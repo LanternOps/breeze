@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "Utilizzo IA",
       "sectionTitle": "Utilizzo dell'IA",
-      "sectionHelp": "Come viene addebitato l'utilizzo dell'assistente IA da parte delle organizzazioni con questo profilo di fatturazione. Fatturi il costo di Breeze più un ricarico oppure imposti un prezzo per modello.",
+      "sectionHelp": "Come viene addebitato l'utilizzo di Breeze AI da parte delle organizzazioni con questo profilo di fatturazione. Fatturi il costo di Breeze più un ricarico oppure imposti un prezzo per modello.",
       "coverage": "Fatturazione dell'utilizzo IA",
       "coverageBillable": "Fatturabile",
       "coverageIncluded": "Incluso",

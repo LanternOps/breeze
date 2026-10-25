@@ -184,6 +184,13 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
+  // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the
+  // remaining device-touching W04 tools. Per tool, so reads share the budget
+  // (manage_browser_policy list) and the bound is set to leave room for them.
+  manage_browser_policy: { limit: 20, windowSeconds: 300 },     // apply queues one command per device
+  manage_peripheral_policy: { limit: 10, windowSeconds: 300 },  // every write queues a device sync
+  remediate_sensitive_data: { limit: 10, windowSeconds: 600 },  // mirrors apply_cis_remediation; encrypt/quarantine/secure_delete on devices
+  configure_network_baseline: { limit: 10, windowSeconds: 300 }, // arms recurring on-site discovery scans
 };
 
 /**

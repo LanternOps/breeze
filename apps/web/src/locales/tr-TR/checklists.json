@@ -21,11 +21,11 @@
     "manual": "Manuel",
     "deliverable": "Çıktı",
     "checklist_template": "Şablon",
-    "operator_task": "Operatör adımı"
+    "operator_task": "Yapay zekâ görevi adımı"
   },
   "operator": {
     "viewTask": "Görevi aç",
-    "badgeTitle": "Bir yapay zekâ Operatör görevi oluşturdu. İş bitince işaretleyin, görev kendiliğinden devam eder."
+    "badgeTitle": "Bir yapay zekâ görevi oluşturdu. İş bitince işaretleyin, görev kendiliğinden devam eder."
   },
   "editDoneWarning": "Adım metnini değiştirmek, adımı kimin ve ne zaman tamamladığı bilgisini siler. Yalnızca notu düzenlemek işareti korur.",
   "resolveConfirm": {
@@ -40,7 +40,7 @@
     "saveFailed": "Kontrol listesi adımı kaydedilemedi.",
     "reorderFailed": "Kontrol listesi yeniden sıralanamadı.",
     "tickRequiresUser": "Bir adımı işaretlemek, oturum açmış bir kullanıcı oturumu gerektirir.",
-    "operatorStepWaiting": "Bir Operatör görevi hâlâ bu adımı bekliyor, bu yüzden silinemez. İş bitince işaretleyin ya da önce görevi durdurun."
+    "operatorStepWaiting": "Bir yapay zekâ görevi hâlâ bu adımı bekliyor, bu yüzden silinemez. İş bitince işaretleyin ya da önce görevi durdurun."
   },
   "templates": {
     "title": "Kontrol listesi şablonları",
@@ -74,7 +74,7 @@
       "loadFailed": "Kontrol listesi şablonları yüklenemedi.",
       "saveFailed": "Kontrol listesi şablonu kaydedilemedi.",
       "applyFailed": "Kontrol listesi şablonu uygulanamadı.",
-      "operatorStepWaiting": "Bir Operatör görevi bu biletin işaretlenmemiş adımlarından birini bekliyor, bu yüzden şablon bu adımların yerini alamaz. Bunun yerine “Bu adımları mevcut kontrol listesine ekle” seçeneğini seçin, iş bitince adımı işaretleyin ya da önce görevi durdurun.",
+      "operatorStepWaiting": "Bir yapay zekâ görevi bu biletin işaretlenmemiş adımlarından birini bekliyor, bu yüzden şablon bu adımların yerini alamaz. Bunun yerine “Bu adımları mevcut kontrol listesine ekle” seçeneğini seçin, iş bitince adımı işaretleyin ya da önce görevi durdurun.",
       "saveAsFailed": "Kontrol listesi şablon olarak kaydedilemedi.",
       "noSteps": "Bu biletin kaydedilecek yeniden kullanılabilir adımı yok.",
       "duplicateFailed": "Kontrol listesi şablonu çoğaltılamadı."
@@ -87,7 +87,7 @@
       "allOrganizations": "Tüm kuruluşlar için kullanılabilir yap",
       "submit": "Şablonu kaydet",
       "success": "“{{name}}” şablonu olarak kaydedildi.",
-      "skipped": "Dışarıda bırakılanlar: {{operator}} Operator adımı ve {{duplicates}} tekrarlanan adım."
+      "skipped": "Dışarıda bırakılanlar: {{operator}} yapay zekâ görevi adımı ve {{duplicates}} tekrarlanan adım."
     }
   }
 }

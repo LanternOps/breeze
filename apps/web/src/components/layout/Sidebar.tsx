@@ -307,7 +307,7 @@ export const navSections: NavSection[] = [
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Operator Recipe Library W06 R1b (#6171): the Operator tasks + recipe
       // library workspace. Same server flag as "Delegate to Operator".
-      { name: 'Operator', labelKey: 'aiOperator:nav.operator', href: '/operator', icon: ListChecks, requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'AI Tasks', labelKey: 'aiOperator:nav.operator', href: '/operator', icon: ListChecks, requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },

@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "Uso de IA",
       "sectionTitle": "Uso de IA",
-      "sectionHelp": "Como o uso do assistente de IA pelas organizações com este perfil de cobrança é faturado. Cobre o custo do Breeze mais uma margem ou defina um preço por modelo.",
+      "sectionHelp": "Como o uso do Breeze AI pelas organizações com este perfil de cobrança é faturado. Cobre o custo do Breeze mais uma margem ou defina um preço por modelo.",
       "coverage": "Cobrança do uso de IA",
       "coverageBillable": "Faturável",
       "coverageIncluded": "Incluído",

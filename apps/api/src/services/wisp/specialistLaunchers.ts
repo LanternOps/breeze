@@ -111,6 +111,20 @@ export function parseSpecialistParams(kind: SpecialistKind, params: unknown): Re
   return parsed.success ? (parsed.data as Record<string, unknown>) : null;
 }
 
+/**
+ * Why `params` do not fit `kind`, for the model to correct its call (#10144);
+ * null when they parse. Zod's messages name the offending keys (the model's
+ * own input) and the expected shape; capped at 300 chars.
+ */
+export function specialistParamsError(kind: SpecialistKind, params: unknown): string | null {
+  const parsed = PARAMS_SCHEMAS[kind].safeParse(params ?? {});
+  if (parsed.success) return null;
+  return parsed.error.issues
+    .map((i) => (i.path.length > 0 ? `${i.path.join('.')}: ${i.message}` : i.message))
+    .join('; ')
+    .slice(0, 300);
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -179,6 +193,87 @@ function triggerRefFor(ctx: LaunchContext, extra: Record<string, unknown> = {}):
 }
 
 // ---------------------------------------------------------------------------
+// Prerequisites (#10144)
+// ---------------------------------------------------------------------------
+
+export type PrerequisiteRefusal = { refused: SpecialistRefusal; detail?: string };
+
+export interface PrerequisiteArgs {
+  orgId: string;
+  partnerId: string;
+  /** Parsed by `parseSpecialistParams` for this kind. */
+  params: Record<string, unknown>;
+}
+
+/** The partner's enabled sweep baseline this org may run (narrowed to any requested kinds), or null. */
+async function findSweepSchedule(partnerId: string, orgId: string, sweepKinds: z.infer<typeof sweepParamsSchema>['sweepKinds']) {
+  const entries = await resolveEffectiveSchedulesForPartner(partnerId);
+  return entries.find((e) => {
+    if (e.baseline.kind !== 'sweep' || !e.baseline.enabled) return false;
+    const eff = effectiveSchedule(
+      { enabled: e.baseline.enabled, sweepKinds: e.baseline.sweepKinds },
+      e.overridesByOrg.get(orgId) ?? null,
+    );
+    if (!eff.enabled || eff.sweepKinds.length === 0) return false;
+    // A requested kind set must overlap what the org's schedule may sweep;
+    // the occurrence intersects, never widens.
+    return !sweepKinds || sweepKinds.some((k) => eff.sweepKinds.includes(k));
+  }) ?? null;
+}
+
+type ResolvedRecipeAgent =
+  | { ok: true; recipe: NonNullable<ReturnType<typeof getRecipe>>; agentId: string }
+  | { ok: false; refusal: PrerequisiteRefusal };
+
+/** The released recipe and the org's enabled agent of the kind it needs. */
+async function resolveRecipeAgent(orgId: string, params: z.infer<typeof operatorRecipeParamsSchema>): Promise<ResolvedRecipeAgent> {
+  const recipe = getRecipe(params.workflowKey, params.workflowVersion);
+  if (!recipe) return { ok: false, refusal: { refused: 'invalid_params', detail: 'unknown_recipe' } };
+  const agentKind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key] : undefined;
+  if (!agentKind) return { ok: false, refusal: { refused: 'no_effective_agent' } };
+  const resolved = await resolveEffectiveAgentSystem(orgId, agentKind);
+  if (!resolved || !resolved.effective.enabled) return { ok: false, refusal: { refused: 'no_effective_agent' } };
+  return { ok: true, recipe, agentId: resolved.agentId };
+}
+
+async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
+  const [device] = await systemRead(() => db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1));
+  return Boolean(device);
+}
+
+/**
+ * The cheap, read-only prerequisite each kind needs before it could launch —
+ * the same checks its launcher makes, without enqueueing, admitting or
+ * provisioning anything. The chat gate runs these BEFORE raising an approval
+ * card (`coordinator.precheckSpecialistRequest`) so a request that would be
+ * refused deterministically never asks first. The launchers still re-check at
+ * launch: state can change while the card waits.
+ */
+export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: PrerequisiteArgs) => Promise<PrerequisiteRefusal | null>>> = Object.freeze({
+  sweep: async ({ orgId, partnerId, params }) => {
+    const { sweepKinds } = sweepParamsSchema.parse(params);
+    return (await findSweepSchedule(partnerId, orgId, sweepKinds)) ? null : { refused: 'no_sweep_schedule' };
+  },
+  // The sandbox flag is the coordinator's gate (aiWorkspaceEnabled); admission owns the rest.
+  analysis: async () => null,
+  operator_recipe: async ({ orgId, params }) => {
+    const resolved = await resolveRecipeAgent(orgId, operatorRecipeParamsSchema.parse(params));
+    return resolved.ok ? null : resolved.refusal;
+  },
+  patch_plan: async ({ orgId }) => ((await resolveEffectiveAgentSystem(orgId, 'patch')) ? null : { refused: 'no_effective_agent' }),
+  // The research agent is provisioned at launch (ensureResearchAgent writes),
+  // so only the device is checked here.
+  remediation_research: async ({ orgId, params }) =>
+    ((await deviceInOrg(orgId, researchParamsSchema.parse(params).deviceId)) ? null : { refused: 'device_not_in_org' }),
+  // Deterministic and agent-less: it checks every ticket when it runs.
+  bulk_ticket_reply: async () => null,
+});
+
+// ---------------------------------------------------------------------------
 // Launchers
 // ---------------------------------------------------------------------------
 
@@ -193,18 +288,7 @@ function triggerRefFor(ctx: LaunchContext, extra: Record<string, unknown> = {}):
  */
 export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
   const params = sweepParamsSchema.parse(ctx.params);
-  const entries = await resolveEffectiveSchedulesForPartner(ctx.partnerId);
-  const entry = entries.find((e) => {
-    if (e.baseline.kind !== 'sweep' || !e.baseline.enabled) return false;
-    const eff = effectiveSchedule(
-      { enabled: e.baseline.enabled, sweepKinds: e.baseline.sweepKinds },
-      e.overridesByOrg.get(ctx.orgId) ?? null,
-    );
-    if (!eff.enabled || eff.sweepKinds.length === 0) return false;
-    // A requested kind set must overlap what the org's schedule may sweep;
-    // the occurrence intersects, never widens.
-    return !params.sweepKinds || params.sweepKinds.some((k) => eff.sweepKinds.includes(k));
-  });
+  const entry = await findSweepSchedule(ctx.partnerId, ctx.orgId, params.sweepKinds);
   if (!entry) return { refused: 'no_sweep_schedule' };
 
   const scheduleId = entry.baseline.id;
@@ -253,12 +337,9 @@ export async function launchAnalysis(ctx: LaunchContext): Promise<LaunchResult> 
 /** An AI Operator task for a released recipe, requested by the grantor. */
 export async function launchOperatorRecipe(ctx: LaunchContext): Promise<LaunchResult> {
   const params = operatorRecipeParamsSchema.parse(ctx.params);
-  const recipe = getRecipe(params.workflowKey, params.workflowVersion);
-  if (!recipe) return { refused: 'invalid_params', detail: 'unknown_recipe' };
-  const agentKind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key] : undefined;
-  if (!agentKind) return { refused: 'no_effective_agent' };
-  const resolved = await resolveEffectiveAgentSystem(ctx.orgId, agentKind);
-  if (!resolved || !resolved.effective.enabled) return { refused: 'no_effective_agent' };
+  const resolved = await resolveRecipeAgent(ctx.orgId, params);
+  if (!resolved.ok) return resolved.refusal;
+  const { recipe } = resolved;
 
   let result: Awaited<ReturnType<typeof admitTask>>;
   try {
@@ -306,12 +387,7 @@ export async function launchPatchPlan(ctx: LaunchContext): Promise<LaunchResult>
 /** Remediation research on one device of the org. */
 export async function launchRemediationResearch(ctx: LaunchContext): Promise<LaunchResult> {
   const params = researchParamsSchema.parse(ctx.params);
-  const [device] = await systemRead(() => db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.id, params.deviceId), eq(devices.orgId, ctx.orgId)))
-    .limit(1));
-  if (!device) return { refused: 'device_not_in_org' };
+  if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
   // The research policy does not exist until the partner baseline does
   // (fixMemory/research.ts). Opens and commits its own system transaction.
   await runOutsideDbContext(() => ensureResearchAgent(ctx.partnerId));

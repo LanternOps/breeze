@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "Assistant IA",
+    "assistant": "Breeze AI",
     "agent": "Agent IA",
     "originUnavailable": "Origine non disponible",
     "openSession": "Ouvrir la conversation",
@@ -670,7 +670,7 @@
     },
     "apps": {
       "title": "Applications connectées",
-      "description": "Les assistants IA et autres clients MCP (Claude.ai, ChatGPT, Cursor, ...) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
+      "description": "Clients IA (Claude.ai, ChatGPT, Cursor, …) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
       "empty": "Aucune application connectée",
       "emptyDescription": "Lorsque vous autorisez un chat Claude.ai, ChatGPT, Cursor ou tout autre client MCP, il apparaîtra ici afin que vous puissiez le révoquer plus tard.",
       "authorized": "Autorisé",
@@ -680,7 +680,7 @@
       "revokeTitle": "Annuler {{app}} ?",
       "revokeDescription": "Toutes les autorisations et tous les jetons d’actualisation de ce client seront supprimés. Les jetons cesseront de fonctionner en moins de 10 minutes. Vous devrez accorder une nouvelle autorisation lors de la prochaine utilisation.",
       "onlyAppTitle": "C’est votre seule application autorisée.",
-      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un assistant IA puisse agir sur votre locataire.",
+      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un client IA puisse agir sur votre locataire.",
       "reasonPlaceholder": "Plus besoin, activité suspecte, ...",
       "revokeAction": "Révoquer l’accès"
     }
@@ -737,8 +737,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Ouvrir le menu de navigation",
-      "ai": "Assistant IA",
-      "aiTitle": "Assistant IA (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aide et documentation",
       "helpTitle": "Aide & Documentation (Cmd+Shift+H)",
       "theme": "Thème",
@@ -2012,7 +2012,7 @@
           "reports": "Rapports"
         },
         "aiFleetActions": "Actions de flotte IA",
-        "aiFleetActionsHint": "Cliquez pour demander à l’assistant IA",
+        "aiFleetActionsHint": "Cliquez pour demander à Breeze AI",
         "quickActions": {
           "checkCompliance": "Vérifier la conformité",
           "activeDeployments": "Déploiements actifs",
@@ -2399,8 +2399,8 @@
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {
-            "title": "Aide alimentée par l’IA",
-            "description": "Posez des questions sur votre flotte, dépannez les problèmes ou générez des rapports. Appuyez sur Cmd+Maj+A à tout moment."
+            "title": "Breeze AI",
+            "description": "Posez des questions sur votre flotte, dépannez les problèmes ou générez des rapports. Appuyez sur ⌘⇧A à tout moment."
           }
         },
         "skipTour": "Ignorer la visite",
@@ -2551,7 +2551,7 @@
           "parameters": "Paramètres"
         },
         "accept": "Accepter",
-        "reject": "Rejeter",
+        "reject": "Refuser",
         "execute": "Exécuter",
         "requestApprovalTitle": "Demander l’approbation du PAM avant exécution",
         "requesting": "Demande...",

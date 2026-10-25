@@ -415,7 +415,13 @@ const ls = launchSpecialistInputSchema.shape;
 export const launchSpecialistShape = {
   orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
   kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
-  params: ls.params.describe('Kind-specific: analysis {goal}; remediation_research {deviceId}; bulk_ticket_reply {concernId, ticketIds, message}; operator_recipe {workflowKey, ...}'),
+  // #10144: every kind's exact keys — the params schemas in
+  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+  // invalid_params. The two long kinds are listed in the tool description
+  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
+  params: ls.params.describe(
+    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+  ),
   reason: ls.reason.describe('Why, in one sentence a technician would accept'),
 };
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
@@ -1269,6 +1275,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       groupIds: z.array(z.string().guid()).max(1000).optional(),
       deviceIds: z.array(z.string().guid()).max(5000).optional(),
     }).optional(),
+    priority: z.number().int().min(0).max(1000).optional(),
     is_active: z.boolean().optional(),
     exception: z.object({
       vendor: z.string().max(255).optional(),
@@ -1476,7 +1483,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_processes: z.object({
     action: z.enum(['list', 'kill']),
     deviceId: uuid,
-    processId: z.string().max(20).optional(),
+    processId: z.string().regex(/^\d+$/).max(20).optional(),
     // Optional at the tool-schema level (kill still works without it, same
     // as before) — but required for the manage_processes.kill act-manifest
     // entry to admit the call (actManifest.ts): a bare PID alone is never
@@ -2421,7 +2428,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_scheduled_tasks: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'run', 'disable', 'enable']),
-    taskName: z.string().min(1).max(1024).optional(),
+    taskName: z.string().min(1).max(512).optional(),
     search: z.string().max(200).optional(),
   }).refine(
     (d) => !['run', 'disable', 'enable'].includes(d.action) || !!d.taskName,
@@ -2431,8 +2438,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   registry_operations: z.object({
     action: z.enum(['read_key', 'get_value', 'set_value', 'create_key', 'delete_key']),
     deviceId: uuid,
-    keyPath: z.string().min(1).max(2048),
-    valueName: z.string().max(255).optional(),
+    keyPath: z.string().min(1).max(1024),
+    valueName: z.string().max(256).optional(),
     valueData: z.string().max(8192).optional(),
     valueType: z.enum(['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_BINARY', 'REG_EXPAND_SZ', 'REG_MULTI_SZ']).optional(),
   }).refine(

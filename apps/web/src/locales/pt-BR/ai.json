@@ -18,10 +18,10 @@
     "pendingApproverDescription": "Esta ação precisa de aprovação na área de Aprovações ou no aplicativo móvel do Breeze.",
     "timeRemaining": "{{minutes}} minutos e {{seconds}} segundos restantes",
     "urgentWarning": "Menos de 30 segundos restantes. Esta solicitação será rejeitada automaticamente.",
-    "progressLabel": "Tempo restante antes da rejeição automática",
+    "progressLabel": "Tempo restante antes da negação automática",
     "showParameters": "Mostrar parâmetros",
     "approve": "Aprovar",
-    "reject": "Rejeitar",
+    "reject": "Negar",
     "approveVerify": "Verificar e aprovar",
     "verifying": "Aguardando verificação…",
     "approving": "Aprovando…",
@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} ações negadas",
     "refusedToast": "Aprovação recusada. A solicitação foi negada.",
     "runContextLabel": "Contexto de execução:",
-    "runContextChosenByAssistant": "escolhido pelo assistente",
+    "runContextChosenByAssistant": "escolhido pelo Breeze AI",
     "runContextScriptDefault": "o padrão salvo do script",
-    "runContextOverrides": "escolhido pelo assistente, substituindo o padrão salvo do script ({{context}})"
+    "runContextOverrides": "escolhido pelo Breeze AI, substituindo o padrão salvo do script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Aguardando resposta...",
@@ -56,7 +56,7 @@
     "sendShortcut": "Cmd+Enter para enviar"
   },
   "aiChatMessages": {
-    "title": "Assistente de IA do Breeze",
+    "title": "Breeze AI",
     "description": "Pergunte sobre seus dispositivos, alertas, métricas ou solucione problemas.",
     "unknownTool": "Ferramenta desconhecida",
     "toolResult": "Resultado da ferramenta",
@@ -107,10 +107,10 @@
     "dismiss": "Dispensar"
   },
   "aiConversationMove": {
-    "openInAssistant": "Abrir nos chats do Wisp",
+    "openInAssistant": "Abrir no Breeze AI",
     "continueInPanel": "Continuar no painel lateral",
     "openPastConversation": "Abrir uma conversa anterior",
-    "closeTabInAssistant": "Feche uma aba nos chats do Wisp para abrir esta conversa",
+    "closeTabInAssistant": "Feche uma aba no Breeze AI para abrir esta conversa",
     "closeTabToOpen": "Feche uma aba para abrir esta conversa",
     "notAvailable": "Esta conversa não está disponível",
     "wasClosed": "Esta conversa foi encerrada",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} mens.",
     "messageCount_one": "{{count}} mensagem",
-    "messageCount_other": "{{count}} mensagens"
+    "messageCount_other": "{{count}} mensagens",
+    "thisMonth": "{{amount}} este mês",
+    "credits_one": "{{formatted}} crédito",
+    "credits_other": "{{formatted}} créditos"
   },
   "aiPlanProgressBar": {
     "completed": "Plano concluído ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "{{count}} etapa",
     "stepCount_other": "{{count}} etapas",
     "approveAll": "Aprovar tudo",
-    "reject": "Rejeitar"
+    "reject": "Negar"
   },
   "aiToolCallCard": {
     "running": "Executando...",
@@ -160,7 +163,7 @@
     "outputExpired": "Saída expirada conforme a política de retenção"
   },
   "aiForOfficePage": {
-    "title": "IA para Office",
+    "title": "Breeze AI for Office",
     "description": "Assistente de IA governado no Excel dos seus clientes — provisionamento, política, auditoria, uso e modelos",
     "tabs": {
       "orgs": "Organizações",
@@ -194,7 +197,7 @@
       "description": "Defina <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (o registro do aplicativo de suplemento do Entra) na API e recarregue."
     },
     "title": "Organizações clientes",
-    "description": "Provisione o assistente de IA do Excel por organização cliente: mapeie o locatário do Entra, conceda consentimento de administrador, habilite a política e implante o suplemento.",
+    "description": "Provisione o Breeze AI for Office por organização cliente: mapeie o locatário do Entra, conceda consentimento de administrador, habilite a política e implante o suplemento.",
     "columns": {
       "aiEnabled": "IA habilitada",
       "entraTenant": "Locatário do Entra",
@@ -208,7 +211,7 @@
     "noOrganizations": "Nenhuma organização",
     "removeMapping": {
       "title": "Remover mapeamento do locatário",
-      "message": "Os usuários do locatário do Entra de {{orgName}} não poderão mais entrar no assistente do Excel. A política da organização e o histórico de uso serão mantidos.",
+      "message": "Os usuários do locatário do Entra de {{orgName}} não poderão mais entrar no Breeze AI for Office. A política da organização e o histórico de uso serão mantidos.",
       "confirm": "Remover mapeamento"
     },
     "wizard": {
@@ -230,7 +233,7 @@
       "openNewTab": "Abrir em nova guia",
       "afterConsent": "Após a concessão, a Microsoft redireciona para uma página de confirmação do Breeze. O consentimento aparece como concedido aqui quando o primeiro usuário entra pelo Excel — não há consulta em tempo real à Microsoft (decisão 1 do Plano 4).",
       "consentGranted": "Concedi o consentimento",
-      "enableDescription": "Habilite o assistente para esta organização. Isso grava <code>enabled: true</code> na política da organização com padrões seguros (todos os usuários, leitura/gravação com aprovação do usuário final, redação de DLP para tipos financeiros/de credenciais). Ajuste tudo depois no editor de políticas.",
+      "enableDescription": "Habilite o Breeze AI for Office para esta organização. Isso grava <code>enabled: true</code> na política da organização com padrões seguros (todos os usuários, leitura/gravação com aprovação do usuário final, redação de DLP para tipos financeiros/de credenciais). Ajuste tudo depois no editor de políticas.",
       "enabling": "Habilitando…",
       "alreadyEnabled": "Já habilitado — continuar",
       "enableAi": "Habilitar IA para Office",
@@ -257,7 +260,7 @@
     },
     "organizations": "Organizações",
     "title": "Política da organização",
-    "description": "Tudo o que o assistente do Excel desta organização cliente tem permissão para fazer.",
+    "description": "Tudo o que o Breeze AI for Office desta organização cliente tem permissão para fazer.",
     "sections": {
       "general": "Geral",
       "userAccess": "Acesso de usuários",
@@ -454,8 +457,8 @@
     "dismiss": "Dispensar"
   },
   "workspaceEmptyState": {
-    "title": "Chats do Wisp",
-    "description": "Execute várias conversas de IA simultaneamente. Investigue um problema de dispositivo em uma guia enquanto configura uma política em outra.",
+    "title": "Breeze AI",
+    "description": "Execute várias conversas simultaneamente. Investigue um problema de dispositivo em uma guia enquanto configura uma política em outra.",
     "newConversation": "Nova conversa",
     "limit": "Até 5 conversas simultâneas"
   },
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Orçamento e verificação periódica",
-      "budget": "Orçamento diário (¢)",
+      "budget": "Orçamento diário",
       "tick": "Verificar a cada (minutos)",
       "save": "Salvar"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Não foi possível retomar o Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ de {{budget}}¢ hoje",
+      "meter": "{{spent}} de {{budget}} hoje",
       "resets": "reinicia em {{hours}} h",
       "raise": "Aumentar o orçamento de hoje",
       "label": "Gasto do Wisp hoje"
@@ -688,7 +691,7 @@
       "empty": "Nada ainda. O trabalho do Wisp aparecerá aqui.",
       "loadFailed": "Não foi possível carregar a atividade",
       "loadMore": "Carregar mais",
-      "cost": "{{cents}} ¢",
+      "cost": "Custo {{amount}}",
       "kind": {
         "assessment": "Verificação",
         "concern": "Pendência",
@@ -751,7 +754,7 @@
         "site": "Locais",
         "alert": "Alertas",
         "run": "Execuções de agentes",
-        "task": "Tarefas do operador",
+        "task": "Tarefas de IA",
         "user": "Usuários"
       },
       "loading": "Buscando…",

@@ -530,7 +530,7 @@
         "device_vulnerabilities": "Vulnerabilities: {{count}}",
         "organization_key_dates": "Key-date reminders: {{count}}",
         "service_deliverable_occurrences": "Deliverable occurrences: {{count}}",
-        "ai_operator_task_targets": "AI operator targets: {{count}}",
+        "ai_operator_task_targets": "AI task targets: {{count}}",
         "ticket_drafts": "Drafts discarded: {{count}}"
       },
       "droppedHeading": "Links that are dropped",

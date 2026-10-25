@@ -68,6 +68,8 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   // --- NEW-OBJECT: nothing exists at approval time -------------------------
   'manage_organizations:create_org':
     'Creates a brand-new organization. The tool takes no id argument at all — there is no pre-existing row to hash.',
+  collect_evidence:
+    'SUPERVISED-ONLY whole-tool input-aware surface (full-control W04, #6758): only a `screenshot` in `evidenceTypes` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_TOOLS member in. It writes no row: it queues a read-only device command, and the addressed `incidents` row is the parent, whose `updated_at` churns with every timeline event. The device, incident and evidence types travel in the intent input the approver reviews.',
   create_remote_session:
     'NEW-OBJECT: inserts a `remote_sessions` row. The only pre-existing row it touches is `devices`, for an access check, and a device row is not the thing being acted on.',
   request_elevation:

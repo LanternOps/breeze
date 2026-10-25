@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "KI-Assistent",
+    "assistant": "Breeze AI",
     "agent": "KI-Agent",
     "originUnavailable": "Ursprung nicht verfügbar",
     "openSession": "Unterhaltung öffnen",
@@ -670,7 +670,7 @@
     },
     "apps": {
       "title": "Verbundene Apps",
-      "description": "KI-Assistenten und andere MCP-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden; die Token funktionieren innerhalb von 10 Minuten nicht mehr.",
+      "description": "KI-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden – Tokens funktionieren dann nach spätestens 10 Minuten nicht mehr.",
       "empty": "Keine verbundenen Apps",
       "emptyDescription": "Wenn Sie einen Claude.ai-Chat, ChatGPT, Cursor oder einen anderen MCP-Client autorisieren, wird dieser hier angezeigt und kann später widerrufen werden.",
       "authorized": "Autorisiert",
@@ -680,7 +680,7 @@
       "revokeTitle": "{{app}} widerrufen?",
       "revokeDescription": "Alle Berechtigungen und Refresh-Token für diesen Client werden gelöscht. Die Token funktionieren innerhalb von 10 Minuten nicht mehr. Bei der nächsten Verwendung ist eine erneute Autorisierung erforderlich.",
       "onlyAppTitle": "Dies ist Ihre einzige autorisierte App.",
-      "onlyAppDescription": "Nach dem Widerruf müssen Sie erneut autorisieren, bevor ein KI-Assistent in Ihrem Mandanten handeln kann.",
+      "onlyAppDescription": "Nach dem Widerrufen müssen Sie erneut autorisieren, bevor ein KI-Client in Ihrem Mandanten handeln kann.",
       "reasonPlaceholder": "Nicht mehr benötigt, verdächtige Aktivität, …",
       "revokeAction": "Zugriff widerrufen"
     }
@@ -737,8 +737,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Navigationsmenü öffnen",
-      "ai": "KI-Assistent",
-      "aiTitle": "KI-Assistent (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Hilfe und Dokumentation",
       "helpTitle": "Hilfe und Dokumentation (Cmd+Shift+H)",
       "theme": "Design",
@@ -2012,7 +2012,7 @@
           "reports": "Berichte"
         },
         "aiFleetActions": "KI-Flottenaktionen",
-        "aiFleetActionsHint": "Klicken Sie hier, um den KI-Assistenten zu fragen",
+        "aiFleetActionsHint": "Klicken, um Breeze AI zu fragen",
         "quickActions": {
           "checkCompliance": "Überprüfen Sie die Einhaltung",
           "activeDeployments": "Aktive Bereitstellungen",
@@ -2399,8 +2399,8 @@
             "description": "Mehrere Kunden verwalten? Wechseln Sie hier zwischen Organisationen."
           },
           "aiHelp": {
-            "title": "KI-gestützte Hilfe",
-            "description": "Stellen Sie Fragen zu Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie jederzeit Befehl+Umschalt+A."
+            "title": "Breeze AI",
+            "description": "Fragen Sie in einfacher Sprache nach Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie überall ⌘⇧A."
           }
         },
         "skipTour": "Tour überspringen",

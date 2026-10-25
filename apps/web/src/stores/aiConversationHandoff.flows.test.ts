@@ -107,7 +107,7 @@ describe('moveToAssistant (panel → workspace)', () => {
     useWorkspaceStore.setState({ tabs: [1, 2, 3, 4, 5].map((i) => tab({ id: `t${i}`, sessionId: `s${i}` })), activeTabId: 't1' });
     await expect(moveToAssistant(S, { draft: 'half a thought' })).resolves.toBe('tab_cap');
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'Close a tab in Wisp chats to open this conversation',
+      message: 'Close a tab in Breeze AI to open this conversation',
     }));
     expect(navigateMock).not.toHaveBeenCalled();
     expect(useHandoffStore.getState().pending).toBeNull();

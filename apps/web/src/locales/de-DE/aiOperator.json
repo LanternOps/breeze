@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Nächster Schritt",
-      "approveInInbox": "Im Posteingang genehmigen",
+      "approveInInbox": "In Genehmigungen genehmigen",
       "answerQuestion": "Frage beantworten",
       "waitingForDevice": "Wartet auf Gerät",
       "waitingForMaintenanceWindow": "Wartet auf Wartungsfenster",
@@ -114,29 +114,29 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Operator-Aufgaben werden geladen...",
-    "loadFailed": "Operator-Aufgaben konnten nicht geladen werden.",
-    "empty": "Keine Operator-Aufgaben für dieses Gerät.",
-    "emptyHint": "Der KI-Operator untersucht und behebt Probleme auf einem Gerät, wenn Sie ihm eine Warnung delegieren. Für dieses Gerät delegierte Aufgaben erscheinen hier.",
-    "learnMore": "Mehr über den KI-Operator erfahren"
+    "loading": "KI-Aufgaben werden geladen…",
+    "loadFailed": "KI-Aufgaben konnten nicht geladen werden.",
+    "empty": "Keine KI-Aufgaben für dieses Gerät.",
+    "emptyHint": "Die KI-Worker untersuchen und beheben Probleme auf einem Gerät, wenn Sie aus einer Warnung eine KI-Aufgabe starten. KI-Aufgaben für dieses Gerät erscheinen hier.",
+    "learnMore": "Mehr über KI-Aufgaben erfahren"
   },
   "delegate": {
-    "button": "An Operator delegieren",
-    "dialogTitle": "An Operator delegieren",
-    "dialogMessage": "Der Operator untersucht das Problem und versucht es mit dem folgenden Workflow zu beheben.",
+    "button": "KI-Aufgabe starten",
+    "dialogTitle": "KI-Aufgabe starten",
+    "dialogMessage": "Die KI-Worker untersuchen das Problem und versuchen es mit dem folgenden Rezept zu beheben.",
     "orgLabel": "Organisation",
     "deviceLabel": "Gerät",
     "serviceNameLabel": "Dienstname",
     "serviceNamePlaceholder": "z. B. Spooler",
     "serviceNameError": "Geben Sie den Dienstnamen ein, um diese Aufgabe zu delegieren.",
-    "workflowLabel": "Arbeitsablauf",
+    "workflowLabel": "Rezept",
     "workflowName": "Dienstwiederherstellung",
     "confirmLabel": "Delegieren",
-    "queued": "Aufgabe an den Operator delegiert.",
-    "failed": "Delegierung an den Operator fehlgeschlagen."
+    "queued": "KI-Aufgabe gestartet.",
+    "failed": "KI-Aufgabe konnte nicht gestartet werden."
   },
   "nav": {
-    "operator": "KI-Operator"
+    "operator": "KI-Aufgaben"
   },
   "effectTool": {
     "googleSetVacation": "Gmail-Abwesenheitsnotiz einrichten",
@@ -162,7 +162,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Bereiche des Operators",
+      "label": "Bereiche der KI-Aufgabe",
       "tasks": "Aufgaben",
       "library": "Bibliothek"
     },
@@ -171,7 +171,7 @@
   "taskList": {
     "loading": "Aufgaben werden geladen...",
     "loadFailed": "Aufgaben konnten nicht geladen werden.",
-    "empty": "Noch keine Operator-Aufgaben.",
+    "empty": "Noch keine KI-Aufgaben.",
     "emptyHint": "Aufgaben, die Sie über die Bibliothek, ein Ticket, einen Kontakt oder eine Warnung starten, erscheinen hier.",
     "loadMore": "Mehr laden",
     "loadMoreFailed": "Weitere Aufgaben konnten nicht geladen werden."

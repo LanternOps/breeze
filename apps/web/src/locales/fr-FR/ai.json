@@ -18,10 +18,10 @@
     "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Breeze.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} secondes restantes",
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
-    "progressLabel": "Temps restant avant l’auto-rejet",
+    "progressLabel": "Temps restant avant refus automatique",
     "showParameters": "Paramètres de présentation",
     "approve": "Approuver",
-    "reject": "Rejeter",
+    "reject": "Refuser",
     "approveVerify": "Vérifier et approuver",
     "verifying": "En attente de vérification…",
     "approving": "Approbation en cours…",
@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} actions refusées",
     "refusedToast": "Approbation refusée. La demande a été rejetée.",
     "runContextLabel": "Contexte d’exécution :",
-    "runContextChosenByAssistant": "choisi par l’assistant",
+    "runContextChosenByAssistant": "choisi par Breeze AI",
     "runContextScriptDefault": "la valeur par défaut enregistrée du script",
-    "runContextOverrides": "choisi par l’assistant, remplaçant la valeur par défaut enregistrée du script ({{context}})"
+    "runContextOverrides": "choisi par Breeze AI, remplaçant la valeur par défaut enregistrée du script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "En attente de réponse...",
@@ -56,7 +56,7 @@
     "sendShortcut": "Cmd+Entrée pour envoyer"
   },
   "aiChatMessages": {
-    "title": "Breeze AI Assistant",
+    "title": "Breeze AI",
     "description": "Demandez des informations sur vos appareils, alertes, indicateurs ou dépannez les problèmes.",
     "unknownTool": "Outil inconnu",
     "toolResult": "Résultat de l’outil",
@@ -107,10 +107,10 @@
     "dismiss": "Fermer"
   },
   "aiConversationMove": {
-    "openInAssistant": "Ouvrir dans les discussions Wisp",
+    "openInAssistant": "Ouvrir dans Breeze AI",
     "continueInPanel": "Continuer dans le panneau latéral",
     "openPastConversation": "Ouvrir une conversation précédente",
-    "closeTabInAssistant": "Fermez un onglet dans les discussions Wisp pour ouvrir cette conversation",
+    "closeTabInAssistant": "Fermez un onglet dans Breeze AI pour ouvrir cette conversation",
     "closeTabToOpen": "Fermez un onglet pour ouvrir cette conversation",
     "notAvailable": "Cette conversation n'est pas disponible",
     "wasClosed": "Cette conversation a été fermée",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} MSGS",
     "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} MSGS"
+    "messageCount_other": "{{count}} MSGS",
+    "thisMonth": "{{amount}} ce mois-ci",
+    "credits_one": "{{formatted}} crédit",
+    "credits_other": "{{formatted}} crédits"
   },
   "aiPlanProgressBar": {
     "completed": "Plan terminé ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "{{count}} pas",
     "stepCount_other": "{{count}} marches",
     "approveAll": "Approuver tout",
-    "reject": "Rejeter"
+    "reject": "Refuser"
   },
   "aiToolCallCard": {
     "running": "En cours…",
@@ -160,7 +163,7 @@
     "outputExpired": "Sortie expirée selon la politique de conservation"
   },
   "aiForOfficePage": {
-    "title": "IA pour Office",
+    "title": "Breeze AI for Office",
     "description": "Assistant IA gouverné dans Excel de vos clients — provisionnement, politiques, audit, utilisation et modèles",
     "tabs": {
       "orgs": "Organisations",
@@ -194,7 +197,7 @@
       "description": "Définissez <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (l’inscription de l’application complémentaire Entra) dans l’API, puis rechargez."
     },
     "title": "Organisations clientes",
-    "description": "Provisionnez l’assistant IA Excel par organisation cliente : associez le tenant Entra, accordez le consentement administrateur, activez la stratégie et déployez le complément.",
+    "description": "Provisionnez Breeze AI for Office par organisation cliente : associez le tenant Entra, accordez le consentement administrateur, activez la stratégie et déployez le complément.",
     "columns": {
       "aiEnabled": "IA activée",
       "entraTenant": "Tenant Entra",
@@ -208,7 +211,7 @@
     "noOrganizations": "Aucune organisation",
     "removeMapping": {
       "title": "Supprimer l’association du tenant",
-      "message": "Les utilisateurs dans le tenant Entra de {{orgName}} ne pourront plus se connecter à l’assistant Excel. La politique de l’organisation et l’historique d’utilisation sont conservés.",
+      "message": "Les utilisateurs dans le tenant Entra de {{orgName}} ne pourront plus se connecter à Breeze AI for Office. La politique de l’organisation et l’historique d’utilisation sont conservés.",
       "confirm": "Supprimer l’association"
     },
     "wizard": {
@@ -230,7 +233,7 @@
       "openNewTab": "Ouvrir dans un nouvel onglet",
       "afterConsent": "Après avoir accordé, Microsoft redirige vers une page de confirmation Breeze. Le consentement apparaît comme accordé ici une fois que le premier utilisateur se connecte depuis Excel — il n’y a pas de sondage en direct contre Microsoft (décision Plan-4 1).",
       "consentGranted": "J’ai donné mon consentement",
-      "enableDescription": "Activez l’assistant pour cette organisation. Cela inscrit <code>enabled: true</code> dans la politique de l’organisation avec des valeurs par défaut sûres (tous les utilisateurs, accès en lecture/écriture avec approbation de l’utilisateur final et masquage DLP des données financières et d’identification). Ajustez ensuite tous les paramètres dans l’éditeur de politiques.",
+      "enableDescription": "Activez Breeze AI for Office pour cette organisation. Cela inscrit <code>enabled: true</code> dans la politique de l’organisation avec des valeurs par défaut sûres (tous les utilisateurs, accès en lecture/écriture avec approbation de l’utilisateur final et masquage DLP des données financières et d’identification). Ajustez ensuite tous les paramètres dans l’éditeur de politiques.",
       "enabling": "Facilitant...",
       "alreadyEnabled": "Déjà activé — continuer",
       "enableAi": "Activer l’IA pour Office",
@@ -257,7 +260,7 @@
     },
     "organizations": "Organisations",
     "title": "Politique de l’organisation",
-    "description": "Tout ce que l’assistant Excel de cette organisation cliente est autorisé à faire.",
+    "description": "Tout ce que Breeze AI for Office de cette organisation cliente est autorisé à faire.",
     "sections": {
       "general": "Généralités",
       "userAccess": "Accès utilisateur",
@@ -454,8 +457,8 @@
     "dismiss": "Fermer"
   },
   "workspaceEmptyState": {
-    "title": "Discussions Wisp",
-    "description": "Faites plusieurs conversations IA simultanément. Enquêtez sur un problème de périphérique dans un onglet tout en configurant une politique dans un autre.",
+    "title": "Breeze AI",
+    "description": "Menez plusieurs conversations en même temps. Enquêtez sur un appareil dans un onglet tout en configurant une politique dans un autre.",
     "newConversation": "Nouvelle conversation",
     "limit": "Jusqu’à 5 conversations simultanées"
   },
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Budget et point de suivi",
-      "budget": "Budget quotidien (¢)",
+      "budget": "Budget quotidien",
       "tick": "Point de suivi toutes les (minutes)",
       "save": "Enregistrer"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Impossible de réactiver Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ sur {{budget}}¢ aujourd’hui",
+      "meter": "{{spent}} sur {{budget}} aujourd’hui",
       "resets": "réinitialisation dans {{hours}} h",
       "raise": "Augmenter le budget du jour",
       "label": "Dépenses de Wisp aujourd’hui"
@@ -688,7 +691,7 @@
       "empty": "Rien pour le moment. Le travail de Wisp apparaîtra ici.",
       "loadFailed": "Impossible de charger l’activité",
       "loadMore": "Charger plus",
-      "cost": "{{cents}} ¢",
+      "cost": "Coût {{amount}}",
       "kind": {
         "assessment": "Vérification",
         "concern": "Point de vigilance",
@@ -751,7 +754,7 @@
         "site": "Emplacements",
         "alert": "Alertes",
         "run": "Exécutions d’agents",
-        "task": "Tâches d’opérateur",
+        "task": "Tâches IA",
         "user": "Utilisateurs"
       },
       "loading": "Recherche en cours…",

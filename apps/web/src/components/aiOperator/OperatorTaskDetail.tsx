@@ -109,6 +109,19 @@ function nextActionLabel(t: Translator, action: AiOperatorTaskNextAction): strin
   }
 }
 
+/**
+ * "Approve in Approvals" opens the card itself: `/approvals#intent-<id>` using
+ * the intent the task is waiting on (`waitDependency`, set for plan and
+ * single-operation approvals alike), falling back to the pending plan
+ * approval, else the Approvals page.
+ */
+function approvalsHref(task: AiOperatorTaskDto): string {
+  const id = task.waitDependency?.kind === 'intent'
+    ? task.waitDependency.id
+    : task.plan?.find((p) => p.state === 'pending' && p.intentId)?.intentId;
+  return id ? `/approvals#intent-${encodeURIComponent(id)}` : '/approvals';
+}
+
 function dispatchStateLabel(t: Translator, state: AiOperatorOperationDispatchState): string {
   switch (state) {
     case 'reserved': return t('operatorTaskDetail.dispatchState.reserved');
@@ -308,7 +321,15 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
         )}
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.nextAction.label')}</dt>
-          <dd data-testid="operator-task-next-action">{nextActionLabel(t, task.nextAction)}</dd>
+          <dd data-testid="operator-task-next-action">
+            {task.nextAction === 'approve_in_inbox' ? (
+              <a href={approvalsHref(task)} className="text-primary underline underline-offset-2 hover:no-underline">
+                {nextActionLabel(t, task.nextAction)}
+              </a>
+            ) : (
+              nextActionLabel(t, task.nextAction)
+            )}
+          </dd>
         </div>
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.deadline.label')}</dt>

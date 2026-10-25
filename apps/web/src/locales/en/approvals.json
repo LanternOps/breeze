@@ -14,7 +14,7 @@
   "targetDevice": "Target device: {{hostname}}",
   "batch": {
     "approveAll": "Approve all ({{count}})",
-    "declineAll": "Decline all ({{count}})",
+    "declineAll": "Deny all ({{count}})",
     "groupTitle": "{{count}} similar requests · {{tool}}",
     "moreHostnames": "+{{count}} more",
     "denyConfirmSummary": "This declines {{count}} requests for {{org}}."
@@ -132,7 +132,7 @@
     "durationValue": "{{minutes}} minutes from approval",
     "purpose": "Purpose",
     "requestedBy": "Requested by",
-    "principalUser": "Breeze AI chat",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP API key",
     "principalOauth": "MCP OAuth connection",
     "paths": "Paths",
@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan for AI Operator task",
+    "title": "Plan for AI task",
     "summary_one": "{{count}} effect, plan revision {{revision}}",
     "summary_other": "{{count}} effects, plan revision {{revision}}",
     "groupBreeze": "Breeze devices",
@@ -171,7 +171,7 @@
       "in_progress": "In progress",
       "completed": "Completed",
       "failed": "Failed",
-      "rejected": "Rejected",
+      "rejected": "Denied",
       "expired": "Expired",
       "cancelled": "Cancelled"
     }

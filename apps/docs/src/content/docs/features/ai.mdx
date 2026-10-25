@@ -64,15 +64,15 @@ The assistant and background agents can author a script mid-conversation, have i
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
-| **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence`, `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
+| **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
 </Aside>
 
 <Aside type="note">
@@ -497,13 +497,13 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 ## Incident Response AI Tools
 
-The AI can create and manage security incidents, execute containment actions, and collect forensic evidence.
+The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
 
 | Tool | Tier | Description |
 |------|------|-------------|
-| `create_incident` | 2 | Create a new security incident with classification and severity |
-| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block) |
-| `collect_evidence` | 2 | Collect forensic evidence from a device (logs, processes, connections, screenshots) |
+| `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
+| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block). Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
 
@@ -544,6 +544,34 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `get_script_execution_history` | 1 | Past execution results for a script |
 | `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
 | `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
+
+### Security & device operations (writes)
+
+These tools change security settings or act on devices. They are available in AI chat and to AI agents. Approval follows the tier shown; see [Tool tiers](#tool-tiers) for what each tier means.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `request_elevation` | 3 | Request a temporary admin elevation on a device. Needs a second approver (four-eyes) |
+| `revoke_elevation` | 2 | Revoke an active elevation and request cleanup on the device |
+| `create_remote_session` | 3 | Open a remote terminal or file session. Needs a second approver (four-eyes), and respects the remote-access policy and the concurrent-session limits |
+| `manage_processes` (list) | 2 | List running processes |
+| `manage_processes` (kill) | 3 | Terminate a process |
+| `manage_scheduled_tasks` (list) | 2 | List scheduled tasks |
+| `manage_scheduled_tasks` (run/disable/enable) | 3 | Run, disable or enable a scheduled task |
+| `registry_operations` (read_key/get_value) | 2 | Read Windows registry keys and values |
+| `registry_operations` (set_value/create_key/delete_key) | 3 | Change the Windows registry |
+| `trigger_agent_restart` | 3 | Restart a silent agent through the watchdog (needs `devices.recover_agent`) |
+| `trigger_agent_upgrade` | 3 | Bring an agent to the version it is meant to run. It never overrides an agent version pin, never re-pushes a version the agent already has, and never downgrades |
+| `manage_software_policy` (list/get) | 1 | Read software policies. No approval needed |
+| `manage_software_policy` (create/update/delete) | 3 | Change software policies |
+| `manage_browser_policy` (list) | 1 | List browser policies. No approval needed |
+| `manage_browser_policy` (create/update/apply) | 3 | Change browser policies or roll one out to devices |
+| `manage_peripheral_policy` (create/update/disable/add_exception/remove_exception) | 3 | Create or change peripheral (USB) policies and exceptions |
+| `remediate_sensitive_data` (encrypt/quarantine/secure_delete/accept_risk/false_positive/mark_remediated) | 3 | Encrypt, quarantine, delete or close out a sensitive-data finding |
+| `remediate_software_violation` | 3 | Uninstall software that violates a policy |
+| `assign_security_training` | 2 | Assign security training to a user |
+| `configure_network_baseline` | 3 | Configure a network baseline. Needs approval because it schedules recurring discovery scans |
+| `acknowledge_network_device` | 2 | Acknowledge a newly discovered network device |
 
 `sync_edr_data` (Tier 2, v0.124.0+) queues an immediate EDR sync — endpoints and detections — for one connection, the connections serving one organization, or every connection of the partner. Results arrive over the following minutes. It is limited to three calls per ten minutes.
 

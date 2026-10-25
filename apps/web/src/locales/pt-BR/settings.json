@@ -285,7 +285,7 @@
     "subtitle": "Conecte provedores, escolha quais modelos estão disponíveis e defina o modelo padrão de cada recurso de IA.",
     "forbidden": "Você não tem permissão para gerenciar provedores e modelos de IA.",
     "loadFailed": "Não foi possível carregar os provedores e modelos de IA.",
-    "workspaceNote": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
+    "workspaceNote": "A indexação de conhecimento usa o provedor de IA configurado e aparece no seu uso de IA.",
     "connections": {
       "title": "Conexões",
       "subtitle": "Para onde suas solicitações de IA são enviadas e quem paga por elas.",
@@ -1096,7 +1096,7 @@
       },
       "aiApprovals": {
         "label": "Tempo limite de aprovação de IA",
-        "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
+        "description": "Quanto tempo o Breeze AI aguarda a aprovação de uma ação restrita"
       },
       "callerVerification": {
         "label": "Verificação de chamador",
@@ -2402,7 +2402,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Uso de IA",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do assistente de IA e configure limites de orçamento",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do Breeze AI e configure limites de orçamento",
     "budgetConfiguration": "Configuração de orçamento",
     "aIEnabled": "IA habilitada",
     "enabled": "Habilitado",
@@ -2456,7 +2456,7 @@
     "creditsRemaining": "Créditos de IA Breeze restantes",
     "defaultValue": "Padrão ({{value}})",
     "viewPartnerWideBudgets": "Orçamentos de IA do parceiro",
-    "monitorAIAssistantUsage": "Monitorar o uso do assistente de IA",
+    "monitorAIAssistantUsage": "Monitorar o uso do Breeze AI",
     "effectiveBudget": "Orçamento vigente",
     "effectiveBudgetHelp": "Os limites em vigor para esta organização agora, e onde cada um foi definido.",
     "effectiveBudgetUnavailable": "Não foi possível carregar o orçamento efetivo. Recarregue a página para tentar novamente.",
@@ -3137,7 +3137,7 @@
         },
         "anomalyLink": "Abrir anomalias do dispositivo",
         "budget": {
-          "title": "Orçamento de exposição",
+          "title": "Orçamento de ações",
           "caption": "Exposição registrada — últimas {{hours}}h",
           "devices": "{{count}} de {{allowance}} dispositivos",
           "decisionsToday": "{{count}} de {{max}} decisões de política hoje",
@@ -3365,7 +3365,7 @@
       "readOnlyNote": "A execução pré-autorizada está desligada nesta instalação; estes números são apenas informativos.",
       "byOrgTruncated": "Mostrando as {{limit}} primeiras organizações por nome. Escolha uma única organização no seletor de organizações para ver as demais.",
       "thresholdPerOrgNote": "Cada organização resolve o próprio limite de promoção, por isso as execuções verificadas aparecem aqui sem uma meta. Escolha uma única organização no seletor de organizações para ver a meta dela.",
-      "approvalsLink": "Acompanhar esta solicitação na caixa de aprovações",
+      "approvalsLink": "Acompanhar esta solicitação em Aprovações",
       "ceilingHint": "As chaves no nível do parceiro são um teto, não uma concessão. O agente de cada organização precisa receber a chave separadamente — pela graduação ou editando o agente daquela organização.",
       "grantOnlyHint": "As chaves pré-autorizadas de um agente de organização só são concedidas pelo painel de graduação por um segundo aprovador, e também são revogadas ali.",
       "promote": "Promover",
@@ -3964,10 +3964,10 @@
       "runsPerHourCount_other": "{{count}} execuções por hora",
       "minuteCount_one": "{{count}} minuto",
       "minuteCount_other": "{{count}} minutos",
-      "approvers_one": "{{roles}} é consultada, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approvers_other": "{{roles}} são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approversCount_one": "{{count}} função é consultada, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approversCount_other": "{{count}} funções são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
+      "approvers_one": "{{roles}} é consultada, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approvers_other": "{{roles}} são consultadas, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approversCount_one": "{{count}} função é consultada, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approversCount_other": "{{count}} funções são consultadas, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
       "scriptGateNote": "{{list}} só será executado sem supervisão depois que um script for autorizado para este agente; até lá, gera uma solicitação de aprovação.",
       "scriptsAuthorized_one": "{{count}} script está autorizado a executar sem supervisão.",
       "scriptsAuthorized_other": "{{count}} scripts estão autorizados a executar sem supervisão."
@@ -5440,7 +5440,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Orçamento de IA",
-    "description": "Limites de gastos, limites de frequência e modo de aprovação do assistente de IA nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "description": "Limites de gastos, limites de frequência e modo de aprovação do Breeze AI nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
     "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
   },
   "orgSettingsPage": {
@@ -5500,7 +5500,7 @@
       "ticketing": "Chamados",
       "ticketingDescription": "SLA e substituições de faturamento",
       "ai": "IA",
-      "aiDescription": "Orçamento do assistente de IA, limites de frequência e modo de aprovação"
+      "aiDescription": "Orçamento do Breeze AI, limites de frequência e modo de aprovação"
     },
     "overview": {
       "title": "Visão geral da organização",
@@ -6729,7 +6729,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Criação de scripts",
-    "subtitle": "Permita que o assistente e seus agentes escrevam, revisem e — quando você permitir — executem scripts sem um cartão de aprovação.",
+    "subtitle": "Permita que o Breeze AI e seus agentes escrevam, revisem e — quando você permitir — executem scripts sem um cartão de aprovação.",
     "partnerCard": {
       "title": "Limite do parceiro",
       "description": "A configuração mais ampla que qualquer organização deste parceiro pode usar. Organizações individuais só podem restringi-la.",
@@ -6897,13 +6897,13 @@
     "timeoutLabel": "Tempo limite de aprovação interativa",
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
-    "description": "Por quanto tempo uma conversa de IA em andamento aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir.",
+    "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
     "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
     "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
   },
   "orgAiApprovalTimeout": {
     "title": "Tempo limite de aprovação de IA",
-    "description": "Por quanto tempo um chat de IA aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir. As organizações podem substituir o padrão do parceiro aqui; o valor da organização prevalece quando definido.",
+    "description": "Por quanto tempo o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir. As organizações podem substituir o padrão do parceiro aqui; o valor da organização prevalece quando definido.",
     "fieldLabel": "Tempo limite de aprovação interativa",
     "inherit": "Herdar",
     "inheritLabel": "Herdar ({{minutes}} minutos, {{source}})",

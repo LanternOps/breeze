@@ -724,10 +724,19 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven) — MCP_T
 
     it('the real checkGuardrails still ALLOWS collect_evidence at Tier 2 — the MCP extras gate is route-only', () => {
       const result = checkGuardrails('collect_evidence', {
-        incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['screenshot'],
+        incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['processes'],
       });
       expect(result.allowed).toBe(true);
       expect(result.tier).toBe(2);
+    });
+
+    it('a screenshot in collect_evidence is Tier 3 supervised in-app (W04-D3, #6758), still allowed', () => {
+      const result = checkGuardrails('collect_evidence', {
+        incidentId: 'inc-1', deviceId: 'dev-1', evidenceTypes: ['screenshot'],
+      });
+      expect(result.allowed).toBe(true);
+      expect(result.tier).toBe(3);
+      expect(result.approvalScope).toBe('supervised');
     });
   });
 });

@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Henüz yama işi yok. Politikalar, güncelleme halkaları veya yapay zeka asistanı tarafından oluşturulan işler burada görünecek.",
+    "empty": "Henüz yama işi yok. Politikalar, güncelleme halkaları veya Breeze AI tarafından oluşturulan işler burada görünecek.",
     "loading": "Yama işleri yükleniyor...",
     "columns": {
       "name": "İş",

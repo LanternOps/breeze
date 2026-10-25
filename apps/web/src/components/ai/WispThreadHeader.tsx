@@ -49,6 +49,9 @@ function readLimits(raw: unknown): { budgetMax: number | null; tickMin: number }
   return { budgetMax, tickMin: Math.min(TICK_MAX, Math.max(TICK_MIN, minTick)) };
 }
 
+/** Daily budget is stored in cents; the input shows dollars with two decimals. */
+const centsToDollars = (cents: number) => (cents / 100).toFixed(2);
+
 const clamp = (n: number, lo: number, hi: number | null) => Math.min(hi ?? Number.POSITIVE_INFINITY, Math.max(lo, Math.round(n)));
 
 function handleMutationError(err: unknown, fallback: string) {
@@ -83,7 +86,7 @@ export default function WispThreadHeader({
   const [revoking, setRevoking] = useState(false);
   const [refreshOpen, setRefreshOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [budget, setBudget] = useState(String(wisp.budgetCentsPerDay));
+  const [budget, setBudget] = useState(centsToDollars(wisp.budgetCentsPerDay));
   const [tick, setTick] = useState(String(wisp.floorTickMinutes));
   const [saving, setSaving] = useState(false);
   const [focusPending, setFocusPending] = useState(false);
@@ -130,7 +133,7 @@ export default function WispThreadHeader({
   };
 
   const openSettings = (force = false) => {
-    setBudget(String(wisp.budgetCentsPerDay));
+    setBudget(centsToDollars(wisp.budgetCentsPerDay));
     setTick(String(wisp.floorTickMinutes));
     setSettingsOpen((v) => force || !v);
   };
@@ -138,7 +141,9 @@ export default function WispThreadHeader({
   const saveSettings = async () => {
     // An emptied or non-numeric field means "leave as is" — never a budget of 0.
     const typed = (raw: string, current: number) => (raw.trim() === '' || !Number.isFinite(Number(raw)) ? current : Number(raw));
-    const nextBudget = clamp(typed(budget, wisp.budgetCentsPerDay), 0, budgetMax);
+    // The field shows dollars; the API stays in cents.
+    const typedBudgetCents = budget.trim() === '' || !Number.isFinite(Number(budget)) ? wisp.budgetCentsPerDay : Math.round(Number(budget) * 100);
+    const nextBudget = clamp(typedBudgetCents, 0, budgetMax);
     const nextTick = clamp(typed(tick, wisp.floorTickMinutes), tickMin, TICK_MAX);
     const patch: { budgetCentsPerDay?: number; floorTickMinutes?: number } = {};
     if (nextBudget !== wisp.budgetCentsPerDay) patch.budgetCentsPerDay = nextBudget;
@@ -252,7 +257,8 @@ export default function WispThreadHeader({
               type="number"
               data-testid="wisp-settings-budget"
               min={0}
-              max={budgetMax ?? undefined}
+              step="0.01"
+              max={budgetMax === null ? undefined : centsToDollars(budgetMax)}
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
               className="w-24 rounded border bg-background px-2 py-1"

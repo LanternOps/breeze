@@ -285,7 +285,7 @@
     "subtitle": "Verbinden Sie Anbieter, legen Sie fest, welche Modelle verfügbar sind, und wählen Sie das Standardmodell für jede KI-Funktion.",
     "forbidden": "Sie haben keine Berechtigung, KI-Anbieter und Modelle zu verwalten.",
     "loadFailed": "KI-Anbieter und Modelle konnten nicht geladen werden.",
-    "workspaceNote": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "workspaceNote": "Die Wissensindizierung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
     "connections": {
       "title": "Verbindungen",
       "subtitle": "Wohin Ihre KI-Anfragen gesendet werden und wer sie bezahlt.",
@@ -1096,7 +1096,7 @@
       },
       "aiApprovals": {
         "label": "KI-Genehmigungs-Timeout",
-        "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
+        "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion wartet"
       },
       "callerVerification": {
         "label": "Anruferverifizierung",
@@ -2402,7 +2402,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "KI-Nutzung",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Überwachen Sie die Nutzung des KI-Assistenten und konfigurieren Sie Budgetgrenzen",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Nutzung von Breeze AI überwachen und Budgetgrenzen konfigurieren",
     "budgetConfiguration": "Budgetkonfiguration",
     "aIEnabled": "KI aktiviert",
     "enabled": "Aktiviert",
@@ -2456,7 +2456,7 @@
     "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben",
     "defaultValue": "Standard ({{value}})",
     "viewPartnerWideBudgets": "Partnerweite KI-Budgets",
-    "monitorAIAssistantUsage": "KI-Assistenten-Nutzung überwachen",
+    "monitorAIAssistantUsage": "Nutzung von Breeze AI überwachen",
     "effectiveBudget": "Geltendes Budget",
     "effectiveBudgetHelp": "Die derzeit für diese Organisation geltenden Grenzwerte und wo jeder davon festgelegt wurde.",
     "effectiveBudgetUnavailable": "Das effektive Budget konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -3137,7 +3137,7 @@
         },
         "anomalyLink": "Offene Geräteanomalien",
         "budget": {
-          "title": "Nutzungsbudget",
+          "title": "Aktionsbudget",
           "caption": "Erfasste Nutzung — letzte {{hours}} Std.",
           "devices": "{{count}} von {{allowance}} Geräten",
           "decisionsToday": "{{count}} von {{max}} Richtlinienentscheidungen heute",
@@ -3365,7 +3365,7 @@
       "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
       "byOrgTruncated": "Es werden die ersten {{limit}} Organisationen nach Name angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um die übrigen zu sehen.",
       "thresholdPerOrgNote": "Jede Organisation ermittelt ihren eigenen Schwellenwert für die Freigabe, daher werden die bestätigten Ausführungen hier ohne Zielwert angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Zielwert zu sehen.",
-      "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
+      "approvalsLink": "Diesen Antrag in den Genehmigungen verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
       "grantOnlyHint": "Vorab autorisierte Schlüssel für den Agenten einer Organisation werden nur über das Freigabestufen-Panel von einem zweiten Genehmiger erteilt – und auch dort wieder entzogen.",
       "promote": "Hochstufen",
@@ -3964,10 +3964,10 @@
       "runsPerHourCount_other": "{{count}} Läufe pro Stunde",
       "minuteCount_one": "{{count}} Minute",
       "minuteCount_other": "{{count}} Minuten",
-      "approvers_one": "{{roles}} wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approvers_other": "{{roles}} werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approversCount_one": "{{count}} Rolle wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approversCount_other": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approvers_one": "{{roles}} wird gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approvers_other": "{{roles}} werden gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_one": "{{count}} Rolle wird gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_other": "{{count}} Rollen werden gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
       "scriptGateNote": "{{list}} läuft erst unbeaufsichtigt, wenn ein Skript für diesen Agenten autorisiert ist; bis dahin wird eine Genehmigungsanfrage ausgelöst.",
       "scriptsAuthorized_one": "{{count}} Skript ist für die unbeaufsichtigte Ausführung autorisiert.",
       "scriptsAuthorized_other": "{{count}} Skripte sind für die unbeaufsichtigte Ausführung autorisiert."
@@ -5387,7 +5387,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "KI-Budget",
-    "description": "Ausgabengrenzen, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten in dieser Organisation. Vom Partner festgelegte Felder werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
+    "description": "Ausgabenobergrenzen, Ratenlimits und Genehmigungsmodus für Breeze AI in dieser Organisation. Von Ihrem Partner festgelegte Felder werden hier angezeigt, können aber nur auf dem Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
   "orgSettingsPage": {
@@ -5447,7 +5447,7 @@
       "ticketing": "Ticketverkauf",
       "ticketingDescription": "SLA und Abrechnungsüberschreibungen",
       "ai": "KI",
-      "aiDescription": "Budget, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten"
+      "aiDescription": "Budget, Ratenlimits und Genehmigungsmodus für Breeze AI"
     },
     "overview": {
       "title": "Organisationsübersicht",
@@ -6729,7 +6729,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Skripterstellung",
-    "subtitle": "Lassen Sie den Assistenten und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es zulassen – ohne Karte ausführen.",
+    "subtitle": "Lassen Sie Breeze AI und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es erlauben – ohne Karte ausführen.",
     "partnerCard": {
       "title": "Partner-Obergrenze",
       "description": "Die weiteste Einstellung, die eine Organisation dieses Partners verwenden darf. Einzelne Organisationen können sie nur einschränken.",
@@ -6897,13 +6897,13 @@
     "timeoutLabel": "Zeitüberschreitung für interaktive Genehmigung",
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
-    "description": "Wie lange ein laufender KI-Chat-Zug darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt.",
+    "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
     "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
     "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
   },
   "orgAiApprovalTimeout": {
     "title": "KI-Genehmigungs-Timeout",
-    "description": "Wie lange ein KI-Chat darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt. Organisationen können hier den Partnerstandard überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird. Organisationen können den Partnerstandard hier überschreiben; der Organisationswert hat Vorrang, sofern gesetzt.",
     "fieldLabel": "Zeitüberschreitung für interaktive Genehmigung",
     "inherit": "Übernehmen",
     "inheritLabel": "Übernehmen ({{minutes}} Minuten, {{source}})",
