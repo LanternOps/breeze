@@ -342,7 +342,8 @@ describe('child effect mint under an approved plan', () => {
 });
 
 describe('proposePlanApproval refusals', () => {
-  it('a secret-bearing effect is refused: secret_bearing_effect', async () => {
+  // R2a Task 6 (W07 Amendment B5): a MIXED set is refused, renamed mixed_secret_bearing.
+  it('a mixed secret-bearing set is refused: mixed_secret_bearing', async () => {
     const t = await seedPlanTenant({ snapshotAllowlist: ['google_suspend_user', 'google_reset_password'], liveAllowlist: ['google_suspend_user', 'google_reset_password'] });
     const effects = [
       effect(0, 'google_suspend_user', { reason: 'x', userEmail: 'dana@customer.example' }),
@@ -352,7 +353,7 @@ describe('proposePlanApproval refusals', () => {
       orgId: t.orgId, taskId: t.taskId, stepKey: STEP_KEY, planRevision: PLAN_REVISION, requesterUserId: t.aId,
       effects, labels: labelsFor(effects), idempotencyClasses: classesFor(effects),
     });
-    expect(res).toMatchObject({ ok: false, reason: 'secret_bearing_effect' });
+    expect(res).toMatchObject({ ok: false, reason: 'mixed_secret_bearing' });
     const rows = await system(() => db.select().from(aiOperatorPlanApprovals).where(eq(aiOperatorPlanApprovals.taskId, t.taskId)));
     expect(rows).toHaveLength(0);
   });

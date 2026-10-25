@@ -37,7 +37,7 @@ import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
 import { ensureTaskTicket, type HumanWorkDbHandle } from './humanWorkService';
 import { markStepWaiting, openStep } from './stepService';
-import type { IdentityManualWorkItem } from './recipes/identityOffboarding';
+import type { RecipeManualWorkItem } from './recipes/types';
 
 export const MANUAL_WORK_STEP_KEY = 'manual_work';
 /** Mirrors `ticket_checklist_items.label` varchar(500). */
@@ -122,7 +122,7 @@ export async function attachHumanWorkStep(
 export async function ensureManualWorkItems(
   dbh: HumanWorkDbHandle,
   task: { id: string; orgId: string; objective: string; revision: number },
-  items: readonly IdentityManualWorkItem[],
+  items: readonly RecipeManualWorkItem[],
   opts: { targetId?: string | null; remindAfterMs?: number | null; now?: Date } = {},
 ): Promise<EnsureManualWorkItemsResult> {
   if (items.length > MANUAL_WORK_MAX_ITEMS) {

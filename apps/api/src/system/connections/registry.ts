@@ -240,6 +240,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'AI_OPERATOR_TASKS_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', secret: false },
+      { name: 'AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', secret: false },
     ],
     status: {
       kind: 'flags',

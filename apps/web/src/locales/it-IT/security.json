@@ -2361,6 +2361,7 @@
       "requiresMdmApproval": "Richiede l'approvazione MDM",
       "platformNotSelected": "Piattaforma non selezionata",
       "varMissing": "Variabile di distribuzione mancante",
+      "varSecret": "La variabile di distribuzione è contrassegnata come segreta",
       "vendorUnavailable": "Fornitore non disponibile",
       "installFailed": "Installazione non riuscita",
       "installNotArmed": "Installazione non abilitata",

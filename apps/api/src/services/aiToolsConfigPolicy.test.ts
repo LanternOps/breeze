@@ -1938,6 +1938,12 @@ describe('manage_policy_feature_link security_agents (#6960)', () => {
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it.each(['controld', 'nextdns'])('refuses enabled:true for the DNS vendor %s too (#6960 W05: AI callers never arm installs, whatever the registry says)', async (vendor) => {
+    const out = await add({ inlineSettings: { version: 1, agents: [{ vendor, enabled: true }] } });
+    expect(out.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('refuses a featurePolicyId', async () => {
     const out = await add({ featurePolicyId: '44444444-4444-4444-4444-444444444444', inlineSettings: DISABLED });
     expect(out.error).toMatch(/featurePolicyId/);

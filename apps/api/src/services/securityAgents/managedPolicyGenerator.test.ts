@@ -21,6 +21,8 @@ import {
   SECURITY_AGENTS_BINARY_MISSING_CODE,
 } from './managedPolicyGenerator';
 import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
+import type { VendorCatalogRow } from './managedPolicyOwnerCatalog';
+import type { VendorKey } from './securityAgentVendors';
 
 const CATALOG_HUNTRESS = '00000000-0000-4000-8000-0000000000c1';
 const CATALOG_S1 = '00000000-0000-4000-8000-0000000000c2';
@@ -32,13 +34,18 @@ const ORG_OWNED = { id: 'cp-2', name: 'Acme baseline', orgId: ORG, partnerId: nu
 
 const catalog = new Map([['huntress' as const, CATALOG_HUNTRESS]]);
 
+/** EDR vendors install from one integration package row each. */
+function edr(byVendor: Map<VendorKey, string>): Map<VendorKey, VendorCatalogRow[]> {
+  return new Map(Array.from(byVendor, ([vendor, catalogId]) => [vendor, [{ catalogId, builtinPackageKey: null }]] as const));
+}
+
 function huntress(enabled: boolean) {
   return { version: 1 as const, agents: [{ vendor: 'huntress' as const, enabled }] };
 }
 
 describe('desiredManagedPolicy', () => {
   it('generates the fixed enforcement shape (allowlist, allowUnknown, enforce, autoInstall, never autoUninstall)', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: catalog });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(catalog) });
     expect(desired.missingCatalog).toEqual([]);
     expect(desired.row).toMatchObject({
       mode: 'allowlist',
@@ -54,19 +61,19 @@ describe('desiredManagedPolicy', () => {
   });
 
   it('a partner-wide config policy yields a partner-owned policy', () => {
-    const { row } = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: catalog });
+    const { row } = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(catalog) });
     expect(row.orgId).toBeNull();
     expect(row.partnerId).toBe(PARTNER);
   });
 
   it('an org config policy yields an org-owned policy (one owner axis only)', () => {
-    const { row } = desiredManagedPolicy({ configPolicy: ORG_OWNED, settings: huntress(true), catalogIdByVendor: catalog });
+    const { row } = desiredManagedPolicy({ configPolicy: ORG_OWNED, settings: huntress(true), catalogByVendor: edr(catalog) });
     expect(row.orgId).toBe(ORG);
     expect(row.partnerId).toBeNull();
   });
 
   it('a disabled vendor has no rule; no enabled vendor means inactive with no rules', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(false), catalogIdByVendor: catalog });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(false), catalogByVendor: edr(catalog) });
     expect(desired.row.rules.software).toEqual([]);
     expect(desired.row.isActive).toBe(false);
     expect(desired.vendors).toEqual([]);
@@ -76,7 +83,7 @@ describe('desiredManagedPolicy', () => {
     const desired = desiredManagedPolicy({
       configPolicy: PARTNER_WIDE,
       settings: { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] },
-      catalogIdByVendor: new Map(),
+      catalogByVendor: edr(new Map()),
     });
     expect(desired.row.rules.software).toEqual([]);
     expect(desired.row.isActive).toBe(false);
@@ -85,13 +92,13 @@ describe('desiredManagedPolicy', () => {
   });
 
   it('reports an enabled vendor whose partner catalog package is missing', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: new Map() });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(new Map()) });
     expect(desired.missingCatalog).toEqual(['huntress']);
     expect(desired.row.rules.software).toEqual([]);
   });
 
   it('the vendor is not stored in rule JSON (derived from catalogId downstream)', () => {
-    const { row } = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: catalog });
+    const { row } = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(catalog) });
     expect(Object.keys(row.rules.software[0]!).sort()).toEqual(['catalogId', 'name', 'reason']);
   });
 
@@ -99,7 +106,7 @@ describe('desiredManagedPolicy', () => {
     const { row } = desiredManagedPolicy({
       configPolicy: { ...PARTNER_WIDE, name: 'x'.repeat(400) },
       settings: huntress(true),
-      catalogIdByVendor: catalog,
+      catalogByVendor: edr(catalog),
     });
     expect(row.name.length).toBeLessThanOrEqual(200);
   });
@@ -110,7 +117,7 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
   const s1Catalog = new Map([['sentinelone' as const, CATALOG_S1]]);
 
   it('a catalog row with no deployable MSI version yields no rule and reports the missing binary', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogIdByVendor: s1Catalog, uploadedBinaryVendors: new Set() });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(s1Catalog), uploadedBinaryVendors: new Set() });
     expect(desired.missingBinary).toEqual(['sentinelone']);
     expect(desired.missingCatalog).toEqual([]);
     expect(desired.vendors).toEqual([]);
@@ -119,14 +126,14 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
   });
 
   it('fails closed when the caller does not say whether a binary was uploaded', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogIdByVendor: s1Catalog });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(s1Catalog) });
     expect(desired.missingBinary).toEqual(['sentinelone']);
     expect(desired.row.isActive).toBe(false);
   });
 
   it('with a deployable MSI the rule is generated and the policy armed', () => {
     const desired = desiredManagedPolicy({
-      configPolicy: PARTNER_WIDE, settings: s1(true), catalogIdByVendor: s1Catalog, uploadedBinaryVendors: new Set(['sentinelone' as const]),
+      configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(s1Catalog), uploadedBinaryVendors: new Set(['sentinelone' as const]),
     });
     expect(desired.missingBinary).toEqual([]);
     expect(desired.vendors).toEqual(['sentinelone']);
@@ -137,13 +144,13 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
   });
 
   it('a missing catalog row is reported as catalog-missing, not binary-missing', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogIdByVendor: new Map() });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: s1(true), catalogByVendor: edr(new Map()) });
     expect(desired.missingCatalog).toEqual(['sentinelone']);
     expect(desired.missingBinary).toEqual([]);
   });
 
   it('Huntress needs no uploaded binary (derivable URL): unchanged without the binary set', () => {
-    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: catalog });
+    const desired = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(catalog) });
     expect(desired.missingBinary).toEqual([]);
     expect(desired.vendors).toEqual(['huntress']);
   });
@@ -152,7 +159,7 @@ describe('desiredManagedPolicy — partner-uploaded binary gate (SentinelOne, #6
     const desired = desiredManagedPolicy({
       configPolicy: PARTNER_WIDE,
       settings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }, { vendor: 'huntress', enabled: true }] },
-      catalogIdByVendor: new Map([['huntress' as const, CATALOG_HUNTRESS], ['sentinelone' as const, CATALOG_S1]]),
+      catalogByVendor: edr(new Map([['huntress' as const, CATALOG_HUNTRESS], ['sentinelone' as const, CATALOG_S1]])),
       uploadedBinaryVendors: new Set(),
     });
     expect(desired.vendors).toEqual(['huntress']);
@@ -250,7 +257,7 @@ describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () =>
     const armed = desiredManagedPolicy({
       configPolicy: PARTNER_WIDE,
       settings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] },
-      catalogIdByVendor: new Map([['sentinelone' as const, CATALOG_S1]]),
+      catalogByVendor: edr(new Map([['sentinelone' as const, CATALOG_S1]])),
       uploadedBinaryVendors: new Set(['sentinelone' as const]),
     }).row;
     const { executor, writes, updates } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...armed }]]);
@@ -272,8 +279,8 @@ describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () =>
 });
 
 describe('planManagedPolicySync', () => {
-  const enabled = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogIdByVendor: catalog }).row;
-  const disabled = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(false), catalogIdByVendor: catalog }).row;
+  const enabled = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(true), catalogByVendor: edr(catalog) }).row;
+  const disabled = desiredManagedPolicy({ configPolicy: PARTNER_WIDE, settings: huntress(false), catalogByVendor: edr(catalog) }).row;
 
   it('no existing row and nothing enabled: create nothing', () => {
     expect(planManagedPolicySync(null, disabled)).toEqual({ action: 'none' });
@@ -378,5 +385,20 @@ describe('repairManagedSoftwarePolicies', () => {
     expect(captureMock).toHaveBeenCalledTimes(1);
     expect(err).toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+describe('DNS vendors with the REAL registry (code-only W05: not enableable)', () => {
+  it('a stored blob enabling NextDNS generates no rule and reads no catalog row', async () => {
+    const { executor, select, writes } = fakeExecutor([[PARTNER_WIDE], []]);
+    const result = await syncManagedSoftwarePolicy(
+      executor,
+      { id: 'link-dns', configPolicyId: 'cp-1', inlineSettings: { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] } },
+      { onMissingCatalog: 'refuse' },
+    );
+    expect(result).toMatchObject({ action: 'none', vendors: [], skippedVendors: [] });
+    // config policy + existing-row lock only: no catalog read for a vendor that cannot get a rule.
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(writes).toEqual([]);
   });
 });

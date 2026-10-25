@@ -249,6 +249,13 @@ export interface AiOperatorTaskDto extends AiOperatorTaskListItemDto {
    * detail route always sends it (`[]` when nothing was proposed).
    */
   plan?: AiOperatorPlanApprovalDto[];
+  /**
+   * W07 R2a: every account an `identity_onboarding` task created or resolved,
+   * one per provider, with its temporary credential's STATE (never the
+   * credential). OPTIONAL for the same reason as `plan`; the detail route
+   * always sends it, `[]` for every other recipe.
+   */
+  accounts?: CreatedAccountView[];
 }
 
 // ---------------------------------------------------------------------------
@@ -476,4 +483,34 @@ export interface AiOperatorPlanApprovalDto {
   supersededByRevision: number | null;
   createdAt: string;
   effects: AiOperatorPlanEffectDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Created accounts — W07 R2a (identity_onboarding, D-R2-6).
+//
+// Mirrors `CREDENTIAL_STATES` / `CreatedAccountView` in
+// `apps/api/src/services/aiOperator/credentialHandover.ts`; the detail route
+// checks the API value against this type with `satisfies`, and the route
+// test pins the two state lists equal.
+// ---------------------------------------------------------------------------
+
+export const AI_OPERATOR_CREDENTIAL_STATES = Object.freeze([
+  'available', 'revealed', 'expired', 'unretrievable', 'not_applicable',
+] as const);
+export type CredentialState = (typeof AI_OPERATOR_CREDENTIAL_STATES)[number];
+
+export interface CreatedAccountView {
+  provider: 'm365' | 'google';
+  /** The frozen UPN / primary email. DISPLAY ONLY. */
+  principalLabel: string;
+  /** The immutable Entra object id / Google user id. */
+  externalId: string;
+  credentialState: CredentialState;
+  /** The intent whose sealed result holds the credential. Null when `not_applicable`. */
+  intentId: string | null;
+  /** Who may reveal it (the create approval's approver). Null unless `available`. */
+  revealableByUserId: string | null;
+  revealableByName: string | null;
+  /** When the reveal window closes. Null unless `available`. */
+  revealExpiresAt: string | null;
 }

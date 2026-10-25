@@ -220,3 +220,66 @@ describe('computeRecipeReadiness', () => {
     expect(degradedEffectTools(r)).toEqual(r.degradedEffects);
   });
 });
+
+/**
+ * R2 Task 1 (G2) — PINS, not reds. `computeRecipeReadiness` already derives
+ * per-tool degradation from the `recipe.requires` it is given and never read
+ * offboarding's map (`degradedEffectTools` keeps its signature), so both cases
+ * passed on first run by design. They pin that a second recipe's readiness is
+ * computed against ITS tools: a leaked offboarding import would degrade the
+ * wrong effects and generate human-work items nobody asked for.
+ */
+describe('readiness is recipe-agnostic (R2 pins)', () => {
+  /** An onboarding-shaped fixture; `identityOnboardingRecipe` lands in Task 3. */
+  const onboardingShaped = {
+    ...recipe,
+    key: 'fixture_onboarding',
+    requires: [
+      { key: 'm365.connection', kind: 'provider_connection', provider: 'm365', detail: 'd' },
+      { key: 'google.workspace.connection', kind: 'provider_connection', provider: 'google', detail: 'd' },
+      { key: 'fixture.m365.create', kind: 'agent_tool', provider: 'm365', detail: 'd', toolNames: ['m365_create_user'] },
+      { key: 'fixture.google.groups', kind: 'agent_tool', provider: 'google', detail: 'd', toolNames: ['google_add_to_group'] },
+      { key: 'agent.helpdesk.tool_allowlist', kind: 'agent_tool', provider: null, detail: 'd',
+        toolNames: ['m365_create_user', 'google_add_to_group'] },
+    ],
+  } as unknown as AnyRecipeDefinition;
+
+  it('degrades the tools of the recipe it is GIVEN, not of the offboarding recipe', () => {
+    // Both providers ready; the agent holds offboarding's tools only.
+    const r = computeRecipeReadiness(onboardingShaped, inputs());
+    const degraded = degradedEffectTools(r);
+    expect(degraded).toEqual(['google_add_to_group', 'm365_create_user']);
+    expect(degraded).not.toContain('google_suspend_user');
+    expect(degraded).not.toContain('m365_disable_user');
+    const ready = computeRecipeReadiness(onboardingShaped, inputs({
+      agent: { id: 'agent-1', kind: 'helpdesk', toolAllowlist: ['m365_create_user', 'google_add_to_group'] },
+    }));
+    expect(degradedEffectTools(ready)).toEqual([]);
+  });
+
+  it('still degrades offboarding tools for the offboarding recipe, unchanged', () => {
+    const r = computeRecipeReadiness(recipe, inputs({ m365: null }));
+    const degraded = degradedEffectTools(r);
+    expect(degraded).toContain('m365_disable_user');
+    expect(degraded).not.toContain('google_suspend_user');
+  });
+});
+
+describe('identity_onboarding is wired into readiness (R2a)', () => {
+  it('runs under the helpdesk agent (spec §6.8 / D3), like offboarding', async () => {
+    const { RECIPE_AGENT_KINDS } = await import('./recipeReadiness');
+    expect(RECIPE_AGENT_KINDS.identity_onboarding).toBe('helpdesk');
+  });
+
+  it('has library-card copy, never the raw key', async () => {
+    const { toWorkflowDto } = await import('./recipeReadiness');
+    const { identityOnboardingRecipe } = await import('./recipes/identityOnboarding');
+    const readiness = computeRecipeReadiness(identityOnboardingRecipe as unknown as AnyRecipeDefinition, {
+      orgId: '00000000-0000-4000-8000-0000000000a1', m365: null, google: null, agent: null,
+      callerVerificationBlocked: false, flagEnabled: false,
+    } as unknown as ReadinessInputs);
+    const dto = toWorkflowDto(readiness);
+    expect(dto.name).toBe('Onboard a person');
+    expect(dto.summary.length).toBeGreaterThan(0);
+  });
+});
