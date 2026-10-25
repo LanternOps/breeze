@@ -27,7 +27,7 @@
     "flowDetail": "Flusso",
     "aiAgentsRunsDetail": "Dettaglio esecuzione",
     "aiAgentsRuns": "Esecuzioni degli agenti",
-    "aiForOffice": "AI per Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Motore di rischio IA",
     "alertsDelivery": "Avvisi – Consegna",
     "alertsCorrelations": "Correlazioni degli avvisi",
@@ -186,7 +186,7 @@
     "settingsWispMemory": "Memoria di Wisp",
     "wispThread": "Thread di Wisp",
     "wisp": "Wisp",
-    "wispChat": "Wisp — chat",
+    "wispChat": "Breeze AI",
     "aiTasks": "Attività IA",
     "aiTask": "Attività IA"
   },
@@ -242,7 +242,7 @@
       },
       "connectedApps": {
         "title": "App connesse",
-        "description": "Rivedi e revoca gli assistenti IA e i client MCP autorizzati ad accedere al tuo tenant."
+        "description": "Rivedi e revoca i client AI autorizzati ad accedere al tuo tenant."
       },
       "officeAddinBindings": {
         "title": "Associazioni componente aggiuntivo Outlook",
@@ -301,7 +301,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "App connesse",
-    "description": "Assistenti IA e altri client MCP autorizzati ad accedere al tuo tenant tramite OAuth. Revoca l'accesso in qualsiasi momento — il token dell'app verrà rifiutato entro 10 minuti."
+    "description": "Client AI autorizzati ad accedere al tuo tenant tramite OAuth. Revoca l'accesso in qualsiasi momento — il token dell'app verrà rifiutato entro 10 minuti."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Impostazioni organizzazione",
