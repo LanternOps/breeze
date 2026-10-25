@@ -162,6 +162,17 @@ describe('WispConcernsPanel', () => {
     expect(screen.queryAllByTestId('wisp-concern-row')).toHaveLength(0);
   });
 
+  it('#10143: a concern whose evidence carries a same-origin href renders an open link; unsafe hrefs do not', async () => {
+    await mountWith([
+      concern('a', 'low', { evidence: { href: '/settings/ai-agents' } }),
+      concern('b', 'low', { evidence: { href: 'https://evil.example/x' } }),
+      concern('c', 'low', { evidence: { href: '//evil.example' } }),
+      concern('d', 'low'),
+    ]);
+    expect(screen.getByTestId('wisp-concern-link-a').getAttribute('href')).toBe('/settings/ai-agents');
+    for (const id of ['b', 'c', 'd']) expect(screen.queryByTestId(`wisp-concern-link-${id}`)).toBeNull();
+  });
+
   it('W06 T7: a concern with an approval intent links to its approval card', async () => {
     await mountWith([concern('a', 'high', { approvalIntentId: 'int-1' }), concern('b', 'low')]);
     expect(screen.getByTestId('wisp-concern-approval-a').getAttribute('href')).toBe('/approvals#intent-int-1');

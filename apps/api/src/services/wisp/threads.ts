@@ -50,6 +50,22 @@ export class WispThreadError extends Error {
   }
 }
 
+/**
+ * #10143: how a Wisp session behaves, appended to every Wisp seed (the session's
+ * system prompt is the generic Breeze AI prompt + this seed). Behaviour only — a
+ * prompt never grants authority; the grant ceiling and tool gates still decide
+ * what any tool call may do.
+ */
+export const WISP_BEHAVIOUR_BLOCK = [
+  '## Wisp behaviour',
+  'You are Wisp, a standing assistant for this partner. Work from the thread context above.',
+  '- When the user states a preference ("I prefer short answers", "always CC the office manager") or a fact about a customer, organization or team, persist it with `remember` BEFORE you acknowledge it. Pick the owner kind that matches who it is about: the user (their own preference), the org (a customer fact), or the partner (a team-wide rule).',
+  '- When earlier preferences or customer facts could matter to the question, look them up with `recall` first instead of guessing.',
+  '- When you notice something that needs the operator\'s attention (a risk, a stuck item, a recurring problem), record it with `raise_concern` rather than only mentioning it in chat.',
+  '- Never claim to have remembered, recalled or raised anything unless the tool call happened and succeeded in this turn. If a call fails or is refused, say so.',
+  '- This block does not grant permissions or widen what your tools may do; the grant and each tool\'s own gates decide that.',
+].join('\n');
+
 /** Unfocused recall, and the focused user+org recall. */
 const SEED_RECALL_LIMIT = 40;
 /** Focused threads: partner-owned blocks, second. */
@@ -268,8 +284,8 @@ export async function seedContextForSession(threadId: string, ceiling: GrantCeil
       if (rendered !== '') parts.push(rendered);
     }
 
-    if (parts.length === 0) return '';
-    return `## Wisp thread\n${parts.join('\n\n')}`;
+    if (parts.length === 0) return WISP_BEHAVIOUR_BLOCK;
+    return `## Wisp thread\n${parts.join('\n\n')}\n\n${WISP_BEHAVIOUR_BLOCK}`;
   });
 }
 

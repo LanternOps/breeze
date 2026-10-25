@@ -106,7 +106,7 @@ vi.mock('./threadAttachments', () => ({
 
 import { CeilingViolationError, type GrantCeiling } from './grantAuthority';
 import {
-  attachSession, getOrCreateThread, seedContextForSession, setThreadFocus, updateThreadSummary,
+  attachSession, getOrCreateThread, seedContextForSession, setThreadFocus, updateThreadSummary, WISP_BEHAVIOUR_BLOCK,
 } from './threads';
 import { truncateSummary } from './threadSummary';
 
@@ -260,9 +260,24 @@ describe('updateThreadSummary', () => {
 });
 
 describe('seedContextForSession', () => {
-  it('seedContextForSession returns "" when summary is empty and recall returns no blocks', async () => {
+  it('seedContextForSession with nothing to recall is only the Wisp behaviour block (#10143)', async () => {
     h.threads = [threadRow];
-    await expect(seedContextForSession(THREAD, ceiling)).resolves.toBe('');
+    const out = await seedContextForSession(THREAD, ceiling);
+    expect(out).toBe(WISP_BEHAVIOUR_BLOCK);
+    expect(out).not.toContain('## Wisp thread');
+  });
+
+  it('the seed carries the Wisp behaviour block after the thread context (#10143)', async () => {
+    threadRow.summary = 'Patched the Acme file server.';
+    h.threads = [threadRow];
+    const out = await seedContextForSession(THREAD, ceiling);
+    expect(out).toContain(WISP_BEHAVIOUR_BLOCK);
+    expect(out.indexOf('## Wisp thread')).toBeLessThan(out.indexOf(WISP_BEHAVIOUR_BLOCK));
+    for (const tool of ['remember', 'recall', 'raise_concern']) expect(WISP_BEHAVIOUR_BLOCK).toContain(`\`${tool}\``);
+    expect(WISP_BEHAVIOUR_BLOCK).toMatch(/never (claim|say)[^.]*remembered/i);
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+    // Prompts never grant: the block says so and grants nothing itself.
+    expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
   it('seedContextForSession wraps the summary as untrusted and appends renderMemoryForPrompt output', async () => {
@@ -336,7 +351,7 @@ describe('seedContextForSession', () => {
 
     const withNone = await seedContextForSession(THREAD, ceiling);
     expect(withNone).not.toContain('wisp_thread_attachments');
-    expect(withNone).toBe('');
+    expect(withNone).toBe(WISP_BEHAVIOUR_BLOCK);
   });
 
   describe('linked objects (W08 Task 5)', () => {

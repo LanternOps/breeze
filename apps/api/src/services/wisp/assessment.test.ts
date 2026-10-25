@@ -41,6 +41,7 @@ const h = vi.hoisted(() => {
     chargeableUnderGrant: vi.fn(),
     notifyBudgetExhaustedOnce: vi.fn(),
     upsertConcern: vi.fn(),
+    resolveConcernBySignature: vi.fn(),
     listConcernsForCeiling: vi.fn(),
     deliverInApp: vi.fn(),
     getOrCreateThread: vi.fn(),
@@ -90,7 +91,11 @@ vi.mock('./budget', async () => ({
   notifyBudgetExhaustedOnce: h.notifyBudgetExhaustedOnce,
   utcDayWindow: (now: Date) => ({ key: now.toISOString().slice(0, 10) }),
 }));
-vi.mock('./concerns', () => ({ upsertConcern: h.upsertConcern, listConcernsForCeiling: h.listConcernsForCeiling }));
+vi.mock('./concerns', () => ({
+  upsertConcern: h.upsertConcern,
+  listConcernsForCeiling: h.listConcernsForCeiling,
+  resolveConcernBySignature: h.resolveConcernBySignature,
+}));
 vi.mock('./deliver', () => ({ deliverInApp: h.deliverInApp }));
 vi.mock('./threads', () => ({
   getOrCreateThread: h.getOrCreateThread,
@@ -327,6 +332,61 @@ describe('enqueueAssessment', () => {
     h.results.push([{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+  });
+});
+
+describe('no_effective_agent readiness concern (#10143)', () => {
+  const SIG = `wisp-readiness:no-effective-agent:${ORG}`;
+  beforeEach(() => {
+    h.upsertConcern.mockReset();
+    h.resolveConcernBySignature.mockReset();
+    h.upsertConcern.mockResolvedValue({ id: 'c-1', created: true });
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+  });
+
+  it('raises ONE info org concern keyed by signature, with an /settings/ai-agents href, when admission skips for no_effective_agent', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    expect(arg).toMatchObject({
+      partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
+    });
+    expect(arg.summary).toMatch(/no AI agent is configured/);
+    expect(arg.summary).toMatch(/Settings → AI Agents/);
+    expect(arg.evidence.href).toBe('/settings/ai-agents');
+  });
+
+  it('a failing raise never changes the skip result (reported, not thrown)', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockRejectedValue(new Error('db down'));
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.captureException).toHaveBeenCalled();
+  });
+
+  it('other admission skips raise nothing', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'agent_disabled' });
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    expect(h.upsertConcern).not.toHaveBeenCalled();
+  });
+
+  it('resolves the concern by signature once an assessment is actually admitted', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: RUN } });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ runId: RUN });
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, expect.any(String));
+    expect(h.upsertConcern).not.toHaveBeenCalled();
+  });
+
+  it('a failing resolve never fails an admitted run', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: RUN } });
+    h.resolveConcernBySignature.mockRejectedValue(new Error('db down'));
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ runId: RUN });
+    expect(h.captureException).toHaveBeenCalled();
   });
 });
 

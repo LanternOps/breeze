@@ -15,6 +15,7 @@ import { showToast } from '@/components/shared/Toast';
 import { formatRelativeTime } from '@/lib/utils';
 import { concernIdFromHash } from '../wisp/wispThreadHash';
 import { needsYouOrder } from '../wisp/wispHome';
+import { safeActivityHref } from '../wisp/wispActivity';
 
 const LIVE: ConcernStatus[] = ['open', 'snoozed'];
 const ALL: ConcernStatus[] = ['open', 'snoozed', 'resolved', 'dismissed'];
@@ -276,6 +277,15 @@ export function WispConcernsPanel({
             className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
           >
             {t('wispConcerns.reviewApproval')}
+          </a>
+        )}
+        {typeof c.evidence.href === 'string' && safeActivityHref(c.evidence.href) && (
+          <a
+            href={safeActivityHref(c.evidence.href) as string}
+            data-testid={`wisp-concern-link-${c.id}`}
+            className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t('wispConcerns.openLink')}
           </a>
         )}
         {renderFeedback(c)}
