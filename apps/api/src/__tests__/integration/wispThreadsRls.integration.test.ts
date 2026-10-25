@@ -20,7 +20,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   aiMessages,
@@ -35,6 +35,7 @@ import {
 } from '../../db/schema';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { attachSession } from '../../services/wisp/threads';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -347,6 +348,63 @@ describe('wisp_threads / wisp_thread_sessions RLS (shape 3)', () => {
       const [after] = await db.select().from(wispThreads).where(eq(wispThreads.id, thread.id));
       expect(after!.focusOrgId).toBeNull();
       expect(after!.partnerId).toBe(f.partnerA);
+    });
+  });
+});
+
+describe('attachSession on the caller\'s connection (W04 Review Focus 4 / #10146)', () => {
+  // createSession inserts the ai_sessions row in the request transaction and
+  // attaches it before COMMIT, so the attach must run on the SAME connection —
+  // and an organization-scoped token (accessiblePartnerIds = []) cannot see the
+  // partner-axis thread, so the attach elevates that connection to system scope
+  // for its own statements only and restores the caller's scope after.
+  const currentScope = async () => {
+    const rows = await db.execute<{ scope: string }>(sql`select public.breeze_current_scope() as scope`);
+    return (rows as unknown as Array<{ scope: string }>)[0]!.scope;
+  };
+
+  it('from an ORG-scoped request context: the uncommitted session is attached and the caller\'s scope comes back', async () => {
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    const sessionId = await withDbAccessContext(orgContext(f.orgA1, f.partnerA), async () => {
+      // The org context cannot even see the thread…
+      const visible = await db.select({ id: wispThreads.id }).from(wispThreads).where(eq(wispThreads.id, thread.id));
+      expect(visible).toHaveLength(0);
+      const [row] = await db.insert(aiSessions).values({ orgId: f.orgA1, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id });
+      await attachSession(thread.id, row!.id);   // …yet the attach of the uncommitted row succeeds.
+      expect(await currentScope()).toBe('organization');
+      // Scope is restored: the partner-axis thread is hidden again on this connection.
+      const after = await db.select({ id: wispThreads.id }).from(wispThreads).where(eq(wispThreads.id, thread.id));
+      expect(after).toHaveLength(0);
+      return row!.id;
+    });
+    await asSystem(async () => {
+      const links = await db.select().from(wispThreadSessions).where(eq(wispThreadSessions.sessionId, sessionId));
+      expect(links).toHaveLength(1);
+      expect(links[0]).toMatchObject({ threadId: thread.id, partnerId: f.partnerA, orgId: f.orgA1 });
+      const [t] = await db.select({ last: wispThreads.lastSessionId }).from(wispThreads).where(eq(wispThreads.id, thread.id));
+      expect(t!.last).toBe(sessionId);
+    });
+  });
+
+  it('from a PARTNER-scoped request context: same outcome, scope restored to partner', async () => {
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    await withDbAccessContext(partnerContext(f.partnerA, [f.orgA1, f.orgA2]), async () => {
+      const [row] = await db.insert(aiSessions).values({ orgId: f.orgA2, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id });
+      await attachSession(thread.id, row!.id);
+      expect(await currentScope()).toBe('partner');
+      const links = await db.select().from(wispThreadSessions).where(eq(wispThreadSessions.sessionId, row!.id));
+      expect(links).toHaveLength(1);
+    });
+  });
+
+  it('restores the caller\'s scope when the attach throws (unknown thread)', async () => {
+    const f = await seed();
+    await withDbAccessContext(orgContext(f.orgA1, f.partnerA), async () => {
+      const [row] = await db.insert(aiSessions).values({ orgId: f.orgA1, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id });
+      await expect(attachSession(randomUUID(), row!.id)).rejects.toThrow(/thread .*not found/i);
+      expect(await currentScope()).toBe('organization');
     });
   });
 });
