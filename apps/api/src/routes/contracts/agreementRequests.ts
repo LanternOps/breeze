@@ -43,11 +43,13 @@ import { captureException } from '../../services/sentry';
 // Standalone agreement requests (#8865), mounted at
 // /contracts/agreement-requests. W1c: record-signed. #9075 W2a: the staff
 // lifecycle (list / detail / draft create-patch-delete / preview / send / copy
-// link / void). The public + portal accept routes are W2b / W3a; remind is W3b.
+// link / void). The public accept routes are routes/agreementsPublic.ts (W2b);
+// portal is W3a; remind is W3b.
 //
 // DB context: the lifecycle routes run in the ordinary request context (RLS on
-// breeze_has_org_access); only record-signed opens a system transaction and is
-// registered in SELF_MANAGED_DB_CONTEXT_ROUTES for it.
+// breeze_has_org_access). Two are registered in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// record-signed (opens a system transaction) and send (W2b: a short auth
+// transaction, then the email after it commits).
 export const agreementRequestRoutes = new Hono();
 
 const scopes = requireScope('partner', 'organization', 'system');
@@ -287,12 +289,23 @@ agreementRequestRoutes.get('/:id/preview', scopes, readPerm, zValidator('param',
   }
 });
 
-// POST /:id/send — draft → sent. W2a does not email (W2b): returns
-// { emailed: false, link } so the response shape is final.
+// POST /:id/send — draft → sent, then email the recipients (#9075 W2b).
+//
+// Two transactions' worth of work, not one (the quotes/:id/send #3905 shape):
+// this route is registered in SELF_MANAGED_DB_CONTEXT_ROUTES, so the auth
+// middleware opens NO ambient request transaction. withAuthDbAccessContext
+// opens a short one (RLS as the caller) that COMMITS when the transition
+// resolves; only then does the deferred delivery run the mail round-trip, so no
+// request-row lock or pooled connection is held across SMTP. Do NOT collapse
+// the two awaits into one context. A committed send whose mail failed is a 200
+// with emailed:false + emailReason, never a 500 the sender would retry into a 409.
 agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   try {
     const { id } = c.req.valid('param');
-    const res = await sendAgreementRequest(authFrom(c), id, new Date());
+    const auth = authFrom(c);
+    const res = await withAuthDbAccessContext(auth, () => sendAgreementRequest(auth, id, new Date()));
+    // Post-commit. Never rejects (every failure is an emailReason).
+    const delivery = await res.deliverEmail();
     writeRouteAudit(c, {
       orgId: res.request.orgId,
       action: 'billing.agreement.sent',
@@ -303,10 +316,17 @@ agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', i
         templateVersionId: res.request.templateVersionId,
         recipientCount: res.recipients.length,
         expiresAt: res.request.expiresAt,
-        emailed: res.emailed,
+        emailed: delivery.emailed,
+        ...(delivery.emailReason ? { emailReason: delivery.emailReason } : {}),
       },
     });
-    return c.json({ data: { request: res.request, emailed: res.emailed, link: res.link, recipients: res.recipients } });
+    return c.json({ data: {
+      request: res.request,
+      emailed: delivery.emailed,
+      emailReason: delivery.emailReason,
+      link: res.link,
+      recipients: res.recipients,
+    } });
   } catch (err) {
     return handleError(c, err);
   }

@@ -53,6 +53,7 @@ import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
+import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -577,6 +578,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
   ...messagingToolSchemas,
+  // Full-control W06 (#6776): PSA configuration + ticket operations.
+  ...ticketOpsToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -685,8 +688,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'list_links',
       'link_ticket',
       'unlink_ticket',
+      // W06 (#6776): assign/status/priority over up to 50 tickets of one org.
+      'bulk_update',
     ]),
     ticketId: uuid.optional(),
+    ticketIds: z.array(uuid).min(1).max(50).optional(),
     // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
     targetTicketId: uuid.optional(),
@@ -699,7 +705,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     targetOrgId: uuid.optional(),
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
-    assigneeId: uuid.optional(),
+    assigneeId: uuid.nullable().optional(),
     subject: z.string().min(1).max(255).optional(),
     description: z.string().max(50_000).optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),

@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   revoke: vi.fn(),
   captureException: vi.fn(),
   afterCommit: [] as Array<{ label: string; work: () => unknown }>,
+  authTx: { open: 0, calls: 0 },
+  deliverEmail: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -43,7 +45,11 @@ vi.mock('../../middleware/auth', () => ({
     if (h.grants && !h.grants.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
     return next();
   },
-  withAuthDbAccessContext: async (_a: unknown, fn: () => Promise<unknown>) => fn(),
+  withAuthDbAccessContext: async (_a: unknown, fn: () => Promise<unknown>) => {
+    h.authTx.calls += 1;
+    h.authTx.open += 1;
+    try { return await fn(); } finally { h.authTx.open -= 1; }
+  },
 }));
 
 vi.mock('../../db', async (importActual) => ({
@@ -96,7 +102,17 @@ beforeEach(() => {
   h.svc.updateAgreementRequest.mockResolvedValue({ ...DTO, label: 'x' });
   h.svc.deleteAgreementRequest.mockResolvedValue({ id: REQ, orgId: ORG });
   h.svc.previewAgreementRequest.mockResolvedValue({ sourceType: 'authored', html: '<p>x</p>', unresolved: [] });
-  h.svc.sendAgreementRequest.mockResolvedValue({ request: { ...DTO, status: 'sent' }, emailed: false, link: 'https://portal/agreement/t', recipients: ['a@example.com'] });
+  h.authTx.open = 0;
+  h.authTx.calls = 0;
+  h.deliverEmail.mockImplementation(async () => {
+    // Delivery must run AFTER the state transition's transaction committed.
+    expect(h.authTx.open).toBe(0);
+    return { emailed: true };
+  });
+  h.svc.sendAgreementRequest.mockImplementation(async () => {
+    expect(h.authTx.open).toBe(1);
+    return { request: { ...DTO, status: 'sent' }, link: 'https://portal/agreement/t', recipients: ['a@example.com'], deliverEmail: h.deliverEmail };
+  });
   h.svc.getAgreementRequestLink.mockResolvedValue({ link: 'https://portal/agreement/t', reissued: false, orgId: ORG });
   h.svc.voidAgreementRequest.mockResolvedValue({ request: { ...DTO, status: 'voided', voidReason: 'wrong client' }, revoke: { jti: 'jti-1', tokenExpiresAt: null } });
 });
@@ -179,13 +195,23 @@ describe('responses + audit', () => {
     ]);
   });
 
-  it('POST /:id/send → { emailed: false, link } and a billing.agreement.sent audit that never logs the link', async () => {
+  it('POST /:id/send → transition in a short auth tx, email AFTER it commits; { emailed, link } + an audit that never logs the link', async () => {
     const res = await contractRoutes.request(`${BASE}/${REQ}/send`, { method: 'POST' });
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toMatchObject({ emailed: false, link: 'https://portal/agreement/t' });
+    expect(h.authTx.calls).toBe(1);
+    expect(h.deliverEmail).toHaveBeenCalledTimes(1);
+    expect((await res.json()).data).toMatchObject({ emailed: true, link: 'https://portal/agreement/t', recipients: ['a@example.com'] });
     const audit = h.writeRouteAudit.mock.calls[0]![1];
-    expect(audit).toMatchObject({ action: 'billing.agreement.sent', resourceId: REQ, details: { recipientCount: 1, emailed: false } });
+    expect(audit).toMatchObject({ action: 'billing.agreement.sent', resourceId: REQ, details: { recipientCount: 1, emailed: true } });
     expect(JSON.stringify(audit)).not.toContain('agreement/t');
+  });
+
+  it('POST /:id/send whose mail failed is still a 200 (the send committed) with emailed:false + emailReason, audited', async () => {
+    h.deliverEmail.mockResolvedValue({ emailed: false, emailReason: 'send_failed' });
+    const res = await contractRoutes.request(`${BASE}/${REQ}/send`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ emailed: false, emailReason: 'send_failed' });
+    expect(h.writeRouteAudit.mock.calls[0]![1].details).toMatchObject({ emailed: false, emailReason: 'send_failed' });
   });
 
   it('GET /:id/link audits the credential dispense without the link itself', async () => {

@@ -41,6 +41,7 @@ const SAMPLE_VARS: Record<string, string> = {
   resolution_note: 'Replaced the failing drive.',
   quote_number: 'Q-2026-0001',
   quote_title: 'Office Network Refresh',
+  agreement_name: 'Business Associate Agreement',
   total: '$1,200.00',
   expiry_date: '2026-07-01',
   accept_url: 'https://portal.example.com/quote/TOKEN',

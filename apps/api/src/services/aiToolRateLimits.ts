@@ -191,6 +191,16 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_peripheral_policy: { limit: 10, windowSeconds: 300 },  // every write queues a device sync
   remediate_sensitive_data: { limit: 10, windowSeconds: 600 },  // mirrors apply_cis_remediation; encrypt/quarantine/secure_delete on devices
   configure_network_baseline: { limit: 10, windowSeconds: 300 }, // arms recurring on-site discovery scans
+  // Full-control W06 (#6776): PSA configuration + ticket-ops. Per tool, so reads share the
+  // budget; the bounds leave room for a model that lists, edits and re-lists. None touches a
+  // device or a vendor — these cap a runaway loop of config writes and queue/attachment reads.
+  manage_ticket_config: { limit: 40, windowSeconds: 300 },
+  manage_ticket_checklist_templates: { limit: 40, windowSeconds: 300 },
+  manage_ticket_inbox: { limit: 30, windowSeconds: 300 },
+  manage_ticket_attachments: { limit: 30, windowSeconds: 60 },  // the route's own limiter: 30/60 s
+  manage_ticket_forms: { limit: 40, windowSeconds: 300 },
+  manage_ticket_response_templates: { limit: 40, windowSeconds: 300 },
+  manage_time_suggestions: { limit: 40, windowSeconds: 300 },
 };
 
 /**

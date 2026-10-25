@@ -103,4 +103,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g79', prompt: 'Kill the runaway chrome.exe (PID 4412) on WS-042.', expect: [{ tool: 'manage_processes', action: 'kill' }, { tool: 'resolve_device_context' }] },
   { id: 'g80', prompt: 'Isolate FIN-LAPTOP-07 from the network for incident INC-12.', expect: [{ tool: 'execute_containment' }, { tool: 'list_incidents' }, { tool: 'get_incident_timeline' }, { tool: 'resolve_device_context' }] },
   { id: 'g81', prompt: 'Restart the Breeze agent on the three offline Contoso servers.', expect: [{ tool: 'trigger_agent_restart' }, { tool: 'query_devices' }] },
+  // Full-control W06 (#6776): PSA configuration and ticket-ops reach chat.
+  { id: 'g82', prompt: 'Add a "Printer" ticket category with a 4 hour response target.', expect: [{ tool: 'manage_ticket_config', action: 'create_category' }, { tool: 'manage_ticket_config', action: 'list_categories' }] },
+  { id: 'g83', prompt: 'Create a checklist template called "New hire setup" with steps for the account, laptop and MFA.', expect: [{ tool: 'manage_ticket_checklist_templates', action: 'create' }, { tool: 'manage_ticket_checklist_templates', action: 'list' }] },
+  { id: 'g84', prompt: 'Log yesterday\'s remote session on FS-01 as time on the printer ticket.', expect: [{ tool: 'manage_time_suggestions', action: 'confirm' }, { tool: 'manage_time_suggestions', action: 'list' }] },
 ];

@@ -1500,7 +1500,8 @@
       "approval_snapshot": "Números da aprovação",
       "approval_expires": "Prazo da aprovação",
       "approval_status": "Status da aprovação",
-      "merged_into_number": "Número do chamado de destino"
+      "merged_into_number": "Número do chamado de destino",
+      "agreement_name": "Nome do acordo"
     },
     "billingPayments": "Faturamento e pagamentos",
     "supportPortal": "Suporte e portal",

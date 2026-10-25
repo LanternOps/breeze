@@ -634,6 +634,7 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_tickets (list/get/list_work_types/list_links/merge_preview)` | 1 | Search and read tickets, work types, and ticket links |
 | `manage_tickets (create/assign/link_alert/unlink_alert/create_from_alert/link_device/draft/link_ticket/unlink_ticket)` | 2 | Open and assign tickets, link alerts, devices, and related tickets, and store a draft reply for human review |
 | `manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)` | 2 | Track time against tickets |
+| `manage_tickets (bulk_update)` | 2 | Assign, change the status of (not resolve), or set the priority of up to 50 tickets that all belong to one organization. A batch spanning organizations is refused whole, and there is no bulk delete |
 | `manage_tickets (comment/update_status/update_fields)` | 2 | Internal notes and ticket updates. A public comment (`isPublic: true`), resolving a ticket or setting a custom status, and changing the requester need approval (Tier 3) |
 | `manage_tickets (edit_comment/delete_comment)` | 3 | Edit or delete a comment — customer-visible text with no restore |
 | `manage_tickets (merge)` | 3 | Merge two tickets of one organization — irreversible, one approver |
@@ -651,6 +652,35 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+#### PSA configuration and ticket operations
+
+These tools configure the ticketing side of the platform. They are available in AI chat, and AI agents get the read actions. Partner-wide configuration is changed for every organization at once, so every write needs approval; deleting configuration needs a second approver (four-eyes).
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)` | 1 | Read ticket statuses, priorities, an organization's SLA overrides, categories, and customer email domain mappings |
+| `manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain)` | 3 | Change categories, statuses, priority and SLA settings, an organization's SLA overrides, and which organization a sender's domain routes to. Needs full partner access; statuses, priorities and domains also need an admin role |
+| `manage_ticket_config (delete_domain)` | 3 | Remove a customer email domain mapping (four-eyes) |
+| `manage_ticket_checklist_templates (list/get)` | 1 | Read checklist templates and their steps |
+| `manage_ticket_checklist_templates (create)` | 2 | Create an organization checklist template. A partner-wide template needs approval (Tier 3) |
+| `manage_ticket_checklist_templates (update/add_item/update_item/remove_item/reorder_items)` | 3 | Edit a template or its steps |
+| `manage_ticket_checklist_templates (delete)` | 3 | Delete a template (four-eyes). A template still used by a deliverable is refused |
+| `manage_ticket_inbox (list)` | 2 | Review inbound email the router could not place. The sender, subject and error text come from outside and are treated as untrusted |
+| `manage_ticket_inbox (convert/dismiss)` | 3 | Turn one email into a ticket in an organization you choose (the sender becomes the requester), or dismiss it. Neither can be undone |
+| `manage_ticket_attachments (list)` | 1 | List the files on a ticket |
+| `manage_ticket_attachments (read_content/attach_from_artifact)` | 2 | Read the text of an attachment (images, PDFs and other binary files return their details only), or attach an AI run artifact to a ticket. The attachment stays pending until a person posts a comment with it |
+| `manage_ticket_attachments (delete)` | 3 | Permanently delete an attachment |
+| `manage_ticket_forms (list/available)` | 1 | Read ticket intake forms, and the forms an organization can use |
+| `manage_ticket_forms (create/update)` | 3 | Create or change a customer-visible intake form |
+| `manage_ticket_forms (delete)` | 3 | Delete an intake form (four-eyes) |
+| `manage_ticket_response_templates (list)` | 1 | Read the partner's canned ticket replies |
+| `manage_ticket_response_templates (create/update)` | 3 | Create or change a canned reply |
+| `manage_ticket_response_templates (delete)` | 3 | Delete a canned reply (four-eyes) |
+| `manage_time_suggestions (list)` | 1 | See your own time-entry suggestions from remote sessions for a day |
+| `manage_time_suggestions (confirm/dismiss/undo)` | 2 | Log a suggestion as a time entry, dismiss it, or restore a dismissed one. Your own suggestions only |
+
+AI agents can use the read actions. A write an agent attempts becomes a proposal that waits for a person to approve it. Most of these write actions refuse to run under an agent identity, because the record they create or change needs a signed-in person as its author; creating a ticket form and converting an inbound email are the two that run as the approver once approved. Make the other changes in chat or in the web app. Writing the same settings from the web app is unchanged.
 
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 

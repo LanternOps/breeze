@@ -889,6 +889,12 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // software_policies.created_by (db/schema/softwarePolicies.ts) —
   // manage_software_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
   'manage_software_policy:create',
+  // Full-control W06 (#6776). Both are tier 3 supervised, so a real approver exists to own the row:
+  // ticket_forms.created_by (db/schema/ticketForms.ts) and the ticket created from an inbound email
+  // (ticketService.createTicket actor, via convertEmailInbound). The paired handler branches check
+  // approverReleaseMismatch(auth, context) before the write.
+  'manage_ticket_forms:create',
+  'manage_ticket_inbox:convert',
   // sensitive_data_findings.remediation_metadata.updatedBy (jsonb, not an
   // actual FK — db/schema/sensitiveData.ts — but the contract's own
   // name-level over-approximation is intentional; guarded the same way

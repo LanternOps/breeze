@@ -219,6 +219,51 @@ describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
   });
 });
 
+/** Spec 2026-09-23 W06 (#6776): the seven PSA configuration / ticket-ops tools are agent-reachable
+ * under `tickets`. An agent reads; every write is a proposal (supervised / four-eyes) or an
+ * allowlisted tier-2 call, and each write handler refuses an `ai_agent` principal (W06-D8). */
+const W06_AGENT_CAPABILITY: Readonly<Record<string, string>> = {
+  manage_ticket_config: 'tickets', manage_ticket_checklist_templates: 'tickets', manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets', manage_ticket_forms: 'tickets', manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
+};
+
+describe('W06 PSA configuration and ticket ops in the agent catalog (#6776)', () => {
+  it('pins all seven W06 tools', () => {
+    expect(Object.keys(W06_AGENT_CAPABILITY)).toHaveLength(7);
+  });
+
+  it.each(Object.entries(W06_AGENT_CAPABILITY))('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('no W06 tier-3 key is pre-authorisable for an agent (every such call is a proposal)', () => {
+    const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => key.split(':')[0]! in W06_AGENT_CAPABILITY);
+    expect(decidable).toEqual([]);
+  });
+
+  it('the picker offers the tier-1 reads as read-only operations and the inbox list / attachment read as allowlisted tier 2', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const op = (tool: string, action: string) => tools.find((t) => t.name === tool)!.operations.find((o) => o.key === `${tool}:${action}`)!;
+    for (const [tool, action] of [
+      ['manage_ticket_config', 'get_config'], ['manage_ticket_config', 'list_categories'], ['manage_ticket_checklist_templates', 'list'],
+      ['manage_ticket_attachments', 'list'], ['manage_ticket_forms', 'list'], ['manage_ticket_response_templates', 'list'],
+    ] as const) {
+      expect(op(tool, action), `${tool}:${action}`).toMatchObject({ tier: 1, readOnly: true });
+    }
+    // Plain tier 2, not read-only: an agent needs an allowlist entry (quorum QW1).
+    expect(op('manage_ticket_inbox', 'list')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('manage_ticket_attachments', 'read_content')).toMatchObject({ tier: 2, readOnly: false });
+    // Writes: supervised or four-eyes are tier 3.
+    expect(op('manage_ticket_config', 'create_category').tier).toBe(3);
+    expect(op('manage_ticket_config', 'delete_domain').tier).toBe(3);
+    expect(op('manage_ticket_forms', 'delete').tier).toBe(3);
+    expect(op('manage_ticket_attachments', 'delete').tier).toBe(3);
+  });
+});
+
 // Spec 2026-09-23 W02 (#6756): PSA and billing write tools are agent-reachable.
 // Their tier-3 actions still become proposals for a human (none is
 // policy-decidable), and manage_tags add/remove stay human-only (QV2).

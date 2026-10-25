@@ -997,6 +997,14 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),
+  // Full-control W06 (#6776). The inbound-email review queue holds mail the router could not
+  // place: sender, recipient, subject and parse error are all attacker-authored. Attachment
+  // filenames come from the uploader (or a run artifact name) and `text` is decoded file
+  // content. Time suggestions echo a ticket subject (requester-authored) and a device hostname
+  // (self-reported at enrollment).
+  manage_ticket_inbox: new Set(['subject', 'fromAddress', 'toAddress', 'error']),
+  manage_ticket_attachments: new Set(['originalFilename', 'text']),
+  manage_time_suggestions: new Set(['subject', 'hostname']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

@@ -11,7 +11,7 @@ function today(): string {
 
 interface SignaturePanelProps {
   /** Called with the typed signer name once name + agreement are provided. */
-  onAccept: (signerName: string) => void | Promise<void>;
+  onAccept: (signerName: string, signerEmail?: string) => void | Promise<void>;
   /** Called ONLY after the customer confirms the inline decline block. */
   onDecline: (reason?: string) => void | Promise<void>;
   busy: boolean;
@@ -25,7 +25,17 @@ interface SignaturePanelProps {
   acceptLabel?: string;
   /** One line under the intro saying what happens after signing (payment). */
   afterSignNote?: string;
+  /** Overrides the "Accept & sign" heading (default keeps the proposal copy). */
+  heading?: string;
+  /** Overrides the intro sentence (default: "Type your full legal name to sign and accept this proposal."). */
+  intro?: string;
+  /** Collects the signer's email (for a signed copy) and gates signing on a plausible address. */
+  requireSignerEmail?: boolean;
+  /** The document's name in the consent and decline copy (default "proposal"). */
+  documentNoun?: string;
 }
+
+const PLAUSIBLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * "Sign here" panel for accepting a proposal. The signer types their full legal
@@ -40,8 +50,9 @@ interface SignaturePanelProps {
  * backing out of the prompt still declined the proposal irreversibly. The
  * confirm block below is the only path to onDecline().
  */
-export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreements = [], acceptLabel, afterSignNote }: SignaturePanelProps) {
+export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreements = [], acceptLabel, afterSignNote, heading, intro, requireSignerEmail = false, documentNoun = 'proposal' }: SignaturePanelProps) {
   const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
   const [declining, setDeclining] = useState(false);
@@ -55,14 +66,16 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
   useEffect(() => setDate(today()), []);
 
   const trimmed = name.trim();
-  const canSign = trimmed.length > 0 && agreed && !busy;
+  const trimmedEmail = email.trim().toLowerCase();
+  const emailOk = !requireSignerEmail || PLAUSIBLE_EMAIL.test(trimmedEmail);
+  const canSign = trimmed.length > 0 && emailOk && agreed && !busy;
   const hintId = `${testIdPrefix}-sign-hint`;
   const showHint = touched && !canSign && !busy;
 
   const submit = () => {
     setTouched(true);
     if (!canSign) return;
-    void onAccept(trimmed);
+    void (requireSignerEmail ? onAccept(trimmed, trimmedEmail) : onAccept(trimmed));
   };
 
   const confirmDecline = () => {
@@ -73,9 +86,9 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
 
   return (
     <div className="rounded-xl border bg-card p-5 sm:p-6" data-testid={`${testIdPrefix}-sign`}>
-      <h3 className="text-sm font-semibold text-foreground">Accept &amp; sign</h3>
+      <h3 className="text-sm font-semibold text-foreground">{heading ?? 'Accept & sign'}</h3>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-        Type your full legal name to sign and accept this proposal.
+        {intro ?? 'Type your full legal name to sign and accept this proposal.'}
         {afterSignNote ? ` ${afterSignNote}` : ''}
       </p>
 
@@ -93,6 +106,26 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
           className={cn(INPUT, "mt-0")}
         />
       </div>
+
+      {requireSignerEmail && (
+        <div className="mt-4 space-y-1.5">
+          <label htmlFor={`${testIdPrefix}-signer-email`} className="text-xs font-medium text-foreground">
+            Email address for your signed copy
+          </label>
+          <input
+            id={`${testIdPrefix}-signer-email`}
+            data-testid={`${testIdPrefix}-signer-email`}
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            onBlur={() => setTouched(true)}
+            disabled={busy}
+            autoComplete="email"
+            placeholder="you@example.com"
+            className={cn(INPUT, "mt-0")}
+          />
+        </div>
+      )}
 
       {/* Signature line — the typed name rendered as a signature, with the date. */}
       <div className="mt-4 rounded-lg border bg-muted/20 px-4 pb-3 pt-6">
@@ -125,7 +158,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
           className="mt-0.5 h-4 w-4 shrink-0 rounded border border-muted-foreground/50 text-primary focus:ring-primary/40"
         />
         <span className="leading-relaxed text-muted-foreground">
-          I have reviewed this proposal and the{' '}
+          I have reviewed this {documentNoun} and the{' '}
           {agreements.length > 0
             ? agreements.map((a, i) => (
                 <Fragment key={a.href}>
@@ -147,7 +180,11 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
           className="mt-2 text-xs font-medium text-destructive-on-tint"
           data-testid={`${testIdPrefix}-sign-hint`}
         >
-          {trimmed.length === 0 ? 'Please type your full name to sign.' : 'Please confirm you agree to the terms.'}
+          {trimmed.length === 0
+            ? 'Please type your full name to sign.'
+            : !emailOk
+              ? 'Please enter a valid email address.'
+              : 'Please confirm you agree to the terms.'}
         </p>
       )}
 
@@ -156,9 +193,9 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
           className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-4"
           data-testid={`${testIdPrefix}-decline-panel`}
         >
-          <h4 className="text-sm font-semibold text-destructive-on-tint">Decline this proposal?</h4>
+          <h4 className="text-sm font-semibold text-destructive-on-tint">Decline this {documentNoun}?</h4>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            This tells the sender you are not going ahead. You cannot accept the proposal afterwards.
+            This tells the sender you are not going ahead. You cannot accept the {documentNoun} afterwards.
           </p>
 
           <div className="mt-3 space-y-1.5">

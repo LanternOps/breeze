@@ -1500,7 +1500,8 @@
       "approval_snapshot": "Dati dell’approvazione",
       "approval_expires": "Scadenza dell’approvazione",
       "approval_status": "Stato dell’approvazione",
-      "merged_into_number": "Numero del ticket di destinazione"
+      "merged_into_number": "Numero del ticket di destinazione",
+      "agreement_name": "Nome dell’accordo"
     },
     "billingPayments": "Fatturazione e pagamenti",
     "supportPortal": "Assistenza e portale",

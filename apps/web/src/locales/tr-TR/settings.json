@@ -1500,7 +1500,8 @@
       "approval_snapshot": "Onay rakamları",
       "approval_expires": "Onay son tarihi",
       "approval_status": "Onay durumu",
-      "merged_into_number": "Hedef bilet numarası"
+      "merged_into_number": "Hedef bilet numarası",
+      "agreement_name": "Sözleşme adı"
     },
     "billingPayments": "Faturalandırma ve ödemeler",
     "supportPortal": "Destek ve portal",
