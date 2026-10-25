@@ -253,11 +253,11 @@ describe('manage_ticket_config — categories (partner-wide, partner axis)', () 
   });
 
   runDb('delete soft-deactivates; reorder writes positions; a reorder naming a foreign id changes nothing', async () => {
-    const a = await seedCategory(f.partnerA, 'a');
+    const a = await seedCategory(f.partnerA, 'a', { sortOrder: 5 });
     const b = await seedCategory(f.partnerA, 'b');
     const foreign = await seedCategory(f.partnerB, 'foreign');
     expect(await cfg(f, 'adminAll', { action: 'reorder_categories', ids: [a.id, foreign.id] })).toEqual({ error: 'One or more categories not found' });
-    expect((await loadCategory(a.id))?.sortOrder).toBe(0);
+    expect((await loadCategory(a.id))?.sortOrder).toBe(5); // untouched by the refused reorder
     expect(await cfg(f, 'adminAll', { action: 'reorder_categories', ids: [b.id, a.id] })).toEqual({ reordered: 2 });
     expect((await loadCategory(b.id))?.sortOrder).toBe(0);
     expect((await loadCategory(a.id))?.sortOrder).toBe(1);

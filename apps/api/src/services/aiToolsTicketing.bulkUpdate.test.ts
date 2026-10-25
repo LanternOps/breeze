@@ -63,6 +63,12 @@ describe('manage_tickets bulk_update wiring (W06)', () => {
     expect(validateToolInput('manage_tickets', { action: 'bulk_update', ticketIds: [T1], assigneeId: null }).success).toBe(true);
   });
 
+  it('the time-entry actor is never manageAll, even for a platform admin (real timeEntryActorFrom)', async () => {
+    const { timeEntryActorFrom } = await import('./aiToolsTicketing');
+    const actor = await timeEntryActorFrom(makeAuth({ user: { id: 'u', email: 'a@b.c', name: 'A', isPlatformAdmin: true } as AuthContext['user'] }));
+    expect(actor.manageAll).toBe(false);
+  });
+
   it('refuses an ai_agent principal and never reaches the bulk module', async () => {
     const agent = makeAuth({ principal: { kind: 'ai_agent', agentId: 'a', runId: 'r' } as AuthContext['principal'] });
     const res = JSON.parse(await tool.handler({ action: 'bulk_update', ticketIds: [T1], priority: 'high' }, agent));

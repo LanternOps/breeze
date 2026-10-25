@@ -84,7 +84,7 @@ describe('manage_time_suggestions (W06)', () => {
       expect(input.startedAt).toBeInstanceOf(Date);
     });
 
-    it('does not accept an hourly rate it cannot honour or an end before the start', async () => {
+    it('rejects an end before the start, an unknown key and an empty signal list', async () => {
       expect(await run({ action: 'confirm', data: { ...confirmData, endedAt: '2026-10-24T08:00:00.000Z' } })).toMatchObject({ code: 'VALIDATION_ERROR' });
       expect(await run({ action: 'confirm', data: { ...confirmData, surprise: true } })).toMatchObject({ code: 'VALIDATION_ERROR' });
       expect(await run({ action: 'confirm', data: { ...confirmData, signals: [] } })).toMatchObject({ code: 'VALIDATION_ERROR' });

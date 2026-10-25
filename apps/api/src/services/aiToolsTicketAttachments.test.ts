@@ -113,6 +113,17 @@ describe('text-safe content (W06-D7)', () => {
     expect(decodeTextSafely(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]))).toBeNull();
   });
 
+  it('caps a streamed body: reads no more than the byte cap and destroys the stream', async () => {
+    m.queue.push([attRow()]);
+    const stream = Readable.from((function* () { for (let i = 0; i < 40; i++) yield Buffer.from('a'.repeat(10_000)); })());
+    const destroy = vi.spyOn(stream, 'destroy');
+    m.openBytes.mockResolvedValue({ body: stream, contentLength: 400_000 });
+    const res = await run({ action: 'read_content', attachmentId: ATT });
+    expect(res).toMatchObject({ contentReturned: true, truncated: true });
+    expect((res.text as string).length).toBe(READ_CONTENT_MAX_CHARS);
+    expect(destroy).toHaveBeenCalled();
+  });
+
   it('a multi-byte character cut by the byte cap does not make a long text unreadable', () => {
     const text = '€'.repeat(READ_CONTENT_MAX_CHARS * 2); // 3 bytes each, > the 4x byte cap boundary is exercised via slicing
     const out = decodeTextSafely(Buffer.from(text));
