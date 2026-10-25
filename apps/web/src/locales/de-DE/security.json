@@ -2361,6 +2361,7 @@
       "requiresMdmApproval": "MDM-Genehmigung erforderlich",
       "platformNotSelected": "Plattform nicht ausgewählt",
       "varMissing": "Bereitstellungsvariable fehlt",
+      "varSecret": "Bereitstellungsvariable ist als geheim markiert",
       "vendorUnavailable": "Hersteller nicht verfügbar",
       "installFailed": "Installation fehlgeschlagen",
       "installNotArmed": "Installation nicht freigegeben",

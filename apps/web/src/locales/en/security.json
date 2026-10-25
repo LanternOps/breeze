@@ -2361,6 +2361,7 @@
       "requiresMdmApproval": "Requires MDM approval",
       "platformNotSelected": "Platform not selected",
       "varMissing": "Deployment variable missing",
+      "varSecret": "Deployment variable is marked secret",
       "vendorUnavailable": "Vendor unavailable",
       "installFailed": "Install failed",
       "installNotArmed": "Install not armed",

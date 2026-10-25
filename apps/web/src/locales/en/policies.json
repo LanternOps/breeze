@@ -1171,7 +1171,13 @@
         "binaryMissing": "{{vendors}} cannot be turned on until the built-in package has a deployable installer: a Windows MSI as its latest version, with install arguments that include SITE_TOKEN={s1_site_token}. Fix it in the package's Versions tab, then save again.",
         "binaryMissingLink": "Open the Versions tab",
         "platformMacosUnsupported": "macOS: not supported.",
-        "sentinelOneMsiNote": "Add the SentinelOne MSI to the built-in SentinelOne package's Versions tab first, with install arguments that include SITE_TOKEN={s1_site_token}. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is there."
+        "sentinelOneMsiNote": "Add the SentinelOne MSI to the built-in SentinelOne package's Versions tab first, with install arguments that include SITE_TOKEN={s1_site_token}. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is there.",
+        "catalogMissingBuiltin": "{{vendors}} is not in this partner's software catalog yet. Add it from Software → Catalog → Built-in packages, then save again.",
+        "catalogMissingBuiltinLink": "Open Built-in packages",
+        "dnsBuiltinNote": "Add {{vendor}} to this partner's software catalog from Software → Catalog → Built-in packages first; it cannot be turned on until it is there.",
+        "dnsVariableNote": "Each organization needs the {{variable}} tenant variable, set as a normal (not secret) variable. Organizations without it are skipped and shown as not applicable.",
+        "dnsVariableLink": "Open Variables",
+        "dnsCoverageNote": "Breeze does not sync the {{vendor}} console, so coverage shows only whether each device can receive the client (pending or not applicable). Install and service state (missing, not running) appear in the generated software policy's compliance."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",
