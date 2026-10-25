@@ -6,7 +6,7 @@ import type { CaseScore, summarize } from './score';
 export interface EvalReport {
   generatedAt: string;
   model: string;
-  /** `chat` = the 67-case chat set on one surface; `agent` = the agent golden set, each task on its own surface. */
+  /** `chat` = the golden chat set on one surface; `agent` = the agent golden set, each task on its own surface; `lazy-index` = the W19 page-context set on chat. */
   suite: 'chat' | 'agent' | 'lazy-index';
   /** W19: `AI_TOOL_INDEX` for the run (chat prompt index text). */
   toolIndexMode?: 'lazy' | 'full';

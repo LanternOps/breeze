@@ -156,7 +156,9 @@ export function renderAlwaysOnIndex(names: Iterable<string>): string {
  * tool in `names`.
  */
 export function renderPageContextToolBlocks(pageType: AiPageContext['type'], names: readonly string[]): string {
-  const blocks = (PAGE_CONTEXT_TOOL_DOMAINS[pageType] ?? [])
+  // Own keys only: a prototype name ('constructor') is never a page type.
+  const domains = Object.hasOwn(PAGE_CONTEXT_TOOL_DOMAINS, pageType) ? PAGE_CONTEXT_TOOL_DOMAINS[pageType] : [];
+  const blocks = domains
     .map((domain) => renderDomainBlock(domain, names))
     .filter((block) => block.length > 0);
   return blocks.length === 0 ? '' : ['### Tools for this page', ...blocks].join('\n');

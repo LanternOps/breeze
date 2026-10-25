@@ -369,6 +369,8 @@ describe('W19 lazy chat tool index (#10065)', () => {
     expect(listToolIndex(FIXTURE_W03_W04).map((e) => e.name).sort()).toEqual([...FIXTURE_W03_W04].sort());
   });
 
+  // B1 is a ceiling on curated prose, not only on tool growth: a new
+  // DOMAIN_NOTES sentence or vocabulary word counts against it (66 B left at W19).
   it('B1: the always-on index is under 2.5 KB with flags off and with every flag on', () => {
     expect(bytes(alwaysOn)).toBeLessThan(ALWAYS_ON_INDEX_BUDGET_BYTES);
     stubAllFlagsOn();
@@ -389,7 +391,7 @@ describe('W19 lazy chat tool index (#10065)', () => {
     }
   });
 
-  it('B3: no page turn carries more index text than today\'s whole index', () => {
+  it('B3: no page turn\'s index text reaches the 7,040 B worst-turn bound', () => {
     for (const page of ['device', 'alert', 'dashboard', 'custom', 'topology'] as const) {
       const turn = bytes(renderAlwaysOnIndex(simulated)) + bytes(renderPageContextToolBlocks(page, simulated));
       expect(turn, page).toBeLessThan(INDEX_BUDGET_BYTES);

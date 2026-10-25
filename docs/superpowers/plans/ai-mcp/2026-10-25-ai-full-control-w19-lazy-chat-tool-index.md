@@ -28,7 +28,7 @@ Base: `origin/main` `dd2556224f` (W02 #9767 merged). Premise check P1–P7: pass
 
 **Where the regression risk falls.** Hosted chat on a first-party host with search on. There the model loses the grouped, action-annotated catalog; it keeps the flat name list and gains vocabulary. On full-list hosts only redundant text is removed.
 
-**Measured today.** `renderToolIndexByDomain(listChatSurfaceToolNames())`: 221 chat tools, 6,917 B. With the 38-tool W03/W04 fixture: 8,199 B. Per-domain line, bytes (today → with fixture): core 91; devices 940 → 1,117; scripts 582; patching 486 → 572; monitoring 731 → 787; network 452 → 508; security 970 → 1,268; backup 433 → 959; tickets 345; billing 282; accounts 343; integrations 562 → 599; admin 260 → 306; ai 198.
+**Measured today.** `renderToolIndexByDomain(listChatSurfaceToolNames())`: 221 chat tools, 6,917 B. With the 38-tool W03/W04 fixture: 8,199 B. Per-domain line in bytes, including its note where one exists (today → with fixture); without the notes, scripts is 363 B and patching 337 → 423 B: core 91; devices 940 → 1,117; scripts 582; patching 486 → 572; monitoring 731 → 787; network 452 → 508; security 970 → 1,268; backup 433 → 959; tickets 345; billing 282; accounts 343; integrations 562 → 599; admin 260 → 306; ai 198.
 
 **Page-context reach.** `buildSystemPrompt` runs:
 - at session create (`aiAgent.ts:283`, stored in `ai_sessions.system_prompt`);
@@ -77,7 +77,7 @@ But `streamingSessionManager` applies `systemPrompt` only when it **creates** th
   - `full` gives the legacy index byte for byte (`renderToolIndexByDomain`) and no page-context blocks. The declared tool set is identical in both modes.
   - **Recommended default: `lazy`.** The structural goal only holds if the gated contract is the composition that ships.
   - **The default is Todd's call** (it changes chat behaviour). The PR ships `lazy`, with the switch documented in `.env.example`, both compose files and `environment.mdx`.
-  - **Rollout limitation:** a flag change does not rewrite prompts already stored in `ai_sessions`. Existing sessions keep the index they started with. This is harmless in both directions, because no tool reference dangles.
+  - **Rollout limitation:** a flag change does not rewrite prompts already stored in `ai_sessions`. A live query keeps its prompt. A conversation picks up the new mode when its SDK query is next created (API restart, eviction, model switch) on a turn that carries page context, which rebuilds the prompt; otherwise it keeps the stored one. This is harmless in both directions, because no tool reference dangles.
 - **W19-D6 Agents, Helper, MCP, script builder, topology are untouched.**
   - No registry, tier, exposure or catalog change.
   - Headless agents build their own prompt (`runnerPrompt.ts`).
@@ -102,7 +102,7 @@ The simulated catalog is `[...listChatSurfaceToolNames(), ...FIXTURE_W03_W04]`. 
   - Gate: branch hits ≥ main − 2 in each arm.
   - Report: cases searched, mean API calls to the first real tool, mean context tokens at and through the first call, and every case lost or gained.
   - Deferred-only cases (where every acceptable tool is deferred under search) are reported separately.
-- **Authored set** `toolEval/lazyIndexCases.ts` (`--suite lazy-index`). It is separate from `GOLDEN_CASES`, so the count pins hold. Each case carries a page fixture: the production static prefix, a fixture `## Current Page Context` with the same lines `buildSystemPrompt` writes, and `renderPageContextToolBlocks`.
+- **Authored set** `toolEval/lazyIndexCases.ts` (`--suite lazy-index`). It is separate from `GOLDEN_CASES`, so the count pins hold. Each case runs the production `buildSystemPrompt` with a fixture page context (a non-UUID device id, so no DB read).
   - Cases: 3 device-page; 2 alert-page; 2 dashboard-page in an unexpanded domain (billing, backup); 1 always-on hot tool; 2 action-enum cases (the right action on a deferred multi-action tool).
   - It runs on the branch with `AI_TOOL_INDEX=lazy` against `full`, with equal caps. `full` is main's index plus the same page lines.
 - **Capture:** one `tool-capture --surface chat --proxy --tool-search on|off` row per tree, for system bytes and turn-1 tokens.

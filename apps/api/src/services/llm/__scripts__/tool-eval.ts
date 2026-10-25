@@ -241,6 +241,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       toolSearchEnabled: cases.length > 0 && cases.every((c) => c.toolSearchEnabled),
       promptVariant: args.promptVariant?.id ?? null,
       toolIndexMode: resolveToolIndexMode(),
+      // The first job's prompt (for lazy-index: the first case's page prompt).
       systemPromptBytes: Buffer.byteLength(
         appendPromptGuidance(args.jobs[0]?.systemPrompt ?? getCaptureSystemPrompt(promptSurface), args.promptVariant), 'utf8'),
       cases, summary: summarize(cases),
