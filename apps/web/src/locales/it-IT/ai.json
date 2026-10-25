@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} msg",
     "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msg"
+    "messageCount_other": "{{count}} msg",
+    "thisMonth": "{{amount}} questo mese",
+    "credits_one": "{{formatted}} credito",
+    "credits_other": "{{formatted}} crediti"
   },
   "aiPlanProgressBar": {
     "completed": "Piano completato ({{completed}}/{{total}})",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Budget e controllo periodico",
-      "budget": "Budget giornaliero (¢)",
+      "budget": "Budget giornaliero",
       "tick": "Controllo ogni (minuti)",
       "save": "Salva"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Impossibile riprendere Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ su {{budget}}¢ oggi",
+      "meter": "{{spent}} su {{budget}} oggi",
       "resets": "si azzera tra {{hours}} h",
       "raise": "Aumenta il budget di oggi",
       "label": "Spesa di Wisp oggi"
@@ -688,7 +691,7 @@
       "empty": "Ancora niente. Il lavoro di Wisp comparirà qui.",
       "loadFailed": "Impossibile caricare l'attività",
       "loadMore": "Carica altro",
-      "cost": "{{cents}} ¢",
+      "cost": "Costo {{amount}}",
       "kind": {
         "assessment": "Controllo",
         "concern": "Segnalazione",

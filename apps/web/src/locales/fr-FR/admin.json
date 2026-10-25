@@ -581,7 +581,7 @@
         "plan": "Offre",
         "activeGrants": "Autorisations actives",
         "pausedGrants": "Autorisations en pause",
-        "assessmentsToday": "Évaluations aujourd'hui",
+        "assessmentsToday": "Vérifications du jour",
         "specialistRequestsToday": "Demandes de spécialistes aujourd'hui",
         "openConcerns": "Préoccupations ouvertes",
         "budgetExhaustedToday": "Autorisations sans budget aujourd'hui"
@@ -597,7 +597,7 @@
         "expires": "Expire",
         "budget": "Budget (cents/jour)",
         "tickMinutes": "Intervalle (min)",
-        "assessmentsToday": "Évaluations aujourd'hui",
+        "assessmentsToday": "Vérifications du jour",
         "partnerWide": "Tout le partenaire"
       },
       "status": {

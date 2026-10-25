@@ -113,7 +113,6 @@
   "ai.workspaceEmptyState.newConversation",
   "ai.workspaceTab.approvalPending",
   "aiOperator.operatorTaskDetail.dispatchState.dispatchFailed",
-  "aiOperator.operatorTaskDetail.nextAction.approveInInbox",
   "aiOperator.operatorTaskDetail.nextAction.handedOff",
   "aiOperator.operatorTaskDetail.nextAction.inProgress",
   "aiOperator.operatorTaskDetail.nextAction.waitingForDevice",

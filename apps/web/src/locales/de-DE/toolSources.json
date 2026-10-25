@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} weitere(s) Tool(s) benötigen noch eine Überprüfung und werden nicht aktiviert.",
     "disableAll": "Alle deaktivieren",
     "test": "Testen",
-    "tier1": "1 – Nur Lesen",
-    "tier2": "2 – Schreibzugriff, Genehmigung nach Richtlinie",
-    "tier3": "3 – Genehmigung erforderlich"
+    "tier1": "Stufe 1 — Lesen",
+    "tier2": "Stufe 2 — Handelt und protokolliert (Genehmigung per Richtlinie)",
+    "tier3": "Stufe 3 — Fragt zuerst"
   },
   "test": {
     "title": "{{tool}} testen",

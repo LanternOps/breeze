@@ -18,7 +18,7 @@
     "pendingApproverDescription": "Bu işlemin Onaylar alanında veya Breeze mobil uygulamasında onaylanması gerekiyor.",
     "timeRemaining": "{{minutes}} dakika {{seconds}} saniye kaldı",
     "urgentWarning": "30 saniyeden az kaldı. Bu istek otomatik olarak reddedilecek.",
-    "progressLabel": "Otomatik reddetmeden önce kalan süre",
+    "progressLabel": "Otomatik reddedilmeden önce kalan süre",
     "showParameters": "Parametreleri göster",
     "approve": "Onayla",
     "reject": "Reddet",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} msjlar",
     "messageCount_one": "{{count}} msj",
-    "messageCount_other": "{{count}} msjlar"
+    "messageCount_other": "{{count}} msjlar",
+    "thisMonth": "Bu ay {{amount}}",
+    "credits_one": "{{formatted}} kredi",
+    "credits_other": "{{formatted}} kredi"
   },
   "aiPlanProgressBar": {
     "completed": "Plan tamamlandı ({{completed}}/{{total}})",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Bütçe ve kontrol aralığı",
-      "budget": "Günlük bütçe (¢)",
+      "budget": "Günlük bütçe",
       "tick": "Kontrol aralığı (dakika)",
       "save": "Kaydet"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Wisp devam ettirilemedi"
     },
     "spend": {
-      "meter": "Bugün {{budget}}¢ içinden {{spent}}¢",
+      "meter": "Bugün {{budget}} içinden {{spent}}",
       "resets": "{{hours}} saat içinde sıfırlanır",
       "raise": "Bugünün bütçesini artır",
       "label": "Bugünkü Wisp harcaması"
@@ -688,7 +691,7 @@
       "empty": "Henüz bir şey yok. Wisp'in çalışmaları burada görünür.",
       "loadFailed": "Etkinlik yüklenemedi",
       "loadMore": "Daha fazla yükle",
-      "cost": "{{cents}} ¢",
+      "cost": "Maliyet {{amount}}",
       "kind": {
         "assessment": "Kontrol",
         "concern": "Endişe",

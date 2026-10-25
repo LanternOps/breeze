@@ -581,7 +581,7 @@
         "plan": "Tarif",
         "activeGrants": "Aktive Berechtigungen",
         "pausedGrants": "Pausierte Berechtigungen",
-        "assessmentsToday": "Bewertungen heute",
+        "assessmentsToday": "Prüfungen heute",
         "specialistRequestsToday": "Spezialistenanfragen heute",
         "openConcerns": "Offene Bedenken",
         "budgetExhaustedToday": "Heute erschöpfte Budgets"
@@ -597,7 +597,7 @@
         "expires": "Läuft ab",
         "budget": "Budget (Cent/Tag)",
         "tickMinutes": "Takt (Min.)",
-        "assessmentsToday": "Bewertungen heute",
+        "assessmentsToday": "Prüfungen heute",
         "partnerWide": "Partnerweit"
       },
       "status": {

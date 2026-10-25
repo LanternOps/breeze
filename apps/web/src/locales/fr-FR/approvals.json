@@ -171,7 +171,7 @@
       "in_progress": "En cours",
       "completed": "Terminée",
       "failed": "Échec",
-      "rejected": "Refusée",
+      "rejected": "Refusé",
       "expired": "Expirée",
       "cancelled": "Annulée"
     }

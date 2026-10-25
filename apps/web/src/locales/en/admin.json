@@ -581,7 +581,7 @@
         "plan": "Plan",
         "activeGrants": "Active grants",
         "pausedGrants": "Paused grants",
-        "assessmentsToday": "Assessments today",
+        "assessmentsToday": "Checks today",
         "specialistRequestsToday": "Specialist requests today",
         "openConcerns": "Open concerns",
         "budgetExhaustedToday": "Budget-exhausted grants today"
@@ -597,7 +597,7 @@
         "expires": "Expires",
         "budget": "Budget (cents/day)",
         "tickMinutes": "Tick (min)",
-        "assessmentsToday": "Assessments today",
+        "assessmentsToday": "Checks today",
         "partnerWide": "Partner-wide"
       },
       "status": {

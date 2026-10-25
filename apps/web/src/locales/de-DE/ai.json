@@ -18,7 +18,7 @@
     "pendingApproverDescription": "Diese Aktion muss im Bereich „Genehmigungen“ oder in der Breeze-Mobile-App genehmigt werden.",
     "timeRemaining": "Verbleibend: {{minutes}} Min., {{seconds}} Sek.",
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
-    "progressLabel": "Verbleibende Zeit bis zur automatischen Ablehnung",
+    "progressLabel": "Verbleibende Zeit, bevor dies automatisch abgelehnt wird",
     "showParameters": "Parameter anzeigen",
     "approve": "Genehmigen",
     "reject": "Ablehnen",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} Nachrichten",
     "messageCount_one": "{{count}} Nachricht",
-    "messageCount_other": "{{count}} Nachrichten"
+    "messageCount_other": "{{count}} Nachrichten",
+    "thisMonth": "{{amount}} diesen Monat",
+    "credits_one": "{{formatted}} Credit",
+    "credits_other": "{{formatted}} Credits"
   },
   "aiPlanProgressBar": {
     "completed": "Plan abgeschlossen ({{completed}}/{{total}})",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Budget und Check-in",
-      "budget": "Tagesbudget (¢)",
+      "budget": "Tagesbudget",
       "tick": "Check-in alle (Minuten)",
       "save": "Speichern"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Wisp konnte nicht fortgesetzt werden"
     },
     "spend": {
-      "meter": "{{spent}}¢ von {{budget}}¢ heute",
+      "meter": "{{spent}} von {{budget}} heute",
       "resets": "wird in {{hours}} Std. zurückgesetzt",
       "raise": "Heutiges Budget erhöhen",
       "label": "Wisp-Ausgaben heute"
@@ -688,7 +691,7 @@
       "empty": "Noch nichts. Hier erscheint die Arbeit von Wisp.",
       "loadFailed": "Aktivität konnte nicht geladen werden",
       "loadMore": "Mehr laden",
-      "cost": "{{cents}} ¢",
+      "cost": "Kosten {{amount}}",
       "kind": {
         "assessment": "Prüfung",
         "concern": "Anliegen",

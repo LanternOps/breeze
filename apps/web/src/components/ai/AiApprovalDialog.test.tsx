@@ -48,18 +48,18 @@ beforeEach(() => {
 });
 
 describe('AiApprovalDialog', () => {
-  it('renders Approve/Reject buttons for a non-intent-backed (legacy Tier-2) execution', () => {
+  it('renders Approve/Deny buttons for a non-intent-backed (legacy Tier-2) execution', () => {
     render(<AiApprovalDialog {...baseProps} />);
 
     expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /deny/i })).toBeInTheDocument();
   });
 
   it('renders a waiting-for-an-approver state instead of a self-approve button when intentBacked', () => {
     render(<AiApprovalDialog {...baseProps} intentBacked />);
 
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^reject$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^deny$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/waiting for an approver/i)).toBeInTheDocument();
     expect(
       screen.getByText(/needs approval in the approvals area or the breeze mobile app/i),

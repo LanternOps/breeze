@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '@/lib/utils';
+import { formatCurrency } from '@/lib/i18n/format';
 import { useOrgStore } from '@/stores/orgStore';
 import { fetchWispActivity, safeActivityHref } from './wispActivity';
 import type { ActivityItem } from '@breeze/shared';
@@ -78,7 +79,7 @@ export default function WispActivityPanel({ threadId, refreshKey = 0 }: { thread
                 <div className="mt-0.5 flex gap-2 text-muted-foreground">
                   {orgName && <span>{orgName}</span>}
                   {item.costCents !== null && item.costCents > 0 && (
-                    <span>{t('wisp.activity.cost', { cents: item.costCents })}</span>
+                    <span>{t('wisp.activity.cost', { amount: formatCurrency(item.costCents / 100) })}</span>
                   )}
                 </div>
               )}

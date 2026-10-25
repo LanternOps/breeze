@@ -581,7 +581,7 @@
         "plan": "Plan",
         "activeGrants": "Etkin yetkiler",
         "pausedGrants": "Duraklatılmış yetkiler",
-        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "assessmentsToday": "Bugünkü kontroller",
         "specialistRequestsToday": "Bugünkü uzman istekleri",
         "openConcerns": "Açık endişeler",
         "budgetExhaustedToday": "Bugün bütçesi tükenen yetkiler"
@@ -597,7 +597,7 @@
         "expires": "Bitiş",
         "budget": "Bütçe (sent/gün)",
         "tickMinutes": "Aralık (dk)",
-        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "assessmentsToday": "Bugünkü kontroller",
         "partnerWide": "Tüm iş ortağı"
       },
       "status": {

@@ -18,10 +18,10 @@
     "pendingApproverDescription": "Esta acción necesita aprobación en el área de Aprobaciones o en la aplicación móvil de Breeze.",
     "timeRemaining": "{{minutes}} minutos {{seconds}} segundos restantes",
     "urgentWarning": "Quedan menos de 30 segundos. Esta solicitud será rechazada automáticamente.",
-    "progressLabel": "Tiempo restante antes del rechazo automático",
+    "progressLabel": "Tiempo restante antes de que se deniegue automáticamente",
     "showParameters": "Mostrar parámetros",
     "approve": "Aprobar",
-    "reject": "Rechazar",
+    "reject": "Denegar",
     "approveVerify": "Verificar y aprobar",
     "verifying": "Esperando la verificación…",
     "approving": "Aprobando…",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} mensajes",
     "messageCount_one": "mensaje {{count}}",
-    "messageCount_other": "{{count}} mensajes"
+    "messageCount_other": "{{count}} mensajes",
+    "thisMonth": "{{amount}} este mes",
+    "credits_one": "{{formatted}} crédito",
+    "credits_other": "{{formatted}} créditos"
   },
   "aiPlanProgressBar": {
     "completed": "Plan completado ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "paso {{count}}",
     "stepCount_other": "pasos {{count}}",
     "approveAll": "Aprobar todo",
-    "reject": "Rechazar"
+    "reject": "Denegar"
   },
   "aiToolCallCard": {
     "running": "En ejecución...",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Presupuesto y revisión periódica",
-      "budget": "Presupuesto diario (¢)",
+      "budget": "Presupuesto diario",
       "tick": "Revisión cada (minutos)",
       "save": "Guardar"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "No se pudo reanudar Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ de {{budget}}¢ hoy",
+      "meter": "{{spent}} de {{budget}} hoy",
       "resets": "se restablece en {{hours}} h",
       "raise": "Aumentar el presupuesto de hoy",
       "label": "Gasto de Wisp hoy"
@@ -688,7 +691,7 @@
       "empty": "Aún no hay nada. Aquí aparecerá el trabajo de Wisp.",
       "loadFailed": "No se pudo cargar la actividad",
       "loadMore": "Cargar más",
-      "cost": "{{cents}} ¢",
+      "cost": "Costo {{amount}}",
       "kind": {
         "assessment": "Revisión",
         "concern": "Asunto",

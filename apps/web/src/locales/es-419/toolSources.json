@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} herramienta(s) adicional(es) aún necesitan revisión y no se habilitarán.",
     "disableAll": "Deshabilitar todas",
     "test": "Probar",
-    "tier1": "1 — Solo lectura",
-    "tier2": "2 — Escrituras, aprobación según política",
-    "tier3": "3 — Requiere aprobación"
+    "tier1": "Nivel 1 — Lecturas",
+    "tier2": "Nivel 2 — Actúa y registra (aprobación por política)",
+    "tier3": "Nivel 3 — Pregunta primero"
   },
   "test": {
     "title": "Probar {{tool}}",

@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Prossima azione",
-      "approveInInbox": "Approva nella posta in arrivo",
+      "approveInInbox": "Approva in Approvazioni",
       "answerQuestion": "Rispondi a una domanda",
       "waitingForDevice": "In attesa del dispositivo",
       "waitingForMaintenanceWindow": "In attesa della finestra di manutenzione",

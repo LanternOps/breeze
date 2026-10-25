@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Stufe 1 — Lesen"
+      },
+      "tier2": {
+        "label": "Stufe 2 — Handelt und protokolliert"
+      },
+      "tier3": {
+        "label": "Stufe 3 — Fragt zuerst"
+      },
+      "tier4": {
+        "label": "Stufe 4 — Blockiert"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "KI-Risiko-Engine",
     "analytics": "Analytik",

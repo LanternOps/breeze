@@ -18,10 +18,10 @@
     "pendingApproverDescription": "Esta ação precisa de aprovação na área de Aprovações ou no aplicativo móvel do Breeze.",
     "timeRemaining": "{{minutes}} minutos e {{seconds}} segundos restantes",
     "urgentWarning": "Menos de 30 segundos restantes. Esta solicitação será rejeitada automaticamente.",
-    "progressLabel": "Tempo restante antes da rejeição automática",
+    "progressLabel": "Tempo restante antes da negação automática",
     "showParameters": "Mostrar parâmetros",
     "approve": "Aprovar",
-    "reject": "Rejeitar",
+    "reject": "Negar",
     "approveVerify": "Verificar e aprovar",
     "verifying": "Aguardando verificação…",
     "approving": "Aprovando…",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} mens.",
     "messageCount_one": "{{count}} mensagem",
-    "messageCount_other": "{{count}} mensagens"
+    "messageCount_other": "{{count}} mensagens",
+    "thisMonth": "{{amount}} este mês",
+    "credits_one": "{{formatted}} crédito",
+    "credits_other": "{{formatted}} créditos"
   },
   "aiPlanProgressBar": {
     "completed": "Plano concluído ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "{{count}} etapa",
     "stepCount_other": "{{count}} etapas",
     "approveAll": "Aprovar tudo",
-    "reject": "Rejeitar"
+    "reject": "Negar"
   },
   "aiToolCallCard": {
     "running": "Executando...",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Orçamento e verificação periódica",
-      "budget": "Orçamento diário (¢)",
+      "budget": "Orçamento diário",
       "tick": "Verificar a cada (minutos)",
       "save": "Salvar"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Não foi possível retomar o Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ de {{budget}}¢ hoje",
+      "meter": "{{spent}} de {{budget}} hoje",
       "resets": "reinicia em {{hours}} h",
       "raise": "Aumentar o orçamento de hoje",
       "label": "Gasto do Wisp hoje"
@@ -688,7 +691,7 @@
       "empty": "Nada ainda. O trabalho do Wisp aparecerá aqui.",
       "loadFailed": "Não foi possível carregar a atividade",
       "loadMore": "Carregar mais",
-      "cost": "{{cents}} ¢",
+      "cost": "Custo {{amount}}",
       "kind": {
         "assessment": "Verificação",
         "concern": "Pendência",

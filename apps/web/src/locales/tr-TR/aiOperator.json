@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Sonraki eylem",
-      "approveInInbox": "Gelen kutusunda onayla",
+      "approveInInbox": "Onaylar bölümünde onayla",
       "answerQuestion": "Bir soruyu yanıtla",
       "waitingForDevice": "Cihaz bekleniyor",
       "waitingForMaintenanceWindow": "Bakım penceresi bekleniyor",

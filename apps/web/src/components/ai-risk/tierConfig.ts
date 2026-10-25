@@ -42,6 +42,7 @@ export type TierIconName = 'eye' | 'shield-check' | 'shield-alert' | 'shield-off
 
 export interface TierDefinition {
   tier: 1 | 2 | 3 | 4;
+  /** `security` locale key (aiRisk.tiers.<id>.label), resolved with t() at render. */
   label: string;
   description: string;
   iconName: TierIconName;
@@ -54,7 +55,7 @@ export interface TierDefinition {
 export const TIER_DEFINITIONS: TierDefinition[] = [
   {
     tier: 1,
-    label: 'Auto-Execute (Read-Only)',
+    label: 'aiRisk.tiers.tier1.label',
     description: 'Read-only operations that execute automatically without any approval or logging overhead.',
     iconName: 'eye',
     borderColor: 'border-l-green-500',
@@ -235,7 +236,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 2,
-    label: 'Auto-Execute + Audit',
+    label: 'aiRisk.tiers.tier2.label',
     description:
       'Low-risk mutations and audited reads, always logged to the audit trail. Read-only entries auto-execute in every approval mode; mutations auto-execute except under per-step approval, which asks a quick confirmation.',
     iconName: 'shield-check',
@@ -332,7 +333,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 3,
-    label: 'Requires Approval',
+    label: 'aiRisk.tiers.tier3.label',
     description: 'Destructive or mutating operations that require explicit user approval before execution.',
     iconName: 'shield-alert',
     borderColor: 'border-l-amber-500',
@@ -443,7 +444,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 4,
-    label: 'Blocked',
+    label: 'aiRisk.tiers.tier4.label',
     description: 'Operations that are never allowed, such as cross-organization data access or unknown tools.',
     iconName: 'shield-off',
     borderColor: 'border-l-red-500',

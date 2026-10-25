@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} ek araç hâlâ inceleme bekliyor ve etkinleştirilmeyecek.",
     "disableAll": "Tümünü devre dışı bırak",
     "test": "Test et",
-    "tier1": "1 — Yalnızca okuma",
-    "tier2": "2 — Yazma, politikaya göre onay",
-    "tier3": "3 — Onay gerekli"
+    "tier1": "Seviye 1 — Okuma",
+    "tier2": "Seviye 2 — Eylem ve kayıt (politikaya göre onay)",
+    "tier3": "Seviye 3 — Önce sorar"
   },
   "test": {
     "title": "{{tool}} test et",

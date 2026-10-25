@@ -2551,7 +2551,7 @@
           "parameters": "Parámetros"
         },
         "accept": "Aceptar",
-        "reject": "Rechazar",
+        "reject": "Denegar",
         "execute": "Ejecutar",
         "requestApprovalTitle": "Solicitar aprobación PAM antes de la ejecución",
         "requesting": "Solicitando...",

@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Nächster Schritt",
-      "approveInInbox": "Im Posteingang genehmigen",
+      "approveInInbox": "In Genehmigungen genehmigen",
       "answerQuestion": "Frage beantworten",
       "waitingForDevice": "Wartet auf Gerät",
       "waitingForMaintenanceWindow": "Wartet auf Wartungsfenster",

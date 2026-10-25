@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} outil(s) supplémentaire(s) nécessitent encore une revue et ne seront pas activés.",
     "disableAll": "Tout désactiver",
     "test": "Tester",
-    "tier1": "1 — Lecture seule",
-    "tier2": "2 — Écritures, approbation selon la politique",
-    "tier3": "3 — Approbation requise"
+    "tier1": "Niveau 1 — Lectures",
+    "tier2": "Niveau 2 — Agit et journalise (approbation selon la politique)",
+    "tier3": "Niveau 3 — Demande d’abord"
   },
   "test": {
     "title": "Tester {{tool}}",

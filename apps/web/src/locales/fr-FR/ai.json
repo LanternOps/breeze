@@ -18,10 +18,10 @@
     "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Breeze.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} secondes restantes",
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
-    "progressLabel": "Temps restant avant l’auto-rejet",
+    "progressLabel": "Temps restant avant refus automatique",
     "showParameters": "Paramètres de présentation",
     "approve": "Approuver",
-    "reject": "Rejeter",
+    "reject": "Refuser",
     "approveVerify": "Vérifier et approuver",
     "verifying": "En attente de vérification…",
     "approving": "Approbation en cours…",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} MSGS",
     "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} MSGS"
+    "messageCount_other": "{{count}} MSGS",
+    "thisMonth": "{{amount}} ce mois-ci",
+    "credits_one": "{{formatted}} crédit",
+    "credits_other": "{{formatted}} crédits"
   },
   "aiPlanProgressBar": {
     "completed": "Plan terminé ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "{{count}} pas",
     "stepCount_other": "{{count}} marches",
     "approveAll": "Approuver tout",
-    "reject": "Rejeter"
+    "reject": "Refuser"
   },
   "aiToolCallCard": {
     "running": "En cours…",
@@ -615,7 +618,7 @@
     },
     "settings": {
       "title": "Budget et point de suivi",
-      "budget": "Budget quotidien (¢)",
+      "budget": "Budget quotidien",
       "tick": "Point de suivi toutes les (minutes)",
       "save": "Enregistrer"
     },
@@ -660,7 +663,7 @@
       "resumeFailed": "Impossible de réactiver Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ sur {{budget}}¢ aujourd’hui",
+      "meter": "{{spent}} sur {{budget}} aujourd’hui",
       "resets": "réinitialisation dans {{hours}} h",
       "raise": "Augmenter le budget du jour",
       "label": "Dépenses de Wisp aujourd’hui"
@@ -688,7 +691,7 @@
       "empty": "Rien pour le moment. Le travail de Wisp apparaîtra ici.",
       "loadFailed": "Impossible de charger l’activité",
       "loadMore": "Charger plus",
-      "cost": "{{cents}} ¢",
+      "cost": "Coût {{amount}}",
       "kind": {
         "assessment": "Vérification",
         "concern": "Point de vigilance",

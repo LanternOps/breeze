@@ -13,7 +13,7 @@
   "targetDevice": "Dispositivo de destino: {{hostname}}",
   "batch": {
     "approveAll": "Aprobar todo ({{count}})",
-    "declineAll": "Rechazar todo ({{count}})",
+    "declineAll": "Denegar todo ({{count}})",
     "groupTitle": "{{count}} solicitudes similares · {{tool}}",
     "moreHostnames": "+{{count}} más",
     "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
@@ -171,7 +171,7 @@
       "in_progress": "En curso",
       "completed": "Completada",
       "failed": "Fallida",
-      "rejected": "Rechazada",
+      "rejected": "Denegado",
       "expired": "Vencida",
       "cancelled": "Cancelada"
     }

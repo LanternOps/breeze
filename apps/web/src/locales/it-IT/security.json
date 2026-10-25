@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Livello 1 — Letture"
+      },
+      "tier2": {
+        "label": "Livello 2 — Agisce e registra"
+      },
+      "tier3": {
+        "label": "Livello 3 — Chiede prima"
+      },
+      "tier4": {
+        "label": "Livello 4 — Bloccato"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "Motore di rischio AI",
     "analytics": "Analisi",

@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Prochaine action",
-      "approveInInbox": "Approuver dans la boîte de réception",
+      "approveInInbox": "Approuver dans Approbations",
       "answerQuestion": "Répondre à une question",
       "waitingForDevice": "En attente de l'appareil",
       "waitingForMaintenanceWindow": "En attente de la fenêtre de maintenance",
@@ -377,7 +377,7 @@
       "state": {
         "pending": "En attente d'approbation",
         "approved": "Approuvé",
-        "rejected": "Rejeté",
+        "rejected": "Refusé",
         "expired": "Expiré",
         "superseded": "Remplacé"
       },

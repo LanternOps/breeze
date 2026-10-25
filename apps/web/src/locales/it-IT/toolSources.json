@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} strumento/i aggiuntivo/i necessitano ancora di revisione e non verranno abilitati.",
     "disableAll": "Disabilita tutto",
     "test": "Prova",
-    "tier1": "1 — Sola lettura",
-    "tier2": "2 — Scritture, approvazione secondo policy",
-    "tier3": "3 — Approvazione richiesta"
+    "tier1": "Livello 1 — Letture",
+    "tier2": "Livello 2 — Agisce e registra (approvazione da policy)",
+    "tier3": "Livello 3 — Chiede prima"
   },
   "test": {
     "title": "Testa {{tool}}",

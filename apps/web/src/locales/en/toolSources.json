@@ -114,9 +114,9 @@
     "enableReadsConfirmSkipped": "{{count}} additional tool(s) still need review and will not be enabled.",
     "disableAll": "Disable all",
     "test": "Test",
-    "tier1": "1 — Read only",
-    "tier2": "2 — Writes, approval by policy",
-    "tier3": "3 — Approval required"
+    "tier1": "Tier 1 — Reads",
+    "tier2": "Tier 2 — Acts and logs (approval by policy)",
+    "tier3": "Tier 3 — Asks first"
   },
   "test": {
     "title": "Test {{tool}}",

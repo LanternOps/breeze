@@ -173,6 +173,53 @@ describe('OperatorTaskDetail', () => {
   });
 });
 
+describe('OperatorTaskDetail approve-in-Approvals link (#10134)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+  const INTENT = '3f2a1b9c-0000-4000-8000-0000000000aa';
+  const planRow = (over: Record<string, unknown>) => ({
+    id: 'p1', taskId: 'task-1', planRevision: 1, effectSetDigest: 'd', effectCount: 1, intentId: INTENT,
+    state: 'pending', approvedByUserId: null, approvedAt: null, supersededByRevision: null,
+    createdAt: '2026-09-07T00:00:00.000Z', effects: [], ...over,
+  });
+
+  it('links the next action to the approval card', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({})] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('links to the Approvals page when the payload carries no pending intent id', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({ intentId: null })] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', '/approvals');
+  });
+
+  it('ignores superseded plan revisions when picking the intent', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({ state: 'superseded', intentId: 'old' }), planRow({ id: 'p2', planRevision: 2 })] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('uses the wait dependency intent for single-operation approvals (no plan)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', waitDependency: { kind: 'intent', id: INTENT }, plan: [] }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('other next actions stay plain text', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'in_progress' }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const cell = await screen.findByTestId('operator-task-next-action');
+    expect(cell.querySelector('a')).toBeNull();
+  });
+});
+
 // Wisp W07 (#9920) — "Wisp for <user>" provenance on the task's origin grid.
 describe('OperatorTaskDetail Wisp provenance', () => {
   beforeEach(() => {
