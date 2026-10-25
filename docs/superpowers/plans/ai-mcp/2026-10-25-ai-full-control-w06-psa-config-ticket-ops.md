@@ -73,7 +73,7 @@ Paths are under `apps/api/src/`; line numbers drift.
 | `…:dismiss` / `undo` | yes (inverse pair) | none | own suggestion | no | t2 | **t2** | — |
 | `manage_tickets:bulk_update` | assign/priority yes; status mostly | assign notifies the assignee (internal); status ≠ resolved reaches nobody | **≤ 50 tickets, ONE org** | no | t2 | **t2** with a single-org rule | quorum QW4: the handler refuses a batch spanning orgs, so "single-org" holds (route: 100 tickets, any orgs) |
 
-**Net effect of the review.** The triage proposed t2 for every write except forms. The spec's own rule (partner-wide, irreversible, the MFA-route invariant) puts every PSA config write at supervised or above, and the five hard deletes of partner-keyed or ownership-by-DB-state config at **four-eyes**. That is a deliberate disagreement with the triage (a first-pass gap list, not a class review), recorded here and for Todd in the PR. Only `manage_ticket_checklist_templates:create` (org-owned), the ticket-ops writes (`attach_from_artifact`, `bulk_update`) and the time-suggestion writes stay t2.
+**Net effect of the review.** The triage proposed t2 for every write except forms. The spec's own rule (partner-wide, irreversible, the MFA-route invariant) puts every PSA config write at supervised or above, and the four hard deletes of partner-keyed or ownership-by-DB-state config at **four-eyes**. That is a deliberate disagreement with the triage (a first-pass gap list, not a class review), recorded here and for Todd in the PR. Only `manage_ticket_checklist_templates:create` (org-owned), the ticket-ops writes (`attach_from_artifact`, `bulk_update`) and the time-suggestion writes stay t2.
 
 ### Final per-action classes (T7's `W06_EXPECTED` copies this)
 
@@ -88,7 +88,7 @@ Paths are under `apps/api/src/`; line numbers drift.
 | `manage_time_suggestions` | list | confirm, dismiss, undo | — | — |
 | `manage_tickets` (+1) | — | bulk_update | — | — |
 
-Four-eyes applies only to the five irreversible deletes; no identity change, no money, nothing that leaves the tenant. No four-eyes → supervised move, so no loosening of an existing gate. Org-owned form / checklist-template deletes are four-eyes too because ownership is DB state and guardrails are DB-free; Todd may split them by ownership if a solo operator needs chat deletes (follow-up).
+Four-eyes applies only to the four irreversible deletes; no identity change, no money, nothing that leaves the tenant. No four-eyes → supervised move, so no loosening of an existing gate. Org-owned form / checklist-template deletes are four-eyes too because ownership is DB state and guardrails are DB-free; Todd may split them by ownership if a solo operator needs chat deletes (follow-up).
 
 ## Wiring (spec checklist 1–11), per tool
 
@@ -119,7 +119,7 @@ Measured in T5 on the branch: always-on < 2,560 B (main 2,494), every domain blo
 - **W06-D5: admin predicate in the handler** for the `ticketConfig.ts` surface and the inbox (route parity the permission map cannot express).
 - **W06-D6: `manage_ticket_attachments:list` added** (no REST twin) so the model can find ids; mirrors the comment feed's visibility: posted attachments of non-deleted comments, plus the caller's own pending rows.
 - **W06-D7: text-safe attachment reads** (see Wiring); `read_content` is plain t2 (not t1, because it returns file content; not t2-ro, because a read-only resolution skips the agent allowlist, quorum QW1).
-- **W06-D10: five hard deletes are four-eyes** (`delete_inbound_domain`, response-template `delete`, forms `delete`, checklist-template `delete`; spec: irreversible and partner-wide). `categories delete` is a soft deactivate and stays supervised. Each new four-eyes key follows the `effectDigestCoverage` contract (resolver or a recorded `DELIBERATELY_UNPINNED` reason).
+- **W06-D10: four hard deletes are four-eyes** (`delete_inbound_domain`, response-template `delete`, forms `delete`, checklist-template `delete`; spec: irreversible and partner-wide). `categories delete` is a soft deactivate and stays supervised. Each new four-eyes key follows the `effectDigestCoverage` contract (resolver or a recorded `DELIBERATELY_UNPINNED` reason).
 - **W06-D11: inbox `convert` and `dismiss` are supervised** (terminal, and convert sets an external requester, quorum QW3). `list` is plain t2.
 - **W06-D12: `duplicate` stays on `manage_ticket_checklist`** (already wired in #6930, route-bound); the new templates tool does not repeat it (quorum QW5: classified there as supervised-by-ownership is a follow-up, its existing class is t2).
 - **W06-D8: agent principals are refused on every W06 write** (users-FK actors; an agent must not reconfigure its own queue). Reads follow the class (t1 reads are agent-reachable; the plain-t2 inbox list and attachment read need an allowlist entry). `manage_time_suggestions` refuses an agent principal for every action, `list` included (an agent has no suggestions of its own). Two writes are the exception: **`manage_ticket_forms:create` and `manage_ticket_inbox:convert` are in `USER_OWNED_RELEASE_ACTIONS`** (jobs/intentReleaseWorker.ts) with an `approverReleaseMismatch(auth, context)` guard in the branch, because `aiTools.userOwnedRelease.contract` requires every agent-mintable tier-3 write of `auth.user.id` into a users FK to be released as the approver; an approved agent proposal for those two therefore runs as the approving person. `manage_ticket_attachments:attach_from_artifact` (tier 2) refuses an agent principal in its branch, the contract's tier-2 alternative.
@@ -160,7 +160,7 @@ T1 (this doc + quorum) → T2 guardrail classes → T3 route bindings + permissi
 
 ## Deviations from the brief (all recorded for Todd in the PR)
 
-1. **Classes:** 26 writes are supervised and 5 hard deletes four-eyes, where the brief said "t2 unless the triage row says sup" (W06-D1, D10, D11). Quorum: AGREE WITH CHANGES, all six changes accepted.
+1. **Classes:** 24 writes are supervised (23, plus the partner-wide checklist-template create) and 4 hard deletes four-eyes, where the brief said "t2 unless the triage row says sup" (W06-D1, D10, D11). Quorum: AGREE WITH CHANGES, all six changes accepted.
 2. **`manage_ticket_attachments:list` added** (no REST twin) and **`bulk_update` priority** is new behaviour (the route has no priority action).
 3. **`bulk_update` is single-org, ≤ 50** (route: any orgs, ≤ 100).
 4. **`inbox:convert` and `forms:create` join `USER_OWNED_RELEASE_ACTIONS`** (W06-D8) — a one-line addition to a release-path allowlist, in a high-blast-radius file.

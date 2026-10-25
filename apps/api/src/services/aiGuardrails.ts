@@ -514,7 +514,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // #8883 W5: ticket routing rule writes (partner-wide gate enforced in the service).
   manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // Full-control W06 (#6776). Partner-wide ticket configuration, MFA-route mutations and
-  // terminal/irreversible acts are tier 3 (plan "Per-tool class review"); the five hard
+  // terminal/irreversible acts are tier 3 (plan "Per-tool class review"); the four hard
   // deletes are four-eyes (irreversible AND partner-wide, spec Class rule). Splits by
   // scope are in TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS below.
   manage_ticket_config: [

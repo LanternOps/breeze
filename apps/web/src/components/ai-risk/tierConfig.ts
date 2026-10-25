@@ -444,7 +444,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
-      // terminal inbox actions and the permanent attachment delete need approval; the five hard deletes
+      // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
       // (email domain mapping, checklist template, ticket form, canned reply) need a second approver.
       { name: 'manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain/delete_domain)', description: 'Change ticket categories, statuses, priorities, SLA overrides or customer email domain routing (removing a domain mapping needs a second approver)', category: 'Ticketing' },
       { name: 'manage_ticket_checklist_templates (update/delete/add_item/update_item/remove_item/reorder_items)', description: 'Edit or delete a checklist template and its steps (deleting needs a second approver)', category: 'Ticketing' },
