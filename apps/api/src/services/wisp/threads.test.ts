@@ -241,7 +241,7 @@ describe('attachSession', () => {
 
     expect(h.calls).not.toContain('system');
     expect(h.calls).not.toContain('system-wrapper');
-    expect(sqlOf(h.execute.mock.calls[1][0]).text).toMatch(/set_config\('breeze\.scope', \$1, true\)/);
+    expect(sqlOf(h.execute.mock.calls[1]![0]).text).toMatch(/set_config\('breeze\.scope', \$1, true\)/);
     // The elevation wraps the writes: both statements ran between the two set_config calls.
     expect(h.events).toEqual(['savepoint', 'read-scope', 'guc:system', 'insert:wisp_thread_sessions', 'update:wisp_threads', 'guc:organization']);
     const ins = h.inserts.find((i) => i.table === 'wisp_thread_sessions')!;
