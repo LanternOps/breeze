@@ -10,9 +10,9 @@
 // one — never a 403 that confirms the row exists. Mutations lock the request
 // row (SELECT … FOR UPDATE) and re-check the status on the locked row.
 //
-// Interim state (W2a): send does NOT email (that is W2b's
-// agreementRequestEmail) — it returns { emailed: false, link }. The link
-// points at the W2b portal page /agreement/<token>.
+// Send (#9075 W2b) returns a DEFERRED email delivery the route runs after its
+// transaction commits (agreementRequestEmail); the link points at the portal
+// signing page /agreement/<token>.
 
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import {
@@ -31,7 +31,7 @@ import {
   type AgreementRequestRow,
   type AgreementRequestStatus,
 } from '../db/schema/contractDocuments';
-import { contractTemplates, contractTemplateVersions } from '../db/schema';
+import { contractTemplates, contractTemplateVersions, partners } from '../db/schema';
 import { contracts } from '../db/schema/contracts';
 import type { AuthContext } from '../middleware/auth';
 import {
@@ -42,6 +42,11 @@ import {
 import { assertTemplateVersionUsable, ContractTemplateServiceError } from './contractTemplateService';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import { portalBase } from './portalUrl';
+import {
+  deliverAgreementRequestEmail,
+  type AgreementRequestDelivery,
+  type AgreementRequestEmailOutcome,
+} from './agreementRequestEmail';
 import { captureException } from './sentry';
 import {
   AgreementRequestServiceError,
@@ -544,12 +549,47 @@ export async function deleteAgreementRequest(auth: AuthContext, id: string): Pro
 // Send-class writes (agreements:send)
 // ---------------------------------------------------------------------------
 
+/**
+ * The recipients' email for a request that was just sent (#9075 W2b).
+ *
+ * **Invoke this AFTER the caller's transaction has committed** — the
+ * DeferredQuoteEmail contract (quoteLifecycle.ts): the SMTP round-trip must not
+ * hold the request row's FOR UPDATE lock or a pooled connection.
+ *  - **Never rejects.** Every failure is an `emailReason`, so a committed send
+ *    is never reported as a failure the sender would retry into a 409.
+ *  - **Memoised.** A second call returns the first call's outcome instead of
+ *    mailing the recipients twice.
+ *  - Touches no database: everything it needs was captured in the send
+ *    transaction. There is no persisted send-email reason on requests; the
+ *    outcome is returned to the route (response + audit row).
+ */
+export type DeferredAgreementRequestEmail = () => Promise<AgreementRequestEmailOutcome>;
+
 export interface SendAgreementRequestResult {
   request: AgreementRequestDto;
-  /** Always false in W2a: emailing the recipients ships with W2b. */
-  emailed: false;
   link: string;
   recipients: string[];
+  /** Run AFTER this call's transaction commits — see {@link DeferredAgreementRequestEmail}. */
+  deliverEmail: DeferredAgreementRequestEmail;
+}
+
+function makeDeferredAgreementRequestEmail(delivery: AgreementRequestDelivery): DeferredAgreementRequestEmail {
+  let inFlight: Promise<AgreementRequestEmailOutcome> | null = null;
+  return () => {
+    inFlight ??= (async () => {
+      // deliverAgreementRequestEmail swallows its own failures; this catch is
+      // the belt for an uncaught path (a memoised REJECTED promise would hand
+      // the same 500 to every later call).
+      try {
+        return await deliverAgreementRequestEmail(delivery);
+      } catch (err) {
+        console.error(`[agreementRequestLifecycle] deferred delivery for request ${delivery.requestId} threw past its own swallow:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        return { emailed: false, emailReason: 'send_failed' as const };
+      }
+    })();
+    return inFlight;
+  };
 }
 
 /** draft → sent. Gates, in order: status (on the locked row), expiry,
@@ -603,7 +643,29 @@ export async function sendAgreementRequest(auth: AuthContext, id: string, now: D
   if (!sent) {
     throw new AgreementRequestServiceError('This agreement request is no longer a draft', 409, 'INVALID_STATE');
   }
-  return { request: toAgreementRequestDto(sent), emailed: false, link: buildAgreementSigningUrl(token), recipients };
+  const link = buildAgreementSigningUrl(token);
+  // The partner's email signature, read in this same transaction so the
+  // deferred delivery needs no database after the commit.
+  const [sig] = await db
+    .select({ emailSignature: partners.emailSignature })
+    .from(partners)
+    .where(eq(partners.id, org.partnerId))
+    .limit(1);
+  const deliverEmail = makeDeferredAgreementRequestEmail({
+    requestId: sent.id,
+    recipients,
+    partnerId: org.partnerId,
+    partnerName: partner.name ?? null,
+    partnerReplyTo: partner.billingEmail ?? null,
+    partnerSignature: sig?.emailSignature ?? null,
+    partnerSettings: partner.settings,
+    agreementName: sent.label?.trim() || renderData.templateName,
+    orgName: sent.clientNameSnapshot,
+    expiresAt: sent.expiresAt,
+    coverMessage: sent.coverMessage,
+    signingUrl: link,
+  });
+  return { request: toAgreementRequestDto(sent), link, recipients, deliverEmail };
 }
 
 /** Copy link: reproduce the stable link from the persisted identity. Only an

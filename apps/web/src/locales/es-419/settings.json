@@ -1496,7 +1496,8 @@
       "approval_snapshot": "Cifras de la aprobación",
       "approval_expires": "Fecha límite de aprobación",
       "approval_status": "Estado de la aprobación",
-      "merged_into_number": "Número del ticket de destino"
+      "merged_into_number": "Número del ticket de destino",
+      "agreement_name": "Nombre del acuerdo"
     },
     "billingPayments": "Facturación y pagos",
     "supportPortal": "Soporte y portal",

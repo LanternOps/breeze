@@ -1496,7 +1496,8 @@
       "approval_snapshot": "Freigabe-Kennzahlen",
       "approval_expires": "Freigabefrist",
       "approval_status": "Freigabestatus",
-      "merged_into_number": "Nummer des Ziel-Tickets"
+      "merged_into_number": "Nummer des Ziel-Tickets",
+      "agreement_name": "Name der Vereinbarung"
     },
     "billingPayments": "Abrechnung und Zahlungen",
     "supportPortal": "Support und Portal",

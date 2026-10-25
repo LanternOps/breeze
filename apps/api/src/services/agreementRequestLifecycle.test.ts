@@ -40,6 +40,12 @@ vi.mock('./contractTemplateService', async (importActual) => ({
 
 vi.mock('./portalUrl', () => ({ portalBase: () => 'https://portal.example.test' }));
 
+const { sendEmailMock, getEmailServiceMock } = vi.hoisted(() => ({ sendEmailMock: vi.fn(), getEmailServiceMock: vi.fn() }));
+vi.mock('./email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./email')>()),
+  getEmailService: getEmailServiceMock,
+}));
+
 import { db } from '../db';
 import {
   createAgreementRequest,
@@ -330,13 +336,70 @@ describe('sendAgreementRequest', () => {
     expect(typeof set.acceptTokenJti).toBe('string');
     expect(set.acceptTokenIssuedAt).toBeInstanceOf(Date);
 
-    expect(res.emailed).toBe(false);
+    expect(typeof res.deliverEmail).toBe('function');
     expect(res.recipients).toEqual(['jane@example.com']);
     const prefix = 'https://portal.example.test/agreement/';
     expect(res.link.startsWith(prefix)).toBe(true);
     const claims = await verifyAgreementAcceptToken(decodeURIComponent(res.link.slice(prefix.length)));
     expect(claims).toEqual({ requestId: REQ, orgId: ORG, partnerId: PARTNER, jti: set.acceptTokenJti });
     expect(res.request).not.toHaveProperty('acceptTokenJti');
+  });
+
+  describe('deferred delivery (#9075 W2b)', () => {
+    async function sendOk(coverMessage: string | null = 'Please sign by Friday') {
+      queue([row({ coverMessage, label: 'BAA 2027' })]);
+      queue([{ email: 'jane@example.com' }, { email: 'ops@example.com' }]);
+      queue([orgRow]);
+      queue([{ ...partnerRow, billingEmail: 'billing@example.com' }]);
+      queue([row({ status: 'sent', sentAt: NOW, coverMessage, label: 'BAA 2027', clientNameSnapshot: 'Acme' })]);
+      queue([{ emailSignature: 'The Best MSP team' }]);
+      return sendAgreementRequest(auth, REQ, NOW);
+    }
+
+    beforeEach(() => {
+      getEmailServiceMock.mockReset().mockReturnValue({ sendEmail: sendEmailMock });
+      sendEmailMock.mockReset().mockResolvedValue(undefined);
+    });
+
+    it('send itself mails nothing — delivery runs only when the caller invokes it (after commit)', async () => {
+      await sendOk();
+      expect(getEmailServiceMock).not.toHaveBeenCalled();
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    it('delivers to the request recipients with the signing link; memoised (a second call mails nobody twice)', async () => {
+      const res = await sendOk();
+      const first = await res.deliverEmail();
+      const second = await res.deliverEmail();
+      expect(first).toEqual({ emailed: true });
+      expect(second).toBe(first);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      const env = sendEmailMock.mock.calls[0]![0];
+      expect(env.to).toEqual(['jane@example.com', 'ops@example.com']);
+      expect(env.purpose).toBe('agreement.sent');
+      expect(env.partnerId).toBe(PARTNER);
+      expect(env.replyTo).toBe('billing@example.com');
+      expect(env.subject).toContain('BAA 2027');
+      expect(env.html).toContain(res.link.replace(/&/g, '&amp;'));
+      expect(env.html).toContain('Please sign by Friday');
+      expect(env.text).toContain('The Best MSP team');
+    });
+
+    it('a transport failure → { emailed: false, emailReason: send_failed }, never rejects', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      sendEmailMock.mockRejectedValue(new Error('smtp down'));
+      const res = await sendOk();
+      await expect(res.deliverEmail()).resolves.toEqual({ emailed: false, emailReason: 'send_failed' });
+      err.mockRestore();
+    });
+
+    it('no email service → { emailed: false, emailReason: no_email_service }', async () => {
+      getEmailServiceMock.mockReturnValue(null);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await sendOk(null);
+      await expect(res.deliverEmail()).resolves.toEqual({ emailed: false, emailReason: 'no_email_service' });
+      warn.mockRestore();
+    });
   });
 
   // Review finding: an organization-scope session cannot read the partners row

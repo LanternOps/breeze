@@ -204,7 +204,7 @@ describe('resolve(): every miss is the SAME 401 (no enumeration)', () => {
         : undefined);
       expect(res.status, `${r.method} ${r.path}`).toBe(401);
     }
-  });
+  }, 30_000); // dynamic import of the whole quotesPublic module graph
 });
 
 describe('resolve(): 410 states carry branding only', () => {

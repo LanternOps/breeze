@@ -1496,7 +1496,8 @@
       "approval_snapshot": "Approval figures",
       "approval_expires": "Approval deadline",
       "approval_status": "Approval status",
-      "merged_into_number": "Merged-into ticket number"
+      "merged_into_number": "Merged-into ticket number",
+      "agreement_name": "Agreement name"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
