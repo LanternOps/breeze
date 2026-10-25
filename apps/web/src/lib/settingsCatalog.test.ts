@@ -11,6 +11,7 @@ vi.mock('../stores/auth', () => ({
 }));
 
 import { SETTINGS_CATALOG, SETTINGS_GROUPS, SIDEBAR_SETTINGS_IDS } from './settingsCatalog';
+import { isNavGateVisible, type NavGateContext } from './navGates';
 import { navSections, topLevelNav } from '../components/layout/Sidebar';
 
 import common from '../locales/en/common.json';
@@ -76,6 +77,7 @@ describe('settings catalogue (#6220)', () => {
       '/settings/ticketing',
       '/settings/users',
       '/integrations',
+      '/settings/ai',
       '/settings',
     ]);
     const more = settingsItems().at(-1)!;
@@ -117,5 +119,44 @@ describe('settings catalogue (#6220)', () => {
       '/settings/roles', '/settings/sso', '/settings/access-reviews', '/settings/enrollment-keys',
       '/settings/custom-fields', '/settings/variables', '/settings/filters',
     ]) expect(hrefs).toContain(h);
+  });
+
+  // W04 (#10135): Settings → AI is a hub page, reached from the sidebar only.
+  it('the Settings → AI hub is a sidebar-only entry gated on ai_sessions:use', () => {
+    expect(SETTINGS_CATALOG.find((e) => e.id === 'ai')).toMatchObject({
+      name: 'AI',
+      labelKey: 'nav.sectionAi',
+      href: '/settings/ai',
+      group: 'ai',
+      sidebarOnly: true,
+      requiredPermission: { resource: 'ai_sessions', action: 'use' },
+    });
+    expect(SIDEBAR_SETTINGS_IDS.indexOf('ai')).toBe(SIDEBAR_SETTINGS_IDS.indexOf('integrations') + 1);
+    // Only the hub is sidebar-only; every real settings screen still gets a card.
+    expect(SETTINGS_CATALOG.filter((e) => e.sidebarOnly).map((e) => e.id)).toEqual(['ai']);
+  });
+
+  it('lists Knowledge sources in the AI group, shown only when the workspace extension is loaded', () => {
+    const entry = SETTINGS_CATALOG.find((e) => e.id === 'knowledge-sources');
+    expect(entry).toMatchObject({
+      name: 'Knowledge sources',
+      labelKey: 'nav.aiKnowledgeSources',
+      href: '/extensions/workspace/sources',
+      group: 'ai',
+      requiresExtension: 'workspace',
+    });
+    const ctx: NavGateContext = {
+      isPlatformAdmin: false,
+      permissions: [{ resource: '*', action: '*' }] as unknown as NavGateContext['permissions'],
+      getScope: () => 'partner',
+      toolSourcesEnabled: true,
+      aiForOfficeEnabled: true,
+      wispEnabled: true,
+      serviceManagementMode: 'native',
+    };
+    expect(isNavGateVisible(entry!, ctx)).toBe(false); // registry not read ⇒ hidden
+    expect(isNavGateVisible(entry!, { ...ctx, loadedExtensions: [] })).toBe(false);
+    expect(isNavGateVisible(entry!, { ...ctx, loadedExtensions: ['other-ext'] })).toBe(false);
+    expect(isNavGateVisible(entry!, { ...ctx, loadedExtensions: ['other-ext', 'workspace'] })).toBe(true);
   });
 });
