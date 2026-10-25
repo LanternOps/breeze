@@ -434,10 +434,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
-      { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      { name: 'operator_plan', description: 'Approve an AI task plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): every other kind asks first; an assessment's
       // request for one becomes the wisp_specialist_request approval card.
-      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an Operator task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
+      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an AI task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
       { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
