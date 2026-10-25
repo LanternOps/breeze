@@ -708,3 +708,16 @@ describe('completion record — identity_onboarding LOADER (R2a Task 13)', () =>
     expect(effects).toContain('### Stage 2 of 2 — provisioning: no approval recorded');
   });
 });
+
+describe('completion record — the onboarding create-stage read projects only noop / verified (R2a review)', () => {
+  it('loadOnboardingStages never selects the whole operation result column (a secret-bearing result is not copied out)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./completionRecord.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('async function loadOnboardingStages(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\nexport async function buildCompletionRecord(', start));
+    expect(body).toContain('aiOperatorOperations');
+    expect(body).not.toMatch(/result:\s*aiOperatorOperations\.result\b/);
+    expect(body).toContain('OPERATION_RESULT_STATE_KEYS');
+  });
+});

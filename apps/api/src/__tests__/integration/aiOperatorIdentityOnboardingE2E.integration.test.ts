@@ -75,6 +75,7 @@ import {
 } from '../../db/schema';
 import { bumpPlanRevision, checkPlanEffectMembershipSystem } from '../../services/aiOperator/planApproval';
 import { createActionIntent } from '../../services/actionIntents/intentService';
+import { TEMP_PASSWORD_ENC_KEY, TEMP_PASSWORD_LEGACY_KEY } from '../../services/actionIntents/resultSecrets';
 import { buildTaskActorAuthContext } from '../../services/actionIntents/actorContext';
 import { moveTicketOrg } from '../../services/ticketService';
 import { createOrganization } from './db-utils';
@@ -211,12 +212,18 @@ describe('identity_onboarding end to end (R2a)', () => {
     const [createChild] = (await childIntents(a)).filter((i) => i.actionName === 'm365_create_user');
     expect(createChild).toMatchObject({ decidedVia: 'plan_approval', requestedByUserId: t.approverId, status: 'completed' });
     expect(world().m365.createCalls).toBe(1);
-    // The seal, at the row level: ciphertext only, on the intent AND the operation.
-    expect((createChild!.result as Record<string, unknown>).temporaryPasswordEnc).toMatch(/^enc:v3:/);
+    // The seal, at the row level: ciphertext ONLY on the intent, where the
+    // one-time reveal and the expiry reaper burn it. The operation row keeps
+    // what resolve_accounts reads (success, action, userId, UPN) and carries
+    // NO credential key at all, sealed or plaintext.
+    expect((createChild!.result as Record<string, unknown>)[TEMP_PASSWORD_ENC_KEY]).toMatch(/^enc:v3:/);
     expect(JSON.stringify(createChild!.result)).not.toContain(FAKE_PASSWORD);
     expect(JSON.stringify(createChild!.arguments)).not.toContain(FAKE_PASSWORD);
-    expect(JSON.stringify(createOps[0]!.result)).not.toContain(FAKE_PASSWORD);
-    expect((createOps[0]!.result as Record<string, unknown>).temporaryPasswordEnc).toMatch(/^enc:v3:/);
+    const createOpResult = createOps[0]!.result as Record<string, unknown>;
+    expect(JSON.stringify(createOpResult)).not.toContain(FAKE_PASSWORD);
+    expect(Object.hasOwn(createOpResult, TEMP_PASSWORD_ENC_KEY), 'no sealed credential on the operation row').toBe(false);
+    expect(Object.hasOwn(createOpResult, TEMP_PASSWORD_LEGACY_KEY), 'no plaintext credential on the operation row').toBe(false);
+    expect(createOpResult).toMatchObject({ success: true, action: 'm365.user.create', userId: CREATED_M365_ID, userPrincipalName: UPN });
     expect(await targetAccounts(a), 'still nothing frozen before resolve_accounts').toHaveLength(0);
 
     // ── manual_create_google ─────────────────────────────────────────────
@@ -318,6 +325,8 @@ describe('identity_onboarding end to end (R2a)', () => {
     expect(record).toContain(`approved by ${t.approverName}`);
     expect(record).toContain(`(id ${CREATED_M365_ID})`);
     expect(record).toContain(`(id ${CREATED_GOOGLE_ID})`);
+    // The create stage's line comes from the projected noop / verified keys only.
+    expect(record).toMatch(/m365_create_user — succeeded, verified, approved by/);
 
     // No create_approval / plan_approval step rows: approval lives inside the effect steps.
     expect(await readSteps(a, 'create_approval')).toHaveLength(0);

@@ -466,6 +466,14 @@ export async function loadCompletionData(input: CompletionRecordInput): Promise<
   }));
 }
 
+/**
+ * Only the result keys `toRecordEffect` reads, built in SQL so the rest of the
+ * body (a secret-bearing result's keys included) is never read out of the row.
+ */
+const OPERATION_RESULT_STATE_KEYS = sql<Record<string, unknown>>`jsonb_strip_nulls(jsonb_build_object(
+  'noop', ${aiOperatorOperations.result} -> 'noop',
+  'verified', ${aiOperatorOperations.result} -> 'verified'))`;
+
 /** An approval row's effect, with its operation's STATE — never its result body. */
 function toRecordEffect(
   e: { ordinal: number; provider: string; toolName: string; rendering: string },
@@ -546,10 +554,10 @@ async function loadOnboardingStages(orgId: string, taskId: string, revision: num
     const keys = effectRows.map((e) => planEffectOperationKey({
       stepKey: create.stepKey, planRevision: create.planRevision, toolName: e.toolName, targetId: e.targetId, ordinal: e.ordinal,
     }));
-    // STATE only: `result` is read for its `noop` / `verified` keys, as the
-    // shared read does, and no result body is ever rendered.
+    // STATE only: just the `noop` / `verified` keys are projected (never the
+    // whole body), and no result body is ever rendered.
     const ops = keys.length === 0 ? [] : await db
-      .select({ operationKey: aiOperatorOperations.operationKey, resultState: aiOperatorOperations.resultState, result: aiOperatorOperations.result })
+      .select({ operationKey: aiOperatorOperations.operationKey, resultState: aiOperatorOperations.resultState, result: OPERATION_RESULT_STATE_KEYS })
       .from(aiOperatorOperations)
       .where(and(eq(aiOperatorOperations.orgId, orgId), eq(aiOperatorOperations.taskId, taskId), inArray(aiOperatorOperations.operationKey, keys)));
     const opByKey = new Map(ops.map((o) => [o.operationKey, o]));
