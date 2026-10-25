@@ -210,11 +210,11 @@ describe('mfaStepUpSchema operation field', () => {
     expect(parsed.resource).toEqual(resource);
   });
 
-  // #8729: the force-reboot binding is a bare { deviceId }. It is strict and
-  // last in the union, so a richer device binding never collapses onto it.
   // #9380 review: pin `.strict()` on the force-reboot binding directly. The
-  // union-order case below would still pass with the order flipped, because
-  // strictness alone keeps a richer device binding from matching it.
+  // union-order test below cannot do it: that one passes if EITHER the member
+  // order or the strictness protects the richer bindings, so it stays green
+  // when only `.strict()` is removed. Both tests are load-bearing — this one
+  // for strictness, the one below for position — so neither is redundant.
   it('rejects a force-reboot binding that carries any key besides deviceId', () => {
     expect(forceRebootStepUpResource.safeParse({ deviceId: '00000000-0000-4000-8000-000000000010' }).success).toBe(true);
     expect(forceRebootStepUpResource.safeParse({
@@ -223,6 +223,8 @@ describe('mfaStepUpSchema operation field', () => {
     }).success).toBe(false);
   });
 
+  // #8729: the force-reboot binding is a bare { deviceId }. It is strict and
+  // last in the union, so a richer device binding never collapses onto it.
   it('keeps a move-org resource whole now that a { deviceId }-only binding exists', () => {
     const resource = {
       deviceId: '00000000-0000-4000-8000-000000000010',

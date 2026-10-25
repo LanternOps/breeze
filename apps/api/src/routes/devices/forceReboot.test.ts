@@ -223,6 +223,13 @@ describe('POST /devices/:id/force-reboot (#8729)', () => {
       body: JSON.stringify({ stepUpGrant: GRANT }),
     });
     expect(res.status).toBe(201);
+    // The premise of this test is that the RAW path segment goes to the lookup
+    // and the canonical id comes back out: `getDeviceWithOrgCheck` is mocked
+    // here, so assert it was handed the uppercase spelling rather than a
+    // pre-normalized one. That the lookup then resolves it rests on
+    // `PG_UUID_REGEX` being case-insensitive (utils/uuid.ts) and Postgres's
+    // uuid cast; no test here exercises an uppercase lookup end to end.
+    expect(getDeviceWithOrgCheck).toHaveBeenCalledWith(MIXED.toUpperCase(), expect.anything());
     expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, binding);
     expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, binding);
     // Everything downstream uses the canonical id too.
