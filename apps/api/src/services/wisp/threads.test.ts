@@ -26,7 +26,12 @@ const h = vi.hoisted(() => ({
   attachmentSeedLines: vi.fn(),
   listLinks: vi.fn(),
   captureException: vi.fn(),
-  execute: vi.fn(async (q: unknown) => { h.events.push('guc:' + String(sqlOf(q).params[0])); return []; }),
+  execute: vi.fn(async (q: unknown) => {
+    const { text, params } = sqlOf(q);
+    if (/current_setting/.test(text)) { h.events.push('read-scope'); return [{ scope: h.state.ambientContext?.scope ?? null }]; }
+    h.events.push('guc:' + String(params[0]));
+    return [];
+  }),
   events: [] as string[],
 }));
 
@@ -83,7 +88,7 @@ vi.mock('../../db', async () => {
   }));
   return {
     db: { select, insert, update, execute: h.execute },
-    withDbTransaction: vi.fn((fn: () => unknown) => fn()),
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => { h.events.push('savepoint'); try { return await fn(); } catch (e) { h.events.push('rollback'); throw e; } }),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
       h.calls.push('system-wrapper');
@@ -236,17 +241,17 @@ describe('attachSession', () => {
 
     expect(h.calls).not.toContain('system');
     expect(h.calls).not.toContain('system-wrapper');
-    expect(sqlOf(h.execute.mock.calls[0][0]).text).toMatch(/set_config\('breeze\.scope', \$1, true\)/);
+    expect(sqlOf(h.execute.mock.calls[1][0]).text).toMatch(/set_config\('breeze\.scope', \$1, true\)/);
     // The elevation wraps the writes: both statements ran between the two set_config calls.
-    expect(h.events).toEqual(['guc:system', 'insert:wisp_thread_sessions', 'update:wisp_threads', 'guc:organization']);
+    expect(h.events).toEqual(['savepoint', 'read-scope', 'guc:system', 'insert:wisp_thread_sessions', 'update:wisp_threads', 'guc:organization']);
     const ins = h.inserts.find((i) => i.table === 'wisp_thread_sessions')!;
     expect(ins.values).toEqual({ threadId: THREAD, sessionId: SESSION, partnerId: PARTNER, orgId: ORG_A });
   });
 
-  it('restores the caller\'s scope even when the attach throws', async () => {
+  it('on a throw the savepoint rollback undoes the elevation; no restore statement runs on an aborted transaction', async () => {
     h.state.ambientContext = { scope: 'partner' };
     await expect(attachSession(THREAD, SESSION)).rejects.toThrow(/thread .*not found/i);
-    expect(h.events).toEqual(['guc:system', 'guc:partner']);
+    expect(h.events).toEqual(['savepoint', 'read-scope', 'guc:system', 'rollback']);
   });
 
   it('joins an ambient SYSTEM context without touching the GUC', async () => {
@@ -255,6 +260,7 @@ describe('attachSession', () => {
     h.rows.ai_sessions = [{ orgId: ORG_A }];
     await attachSession(THREAD, SESSION);
     expect(h.execute).not.toHaveBeenCalled();
+    expect(h.events).not.toContain('savepoint');
     expect(h.calls).not.toContain('system-wrapper');
   });
 

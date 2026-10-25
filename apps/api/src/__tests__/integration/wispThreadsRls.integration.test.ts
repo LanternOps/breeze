@@ -399,6 +399,22 @@ describe('attachSession on the caller\'s connection (W04 Review Focus 4 / #10146
     });
   });
 
+  it('a failed SQL statement inside the attach keeps its own SQLSTATE, rolls the elevation back and leaves the outer transaction usable', async () => {
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    // A session from the OTHER partner's org: wisp_thread_sessions_org_fk (23503) fires inside the elevated savepoint.
+    const sessionB = await insertSession(f.orgB1);
+    await withDbAccessContext(partnerContext(f.partnerA, [f.orgA1, f.orgA2]), async () => {
+      await expectSqlState(() => attachSession(thread.id, sessionB), '23503', 'wisp_thread_sessions_org_fk');
+      // Savepoint rollback undid the elevation and the outer transaction is not aborted.
+      expect(await currentScope()).toBe('partner');
+      const own = await db.select({ id: wispThreads.id }).from(wispThreads).where(eq(wispThreads.id, thread.id));
+      expect(own).toHaveLength(1);
+      const links = await db.select().from(wispThreadSessions).where(eq(wispThreadSessions.threadId, thread.id));
+      expect(links).toHaveLength(0);
+    });
+  });
+
   it('restores the caller\'s scope when the attach throws (unknown thread)', async () => {
     const f = await seed();
     await withDbAccessContext(orgContext(f.orgA1, f.partnerA), async () => {

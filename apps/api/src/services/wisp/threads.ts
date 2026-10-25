@@ -168,23 +168,34 @@ export async function getOrCreateThread(grantId: string): Promise<WispThread> {
  * may be opened from an ORGANIZATION-scoped token (W04 Review Focus 4), whose
  * `accessiblePartnerIds` is empty, so the partner-axis policies on
  * `wisp_threads` / `wisp_thread_sessions` would hide the thread and refuse the
- * insert. So the attach flips the transaction-local `breeze.scope` GUC to
- * `system` for exactly its own statements and restores the caller's scope
- * after — the ids are already authorised (`validateWispGrantForSession` matched
- * the grant's partner to the session org's partner under a system read), and
- * the reads here are by primary key only.
+ * insert.
+ *
+ * So the attach flips the transaction-local `breeze.scope` GUC to `system`
+ * inside a driver-owned savepoint (`withDbTransaction`): on success the
+ * previous value (read back from Postgres, not assumed from the JS context) is
+ * restored; on ANY throw the savepoint rollback undoes the elevation and the
+ * original error propagates untouched (a restore after a failed statement
+ * would itself fail with 25P02 and mask it). Contract — private, non-nesting,
+ * and the callback must be the only user of the transaction connection while
+ * elevated (no concurrent sibling queries, no context-aware services):
+ * `getCurrentDbAccessContext()` keeps reporting the caller's narrower scope
+ * for the duration. The ids are already authorised
+ * (`validateWispGrantForSession` matched the grant's partner to the session
+ * org's partner under a system read) and the reads here are by primary key.
  */
 async function asSystemOnCallerConnection<T>(fn: () => Promise<T>): Promise<T> {
   const ctx = getCurrentDbAccessContext();
   if (!ctx) return withSystemDbAccessContext(fn, 'wisp.threads.attachSession');
   if (ctx.scope === 'system') return fn();
-  const elevated = 'system';
-  await db.execute(sql`select set_config('breeze.scope', ${elevated}, true)`);
-  try {
-    return await fn();
-  } finally {
-    await db.execute(sql`select set_config('breeze.scope', ${ctx.scope}, true)`);
-  }
+  return withDbTransaction(async () => {
+    const rows = (await db.execute(sql`select current_setting('breeze.scope', true) as scope`)) as unknown as Array<{ scope: string | null }>;
+    const previous = rows[0]?.scope ?? '';
+    const elevated = 'system';
+    await db.execute(sql`select set_config('breeze.scope', ${elevated}, true)`);
+    const result = await fn();
+    await db.execute(sql`select set_config('breeze.scope', ${previous}, true)`);
+    return result;
+  });
 }
 
 /**
