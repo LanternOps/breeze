@@ -111,5 +111,5 @@ Use synthetic data only. No customer names, hostnames or addresses in the eviden
 | (b) B1 | TODO |
 | (c) C1 | TODO |
 
-The orchestrator closes #9840 only when the §8 rows — A1–A3 (a), B1 (b), C1 (c)
+The orchestrator runs `close_feature` for feature #9840 only when the §8 rows — A1–A3 (a), B1 (b), C1 (c)
 — are PASS, or when Todd decides to close it with them open.

@@ -94,7 +94,21 @@ function liveSse() {
 }
 type Live = ReturnType<typeof liveSse>;
 /** A frame on a stream whose reader may already be cancelled (then it is simply dropped). */
-const tryPush = (live: Live, s: string) => { try { live.push(s); } catch { /* reader cancelled */ } };
+/**
+ * Push a frame onto a stream whose reader the code under test should already
+ * have cancelled. Returns false when the stream refused it (cancelled), so the
+ * caller can assert that the frame could not be delivered; anything other than
+ * the enqueue-after-cancel TypeError is rethrown.
+ */
+const tryPush = (live: Live, s: string): boolean => {
+  try {
+    live.push(s);
+    return true;
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    return false;
+  }
+};
 const sse = (...frames: string[]) => {
   const s = liveSse();
   for (const f of frames) s.push(f);
@@ -232,6 +246,10 @@ describe('RT1 panel → workspace mid-turn, approval pending, approved from the 
     expect(useAiStore.getState()).toMatchObject({ sessionId: S, isStreaming: true });
     expect(useAiStore.getState().pendingApproval?.approvalExpiresAt).toBe(DEADLINE);
     expect(assistantText(useAiStore.getState().messages)).toBe('Hel');
+    // A live frame the snapshot already covers (seq <= lastSeq) is not applied twice.
+    panelLive.push(frame({ type: 'content_delta', delta: 'Hel', seq: 3 }));
+    await settle();
+    expect(assistantText(useAiStore.getState().messages)).toBe('Hel');
     useAiStore.getState().setComposerDraft('d');
 
     // What the workspace looked like at the instant the panel let go.
@@ -269,6 +287,8 @@ describe('RT1 panel → workspace mid-turn, approval pending, approved from the 
     expect(t!.composerDraft).toBe('d');
     expect(assistantText(t!.messages)).toBe('Hel'); // the replay was folded, not re-sent
     expect(t!.deviceId).toBe('dev-1'); // the device binding came along
+    // The panel's reader was already cancelled inside the release itself.
+    expect(atRelease!.panelReaderCancelled).toBe(true);
 
     // The panel's reader was cancelled as part of the release, not later.
     expect(panelLive.cancel).toHaveBeenCalled();
@@ -281,12 +301,9 @@ describe('RT1 panel → workspace mid-turn, approval pending, approved from the 
     expect(streamCalls(S)).toHaveLength(2);
     expect(sessionGets(S)).toHaveLength(2);
 
-    // A frame still in flight on the panel's old stream writes nowhere.
+    // The panel's old stream can no longer deliver anything (its reader is cancelled).
     const tabBefore = tabFor(S)!;
-    tryPush(panelLive, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }));
-    await settle();
-    expect(useAiStore.getState().messages).toEqual([]);
-    expect(tabFor(S)).toBe(tabBefore);
+    expect(tryPush(panelLive, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }))).toBe(false);
 
     // The tab composer does not send into a running turn.
     await useWorkspaceStore.getState().sendMessage(tabBefore.id, 'too early');
@@ -351,12 +368,8 @@ describe('RT2 workspace → panel mid-turn (the reverse of leg (a))', () => {
     expect(useWorkspaceStore.getState().tabs).toEqual([]);
     expect(tabLive.cancel).toHaveBeenCalled();
 
-    // A frame still in flight on the tab's old stream writes nowhere.
-    const panelMessages = useAiStore.getState().messages;
-    tryPush(tabLive, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }));
-    await settle();
-    expect(useAiStore.getState().messages).toBe(panelMessages);
-    expect(useWorkspaceStore.getState().tabs).toEqual([]);
+    // The tab's old stream can no longer deliver anything (its reader is cancelled).
+    expect(tryPush(tabLive, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }))).toBe(false);
 
     // Decided elsewhere (e.g. the Approvals queue): the tool's result lands on
     // the panel's attach and withdraws the card; then the reply finishes.
@@ -400,11 +413,9 @@ describe('RT3 leave /workspace mid-turn and return (plan T17 Step 3 (c))', () =>
     useWorkspaceStore.getState().cleanupAllStreams();
     expect(first[S]!.cancel).toHaveBeenCalled();
     expect(first[S2]!.cancel).toHaveBeenCalled();
-    const before = useWorkspaceStore.getState().tabs;
-    tryPush(first[S]!, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }));
-    tryPush(first[S2]!, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }));
-    await settle();
-    expect(useWorkspaceStore.getState().tabs).toBe(before);
+    // Neither old stream can deliver anything any more.
+    expect(tryPush(first[S]!, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }))).toBe(false);
+    expect(tryPush(first[S2]!, frame({ type: 'content_delta', delta: 'STALE', seq: 4 }))).toBe(false);
 
     // Returning: the turn ran on while we were away (lastSeq advanced).
     const advanced = () => RUNNING({
@@ -552,6 +563,7 @@ describe('RT6 the hand-off never completes mid-turn (Review Focus 2)', () => {
     const moved = moveToAssistant(S, { draft: 'd' });
     await vi.waitFor(() => expect(navigateMock).toHaveBeenCalled());
     // The workspace never mounts: no openSession, no completeHandoff.
+    expect(useAiStore.getState()).toMatchObject({ sessionId: S, isStreaming: true });
     await vi.advanceTimersByTimeAsync(HANDOFF_TIMEOUT_MS + 1);
     await expect(moved).resolves.toBe('aborted');
     vi.useRealTimers();

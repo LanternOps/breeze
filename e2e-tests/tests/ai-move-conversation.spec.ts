@@ -92,7 +92,11 @@ function seedSessions(): Seed {
 /** `path` is the pathname only: fetchWithAuth appends `?orgId=<current org>`. */
 type Req = { method: string; path: string };
 
-/** Every /api/v1/ai/sessions request the page makes, in order. */
+/**
+ * Every /api/v1/ai/sessions request the page makes, in order. The "no DELETE"
+ * and "zero requests" assertions are scoped to this prefix: the session routes
+ * are the only ones a move, an open or a release could call.
+ */
 function recordSessionRequests(page: Page): Req[] {
   const seen: Req[] = [];
   page.on('request', (r) => {
@@ -147,6 +151,9 @@ test.describe('AI chat: move conversations between the side panel and the AI Ass
     const ws = new AiWorkspacePage(page);
 
     await chat.open();
+    // The clean start took (every later leg also asserts its exact tab count).
+    expect(await panelSessionId(page)).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem('breeze-workspace'))).toBeNull();
     await chat.pickFromHistory(seed.A);
     await expect(chat.openInAssistant()).toBeVisible();
     await expect.poll(() => streamsOf(reqs, seed.A)).toBe(1);
@@ -245,8 +252,12 @@ test.describe('AI chat: move conversations between the side panel and the AI Ass
     const before = reqs.length;
     await chat.conversationRow(seed.C).click();
     await expect(ws.replaceConfirm()).toBeVisible();
+    // Dialog handles Escape on its panel and moves focus inside on the next
+    // animation frame; put focus inside first so the key cannot land on <body>.
+    await ws.replaceConfirm().focus();
     await page.keyboard.press('Escape');
     await expect(ws.replaceConfirm()).toHaveCount(0);
+    await page.waitForTimeout(500);
     await expect.poll(() => panelSessionId(page)).toBe(seed.A);
     await expect(ws.tabs()).toHaveCount(1);
     expect(reqs.slice(before)).toEqual([]);

@@ -51,14 +51,13 @@ export class AiChatPage extends BasePage {
     await this.sidebar().waitFor({ state: 'visible' });
     await expect(this.sidebar()).not.toHaveAttribute('inert');
     const viewport = this.page.viewportSize();
-    if (viewport) {
-      await expect
-        .poll(async () => {
-          const box = await this.sidebar().boundingBox();
-          return box ? Math.round(box.x + box.width) : null;
-        })
-        .toBe(viewport.width);
-    }
+    expect(viewport, 'openPanel needs a fixed viewport to know when the slide-in is done').not.toBeNull();
+    await expect
+      .poll(async () => {
+        const box = await this.sidebar().boundingBox();
+        return box ? Math.round(box.x + box.width) : null;
+      })
+      .toBe(viewport!.width);
   }
 
   /** Open History and pick a row. */

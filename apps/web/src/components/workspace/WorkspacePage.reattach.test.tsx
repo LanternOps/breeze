@@ -56,7 +56,21 @@ function liveSse() {
   };
 }
 type Live = ReturnType<typeof liveSse>;
-const tryPush = (live: Live, s: string) => { try { live.push(s); } catch { /* reader cancelled */ } };
+/**
+ * Push a frame onto a stream whose reader the code under test should already
+ * have cancelled. Returns false when the stream refused it (cancelled), so the
+ * caller can assert that the frame could not be delivered; anything other than
+ * the enqueue-after-cancel TypeError is rethrown.
+ */
+const tryPush = (live: Live, s: string): boolean => {
+  try {
+    live.push(s);
+    return true;
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    return false;
+  }
+};
 const RUNNING = {
   type: 'attach_state', turn: 'running', turnId: 't1', lastSeq: 2, turnUserMessageId: 'u1', partial: false,
   replay: [{ type: 'message_start', messageId: 'am1', seq: 1 }, { type: 'content_delta', delta: 'Hel', seq: 2 }],
@@ -74,7 +88,6 @@ function on(url: string, ...handlers: Handler[]) {
 }
 const callsTo = (url: string) => fetchMock.mock.calls.filter(([u]) => String(u) === url);
 const methods = () => fetchMock.mock.calls.map(([, init]) => (init as RequestInit | undefined)?.method ?? 'GET');
-const settle = () => new Promise((r) => setTimeout(r, 30));
 
 function tab(over: Partial<TabState>): TabState {
   return {
@@ -134,11 +147,9 @@ describe('leaving /workspace mid-turn and returning', () => {
     view.unmount();
     expect(first[A]!.cancel).toHaveBeenCalled();
     expect(first[B]!.cancel).toHaveBeenCalled();
-    const tabsWhileAway = useWorkspaceStore.getState().tabs;
-    tryPush(first[A]!, frame({ type: 'content_delta', delta: 'STALE', seq: 3 }));
-    tryPush(first[B]!, frame({ type: 'content_delta', delta: 'STALE', seq: 3 }));
-    await settle();
-    expect(useWorkspaceStore.getState().tabs).toBe(tabsWhileAway);
+    // Neither old stream can deliver anything any more.
+    expect(tryPush(first[A]!, frame({ type: 'content_delta', delta: 'STALE', seq: 3 }))).toBe(false);
+    expect(tryPush(first[B]!, frame({ type: 'content_delta', delta: 'STALE', seq: 3 }))).toBe(false);
 
     // Come back.
     render(<WorkspacePage />);
