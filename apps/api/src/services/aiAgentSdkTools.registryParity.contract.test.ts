@@ -59,7 +59,8 @@ function humanOnlyProblems(
  * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
  * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
  * (14 of them after their route-permission parity fixes landed), leaving 45.
- * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38.
+ * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38. W04 (#6758)
+ * wired the 19 security, incident and device-operation tools, leaving W03's 19.
  * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
@@ -68,38 +69,19 @@ function humanOnlyProblems(
  * list.
  */
 const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'acknowledge_network_device',
-  'assign_security_training',
-  'collect_evidence',
   'configure_backup_sla',
-  'configure_network_baseline',
   'configure_vault',
-  'create_incident',
-  'create_remote_session',
-  'execute_containment',
   'execute_dr_plan',
   'instant_boot_vm',
   'manage_backup_profiles',
-  'manage_browser_policy',
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
-  'manage_peripheral_policy',
-  'manage_processes',
-  'manage_scheduled_tasks',
-  'manage_software_policy',
-  'registry_operations',
-  'remediate_sensitive_data',
-  'remediate_software_violation',
-  'request_elevation',
   'restore_as_vm',
   'restore_c2c_items',
   'restore_hyperv_vm',
   'restore_mssql_database',
   'restore_snapshot',
-  'revoke_elevation',
-  'trigger_agent_restart',
-  'trigger_agent_upgrade',
   'trigger_backup',
   'trigger_c2c_sync',
   'trigger_hyperv_backup',
@@ -377,6 +359,43 @@ describe('W01 read-only wiring (#6755)', () => {
   });
 });
 
+
+/** Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+ * Pinned so a later wave cannot silently un-wire one. */
+const W04_WRITE_TOOLS = [
+  'execute_containment', 'create_incident', 'collect_evidence', 'request_elevation', 'revoke_elevation',
+  'create_remote_session', 'manage_processes', 'manage_scheduled_tasks', 'registry_operations',
+  'trigger_agent_restart', 'trigger_agent_upgrade', 'manage_software_policy', 'manage_browser_policy',
+  'manage_peripheral_policy', 'remediate_sensitive_data', 'remediate_software_violation',
+  'assign_security_training', 'configure_network_baseline', 'acknowledge_network_device',
+] as const;
+
+describe('W04 write wiring (#6758)', () => {
+  it.each(W04_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    // The SDK strips keys absent from its shape, so a registry-advertised key
+    // missing here would vanish before validateToolInput ever saw it (the
+    // manage_peripheral_policy `priority` drift, W04-D16).
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('configure_network_baseline is registry tier 3 (W04-D7: arms recurring scans)', () => {
+    expect(TOOL_TIERS.configure_network_baseline).toBe(3);
+  });
+
+  it('none of the W04 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W04_WRITE_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
 
 /** Spec 2026-09-23 W02 (#6756): PSA and billing writes. Pinned so a later
  * wave cannot silently un-wire one. */
