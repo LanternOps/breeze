@@ -94,7 +94,7 @@ describe('workspace-sources-page', () => {
     const element = await mountPage(context as Record<string, unknown>);
     expect(fetchMock).not.toHaveBeenCalled();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('invalid host context');
+    expect(alert?.textContent).toContain('Wisp received an invalid host context');
   });
 
   it('renders source rows as inert text, never as markup', async () => {
@@ -118,6 +118,8 @@ describe('workspace-sources-page', () => {
     const element = await mountPage();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('not authorized');
+    expect(alert?.textContent).toContain('Wisp sources');
+    expect(alert?.textContent).not.toMatch(/workspace/i);
   });
 
   it('offers retry after a server error, and retry refetches', async () => {
@@ -283,5 +285,16 @@ describe('workspace-sources-page', () => {
     expect(capturedSignal!.aborted).toBe(false);
     element.remove();
     expect(capturedSignal!.aborted).toBe(true);
+  });
+});
+
+describe('workspace-sources-page copy', () => {
+  it('renders the Wisp Sources heading', async () => {
+    defineWorkspaceElements();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ sources: [] })));
+    const element = await mountPage();
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).toBe('Wisp Sources');
+    expect(shadowText(element)).not.toMatch(/workspace/i);
+    vi.unstubAllGlobals();
   });
 });

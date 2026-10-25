@@ -367,7 +367,7 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
     } catch {
       this.#context = null;
       // Malformed host context: render the failure, make NO network call.
-      this.renderError('Workspace received an invalid host context.');
+      this.renderError('Wisp received an invalid host context.');
       return;
     }
     this.#context = parsed;
@@ -475,7 +475,7 @@ export class WorkspaceDashboard extends WorkspaceBaseElement {
       this.#paint();
     } catch (error) {
       if (this.#isAbort(error)) return;
-      this.renderError('The Workspace dashboard could not be loaded.', () => {
+      this.renderError('The Wisp dashboard could not be loaded.', () => {
         this.track(this.#refresh(config));
       });
     }

@@ -15,6 +15,8 @@
   "operatorTaskDetail": {
     "loading": "Cargando tarea...",
     "agent": "Atendida por {{name}}",
+    "requestedBy": "Solicitado por",
+    "wispFor": "Wisp para {{name}}",
     "target": {
       "label": "Objetivo",
       "none": "Sin dispositivo objetivo"

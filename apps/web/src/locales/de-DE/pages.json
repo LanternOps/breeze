@@ -179,6 +179,7 @@
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
+    "adminWisp": "Wisp",
     "billingAutopay": "Automatische Zahlungen",
     "endpointMessages": "Endpunkt-Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",

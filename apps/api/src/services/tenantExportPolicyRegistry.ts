@@ -1106,6 +1106,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // Wisp W04 (#9910). Plain identifiers + timestamps; `label` is a bounded
   // varchar (the attachment bytes live in ai_run_artifacts, exported above).
   "wisp_thread_attachments": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","artifact_id","added_by_user_id","label","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Wisp W08a (#9914). Plain identifiers + timestamps; `label` is a bounded
+  // text display cache; entity_id is a soft reference. No json columns.
+  // Partner-level links (org_id NULL) never enter an org export.
+  "wisp_thread_links": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","entity_kind","entity_id","label","added_by_user_id","added_by_grant_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "wisp_thread_sessions": tablePolicy("org_id", {"included":["thread_id","session_id","partner_id","org_id","attached_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "wisp_watches": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","owner_user_id","kind","cadence_minutes","status","stopped_reason","last_ran_at","next_due_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["params"]}),
   // #6263 W03a. published_bundle is the served rule bundle (bytea); meta is open jsonb.

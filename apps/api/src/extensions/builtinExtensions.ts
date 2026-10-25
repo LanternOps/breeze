@@ -134,7 +134,12 @@ const BUILTIN_MIGRATION_ROLLOUT = 'replace' as const;
  * schema.
  */
 export function isBuiltinEnabled(builtin: BuiltinExtension): boolean {
-  return process.env[builtin.enableEnvVar] === 'true';
+  return builtinEnableFlags(builtin).some((name) => process.env[name] === 'true');
+}
+
+/** The canonical enable flag first, then any {@link BuiltinExtension.enableEnvAliases}. */
+export function builtinEnableFlags(builtin: BuiltinExtension): string[] {
+  return [builtin.enableEnvVar, ...(builtin.enableEnvAliases ?? [])];
 }
 
 /**
@@ -649,7 +654,10 @@ async function skipDisabledBuiltin(
   builtin: BuiltinExtension,
   ports: BuiltinPorts,
 ): Promise<ExtensionTenancyDeclaration | undefined> {
-  const raw = process.env[builtin.enableEnvVar];
+  // The first flag that is SET (canonical, then aliases), so a mistyped alias
+  // value is reported as "configured wrong" rather than "never configured".
+  const setFlag = builtinEnableFlags(builtin).find((name) => process.env[name] !== undefined);
+  const raw = setFlag === undefined ? undefined : process.env[setFlag];
   console.warn(
     `[extensions] ${JSON.stringify({
       event: 'builtin_extension_disabled',
@@ -657,9 +665,10 @@ async function skipDisabledBuiltin(
       reason:
         raw === undefined
           ? 'built-in extensions are opt-in per deployment and this one is not enabled'
-          : `${builtin.enableEnvVar} is SET but is not the exact string "true"; the flag is ` +
+          : `${setFlag} is SET but is not the exact string "true"; the flag is ` +
             'value-strict (no "1"/"TRUE"/"yes"), so this built-in stays OFF',
       enableFlag: builtin.enableEnvVar,
+      ...(builtin.enableEnvAliases?.length ? { enableFlagAliases: builtin.enableEnvAliases } : {}),
       // Distinguishes "never configured" from "configured wrong" in the log
       // itself, so a typo'd flag does not read identically to an absent one.
       observedValue: raw === undefined ? null : raw,

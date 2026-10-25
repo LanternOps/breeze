@@ -1356,6 +1356,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   snooze_concern: { resource: 'ai_sessions', action: 'use' },
   resolve_concern: { resource: 'ai_sessions', action: 'use' },
   create_watch: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W08 thread links (services/wisp/linkTools.ts): the chat-use
+  // permission, same as the /wisp/thread/:id/links routes. The object's own
+  // read permission is checked per object by resolveEntityRef.
+  link_entity: { resource: 'ai_sessions', action: 'use' },
+  list_links: { resource: 'ai_sessions', action: 'use' },
   // Wisp W07 specialists (services/aiToolsWisp.ts), w00 A1: the chat-use
   // permission. The kind's own permissions (SPECIALIST_KIND_POLICY) are
   // ceiling terms the coordinator checks against the grantor AND the acting

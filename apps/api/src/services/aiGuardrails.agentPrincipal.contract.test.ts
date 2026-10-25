@@ -298,6 +298,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
+  'list_links', // Wisp W08: Tier 1 thread-link read; refuses without auth.wispGrant, every link re-resolved
   // W01 (#6755)
   'list_monitors',
   'list_network_assets', // A-W06 Tier-1 read

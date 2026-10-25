@@ -683,7 +683,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }));
   });
 
   it('a pinned session that cannot be resolved (WispSessionUnavailableError) refuses the turn with 409, no seed', async () => {

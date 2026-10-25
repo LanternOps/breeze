@@ -258,9 +258,14 @@ export function agentBinariesStatus(env: EnvSnapshot): StatusResult {
   return { status: 'enabled' };
 }
 
-/** extensions/builtinExtensions.ts:137 — strict `=== 'true'`, not the envFlag vocabulary. */
+/**
+ * extensions/builtinExtensions.ts `isBuiltinEnabled` — strict `=== 'true'`, not the envFlag
+ * vocabulary; the Wisp-named alias (builtinRegistry.ts `enableEnvAliases`) counts the same.
+ */
 export function workspaceExtensionStatus(env: EnvSnapshot): StatusResult {
-  return env.BREEZE_WORKSPACE_ENABLED === 'true' ? { status: 'enabled' } : { status: 'disabled' };
+  return env.BREEZE_WORKSPACE_ENABLED === 'true' || env.BREEZE_WISP_CONNECTOR_ENABLED === 'true'
+    ? { status: 'enabled' }
+    : { status: 'disabled' };
 }
 
 /** middleware/security.ts:166-167 — FORCE_HTTPS is 'true' or '1'; the redirect needs PUBLIC_API_URL. */

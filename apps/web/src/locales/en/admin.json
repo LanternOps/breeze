@@ -561,6 +561,61 @@
         "mfaRequired": "Flipping the AI kill switch requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Per-partner overview of Wisp grants and today's activity. Read-only.",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "loading": "Loading...",
+      "empty": "No partners have Wisp grants yet",
+      "disabled": "Wisp is not enabled on this deployment (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Failed to load the Wisp overview"
+      },
+      "platformAdmin": {
+        "title": "Platform admin only",
+        "description": "The Wisp overview is available to platform administrators."
+      },
+      "table": {
+        "partner": "Partner",
+        "plan": "Plan",
+        "activeGrants": "Active grants",
+        "pausedGrants": "Paused grants",
+        "assessmentsToday": "Assessments today",
+        "specialistRequestsToday": "Specialist requests today",
+        "openConcerns": "Open concerns",
+        "budgetExhaustedToday": "Budget-exhausted grants today"
+      },
+      "grants": {
+        "loading": "Loading grants...",
+        "error": "Failed to load grants",
+        "empty": "This partner has no grants",
+        "grantor": "Grantor",
+        "scope": "Scope",
+        "status": "Status",
+        "pausedReason": "Paused reason",
+        "expires": "Expires",
+        "budget": "Budget (cents/day)",
+        "tickMinutes": "Tick (min)",
+        "assessmentsToday": "Assessments today",
+        "partnerWide": "Partner-wide"
+      },
+      "status": {
+        "active": "Active",
+        "paused": "Paused",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget exhausted",
+        "grantor_suspended": "Grantor suspended",
+        "grantor_access_lost": "Grantor lost access",
+        "factor_expired": "Factor expired",
+        "entitlement_lost": "Entitlement lost",
+        "user_paused": "Paused by user",
+        "partner_disabled": "Partner disabled"
+      }
+    },
     "systemPage": {
       "title": "System",
       "description": "Deployment-wide status for platform administrators. This page is read-only.",

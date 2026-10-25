@@ -21,6 +21,15 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
+    it('maps /ai/wisp/thread/:id to the Wisp feature page', () => {
+      expect(getDocsForPath('/ai/wisp/thread/abc').url).toContain('/features/wisp/');
+    });
+
+    it('maps /settings/wisp-memory and /admin/wisp to the Wisp feature page', () => {
+      expect(getDocsForPath('/settings/wisp-memory').url).toBe(`${DOCS_BASE_URL}/features/wisp/#memory`);
+      expect(getDocsForPath('/admin/wisp').url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
+    });
+
     it('/approvals maps to AI Agents docs', () => {
       const result = getDocsForPath('/approvals');
       expect(result.label).toBe('Approvals');
@@ -33,10 +42,10 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
-    it('/ai/wisp/thread/:id maps to the AI docs with a Wisp label (W06 #9918)', () => {
+    it('/ai/wisp/thread/:id maps to the Wisp docs with a Wisp label (W06 #9918, W07)', () => {
       const result = getDocsForPath('/ai/wisp/thread/abc-123');
       expect(result.label).toBe('Wisp');
-      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
     });
 
     it('/ai-agents/runs/:id maps to AI Agents docs', () => {

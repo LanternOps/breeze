@@ -31,7 +31,7 @@ export class WorkspaceDeviceIndex extends WorkspaceBaseElement {
     } catch {
       this.#context = null;
       // Malformed host context: render the failure, make NO network call.
-      this.renderError('Workspace received an invalid host context.');
+      this.renderError('Wisp received an invalid host context.');
       return;
     }
     this.#context = parsed;
@@ -57,15 +57,15 @@ export class WorkspaceDeviceIndex extends WorkspaceBaseElement {
       if (error instanceof WorkspaceApiError && error.kind === 'not-found') {
         this.clearContent();
         this.root.append(this.el('p', {
-          text: 'This device has no Workspace index yet.',
+          text: 'This device has no Wisp index yet.',
           className: 'muted',
           attrs: { role: 'status' },
         }));
         return;
       }
       const message = error instanceof WorkspaceApiError && error.kind === 'unauthorized'
-        ? 'You are not authorized to view this device’s Workspace index.'
-        : 'The Workspace index for this device could not be loaded.';
+        ? 'You are not authorized to view this device’s Wisp index.'
+        : 'The Wisp index for this device could not be loaded.';
       this.renderError(message, () => this.track(this.#load()));
       return;
     }
@@ -86,6 +86,6 @@ export class WorkspaceDeviceIndex extends WorkspaceBaseElement {
         path: '/extensions/workspace/sources',
       });
     });
-    this.root.append(this.el('h2', { text: 'Workspace index' }), stats, manage);
+    this.root.append(this.el('h2', { text: 'Wisp index' }), stats, manage);
   }
 }

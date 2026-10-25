@@ -283,9 +283,11 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
   defineEntry({
     id: 'workspace-extension',
     group: 'ai',
-    label: 'Workspace extension (pgvector)',
+    label: 'Wisp knowledge connector (pgvector)',
     vars: [
       { name: 'BREEZE_WORKSPACE_ENABLED', secret: false },
+      // Wisp W08 alias; either one enables the connector (builtinRegistry.ts enableEnvAliases).
+      { name: 'BREEZE_WISP_CONNECTOR_ENABLED', secret: false },
     ],
     status: { kind: 'custom', fn: workspaceExtensionStatus },
   }),
