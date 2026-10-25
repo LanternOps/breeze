@@ -472,6 +472,8 @@ export interface RateLimitConfig {
   category: ToolCategory;
 }
 
+// `tier` here is the tool's BASE (registry) tier; per-action escalations
+// (e.g. configure_vault create/update -> Tier 3) are listed in TIER_DEFINITIONS.
 export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
   { toolName: 'execute_command', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },

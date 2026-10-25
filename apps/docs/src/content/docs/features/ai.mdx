@@ -662,7 +662,7 @@ The AI assistant can query, manage, and operate backups, disaster recovery plans
 | `restore_c2c_items` | 3 | Restore cloud-to-cloud backup items by id. Needs a second approver |
 | `execute_dr_plan` | 3 | Run a DR rehearsal, failover or failback. Every `executionType` needs a second approver, because a rehearsal of a non-bare-metal group runs the same restore as a failover |
 
-Tier 3 actions in this table are approved by the requesting user unless the row says they need a second approver. A headless AI agent can call any of these tools, but every Tier 3 call becomes a proposal that a person approves. None of these actions can be pre-authorized for an agent.
+Tier 3 actions in this table are approved by the requesting user unless the row says they need a second approver. A headless AI agent can call any of these tools, but every Tier 3 call becomes a proposal that a person approves. None of these actions can be pre-authorized for an in-product AI agent.
 
 See [Backup & Recovery](/backup/overview/) for configuration details.
 

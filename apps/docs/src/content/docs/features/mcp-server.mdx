@@ -506,8 +506,8 @@ These write tools follow the same per-action tiers as in-product chat. Every Tie
 | `configure_vault` | 3 | Create or update a device's local vault (path, type, retention); the device is reconfigured. |
 | `trigger_vault_sync`, `trigger_c2c_sync`, `verify_mssql_backup` | 3 | Queue a vault sync, start a cloud-to-cloud sync, or verify a SQL Server backup on the device that took it. |
 | `trigger_backup`, `trigger_hyperv_backup`, `trigger_mssql_backup` | 3 | On-demand backups. |
-| `manage_hyperv_vm`, `manage_hyperv_checkpoints` | 3 | Hyper-V power actions and checkpoints. Deleting or applying a checkpoint needs a second approver. |
-| `restore_snapshot`, `restore_as_vm`, `instant_boot_vm`, `restore_hyperv_vm`, `restore_mssql_database`, `restore_c2c_items`, `execute_dr_plan` | 3 | Restores and DR execution. Each needs a second approver. |
+| `manage_hyperv_vm`, `manage_hyperv_checkpoints` | 3 | Hyper-V power actions and checkpoints. When filed for approval, deleting or applying a checkpoint needs a second approver. |
+| `restore_snapshot`, `restore_as_vm`, `instant_boot_vm`, `restore_hyperv_vm`, `restore_mssql_database`, `restore_c2c_items`, `execute_dr_plan` | 3 | Restores and DR execution. When filed for approval, each needs a second approver. |
 
 <Aside type="caution">
   **Changed in this release.** `trigger_vault_sync`, `trigger_c2c_sync` and `verify_mssql_backup` were Tier 2, and `configure_vault`, `manage_hyperv_checkpoints` `create`, and `manage_backup_profiles` `update`/`delete` and partner-wide `create` were Tier 2 actions. They are now Tier 3, so an MCP client that called them directly needs the approval flow above.

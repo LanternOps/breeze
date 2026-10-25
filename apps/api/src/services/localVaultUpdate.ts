@@ -1,8 +1,9 @@
 /**
- * The one site-safe `local_vaults` update, shared by PATCH /backup/vault/:id
- * and the `configure_vault` AI tool (W03-D12, #6757). Moved verbatim from
- * routes/backup/vault.ts so the tool can no longer check a device's site and
- * then write after a concurrent site move.
+ * The one site-safe `local_vaults` update, shared by PATCH and DELETE /backup/vault/:id
+ * and the `configure_vault` AI tool (W03-D12, #6757). Moved from
+ * routes/backup/vault.ts unchanged except that the last parameter is now the
+ * site allowlist (it was the permissions object), so the tool can no longer
+ * check a device's site and then write after a concurrent site move.
  *
  * `allowedSiteIds`: `undefined` = unrestricted caller (plain org-bound
  * update); an empty list = no site access (nothing is written); otherwise the

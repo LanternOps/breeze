@@ -151,7 +151,7 @@ Every action queues `HYPERV_CHECKPOINT` (`aiToolsHyperv.ts:551-562`). Scope is `
 **`configure_vault`** (registry tier 2)
 - A vault is a per-device local copy of backups: path, type `local` / `smb` / `usb`, and `retentionCount` (`db/schema/localVault.ts:18-46`).
 - **Both actions push a `vault_configure` command to the device** (`aiToolsVault.ts`, `pushDeviceVaultConfig`).
-- Scope: `deviceSiteDenied` or `deviceIdSiteDenied`, the same as `routes/backup/vault.ts:176-270`. The route's update additionally row-locks the device against a concurrent site move (follow-up).
+- Scope: `deviceSiteDenied` or `deviceIdSiteDenied`, the same as `routes/backup/vault.ts:176-270`. The route's update additionally row-locks the device against a concurrent site move; W03-D12 gives the tool the same lock.
 - RBAC is organizations:write = (pinned by `routeParity`).
 
 | Action | Q1 | Q2 | Q3 | Q4 | Today | **W03** |
@@ -223,7 +223,7 @@ Each requested change is resolved on the merits below.
   - **Approval window.** The `execute_dr_plan` effect digest pins only `dr_plans.updated_at` and `status` (`actionIntents/effectDigest.ts:588-607`, a documented partial pin). A group-only edit does not bump the plan row.
   - **During a run.** A nonterminal execution re-reads the groups on every tick (`drExecutionService.ts:1478`) and dispatches their current config (`:1591`).
 - **QW4: C2C restore destination-org parity. Accepted, fixed before exposure (new W03-D11).** The handler authorizes the target connection and the items independently, each by `orgWhere`. A multi-org caller can therefore pair org A's items with org B's connection, and the worker refuses only later.
-- **QW5: vault update site race. Accepted, fixed before exposure (new W03-D12).** The REST `PATCH` row-locks the device inside the site allowlist (`updateVaultWithinCurrentSite`, `routes/backup/vault.ts:78-130`). The tool re-checks and then updates without a lock.
+- **QW5: vault update site race. Accepted, fixed before exposure (new W03-D12).** The REST `PATCH` row-locks the device inside the site allowlist (`updateVaultWithinCurrentSite`, `routes/backup/vault.ts:78-130` before the move). The tool re-checks and then updates without a lock.
 - **QW6: W03-D1's reversibility evidence was wrong. Accepted.** The approver sees only the new values, and the handler returned only the updated row. `update` now returns `previous` (name, description, selections, isActive), so the change can be undone from the transcript. D1 is rewritten below. The headline says ownership is resolved at run time, because input alone cannot show it.
 - **QW7: profile reads carry technician free text. Accepted as a rationale correction.** The agent-exposure row now says it: `description` is free text written by a staff member with `backup:write`. Exposure stays reachable, because it is tenant-internal and not device-originated.
 - **QW8: MCP wording. Accepted.** W03-D6 now says "denied by default". The MCP intent path (`MCP_TIER3_INTENTS_ENABLED=true`) and operator-authorized unattended principals (`MCP_UNATTENDED_TIER3_PRINCIPALS`) already exist (`routes/mcpServer.ts:2314-2339`).
@@ -242,7 +242,7 @@ Each requested change is resolved on the merits below.
 - **W03-D3: `execute_dr_plan` stays four-eyes for every `executionType`, including `rehearsal`.** For non-BMR groups a rehearsal queues the same restore command as a failover (`drExecutionService.ts:1168`), with no server-side isolation. Moving it to supervised would be a loosening, and there is no evidence that it is safe.
 - **W03-D4: `restore_as_vm`'s ZodPipe gets a schema-module envelope, not a hand-written SDK shape.**
   - The SDK `tool()` needs a `ZodRawShape`, and its `z.object(shape)` strips keys that are not in the shape. So the SDK shape must be the union of both engine arms' keys plus every registry key.
-  - `aiToolSchemasBackup.ts` exports the two arm objects and an `restoreAsVmSdkShape` envelope built from them (every key optional; `engine` an optional enum). `toolSdkInputShapes` in `aiToolSchemas.ts` maps `restore_as_vm` to it. `inputShape()` reads that map before falling back to `.shape`.
+  - `aiToolSchemasBackup.ts` names the two arm objects (`restoreAsVmHypervArm`, `restoreAsVmRebuildArm`, module-private) and exports `TOOL_SDK_INPUT_SHAPES`, whose `restore_as_vm` envelope is built from them (every key optional; `engine` an optional enum). `inputShape()` in `aiAgentSdkTools.ts` reads that map before falling back to `.shape`.
   - `validateToolInput` still validates the full pipe, so the strict rebuild arm and the required hyperv fields keep rejecting bad input.
   - **Drift fixed in the same task:** the hyperv arm gains `switchName`, which the registry advertises and the handler stores (`aiToolsBackupVm.ts:262`) but Zod did not list. `hypervisor` narrows to `['hyperv']`, matching the registry enum and the handler, which refuses anything else (`:264`).
 - **W03-D5: no W03 tool returns content, and `search_c2c_items` stays `AGENT_DENIED_READ_TOOLS`.** `restore_c2c_items` takes item ids and returns `{restoreJobId, status, itemCount}`. An agent can therefore propose a restore only from ids it already holds, and it cannot read mailbox items through this wave.
@@ -254,15 +254,16 @@ Each requested change is resolved on the merits below.
 
   Already MCP-denied before W03, and unchanged: every restore, `instant_boot_vm`, `execute_dr_plan`, the three backup triggers, `manage_hyperv_vm`, and `manage_dr_plan:delete_group`.
 - **W03-D7: no new rate limits.** `manage_backup_profiles` has none, and its writes are now either an approval or an org-scoped inert object. Every device-touching W03 tool already has one.
-- **W03-D8: approval headlines.** `buildApprovalDescription` gains cases for the restores (snapshot id, target device, selected-path count, never the path list), `execute_dr_plan` (plan id + `executionType`), the Hyper-V tools (action + VM id), `configure_vault` (vault type, path capped at 80 chars, retention), `manage_backup_profiles` (partner-wide flagged) and the triggers. `humanizeToolAction` is the fallback.
+- **W03-D8: approval headlines.** `buildApprovalDescription` gains cases for the restores (snapshot id, target device, selected-path count, never the path list), `execute_dr_plan` (plan id + `executionType`), the Hyper-V tools (action + VM id), `configure_vault` (vault type, path capped at 80 chars, retention), and `manage_backup_profiles` (partner-wide flagged). The triggers keep the humanized label. `humanizeToolAction` is also the fallback when a primary id is absent.
 - **W03-D9: every W03 write action gets a `routeBinding` row** (T3). An RBAC binding is not scope parity: scope parity is the handler tables above, D10–D12, and the T12 suites. Tool-vs-route MFA is not mirrored; that is the W02-D11 follow-up.
 - **W03-D10 (QW3): a DR plan cannot change under an approved or running execution.** In `aiToolsDR.ts`, `manage_dr_plan`:
   - refuses `update_plan`, `add_group`, `update_group` and `delete_group` while the plan has a `pending` or `running` `dr_executions` row;
-  - bumps `dr_plans.updated_at` in the same transaction as every group write, so the existing `execute_dr_plan` effect digest fails a released intent closed after any group edit in the approval window.
+  - bumps `dr_plans.updated_at` immediately before every group write, so the existing `execute_dr_plan` effect digest fails a released intent closed after any group edit in the approval window. The bump is a separate statement, not a transaction: if the group write then fails, the worst case is a spurious digest mismatch. A bump that matches no row refuses the write.
+  - **Residual (PR review):** the execution check is check-then-write, not a lock. `createDrExecutionAndEnqueue` does not lock `dr_plans`, so an execution created in the milliseconds between the check and the write can still see the edit. Closing it needs the execution-start path to lock the plan row (follow-up).
 
   The tool becomes **stricter** than the REST group routes. Mirroring this on the routes is a follow-up.
 - **W03-D11 (QW4): `restore_c2c_items` requires the target connection to be in the items' org.**
-- **W03-D12 (QW5): `configure_vault:update` uses the route's locked update.** `updateVaultWithinCurrentSite` is exported from `routes/backup/vault.ts` with its parameter narrowed to `{ allowedSiteIds }`. A site-restricted caller's update then row-locks the device inside its allowlist, as the REST `PATCH` does.
+- **W03-D12 (QW5): `configure_vault:update` uses the route's locked update.** `updateVaultWithinCurrentSite` moves from `routes/backup/vault.ts` to `services/localVaultUpdate.ts`, and its last parameter is now the site allowlist. The route's PATCH and DELETE and the `configure_vault` tool all call it. A site-restricted caller's update then row-locks the device inside its allowlist, as the REST `PATCH` does.
 
 ## Budget (W19 bounds; the brief's whole-index policy is obsolete)
 
