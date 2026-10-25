@@ -197,6 +197,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/localVaultUpdate.ts': 'site-locked vault update (W03-D12, #6757; lifted from routes/backup/vault.ts): row-locks the ONE device that owns a vault the caller already resolved, inside the caller\'s sites, then updates that vault; selects no targets, and the follow-up vault_configure to a parked device is refused by command delivery',
   'services/securityScanStart.ts': 'single-device Scan now (#6263 W05-11, lifted from routes/security/scans.ts): reads the ONE device id the caller named under its own RLS; selects no targets. queueCommand refuses a parked device',
   'jobs/securityScanClaim.ts': 'IOC scan claim (#6263 W05-3): re-reads ONE already-queued scan and its device under the partner lock; selects no targets. The command goes through dispatchDeviceCommand, which refuses a parked device (device_pending_assignment); sweep targets come from services/securityScanSweepTargets.ts and the pump, both FANOUT_MODULES entries',
   'services/wisp/concernTools.ts': 'Wisp W05a raise_concern (#9911): one existence check (id, org_id) for a device the user named, AFTER assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs (notHiddenOrgType in grantAuthority), so a parked device never matches; selects no targets and runs nothing',
