@@ -268,6 +268,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/patches.ts': { exempt: 'agent_transport' },
   'agents/peripherals.ts': { exempt: 'agent_transport' },
   'agents/processSample.ts': { exempt: 'agent_transport' },
+  'agents/rebind.ts': { exempt: 'agent_transport' },
   'agents/recoveryKeys.ts': { exempt: 'agent_transport' },
   'agents/reliability.ts': { exempt: 'agent_transport' },
   'agents/security.ts': { exempt: 'agent_transport' },
