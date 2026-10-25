@@ -187,6 +187,15 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
   catalog(src: SourceHandle<Options>): Promise<SourceCatalog>;
   /** One page of the ticket list; `next` null after the last page. */
   scan(src: SourceHandle<Options>, cursor: Cursor | null): Promise<{ rows: SourceRow[]; next: Cursor | null }>;
+  /**
+   * Optional: the cursor that re-reads the same page without the rows up to
+   * and including `rowKey` (rows come in the order the module returns them).
+   * Given, the runner saves it after each row instead of a position in the
+   * page, so a page re-read after a yield or a crash, and shifted meanwhile
+   * (a ticket deleted or added before it), skips no row. Without it the
+   * runner keeps the row's position.
+   */
+  cursorAfterRow?(cursor: Cursor | null, rowKey: string): Cursor;
   load(src: SourceHandle<Options>, row: SourceRow): Promise<LoadedTicket>;
   /** Pure and synchronous. */
   convert(loaded: LoadedTicket, ctx: ConversionContext<Options>): Conversion;

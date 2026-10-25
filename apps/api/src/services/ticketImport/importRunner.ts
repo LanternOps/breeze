@@ -335,16 +335,26 @@ class SliceRunner {
     // A key a source lists twice in one page is processed once, the first
     // time (review #8); keys of rows done before a crash count as handled.
     const handled = new Set(rows.slice(0, this.cursor.scan.index).map((r) => r.key));
+    // Past row i: by key when the module can say so (a re-read page that
+    // shifted meanwhile then skips nothing), else by position (review W5 #8).
+    const pastRow = (i: number) => {
+      if (this.module.cursorAfterRow) {
+        this.cursor.scan.page = this.module.cursorAfterRow(this.cursor.scan.page ?? null, rows[i]!.key);
+        this.cursor.scan.index = 0;
+      } else {
+        this.cursor.scan.index = i + 1;
+      }
+    };
     for (let i = this.cursor.scan.index; i < rows.length; i += 1) {
       if (this.timeUp()) return { kind: 'yield' };
       if (handled.has(rows[i]!.key)) {
-        this.cursor.scan.index = i + 1;
+        pastRow(i);
         continue;
       }
       handled.add(rows[i]!.key);
       const result = await this.processRow(rows[i]!, existing.get(rows[i]!.key), refs);
       if (result.kind !== 'done') return result;
-      this.cursor.scan.index = i + 1;
+      pastRow(i);
       if (result.slow) await this.commit();
       this.progressed = true;
     }

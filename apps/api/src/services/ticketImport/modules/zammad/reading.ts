@@ -25,12 +25,11 @@ import {
  * Reading a Zammad 7.2.x source (#8313 W5; spec 2026-10-19 §6.2).
  *
  * - **scan** pages `GET /tickets?page=N&per_page=100`, ordered `id ASC`, with
- *   no state filter (Z2). The cursor is the page number and the last id seen:
- *   offset paging shifts when a ticket on an earlier page disappears (one row
- *   is then skipped this pass, and the deletions probe finds it `present`) or
- *   reappears (a row is listed twice, and the id filter drops the repeat). A
- *   page shorter than 100 is the last. The header comes from the list row, so
- *   an unchanged ticket costs no other request.
+ *   no state filter (Z2). Offset paging shifts when a ticket on an earlier
+ *   page disappears or reappears; the scan therefore keys on the last id
+ *   handled and re-reads the previous page as an overlap (`scanZammad`). The
+ *   header comes from the list row, so an unchanged ticket costs no other
+ *   request.
  * - **load** reads the article ids (`?expand=true`, System articles
  *   included), then the articles with `by_ticket` (unpaginated; inline
  *   attachments included, Z5), never `GET /tickets/:id?all=true`, which omits
@@ -84,23 +83,50 @@ export function unreadableZammadRow(row: UnreadableTicketRow): SourceRow {
   };
 }
 
+/**
+ * One step of the scan. The cursor is the last id handled (plus the page
+ * number as a hint where to look). Each step re-reads the previous page as an
+ * overlap and reads the next one, and returns only the ids above `lastId`, in
+ * ascending order, with no position in a page:
+ *
+ * - a ticket deleted on an earlier page shifts every later row left, so the
+ *   first rows of this page now end the previous one: the overlap still
+ *   returns them (up to a page of deletions between two steps);
+ * - a ticket that reappears shifts rows right: the repeats are at or below
+ *   `lastId` and dropped;
+ * - the runner saves `cursorAfterRow` after each row, so a page re-read after
+ *   a yield or a crash, and shifted meanwhile, resumes after the last row
+ *   handled rather than at a position.
+ *
+ * A page shorter than 100 is the last; so is the third full page in a row
+ * that brings no new id (a server ignoring `page`).
+ */
 export async function scanZammad(
   src: SourceHandle<unknown>,
   rawCursor: ZammadCursor | null,
 ): Promise<{ rows: SourceRow[]; next: ZammadCursor | null }> {
   const cursor = cursorOf(rawCursor);
+  const overlap = cursor.page > 1 ? await listTicketsPage(src, cursor.page - 1) : null;
   const page = await listTicketsPage(src, cursor.page);
-  const listed = [
-    ...page.tickets.map((t) => ({ id: t.id, row: zammadRow(t) })),
-    ...page.unreadable.map((u) => ({ id: u.id, row: unreadableZammadRow(u) })),
-  ];
-  const fresh = listed.filter((t) => t.id > cursor.lastId).sort((a, b) => a.id - b.id);
-  const lastId = fresh.reduce((max, t) => Math.max(max, t.id), cursor.lastId);
-  const rows = fresh.map((t) => t.row);
+  const byId = new Map<number, SourceRow>();
+  for (const read of overlap ? [overlap, page] : [page]) {
+    for (const t of read.tickets) if (t.id > cursor.lastId) byId.set(t.id, zammadRow(t));
+    for (const u of read.unreadable) if (u.id > cursor.lastId && !byId.has(u.id)) byId.set(u.id, unreadableZammadRow(u));
+  }
+  const ids = [...byId.keys()].sort((a, b) => a - b);
+  const rows = ids.map((id) => byId.get(id)!);
+  const lastId = ids.length > 0 ? ids[ids.length - 1]! : cursor.lastId;
   if (page.size < ZAMMAD_TICKET_PAGE_SIZE) return { rows, next: null };
-  const stale = fresh.length === 0 ? (cursor.stale ?? 0) + 1 : 0;
+  const stale = rows.length === 0 ? (cursor.stale ?? 0) + 1 : 0;
   if (stale >= STALE_PAGE_LIMIT) return { rows, next: null };
   return { rows, next: { page: cursor.page + 1, lastId, ...(stale > 0 ? { stale } : {}) } };
+}
+
+/** The same page, past `rowKey` (rows come in ascending id order). */
+export function zammadCursorAfterRow(rawCursor: ZammadCursor | null, rowKey: string): ZammadCursor {
+  const cursor = cursorOf(rawCursor);
+  const id = Number(rowKey);
+  return { ...cursor, lastId: Number.isSafeInteger(id) ? Math.max(cursor.lastId, id) : cursor.lastId };
 }
 
 // ------------------------------------------------------------ attachments

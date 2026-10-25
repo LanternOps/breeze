@@ -4,7 +4,7 @@ import { fetchZammadAttachment, probeZammad } from './attachments';
 import { convertZammadTicket } from './conversion';
 import { isZammadSourceArticleId } from './ids';
 import { zammadOptionsSchema, type ZammadOptions } from './options';
-import { loadZammad, scanZammad, type ZammadCursor } from './reading';
+import { loadZammad, scanZammad, zammadCursorAfterRow, type ZammadCursor } from './reading';
 
 /**
  * The Zammad 7.2.x import module (#8313 W5; spec
@@ -31,6 +31,7 @@ export const zammadTicketImportModule: TicketImportModule<ZammadOptions, ZammadC
   connect: connectZammad,
   catalog: catalogZammad,
   scan: scanZammad,
+  cursorAfterRow: zammadCursorAfterRow,
   load: loadZammad,
   convert: convertZammadTicket,
   fetchAttachment: fetchZammadAttachment,

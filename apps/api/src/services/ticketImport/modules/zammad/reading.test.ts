@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
 import { clearZammadDirectoryCache, takeZammadInvalidRows, zammadPeople } from './directory';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
-import { __zammadReadingTestHooks, boundedInOrder, forgetFileLocations, loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
+import { __zammadReadingTestHooks, boundedInOrder, forgetFileLocations, loadZammad, rememberedFileLocation, scanZammad, zammadCursorAfterRow, zammadRow, type ZammadCursor } from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
 
 /**
@@ -67,6 +67,38 @@ describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
     expect(second.rows[0]!.key).toBe('110');
     expect(second.rows.map((r) => r.key)).not.toContain('109');
     expect(second.rows).toHaveLength(50);
+  });
+
+  it('a deletion on an earlier page while scanning: the row that shifted into it is still returned (review 8)', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(230);
+    const src = zammadTestHandle(fake);
+    const first = await scanZammad(src, null);
+    expect(first.next).toEqual({ page: 2, lastId: 100 });
+    // Ticket 50 is deleted: 101 moves to the end of page 1.
+    fake.data.tickets = fake.data.tickets.filter((t) => t.id !== 50);
+    const second = await scanZammad(src, first.next);
+    expect(second.rows[0]!.key).toBe('101');
+    expect(second.rows.map((r) => Number(r.key))).toEqual(Array.from({ length: 101 }, (_, i) => 101 + i));
+    // The previous page is read again as the overlap.
+    expect(fake.requestedPaths().slice(-2)).toEqual(['/api/v1/tickets?page=1&per_page=100', '/api/v1/tickets?page=2&per_page=100']);
+  });
+
+  it('a mid-page yield followed by a shift: the re-read page resumes after the last row handled, skipping none (review 8)', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(150);
+    const src = zammadTestHandle(fake);
+    const page = await scanZammad(src, null);
+    // The runner handles rows 1..40, saving the cursor past each one, then yields.
+    let cursor: ZammadCursor | null = null;
+    for (const row of page.rows.slice(0, 40)) cursor = zammadCursorAfterRow(cursor, row.key);
+    expect(cursor).toEqual({ page: 1, lastId: 40, stale: 0 });
+    // Before the next slice, ticket 10 (already handled) is deleted: the page shifts left.
+    fake.data.tickets = fake.data.tickets.filter((t) => t.id !== 10);
+    const again = await scanZammad(src, cursor);
+    // A position (40) would now skip ticket 41; the key does not.
+    expect(again.rows[0]!.key).toBe('41');
+    expect(again.rows.map((r) => Number(r.key))).toEqual(Array.from({ length: 61 }, (_, i) => 41 + i));
   });
 
   it('ends a scan whose pages bring no new id (a server ignoring `page`)', async () => {

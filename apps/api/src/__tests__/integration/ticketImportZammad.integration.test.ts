@@ -50,6 +50,8 @@ import {
   tickets,
 } from '../../db/schema';
 import { createSourceClient } from '../../services/ticketImport/sourceFetch';
+import { ticketImportLimits } from '../../services/ticketImport/importLimits';
+import type { SafeFetchInit } from '../../services/urlSafety';
 import { normalizeCounters } from '../../services/ticketImport/runReport';
 import { clearZammadDirectoryCache } from '../../services/ticketImport/modules/zammad/directory';
 import { __zammadReadingTestHooks } from '../../services/ticketImport/modules/zammad/reading';
@@ -255,6 +257,40 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     } finally {
       fake.handle = original;
     }
+  }, CASE_TIMEOUT);
+
+  runDb('a page that shifts between two slices skips no ticket: the runner resumes after the last row, not at a position (review 8)', async () => {
+    const fx = await seedZammad();
+    const window = await openWindow(fx);
+    // Five plain tickets on one page, one ticket per slice.
+    const data = loadZammadFixtures('base');
+    data.tickets = data.tickets.filter((t) => [101, 104, 106, 113, 119].includes(t.id));
+    fake.use(data);
+    let listReads = 0;
+    const shifting = {
+      sliceDeps: {
+        limits: { ...ticketImportLimits(), sliceMs: 1 },
+        httpFor: (baseUrl: string) => createSourceClient(baseUrl, {
+          timeoutMs: 10_000,
+          concurrency: 2,
+          sleep: async () => undefined,
+          fetchImpl: (async (url: string, init?: SafeFetchInit) => {
+            if (url.includes('/api/v1/tickets?') && url.includes('per_page=100')) {
+              listReads += 1;
+              // After 101, 104 and 106 are imported, 101 is deleted: the page shifts left by one.
+              if (listReads === 4) fake.data.tickets = fake.data.tickets.filter((t) => t.id !== 101);
+            }
+            return loopbackFetch(server.origin)(url, init);
+          }) as never,
+        }),
+      },
+    };
+    const run = await startImportRun(fx, 'import', window.id);
+    const steps = await drive(fx, run.id, { deps: shifting });
+    expect(steps.filter((s) => s.outcome === 'continue').length).toBeGreaterThanOrEqual(4);
+    // With a position, the re-read [104, 106, 113, 119] would have resumed at index 3 and skipped 113.
+    expect(normalizeCounters((await runRow(run.id)).counters).tickets).toMatchObject({ created: 5, failed: 0 });
+    expect([...(await importedTickets(fx)).keys()].sort()).toEqual(['101', '104', '106', '113', '119']);
   }, CASE_TIMEOUT);
 
   runDb('an import, then a delta pass after the source changed', async () => {
