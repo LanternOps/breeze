@@ -5773,7 +5773,9 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// reattach is in flight no NEW token rotation starts (see
 	// rebindInProgress); the server re-signals it later.
 	h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
-	rebindHold := h.rebindInProgress()
+	// A directive in this response starts the flow on its own goroutine, so
+	// the staged set may not be on disk yet: hold rotation for this beat too.
+	rebindHold := h.rebindInProgress() || response.Rebind != nil
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {

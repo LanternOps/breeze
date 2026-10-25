@@ -643,6 +643,18 @@ func TestRebindHoldsNewTokenRotation(t *testing.T) {
 	}
 }
 
+// The response that carries the FIRST directive holds rotation too: the flow
+// starts on its own goroutine and has nothing on disk yet.
+func TestRebindHoldsTokenRotationInTheDirectivesOwnResponse(t *testing.T) {
+	r := newRebindHarness(t)
+	r.h.tunnelMgr = &tunnel.Manager{}
+	r.h.processHeartbeatResponse(&HeartbeatResponse{RotateToken: true, Rebind: r.directive(rebindGoldenIntent)})
+	r.waitRestarts(1)
+	if n := len(r.fake.callsTo("/rotate-token")); n != 0 {
+		t.Fatalf("rotate-token calls = %d, want 0 beside a directive", n)
+	}
+}
+
 func TestRebindCapabilityIsNeverDeclaredInSupportMode(t *testing.T) {
 	r := newRebindHarness(t)
 	r.h.config.SupportMode = true
