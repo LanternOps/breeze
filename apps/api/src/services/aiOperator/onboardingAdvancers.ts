@@ -752,7 +752,8 @@ export async function advanceManualCreateGoogle(a: StepAdvancerArgs): Promise<st
 
 /** What is left after an unresolved stage 1, in words: the unresolved accounts and the collision/capability items. */
 function unresolvedSummary(
-  o: Ops, cp: Cp, facts: DiscoveryFacts, unresolved: ReadonlyArray<{ provider: string; reason: string; detail: string }>,
+  o: Ops, taskId: string, cp: Cp, facts: DiscoveryFacts,
+  unresolved: ReadonlyArray<{ provider: string; reason: string; detail: string }>,
 ): string {
   const parts = unresolved.map((u) => `${u.provider === 'm365' ? 'Microsoft 365' : 'Google Workspace'}: ${u.reason} (${u.detail})`);
   try {
@@ -760,8 +761,10 @@ function unresolvedSummary(
     const items = o.buildIdentityOnboardingManualWork(inputOf(cp), facts, f.capabilityReadiness ?? {}, [])
       .filter((i) => /^(resolve_upn_collision|resolve_email_collision|collision_check_failed|capability):/.test(i.key));
     for (const i of items) parts.push(i.label);
-  } catch {
-    // The unresolved list alone still names what is left.
+  } catch (err) {
+    // The unresolved list alone still names what is left; say why the items are missing.
+    console.warn(`[aiOperator] identity_onboarding resolve_accounts: manual-work summary unavailable for task ${taskId}: `
+      + `${err instanceof Error ? err.message : String(err)}`);
   }
   return parts.join('; ');
 }
@@ -802,7 +805,7 @@ export async function advanceResolveAccounts(a: StepAdvancerArgs): Promise<strin
     createPlanRevision: r, input: inputOf(cp), facts: loaded.facts,
   });
   if (!res.ok) {
-    const left = res.reason === 'no_account_resolved' ? unresolvedSummary(o, cp, loaded.facts, res.unresolved) : res.detail;
+    const left = res.reason === 'no_account_resolved' ? unresolvedSummary(o, a.task.id, cp, loaded.facts, res.unresolved) : res.detail;
     // No bump: a bump with nothing to provision would supersede the creation approval for nothing.
     return handOff(o, a, `resolve_accounts: ${res.reason}: ${res.detail}`.slice(0, 1000),
       `Breeze could not confirm any account this onboarding created, so it did not go on to licences and groups. `

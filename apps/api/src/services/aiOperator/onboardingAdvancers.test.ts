@@ -601,6 +601,24 @@ describe('resolve_accounts (B2 order, B7)', () => {
     expect(taskWrites()).toEqual([]);
   });
 
+  it('no_account_resolved whose manual-work summary cannot be built still hands off, and WARNS with the task id (no silent catch)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: { ...S1, targets: {} } });
+      h.resolveCreatedAccounts.mockResolvedValue({
+        ok: false, reason: 'no_account_resolved', detail: 'no created account resolved',
+        unresolved: [{ provider: 'm365', reason: 'upn_collision', detail: 'taken' }],
+      });
+      await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+      expect(settled()[0]).toMatchObject({ event: 'hand_off' });
+      expect(settled()[0]!.handoffSummary).toContain('upn_collision');
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('task-1') && l.includes('identity_onboarding'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('the collision path still bumps: M365 collided (empty create plan), Google resolved', async () => {
     h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: { ...S1, collisions: { ...S1.collisions, m365: { upnTaken: true, existingObjectId: 'obj-1111' } } } });
     h.resolveCreatedAccounts.mockResolvedValue({ ...RESOLVED, accounts: { m365: null, google: S2.accounts.google }, unresolved: [{ provider: 'm365', reason: 'upn_collision', detail: 't' }] });
