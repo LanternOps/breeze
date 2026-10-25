@@ -75,7 +75,9 @@ function mockReads(opts: { orgDevices: Array<{ id: string; siteId: string | null
   });
   mockDb.insert.mockReturnValue({ values: () => ({ returning: () => Promise.resolve([{ id: 'group-1' }]) }) });
   // W03-D10: group writes bump dr_plans.updated_at first.
-  (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mockReturnValue({ set: () => ({ where: () => Promise.resolve([]) }) });
+  (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mockReturnValue({
+    set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: PLAN.id }]) }) }),
+  });
 }
 
 describe('execute_dr_plan — stored-device scope', () => {
