@@ -208,7 +208,8 @@ describe('trigger_agent_restart', () => {
 
   it('is present in the TOOL_PERMISSIONS gate (dual-map drift guard)', () => {
     // A tool absent from TOOL_PERMISSIONS 404s at execute time. Lock it here.
-    expect(TOOL_PERMISSIONS.trigger_agent_restart).toEqual({ resource: 'devices', action: 'execute' });
+    // W04 (#6758): the route's permission, devices:recover_agent (routes/devices/agentRecovery.ts).
+    expect(TOOL_PERMISSIONS.trigger_agent_restart).toEqual({ resource: 'devices', action: 'recover_agent' });
   });
 
   it('dispatches restart_agent to the WATCHDOG, even for an offline agent', async () => {
