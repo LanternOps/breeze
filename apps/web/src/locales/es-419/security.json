@@ -678,6 +678,10 @@
     "wed": "Mié"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Cancelado",
+      "expired": "Vencido"
+    },
     "activeScans": "Escaneos activos",
     "allScanRequestsFailed": "Todas las solicitudes de escaneo {{count}} fallaron",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "No se encontró esta amenaza. Es posible que se haya eliminado o que usted no tenga acceso a su dispositivo.",
     "relatedLoadFailed": "No se pudieron cargar las amenazas relacionadas.",
     "rule": {
+      "version": "Versión {{version}}",
       "title": "Regla de detección",
       "legacy": "Firma integrada (escaneo heredado)",
       "ruleName": "Regla",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Barridos",
     "iocScans": "Escaneos de IOC",
     "subtitle": "Barridos de malware e IOC basados en firmas en toda su flota. No sustituye la protección completa de terminales.",
     "scansTab": "Escaneos",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "En espera del informe del proveedor",
       "awaitingEvaluation": "En espera de evaluación",
       "vendorOrgMismatch": "El proveedor informa otra organización"
+    }
+  },
+  "sweeps": {
+    "title": "Barridos de IOC",
+    "started": "Barrido iniciado",
+    "cancelled": "Barrido cancelado. Detenidos antes de la entrega: {{queued}}. Ya entregados y terminando en el dispositivo: {{stillRunning}}.",
+    "detectOnly": "Los barridos solo detectan. Nada se pone en cuarentena automáticamente y no se inicia ningún análisis de Defender.",
+    "version": "Versión {{version}}",
+    "sweepNow": "Barrer ahora",
+    "sweepNowUnpublished": "Publique este conjunto de reglas antes de usarlo en un barrido.",
+    "sweepNowDisabled": "Habilite este conjunto de reglas antes de usarlo en un barrido.",
+    "progress": {
+      "label": "{{done}} de {{total}} dispositivos terminados"
+    },
+    "errors": {
+      "orgOutOfScope": "Una o más organizaciones están fuera de su acceso.",
+      "siteOutOfScope": "Uno o más sitios están fuera de su acceso.",
+      "deviceOutOfScope": "Uno o más dispositivos están fuera de su acceso.",
+      "ruleSetNotFound": "Un conjunto de reglas seleccionado ya no existe.",
+      "ruleSetNotPublished": "Un conjunto de reglas seleccionado está deshabilitado o nunca se publicó.",
+      "sweepTooLarge": "Este barrido analizaría {{targeted}} dispositivos; un barrido está limitado a {{max}}. Reduzca el alcance.",
+      "noEligibleDevices": "Ningún dispositivo de este alcance puede ejecutar el barrido ahora. Revise las versiones del agente y el alcance.",
+      "scopeChanged": "Los dispositivos o los conjuntos de reglas cambiaron desde la vista previa. Revise las nuevas cifras.",
+      "alreadyRunning": "Este barrido ya se está ejecutando en estos dispositivos.",
+      "tooManyActive": "Esta organización ya tiene {{max}} barridos activos. Espere a que termine uno o cancele uno.",
+      "mfaRequired": "Este barrido abarca {{targeted}} dispositivos, más de {{threshold}}. Inicie sesión con autenticación multifactor o reduzca el alcance.",
+      "rateLimited": "Se iniciaron demasiados barridos recientemente. Inténtelo de nuevo más tarde."
+    },
+    "skipReasons": {
+      "agent_too_old": "dispositivos con un agente demasiado antiguo",
+      "busy_same_sweep": "dispositivos que ya ejecutan este barrido",
+      "rule_set_not_eligible": "dispositivos a los que no se aplican los conjuntos de reglas"
+    },
+    "skipExplain": {
+      "agent_too_old": "El agente debe actualizarse antes de poder ejecutar conjuntos de reglas YARA.",
+      "busy_same_sweep": "Un barrido idéntico sigue activo en estos dispositivos.",
+      "rule_set_not_eligible": "El sistema operativo o la organización del dispositivo quedan fuera del alcance del conjunto de reglas."
+    },
+    "dialog": {
+      "title": "Barrer dispositivos en busca de coincidencias de IOC",
+      "ruleSets": "Conjuntos de reglas: {{names}}",
+      "rescopeNote": "Un barrido no recuerda sus dispositivos. Elija el alcance de nuevo; se conservan los conjuntos de reglas y el tipo de análisis.",
+      "back": "Atrás",
+      "next": "Siguiente",
+      "previewAction": "Vista previa",
+      "confirm": "Barrer {{targeted}} dispositivos",
+      "viewRunning": "Ver el barrido en curso",
+      "confirmSummary": "Se analizarán {{targeted}} dispositivos de {{orgs}} organizaciones con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en los dispositivos.",
+      "steps": {
+        "scope": "Alcance",
+        "type": "Tipo de análisis",
+        "duration": "Duración",
+        "preview": "Vista previa",
+        "confirm": "Confirmar"
+      },
+      "scope": {
+        "legend": "¿Qué dispositivos?",
+        "all": "Todos los dispositivos accesibles",
+        "orgs": "Organizaciones",
+        "sites": "Sitios",
+        "groups": "Grupos de dispositivos",
+        "devices": "Dispositivos",
+        "allHelp": "Todos los dispositivos a los que tiene acceso y que pueden ejecutar el barrido.",
+        "noOrgs": "No hay organizaciones disponibles.",
+        "siteOrg": "Organización",
+        "pickOrg": "Elija una organización",
+        "noSites": "Esta organización no tiene sitios.",
+        "sitesFailed": "No se pudieron cargar los sitios.",
+        "sitesSelected": "Sitios seleccionados: {{selected}}"
+      },
+      "type": {
+        "label": "Tipo de análisis",
+        "quick": "Rápido",
+        "full": "Completo",
+        "custom": "Rutas personalizadas",
+        "paths": "Rutas, una por línea",
+        "pathsHelp": "Hasta {{max}} rutas, de {{chars}} caracteres cada una."
+      },
+      "duration": {
+        "label": "Ejecutar durante (horas)",
+        "help": "Los dispositivos sin conexión ejecutan el análisis cuando vuelven dentro de este plazo. Entre 1 y {{max}} horas."
+      },
+      "preview": {
+        "targeted": "{{devices}} dispositivos en {{orgs}} organizaciones",
+        "org": "{{org}}: {{devices}} dispositivos",
+        "ruleSets": "Conjuntos de reglas",
+        "skipped": "Omitidos",
+        "scopeChanged": "Los dispositivos o los conjuntos de reglas cambiaron desde la vista previa. Revise las nuevas cifras y confirme de nuevo."
+      }
+    },
+    "panel": {
+      "empty": "Aún no hay barridos de IOC. Inicie uno desde un conjunto de reglas de detección.",
+      "refreshFailed": "No se pudo actualizar la lista. Lo que ve puede estar desactualizado.",
+      "allSweeps": "Todos los barridos",
+      "openGroup": "Abrir grupo",
+      "cancel": "Cancelar",
+      "cancelAll": "Cancelar todo",
+      "resweep": "Barrer de nuevo con las reglas actuales",
+      "rulesChanged": "Las reglas cambiaron desde que empezó este barrido",
+      "queued": "En cola: {{queued}}",
+      "columns": {
+        "ruleSets": "Conjuntos de reglas",
+        "origin": "Iniciado desde",
+        "progress": "Progreso",
+        "skipped": "Omitidos",
+        "degraded": "Con cobertura reducida",
+        "threats": "Amenazas",
+        "created": "Creado",
+        "state": "Estado"
+      },
+      "state": {
+        "active": "Activo",
+        "completed": "Completado",
+        "cancelled": "Cancelado",
+        "expired": "Vencido"
+      },
+      "origin": {
+        "web": "Interfaz web",
+        "api": "Acceso por API",
+        "ai_chat": "Chat de IA",
+        "mcp": "Cliente MCP"
+      },
+      "scanType": {
+        "quick": "Análisis rápido",
+        "full": "Análisis completo",
+        "custom": "Rutas personalizadas"
+      }
     }
   },
   "detectionRules": {

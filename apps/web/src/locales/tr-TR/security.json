@@ -678,6 +678,10 @@
     "wed": "Çar"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
+    },
     "activeScans": "Aktif taramalar",
     "allScanRequestsFailed": "Tüm {{count}} tarama istekleri başarısız oldu",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "Bu tehdit bulunamadı. Silinmiş olabilir veya cihazına erişiminiz olmayabilir.",
     "relatedLoadFailed": "İlgili tehditler yüklenemedi.",
     "rule": {
+      "version": "Sürüm {{version}}",
       "title": "Tespit kuralı",
       "legacy": "Yerleşik imza (eski tarama)",
       "ruleName": "Kural",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Toplu taramalar",
     "iocScans": "IOC Taramaları",
     "subtitle": "Filonuz genelinde imza tabanlı kötü amaçlı yazılım ve IOC taramaları. Tam uç nokta korumasının yerini tutmaz.",
     "scansTab": "Taramalar",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+    }
+  },
+  "sweeps": {
+    "title": "IOC toplu taramaları",
+    "started": "Toplu tarama başlatıldı",
+    "cancelled": "Toplu tarama iptal edildi. Teslim edilmeden durdurulan: {{queued}}. Zaten teslim edilmiş ve cihazda tamamlanan: {{stillRunning}}.",
+    "detectOnly": "Toplu taramalar yalnızca tespit eder. Hiçbir şey otomatik olarak karantinaya alınmaz ve Defender taraması başlatılmaz.",
+    "version": "Sürüm {{version}}",
+    "sweepNow": "Şimdi toplu tara",
+    "sweepNowUnpublished": "Bu kural kümesini toplu taramada kullanmadan önce yayımlayın.",
+    "sweepNowDisabled": "Bu kural kümesini toplu taramada kullanmadan önce etkinleştirin.",
+    "progress": {
+      "label": "{{total}} cihazdan {{done}} tanesi tamamlandı"
+    },
+    "errors": {
+      "orgOutOfScope": "Bir veya daha fazla kuruluş erişiminizin dışında.",
+      "siteOutOfScope": "Bir veya daha fazla site erişiminizin dışında.",
+      "deviceOutOfScope": "Bir veya daha fazla cihaz erişiminizin dışında.",
+      "ruleSetNotFound": "Seçilen bir kural kümesi artık mevcut değil.",
+      "ruleSetNotPublished": "Seçilen bir kural kümesi devre dışı veya hiç yayımlanmamış.",
+      "sweepTooLarge": "Bu toplu tarama {{targeted}} cihazı tarardı; tek bir toplu tarama en fazla {{max}} cihazla sınırlıdır. Kapsamı daraltın.",
+      "noEligibleDevices": "Bu kapsamdaki hiçbir cihaz şu anda toplu taramayı çalıştıramıyor. Ajan sürümlerini ve kapsamı kontrol edin.",
+      "scopeChanged": "Cihazlar veya kural kümeleri önizlemeden sonra değişti. Yeni sayıları gözden geçirin.",
+      "alreadyRunning": "Bu toplu tarama bu cihazlarda zaten çalışıyor.",
+      "tooManyActive": "Bu kuruluşta zaten {{max}} etkin toplu tarama var. Birinin bitmesini bekleyin veya birini iptal edin.",
+      "mfaRequired": "Bu toplu tarama {{targeted}} cihazı hedefliyor; bu sayı {{threshold}} değerinden fazla. Çok faktörlü kimlik doğrulamayla oturum açın veya kapsamı daraltın.",
+      "rateLimited": "Kısa süre önce çok fazla toplu tarama başlatıldı. Daha sonra tekrar deneyin."
+    },
+    "skipReasons": {
+      "agent_too_old": "ajanı çok eski olan cihazlar",
+      "busy_same_sweep": "bu toplu taramayı zaten çalıştıran cihazlar",
+      "rule_set_not_eligible": "kural kümelerinin geçerli olmadığı cihazlar"
+    },
+    "skipExplain": {
+      "agent_too_old": "Ajanın YARA kural kümelerini çalıştırabilmesi için güncellenmesi gerekir.",
+      "busy_same_sweep": "Bu cihazlarda aynı toplu tarama hâlâ etkin.",
+      "rule_set_not_eligible": "Cihazın işletim sistemi veya kuruluşu kural kümesinin kapsamı dışında."
+    },
+    "dialog": {
+      "title": "Cihazlarda IOC eşleşmesi tara",
+      "ruleSets": "Kural kümeleri: {{names}}",
+      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri ve tarama türü korunur.",
+      "back": "Geri",
+      "next": "İleri",
+      "previewAction": "Önizle",
+      "confirm": "{{targeted}} cihazı tara",
+      "viewRunning": "Çalışan toplu taramayı görüntüle",
+      "confirmSummary": "{{orgs}} kuruluştaki {{targeted}} cihaz, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazlarda hiçbir şey değiştirilmez.",
+      "steps": {
+        "scope": "Kapsam",
+        "type": "Tarama türü",
+        "duration": "Süre",
+        "preview": "Önizleme",
+        "confirm": "Onayla"
+      },
+      "scope": {
+        "legend": "Hangi cihazlar?",
+        "all": "Erişilebilen tüm cihazlar",
+        "orgs": "Kuruluşlar",
+        "sites": "Siteler",
+        "groups": "Cihaz grupları",
+        "devices": "Cihazlar",
+        "allHelp": "Erişiminiz olan ve toplu taramayı çalıştırabilen her cihaz.",
+        "noOrgs": "Kullanılabilir kuruluş yok.",
+        "siteOrg": "Kuruluş",
+        "pickOrg": "Bir kuruluş seçin",
+        "noSites": "Bu kuruluşun sitesi yok.",
+        "sitesFailed": "Siteler yüklenemedi.",
+        "sitesSelected": "Seçilen siteler: {{selected}}"
+      },
+      "type": {
+        "label": "Tarama türü",
+        "quick": "Hızlı",
+        "full": "Tam",
+        "custom": "Özel yollar",
+        "paths": "Yollar, her satıra bir tane",
+        "pathsHelp": "En fazla {{max}} yol, her biri {{chars}} karakter."
+      },
+      "duration": {
+        "label": "Çalışma süresi (saat)",
+        "help": "Çevrimdışı cihazlar, bu süre içinde geri geldiklerinde taramayı çalıştırır. 1 ile {{max}} saat arasında."
+      },
+      "preview": {
+        "targeted": "{{orgs}} kuruluşta {{devices}} cihaz",
+        "org": "{{org}}: {{devices}} cihaz",
+        "ruleSets": "Kural kümeleri",
+        "skipped": "Atlananlar",
+        "scopeChanged": "Cihazlar veya kural kümeleri önizlemeden sonra değişti. Yeni sayıları gözden geçirin, ardından yeniden onaylayın."
+      }
+    },
+    "panel": {
+      "empty": "Henüz IOC toplu taraması yok. Bir tespit kuralı kümesinden başlatın.",
+      "refreshFailed": "Liste yenilenemedi. Gördükleriniz güncel olmayabilir.",
+      "allSweeps": "Tüm toplu taramalar",
+      "openGroup": "Grubu aç",
+      "cancel": "İptal",
+      "cancelAll": "Tümünü iptal et",
+      "resweep": "Güncel kurallarla yeniden tara",
+      "rulesChanged": "Bu toplu tarama başladığından beri kurallar değişti",
+      "queued": "Sırada: {{queued}}",
+      "columns": {
+        "ruleSets": "Kural kümeleri",
+        "origin": "Başlatıldığı yer",
+        "progress": "İlerleme",
+        "skipped": "Atlananlar",
+        "degraded": "Sınırlı kapsam",
+        "threats": "Tehditler",
+        "created": "Oluşturulma",
+        "state": "Durum"
+      },
+      "state": {
+        "active": "Etkin",
+        "completed": "Tamamlandı",
+        "cancelled": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "origin": {
+        "web": "Web arayüzü",
+        "api": "API erişimi",
+        "ai_chat": "Yapay zekâ sohbeti",
+        "mcp": "MCP istemcisi"
+      },
+      "scanType": {
+        "quick": "Hızlı tarama",
+        "full": "Tam tarama",
+        "custom": "Özel yollar"
+      }
     }
   },
   "detectionRules": {

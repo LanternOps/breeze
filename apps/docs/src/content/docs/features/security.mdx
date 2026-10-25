@@ -105,10 +105,11 @@ ThreatDown (Malwarebytes' business brand) reports as `malwarebytes`. F-Secure pr
 
 ## The IOC Scans Page
 
-**Security → IOC Scans** (`/security/scans`) is the console for running on-demand scans and working detected threats without leaving the browser. It has two tabs:
+**Security → IOC Scans** (`/security/scans`) is the console for running on-demand scans and working detected threats without leaving the browser. It has three tabs:
 
 - **Scans** — pick one or more devices (single- or multi-select), choose a scan type (Quick, Full, or Custom with an explicit path), and start the scan. Submission progress is shown per device as each request queues. Below that, **Active Scans** shows what's currently queued or running, and **Scan History** lists the most recent completed and failed runs with their result and duration.
 - **Threats** — a filterable list of detected threats (by status, severity, device) across the fleet. Selecting a threat opens its detail view, where you can **Quarantine**, **Restore**, or permanently remove it; the bulk-action toolbar on the list lets you quarantine or remove several threats at once. Restoring a quarantined threat moves it back to allowed without re-scanning.
+- **Sweeps** — run a detection rule set across many devices at once and follow the progress, cancel it, or open a group of sweeps by its link. See [IOC sweeps](#ioc-sweeps).
 
 <Aside type="note">
   Before v0.116.0, quarantine and restore were reachable only through the API (see [Threat Actions](#threat-actions) below) — a quarantined threat had no UI path to restore it. The Threats tab closes that gap.
@@ -121,6 +122,91 @@ Quarantine, Remove and Restore send a command to the device; they do not change 
 IOC auto-quarantine (set on the **Security** feature of a configuration policy) moves files on every device the policy reaches with no one reviewing each scan, so it is treated as a device-execution grant. Saving Security settings with auto-quarantine on needs the `devices:execute` permission and MFA; with auto-quarantine off, `devices:write` is enough, and turning it off is never restricted. Because auto-quarantine is on by default, a technician with only `devices:write` must turn it off before the Security settings will save.
 
 Scheduled scans quarantine only while the user who approved auto-quarantine is active and still holds `devices:execute`. Policies that had auto-quarantine on before v0.122.1 keep running under the user who created them on the same terms. Otherwise the policy shows *Auto-quarantine is paused* and its scans run detect-only until a user with `devices:execute` and MFA saves the Security settings again. A scan you start by hand runs under your own permissions; without a completed MFA check in your session it runs detect-only.
+
+## IOC sweeps
+
+A detection rule set lives under **Security → Detection Rules**; each time you publish it, it gets a numbered version. An IOC sweep runs one or more published rule sets against many devices at once and pins the exact versions it was approved with.
+
+### What a sweep is
+
+A sweep is one request that fans out into one ordinary IOC scan per eligible device, so every result shows up in the usual **Scan History** and **Threats** views. Start one from a rule set (**Sweep now** in the rule-set editor), from the API, or from the AI assistant. Follow it on the **Sweeps** tab of **Security → IOC Scans**: the list shows the rule sets and their versions, progress, how many scans ran with degraded coverage, threats found, who started it and when, and its state (**Active**, **Completed**, **Cancelled** or **Expired**). A sweep that spans several organizations is stored as one row per organization; they share a group, and `#sweeps&group=<groupId>` in the page address opens that group.
+
+### Sweeps only detect
+
+A sweep never quarantines or removes anything, whatever the rule set's auto-quarantine setting says. On Windows it also does not start a Microsoft Defender scan, unlike a single-device scan started from the Scans tab. A match is reported as a threat, and you decide what to do with it from the Threats tab.
+
+### Scope and eligibility
+
+Choose the scope when you start the sweep:
+
+- **All reachable devices** — every device your account can access.
+- **Organizations**, **Sites**, **Device groups** or **Devices** — only those.
+
+Scopes defined by device policies are not offered. A request is limited to 10,000 devices. Devices outside your access are never included, and asking for one explicitly is refused.
+
+A device in scope can be skipped for one of three reasons, each shown with its count in the preview:
+
+| Reason | Meaning |
+|--------|---------|
+| `agent_too_old` | The agent is older than 0.124.0 and cannot run YARA rule sets. Update it and sweep again. |
+| `busy_same_sweep` | An identical sweep is still active on the device. |
+| `rule_set_not_eligible` | The device's operating system or organization is outside the rule set's reach. |
+
+Users limited to certain sites or devices do not see skip counts; the Sweeps tab shows a dash for them.
+
+### Preview and confirmation
+
+**Sweep now** opens a five-step dialog: scope, scan type (Quick, Full, or Custom with up to 20 paths of at most 1,024 characters), duration, preview and confirm. The preview shows how many devices in how many organizations will be scanned, the rule-set versions, and the skipped devices with the reason for each. Nothing is written until you confirm. Confirming sends a digest of what you previewed; if the devices or rule sets changed in the meantime, the dialog shows the new preview and asks again instead of running something you did not approve. If the same sweep is already running, the dialog links to it.
+
+### Multi-factor authentication above 50 devices
+
+A sweep of more than 50 devices needs an interactive sign-in with multi-factor authentication satisfied, as your organization's policy requires. When no second factor is enforced, a signed-in password session counts. If the check fails, the dialog says so and you can sign in again or narrow the scope. API keys and other machine credentials are refused above 50 devices whether or not multi-factor authentication is enforced; narrow the scope or run the sweep from the console.
+
+### Pinned rule versions
+
+When you confirm, the sweep pins each rule set's published version and content hash. Every scan of the sweep runs exactly those versions, and a threat found by a pinned scan shows **Version N** in its rule panel. If someone republishes a pinned rule set while the sweep is running, the scans that have not started yet fail with `rule_set_changed` rather than silently running different rules, and the Sweeps tab marks the row **Rules changed since this sweep started** with **Sweep again with the current rules**.
+
+### Duration and offline devices
+
+A sweep stays open for 24 hours by default; you can set 1 to 72 hours. An offline device keeps its queued scan and runs it when it returns within that time. When the time is up, scans that have not started become **Expired**, the sweep becomes **Expired**, and scans already running on a device are allowed a grace period before they are closed out.
+
+### Pacing
+
+Each device runs one scan at a time. The server hands scans to devices in small batches on a timer, and also limits how many scans run at once per device, per organization and per partner, so a large sweep takes a while and does not flood a site. An organization can have 5 active sweeps at once, a partner at most 200 running scans, and a user can start 10 sweeps per hour. These limits and the operator settings behind them:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `SECURITY_SWEEP_MAX_DEVICES` | 10000 | Devices per request |
+| `SECURITY_SWEEP_MAX_ACTIVE_PER_ORG` | 5 | Active sweeps per organization |
+| `SECURITY_SWEEP_PARTNER_RUNNING_CAP` | 200 | Running sweep scans per partner |
+| `SECURITY_SWEEP_PUMP_INTERVAL_MS` | 30000 | How often queued scans are handed out |
+| `SECURITY_SWEEP_PUMP_BATCH` | 100 | Scans admitted per sweep per organization per tick |
+| `SECURITY_SWEEP_TTL_HOURS_DEFAULT` | 24 | Default duration |
+| `SECURITY_SWEEP_MFA_DEVICE_THRESHOLD` | 50 | Devices above which multi-factor authentication is required |
+| `SECURITY_SWEEP_RUNNING_GRACE_MINUTES` | 65 | Grace for scans already running at expiry |
+| `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` | 25 | Devices above which an AI-started sweep needs a second approver |
+
+### Cancel
+
+**Cancel** stops a sweep; **Cancel all** stops every sweep of a group. Scans still queued stop at once. A scan already delivered to a device finishes there, because the agent cannot be recalled, and the confirmation says how many are still finishing. Cancelling an already finished sweep does nothing. You need permission to run commands on the devices, and a user limited to certain sites or devices can cancel only sweeps they started.
+
+### Running it again
+
+Sweeping again with the same rule sets, scope and scan type while one is active is refused with a link to the running sweep. Once it has finished, a new sweep starts fresh against the current published versions. A sweep does not remember its devices, so choosing **Sweep again with the current rules** reopens the dialog with the rule sets and scan type filled in and asks for the scope again.
+
+### Degraded coverage
+
+A scan counts as degraded when it completed or timed out on the legacy engine, or when some rules in the set could not be loaded on the device. The Sweeps tab shows the count, and the sweep's tone turns to a warning so a clean-looking result is not mistaken for full coverage. Failed, expired and cancelled scans are counted separately.
+
+### AI assistant and MCP
+
+The AI assistant and MCP clients use the `ioc_hunt` tool: listing rule sets, previewing, listing and checking sweeps are Tier 1 and need no approval; cancelling a sweep is Tier 2; starting a sweep and importing IOCs are Tier 3 and need an approved action (see [AI features](/features/ai/) and [MCP server](/features/mcp-server/)). A sweep started by the assistant is supervised up to 25 expected devices, and above 25 it needs a second approver. An assistant sweep covers one organization at a time. Importing IOCs adds them to a rule set and publishes it; importing into a set that has auto-quarantine turned on is refused. `ioc_hunt` is not part of any AI agent's tool catalog.
+
+### Audit events
+
+Every sweep writes audit events for its organization row: `security.scan_sweep.create`, `security.scan_sweep.cancel`, `security.scan_sweep.expire` and `security.scan_sweep.complete`. They record the rule-set pins, scan type, scope kind, counts and origin (web, API, AI chat or MCP), never paths, device ids or IOC values.
+
+---
 
 ## Threat Detection
 
@@ -142,6 +228,10 @@ The agent scans for known threat signatures using both filename pattern matching
 | **`medium`** | Moderate risk; should be reviewed |
 | **`high`** | Significant risk; prompt action recommended (e.g. Mimikatz, EICAR, ransomware notes) |
 | **`critical`** | Severe risk; immediate action required (e.g. CobaltStrike beacons, Emotet) |
+
+### Which rule fired
+
+A threat found by a detection rule shows the rule, its rule set and the matched strings in the threat's rule panel. When the scan ran pinned rule-set versions (every IOC sweep does), the panel also shows **Version N**, the version of the rule set that was dispatched to the device. Threats found by the built-in signatures, and threats from scans that did not pin a version, show no version.
 
 ### Threat Status Lifecycle
 
@@ -212,6 +302,8 @@ The scan is queued as a `SECURITY_SCAN` command to the agent. The response retur
 | **`running`** | Agent is actively scanning |
 | **`completed`** | Scan finished; results include `threatsFound` count and `durationSeconds` |
 | **`failed`** | Scan encountered an error |
+| **`cancelled`** | The scan was stopped before it ran, for example when its sweep was cancelled |
+| **`expired`** | The scan never ran because its sweep's time ran out |
 
 ### Viewing Scan History
 
@@ -516,6 +608,13 @@ All security endpoints require authentication and are scoped to `organization`, 
 | `POST` | `/security/threats/:id/restore` | Restore a quarantined threat |
 | `POST` | `/security/scan/:deviceId` | Trigger an on-demand security scan |
 | `GET` | `/security/scans/:deviceId` | List scan history for a device |
+| `POST` | `/security/sweeps/preview` | Preview an IOC sweep: device count per organization, rule-set versions, skipped devices and a `previewDigest`. Writes nothing. Needs `devices:execute` |
+| `POST` | `/security/sweeps` | Start an IOC sweep; the body is the preview request plus the `previewDigest`. Needs `devices:execute`. Errors: `SWEEP_SCOPE_CHANGED`, `SWEEP_ALREADY_RUNNING`, `TOO_MANY_ACTIVE_SWEEPS`, `MFA_REQUIRED`, `RATE_LIMITED`, `SWEEP_TOO_LARGE`, `NO_ELIGIBLE_DEVICES`, `RULE_SET_NOT_FOUND`, `RULE_SET_NOT_PUBLISHED`, `ORG_OUT_OF_SCOPE`, `SITE_OUT_OF_SCOPE`, `DEVICE_OUT_OF_SCOPE` |
+| `GET` | `/security/sweeps` | List sweeps (filterable by `state` and `orgId`, paginated). Needs `devices:read` |
+| `GET` | `/security/sweeps/:id` | Get one sweep with its progress. Needs `devices:read` |
+| `GET` | `/security/sweeps/groups/:groupId` | Get every sweep of a group with the combined progress. Needs `devices:read` |
+| `POST` | `/security/sweeps/:id/cancel` | Cancel a sweep; returns `cancelledQueued`, `cancelledUndelivered` and `stillRunning`. Needs `devices:execute` |
+| `POST` | `/security/sweeps/groups/:groupId/cancel` | Cancel every sweep of a group. Needs `devices:execute` |
 | `GET` | `/security/posture` | List security posture for all devices (filterable by score range, risk level) |
 | `GET` | `/security/posture/:deviceId` | Get detailed posture for a specific device |
 | `GET` | `/security/dashboard` | Get aggregated security dashboard data |
