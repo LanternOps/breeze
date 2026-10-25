@@ -213,7 +213,10 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // unattended enforcement/remediation on the fleet. The two backup tools stay
   // here deliberately; see the note in TIER3_ACTIONS for the full rationale.
   manage_backup_configs: ['create', 'update'],
-  manage_backup_profiles: ['create', 'update', 'delete'],
+  // W03 (#6757): update/delete moved to TIER3_ACTIONS (supervised, W03-D1);
+  // create stays here as the base class and escalates through
+  // isInputAwareTier3 when ownerScope === 'partner'.
+  manage_backup_profiles: ['create'],
   // Notification channel & saved filter tools — Tier 2 actions.
   // manage_notification_channels `test` stays tier 2 ONLY because the AI
   // handler is a lookup stub that sends nothing (W02-D9, pinned by
@@ -452,7 +455,8 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // reads still auto-execute with no prompt. Only the mutations escalate.
   //
   // Deliberately NOT escalated (judgment calls, left at Tier 2, #3552):
-  //   - manage_backup_configs / manage_backup_profiles. They change storage
+  //   - manage_backup_configs (and, until W03 #6757, manage_backup_profiles —
+  //     see its entry below). They change storage
   //     destinations, credentials, retention and selection sets — real, but
   //     PROTECTIVE scheduling rather than enforcement or remediation: no
   //     payload there causes an agent to uninstall, block, or reboot anything.
@@ -463,7 +467,18 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_peripheral_policies: ['create', 'update'],
   // Backup & DR — Tier 3 actions (require user approval)
   manage_dr_plan: ['delete_group'],
-  manage_hyperv_checkpoints: ['delete', 'apply'],
+  // W03 (#6757, W03-D2): create queues a HYPERV_CHECKPOINT command on the
+  // customer's Hyper-V host — "touches a customer machine" is supervised at
+  // minimum. delete/apply destroy or rewind state (four-eyes below).
+  manage_hyperv_checkpoints: ['create', 'delete', 'apply'],
+  // W03-D1: whether a profile is partner-wide is DB state (orgId null), and
+  // guardrails are DB-free. Narrowing a linked partner-wide profile silently
+  // stops protecting data in every org, so update/delete fail safe.
+  manage_backup_profiles: ['update', 'delete'],
+  // W03-D2: both actions push vault_configure to the device, and vaultPath
+  // may point backup copies at a model-chosen SMB share — the W02
+  // notification-channel class (data to a new destination).
+  configure_vault: ['create', 'update'],
   // Monitoring tools — Tier 3 actions (require user approval)
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
@@ -753,6 +768,15 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_browser_policy: ['create', 'update', 'apply'],
   manage_peripheral_policy: ['create', 'update', 'disable', 'add_exception', 'remove_exception'],
   remediate_sensitive_data: ['encrypt', 'quarantine', 'secure_delete', 'accept_risk', 'false_positive', 'mark_remediated'],
+  // W03 (#6757) — see the TIER3_ACTIONS notes for each. manage_hyperv_vm is
+  // registry tier 3 (whole-tool backstop below); every power action is
+  // enumerated here so a new one reds the enumeration contract. force_stop is
+  // irreversible but single-device and tenant-internal: supervised, not
+  // four-eyes, under the spec's class rule.
+  manage_hyperv_vm: ['start', 'stop', 'force_stop', 'pause', 'resume', 'save'],
+  manage_hyperv_checkpoints: ['create'],
+  manage_backup_profiles: ['update', 'delete'],
+  configure_vault: ['create', 'update'],
   // W02 (#6756) — see the TIER3_ACTIONS notes for each.
   manage_tickets: ['edit_comment', 'delete_comment', 'merge'],
   manage_quotes: ['decline', 'create_pay_link'],
@@ -821,6 +845,11 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // (every 1-168 h) — the one-shot network_discovery is already supervised,
   // and at tier 2 auto_approve would schedule it with no prompt.
   'configure_network_baseline',
+  // W03 (#6757): registry tier 2 → 3. Vault sync and MSSQL verify queue a
+  // device command (VAULT_SYNC / MSSQL_VERIFY stages the backup artifact on
+  // the device); C2C sync is a vendor pull by intent (today the worker fails
+  // it not-implemented). Same class as the backup triggers above.
+  'trigger_vault_sync', 'trigger_c2c_sync', 'verify_mssql_backup',
   // Topology M4 Task 4 (#6000), same class as network_discovery: every
   // accepted recipe is ONE bounded, same-site OBSERVATIONAL check from the
   // fixed M1/M3 set (gateway/DNS/internet/configured target/routed trace) —
@@ -870,6 +899,10 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // HP CMSL collection — the pair is unchanged, the predicate gained an arm.
   'manage_policy_feature_link:add',
   'manage_policy_feature_link:update',
+  // W03 (#6757): a partner-wide backup profile ("all orgs") is supervised;
+  // an org-owned one stays at the base Tier 2. Only the create INPUT says
+  // which — on update/delete ownership is DB state (static supervised).
+  'manage_backup_profiles:create',
 ]);
 
 /**
@@ -945,6 +978,12 @@ export function isInputAwareTier3(
     const types = input.evidenceTypes;
     return !Array.isArray(types) || types.includes('screenshot');
   }
+  if (toolName === 'manage_backup_profiles') {
+    // Mirrors the handler (aiToolsPolicyPrereqs.ts create branch): only the
+    // literal 'partner' creates a partner-wide row; anything else is an
+    // org-owned profile, so the guard and the write cannot disagree.
+    return action === 'create' && input.ownerScope === 'partner';
+  }
   if (toolName !== 'manage_policy_feature_link') return false;
   if (action !== 'add' && action !== 'update') return false;
   return (
@@ -999,6 +1038,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   ioc_hunt: ['expectedDeviceCount'],
   // isInputAwareTier3: evidenceTypes containing 'screenshot' (or not an array) is supervised (W04, #6758).
   collect_evidence: ['evidenceTypes'],
+  // isInputAwareTier3: create with ownerScope === 'partner' is supervised (W03, #6757).
+  manage_backup_profiles: ['ownerScope'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -3482,6 +3523,12 @@ export function buildApprovalDescription(
 ): string {
   const parts: string[] = [];
 
+  // W03 (#6757): call-specific copy needs its primary id; without one the
+  // humanized label is used (the W02 / #9657 fallback rule,
+  // approvalLabels.contract.test.ts).
+  const w03PrimaryKey = W03_PRIMARY_ID_KEYS[toolName];
+  if (w03PrimaryKey && !w03Present(input[w03PrimaryKey])) return humanizeToolAction(toolName, action);
+
   switch (toolName) {
     case 'operator_plan': {
       const n = Array.isArray(input.effects) ? input.effects.length : 0;
@@ -3976,9 +4023,116 @@ export function buildApprovalDescription(
       break;
     }
 
+    // W03 (#6757, W03-D8): backup, DR and Hyper-V headlines name the target
+    // and what changes. Selected-path LISTS are never echoed (a count only),
+    // and model-chosen free text is capped at 80 characters.
+    case 'restore_snapshot': {
+      const n = Array.isArray(input.selectedPaths) ? input.selectedPaths.length : 0;
+      const target = nonEmptyText(input.targetPath);
+      parts.push(
+        `Restore snapshot ${w03Id(input.snapshotId)} onto device ${w03Id(input.deviceId)}: `
+        + (n > 0 ? `${n} selected path(s)` : 'full restore')
+        + (target ? ` into ${w03Cap(target)}` : ' to the original location (overwrites live files)'),
+      );
+      break;
+    }
+    case 'restore_as_vm':
+      parts.push(input.engine === 'rebuild'
+        ? `Rebuild snapshot ${w03Id(input.snapshotId)} as a disk image on host ${w03Id(input.rebuildHostDeviceId)}`
+        : `Restore snapshot ${w03Id(input.snapshotId)} as a new VM on host ${w03Id(input.targetDeviceId)}`);
+      break;
+    case 'instant_boot_vm':
+      parts.push(`Instant-boot snapshot ${w03Id(input.snapshotId)} as a VM on host ${w03Id(input.targetDeviceId)}`);
+      break;
+    case 'restore_hyperv_vm':
+      parts.push(`Restore Hyper-V snapshot ${w03Id(input.snapshotId)} onto host ${w03Id(input.deviceId)}`
+        + (input.generateNewId === false ? ' reusing the original VM id' : ' as a new VM'));
+      break;
+    case 'restore_mssql_database': {
+      const db = nonEmptyText(input.targetDatabase);
+      parts.push(`Restore SQL snapshot ${w03Id(input.snapshotId)} over database ${db ? `"${w03Cap(db)}"` : '(unnamed)'} on device ${w03Id(input.deviceId)}`);
+      break;
+    }
+    case 'restore_c2c_items': {
+      const n = Array.isArray(input.itemIds) ? input.itemIds.length : 0;
+      parts.push(`Restore ${n} cloud backup item(s)${typeof input.targetConnectionId === 'string' ? ` to connection ${w03Id(input.targetConnectionId)}` : ''}`);
+      break;
+    }
+    case 'execute_dr_plan':
+      parts.push(`Run a ${w03Cap(nonEmptyText(input.executionType) ?? 'DR')} of DR plan ${w03Id(input.planId)} (every group's restore runs on its devices)`);
+      break;
+    case 'manage_hyperv_vm': {
+      const verb = HYPERV_VM_VERBS[action ?? ''];
+      parts.push(verb ? `${verb} VM ${w03Id(input.vmId)}` : `${humanizeToolAction(toolName, action)} on VM ${w03Id(input.vmId)}`);
+      break;
+    }
+    case 'manage_hyperv_checkpoints': {
+      const name = nonEmptyText(input.checkpointName);
+      const verb = HYPERV_CHECKPOINT_VERBS[action ?? ''];
+      parts.push(`${verb ?? humanizeToolAction(toolName, action)} checkpoint${name ? ` "${w03Cap(name)}"` : ''} on VM ${w03Id(input.vmId)}`);
+      break;
+    }
+    case 'configure_vault': {
+      const path = nonEmptyText(input.vaultPath);
+      const details = [
+        typeof input.vaultType === 'string' ? `${w03Cap(input.vaultType)} vault` : null,
+        path ? `at ${w03Cap(path)}` : (action === 'update' ? 'path unchanged' : null),
+        input.retentionCount !== undefined ? `keep ${w03Cap(String(input.retentionCount))} cop(ies)` : null,
+        typeof input.isActive === 'boolean' ? (input.isActive ? 'active' : 'inactive') : null,
+      ].filter((x): x is string => x !== null);
+      const subject = action === 'create' ? `on device ${w03Id(input.deviceId)}` : `vault ${w03Id(input.vaultId)}`;
+      parts.push(`${humanizeToolAction(toolName, action)} ${subject}${details.length ? `: ${details.join(', ')}` : ''}`);
+      break;
+    }
+    case 'manage_backup_profiles':
+      if (action === 'create' && input.ownerScope === 'partner') {
+        parts.push(`Create a PARTNER-WIDE backup profile${input.name ? ` "${w03Cap(String(input.name))}"` : ''} (applies to every organization)`);
+      } else if (action === 'update' || action === 'delete') {
+        // Ownership is DB state: the headline cannot say whether this one is
+        // partner-wide, so it says that it may be (W03-D1, QW6).
+        parts.push(`${humanizeToolAction(toolName, action)} ${w03Id(input.profileId)} (may be partner-wide; ownership is checked when it runs)`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+
     default:
       parts.push(humanizeToolAction(toolName, action));
   }
 
   return parts.join(' ');
+}
+
+/** The input key each W03 headline is built around (W03-D8). */
+const W03_PRIMARY_ID_KEYS: Readonly<Record<string, string>> = {
+  restore_snapshot: 'snapshotId',
+  restore_as_vm: 'snapshotId',
+  instant_boot_vm: 'snapshotId',
+  restore_hyperv_vm: 'snapshotId',
+  restore_mssql_database: 'snapshotId',
+  restore_c2c_items: 'itemIds',
+  execute_dr_plan: 'planId',
+  manage_hyperv_vm: 'vmId',
+  manage_hyperv_checkpoints: 'vmId',
+};
+
+function w03Present(value: unknown): boolean {
+  return (typeof value === 'string' && value.length > 0) || (Array.isArray(value) && value.length > 0);
+}
+
+const HYPERV_VM_VERBS: Readonly<Record<string, string>> = {
+  start: 'Start', stop: 'Shut down', force_stop: 'Force-stop (hard power-off)', pause: 'Pause', resume: 'Resume', save: 'Save the state of',
+};
+const HYPERV_CHECKPOINT_VERBS: Readonly<Record<string, string>> = {
+  create: 'Create', delete: 'Delete (merge away)', apply: 'Apply (discards current VM state since)',
+};
+
+/** First 8 characters of an id for a headline, or a placeholder. */
+function w03Id(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 ? `${value.slice(0, 8)}...` : '(unspecified)';
+}
+
+/** Model-chosen free text in a headline, capped at 80 characters. */
+function w03Cap(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }

@@ -67,12 +67,12 @@ export const DISCOVERY_LIMITS = Object.freeze({
 } as const);
 
 /** Clip every provider-sourced string; keeps the capped worst case bounded. */
-const MAX_FIELD_CHARS = 160;
+export const MAX_FIELD_CHARS = 160;
 
 /** Google licence product ids discovery checks for an assignment. */
-const GOOGLE_LICENSE_PRODUCT_IDS = Object.freeze(['Google-Apps', 'Google-Vault', '101031', '101033', '101034']);
+export const GOOGLE_LICENSE_PRODUCT_IDS = Object.freeze(['Google-Apps', 'Google-Vault', '101031', '101033', '101034']);
 /** Pages of 1000 assignments per product; past this the licence list is truncated. */
-const GOOGLE_LICENSE_MAX_PAGES = 10;
+export const GOOGLE_LICENSE_MAX_PAGES = 10;
 
 export type GroupOwnership = 'sole' | 'shared' | 'none' | 'unknown';
 export interface DiscoveredGroup {
@@ -131,7 +131,7 @@ export interface DiscoverIdentityFactsInput {
   now?: Date;
 }
 
-function clip(v: unknown): string | null {
+export function clip(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v.slice(0, MAX_FIELD_CHARS) : null;
 }
 
@@ -142,7 +142,7 @@ function emptyM365(): M365IdentityFacts {
   return { present: false, externalId: null, userPrincipalName: null, accountEnabled: null, groups: [], licenses: [], intuneDevices: [] };
 }
 
-class Collector {
+export class Collector {
   readonly flags: DiscoveryFlagRow[] = [];
   readonly truncated: string[] = [];
   flag(code: string, subject: string, detail: string): void {
@@ -153,7 +153,7 @@ class Collector {
   }
 }
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -170,7 +170,7 @@ export class DiscoveryTransientError extends Error {
 }
 
 /** Resolve a provider connection in a db context scoped to exactly this org. */
-function inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+export function inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withDbAccessContext(
     { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.identityDiscovery' },
     fn,
@@ -187,7 +187,7 @@ type M365Result = Awaited<ReturnType<typeof executeM365ReadActionByOrg>>;
 /** Read codes that mean "this tenant must re-consent", not "something is broken". */
 const M365_CONSENT_CODES: ReadonlySet<string> = new Set(['graph_permission_missing', 'consent_upgrade_required']);
 
-class M365ReadFailed extends Error {
+export class M365ReadFailed extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 
@@ -196,21 +196,21 @@ const M365_TRANSIENT_CODES: ReadonlySet<string> = new Set([
   'executor_unavailable', 'read_rate_limited', 'graph_throttled', 'graph_transport_failed', 'graph_request_timeout',
 ]);
 
-async function m365Read(orgId: string, action: M365Action): Promise<Exclude<M365Result, { ok: false }>> {
+export async function m365Read(orgId: string, action: M365Action): Promise<Exclude<M365Result, { ok: false }>> {
   const result = await inOrgContext(orgId, () => executeM365ReadActionByOrg(orgId, action));
   if (!result.ok) throw new M365ReadFailed(result.code, result.message);
   return result;
 }
 
 /** The account read's failure, classified: transient → throw; definitive → flag. */
-function rethrowIfTransientM365(err: unknown): void {
+export function rethrowIfTransientM365(err: unknown): void {
   if (!(err instanceof M365ReadFailed)) {
     throw new DiscoveryTransientError('m365', 'error', errorMessage(err));
   }
   if (M365_TRANSIENT_CODES.has(err.code)) throw new DiscoveryTransientError('m365', err.code, err.message);
 }
 
-function m365FailureFlag(c: Collector, subject: string, err: unknown, what: string): void {
+export function m365FailureFlag(c: Collector, subject: string, err: unknown, what: string): void {
   if (err instanceof M365ReadFailed && M365_CONSENT_CODES.has(err.code)) {
     c.flag('m365_consent_upgrade_required', subject,
       `Microsoft 365 refused the ${what} read for missing permissions: re-consent Microsoft 365.`);
@@ -336,14 +336,14 @@ async function readM365(orgId: string, externalId: string, label: string, c: Col
 // ---------------------------------------------------------------------------
 
 /** Throttling, a 5xx, or no HTTP response at all (network): retry, never conclude. */
-function isTransientGoogle(err: unknown): boolean {
+export function isTransientGoogle(err: unknown): boolean {
   if (normalizeGoogleError(err).code === 'google_rate_limited') return true;
   const e = err as { code?: unknown; status?: unknown; response?: { status?: unknown } } | null;
   const status = [e?.response?.status, e?.status, e?.code].find((v): v is number => typeof v === 'number');
   return status === undefined ? true : status >= 500;
 }
 
-function googleFailureFlag(c: Collector, code: string, subject: string, err: unknown, what: string): void {
+export function googleFailureFlag(c: Collector, code: string, subject: string, err: unknown, what: string): void {
   const norm = normalizeGoogleError(err);
   c.flag(code, subject, `The Google Workspace ${what} read failed (${norm.code}): ${norm.message}`);
 }

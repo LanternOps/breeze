@@ -184,6 +184,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_c2c_connections', description: 'Cloud-to-cloud backup connections', category: 'Backup & Recovery' },
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
+      // Full-control W03 (#6757)
+      { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
@@ -253,6 +255,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
+      // Backup & Recovery (full-control W03, #6757)
+      { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
+      { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
       { name: 'get_monitor_activity', description: 'Per-device breach state and recent breach episodes for a monitor', category: 'Monitoring & Analytics' },
       { name: 'reset_monitor_escalation', description: 'Clear a monitor recurrence escalation for one device and resume its automatic responses', category: 'Monitoring & Analytics' },
@@ -369,8 +375,26 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
       // Backup & Recovery
+      // Full-control W03 (#6757): triggers and Hyper-V power are approved by the
+      // requester; restores, instant boot and DR execution need a second approver.
       { name: 'trigger_backup', description: 'Initiate on-demand backup', category: 'Backup & Recovery' },
-      { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
+      { name: 'trigger_hyperv_backup', description: 'Back up a Hyper-V VM now', category: 'Backup & Recovery' },
+      { name: 'trigger_mssql_backup', description: 'Back up a SQL Server database now', category: 'Backup & Recovery' },
+      { name: 'verify_mssql_backup', description: 'Verify a SQL Server backup on the device (RESTORE VERIFYONLY)', category: 'Backup & Recovery' },
+      { name: 'trigger_vault_sync', description: 'Copy a snapshot to the device\'s local vault', category: 'Backup & Recovery' },
+      { name: 'trigger_c2c_sync', description: 'Start a cloud-to-cloud backup sync', category: 'Backup & Recovery' },
+      { name: 'configure_vault (create/update)', description: 'Create or repoint a local vault (path, type, retention); the device is reconfigured', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
+      { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
+      { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
+      { name: 'instant_boot_vm', description: 'Boot a snapshot as a VM (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_hyperv_vm', description: 'Restore a Hyper-V VM from backup (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_mssql_database', description: 'Restore a SQL Server database (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_c2c_items', description: 'Restore cloud-to-cloud backup items (second approver)', category: 'Backup & Recovery' },
+      { name: 'execute_dr_plan', description: 'Run a DR rehearsal, failover or failback (second approver)', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (create/update/delete)', description: 'Create, repoint, or delete a notification channel (the approver sees the destination host)', category: 'Alerts & Notifications' },
@@ -450,6 +474,8 @@ export interface RateLimitConfig {
   category: ToolCategory;
 }
 
+// `tier` here is the tool's BASE (registry) tier; per-action escalations
+// (e.g. configure_vault create/update -> Tier 3) are listed in TIER_DEFINITIONS.
 export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
   { toolName: 'execute_command', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
@@ -547,7 +573,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
-  { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
   { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
@@ -558,13 +584,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_hyperv_checkpoints', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'trigger_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_mssql_database', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'verify_mssql_backup', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'verify_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
   { toolName: 'query_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'manage_service_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'get_service_monitoring_status', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'trigger_c2c_sync', tier: 2, permission: 'organizations.write', category: 'Integrations' },
+  { toolName: 'trigger_c2c_sync', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'restore_c2c_items', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   // Alerts & Notifications
   { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },

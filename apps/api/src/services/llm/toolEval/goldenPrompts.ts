@@ -95,8 +95,11 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g73', prompt: 'Is the Contoso Slack alert channel set up correctly? Test it.', expect: [{ tool: 'manage_notification_channels', action: 'test' }] },
   { id: 'g74', prompt: 'Fire a test delivery at our PSA webhook.', expect: [{ tool: 'test_webhook' }, { tool: 'query_webhooks' }] },
   { id: 'g75', prompt: 'Mark quote Q-2041 declined — the customer said no on the phone today.', expect: [{ tool: 'manage_quotes', action: 'decline' }, { tool: 'list_quotes' }] },
-  // Full-control W04 (#6758): security, incident and device-operation writes reach chat
-  // (g76-g78 are W03's, #6757).
+  // Full-control W03 (#6757): backup, DR and virtualization writes.
+  { id: 'g76', prompt: "Restore last night's snapshot of C:\\Users\\amy\\Documents to AMY-PC.", expect: [{ tool: 'restore_snapshot' }, { tool: 'browse_snapshots' }] },
+  { id: 'g77', prompt: 'Run a rehearsal of the Contoso DR plan.', expect: [{ tool: 'execute_dr_plan' }, { tool: 'query_dr_plans' }] },
+  { id: 'g78', prompt: 'Start the SQL01 VM on HV-HOST-2.', expect: [{ tool: 'manage_hyperv_vm', action: 'start' }, { tool: 'query_hyperv_vms' }] },
+  // Full-control W04 (#6758): security, incident and device-operation writes reach chat.
   { id: 'g79', prompt: 'Kill the runaway chrome.exe (PID 4412) on WS-042.', expect: [{ tool: 'manage_processes', action: 'kill' }, { tool: 'resolve_device_context' }] },
   { id: 'g80', prompt: 'Isolate FIN-LAPTOP-07 from the network for incident INC-12.', expect: [{ tool: 'execute_containment' }, { tool: 'list_incidents' }, { tool: 'get_incident_timeline' }, { tool: 'resolve_device_context' }] },
   { id: 'g81', prompt: 'Restart the Breeze agent on the three offline Contoso servers.', expect: [{ tool: 'trigger_agent_restart' }, { tool: 'query_devices' }] },

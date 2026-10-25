@@ -1895,13 +1895,6 @@ export async function createActionIntent(
         'plan_approval_invalid',
       );
     }
-    // Spec §6.4: secret-bearing effects never ride a plan in this wave.
-    if (isSecretBearingTool(input.toolName)) {
-      throw new ActionIntentError(
-        `${input.toolName} mints a credential and cannot be dispatched under a plan approval`,
-        'plan_approval_invalid',
-      );
-    }
     const membership = await checkPlanEffectMembershipSystem({
       orgId,
       taskId: taskContext.taskId,
@@ -1915,6 +1908,22 @@ export async function createActionIntent(
     if (!membership.ok) {
       throw new ActionIntentError(
         `plan approval does not authorize this effect: ${membership.refusal} (${membership.detail})`,
+        'plan_approval_invalid',
+      );
+    }
+    // Spec §6.4 / R2 (D-R2-2): the effect's kind must MATCH its approved set's
+    // kind, both ways. A credential-minting effect is dispatched only under a
+    // set whose every member mints one (the card was about account creation
+    // and nothing else, and each effect keeps its own result to seal into); an
+    // ordinary effect never rides a credential-only set. `setSecrecy` is read
+    // from the approved ROWS by membership, which also refuses a mixed set at
+    // mint and at release.
+    const wantsSecret = isSecretBearingTool(input.toolName);
+    if (wantsSecret !== (membership.setSecrecy === 'all_secret_bearing')) {
+      throw new ActionIntentError(
+        wantsSecret
+          ? `${input.toolName} mints a credential and may only be dispatched under an approval whose every effect does`
+          : `${input.toolName} does not mint a credential and may not be dispatched under a credential-only approval`,
         'plan_approval_invalid',
       );
     }

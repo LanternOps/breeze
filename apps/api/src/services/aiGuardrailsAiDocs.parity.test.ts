@@ -180,6 +180,18 @@ const W04_DOCUMENTED = [
   'acknowledge_network_device',
 ] as const;
 
+/**
+ * Spec 2026-09-23 W03 (#6757): the 19 backup, DR and virtualization write
+ * tools reach chat and agents — every action-enum member (or, for a
+ * single-purpose tool, a bare row) carries a documented tier.
+ */
+const W03_DOCUMENTED_TOOLS = [
+  'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'trigger_vault_sync', 'trigger_c2c_sync',
+  'verify_mssql_backup', 'restore_snapshot', 'restore_as_vm', 'restore_hyperv_vm', 'restore_mssql_database',
+  'restore_c2c_items', 'instant_boot_vm', 'manage_hyperv_vm', 'manage_hyperv_checkpoints', 'manage_dr_plan',
+  'execute_dr_plan', 'manage_backup_profiles', 'configure_backup_sla', 'configure_vault',
+] as const;
+
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
   it.each(W04_DOCUMENTED)('W04 (#6758): %s is documented in a tool table with every action', (tool) => {
     const rows = claims.filter((c) => c.tool === tool);
@@ -193,7 +205,7 @@ describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
     expect(actions.filter((a) => !documented.has(a)), `Undocumented ${tool} actions in ${DOC_REL}`).toEqual([]);
   });
 
-  it.each(W02_DOCUMENTED_TOOLS)('W02 (#6756): every %s action has a documented tier row', (tool) => {
+  it.each([...W02_DOCUMENTED_TOOLS, ...W03_DOCUMENTED_TOOLS])('W02/W03 (#6756, #6757): every %s action has a documented tier row', (tool) => {
     const actions = toolActionEnum(tool) ?? [];
     const rows = claims.filter((c) => c.tool === tool);
     if (actions.length === 0) {

@@ -590,3 +590,22 @@ Of the 75 cases, 39 are deferred-only: every acceptable first tool is deferred u
 3. Do not edit `DOMAIN_VOCABULARY` or the bounds to make room.
 
 A new `DOMAIN_NOTES` sentence costs always-on bytes, and 66 B of headroom are left.
+
+## 14. Full-control W03 (#6757) delta
+
+**Date measured:** 2026-10-25 · **Branch:** `feature/6754-ai-full-control/wave-6757` @ `0f03ba0693` against `origin/main` @ `30d2519965` (post-W19), the main tree measured from a `git archive` export with the branch's dependencies · **Plan:** `plans/ai-mcp/2026-10-25-ai-full-control-w03-backup-dr-writes.md` (spec D5, gate ≤ +8,000 turn-1 tokens per surface with tool search **on**, production since A-W04; the `off` delta is recorded alongside)
+
+Harness: `tool-capture.ts --surface <chat|agent-full> --proxy --tool-search <off|on>`, model `claude-sonnet-5-5`, default prompt. Turn-1 tokens are read from the first Sonnet `/v1/messages` proxy row that carries a tool list, as `inputTokens + cacheCreationInputTokens + cacheReadInputTokens`.
+
+| Surface | Tool search | Tools sent (main → branch) | Turn-1 main | Turn-1 branch | Δ tokens | Gate |
+|---|---|---|---|---|---|---|
+| chat | **on** | 17 → 17 (deferred: 222 → 241 registered) | 19,085 | 19,707 | **+622** | pass |
+| chat | off | 222 → 241 (+19) | 116,098 | 125,342 | +9,244 | recorded (not the gate) |
+| agent-full | **on** | 162 → 163 (+1) | 78,482 | 79,833 | **+1,351** | pass |
+| agent-full | off | 162 → 163 (+1) | 78,505 | 79,833 | +1,328 | recorded |
+
+- **chat** gains all 19 W03 tools. With tool search on they are deferred, so turn 1 pays only their names in the deferred-tool list (+622). The system prompt is 13,876 bytes on both: the W19 always-on index does not grow with tools.
+- **agent-full** gains one. With an empty agent allowlist a full-profile run exposes only tools with a read-only action (`fullRunToolExposure`, #6909), and `manage_backup_profiles` (`list`/`get`) is the only W03 tool that has one. The other 18 reach an agent only when its allowlist names them.
+- **The `off` delta (+9,244) is over +8,000.** It is the price of 19 inline schemas on a full-list host. It is not the gate, because tool search has been the production default since A-W04 (2026-09-28), which is the lever D5 told an over-budget wave to wait for.
+- **Chat tool index (W19 bounds):** the always-on index is 2,494 B on both. The backup block grows 433 → 959 B and the integrations block 562 → 599 B (B2 < 2,048 B). The worst page turn stays at 4,190 B (B3 < 7,040 B; backup is not a page-context domain). The legacy `AI_TOOL_INDEX=full` render is 6,917 → 7,480 B default and 6,966 → 7,529 B flag-on, informational only (no ceiling since W19).
+- None of the 19 is `alwaysLoad`.

@@ -44,6 +44,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureException, captureMessage } from './sentry';
@@ -637,6 +638,29 @@ export const TOOL_TIERS = {
   manage_tags: 2,
   manage_notification_channels: 1,
   test_webhook: 3,
+  // Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes.
+  // Per-action classes live in aiGuardrails (W03 class review: restores and
+  // DR execution four-eyes, triggers and Hyper-V power supervised, partner-
+  // wide backup profiles input-aware).
+  trigger_backup: 3,
+  trigger_hyperv_backup: 3,
+  trigger_mssql_backup: 3,
+  trigger_vault_sync: 3,
+  trigger_c2c_sync: 3,
+  verify_mssql_backup: 3,
+  restore_snapshot: 3,
+  restore_as_vm: 3,
+  restore_hyperv_vm: 3,
+  restore_mssql_database: 3,
+  restore_c2c_items: 3,
+  instant_boot_vm: 3,
+  manage_hyperv_vm: 3,
+  manage_hyperv_checkpoints: 2,
+  manage_dr_plan: 2,
+  execute_dr_plan: 3,
+  manage_backup_profiles: 1,
+  configure_backup_sla: 2,
+  configure_vault: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 /**
@@ -814,6 +838,10 @@ const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
  * that static scan.
  */
 function inputShape(toolName: string): z.ZodRawShape {
+  // W03-D4 (#6757): a tool whose validator is a pipe/union (restore_as_vm)
+  // exposes a flat envelope built from its arms in the schema module.
+  const envelope = TOOL_SDK_INPUT_SHAPES[toolName];
+  if (envelope) return envelope;
   const shape = (toolInputSchemas as Record<string, { shape?: z.ZodRawShape }>)[toolName]?.shape;
   if (!shape) {
     throw new Error(`toolInputSchemas.${toolName} is not a plain z.object — hand-mirror its shape instead`);
@@ -3678,6 +3706,143 @@ export function buildBreezeSdkTools(
       registryDescription('search_c2c_items'),
       inputShape('search_c2c_items'),
       makeHandler('search_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes.
+    // Classes live in aiGuardrails (W03 class review); every restore and DR
+    // execution is four-eyes, every trigger supervised.
+
+    tool(
+      'trigger_backup',
+      registryDescription('trigger_backup'),
+      inputShape('trigger_backup'),
+      makeHandler('trigger_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_hyperv_backup',
+      registryDescription('trigger_hyperv_backup'),
+      inputShape('trigger_hyperv_backup'),
+      makeHandler('trigger_hyperv_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_mssql_backup',
+      registryDescription('trigger_mssql_backup'),
+      inputShape('trigger_mssql_backup'),
+      makeHandler('trigger_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_vault_sync',
+      registryDescription('trigger_vault_sync'),
+      inputShape('trigger_vault_sync'),
+      makeHandler('trigger_vault_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_c2c_sync',
+      registryDescription('trigger_c2c_sync'),
+      inputShape('trigger_c2c_sync'),
+      makeHandler('trigger_c2c_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'verify_mssql_backup',
+      registryDescription('verify_mssql_backup'),
+      inputShape('verify_mssql_backup'),
+      makeHandler('verify_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_snapshot',
+      registryDescription('restore_snapshot'),
+      inputShape('restore_snapshot'),
+      makeHandler('restore_snapshot', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_as_vm',
+      registryDescription('restore_as_vm'),
+      inputShape('restore_as_vm'),
+      makeHandler('restore_as_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_hyperv_vm',
+      registryDescription('restore_hyperv_vm'),
+      inputShape('restore_hyperv_vm'),
+      makeHandler('restore_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_mssql_database',
+      registryDescription('restore_mssql_database'),
+      inputShape('restore_mssql_database'),
+      makeHandler('restore_mssql_database', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_c2c_items',
+      registryDescription('restore_c2c_items'),
+      inputShape('restore_c2c_items'),
+      makeHandler('restore_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'instant_boot_vm',
+      registryDescription('instant_boot_vm'),
+      inputShape('instant_boot_vm'),
+      makeHandler('instant_boot_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_hyperv_vm',
+      registryDescription('manage_hyperv_vm'),
+      inputShape('manage_hyperv_vm'),
+      makeHandler('manage_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_hyperv_checkpoints',
+      registryDescription('manage_hyperv_checkpoints'),
+      inputShape('manage_hyperv_checkpoints'),
+      makeHandler('manage_hyperv_checkpoints', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_dr_plan',
+      registryDescription('manage_dr_plan'),
+      inputShape('manage_dr_plan'),
+      makeHandler('manage_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'execute_dr_plan',
+      registryDescription('execute_dr_plan'),
+      inputShape('execute_dr_plan'),
+      makeHandler('execute_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_backup_profiles',
+      registryDescription('manage_backup_profiles'),
+      inputShape('manage_backup_profiles'),
+      makeHandler('manage_backup_profiles', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_backup_sla',
+      registryDescription('configure_backup_sla'),
+      inputShape('configure_backup_sla'),
+      makeHandler('configure_backup_sla', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_vault',
+      registryDescription('configure_vault'),
+      inputShape('configure_vault'),
+      makeHandler('configure_vault', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Playbook tools

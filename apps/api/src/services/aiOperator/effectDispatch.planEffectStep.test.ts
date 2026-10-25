@@ -707,3 +707,135 @@ describe('planEffectStep — review-round fixes (R1a-0)', () => {
     expect(out.settledDetail).toContain('google_signout (ordinal 0)');
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2a Task 3a (W07 Amendment B2): per-step planning snapshots and the
+// post-stage-1 build-failure policy. Appended; every case above is unchanged.
+//
+// A synthetic two-stage recipe (the onboarding recipe does not exist yet):
+// `create_accounts` plans from snapshot 1 (`discover`), `provision_effects`
+// and `verify_outcome` from snapshot 2 (`resolve_accounts`). Stage 2 runs at
+// revision 3; stage 1's operations sit at revision 2. No approval row exists
+// at revision 3 in any case here — the A.4 rule alone would `fail`, but stage
+// 1 may already have created an account, so a stage-2 fault must hand off.
+// ---------------------------------------------------------------------------
+describe('planEffectStep — per-stage snapshots (R2a Task 3a)', () => {
+  const S2_STEP_ID = '00000000-0000-4000-8000-0000000000f2';
+  const S2_REVISION = 3;
+  const facts2 = { stage: 'provision', targets: { contactTargetId: TARGET }, accounts: { m365: 'obj-1111', google: null } };
+  const sealed2 = sealPlanningSnapshot(facts2, new Date('2026-10-11T10:00:00.000Z'));
+  const snapshot2Row = (over: Record<string, unknown> = {}) => ({
+    id: S2_STEP_ID, orgId: 'o1', taskId: TASK_ID, stepKey: 'resolve_accounts', state: 'succeeded',
+    checkpoint: { planningSnapshot: sealed2.envelope }, ...over,
+  });
+  const stageTask = (currentStepKey: string, revision = S2_REVISION) => ({
+    id: TASK_ID, orgId: 'o1', revision, currentStepKey, attemptOrdinal: 0, requesterUserId: 'u-requester',
+  }) as never;
+  /** `null` = the map is absent (an explicit `undefined` would take the default). */
+  const twoStage = (planningSnapshotStepFor: Record<string, string> | null = {
+    review: 'discover', create_accounts: 'discover', resolve_accounts: 'discover',
+    provision_effects: 'resolve_accounts', verify_outcome: 'resolve_accounts', manual_work: 'resolve_accounts',
+  }) => ({
+    key: 'fixture_two_stage', buildPlan,
+    steps: { discover: {}, create_accounts: {}, resolve_accounts: {}, provision_effects: {}, verify_outcome: {}, manual_work: {} },
+    planningSnapshotStepKey: 'discover',
+    ...(planningSnapshotStepFor ? { planningSnapshotStepFor } : {}),
+  }) as never;
+  const cp = (over: Record<string, unknown> = {}) =>
+    ({ recipeInput: { who: 'dana' }, planningSnapshot: { stepId: S2_STEP_ID, digest: sealed2.digest }, resumeStepKey: 'manual_work', ...over }) as never;
+  const runStage = (stepKey: string, recipe: never = twoStage(), checkpoint: never = cp()) =>
+    planEffectStep({ task: stageTask(stepKey), recipe, checkpoint, now: new Date('2026-10-12T00:00:00Z') });
+  /** A stage-1 operation: an earlier revision, an earlier step. */
+  const stage1Op = (resultState: string) => op(e0, { resultState, intentId: 'c1', planRevision: 2, taskStepKey: 'create_accounts' });
+
+  beforeEach(() => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row()]);
+    h.tables.set(aiOperatorPlanApprovals, []);
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+  });
+
+  it('a stage-2 wake plans from snapshot 2: buildPlan gets its facts', async () => {
+    h.proposePlanApproval.mockResolvedValue({ ok: true, approvalId: 'ap2', intentId: 'plan-intent-2', effectSetDigest: 'x', effectCount: 3 });
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts2);
+  });
+
+  it('stage-2 snapshot fault (ref still at discover) with NO approval at the revision hands off unresolved, never fails', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    const out = await runStage('provision_effects') as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    expect(out.handoffSummary).toContain('Nothing further was dispatched');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.readPlanApprovalAtRevision).not.toHaveBeenCalled();
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'unknown'])('stage-2 buildPlan throw with an EARLIER-revision %s operation hands off unknown_effect', async (state) => {
+    buildPlan.mockImplementation(() => { throw new Error('malformed stage-2 facts'); });
+    setOps([stage1Op(state)]);
+    const out = await runStage('provision_effects') as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect', detail: expect.stringContaining('malformed stage-2 facts') });
+    expect(out.handoffSummary).toContain('may still be running');
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('stage-2 buildPlan throw with no unsettled operation hands off unresolved', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('malformed stage-2 facts'); });
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved' });
+  });
+
+  it('snapshot_step_unmapped: a consumer step the declared map does not name hands off, never builds with snapshot 1', async () => {
+    const out = await runStage('provision_effects', twoStage({ review: 'discover', create_accounts: 'discover' }));
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('snapshot_step_unmapped') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('the stage-2 EMPTY plan with no approval at the revision still finishes (moves to resumeStepKey)', async () => {
+    buildPlan.mockReturnValue([]);
+    setOps([stage1Op('pending')]);
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'move', toStepKey: 'manual_work' });
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+  });
+
+  it('planProbeStep at a stage-2 probe step applies the same hand-off', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    await expect(planProbeStep({ task: stageTask('verify_outcome'), recipe: twoStage(), checkpoint: cp(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    setOps([stage1Op('unknown')]);
+    await expect(planProbeStep({ task: stageTask('verify_outcome'), recipe: twoStage(), checkpoint: cp(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+  });
+
+  it('PIN: a stage-1 snapshot fault (create_accounts reads a resolve_accounts ref) fails closed under the A.4 rule', async () => {
+    // create_accounts maps to planningSnapshotStepKey, so the stage-1 rule is
+    // today's: no approval at the revision ⇒ fail.
+    const out = await planEffectStep({
+      task: stageTask('create_accounts', 2), recipe: twoStage(), checkpoint: cp(), now: new Date('2026-10-12T00:00:00Z'),
+    });
+    expect(out).toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('PIN (stage 1 keeps the A.4 split): a create_accounts buildPlan throw with no approval fails, even with a pending op', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    buildPlan.mockImplementation(() => { throw new Error('boom'); });
+    setOps([stage1Op('pending')]);
+    await expect(planEffectStep({
+      task: stageTask('create_accounts', 2), recipe: twoStage(), checkpoint: cp(), now: new Date('2026-10-12T00:00:00Z'),
+    })).resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved' });
+  });
+
+  it('PIN (map absent ⇒ today\'s fail): a single-snapshot recipe at any step with a pending op and no approval fails', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    buildPlan.mockImplementation(() => { throw new Error('boom'); });
+    setOps([stage1Op('pending')]);
+    await expect(runStage('provision_effects', twoStage(null)))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('boom') });
+    // and a wrong-step ref on a map-less recipe is still today's fail
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row()]);
+    await expect(runStage('provision_effects', twoStage(null)))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', detail: expect.stringContaining('snapshot_wrong_step') });
+  });
+});

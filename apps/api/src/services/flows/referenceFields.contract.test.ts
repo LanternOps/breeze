@@ -85,6 +85,12 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // handler re-checks org/partner/site reach at run time (see the
   // aiTools*WritesScope integration suites). Save-time owner checks for them
   // need new FLOW_OWNED_REFERENCE_FIELDS kinds — a follow-up, flows are flag-off.
+  // Full-control W03 (#6757) added the backup/DR/Hyper-V write tools' ids
+  // (snapshots, VMs, DR plans/groups, vaults, profiles, SLA and C2C configs) on
+  // the same terms: every handler re-checks org/site reach at run time, pinned
+  // by aiToolsBackupWritesSiteScope / aiToolsDrHypervWritesScope /
+  // aiToolsBackupProfilesScope. Every one of their tier-3 actions also needs
+  // approval when a flow runs it.
   // recall / remember (Wisp W03) and the W05a concern tools (list_concerns, raise_concern,
   // snooze_concern, resolve_concern, create_watch) are absent: they refuse outright without
   // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
@@ -100,12 +106,17 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "apply_configuration_policy.targetId",
         "cancel_script_execution.executionId",
         "configuration_policy_compliance.policyId",
+        "configure_backup_sla.configId",
+        "configure_backup_sla.orgId",
+        "configure_backup_sla.targetGroups",
+        "configure_vault.vaultId",
         "delete_tenant.tenant_id",
         "detect_log_correlations.orgId",
         "diagnose_connectivity.origin_device_id",
         "diagnose_connectivity.site_id",
         "disk_cleanup.cleanupRunId",
         "edr_endpoint_action.connectionId",
+        "execute_dr_plan.planId",
         "execute_playbook.playbookId",
         "export_dataset.siteId",
         "find_proven_fixes.alertId",
@@ -179,6 +190,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_topology_monitoring_status.site_id",
         "get_trust_page_status.orgId",
         "get_vm_restore_estimate.snapshotId",
+        "instant_boot_vm.snapshotId",
         "list_ai_agent_runs.agentId",
         "list_ai_agent_runs.orgId",
         "list_business_calendars.orgId",
@@ -213,6 +225,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_automations.automationId",
         "manage_backup_configs.configId",
         "manage_backup_configs.orgId",
+        "manage_backup_profiles.orgId",
+        "manage_backup_profiles.profileId",
         "manage_billing_catalog.catalogId",
         "manage_billing_catalog.orgId",
         "manage_configuration_policy.orgId",
@@ -234,9 +248,15 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_deployments.deploymentId",
         "manage_deployments.orgId",
         "manage_dns_policy.integrationId",
+        "manage_dr_plan.dependsOnGroupId",
+        "manage_dr_plan.groupId",
+        "manage_dr_plan.orgId",
+        "manage_dr_plan.planId",
         "manage_groups.groupId",
         "manage_groups.orgId",
         "manage_groups.siteId",
+        "manage_hyperv_checkpoints.vmId",
+        "manage_hyperv_vm.vmId",
         "manage_invoices.bundleId",
         "manage_invoices.catalogItemId",
         "manage_invoices.contractId",
@@ -320,6 +340,11 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "remove_configuration_policy_assignment.assignmentId",
         "reset_monitor_escalation.monitorId",
         "resolve_device_context.contextId",
+        "restore_c2c_items.itemIds",
+        "restore_c2c_items.targetConnectionId",
+        "restore_hyperv_vm.snapshotId",
+        "restore_mssql_database.snapshotId",
+        "restore_snapshot.snapshotId",
         "run_script.proposalId",
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",
@@ -333,6 +358,11 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "test_ticket_routing_rule.categoryId",
         "test_ticket_routing_rule.orgId",
         "test_webhook.webhookId",
+        "trigger_backup.configId",
+        "trigger_c2c_sync.configId",
+        "trigger_hyperv_backup.vmId",
+        "trigger_vault_sync.vaultId",
+        "verify_mssql_backup.snapshotId",
         "workspace_run.stdinHandle",
         "workspace_stage.handles",
       ]

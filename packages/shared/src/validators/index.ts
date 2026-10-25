@@ -1062,6 +1062,7 @@ export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
 export * from './aiOperatorIdentity';
+export * from './aiOperatorOnboarding';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';

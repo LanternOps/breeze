@@ -59,8 +59,9 @@ function humanOnlyProblems(
  * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
  * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
  * (14 of them after their route-permission parity fixes landed), leaving 45.
- * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38. W04 (#6758)
- * wired the 19 security, incident and device-operation tools, leaving W03's 19.
+ * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38. W03 (#6757)
+ * wired the 19 backup, DR and virtualization write tools and W04 (#6758) the
+ * 19 security, incident and device-operation tools, leaving none.
  * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
@@ -69,25 +70,6 @@ function humanOnlyProblems(
  * list.
  */
 const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'configure_backup_sla',
-  'configure_vault',
-  'execute_dr_plan',
-  'instant_boot_vm',
-  'manage_backup_profiles',
-  'manage_dr_plan',
-  'manage_hyperv_checkpoints',
-  'manage_hyperv_vm',
-  'restore_as_vm',
-  'restore_c2c_items',
-  'restore_hyperv_vm',
-  'restore_mssql_database',
-  'restore_snapshot',
-  'trigger_backup',
-  'trigger_c2c_sync',
-  'trigger_hyperv_backup',
-  'trigger_mssql_backup',
-  'trigger_vault_sync',
-  'verify_mssql_backup',
 ]);
 
 /**
@@ -308,6 +290,7 @@ describe('SDK declarations carry registry search metadata (A-W02)', () => {
 
 import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
 import { validateToolInput, toolInputSchemas } from './aiToolSchemas';
+import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 
 describe('manage_delivery has every registration', () => {
   it('does not add a frozen-gap exception', () => {
@@ -417,6 +400,45 @@ describe('W02 write wiring (#6756)', () => {
 
   it('test_webhook is registry tier 3 (a real outbound POST)', () => {
     expect(TOOL_TIERS.test_webhook).toBe(3);
+  });
+});
+
+/** Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes. Pinned
+ * so a later wave cannot silently un-wire one. */
+const W03_WRITE_TOOLS = [
+  'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'trigger_vault_sync', 'trigger_c2c_sync',
+  'verify_mssql_backup', 'restore_snapshot', 'restore_as_vm', 'restore_hyperv_vm', 'restore_mssql_database',
+  'restore_c2c_items', 'instant_boot_vm', 'manage_hyperv_vm', 'manage_hyperv_checkpoints', 'manage_dr_plan',
+  'execute_dr_plan', 'manage_backup_profiles', 'configure_backup_sla', 'configure_vault',
+] as const;
+
+/** The SDK shape a tool must declare: its plain z.object's shape, or its W03-D4 envelope. */
+function expectedSdkShapeKeys(name: string): string[] {
+  const envelope = TOOL_SDK_INPUT_SHAPES[name];
+  if (envelope) return Object.keys(envelope).sort();
+  return Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort();
+}
+
+describe('W03 write wiring (#6757)', () => {
+  it.each(W03_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    expect(KNOWN_MISSING_TOOL_TIERS.has(name)).toBe(false);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(expectedSdkShapeKeys(name));
+    // The SDK strips keys absent from its shape, so a registry-advertised key
+    // missing here would vanish before validateToolInput ever saw it.
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('the three tools escalated to supervised are registry tier 3 (W03 class review)', () => {
+    for (const name of ['trigger_vault_sync', 'trigger_c2c_sync', 'verify_mssql_backup'] as const) {
+      expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS], name).toBe(3);
+    }
   });
 });
 

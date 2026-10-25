@@ -295,6 +295,30 @@ const BINDINGS: readonly Binding[] = [
   // the handler enforces it (aiToolsDR.ts execute_dr_plan).
   { tool: 'execute_dr_plan', routeFile: 'dr.ts', method: 'post', path: '/plans/:id/execute' },
 
+  // Full-control W03 (#6757): every backup / DR / Hyper-V write action wired
+  // into chat binds to the route a technician uses for the same act.
+  { tool: 'trigger_backup', routeFile: 'backup/jobs.ts', method: 'post', path: '/jobs/run/:deviceId' },
+  { tool: 'trigger_hyperv_backup', routeFile: 'backup/hyperv.ts', method: 'post', path: '/backup' },
+  { tool: 'trigger_mssql_backup', routeFile: 'backup/mssql.ts', method: 'post', path: '/mssql/backup' },
+  { tool: 'verify_mssql_backup', routeFile: 'backup/mssql.ts', method: 'post', path: '/mssql/verify/:snapshotId' },
+  { tool: 'trigger_vault_sync', routeFile: 'backup/vault.ts', method: 'post', path: '/:id/sync' },
+  { tool: 'configure_vault', action: 'update', routeFile: 'backup/vault.ts', method: 'patch', path: '/:id' },
+  { tool: 'trigger_c2c_sync', routeFile: 'c2c/jobs.ts', method: 'post', path: '/configs/:id/run' },
+  { tool: 'restore_c2c_items', routeFile: 'c2c/items.ts', method: 'post', path: '/restore' },
+  ...(['start', 'stop', 'force_stop', 'pause', 'resume', 'save'] as const).map((action) => (
+    { tool: 'manage_hyperv_vm', action, routeFile: 'backup/hyperv.ts', method: 'post' as const, path: '/vm-state/:deviceId/:vmId' }
+  )),
+  ...(['create', 'delete', 'apply'] as const).map((action) => (
+    { tool: 'manage_hyperv_checkpoints', action, routeFile: 'backup/hyperv.ts', method: 'post' as const, path: '/checkpoints/:deviceId/:vmId' }
+  )),
+  { tool: 'manage_backup_profiles', action: 'list', routeFile: 'backup/profiles.ts', method: 'get', path: '/profiles' },
+  { tool: 'manage_backup_profiles', action: 'get', routeFile: 'backup/profiles.ts', method: 'get', path: '/profiles/:id' },
+  { tool: 'manage_backup_profiles', action: 'create', routeFile: 'backup/profiles.ts', method: 'post', path: '/profiles' },
+  { tool: 'manage_backup_profiles', action: 'update', routeFile: 'backup/profiles.ts', method: 'patch', path: '/profiles/:id' },
+  { tool: 'manage_backup_profiles', action: 'delete', routeFile: 'backup/profiles.ts', method: 'delete', path: '/profiles/:id' },
+  { tool: 'configure_backup_sla', action: 'create', routeFile: 'backup/sla.ts', method: 'post', path: '/configs' },
+  { tool: 'configure_backup_sla', action: 'update', routeFile: 'backup/sla.ts', method: 'patch', path: '/configs/:id' },
+
   // §2.5 — backup / Hyper-V / MSSQL reads. query_backups' own binding moved to
   // the per-action rows below (its base tier-1 map is per-action, so a
   // bare-tool binding here can no longer resolve).

@@ -616,7 +616,7 @@ Device file contents, command output and registry values reach the model as fenc
 
 ## Backup AI Tools
 
-The AI assistant can query, manage, and operate backups across your fleet. These tools are available in any AI chat session.
+The AI assistant can query, manage, and operate backups, disaster recovery plans and Hyper-V VMs across your fleet. These tools are available in any AI chat session and to AI agents.
 
 | Tool | Tier | Description |
 |------|------|-------------|
@@ -639,8 +639,30 @@ The AI assistant can query, manage, and operate backups across your fleet. These
 | `query_dr_plans` | 1 | List disaster recovery plans |
 | `get_dr_plan_details` | 1 | Details for one disaster recovery plan, including its groups |
 | `get_dr_execution_status` | 1 | Status of a disaster recovery plan execution |
-| `trigger_backup` | 3 | Initiate an on-demand backup for a device (requires approval) |
-| `restore_snapshot` | 3 | Restore data from a snapshot to a device (requires approval) |
+| `manage_backup_profiles (list/get)` | 1 | List backup profiles and see what each one backs up |
+| `manage_backup_profiles (create)` | 2 | Create an organization backup profile. A partner-wide profile (`ownerScope: partner`, "all orgs") needs approval (Tier 3) |
+| `manage_backup_profiles (update/delete)` | 3 | Change or delete a backup profile. It may be partner-wide, and narrowing one stops protecting data in every organization, so the requester approves |
+| `configure_backup_sla (create/update)` | 2 | Create or change a backup SLA: RPO/RTO targets and breach alerts |
+| `manage_dr_plan (create_plan/update_plan/add_group/update_group)` | 2 | Create or edit a disaster recovery plan and its device groups. Refused while one of the plan's executions is running |
+| `manage_dr_plan (delete_group)` | 3 | Delete a group from a disaster recovery plan |
+| `trigger_backup` | 3 | Initiate an on-demand backup for a device |
+| `trigger_hyperv_backup` | 3 | Back up a Hyper-V VM now |
+| `trigger_mssql_backup` | 3 | Back up a SQL Server database now |
+| `verify_mssql_backup` | 3 | Verify a SQL Server backup on the device that took it (`RESTORE VERIFYONLY`) |
+| `trigger_vault_sync` | 3 | Copy a snapshot to a device's local vault |
+| `trigger_c2c_sync` | 3 | Start a cloud-to-cloud backup sync for a configuration |
+| `configure_vault (create/update)` | 3 | Create or repoint a device's local vault (path, local/SMB/USB type, retention). The device is reconfigured, and the approval names the path |
+| `manage_hyperv_vm (start/stop/force_stop/pause/resume/save)` | 3 | Change a Hyper-V VM's power state |
+| `manage_hyperv_checkpoints (create/delete/apply)` | 3 | Create a checkpoint. Deleting or applying one needs a second approver |
+| `restore_snapshot` | 3 | Restore files from a snapshot to a device. Needs a second approver |
+| `restore_as_vm` | 3 | Restore a snapshot as a new Hyper-V VM or bare-metal disk image. Needs a second approver |
+| `instant_boot_vm` | 3 | Boot a snapshot as a VM. Needs a second approver |
+| `restore_hyperv_vm` | 3 | Restore a Hyper-V VM from backup. Needs a second approver |
+| `restore_mssql_database` | 3 | Restore a SQL Server database. Needs a second approver |
+| `restore_c2c_items` | 3 | Restore cloud-to-cloud backup items by id. Needs a second approver |
+| `execute_dr_plan` | 3 | Run a DR rehearsal, failover or failback. Every `executionType` needs a second approver, because a rehearsal of a non-bare-metal group runs the same restore as a failover |
+
+Tier 3 actions in this table are approved by the requesting user unless the row says they need a second approver. A headless AI agent can call any of these tools, but every Tier 3 call becomes a proposal that a person approves. None of these actions can be pre-authorized for an in-product AI agent.
 
 See [Backup & Recovery](/backup/overview/) for configuration details.
 

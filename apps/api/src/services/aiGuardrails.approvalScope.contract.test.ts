@@ -157,8 +157,9 @@ describe('tier-3 approval scope classification', () => {
     expect(enumerated.sort()).toEqual([
       // edr_endpoint_action (#8167 W03): whole-tool four_eyes backstop; isolate/unisolate/scan classified.
       'edr_endpoint_action', 'manage_ai_agents',
+      // W03 (#6757): whole-tool supervised backstop; all six power actions classified.
       // W04 (#6758): whole-tool supervised backstops; every action classified.
-      'manage_browser_policy', 'manage_peripheral_policy',
+      'manage_browser_policy', 'manage_hyperv_vm', 'manage_peripheral_policy',
       'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',
@@ -937,3 +938,176 @@ describe('W02 class rows (#6756)', () => {
     expect(classOf(tool, {})).toBe(cls);
   });
 });
+
+// ── W03 (#6757): backup, DR and virtualization write classes ────────────────
+// Class table: docs/superpowers/plans/ai-mcp/2026-10-25-ai-full-control-w03-
+// backup-dr-writes.md, "Final per-action classes".
+describe('W03 static classes (#6757)', () => {
+  it.each([
+    // Triggers: every one touches a customer machine or a vendor → supervised.
+    ['trigger_backup', undefined, 3, 'supervised'],
+    ['trigger_hyperv_backup', undefined, 3, 'supervised'],
+    ['trigger_mssql_backup', undefined, 3, 'supervised'],
+    ['trigger_vault_sync', undefined, 3, 'supervised'],
+    ['trigger_c2c_sync', undefined, 3, 'supervised'],
+    ['verify_mssql_backup', undefined, 3, 'supervised'],
+    // Restores and DR execution overwrite or replace live state → four-eyes.
+    ['restore_snapshot', undefined, 3, 'four_eyes'],
+    ['restore_as_vm', undefined, 3, 'four_eyes'],
+    ['restore_hyperv_vm', undefined, 3, 'four_eyes'],
+    ['restore_mssql_database', undefined, 3, 'four_eyes'],
+    ['restore_c2c_items', undefined, 3, 'four_eyes'],
+    ['instant_boot_vm', undefined, 3, 'four_eyes'],
+    ['manage_hyperv_vm', 'start', 3, 'supervised'],
+    ['manage_hyperv_vm', 'stop', 3, 'supervised'],
+    ['manage_hyperv_vm', 'force_stop', 3, 'supervised'],
+    ['manage_hyperv_vm', 'pause', 3, 'supervised'],
+    ['manage_hyperv_vm', 'resume', 3, 'supervised'],
+    ['manage_hyperv_vm', 'save', 3, 'supervised'],
+    ['manage_hyperv_checkpoints', 'create', 3, 'supervised'],
+    ['manage_hyperv_checkpoints', 'delete', 3, 'four_eyes'],
+    ['manage_hyperv_checkpoints', 'apply', 3, 'four_eyes'],
+    ['manage_dr_plan', 'create_plan', 2, undefined],
+    ['manage_dr_plan', 'update_plan', 2, undefined],
+    ['manage_dr_plan', 'add_group', 2, undefined],
+    ['manage_dr_plan', 'update_group', 2, undefined],
+    ['manage_dr_plan', 'delete_group', 3, 'supervised'],
+    ['manage_backup_profiles', 'list', 1, undefined],
+    ['manage_backup_profiles', 'get', 1, undefined],
+    ['manage_backup_profiles', 'create', 2, undefined],
+    ['manage_backup_profiles', 'update', 3, 'supervised'],
+    ['manage_backup_profiles', 'delete', 3, 'supervised'],
+    ['configure_backup_sla', 'create', 2, undefined],
+    ['configure_backup_sla', 'update', 2, undefined],
+    ['configure_vault', 'create', 3, 'supervised'],
+    ['configure_vault', 'update', 3, 'supervised'],
+  ] as const)('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, action ? { action } : {});
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it.each(['rehearsal', 'failover', 'failback'])('execute_dr_plan executionType %s is four-eyes (W03-D3: no rehearsal loosening)', (executionType) => {
+    const r = checkGuardrails('execute_dr_plan', { planId: '11111111-1111-4111-8111-111111111111', executionType });
+    expect(r.tier).toBe(3);
+    expect(r.approvalScope).toBe('four_eyes');
+  });
+});
+
+describe('manage_backup_profiles input-aware escalation (W03, #6757)', () => {
+  const tier = (input: Record<string, unknown>) => checkGuardrails('manage_backup_profiles', input);
+  it.each([
+    [{ action: 'create', name: 'All orgs', ownerScope: 'partner' }, 3, 'supervised'],
+    [{ action: 'create', name: 'One org', ownerScope: 'organization' }, 2, undefined],
+    [{ action: 'create', name: 'One org' }, 2, undefined],                         // handler default is organization
+    [{ action: 'create', name: 'x', ownerScope: 'PARTNER' }, 2, undefined],        // the handler's own `=== 'partner'`
+    [{ action: 'list', ownerScope: 'partner' }, 1, undefined],                     // a read is never escalated
+    [{ action: 'get', profileId: '11111111-1111-4111-8111-111111111111', ownerScope: 'partner' }, 1, undefined],
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = tier(input);
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('create is input-aware, absent from the static scope tables, and mirrors the handler predicate', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_backup_profiles:create')).toBe(true);
+    expect(TIER3_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(isInputAwareTier3('manage_backup_profiles', 'create', { ownerScope: 'partner' })).toBe(true);
+    expect(isInputAwareTier3('manage_backup_profiles', 'update', { ownerScope: 'partner' })).toBe(false);
+  });
+
+  it('the partner-wide create headline says it applies to every organization', () => {
+    expect(tier({ action: 'create', name: 'All orgs', ownerScope: 'partner' }).description).toMatch(/partner-wide.*every organization/i);
+  });
+});
+
+describe('W03 approval descriptions say what changes, where (#6757)', () => {
+  const SNAP = '11111111-1111-4111-8111-111111111111';
+  const DEV = '22222222-2222-4222-8222-222222222222';
+  const desc = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+  it('restore_snapshot names snapshot, device and the selected-path COUNT, never the paths', () => {
+    const d = desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV, selectedPaths: ['C:/Users/amy/SECRET-A', 'C:/Users/amy/SECRET-B'] });
+    expect(d).toContain('11111111');
+    expect(d).toContain('22222222');
+    expect(d).toMatch(/2 selected path/);
+    expect(d).not.toContain('SECRET');
+    expect(desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV })).toMatch(/full restore/i);
+  });
+
+  it('restore_snapshot caps a model-chosen target path', () => {
+    const d = desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV, targetPath: `C:/${'p'.repeat(300)}` });
+    expect(d).not.toContain('p'.repeat(81));
+  });
+
+  it('execute_dr_plan names the plan and the execution type', () => {
+    expect(desc('execute_dr_plan', { planId: SNAP, executionType: 'failover' })).toMatch(/failover.*DR plan 11111111/i);
+  });
+
+  it('Hyper-V actions name the action and the VM', () => {
+    expect(desc('manage_hyperv_vm', { action: 'force_stop', vmId: SNAP })).toMatch(/force.stop.*VM 11111111/i);
+    expect(desc('manage_hyperv_checkpoints', { action: 'apply', vmId: SNAP, checkpointName: 'pre-patch' })).toMatch(/apply.*checkpoint.*VM 11111111/i);
+  });
+
+  it('configure_vault names the destination type, a capped path and the retention', () => {
+    const d = desc('configure_vault', { action: 'update', vaultId: SNAP, vaultType: 'smb', vaultPath: `//files.example/${'v'.repeat(300)}`, retentionCount: 2 });
+    expect(d).toMatch(/smb/i);
+    expect(d).toContain('files.example');
+    expect(d).not.toContain('v'.repeat(81));
+    expect(d).toMatch(/keep 2/i);
+  });
+});
+
+// ── W03 class rows (#6757, spec checklist item 3) ──────────────────────────
+// Copied from the W03 plan's "Final per-action classes" table, NOT derived
+// from the guardrail tables. Every action-enum member of the multiplexers has
+// a row, so a new action reds here until someone classifies it. The
+// input-aware manage_backup_profiles:create is pinned on EMPTY input (its
+// partner-wide arm is covered by the input-aware suite above).
+const W03_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_hyperv_vm: {
+    start: 'supervised', stop: 'supervised', force_stop: 'supervised',
+    pause: 'supervised', resume: 'supervised', save: 'supervised',
+  },
+  manage_hyperv_checkpoints: { create: 'supervised', delete: 'four_eyes', apply: 'four_eyes' },
+  manage_dr_plan: {
+    create_plan: 't2', update_plan: 't2', add_group: 't2', update_group: 't2', delete_group: 'supervised',
+  },
+  manage_backup_profiles: { list: 't1', get: 't1', create: 't2', update: 'supervised', delete: 'supervised' },
+  configure_backup_sla: { create: 't2', update: 't2' },
+  configure_vault: { create: 'supervised', update: 'supervised' },
+};
+/** Single-purpose W03 tools (no action enum): the whole tool has one class. */
+const W03_WHOLE_TOOL: Record<string, W02Class> = {
+  trigger_backup: 'supervised', trigger_hyperv_backup: 'supervised', trigger_mssql_backup: 'supervised',
+  trigger_vault_sync: 'supervised', trigger_c2c_sync: 'supervised', verify_mssql_backup: 'supervised',
+  restore_snapshot: 'four_eyes', restore_as_vm: 'four_eyes', restore_hyperv_vm: 'four_eyes',
+  restore_mssql_database: 'four_eyes', restore_c2c_items: 'four_eyes', instant_boot_vm: 'four_eyes',
+  execute_dr_plan: 'four_eyes',
+};
+
+describe('W03 class rows (#6757)', () => {
+  it('covers all 19 W03 tools exactly once', () => {
+    expect([...Object.keys(W03_EXPECTED), ...Object.keys(W03_WHOLE_TOOL)].sort()).toHaveLength(19);
+  });
+
+  it.each(Object.keys(W03_EXPECTED))('%s: W03_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W03_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W03_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W03_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+});
+
