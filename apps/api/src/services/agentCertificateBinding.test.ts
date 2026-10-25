@@ -39,6 +39,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import {
   checkAgentCertificateBinding,
   enforceAgentCertificateBinding,
+  enforceRebindConfirmCertificateBinding,
   getAgentMtlsBindingMode,
   loadAgentCertificateBindingIdentity,
   normalizeCertificateSerial,
@@ -567,5 +568,104 @@ describe('registerAgentCertificateBindingPrometheusCounter', () => {
 
     // reuses the existing metric on the same registry instead of throwing
     expect(() => registerAgentCertificateBindingPrometheusCounter(registry)).not.toThrow();
+  });
+});
+
+describe('enforceRebindConfirmCertificateBinding (#8318 §6.4)', () => {
+  const ORIGINAL = process.env.AGENT_MTLS_BINDING_MODE;
+  const SOURCE = '44444444-4444-4444-8444-444444444444';
+  const TARGET = '55555555-5555-4555-8555-555555555555';
+  const STAGED_ID = '66666666-6666-4666-8666-666666666666';
+  const SOURCE_SERIAL = 'AA00000000000000000A';
+  const STAGED_SERIAL = 'BB00000000000000000B';
+  const OLD_TARGET_SERIAL = 'CC00000000000000000C';
+
+  /** The helper's two reads: certificate rows of both devices, then their legacy columns. */
+  function mockRebindReads(certRows: unknown[], legacyRows: unknown[] = []) {
+    const certWhere = vi.fn(async () => certRows);
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn(() => ({ where: certWhere })) } as unknown as ReturnType<typeof db.select>);
+    const legacyWhere = vi.fn(async () => legacyRows);
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn(() => ({ where: legacyWhere })) } as unknown as ReturnType<typeof db.select>);
+  }
+
+  const rows = [
+    { id: 'src-cert', deviceId: SOURCE, serialNumber: SOURCE_SERIAL, state: 'active' },
+    { id: STAGED_ID, deviceId: TARGET, serialNumber: STAGED_SERIAL, state: 'pending_activation' },
+    { id: 'old-target-cert', deviceId: TARGET, serialNumber: OLD_TARGET_SERIAL, state: 'active' },
+  ];
+  const assertion = (serial: string | null, trusted = true): AgentCertificateAssertion => ({
+    assertionTrusted: trusted,
+    assertedVerified: serial !== null,
+    assertedSerial: serial,
+  });
+  const decide = (serial: string | null, opts: { acceptTargetActive?: boolean; trusted?: boolean } = {}) =>
+    enforceRebindConfirmCertificateBinding({
+      sourceDeviceId: SOURCE,
+      targetDeviceId: TARGET,
+      stagedCertificateId: STAGED_ID,
+      acceptTargetActive: opts.acceptTargetActive ?? false,
+      assertion: assertion(serial, opts.trusted ?? true),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(withSystemDbAccessContext).mockImplementation(
+      (async (fn: () => Promise<unknown>) => fn()) as never,
+    );
+    setAgentCertificateBindingMetricsRecorder(null);
+    process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
+  });
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.AGENT_MTLS_BINDING_MODE;
+    else process.env.AGENT_MTLS_BINDING_MODE = ORIGINAL;
+  });
+
+  it('mode off: no read, allowed', async () => {
+    delete process.env.AGENT_MTLS_BINDING_MODE;
+    await expect(decide(null)).resolves.toEqual({ allowed: true, reason: 'mode_off' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('accepts the source\'s active certificate and the target\'s staged (pending) one', async () => {
+    mockRebindReads(rows);
+    await expect(decide(SOURCE_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+    mockRebindReads(rows);
+    await expect(decide(STAGED_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('refuses the target\'s active certificate before confirm (it belongs to the OLD install)', async () => {
+    mockRebindReads(rows);
+    await expect(decide(OLD_TARGET_SERIAL)).resolves.toEqual({ allowed: false, reason: 'serial_mismatch' });
+  });
+
+  it('accepts the target\'s active certificate for a confirmed replay', async () => {
+    mockRebindReads(rows);
+    await expect(decide(OLD_TARGET_SERIAL, { acceptTargetActive: true })).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('accepts the source\'s certificate during its 24 h pending_revocation grace', async () => {
+    mockRebindReads([{ ...rows[0], state: 'pending_revocation' }, rows[1]]);
+    await expect(decide(SOURCE_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
+  });
+
+  it('refuses a missing or untrusted assertion in enforce, allows it in audit', async () => {
+    mockRebindReads(rows);
+    await expect(decide(null)).resolves.toEqual({ allowed: false, reason: 'missing_assertion' });
+    mockRebindReads(rows);
+    await expect(decide(SOURCE_SERIAL, { trusted: false })).resolves.toEqual({ allowed: false, reason: 'untrusted_assertion' });
+    process.env.AGENT_MTLS_BINDING_MODE = 'audit';
+    mockRebindReads(rows);
+    await expect(decide(null)).resolves.toEqual({ allowed: true, reason: 'missing_assertion' });
+  });
+
+  it('passes as legacy_identity when neither device has any certificate on file', async () => {
+    mockRebindReads([], [{ id: SOURCE, serial: null }, { id: TARGET, serial: null }]);
+    await expect(decide(null)).resolves.toEqual({ allowed: true, reason: 'legacy_identity' });
+  });
+
+  it('accepts the source\'s legacy column serial', async () => {
+    mockRebindReads([], [{ id: SOURCE, serial: SOURCE_SERIAL }, { id: TARGET, serial: null }]);
+    await expect(decide(SOURCE_SERIAL)).resolves.toEqual({ allowed: true, reason: 'matched' });
   });
 });

@@ -1340,6 +1340,10 @@
             "description": "Wird ausgelöst, wenn ein Gerät eine Verbindung herstellt.",
             "label": "Gerät online"
           },
+          "deviceReinstalled": {
+            "description": "Wird ausgelöst, wenn ein neu installierter Rechner wieder mit seinem bestehenden Gerätedatensatz verknüpft wird.",
+            "label": "Gerät neu installiert"
+          },
           "scriptCompleted": {
             "description": "Wird ausgelöst, wenn ein Skript abgeschlossen ist.",
             "label": "Skript abgeschlossen"

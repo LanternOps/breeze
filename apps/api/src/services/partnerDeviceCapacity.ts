@@ -104,7 +104,16 @@ export async function admitPartnerDeviceCapacity(
  */
 export async function previewPartnerDeviceCapacity(
   tx: PartnerDeviceCapacityTx,
-  input: { orgId: string; expectedPartnerId: string },
+  input: {
+    orgId: string;
+    expectedPartnerId: string;
+    /**
+     * A device the caller's transaction retires before it admits (the
+     * reattach confirm decommissions its source in the same transaction), so
+     * the preview answers the question the later admission will.
+     */
+    excludeDeviceId?: string;
+  },
 ): Promise<PartnerDeviceCapacityResult> {
   const [org] = await tx
     .select({ partnerId: organizations.partnerId })

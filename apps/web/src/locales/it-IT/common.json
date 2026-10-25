@@ -1340,6 +1340,10 @@
             "description": "Attivato quando un dispositivo si connette.",
             "label": "Dispositivo online"
           },
+          "deviceReinstalled": {
+            "description": "Si attiva quando una macchina reinstallata viene ricollegata al record del dispositivo esistente.",
+            "label": "Dispositivo reinstallato"
+          },
           "scriptCompleted": {
             "description": "Attivato al termine di uno script.",
             "label": "Script completato"
