@@ -246,6 +246,6 @@ describe('workspace-dashboard element', () => {
     const element = await mountDashboard(pageContext({ contractVersion: 2 }));
     expect(fetchMock).not.toHaveBeenCalled();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('Wisp received an invalid host context');
+    expect(alert?.textContent).toContain('Knowledge received an invalid host context');
   });
 });

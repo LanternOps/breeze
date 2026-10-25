@@ -98,6 +98,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'ioc_hunt (list_rule_sets/preview_sweep/list_sweeps/sweep_status)', description: 'Detection rule sets, IOC sweep preview, list and status', category: 'Security & Compliance' },
+      // W04 (#6758): reads of staff-written policy config, no approval needed
+      { name: 'manage_software_policy (list/get)', description: 'List or read software policies', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
@@ -271,7 +273,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Network & DNS
       { name: 'acknowledge_network_device', description: 'Acknowledge network device', category: 'Network & DNS' },
-      { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
       { name: 'manage_dns_policy', description: 'DNS policy management', category: 'Network & DNS' },
       // Remote Access & Control
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
@@ -360,7 +361,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
-      { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
+      { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
@@ -369,6 +370,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
+      { name: 'configure_network_baseline', description: 'Configure a recurring network baseline scan (schedules on-site discovery)', category: 'Network & DNS' },
       { name: 'diagnose_connectivity', description: 'One approved topology connectivity check (fresh MFA)', category: 'Network & DNS' },
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
@@ -528,7 +530,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Integrations
   { toolName: 'test_webhook', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
-  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.recover_agent', category: 'Integrations' },
   { toolName: 'manage_notification_channels', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   { toolName: 'manage_saved_filters', tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
@@ -554,14 +556,20 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
-  { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
-  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
+  { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'edr_endpoint_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_edr_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Full-control W04 (#6758, quorum QW11): device-touching tools that gained a rate limit.
+  { toolName: 'manage_browser_policy', tier: 3, permission: 'devices.write / devices.execute (apply)', category: 'Security & Compliance' },
+  { toolName: 'manage_peripheral_policy', tier: 3, permission: 'organizations.write', category: 'Devices & Hardware' },
+  { toolName: 'remediate_sensitive_data', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'configure_network_baseline', tier: 3, permission: 'devices.write', category: 'Network & DNS' },
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },

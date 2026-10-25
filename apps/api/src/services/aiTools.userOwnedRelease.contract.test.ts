@@ -153,8 +153,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:458', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:566', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:477', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:618', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must
@@ -163,7 +163,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:599', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBrowser.ts:611', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.

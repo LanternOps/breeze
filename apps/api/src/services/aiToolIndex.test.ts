@@ -333,12 +333,18 @@ function stubAllFlagsOn(): void {
 }
 
 /**
- * The tools W04 (#6758) will wire into chat (W03 #6757 wired its 19 and
- * removed them here). All are registered today but not chat-declared, so
- * `getToolDomain`/hints resolve from the real registry: `[...chat, ...FIXTURE]`
- * is the catalog after the wave, with no synthetic registry.
+ * The 38 tools full-control W03 (#6757) and W04 (#6758) wired into chat. The
+ * simulated catalog `[...chat, ...FIXTURE_W03_W04]` was the post-wave catalog
+ * while they were registered but undeclared; both waves have landed, so the
+ * fixture is now EMPTY and `simulated` is the real chat catalog — the B1-B3
+ * bounds below are measured on it directly.
  */
-const FIXTURE_W03_W04 = [
+const W03_W04_WIRED = [
+  // W03 (#6757)
+  'manage_dr_plan', 'manage_hyperv_vm', 'manage_backup_profiles', 'manage_hyperv_checkpoints', 'configure_backup_sla',
+  'configure_vault', 'restore_mssql_database', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'verify_mssql_backup',
+  'trigger_vault_sync', 'restore_hyperv_vm', 'restore_c2c_items', 'trigger_c2c_sync', 'restore_snapshot',
+  'instant_boot_vm', 'execute_dr_plan', 'trigger_backup', 'restore_as_vm',
   // W04 (#6758)
   'remediate_sensitive_data', 'manage_peripheral_policy', 'registry_operations', 'manage_software_policy',
   'manage_scheduled_tasks', 'manage_browser_policy', 'manage_processes', 'remediate_software_violation',
@@ -346,6 +352,8 @@ const FIXTURE_W03_W04 = [
   'trigger_agent_restart', 'trigger_agent_upgrade', 'execute_containment', 'request_elevation', 'collect_evidence',
   'revoke_elevation', 'create_incident',
 ] as const;
+const FIXTURE_W03_W04: readonly string[] = [
+];
 
 const ALWAYS_ON_INDEX_BUDGET_BYTES = 2.5 * 1024;
 const DOMAIN_BLOCK_BUDGET_BYTES = 2 * 1024;
@@ -357,11 +365,12 @@ describe('W19 lazy chat tool index (#10065)', () => {
   const simulated = [...names, ...FIXTURE_W03_W04];
   const alwaysOn = renderAlwaysOnIndex(names);
 
-  it('the W03/W04 fixture is the 19 W04 tools, registered and not chat-declared yet (W03 #6757 wired its 19)', () => {
-    expect(FIXTURE_W03_W04).toHaveLength(19);
-    expect(FIXTURE_W03_W04.filter((n) => !registered.has(n)), 'renamed or removed fixture tool').toEqual([]);
-    expect(FIXTURE_W03_W04.filter((n) => names.includes(n)), 'already chat-declared: drop it from the fixture').toEqual([]);
-    expect(listToolIndex(FIXTURE_W03_W04).map((e) => e.name).sort()).toEqual([...FIXTURE_W03_W04].sort());
+  it('the W03/W04 fixture is empty: all 38 W03/W04 tools are registered and chat-declared (#6757, #6758)', () => {
+    expect(FIXTURE_W03_W04).toHaveLength(0);
+    expect(W03_W04_WIRED).toHaveLength(38);
+    expect(W03_W04_WIRED.filter((n) => !registered.has(n)), 'renamed or removed tool').toEqual([]);
+    expect(W03_W04_WIRED.filter((n) => !names.includes(n)), 'not chat-declared').toEqual([]);
+    expect(listToolIndex(W03_W04_WIRED).map((e) => e.name).sort()).toEqual([...W03_W04_WIRED].sort());
   });
 
   // B1 is a ceiling on curated prose, not only on tool growth: a new
@@ -376,7 +385,7 @@ describe('W19 lazy chat tool index (#10065)', () => {
     }
   });
 
-  it('B1 invariance: the remaining W04 tools change the always-on index by 0 bytes', () => {
+  it('B1 invariance: the (now empty) fixture changes the always-on index by 0 bytes', () => {
     expect(renderAlwaysOnIndex(simulated)).toBe(alwaysOn);
   });
 

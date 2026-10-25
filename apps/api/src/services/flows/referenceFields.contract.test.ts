@@ -85,6 +85,13 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // handler re-checks org/partner/site reach at run time (see the
   // aiTools*WritesScope integration suites). Save-time owner checks for them
   // need new FLOW_OWNED_REFERENCE_FIELDS kinds — a follow-up, flows are flag-off.
+  // Full-control W04 (#6758) added the security, incident and device-operation
+  // write tools' ids (incidents, elevation requests, findings, policies,
+  // baselines, network change events, users) on the same terms, pinned by
+  // aiToolsIncidentPamRemoteWritesScope / aiToolsPolicyWritesScope /
+  // aiToolsDeviceOpsWritesSiteScope; every tier-3 action needs approval when a
+  // flow runs it. create_incident.relatedAlertIds is stored without an
+  // org check on both the tool and the route (a recorded follow-up).
   // Full-control W03 (#6757) added the backup/DR/Hyper-V write tools' ids
   // (snapshots, VMs, DR plans/groups, vaults, profiles, SLA and C2C configs) on
   // the same terms: every handler re-checks org/site reach at run time, pinned
@@ -99,23 +106,32 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
+        "acknowledge_network_device.event_id",
         "analyze_fleet_metrics.orgId",
         "apply_cis_remediation.baselineId",
         "apply_cis_remediation.baselineResultId",
         "apply_configuration_policy.configPolicyId",
         "apply_configuration_policy.targetId",
+        "assign_security_training.orgId",
+        "assign_security_training.userId",
         "cancel_script_execution.executionId",
+        "collect_evidence.incidentId",
         "configuration_policy_compliance.policyId",
         "configure_backup_sla.configId",
         "configure_backup_sla.orgId",
         "configure_backup_sla.targetGroups",
+        "configure_network_baseline.baseline_id",
+        "configure_network_baseline.org_id",
+        "configure_network_baseline.site_id",
         "configure_vault.vaultId",
+        "create_incident.relatedAlertIds",
         "delete_tenant.tenant_id",
         "detect_log_correlations.orgId",
         "diagnose_connectivity.origin_device_id",
         "diagnose_connectivity.site_id",
         "disk_cleanup.cleanupRunId",
         "edr_endpoint_action.connectionId",
+        "execute_containment.incidentId",
         "execute_dr_plan.planId",
         "execute_playbook.playbookId",
         "export_dataset.siteId",
@@ -229,6 +245,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_backup_profiles.profileId",
         "manage_billing_catalog.catalogId",
         "manage_billing_catalog.orgId",
+        "manage_browser_policy.orgId",
+        "manage_browser_policy.policyId",
         "manage_configuration_policy.orgId",
         "manage_configuration_policy.policyId",
         "manage_contracts.contractId",
@@ -291,6 +309,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_patches.ringId",
         "manage_peripheral_policies.orgId",
         "manage_peripheral_policies.policyId",
+        "manage_peripheral_policy.org_id",
+        "manage_peripheral_policy.policy_id",
         "manage_policy_feature_link.configPolicyId",
         "manage_policy_feature_link.featureLinkId",
         "manage_policy_feature_link.featurePolicyId",
@@ -304,6 +324,9 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_service_monitors.configPolicyId",
         "manage_software_policies.orgId",
         "manage_software_policies.policyId",
+        "manage_software_policy.orgId",
+        "manage_software_policy.policyId",
+        "manage_software_policy.targetIds",
         "manage_ticket_checklist.itemId",
         "manage_ticket_checklist.itemIds",
         "manage_ticket_checklist.orgId",
@@ -336,6 +359,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "query_devices.siteId",
         "query_psa_status.connectionId",
         "read_artifact.handle",
+        "remediate_sensitive_data.findingIds",
+        "remediate_software_violation.policyId",
         "remediate_vulnerability.deviceVulnerabilityIds",
         "remove_configuration_policy_assignment.assignmentId",
         "reset_monitor_escalation.monitorId",
@@ -345,6 +370,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "restore_hyperv_vm.snapshotId",
         "restore_mssql_database.snapshotId",
         "restore_snapshot.snapshotId",
+        "revoke_elevation.elevationRequestId",
         "run_script.proposalId",
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",

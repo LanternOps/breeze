@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGREEMENT_SIGNED_AT_SKEW_MS,
+  createAgreementRequestSchema,
+  listAgreementRequestsQuerySchema,
+  updateAgreementRequestSchema,
+  voidAgreementRequestSchema,
   recordSignedAgreementFromForm,
   recordSignedAgreementSchema,
 } from './agreementRequests';
@@ -121,5 +125,94 @@ describe('recordSignedAgreementFromForm', () => {
     expect(parsed.effectiveDate).toBeUndefined();
     expect(parsed.label).toBeUndefined();
     expect(parsed.variableValues).toEqual({ 'custom.po': 'PO-4471' });
+  });
+});
+
+// #9075 W2a — lifecycle bodies (spec §5).
+describe('createAgreementRequestSchema', () => {
+  const TEMPLATE = '44444444-4444-4444-8444-444444444444';
+  const base = { orgId: ORG, templateId: TEMPLATE };
+
+  it('accepts the minimal body and defaults recipients + variableValues', () => {
+    const parsed = createAgreementRequestSchema.parse(base);
+    expect(parsed.recipients).toEqual([]);
+    expect(parsed.variableValues).toEqual({});
+  });
+
+  it('lower-cases and trims recipient emails', () => {
+    const parsed = createAgreementRequestSchema.parse({ ...base, recipients: ['  Jane@Example.COM '] });
+    expect(parsed.recipients).toEqual(['jane@example.com']);
+  });
+
+  it('rejects an invalid recipient email', () => {
+    expect(createAgreementRequestSchema.safeParse({ ...base, recipients: ['not-an-email'] }).success).toBe(false);
+  });
+
+  it('caps recipients at 50', () => {
+    const many = Array.from({ length: 51 }, (_, i) => `r${i}@example.com`);
+    expect(createAgreementRequestSchema.safeParse({ ...base, recipients: many }).success).toBe(false);
+  });
+
+  it('coerces expiresAt to a Date and accepts a real effectiveDate', () => {
+    const parsed = createAgreementRequestSchema.parse({ ...base, expiresAt: '2026-12-01T00:00:00.000Z', effectiveDate: '2026-12-01' });
+    expect(parsed.expiresAt).toBeInstanceOf(Date);
+    expect(parsed.effectiveDate).toBe('2026-12-01');
+  });
+
+  it('rejects an impossible effectiveDate', () => {
+    expect(createAgreementRequestSchema.safeParse({ ...base, effectiveDate: '2026-02-30' }).success).toBe(false);
+  });
+
+  it('rejects a non-uuid templateId and a missing orgId', () => {
+    expect(createAgreementRequestSchema.safeParse({ ...base, templateId: 'x' }).success).toBe(false);
+    expect(createAgreementRequestSchema.safeParse({ templateId: TEMPLATE }).success).toBe(false);
+  });
+
+  it('caps the cover message at 5000 characters', () => {
+    expect(createAgreementRequestSchema.safeParse({ ...base, coverMessage: 'a'.repeat(5000) }).success).toBe(true);
+    expect(createAgreementRequestSchema.safeParse({ ...base, coverMessage: 'a'.repeat(5001) }).success).toBe(false);
+  });
+});
+
+describe('updateAgreementRequestSchema', () => {
+  it('accepts a partial body', () => {
+    expect(updateAgreementRequestSchema.parse({ label: 'BAA' })).toEqual({ label: 'BAA' });
+  });
+
+  it('allows clearing the contract with null', () => {
+    expect(updateAgreementRequestSchema.parse({ contractId: null })).toEqual({ contractId: null });
+  });
+
+  it('rejects an empty body', () => {
+    expect(updateAgreementRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('cannot move a request to another org', () => {
+    expect(updateAgreementRequestSchema.safeParse({ orgId: ORG }).success).toBe(false);
+  });
+});
+
+describe('voidAgreementRequestSchema', () => {
+  it('accepts an empty body and a trimmed reason', () => {
+    expect(voidAgreementRequestSchema.parse({})).toEqual({});
+    expect(voidAgreementRequestSchema.parse({ reason: '  sent to the wrong client ' })).toEqual({ reason: 'sent to the wrong client' });
+  });
+
+  it('caps the reason', () => {
+    expect(voidAgreementRequestSchema.safeParse({ reason: 'a'.repeat(1001) }).success).toBe(false);
+  });
+});
+
+describe('listAgreementRequestsQuerySchema', () => {
+  it('accepts the three status buckets and rejects a raw status', () => {
+    for (const status of ['pending', 'signed', 'closed']) {
+      expect(listAgreementRequestsQuerySchema.safeParse({ status }).success).toBe(true);
+    }
+    expect(listAgreementRequestsQuerySchema.safeParse({ status: 'draft' }).success).toBe(false);
+  });
+
+  it('accepts org/contract/template filters as uuids', () => {
+    expect(listAgreementRequestsQuerySchema.safeParse({ orgId: ORG, contractId: CONTRACT, templateId: VERSION }).success).toBe(true);
+    expect(listAgreementRequestsQuerySchema.safeParse({ orgId: 'x' }).success).toBe(false);
   });
 });
