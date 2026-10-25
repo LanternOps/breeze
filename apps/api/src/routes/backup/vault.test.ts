@@ -343,6 +343,21 @@ describe('vault routes', () => {
     expect(await res.json()).toEqual({ deleted: true, id: VAULT_ID, deviceConfig: { status: 'queued' } });
   });
 
+  // W03-D12 (#6757) regression: the shared updateVaultWithinCurrentSite takes
+  // the site allowlist, not the permissions object — an unrestricted caller
+  // WITH a permissions object (every real user) must still deactivate.
+  it('deactivates a vault for an unrestricted caller that carries a permissions object', async () => {
+    permissionsState = { allowedSiteIds: undefined };
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+  });
+
   it('hides DELETE from a caller with an empty site ceiling before database or audit work', async () => {
     permissionsState = { allowedSiteIds: [] };
     updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));

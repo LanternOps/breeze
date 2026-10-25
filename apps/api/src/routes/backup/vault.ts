@@ -242,7 +242,7 @@ vaultRoutes.delete(
     orgId,
     id,
     { isActive: false, updatedAt: new Date() },
-    permissions,
+    permissions?.allowedSiteIds,
   );
 
   if (!row) {
