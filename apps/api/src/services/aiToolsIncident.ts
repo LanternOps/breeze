@@ -421,6 +421,13 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       const deviceAccess = await verifyDeviceAccess(input.deviceId as string, auth);
       if ('error' in deviceAccess) return JSON.stringify({ error: deviceAccess.error });
 
+      // W04-D12 (#6758): bound to the incident's org, as execute_containment is
+      // (#9662) — a multi-org caller must not aim forensic collection at a
+      // device in another org under this incident.
+      if (deviceAccess.device.orgId !== incident.orgId) {
+        return JSON.stringify({ error: 'The device must belong to the same organization as the incident' });
+      }
+
       const payload = {
         incidentId: input.incidentId as string,
         evidenceTypes: input.evidenceTypes as string[],

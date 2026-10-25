@@ -256,3 +256,34 @@ describe('execute_containment action lifecycle (#9662)', () => {
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * W04-D12 (#6758): collect_evidence must be bound to the incident's org, as
+ * execute_containment is (#9662). Without it a multi-org caller could aim
+ * forensic collection at a device in org B under an incident in org A.
+ */
+describe('collect_evidence device/incident org binding (W04-D12, #6758)', () => {
+  const input = { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes'] };
+
+  it('refuses a device outside the incident organization and dispatches nothing', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.error).toMatch(/same organization/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('control: a device in the incident organization is dispatched', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.success).toBe(true);
+    expect(aiQueueCommandForExecution).toHaveBeenCalledTimes(1);
+  });
+});
