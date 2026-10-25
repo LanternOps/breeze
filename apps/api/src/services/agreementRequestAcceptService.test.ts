@@ -159,6 +159,12 @@ describe('acceptAgreementRequest — refusals freeze nothing and write nothing',
     await expect(acceptAgreementRequest(params())).rejects.toMatchObject({ status: 409, code: 'AGREEMENT_ALREADY_SIGNED' });
   });
 
+  it('a voided request whose link column is somehow unset → still refused (409), never signed', async () => {
+    queue([row({ status: 'voided', publicLinkRevokedAt: null })]);
+    await expect(acceptAgreementRequest(params())).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+    expect(events).toEqual([]);
+  });
+
   it('a declined request → 409', async () => {
     queue([row({ status: 'declined' })]);
     await expect(acceptAgreementRequest(params())).rejects.toMatchObject({ status: 409 });

@@ -92,6 +92,35 @@ describe('agreement-accept token', () => {
     expect(await verifyAgreementAcceptToken(noKind)).toBeNull();
   });
 
+  async function signWith(claims: Record<string, unknown>, opts: { iss?: string; aud?: string; jti?: string } = {}) {
+    const signKey = getSignKey();
+    return new SignJWT(claims)
+      .setProtectedHeader(buildHeader(signKey.kid))
+      .setJti(opts.jti ?? 'j1').setIssuedAt().setExpirationTime('1h')
+      .setIssuer(opts.iss ?? 'breeze').setAudience(opts.aud ?? 'breeze-agreement-accept')
+      .sign(signKey.key);
+  }
+
+  it('rejects another kind value under the same audience', async () => {
+    expect(await verifyAgreementAcceptToken(await signWith({ kind: 'quote', requestId: 'r1', orgId: 'o1', partnerId: 'p1' }))).toBeNull();
+  });
+
+  it('rejects a wrong issuer', async () => {
+    expect(await verifyAgreementAcceptToken(await signWith({ kind: 'agreement_request', requestId: 'r1', orgId: 'o1', partnerId: 'p1' }, { iss: 'someone-else' }))).toBeNull();
+  });
+
+  it('rejects an empty jti and non-string identity claims', async () => {
+    expect(await verifyAgreementAcceptToken(await signWith({ kind: 'agreement_request', requestId: 'r1', orgId: 'o1', partnerId: 'p1' }, { jti: '' }))).toBeNull();
+    expect(await verifyAgreementAcceptToken(await signWith({ kind: 'agreement_request', requestId: 1, orgId: 'o1', partnerId: 'p1' }))).toBeNull();
+  });
+
+  it('rejects an unsigned (alg: none) token', async () => {
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const unsigned = `${enc({ alg: 'none' })}.${enc({ kind: 'agreement_request', requestId: 'r1', orgId: 'o1', partnerId: 'p1', jti: 'j', iat: now, exp: now + 3600, iss: 'breeze', aud: 'breeze-agreement-accept' })}.`;
+    expect(await verifyAgreementAcceptToken(unsigned)).toBeNull();
+  });
+
   // Cross-kind confusion, both directions (spec §3.5: each verifier rejects
   // the other's tokens).
   it('a quote accept token is rejected by the agreement verifier', async () => {

@@ -42,6 +42,7 @@ import {
 import { assertTemplateVersionUsable, ContractTemplateServiceError } from './contractTemplateService';
 import { sanitizeRichTextHtml } from './richTextSanitize';
 import { portalBase } from './portalUrl';
+import { captureException } from './sentry';
 import {
   AgreementRequestServiceError,
   assertRequestVariablesResolved,
@@ -252,15 +253,34 @@ async function renderSnapshotFor(row: AgreementRequestRow, now: Date): Promise<R
       effectiveDate,
     };
   }
-  const org = await loadPartySnapshot(row.orgId, null);
-  const partner = await loadPartner(org.partnerId);
+  const { org, partner } = await loadSendingParties(row.orgId);
   return { ...buildPartySnapshotColumns(org, partner), effectiveDate };
+}
+
+/** The org and its owning partner, read in the caller's RLS context. The
+ *  partner row feeds the SELLER snapshot that is frozen into the legal record
+ *  and its content hash, so an unreadable partner row (an organization-scope
+ *  session has no partner-axis access under the `partners` RLS policy) is
+ *  refused — never frozen as a blank seller. */
+async function loadSendingParties(orgId: string) {
+  const org = await loadPartySnapshot(orgId, null);
+  const partner = await loadPartner(org.partnerId);
+  if (!partner) {
+    throw new AgreementRequestServiceError(
+      'The sending partner\'s details are not available to this account — send the agreement from a partner account',
+      422,
+      'SELLER_UNAVAILABLE',
+    );
+  }
+  return { org, partner };
 }
 
 function readIdentity(row: AgreementRequestRow): AgreementAcceptTokenIdentity | null {
   if (!row.acceptTokenJti || !row.acceptTokenIssuedAt || !row.acceptTokenExpiresAt) {
     if (row.acceptTokenJti || row.acceptTokenIssuedAt || row.acceptTokenExpiresAt) {
-      console.error(`[agreementRequestLifecycle] request ${row.id} has a partially-populated accept-token identity — treating as unreproducible`);
+      const err = new Error(`[agreementRequestLifecycle] request ${row.id} has a partially-populated accept-token identity — treating as unreproducible`);
+      console.error(err.message);
+      captureException(err);
     }
     return null;
   }
@@ -479,7 +499,14 @@ export async function updateAgreementRequest(
     patch.variableValues = filterDeclaredManualValues(renderData, input.variableValues ?? row.variableValues ?? {});
   }
 
-  await db.update(agreementRequests).set(patch).where(eq(agreementRequests.id, id));
+  const patched = await db
+    .update(agreementRequests)
+    .set(patch)
+    .where(and(eq(agreementRequests.id, id), eq(agreementRequests.status, 'draft')))
+    .returning({ id: agreementRequests.id });
+  if (patched.length === 0) {
+    throw new AgreementRequestServiceError('This agreement request is no longer a draft', 409, 'INVALID_STATE');
+  }
   if (input.recipients) await replaceRecipients(id, row.orgId, normalizeRecipients(input.recipients));
   return getAgreementRequestDetail(auth, id);
 }
@@ -530,8 +557,7 @@ export async function sendAgreementRequest(auth: AuthContext, id: string, now: D
     throw new AgreementRequestServiceError('Add at least one recipient before sending', 422, 'RECIPIENTS_REQUIRED');
   }
 
-  const org = await loadPartySnapshot(row.orgId, null);
-  const partner = await loadPartner(org.partnerId);
+  const { org, partner } = await loadSendingParties(row.orgId);
   const renderData = await loadTemplateVersionRenderData(row.templateVersionId);
   await assertTemplateVersionUsable(
     { templateId: row.templateId, templateVersionId: row.templateVersionId },

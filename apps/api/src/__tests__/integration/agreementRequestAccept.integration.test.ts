@@ -204,8 +204,9 @@ describe('agreement request: send → customer accept (real Postgres)', () => {
     const results = await Promise.all([outcome(accept(s, claims, 'Dana Buyer')), outcome(accept(s, claims, 'Office Manager'))]);
 
     expect(results.filter((r) => r.ok)).toHaveLength(1);
-    const loser = results.find((r) => !r.ok) as { status?: number; code?: string };
-    expect([401, 409]).toContain(loser.status);
+    // The row lock serialises the two: the loser re-reads the committed row
+    // and fails on the durable single-use check.
+    expect(results.find((r) => !r.ok)).toMatchObject({ status: 401, code: 'RESPONSE_CONSUMED' });
     expect(await documentsFor(requestId)).toHaveLength(1);
     expect((await requestRow(requestId)).status).toBe('signed');
   });
@@ -267,6 +268,22 @@ describe('agreement request: send → customer accept (real Postgres)', () => {
       SELECT (SELECT count(*) FROM agreement_requests WHERE id = ${draft.id}::uuid)::int AS requests,
              (SELECT count(*) FROM agreement_request_recipients WHERE request_id = ${draft.id}::uuid)::int AS recipients`))[0]!);
     expect(left).toEqual({ requests: 0, recipients: 0 });
+  });
+
+  // Review finding: under partners RLS an organization-scope session cannot read
+  // the sending partner — send must refuse rather than freeze a blank seller.
+  runDb('an organization-scope sender is refused with SELLER_UNAVAILABLE; the draft is untouched', async () => {
+    const s = await seed();
+    const ctx = partnerCtx(s.partner.id, s.org.id, s.tech.id);
+    const auth = staffAuth(s.partner.id, s.org.id, s.tech.id);
+    const draft = await withDbAccessContext(ctx, () => createAgreementRequest(auth, {
+      orgId: s.org.id, templateId: s.templateId, recipients: ['a@example.com'], variableValues: { 'custom.po': 'PO-1' },
+    }, new Date()));
+    expect(await outcome(withDbAccessContext(orgContext(s.org.id), () => sendAgreementRequest(auth, draft.id, new Date()))))
+      .toMatchObject({ ok: false, status: 422, code: 'SELLER_UNAVAILABLE' });
+    const r = await requestRow(draft.id);
+    expect(r.status).toBe('draft');
+    expect(r.seller_snapshot).toBeNull();
   });
 
   runDb('send refuses a draft whose manual variable is missing, naming it; nothing changes', async () => {

@@ -30,8 +30,10 @@
 --
 -- Idempotent: safe to re-run. `permissions` has NO unique (resource, action)
 -- constraint, so the row insert uses an explicit existence check (never ON
--- CONFLICT). `role_permissions` is PK (role_id, permission_id), so the grant
--- uses SELECT DISTINCT + NOT EXISTS.
+-- CONFLICT), and the back-fill matches EVERY agreements:write row rather than
+-- one id — a role linked to a duplicate row must not be missed.
+-- `role_permissions` is PK (role_id, permission_id), so the grant uses
+-- SELECT DISTINCT + NOT EXISTS.
 --
 -- Every write in this file runs under system scope (issue #4518): one
 -- set_config at the top covers the whole file — is_local = true scopes it to
@@ -67,29 +69,24 @@ DO $$
 DECLARE
   n integer;
   v_send_id uuid;
-  v_write_id uuid;
-  v_agreements_any_id uuid;
 BEGIN
-  -- Scalar lookups (not JOINs): correct even if a duplicate permissions row
-  -- were ever present.
+  -- The ONE send row every grant points at (section 1 guarantees it exists;
+  -- ORDER BY id makes a hypothetical duplicate resolve deterministically).
   SELECT id INTO v_send_id FROM permissions
   WHERE resource = 'agreements' AND action = 'send' ORDER BY id LIMIT 1;
 
-  SELECT id INTO v_write_id FROM permissions
-  WHERE resource = 'agreements' AND action = 'write' ORDER BY id LIMIT 1;
-
-  -- Defensive: a resource-wildcard row. Expected NULL on every real database.
-  SELECT id INTO v_agreements_any_id FROM permissions
-  WHERE resource = 'agreements' AND action = '*' ORDER BY id LIMIT 1;
-
-  IF v_agreements_any_id IS NOT NULL THEN
+  -- Defensive: a resource-wildcard row. Expected absent on every real database.
+  IF EXISTS (SELECT 1 FROM permissions WHERE resource = 'agreements' AND action = '*') THEN
     RAISE WARNING 'unexpected agreements:* wildcard permission row present — including it in the agreements:send back-fill';
   END IF;
 
   INSERT INTO role_permissions (role_id, permission_id)
   SELECT DISTINCT rp.role_id, v_send_id
   FROM role_permissions rp
-  WHERE rp.permission_id IN (v_write_id, v_agreements_any_id)
+  WHERE rp.permission_id IN (
+      SELECT p.id FROM permissions p
+      WHERE p.resource = 'agreements' AND p.action IN ('write', '*')
+    )
     AND v_send_id IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM role_permissions existing

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   },
   writeRouteAudit: vi.fn(),
   revoke: vi.fn(),
+  captureException: vi.fn(),
   afterCommit: [] as Array<{ label: string; work: () => unknown }>,
 }));
 
@@ -58,6 +59,11 @@ vi.mock('../../services/agreementRequestLifecycle', async (importOriginal) => ({
 vi.mock('../../services/agreementAcceptToken', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/agreementAcceptToken')>()),
   revokeAgreementAcceptJti: h.revoke,
+}));
+
+vi.mock('../../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/sentry')>()),
+  captureException: h.captureException,
 }));
 
 vi.mock('../../services/auditEvents', async (importOriginal) => ({
@@ -199,6 +205,23 @@ describe('responses + audit', () => {
     expect(h.afterCommit).toHaveLength(1);
     await h.afterCommit[0]!.work();
     expect(h.revoke).toHaveBeenCalledWith('jti-1', null);
+  });
+});
+
+describe('void post-commit revoke edge cases', () => {
+  it('a voided request with no minted token schedules no Redis work', async () => {
+    h.svc.voidAgreementRequest.mockResolvedValueOnce({ request: { ...DTO, status: 'voided', voidReason: null }, revoke: null });
+    const res = await contractRoutes.request(`${BASE}/${REQ}/void`, json('POST', {}));
+    expect(res.status).toBe(200);
+    expect(h.afterCommit).toHaveLength(0);
+  });
+
+  it('a failed Redis revoke after commit is reported, not thrown (the durable kill already holds)', async () => {
+    h.revoke.mockRejectedValueOnce(new Error('redis down'));
+    const res = await contractRoutes.request(`${BASE}/${REQ}/void`, json('POST', {}));
+    expect(res.status).toBe(200);
+    await expect(h.afterCommit[0]!.work()).resolves.toBeUndefined();
+    expect(h.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }));
   });
 });
 

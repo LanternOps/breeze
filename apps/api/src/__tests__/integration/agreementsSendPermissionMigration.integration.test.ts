@@ -168,6 +168,30 @@ describe.skipIf(!RUN)('migration: 2027-01-05-110000-agreements-send-permission',
     expect(msgs.some((m) => /^granted agreements:send to 3 role\(s\)/.test(m))).toBe(true);
   });
 
+  // permissions has no UNIQUE (resource, action): a role linked to a DUPLICATE
+  // agreements:write row must still be back-filled (review finding).
+  it('back-fills a role linked to a duplicate agreements:write row', async () => {
+    await replay();
+    await ensurePermission('agreements', 'write');
+    const [dup] = await adminSql`
+      insert into permissions (resource, action, description)
+      values ('agreements', 'write', 'duplicate fixture row') returning id
+    `;
+    const partnerId = await makePartner('Agreements Send Duplicate Write');
+    const [role] = await adminSql`
+      insert into roles (partner_id, scope, name, is_system, force_mfa)
+      values (${partnerId}, 'partner', 'Dup Writer', false, false) returning id
+    `;
+    await grant(role!.id, dup!.id as string);
+    try {
+      await replay();
+      expect(await grantedKeys(role!.id)).toContain('agreements:send');
+    } finally {
+      await adminSql`delete from role_permissions where permission_id = ${dup!.id as string}`;
+      await adminSql`delete from permissions where id = ${dup!.id as string}`;
+    }
+  });
+
   it('a *:* role gets no send row and still satisfies agreements:send', async () => {
     await replay();
     const partnerId = await makePartner('Agreements Send Wildcard');

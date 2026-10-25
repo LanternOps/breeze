@@ -21,7 +21,12 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { replayMigration } from './replayMigration';
 
-const MIGRATION = '2026-12-31-210000-agreement-requests.sql';
+// W1b introduced the back-fill; #9075 W2a re-runs it verbatim (W1b's
+// rolling-deploy evidence gap). Both files must keep the same contract.
+const MIGRATIONS = [
+  '2026-12-31-210000-agreement-requests.sql',
+  '2027-01-05-110000-agreements-send-permission.sql',
+] as const;
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 type Row = Record<string, unknown>;
@@ -33,7 +38,7 @@ const sys = <T,>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 const notices: string[] = [];
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: (n) => { notices.push(String(n.message)); } });
 afterAll(async () => { await adminSql.end({ timeout: 5 }); });
-async function runMigrationAsAdmin(): Promise<string[]> {
+async function runMigrationAsAdmin(MIGRATION: string): Promise<string[]> {
   const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
   notices.length = 0;
   await adminSql.unsafe(migrationSql);
@@ -95,10 +100,10 @@ async function seed() {
 const docRow = async (id: string) =>
   rows(await sys(() => db.execute(sql`SELECT * FROM contract_documents WHERE id = ${id}::uuid`)))[0]!;
 
-describe('contract_documents evidence back-fill (2026-12-31-210000)', () => {
+describe.each(MIGRATIONS)('contract_documents evidence back-fill (%s)', (MIGRATION) => {
   runDb('copies the acceptance evidence onto linked rows and leaves orphaned rows untouched', async () => {
     const { rowA, rowB, techId } = await seed();
-    const warnings = await runMigrationAsAdmin();
+    const warnings = await runMigrationAsAdmin(MIGRATION);
     expect(warnings).toEqual(['backfilled signer evidence onto 1 contract_documents rows']);
 
     const a = await docRow(rowA);
@@ -139,7 +144,7 @@ describe('contract_documents evidence back-fill (2026-12-31-210000)', () => {
     const firstB = await docRow(rowB);
     expect(firstA.signer_name).toBe('Jane Doe');
 
-    const warnings = await runMigrationAsAdmin();
+    const warnings = await runMigrationAsAdmin(MIGRATION);
     expect(warnings).toEqual([]); // the `signed_at IS NULL` guard: nothing left to back-fill
 
     expect(await docRow(rowA)).toEqual(firstA);

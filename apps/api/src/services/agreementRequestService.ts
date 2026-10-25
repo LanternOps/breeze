@@ -52,7 +52,8 @@ export type AgreementRequestServiceErrorCode =
   | 'EXPIRES_AT_IN_PAST'
   | 'LINK_REVOKED'
   | 'RESPONSE_CONSUMED'
-  | 'LINK_RACE';
+  | 'LINK_RACE'
+  | 'SELLER_UNAVAILABLE';
 
 export class AgreementRequestServiceError extends Error {
   constructor(

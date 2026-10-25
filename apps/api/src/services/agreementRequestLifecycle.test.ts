@@ -219,6 +219,24 @@ describe('draft-only edits', () => {
     });
   }
 
+  it('PATCH a draft writes under a status = draft guard and returns the detail', async () => {
+    queue([row()]);
+    queue([{ id: REQ }]);          // update .returning()
+    queue([row({ label: 'BAA v2' })]);
+    queueDetailTail();
+    const res = await updateAgreementRequest(auth, REQ, { label: ' BAA v2 ' }, NOW);
+    expect(updated[0]).toEqual({ updatedAt: NOW, label: 'BAA v2' });
+    expect(res.label).toBe('BAA v2');
+  });
+
+  it('PATCH whose guarded update matches nothing (status changed under the lock) → 409, no recipients written', async () => {
+    queue([row()]);
+    queue([]);
+    await expect(updateAgreementRequest(auth, REQ, { label: 'x', recipients: ['a@example.com'] }, NOW))
+      .rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('PATCH locks the row', async () => {
     queue([row({ status: 'sent' })]);
     await expect(updateAgreementRequest(auth, REQ, { label: 'x' }, NOW)).rejects.toMatchObject({ status: 409 });
@@ -321,6 +339,17 @@ describe('sendAgreementRequest', () => {
     expect(res.request).not.toHaveProperty('acceptTokenJti');
   });
 
+  // Review finding: an organization-scope session cannot read the partners row
+  // (partners RLS), which used to freeze a BLANK seller into the legal record.
+  it('an unreadable sending partner → 422 SELLER_UNAVAILABLE, nothing minted or written', async () => {
+    queue([row()]);
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([]); // partners row invisible in this RLS context
+    await expect(sendAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 422, code: 'SELLER_UNAVAILABLE' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it('a concurrent send that already flipped the row → 409, no link returned', async () => {
     queue([row()]);
     queue([{ email: 'jane@example.com' }]);
@@ -347,6 +376,27 @@ describe('getAgreementRequestLink', () => {
   it('past expires_at → 410 AGREEMENT_EXPIRED (no credential for an expired request)', async () => {
     queue([row({ status: 'sent', expiresAt: new Date(NOW.getTime() - 1) })]);
     await expect(getAgreementRequestLink(auth, REQ, NOW)).rejects.toMatchObject({ status: 410, code: 'AGREEMENT_EXPIRED' });
+  });
+
+  it('an unreproducible identity (signing kid rotated out) mints ONE replacement, conditionally, and says so', async () => {
+    const stale = { acceptTokenJti: 'old-jti', acceptTokenIssuedAt: NOW, acceptTokenExpiresAt: LATER, acceptTokenKid: 'retired-kid' };
+    queue([row({ status: 'sent', ...stale })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([{ id: REQ }]); // conditional claim won
+    const res = await getAgreementRequestLink(auth, REQ, NOW);
+    expect(res.reissued).toBe(true);
+    const set = updated[0]!;
+    expect(set.acceptTokenJti).not.toBe('old-jti');
+    expect(set.acceptTokenExpiresAt).toEqual(new Date(Math.floor(LATER.getTime() / 1000) * 1000));
+    const claims = await verifyAgreementAcceptToken(decodeURIComponent(res.link.split('/agreement/')[1]!));
+    expect(claims).toEqual({ requestId: REQ, orgId: ORG, partnerId: PARTNER, jti: set.acceptTokenJti });
+  });
+
+  it('losing the reissue race → 409 LINK_RACE, never an unrecorded credential', async () => {
+    queue([row({ status: 'sent', acceptTokenJti: 'old-jti', acceptTokenIssuedAt: NOW, acceptTokenExpiresAt: LATER, acceptTokenKid: 'retired-kid' })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([]); // another call already replaced the identity
+    await expect(getAgreementRequestLink(auth, REQ, NOW)).rejects.toMatchObject({ status: 409, code: 'LINK_RACE' });
   });
 
   it('regenerates the SAME link send handed out, writing nothing', async () => {
@@ -395,6 +445,12 @@ describe('voidAgreementRequest', () => {
     expect(res.request).not.toHaveProperty('acceptTokenJti');
   });
 
+  it('a void whose guarded update matches nothing → 409, no revoke handed back', async () => {
+    queue([row({ status: 'sent', acceptTokenJti: 'jti-1' })]);
+    queue([]);
+    await expect(voidAgreementRequest(auth, REQ, {}, NOW)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
   it('a request already past expires_at can still be voided (void only ever narrows access)', async () => {
     queue([row({ status: 'sent', expiresAt: new Date(NOW.getTime() - 1000), acceptTokenJti: 'jti-2' })]);
     queue([row({ status: 'voided' })]);
@@ -410,6 +466,13 @@ describe('preview + the shared HTML render', () => {
     const res = await previewAgreementRequest(auth, REQ, NOW);
     expect(res).toMatchObject({ sourceType: 'authored', templateName: 'BAA', versionNumber: 3, unresolved: ['custom.po'] });
     expect(res.html).toBe('<p>Acme PO </p>');
+  });
+
+  it('a draft preview with an unreadable sending partner → 422 SELLER_UNAVAILABLE (never a blank seller)', async () => {
+    queue([row()]);
+    queue([orgRow]);
+    queue([]);
+    await expect(previewAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 422, code: 'SELLER_UNAVAILABLE' });
   });
 
   it('renderAgreementRequestHtml escapes values and strips a javascript: href', () => {
