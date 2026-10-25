@@ -327,6 +327,11 @@ type SecurityCapabilities struct {
 	// (emission lands in a later wave): send retainState only to a beat
 	// declaring exactly 1; any other value gets the legacy response shape.
 	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
+	// RebindProtocolVersion (#8318) declares that this build verifies the
+	// signed `rebind` directive and runs the bounded rebind (rebind_flow.go).
+	// The API records it non-sticky; only exactly 1 makes this device eligible
+	// to be the source of a reattach. Never declared by a Quick Support client.
+	RebindProtocolVersion int `json:"rebindProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -377,6 +382,10 @@ type HeartbeatResponse struct {
 	// RetainState (#8258) lists features the server made no decision about this
 	// beat (keep current state); see retain_state.go. Absent = today's semantics.
 	RetainState RetainState `json:"retainState"`
+	// Rebind (#8318) is the signed reattach directive, present on the main and
+	// the parked beat while this install is the source of an open intent.
+	// Verified before use; see rebind_directive.go and rebind_flow.go.
+	Rebind *RebindDirective `json:"rebind,omitempty"`
 }
 
 type HelperSettings struct {
@@ -431,6 +440,8 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
+	rebind rebindState
 	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
 	// not yet closed, for replay after a helper restart; and the upstream event
 	// sink (nil = post to the API; tests override it).
@@ -2176,6 +2187,9 @@ func (h *Heartbeat) Start() {
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
 
+	// #8318 — resume a reattach a previous process left mid-flight (§6.6).
+	go h.resumeRebind()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -2287,6 +2301,15 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			// #8318 — drive a staged reattach before the auth-dead skip: an
+			// agent whose confirm committed with its answer lost is one whose
+			// source credentials are now refused. Once the reattached identity
+			// is on disk this process holds retired credentials; it only waits
+			// for its restart.
+			h.tickRebind()
+			if h.rebindOwnsIdentity() {
+				continue
+			}
 			// Issue #2621 — retry an unfinished credential rotation on every tick
 			// while one is outstanding. This runs BEFORE the auth-dead skip on
 			// purpose: if the server already promoted but the confirmation
@@ -5141,6 +5164,11 @@ func (h *Heartbeat) beatSkipReason() string {
 	if h.identityIntakePaused() {
 		return "restarting to apply a server-assigned identity"
 	}
+	// #8318 — the identity on disk is the reattached one; the credentials in
+	// memory are the retired source's.
+	if h.rebindOwnsIdentity() {
+		return "restarting to apply a reattached identity"
+	}
 	return ""
 }
 
@@ -5209,7 +5237,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: compiledSecurityCapabilities(),
+		SecurityCapabilities: h.securityCapabilitiesForBeat(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
 		// #8382 — why the last identity assertion was refused, once.
 		IdentityAssertionRejection: h.identityRejectionForBeat(),
@@ -5401,6 +5429,9 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 			h.authMon.RecordAuthFailure()
 		}
 		h.noteAuthRejectedLiveness()
+		// #8318 — with a staged reattach set on disk, a confirm may have
+		// committed and retired these credentials: replay it and probe.
+		h.noteSourceCredentialsRejected()
 		return nil, false
 	}
 
@@ -5421,6 +5452,9 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if h.authMon != nil {
 		h.authMon.RecordSuccess()
 	}
+	// #8318 — this install's credentials are proven current: a staged
+	// reattach set the server ended can now be discarded.
+	h.noteSourceCredentialsCurrent()
 
 	// Update state file with latest heartbeat timestamp so the watchdog
 	// can detect stale heartbeats.
@@ -5732,6 +5766,14 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
 	rollbackActive := rollbackInResponse || h.rollbackInProgress()
+
+	// #8318 — the signed reattach directive, after the pin above for the same
+	// reason as the identity assertion. Not while a restart for an identity
+	// or a rollback is pending: the directive comes on every beat. While a
+	// reattach is in flight no NEW token rotation starts (see
+	// rebindInProgress); the server re-signals it later.
+	h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
+	rebindHold := h.rebindInProgress()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {
@@ -5785,8 +5827,8 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
-	if identityRestarting {
-		// Re-signaled after the restart.
+	if identityRestarting || rebindHold {
+		// Re-signaled after the restart, or once the reattach is resolved.
 	} else if response.RotateToken {
 		go h.handleTokenRotation()
 	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
@@ -6298,6 +6340,13 @@ func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	if h.rebindOwnsIdentity() {
+		// #8318 — the reattached identity is on disk; h.config is the retired
+		// source's, and SaveTo would write its ids and certificate back.
+		h.mu.Unlock()
+		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
+		return
+	}
 	h.config.MtlsCertPEM = m.Certificate
 	h.config.MtlsKeyPEM = m.PrivateKey
 	h.config.MtlsCertExpires = m.ExpiresAt
@@ -6340,6 +6389,13 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	if h.rebindOwnsIdentity() {
+		// #8318 — the reattached identity is on disk; h.config is the retired
+		// source's, and SaveTo would write its ids and certificate back.
+		h.mu.Unlock()
+		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
+		return
+	}
 	h.config.PendingMTLSCertificate = renewResp.Mtls.Certificate
 	h.config.PendingMTLSPrivateKey = renewResp.Mtls.PrivateKey
 	h.config.PendingMTLSCertificateID = renewResp.CertificateID
@@ -6533,6 +6589,13 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	if h.rebindOwnsIdentity() {
+		// #8318 — the reattached identity is on disk; h.config is the retired
+		// source's, and SaveTo would write its ids and certificate back.
+		h.mu.Unlock()
+		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
+		return
+	}
 	// FINAL-REVIEW C4 (inert retry): snapshot every field this write mutates
 	// so a failed SaveTo can restore ALL of them. The previous version zeroed
 	// the in-memory pending fields BEFORE SaveTo and left them zeroed when the
@@ -6601,6 +6664,13 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 func (h *Heartbeat) clearPendingMTLSCert() {
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	if h.rebindOwnsIdentity() {
+		// #8318 — the reattached identity is on disk; h.config is the retired
+		// source's, and SaveTo would write its ids and certificate back.
+		h.mu.Unlock()
+		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
+		return
+	}
 	// FINAL-REVIEW C4 (same defect class as promotePendingMTLSCert): restore
 	// the in-memory pending fields when SaveTo fails. Zeroing them and leaving
 	// them zeroed made hasPendingMTLSCert report "nothing pending" while the

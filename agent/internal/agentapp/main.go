@@ -769,6 +769,18 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		repairStartupPermissions(cfg.SupportMode, sessionbroker.EnsureIPCGroup, config.FixConfigPermissions)
 	})
 
+	// #8318 — finish a reattach a previous process confirmed but did not
+	// finish swapping, before anything below reads the identity or the
+	// credentials. Never in support mode: a Quick Support client takes no
+	// part in a reattach.
+	if !cfg.SupportMode {
+		reattached, err := finishConfirmedRebindAtStartup(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg = reattached
+	}
+
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
 	// leaves agent.state holding a prior run's dead PID, and the watchdog reads
