@@ -24,8 +24,11 @@ import type { AgreementRequestRow } from '../../db/schema/contractDocuments';
 export const agreementRequestRoutes = new Hono();
 
 const scopes = requireScope('partner', 'organization', 'system');
-// W1: gated on agreements:write. W2 moves record-signed to agreements:send.
-const writePerm = requirePermission(PERMISSIONS.AGREEMENTS_WRITE.resource, PERMISSIONS.AGREEMENTS_WRITE.action);
+// Spec §5 / OD7 B (#9075 W2a): reads = agreements:read; draft create / patch /
+// delete = agreements:write; send, copy link, void and record-signed =
+// agreements:send (record-signed moved off agreements:write here; the
+// 2027-01-05-110000 migration back-fills send to every role holding write).
+const sendPerm = requirePermission(PERMISSIONS.AGREEMENTS_SEND.resource, PERMISSIONS.AGREEMENTS_SEND.action);
 
 /** Never put the link-token or public-response bookkeeping on the wire. */
 function serializeRequest(row: AgreementRequestRow) {
@@ -67,7 +70,7 @@ function handleError(c: Context, err: unknown): Response {
 agreementRequestRoutes.post(
   '/record-signed',
   scopes,
-  writePerm,
+  sendPerm,
   // Multipart overhead headroom; the exact 10 MB cap is enforced on the bytes.
   bodyLimit({
     maxSize: QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES + 64 * 1024,

@@ -154,10 +154,10 @@ beforeEach(() => {
 });
 
 describe('POST /contracts/agreement-requests/record-signed', () => {
-  it('is guarded by partner/organization/system scopes and agreements:write (W2 moves it to agreements:send)', async () => {
+  it('is guarded by partner/organization/system scopes and agreements:send (#9075 W2a, OD7 B)', async () => {
     const res = await contractRoutes.request(URL, multipart(fields()));
     expect(res.status).toBe(201);
-    expect(h.guards).toEqual(['scope:partner,organization,system', 'perm:agreements:write']);
+    expect(h.guards).toEqual(['scope:partner,organization,system', 'perm:agreements:send']);
   });
 
   it('JSON body instead of multipart → 400 INVALID_MULTIPART, service not called', async () => {
