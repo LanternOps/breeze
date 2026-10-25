@@ -35,11 +35,15 @@ import { devices } from '../../db/schema/devices';
 import {
   identityOffboardingCheckpointSchema,
   identityOffboardingInputSchema,
+  identityOnboardingCheckpointSchema,
+  identityOnboardingInputSchema,
   serviceRecoveryCheckpointSchema,
   taskCheckpointSchema,
   TASK_CHECKPOINT_VERSION,
   type IdentityOffboardingCheckpoint,
   type IdentityOffboardingInput,
+  type IdentityOnboardingCheckpoint,
+  type IdentityOnboardingInput,
   type ServiceRecoveryCheckpoint,
   type TaskCheckpoint,
   type ServiceRecoveryInput,
@@ -51,10 +55,12 @@ import {
   parseServiceRecoveryInput,
 } from './recipes/serviceRecovery';
 import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_ONBOARDING_WORKFLOW_KEY } from './recipes/identityOnboarding';
 import { resolveAdmissionRecipe } from './recipes';
 import type { AnyRecipeDefinition, TaskPhase } from './recipes/types';
 import {
   aiOperatorIdentityOffboardingEnabled,
+  aiOperatorIdentityOnboardingEnabled,
   aiOperatorServiceRecoveryEnabled,
   aiOperatorTasksEnabled,
 } from '../../config/env';
@@ -62,6 +68,7 @@ import { admissionFenced } from './taskTransitions';
 import { createTaskTarget, freezeTargetAccount, upsertContactExternalLinks } from './targetService';
 import {
   createContactForTask,
+  createNewContactForTask,
   findLiveTaskForContact,
   identifyTaskPerson,
   lockContactForRecipe,
@@ -101,7 +108,15 @@ export type AdmitTaskRefusal =
   /** R1a. Neither provider has an account for the person. */
   | 'no_provider_account'
   /** R1a. A task of this recipe is already live for this contact (409). */
-  | 'duplicate_live_task';
+  | 'duplicate_live_task'
+  /**
+   * R2a, `identity_onboarding`. A contact already uses the new person's
+   * address (one contact, or a shared mailbox): either this onboarding was
+   * already started or the address is somebody else's. A human decides.
+   */
+  | 'contact_already_exists'
+  /** R2a, `identity_onboarding`. `startAt` is after the task's own deadline, so the wait would outlive the task. */
+  | 'start_at_beyond_deadline';
 
 export type AdmitTaskResult =
   /**
@@ -175,7 +190,23 @@ export const RECIPE_FLAGS: Readonly<Record<string, { name: string; enabled: () =
     name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED',
     enabled: () => aiOperatorIdentityOffboardingEnabled(),
   },
+  [IDENTITY_ONBOARDING_WORKFLOW_KEY]: {
+    name: 'AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED',
+    enabled: () => aiOperatorIdentityOnboardingEnabled(),
+  },
 });
+
+/**
+ * Recipes whose contact target does not exist yet, so admission CREATES it and
+ * freezes no provider account (spec §5.2's last sentence).
+ *
+ * A set of recipe keys rather than a flag on RecipeDefinition because it is an
+ * ADMISSION policy, not a recipe property: the recipe already says
+ * `targetKinds: ['contact', …]`, and what differs is what admission does with
+ * that. A third identity recipe adds one line here, next to its RECIPE_FLAGS
+ * line, which keeps the two admission-shaped facts about a recipe together.
+ */
+const CREATES_CONTACT_RECIPES: ReadonlySet<string> = new Set([IDENTITY_ONBOARDING_WORKFLOW_KEY]);
 
 /** True when tasks are on AND the recipe's own flag is on. Read at call time. */
 export function recipeEnabled(recipeKey: string): boolean {
@@ -279,7 +310,10 @@ interface AdmissionTargets {
  * recipe resolves its person and provider accounts BEFORE the transaction
  * (provider reads never run under admission locks) and inserts its own steps
  * after the deadline: cutoff ≤ deadline, contact pin/create, the per-(recipe,
- * contact) advisory lock, and the one-live-task refusal.
+ * contact) advisory lock, and the one-live-task refusal. A recipe in
+ * `CREATES_CONTACT_RECIPES` (onboarding) does no pre-transaction lookup at
+ * all: its steps are startAt ≤ deadline, contact CREATE (refusing an existing
+ * one), the same lock, and the same refusal — and it freezes no account.
  */
 export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult> {
   if (!aiOperatorTasksEnabled()) {
@@ -356,6 +390,16 @@ export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult>
     const prepared = await prepareContactTargets(input, recipe, parsed.data);
     if ('refusal' in prepared) return prepared;
     targets = prepared;
+  } else if (CREATES_CONTACT_RECIPES.has(recipe.key)) {
+    const parsed = identityOnboardingInputSchema.safeParse(input.recipeInput);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        refusal: 'invalid_input',
+        detail: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ').slice(0, 400),
+      };
+    }
+    targets = prepareOnboardingTargets(input, recipe, parsed.data);
   } else {
     // A registered recipe this admission has no target plan for.
     return { ok: false, refusal: 'unknown_recipe', detail: `workflow '${recipe.key}' cannot be admitted by this build` };
@@ -780,6 +824,99 @@ async function prepareContactTargets(
         targetId: contactTarget.id,
         detail: `${recipe.key} v${recipe.version} admitted against contact target ${contactTarget.id}`
           + ` (${selected.length} device target(s), ${accounts.map((a) => a.provider).join('+')} account(s) frozen)`,
+      });
+    },
+  };
+}
+
+/**
+ * `identity_onboarding` (a `CREATES_CONTACT_RECIPES` member): ONE contact
+ * target (ordinal 0), CREATED here — the person is new, so there is nothing to
+ * identify and no provider account to resolve or freeze. The inversion of
+ * `prepareContactTargets`: no `identifyTaskPerson`, no `resolveProviderAccounts`,
+ * no `freezeTargetAccount`, no external links, no device targets. The
+ * collision pre-read is `discover`'s job (provider round trips never run under
+ * admission locks, and a stale answer at admission would be worse than none).
+ *
+ * The contact's address is the principal the first account will be created
+ * under: the M365 UPN, else the Google primary email (the input requires one
+ * block). Nothing here writes until the transaction.
+ */
+function prepareOnboardingTargets(
+  input: AdmitTaskInput,
+  recipe: AnyRecipeDefinition,
+  recipeInput: IdentityOnboardingInput,
+): AdmissionTargets {
+  const entryStepKey = recipe.entryStepKey ?? 'investigate';
+  const phase = recipe.steps[entryStepKey]?.phase ?? 'investigate';
+  const checkpoint: IdentityOnboardingCheckpoint = identityOnboardingCheckpointSchema.parse({
+    version: TASK_CHECKPOINT_VERSION,
+    checkpointKind: 'identity_onboarding',
+    recipeInput,
+  });
+  // The schema's refine guarantees one block, so one of the two is present.
+  const email = recipeInput.m365?.userPrincipalName ?? recipeInput.google!.primaryEmail;
+  const label = recipeInput.displayName.slice(0, 255);
+  let contactId: string | null = null;
+
+  return {
+    // The contact is the only target an effect acts on.
+    async resolve() { return { targetCount: 1 }; },
+    async beforeInsert(deadlineAt) {
+      // D-R2-10: a wait that outlives its own task hands off for no reason;
+      // admission is the only place a technician can still fix it.
+      if (recipeInput.startAt && new Date(recipeInput.startAt).getTime() > deadlineAt.getTime()) {
+        return refuse('start_at_beyond_deadline',
+          `startAt ${recipeInput.startAt} is after this task's deadline ${deadlineAt.toISOString()}`);
+      }
+      const created = await createNewContactForTask(input.orgId, {
+        displayName: recipeInput.displayName,
+        email,
+        title: recipeInput.jobTitle,
+        siteId: recipeInput.siteId,
+      }, input.requesterUserId);
+      if (!created.ok) {
+        return refuse(created.reason === 'contact_already_exists' ? 'contact_already_exists' : 'invalid_input', created.detail);
+      }
+      contactId = created.contactId;
+      // D-R1-6, in R1's order: the per-(recipe, contact) lock AFTER the contact
+      // exists, then the one-live-task refusal. A fresh contact cannot have a
+      // live task; the check stays so the rule has one shape for every recipe.
+      await lockContactForRecipe(input.orgId, recipe.key, contactId);
+      const live = await findLiveTaskForContact(input.orgId, recipe.key, contactId);
+      if (live) {
+        return refuse('duplicate_live_task', `a ${recipe.key} task is already live for this contact: ${live.taskId}`,
+          { existingTaskId: live.taskId });
+      }
+      return null;
+    },
+    row() {
+      return { deviceId: null, targetLabel: label, phase, currentStepKey: entryStepKey, checkpoint };
+    },
+    async afterInsert(taskId) {
+      const contactTarget = await createTaskTarget(db, {
+        orgId: input.orgId, taskId, targetKind: 'contact', contactId: contactId!,
+        targetLabel: label, targetOrdinal: 0,
+      });
+      await openStep(db, {
+        orgId: input.orgId,
+        taskId,
+        stepKey: entryStepKey,
+        stepKind: resolveStepKind(recipe.key, recipe.version, entryStepKey),
+        targetId: contactTarget.id,
+        attemptOrdinal: 0,
+        planRevision: 1,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+      });
+      await appendTaskEvent(db, {
+        orgId: input.orgId,
+        taskId,
+        eventType: 'task_admitted',
+        actor: input.requesterUserId ? { kind: 'user', userId: input.requesterUserId } : { kind: 'system' },
+        stepKey: entryStepKey,
+        targetId: contactTarget.id,
+        detail: `${recipe.key} v${recipe.version} admitted against new contact target ${contactTarget.id}`
+          + ' (no account frozen; accounts are created and resolved by the task)',
       });
     },
   };
