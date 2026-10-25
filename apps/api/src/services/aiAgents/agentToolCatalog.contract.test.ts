@@ -6,7 +6,7 @@ import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS, BLOCKED_TOOLS, isNeverAgentTool } from '../aiGuardrails';
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
-import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
+import { isPolicyDecidableKey, POLICY_DECIDABLE_TIER3 } from '../actionIntents/policyDecidable';
 import {
   AGENT_CAPABILITIES, TOOL_CAPABILITY, AGENT_KIND_PRESETS,
   listAgentReachableTools, listUnreachableRegisteredTools, buildAgentToolCatalog,
@@ -194,5 +194,28 @@ describe('W02 PSA/billing writes in the agent catalog (#6756)', () => {
     expect(TOOL_CAPABILITY.manage_billing_catalog).toBe('business');
     expect(TOOL_CAPABILITY.manage_tickets).toBe('tickets');
     expect('manage_catalog' in TOOL_CAPABILITY).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W03 (#6757): every W03 tool is agent-reachable; its writes
+ * are allowlisted (t2) or proposals (supervised / four-eyes), never unattended. */
+const W03_AGENT_REACHABLE = [
+  'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'trigger_vault_sync', 'trigger_c2c_sync',
+  'verify_mssql_backup', 'restore_snapshot', 'restore_as_vm', 'restore_hyperv_vm', 'restore_mssql_database',
+  'restore_c2c_items', 'instant_boot_vm', 'manage_hyperv_vm', 'manage_hyperv_checkpoints', 'manage_dr_plan',
+  'execute_dr_plan', 'manage_backup_profiles', 'configure_backup_sla', 'configure_vault',
+] as const;
+
+describe('W03 backup/DR writes in the agent catalog (#6757)', () => {
+  it.each(W03_AGENT_REACHABLE)('%s is agent-reachable under backup_recovery', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe('backup_recovery');
+  });
+
+  it('no W03 tier-3 key is pre-authorisable for an agent (every such call is a proposal)', () => {
+    const w03 = new Set<string>(W03_AGENT_REACHABLE);
+    const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => w03.has(key.split(':')[0]!));
+    expect(decidable).toEqual([]);
   });
 });
