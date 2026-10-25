@@ -276,9 +276,9 @@ describe('device_reattach_intents RLS (breeze_app)', () => {
     const hash = 'e'.repeat(64);
     const cancelledWith = { state: 'cancelled' as const, cancelReason: 'admin', confirmationTokenHash: hash };
     const one = await devicePair({ orgId: s.orgA.id, siteId: s.siteA.id }, { orgId: s.orgA.id, siteId: s.siteA.id });
-    await insertIntentAsSystem({ ...intentValues({ partnerId: s.partner.id, ...one, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }), ...cancelledWith } as ReturnType<typeof intentValues>);
+    await insertIntentAsSystem({ ...intentValues({ partnerId: s.partner.id, ...one, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }), ...cancelledWith } as unknown as ReturnType<typeof intentValues>);
     const two = await devicePair({ orgId: s.orgA.id, siteId: s.siteA.id }, { orgId: s.orgA.id, siteId: s.siteA.id });
-    const c = await cause(() => insertIntentAsSystem({ ...intentValues({ partnerId: s.partner.id, ...two, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }), ...cancelledWith } as ReturnType<typeof intentValues>));
+    const c = await cause(() => insertIntentAsSystem({ ...intentValues({ partnerId: s.partner.id, ...two, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }), ...cancelledWith } as unknown as ReturnType<typeof intentValues>));
     expect(c?.code).toBe('23505');
   });
 

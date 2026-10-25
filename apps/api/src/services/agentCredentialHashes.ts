@@ -1,3 +1,13 @@
+import { createHash } from 'node:crypto';
+
+/** The stored form of every agent-side secret: lowercase hex SHA-256 of the whole token string. */
+export function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** A value in that stored form: 64 lowercase hex characters. */
+export const SHA256_HEX_DIGEST = /^[0-9a-f]{64}$/;
+
 /**
  * Every credential hash a `devices` row can carry: agent, watchdog and helper,
  * each current, previous and pending (#8318 §6.4, full-hash revocation).

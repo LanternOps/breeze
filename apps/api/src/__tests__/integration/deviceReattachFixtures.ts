@@ -5,17 +5,18 @@
  * (so the REAL agent router authenticates them) over the privileged test
  * connection.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { eq, notInArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach } from 'vitest';
 import { deviceReattachIntents, devices, manifestSigningKeys, partnerUsers } from '../../db/schema';
+import { sha256Hex } from '../../services/agentCredentialHashes';
 import { ensureActiveSigningKey, invalidateManifestTrustCaches } from '../../services/manifestSigning';
 import { declareParkedDeviceAdmission } from '../../services/unassignedPool/admission';
 import { createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
 
-export const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+export const sha256 = sha256Hex;
 
 /**
  * The directive is signed with the deployment key, which the server never

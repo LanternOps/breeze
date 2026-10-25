@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { Counter, type Registry } from 'prom-client';
 import { db, withSystemDbAccessContext } from '../db';
 import { devices, deviceMtlsCertificates, type DeviceMtlsCertificateState } from '../db/schema';
@@ -337,80 +337,77 @@ export async function enforceAgentCertificateBinding(input: {
 }
 
 /**
+ * The staged (pending_activation) certificate of a reattach as a binding
+ * identity, or null when that row is no longer pending on the target (never
+ * a `legacy_identity` free pass: null means "not a candidate").
+ */
+async function loadStagedCertificateIdentity(
+  stagedCertificateId: string,
+  targetDeviceId: string,
+): Promise<AgentCertificateBindingIdentity | null> {
+  const [row] = await withSystemDbAccessContext(() => db
+    .select({ serialNumber: deviceMtlsCertificates.serialNumber, state: deviceMtlsCertificates.state })
+    .from(deviceMtlsCertificates)
+    .where(and(eq(deviceMtlsCertificates.id, stagedCertificateId), eq(deviceMtlsCertificates.deviceId, targetDeviceId)))
+    .limit(1));
+  if (!row || row.state !== 'pending_activation') return null;
+  // The staged certificate is the identity this install will hold: match it
+  // as an active one.
+  return { storedSerial: normalizeCertificateSerial(row.serialNumber), storedState: 'active' };
+}
+
+/**
  * #8318 §6.4 — the binding decision of `POST /agents/:id/rebind-confirm`,
  * which authenticates with the confirm-only token, not with an agent
  * credential, and is presented by an install in the middle of becoming
- * another device. In `enforce` it accepts a verified, trusted assertion of:
- *   - the SOURCE's certificate (active, or pending_revocation: confirm demotes
- *     it with a 24 h grace so the agent can still reach this route), or its
- *     legacy column;
- *   - the TARGET's staged certificate (`stagedCertificateId`, pending before
- *     confirm and active after);
- *   - the TARGET's active certificate, only when `acceptTargetActive` (the
- *     confirmed replay: by then the active one is the new install's). Before
- *     confirm the target's active certificate belongs to the OLD install and
- *     is not accepted.
- * When neither device has any certificate on file the request passes as
- * `legacy_identity`, like agent auth. `audit` observes; `off` skips the read.
+ * another device. Every candidate goes through `checkAgentCertificateBinding`,
+ * the exact decision agent auth makes:
+ *   - `before_confirm`: the SOURCE as agent auth sees it (its active
+ *     certificate, or `legacy_identity` when it has no certificate history at
+ *     all — never a `pending_revocation` row, which reads
+ *     `certificate_not_active`), OR the TARGET's staged certificate while it
+ *     is still pending on the target. The target's active certificate belongs
+ *     to the OLD install and is never accepted here.
+ *   - `after_confirm` (a confirmed intent or a ledger replay): the TARGET as
+ *     agent auth now sees it, i.e. the new install's active certificate. The
+ *     source (its certificate is pending revocation, its legacy serial
+ *     belongs to a retired row) is no longer accepted.
+ * `audit` observes; `off` skips the reads.
  */
 export async function enforceRebindConfirmCertificateBinding(input: {
+  phase: 'before_confirm' | 'after_confirm';
   sourceDeviceId: string;
   targetDeviceId: string;
   stagedCertificateId: string | null;
-  acceptTargetActive: boolean;
   assertion: AgentCertificateAssertion;
 }): Promise<AgentCertificateBindingDecision> {
   const mode = getAgentMtlsBindingMode();
   if (mode === 'off') return { allowed: true, reason: 'mode_off' };
 
-  const { acceptable, anyHistory } = await withSystemDbAccessContext(async () => {
-    const rows = await db
-      .select({
-        id: deviceMtlsCertificates.id,
-        deviceId: deviceMtlsCertificates.deviceId,
-        serialNumber: deviceMtlsCertificates.serialNumber,
-        state: deviceMtlsCertificates.state,
-      })
-      .from(deviceMtlsCertificates)
-      .where(or(
-        eq(deviceMtlsCertificates.deviceId, input.sourceDeviceId),
-        eq(deviceMtlsCertificates.deviceId, input.targetDeviceId),
-      ));
-    const legacy = await db
-      .select({ id: devices.id, serial: devices.mtlsCertSerialNumber })
-      .from(devices)
-      .where(inArray(devices.id, [input.sourceDeviceId, input.targetDeviceId]));
-    const serials = new Set<string>();
-    for (const row of rows) {
-      const isSource = row.deviceId === input.sourceDeviceId;
-      const accepted = isSource
-        ? row.state === 'active' || row.state === 'pending_revocation'
-        : (row.id === input.stagedCertificateId && (row.state === 'pending_activation' || row.state === 'active'))
-          || (input.acceptTargetActive && row.state === 'active');
-      const serial = normalizeCertificateSerial(row.serialNumber);
-      if (accepted && serial) serials.add(serial);
-    }
-    const sourceLegacy = legacy.find((row) => row.id === input.sourceDeviceId)?.serial;
-    const normalizedSourceLegacy = normalizeCertificateSerial(sourceLegacy);
-    if (normalizedSourceLegacy) serials.add(normalizedSourceLegacy);
-    return {
-      acceptable: serials,
-      anyHistory: rows.length > 0 || legacy.some((row) => Boolean(row.serial)),
-    };
+  const decide = (identity: AgentCertificateBindingIdentity) => checkAgentCertificateBinding({
+    mode,
+    assertionTrusted: input.assertion.assertionTrusted,
+    assertedVerified: input.assertion.assertedVerified,
+    assertedSerial: input.assertion.assertedSerial,
+    storedSerial: identity.storedSerial,
+    storedState: identity.storedState,
   });
 
   let decision: AgentCertificateBindingDecision;
-  if (!anyHistory) {
-    decision = { allowed: true, reason: 'legacy_identity' };
-  } else if (!input.assertion.assertionTrusted) {
-    decision = { allowed: mode === 'audit', reason: input.assertion.assertedVerified ? 'untrusted_assertion' : 'missing_assertion' };
-  } else if (!input.assertion.assertedVerified || !input.assertion.assertedSerial) {
-    decision = { allowed: mode === 'audit', reason: 'missing_assertion' };
-  } else if (!acceptable.has(input.assertion.assertedSerial)) {
-    decision = { allowed: mode === 'audit', reason: 'serial_mismatch' };
+  if (input.phase === 'after_confirm') {
+    decision = decide(await loadAgentCertificateBindingIdentity(input.targetDeviceId));
   } else {
-    decision = { allowed: true, reason: 'matched' };
+    const candidates = [decide(await loadAgentCertificateBindingIdentity(input.sourceDeviceId))];
+    const staged = input.stagedCertificateId
+      ? await loadStagedCertificateIdentity(input.stagedCertificateId, input.targetDeviceId)
+      : null;
+    if (staged) candidates.push(decide(staged));
+    // A real match wins over a pass that only audit mode grants.
+    decision = candidates.find((c) => c.allowed && (c.reason === 'matched' || c.reason === 'legacy_identity'))
+      ?? candidates.find((c) => c.allowed)
+      ?? candidates[0]!;
   }
   recordAgentCertificateBindingMetric(mode, decision.reason, 'rest');
   return decision;
 }
+

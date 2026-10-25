@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { confirmationHashMatches, hashConfirmationToken, parseConfirmationBearer } from './confirmationToken';
+import { sha256Hex } from '../agentCredentialHashes';
+import { confirmationHashMatches, parseConfirmationBearer } from './confirmationToken';
+
+const hashConfirmationToken = sha256Hex;
 
 const SECRET = 'a'.repeat(43);
 const TOKEN = `brz_rbc_${SECRET}`;
@@ -25,7 +28,7 @@ describe('parseConfirmationBearer (#8318 §6.4)', () => {
   });
 });
 
-describe('hashConfirmationToken / confirmationHashMatches', () => {
+describe('sha256Hex (the stored form) / confirmationHashMatches', () => {
   it('is the SHA-256 hex of the whole token, prefix included (what the agent sends at phase 1)', () => {
     expect(hashConfirmationToken(TOKEN)).toBe(createHash('sha256').update(TOKEN).digest('hex'));
   });

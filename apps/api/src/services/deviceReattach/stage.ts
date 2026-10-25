@@ -32,7 +32,7 @@ import { randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceReattachIntents, type DeviceReattachIntent } from '../../db/schema';
-import { collectAgentCredentialHashes } from '../agentCredentialHashes';
+import { collectAgentCredentialHashes, SHA256_HEX_DIGEST } from '../agentCredentialHashes';
 import { writeReattachAudit } from './audit';
 import { cancelledRefusal, intentStateRefusal, reattachRefusal, ReattachRefusedError, type ReattachRefusal } from './errors';
 import {
@@ -45,7 +45,7 @@ import {
   type EndedIntent,
 } from './intentStore';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
-import { REATTACH_STAGED_TTL_MS, SHA256_HEX } from './protocol';
+import { REATTACH_STAGED_TTL_MS } from './protocol';
 import { revalidateLockedIntent } from './revalidation';
 import {
   insertStagedCertificateRow,
@@ -128,7 +128,7 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
     confirmationTokenHash: input.confirmationTokenHash,
   };
   const values = Object.values(hashes);
-  if (!values.every((value) => SHA256_HEX.test(value)) || new Set(values).size !== values.length) {
+  if (!values.every((value) => SHA256_HEX_DIGEST.test(value)) || new Set(values).size !== values.length) {
     return reattachRefusal(400, 'invalid_staged_set', 'The staged set must be four distinct SHA-256 hex digests');
   }
 

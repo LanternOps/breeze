@@ -64,7 +64,7 @@ import {
   type DeviceReattachment,
 } from '../../db/schema';
 import { disconnectAgent, disconnectAgentCredentialGeneration, publishAgentCredentialRevocation } from '../../routes/agentWs';
-import { collectAgentCredentialHashes } from '../agentCredentialHashes';
+import { collectAgentCredentialHashes, sha256Hex } from '../agentCredentialHashes';
 import {
   enforceRebindConfirmCertificateBinding,
   type AgentCertificateAssertion,
@@ -79,7 +79,7 @@ import { getRedis } from '../redis';
 import { captureException } from '../sentry';
 import { lockPartnerHoldingArea } from '../unassignedPool/holdingAreaLock';
 import { writeReattachAudit } from './audit';
-import { confirmationHashMatches, hashConfirmationToken } from './confirmationToken';
+import { confirmationHashMatches } from './confirmationToken';
 import { cancelledRefusal, intentStateRefusal, reattachRefusal, ReattachRefusedError, type ReattachRefusal } from './errors';
 import {
   endIntentInTransaction,
@@ -546,15 +546,16 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
 
 export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<ConfirmRebindResult> {
   const now = input.now ?? new Date();
-  const presentedHash = hashConfirmationToken(input.token);
+  const presentedHash = sha256Hex(input.token);
   const located = await locateByToken(input.sourceAgentId, presentedHash);
   if (!located) return INVALID_CREDENTIALS();
 
   const binding = await enforceRebindConfirmCertificateBinding({
+    // A confirmed intent or a ledger row: the target is the new install's now.
+    phase: located.kind === 'ledger' || located.intent.state === 'confirmed' ? 'after_confirm' : 'before_confirm',
     sourceDeviceId: located.kind === 'intent' ? located.intent.sourceDeviceId : located.ledger.sourceDeviceId,
     targetDeviceId: located.kind === 'intent' ? located.intent.targetDeviceId : located.ledger.targetDeviceId,
     stagedCertificateId: located.kind === 'intent' ? located.intent.stagedMtlsCertificateId : null,
-    acceptTargetActive: located.kind === 'ledger' || located.intent.state === 'confirmed',
     assertion: input.assertion,
   });
   if (!binding.allowed) {

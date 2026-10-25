@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { readAgentCertificateAssertion } from '../../services/agentCertificateBinding';
+import { SHA256_HEX_DIGEST } from '../../services/agentCredentialHashes';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { confirmRebindIntent } from '../../services/deviceReattach/confirm';
 import { parseConfirmationBearer } from '../../services/deviceReattach/confirmationToken';
@@ -38,14 +39,14 @@ export const REBIND_CONFIRM_IP_RATE_LIMIT = { limit: 30, windowSeconds: 300 } as
 /** Confirm: FAILED token verifications per source agent id (`:id`), charged after the mismatch. */
 export const REBIND_CONFIRM_FAILURE_LIMIT = { limit: 10, windowSeconds: 300 } as const;
 
-const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/, 'must be a lowercase SHA-256 hex digest');
+const sha256HexDigest = z.string().regex(SHA256_HEX_DIGEST, 'must be a lowercase SHA-256 hex digest');
 
 export const rebindStageSchema = z.object({
   intentId: z.string().uuid(),
-  stagedTokenHash: sha256Hex,
-  stagedWatchdogTokenHash: sha256Hex,
-  stagedHelperTokenHash: sha256Hex,
-  confirmationTokenHash: sha256Hex,
+  stagedTokenHash: sha256HexDigest,
+  stagedWatchdogTokenHash: sha256HexDigest,
+  stagedHelperTokenHash: sha256HexDigest,
+  confirmationTokenHash: sha256HexDigest,
 });
 
 /** Agent ids are 64 hex characters; anything else can never match an intent. */

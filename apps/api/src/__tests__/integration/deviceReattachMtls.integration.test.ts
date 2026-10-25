@@ -226,15 +226,28 @@ describe('rebind with mTLS (#8318 §6.3, §6.4)', () => {
     expect(dueIn).toBeLessThanOrEqual(24 * 3_600_000);
     expect(provider.revoked).not.toContain(sourceCert.providerId);
 
-    // The replay still reaches the confirm route under the source's grace,
-    // and under the target's (new) active certificate.
-    expect((await confirmAs(sourceCert.serial)).status).toBe(200);
+    // Review finding 4: after confirm the replay is bound to the TARGET as
+    // agent auth now sees it (the new install's active certificate); the
+    // source's certificate, pending revocation, no longer passes.
     expect((await confirmAs(stagedSerial)).status).toBe(200);
+    expect(await confirmAs(sourceCert.serial)).toMatchObject({ status: 403, body: { code: 'certificate_binding_failed' } });
 
     // Exactly one active certificate on the target.
     const active = await getTestDb().select().from(deviceMtlsCertificates)
       .where(and(eq(deviceMtlsCertificates.deviceId, target.id), eq(deviceMtlsCertificates.state, 'active')));
     expect(active).toHaveLength(1);
+  });
+
+  it('before confirm, a source certificate that is no longer active (pending_revocation) is refused', async () => {
+    const { source, sourceCert, intent } = await arrange();
+    const set = stagedSet();
+    expect((await call(`/${source.agentId}/rebind`, source.agentToken, { intentId: intent.id, ...set.hashes }, sourceCert.serial)).status).toBe(200);
+    await getTestDb().update(deviceMtlsCertificates)
+      .set({ state: 'pending_revocation', nextRevokeAttemptAt: new Date(Date.now() + 86_400_000) })
+      .where(eq(deviceMtlsCertificates.id, sourceCert.id));
+    expect(await call(`/${source.agentId}/rebind-confirm`, set.tokens.confirmationToken, {}, sourceCert.serial))
+      .toMatchObject({ status: 403, body: { code: 'certificate_binding_failed' } });
+    expect((await readIntent(intent.id))!.state).toBe('staged');
   });
 
   it('confirm accepts the source\'s active certificate before confirm', async () => {
