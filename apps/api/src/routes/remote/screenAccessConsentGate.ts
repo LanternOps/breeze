@@ -15,7 +15,7 @@ import {
  * remote desktop session. Recorded on the audit row so a refusal can be traced
  * to the tool or route that asked.
  */
-export type ScreenAccessSurface = 'take_screenshot' | 'analyze_screen' | 'computer_control' | 'device_diagnose';
+export type ScreenAccessSurface = 'take_screenshot' | 'analyze_screen' | 'computer_control' | 'device_diagnose' | 'collect_evidence';
 
 export const SCREEN_ACCESS_CONSENT_BLOCKED_AUDIT_ACTION = 'screen_access_consent_blocked';
 

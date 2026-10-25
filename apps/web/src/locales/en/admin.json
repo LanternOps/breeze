@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Connected apps (org-wide)",
       "description": {
-        "prefix": "AI assistants and other MCP clients that users in",
+        "prefix": "AI clients that users in",
         "yourOrganization": "your organization",
         "suffix": "have authorized. Block any client to immediately revoke every active grant."
       },
@@ -581,7 +581,7 @@
         "plan": "Plan",
         "activeGrants": "Active grants",
         "pausedGrants": "Paused grants",
-        "assessmentsToday": "Assessments today",
+        "assessmentsToday": "Checks today",
         "specialistRequestsToday": "Specialist requests today",
         "openConcerns": "Open concerns",
         "budgetExhaustedToday": "Budget-exhausted grants today"
@@ -597,7 +597,7 @@
         "expires": "Expires",
         "budget": "Budget (cents/day)",
         "tickMinutes": "Tick (min)",
-        "assessmentsToday": "Assessments today",
+        "assessmentsToday": "Checks today",
         "partnerWide": "Partner-wide"
       },
       "status": {
@@ -889,10 +889,10 @@
       "backup.restore.unattested_override": "Confirmed restore of an unverified snapshot",
       "ai.tool_approval.update": "Updated AI tool approval",
       "ai.tool.*": "AI tool: {tool}",
-      "ai.session.create": "Started AI chat",
-      "ai.session.close": "Closed AI chat",
-      "ai.session.flag": "Flagged AI chat",
-      "ai.session.unflag": "Unflagged AI chat",
+      "ai.session.create": "Started a Breeze AI conversation",
+      "ai.session.close": "Closed a Breeze AI conversation",
+      "ai.session.flag": "Flagged a Breeze AI conversation",
+      "ai.session.unflag": "Unflagged a Breeze AI conversation",
       "ai.message.interrupt": "Stopped AI response",
       "ai.command.executed": "AI ran a command",
       "ai.script.executed": "AI ran a script",

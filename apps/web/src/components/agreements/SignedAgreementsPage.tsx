@@ -73,8 +73,9 @@ export default function SignedAgreementsPage({
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const locked = Boolean(lockedOrgId || lockedContractId);
   const { can } = usePermissions();
-  // UX only — the record-signed route re-checks agreements:write server-side.
-  const canRecord = can('agreements', 'write');
+  // UX only — the record-signed route re-checks agreements:send server-side
+  // (#9075 W2a moved it off agreements:write, OD7 B).
+  const canRecord = can('agreements', 'send');
   const [recordOpen, setRecordOpen] = useState(false);
 
   // CLAUDE.md: hash for transient UI state, never query params. Embeds do NOT

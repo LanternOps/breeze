@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "Yapay zeka kullanımı",
       "sectionTitle": "Yapay zeka kullanımı",
-      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların yapay zeka asistanı kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
+      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların Breeze AI kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
       "coverage": "Yapay zeka kullanımı faturalandırması",
       "coverageBillable": "Faturalandırılabilir",
       "coverageIncluded": "Dahil",

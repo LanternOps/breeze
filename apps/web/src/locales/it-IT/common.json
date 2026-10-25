@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "Assistente IA",
+    "assistant": "Breeze AI",
     "agent": "Agente IA",
     "flow": "Flusso",
     "originUnavailable": "Origine non disponibile",
@@ -671,7 +671,7 @@
     },
     "apps": {
       "title": "App connesse",
-      "description": "Assistenti AI e altri client MCP (Claude.ai, ChatGPT, Cursor, ...) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento: i token smettono di funzionare entro 10 minuti.",
+      "description": "Client AI (Claude.ai, ChatGPT, Cursor, …) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento — i token smettono di funzionare entro 10 minuti.",
       "empty": "Nessuna app connessa",
       "emptyDescription": "Quando autorizzi una chat Claude.ai, ChatGPT, Cursor o qualsiasi altro client MCP, apparirà qui in modo da poterlo revocare in seguito.",
       "authorized": "Autorizzato",
@@ -681,7 +681,7 @@
       "revokeTitle": "Revoca {{app}}?",
       "revokeDescription": "Tutte le concessioni e i token di aggiornamento per questo client verranno cancellati. I token smettono di funzionare entro 10 minuti. Dovrai autorizzare nuovamente la prossima volta che lo utilizzerai.",
       "onlyAppTitle": "Questa è la tua unica app autorizzata.",
-      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi assistente AI possa agire sul tuo tenant.",
+      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi client AI possa agire sul tuo tenant.",
       "reasonPlaceholder": "Non più necessario, attività sospetta...",
       "revokeAction": "Revoca l'accesso"
     }
@@ -738,8 +738,8 @@
     "header": {
       "menu": "Menù",
       "openMenu": "Apri il menu di navigazione",
-      "ai": "Assistente AI",
-      "aiTitle": "Assistente AI (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aiuto e documenti",
       "helpTitle": "Guida e documenti (Cmd+Shift+H)",
       "theme": "Tema",
@@ -2013,7 +2013,7 @@
           "reports": "Report"
         },
         "aiFleetActions": "Azioni della flotta AI",
-        "aiFleetActionsHint": "Fai clic per chiedere all'assistente AI",
+        "aiFleetActionsHint": "Fai clic per chiedere a Breeze AI",
         "quickActions": {
           "checkCompliance": "Verifica conformità",
           "activeDeployments": "Distribuzioni attive",
@@ -2400,8 +2400,8 @@
             "description": "Gestisci più clienti? Passa da un'organizzazione all'altra qui."
           },
           "aiHelp": {
-            "title": "Assistenza basata sull'AI",
-            "description": "Poni domande sulla tua flotta, risolvi i problemi o genera report. Premi Cmd+Shift+A in qualsiasi momento."
+            "title": "Breeze AI",
+            "description": "Poni domande sulla tua flotta in linguaggio naturale, risolvi i problemi o genera report. Premi ⌘⇧A in qualsiasi momento."
           }
         },
         "skipTour": "Salta il tour",

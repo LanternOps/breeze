@@ -1,87 +1,52 @@
 ---
-title: AI Features
-description: AI assistant with tiered tool approvals, AI Risk Engine, Fleet Orchestration Brain, device context memory, Helper chat, and cost tracking.
+title: AI in Breeze
+description: How AI fits together in Breeze - operators, the workers, Wisp, and governance - plus the AI risk engine, approvals, rate limits, cost tracking and privacy.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Breeze includes a built-in AI assistant powered by the Claude Agent SDK that can query your fleet, diagnose device issues, and take action on your behalf. The assistant runs as a managed agent with a query loop — it receives your question, plans a sequence of tool calls, executes them against live fleet data, and returns a synthesized answer. All tool executions are governed by a tiered approval system with full audit logging and per-tool rate limits.
+**Operators run Breeze. The workers do the work. Wisp runs your day.**
 
-Six capabilities extend and govern this system:
+```
+Operators run Breeze.            → people, roles, permissions, Approvals (you hold them)
+The workers do the work.         → the built-in AI everyone has:
+                                    Breeze AI (the chat door) · Agents (the roster) ·
+                                    Runs · AI tasks (long-running jobs) · Library (recipes)
+Wisp runs your day.              → one per person, hosted: home · thread · brief ·
+                                    nudges · memory · grant · spend meter
+Governance                       → Risk engine · Approvals · Budgets & usage ·
+                                    Providers & models · Tool sources · Kill switch · Audit
+Doors for other people           → Breeze Helper / Breeze Assist (end users on the device)
+                                    Breeze AI for Office (end users in Office)
+                                    MCP server (AI clients) · Mobile
+```
 
-- **AI Risk Engine** — governance dashboard for controlling and auditing AI-assisted operations
-- **Fleet Orchestration Brain** — command center for fleet-scale AI-driven management
-- **AI Device Context Memory** — persistent per-device memory that the AI carries across conversations
-- **Helper AI Chat** — end-user-facing AI assistant in the Breeze Helper tray app
-- **AI Cost Tracking** — per-session and per-organisation usage and cost monitoring
-- **AI Input Sanitization** — guardrails that validate and sanitize all AI inputs before execution
+## Operators
 
----
+You and your technicians are the operators. Roles and permissions decide who can use AI at all (`ai_sessions:use`), who can manage agents (`ai_agents:*`) and who can approve what the AI proposes. There is one approval object and one place for it: **Approvals**. See [Approvals](#approval-workflow) below and [Approval security](/features/approval-security/).
 
-## Chat surfaces: the side panel and Wisp chats
+## The workers
 
-You can talk to the assistant in two places:
+The workers are the built-in AI every Breeze deployment has.
 
-- **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
-- **Wisp chats** — the full page at `/wisp/chat`, reached from **Wisp** in the sidebar (the old `/workspace` address redirects here). It holds up to five conversations, one per tab. The **Wisp** entry itself opens the Wisp home; see [Wisp](/features/wisp/).
+- **[Breeze AI](/features/breeze-ai/)** is the chat door: the side panel and the full chat page, suggested fixes and per-device memory.
+- **[Agents](/features/ai-agents/)** are named, permission-scoped workers that wake on a trigger and write up what they found. Each pass is a **run**; see also [Analysis runs](/features/ai-analysis-runs/) and [AI impact](/features/ai-impact/).
+- **[AI tasks](/features/ai-tasks/)** are long-running, multi-step jobs you hand off and walk away from, started from a recipe in the Library.
 
-A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
+## Wisp
 
-### Move a conversation to Wisp chats
+**[Wisp](/features/wisp/)** is one per person and sits above the workers. It keeps an eye on the estate that person can see, nudges them when something needs a human, and hands focused jobs to the workers. What it hands off shows up as a run or an AI task.
 
-<Steps>
+## Governance
 
-1. In the side panel, click **Open in Wisp chats** (the arrow icon in the panel header).
-2. Wisp chats opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
-3. The side panel closes and lets the conversation go. It stays in your history.
+The same controls apply to every worker: the [AI risk engine](#ai-risk-engine) and its tiers, [Approvals](#approval-workflow), [rate limits](#rate-limits), [cost tracking](#ai-cost-tracking), [bring your own LLM key](/features/bring-your-own-llm-key/), [tool sources](/features/tool-sources/) and the audit trail.
 
-</Steps>
+## Doors for other people
 
-If Wisp chats already has five tabs, nothing moves and you see **Close a tab in Wisp chats to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
-
-### Move a conversation back to the side panel
-
-Use either **Continue in side panel** in the chat header, or **Tab options** (the tab's menu) → **Continue in side panel**. The side panel opens with the conversation and your unsent text, then the tab closes. If the side panel already holds a different conversation with unsent text or a reply in progress, you are asked first: **Replace the conversation in the side panel? It stays in your history.**
-
-### A reply that is still being written
-
-You do not have to wait for the assistant to finish. If you move a conversation while a reply is streaming, the destination shows the reply so far and keeps following it to the end. Nothing is sent again.
-
-An approval card that is waiting moves with the conversation and keeps its **original** deadline — moving it does not give you more time. You can approve or deny it from the destination.
-
-For a very long reply you may see **Joined mid-response. The full reply appears when it finishes.** The complete reply appears as soon as the assistant is done.
-
-### Open a past conversation
-
-- In the side panel, click **History** (the clock icon).
-- In Wisp chats, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
-
-Both lists show your active conversations from every organization you can access, most recent first, and each has a search box:
-
-- An **organization chip** names the conversation's organization when you work in more than one. It reads **Another organization** until the name loads.
-- A **Device** chip marks a conversation bound to a device.
-- A conversation already open on the other surface is labelled **Open in Wisp chats** (in the side panel's History) or **Open in side panel** (in the Wisp chats list). Picking it moves it there.
-- Topology investigations are listed in the side panel only. Script-authoring and MCP sessions are not chat conversations and do not appear in either list.
-
-Opening a conversation from another organization does not change the organization switcher.
-
-### Links to a conversation
-
-`/wisp/chat#session=<conversation id>` (old `/workspace#session=...` links redirect) opens that conversation in Wisp chats, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
-
-| Message | Meaning |
-|---|---|
-| **This conversation isn't available** | The conversation does not exist or you cannot access it. |
-| **This conversation was closed** | The conversation has ended and can no longer be continued. |
-| **Close a tab to open this conversation** | Wisp chats already has five tabs. Nothing is closed for you. |
-| **Investigations open from the topology map** | Topology investigations live in the side panel; the message offers to open it there. |
-| **Continue in side panel to choose a model** | The next message needs a model choice, which is made in the side panel. |
-
-Both surfaces need the **`ai_sessions:use`** permission (see [Who can approve](#who-can-approve)). Signing out clears both surfaces in that browser: the next sign-in starts with no tabs and an empty side panel.
-
-<Aside type="note" title="For self-hosters">
-The conversation list now shows only chat conversations: script-authoring and MCP sessions no longer appear in the side panel's History, and the mobile app's history list changes the same way. API users: `GET /api/v1/ai/sessions` and `/search` return only chat sessions and now include `orgId`, `type` and `deviceId` (search also `status`), and `GET /api/v1/ai/sessions/:id/stream` is a new read-only route that follows a conversation's current reply. No environment variable, migration or proxy change is needed beyond what `POST …/messages` already requires for streaming.
-</Aside>
+- **[Breeze Helper](/agents/helper/)** gives end users an AI chat on their own device (see [Helper AI Chat](#helper-ai-chat)).
+- **[Breeze AI for Office](/features/ai-for-office/)** brings it to your clients in Office.
+- **[MCP server](/features/mcp-server/)** connects Claude Desktop, Cursor and other AI clients.
+- **[Mobile](/features/mobile/)** carries approvals and Wisp nudges in your pocket.
 
 ---
 
@@ -99,15 +64,15 @@ The assistant and background agents can author a script mid-conversation, have i
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
-| **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence`, `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
-| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `ioc_hunt` (list_rule_sets/preview_sweep/list_sweeps/sweep_status), `get_active_users`, `disk_cleanup` (preview), `system_cleanup` (status), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `get_service_monitoring_status`, `query_monitors`, `manage_monitors` (get/create/update/delete), `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `manage_software_policy` (list/get), `manage_browser_policy` (list), `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `find_proven_fixes`, `get_device_vulnerabilities`, `search_documentation`, `propose_script`, `get_script_proposal` |
+| **Tier 2** | Auto-execute + audit logged | `manage_alerts` (acknowledge/resolve), `manage_services` (list), `ioc_hunt` (cancel_sweep), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), `analyze_disk_usage` (refresh), `analyze_boot_performance` (triggerCollection), `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `revoke_elevation`, `assign_security_training`, `acknowledge_network_device`, `registry_operations` (read_key/get_value), `file_operations` (list), `execute_command` (list_processes/file_list/event_logs_list) |
+| **Tier 3** | Requires human approval before execution | `execute_command` (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query), `run_script`, `disk_cleanup` (execute), `system_cleanup` (run), `network_discovery`, `security_scan` (quarantine/remove/restore), `ioc_hunt` (sweep/import_iocs), `file_operations` (read/write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_scheduled_tasks` (run/disable/enable), `registry_operations` (set_value/create_key/delete_key), `create_remote_session`, `request_elevation`, `trigger_agent_restart`, `trigger_agent_upgrade`, `configure_network_baseline`, `trigger_backup`, `restore_snapshot`, `execute_containment`, `collect_evidence`, `execute_playbook`, `remediate_vulnerability`, `manage_ai_agents` (authorize_supervised_key) |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
 
 `manage_monitors` supports `get` only. Its retired `create`, `update`, and `delete` actions return guidance without approval or write permission. Author network checks with `manage_monitor_definitions` using kind `network_check`; retire unconverted checks through the conversion ledger to preserve history.
 
 <Aside>
-  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
+  Tier classification is action-level, not tool-level. For example, `disk_cleanup` is Tier 1 when previewing and Tier 3 when executing. `system_cleanup` follows the same split — reading a run's status is Tier 1, listing the OS-native cleaners a device offers asks the device live and is Tier 2, running them is Tier 3; `analyze_disk_usage` and `analyze_boot_performance` read stored data at Tier 1, and only a fresh scan (`refresh`) or collection (`triggerCollection`) from the device is Tier 2; `manage_alerts` is Tier 1 for list/get and Tier 2 for acknowledge/resolve. `execute_command` resolves per `commandType`: `list_processes`, `file_list`, and `event_logs_list` are Tier 2; `list_services` and `event_logs_query` stay Tier 3 despite being reads, because they can return unredacted credential- or PII-bearing content (service binary paths, raw event-log messages); mutating types and `file_read` are Tier 3 too. `collect_evidence` is Tier 2 when it collects logs, processes or connections, and Tier 3 as soon as the request includes a screenshot (it is listed under Tier 3 because the unqualified call is checked at the stricter level). The AI resolves the tier for each specific action at runtime. Within Tier 2, strictly read-only entries — the `execute_command` types above, `file_operations` (list), `manage_services` (list), `manage_processes` (list), `manage_scheduled_tasks` (list), `system_cleanup` (list), a fresh `analyze_disk_usage` or `analyze_boot_performance` read, and the single-purpose get/list/search catalog, contract, invoice, and quote tools — auto-execute (with the audit-trail entry) under **every** approval mode, including the default per-step mode. Tier-2 *mutations* still take a lightweight inline confirmation under per-step approval, and a paused session always confirms everything Tier 2 and above.
 </Aside>
 
 <Aside type="note">
@@ -334,144 +299,6 @@ this to my machine" gets the answer in the one artifact designed to hold it.
 
 ---
 
-## Fleet Orchestration Brain
-
-The Fleet Orchestration Brain is an AI command centre for fleet-scale operations. Open it via **AI → Fleet Orchestration** in the main navigation sidebar.
-
-### Dashboard metrics
-
-The page shows eight stat cards that aggregate live fleet data:
-
-| Card | What it shows |
-|---|---|
-| **Policies** | Total policies, enforcing count, compliance %, non-compliant devices |
-| **Deployments** | Active, pending, completed, and failed deployment counts |
-| **Patches** | Pending approval, approved, installed; critical pending count |
-| **Alerts** | Critical, high, medium, and low alert counts |
-| **Device Groups** | Count of static and dynamic groups |
-| **Automations** | Configured automations with recent run history |
-| **Maintenance Windows** | Active windows with suppression flags |
-| **Reports** | Available report templates and schedules |
-
-### AI tools
-
-When you are on the Fleet Orchestration page, the AI assistant gains access to nine fleet-level tools:
-
-| Tool | What it does |
-|---|---|
-| `manage_configuration_policy` | Create, update, activate/deactivate, and delete configuration policies |
-| `configuration_policy_compliance` | Check org-wide compliance summary or per-device compliance status for a policy |
-| `manage_deployments` | Create, start, pause, resume, and cancel deployments |
-| `manage_patches` | Scan, approve, decline, defer, bulk approve, and rollback patches |
-| `manage_groups` | Create static/dynamic groups and manage membership |
-| `manage_maintenance_windows` | Schedule maintenance windows with timezone support |
-| `manage_automations` | Create and update automation rules and event triggers |
-| `manage_alert_rules` | Configure alerting templates per device or site |
-| `generate_report` | Generate inventory, compliance, performance, and executive summary reports, plus (v0.124.0+) the business reports — ticket SLA attainment, technician time and billability, AR aging, and AI usage by client — which are for MSP staff only and refused for site-restricted callers |
-
-### Quick actions
-
-The page includes pre-populated AI chat buttons that open the AI sidebar with a domain-specific prompt:
-
-| Button | Pre-filled prompt |
-|---|---|
-| Check compliance | Show me a compliance summary for all policies |
-| Active deployments | List all active deployments and their progress |
-| Critical patches | What critical patches are pending approval? |
-| Alert overview | Give me a summary of active alerts by severity |
-| Maintenance windows | What maintenance windows are active right now? |
-| Run automations | List all enabled automations and their recent run history |
-| Device groups | Show me all device groups and their member counts |
-| Generate report | Generate an executive summary report for the fleet |
-
----
-
-## Suggested fixes and fix memory
-
-On an alert or anomaly, **Suggested Fixes** lists things a technician could do about it. The panel groups suggestions as **Proven fixes** (fixes your fleet has already seen work), **AI suggestions** (from the built-in research agent), **Similar fixes**, and a collapsed **Earlier keyword matches** group. AI suggestions carry an **AI researched** badge. The feature is controlled by the `ml.remediation_suggestions.enabled` flag (see [ML Insights](/features/ml-insights/)); research also needs AI credits (or the organization's AI budget) to be available, and a manual request needs the `ai_sessions:use` permission.
-
-### Generate and Research deeper
-
-- **Generate** attaches proven fix memory first: a fix that worked for the same kind of problem on the same operating system is suggested straight away with its track record. It then also starts a **quick** research run, whether or not a proven fix exists, provided you have `ai_sessions:use`. Without that permission the panel tells you so.
-- **Research deeper** starts a **deep** research run for the same alert or anomaly. It gets a larger turn and budget ceiling than a quick run, and is meant for when the first answer was not enough.
-
-AI triage consults fix memory first as well, behind the same `ml.remediation_suggestions.enabled` flag. When an alert already has a proven fix that can be attached, shadow-mode triage attaches it instead of starting a triage run. Triage verdict and full alert runs see the alert's proven fixes and their track record, and a full run proposes a proven fix (through the normal approval path) before researching alternatives.
-
-Every attempt ends in an explicit state on the panel, never a silent blank: researching; "AI found no safe fix for this problem"; research failed, with a **Retry** button; still researching after about five minutes ("check back", with **Refresh**); busy, when concurrency or rate limits are reached; no permission; or one of the other reasons a run could not start, such as the feature being off for the organization, AI credits being used up, or the alert having no single device. Asking again while a run is active shows that run instead of starting a second one.
-
-**Research never runs anything.** The research agent is read-only: it can look at device details, logs, your script and playbook catalog and proven fixes, and it submits suggestions. It cannot execute, change or draft a script on its own. A technician always chooses what to accept and run.
-
-### What a suggestion can be
-
-| Kind | What it is |
-|---|---|
-| Catalog script or playbook | One from your own catalog that runs on the device's operating system. Anything else the agent names is dropped by the server. |
-| Built-in action | One of `reboot`, `restart_service`, `kill_process` or `disk_cleanup`, with typed parameters (a service name, a process name, or cleanup action IDs). |
-| Manual steps | A short list of steps for a person to follow. |
-| Script draft request | A brief for a script that does not exist yet. |
-
-**Built-in actions and approval.** Running a built-in action needs `devices:execute` in addition to `scripts:execute`. Each action has a minimum risk level the server enforces regardless of what the agent proposed: `reboot` is always high risk, so it always goes through approval before it runs; `restart_service` and `kill_process` are at least medium; `disk_cleanup` is low. `kill_process` resolves the process by name when you run it and refuses if none or more than one process matches.
-
-**Draft a script.** On a script draft request, **Draft a script** opens the script builder with the brief and language pre-filled (it needs `scripts:write`). If the hand-off cannot be stashed in your browser, the brief is copied to the clipboard as a prompt instead. Nothing is sent or saved until you do it yourself.
-
-### Written by AI and reviewed steps
-
-Manual steps written by the research agent are labelled **Written by AI — review before following**, and that label stays on the suggestion. After checking the steps, a user with `scripts:write` and partner-wide management rights can use **Save as reviewed steps** to keep a reusable copy for an operating system. When a technician later marks a manual-steps suggestion **Done**, a picker offers the reviewed steps (or "Steps as written (not shared)"). The choice is recorded with the outcome, and once verified outcomes accumulate the fix appears as a proven fix labelled with the reviewed title, visible to your organizations' users. The research agent does not read reviewed steps; it only sees that a proven manual-steps fix exists and its track record.
-
-### The Fix memory page
-
-**Fix memory** (in the AI Agents section of the navigation) has two tabs. **Fixes** lists what Breeze has learned from observed outcomes, each with its condition, operating system, kind, scope (this client or all clients), status (including Demoted and Stale) and track record. **Reviewed steps** lists the saved reviewed steps and lets you retire them. Only counts are shared across clients, never another client's details. Retire an entry to stop it being suggested. Retiring a fix on the **Fixes** tab needs the AI agents write permission and MFA, and retiring an all-clients fix also needs partner-wide management rights. Saving reviewed steps, and retiring a saved entry on the **Reviewed steps** tab, each need partner-level access, `scripts:write`, partner-wide management rights and MFA.
-
-### The "Fix research (built-in)" agent
-
-- **Provisioned for you.** Each partner gets one built-in agent, named "Fix research (built-in)", created the first time research is requested. It cannot be created by hand at partner level.
-- **Only a few things are editable.** You can enable or disable it, rename it and adjust its research caps. Its instructions, tools and mode are fixed.
-- **Default ceilings.** A quick run is limited to 4 turns and 5 cents; a deep run to 10 turns and 25 cents. These are configurable ceilings, not typical costs. There are also per-hour and concurrency limits.
-- **Organization override.** An organization can have its own override of the agent, for example to disable it or set tighter caps for that client. The override carries only those same editable settings.
-- **Automatic research.** For **high** and **critical** alerts where no proven fix could be attached, research starts on its own at quick depth, once per alert, and is capped per organization per hour (6 by default). Medium and low alerts are only researched when a technician asks.
-- **Credits.** Research runs are billed like other AI agent runs. If credits are exhausted, runs are refused and the panel says why.
-
-## AI Device Context Memory
-
-The AI can remember device-specific facts across conversations. When you ask the AI about a device, it automatically loads that device's context entries and incorporates them into its analysis — so it won't re-alert on known quirks or forget about open follow-ups.
-
-### Context types
-
-| Type | Purpose | Example |
-|---|---|---|
-| `issue` | Known problems to track | "Recurring BSOD on boot since Jan 2026" |
-| `quirk` | Normal but unusual behaviour | "Slow startup is expected due to a legacy driver" |
-| `followup` | Pending actions | "Check disk health after replacement on 2026-03-01" |
-| `preference` | User or device preferences | "Maintenance window: Sundays 2 AM–4 AM only" |
-
-### Managing context
-
-Context is managed through the AI assistant — there is no separate UI. Ask naturally:
-
-- _"Remember that this device has a recurring BSOD issue."_
-- _"Mark the disk check follow-up as resolved."_
-- _"What do you know about HOSTNAME?"_
-
-Context entries can have an **expiry date**, which is useful for time-bound follow-ups. Expired entries are excluded from future queries but are not deleted.
-
-The AI uses three tools internally to manage context:
-
-| Tool | Tier | Description |
-|---|---|---|
-| `get_device_context` | Tier 1 | Load context entries for a device |
-| `set_device_context` | Tier 2 | Create a new context entry |
-| `resolve_device_context` | Tier 2 | Mark an existing entry as resolved |
-
-<Aside>
-  Context is scoped to your organisation. Entries created by one user are visible to all users in the same organisation when they ask the AI about the same device.
-</Aside>
-
-<Aside type="note">
-  Direct REST endpoints for device context are not yet available. Context is currently managed exclusively through the AI assistant.
-</Aside>
-
----
-
 ## Helper AI Chat
 
 The Breeze Helper tray application includes an AI chat interface designed for end users (not just administrators). When enabled at the organisation level, end users can ask the Helper questions about their device, troubleshoot issues, and request common IT actions — all without opening a support ticket.
@@ -670,13 +497,13 @@ See [Backup & Recovery](/backup/overview/) for configuration details.
 
 ## Incident Response AI Tools
 
-The AI can create and manage security incidents, execute containment actions, and collect forensic evidence.
+The AI can create and manage security incidents, execute containment actions, and collect forensic evidence. These tools are available in AI chat and to AI agents.
 
 | Tool | Tier | Description |
 |------|------|-------------|
-| `create_incident` | 2 | Create a new security incident with classification and severity |
-| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block) |
-| `collect_evidence` | 2 | Collect forensic evidence from a device (logs, processes, connections, screenshots) |
+| `create_incident` | 2 | Create a new security incident with classification and severity (needs `alerts.write`) |
+| `execute_containment` | 3 | Run a containment action on a device (process kill, network isolation, account disable, USB block). Needs both `devices.execute` and `alerts.write`, because it also records the action on the incident |
+| `collect_evidence` | 3 | Collect forensic evidence from a device (logs, processes, connections). Evidence without a screenshot runs at Tier 2; a request that includes a screenshot needs approval |
 | `get_incident_timeline` | 1 | View the full timeline of an incident |
 | `generate_incident_report` | 1 | Generate a structured report with action and evidence summaries |
 
@@ -717,6 +544,34 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `get_script_execution_history` | 1 | Past execution results for a script |
 | `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
 | `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
+
+### Security & device operations (writes)
+
+These tools change security settings or act on devices. They are available in AI chat and to AI agents. Approval follows the tier shown; see [Tool tiers](#tool-tiers) for what each tier means.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `request_elevation` | 3 | Request a temporary admin elevation on a device. Needs a second approver (four-eyes) |
+| `revoke_elevation` | 2 | Revoke an active elevation and request cleanup on the device |
+| `create_remote_session` | 3 | Open a remote terminal or file session. Needs a second approver (four-eyes), and respects the remote-access policy and the concurrent-session limits |
+| `manage_processes` (list) | 2 | List running processes |
+| `manage_processes` (kill) | 3 | Terminate a process |
+| `manage_scheduled_tasks` (list) | 2 | List scheduled tasks |
+| `manage_scheduled_tasks` (run/disable/enable) | 3 | Run, disable or enable a scheduled task |
+| `registry_operations` (read_key/get_value) | 2 | Read Windows registry keys and values |
+| `registry_operations` (set_value/create_key/delete_key) | 3 | Change the Windows registry |
+| `trigger_agent_restart` | 3 | Restart a silent agent through the watchdog (needs `devices.recover_agent`) |
+| `trigger_agent_upgrade` | 3 | Bring an agent to the version it is meant to run. It never overrides an agent version pin, never re-pushes a version the agent already has, and never downgrades |
+| `manage_software_policy` (list/get) | 1 | Read software policies. No approval needed |
+| `manage_software_policy` (create/update/delete) | 3 | Change software policies |
+| `manage_browser_policy` (list) | 1 | List browser policies. No approval needed |
+| `manage_browser_policy` (create/update/apply) | 3 | Change browser policies or roll one out to devices |
+| `manage_peripheral_policy` (create/update/disable/add_exception/remove_exception) | 3 | Create or change peripheral (USB) policies and exceptions |
+| `remediate_sensitive_data` (encrypt/quarantine/secure_delete/accept_risk/false_positive/mark_remediated) | 3 | Encrypt, quarantine, delete or close out a sensitive-data finding |
+| `remediate_software_violation` | 3 | Uninstall software that violates a policy |
+| `assign_security_training` | 2 | Assign security training to a user |
+| `configure_network_baseline` | 3 | Configure a network baseline. Needs approval because it schedules recurring discovery scans |
+| `acknowledge_network_device` | 2 | Acknowledge a newly discovered network device |
 
 `sync_edr_data` (Tier 2, v0.124.0+) queues an immediate EDR sync — endpoints and detections — for one connection, the connections serving one organization, or every connection of the partner. Results arrive over the following minutes. It is limited to three calls per ten minutes.
 
@@ -779,6 +634,7 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_tickets (list/get/list_work_types/list_links/merge_preview)` | 1 | Search and read tickets, work types, and ticket links |
 | `manage_tickets (create/assign/link_alert/unlink_alert/create_from_alert/link_device/draft/link_ticket/unlink_ticket)` | 2 | Open and assign tickets, link alerts, devices, and related tickets, and store a draft reply for human review |
 | `manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)` | 2 | Track time against tickets |
+| `manage_tickets (bulk_update)` | 2 | Assign, change the status of (not resolve), or set the priority of up to 50 tickets that all belong to one organization. A batch spanning organizations is refused whole, and there is no bulk delete |
 | `manage_tickets (comment/update_status/update_fields)` | 2 | Internal notes and ticket updates. A public comment (`isPublic: true`), resolving a ticket or setting a custom status, and changing the requester need approval (Tier 3) |
 | `manage_tickets (edit_comment/delete_comment)` | 3 | Edit or delete a comment — customer-visible text with no restore |
 | `manage_tickets (merge)` | 3 | Merge two tickets of one organization — irreversible, one approver |
@@ -796,6 +652,35 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+#### PSA configuration and ticket operations
+
+These tools configure the ticketing side of the platform. They are available in AI chat, and AI agents get the read actions. Partner-wide configuration is changed for every organization at once, so every write needs approval; deleting configuration needs a second approver (four-eyes).
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)` | 1 | Read ticket statuses, priorities, an organization's SLA overrides, categories, and customer email domain mappings |
+| `manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain)` | 3 | Change categories, statuses, priority and SLA settings, an organization's SLA overrides, and which organization a sender's domain routes to. Needs full partner access; statuses, priorities and domains also need an admin role |
+| `manage_ticket_config (delete_domain)` | 3 | Remove a customer email domain mapping (four-eyes) |
+| `manage_ticket_checklist_templates (list/get)` | 1 | Read checklist templates and their steps |
+| `manage_ticket_checklist_templates (create)` | 2 | Create an organization checklist template. A partner-wide template needs approval (Tier 3) |
+| `manage_ticket_checklist_templates (update/add_item/update_item/remove_item/reorder_items)` | 3 | Edit a template or its steps |
+| `manage_ticket_checklist_templates (delete)` | 3 | Delete a template (four-eyes). A template still used by a deliverable is refused |
+| `manage_ticket_inbox (list)` | 2 | Review inbound email the router could not place. The sender, subject and error text come from outside and are treated as untrusted |
+| `manage_ticket_inbox (convert/dismiss)` | 3 | Turn one email into a ticket in an organization you choose (the sender becomes the requester), or dismiss it. Neither can be undone |
+| `manage_ticket_attachments (list)` | 1 | List the files on a ticket |
+| `manage_ticket_attachments (read_content/attach_from_artifact)` | 2 | Read the text of an attachment (images, PDFs and other binary files return their details only), or attach an AI run artifact to a ticket. The attachment stays pending until a person posts a comment with it |
+| `manage_ticket_attachments (delete)` | 3 | Permanently delete an attachment |
+| `manage_ticket_forms (list/available)` | 1 | Read ticket intake forms, and the forms an organization can use |
+| `manage_ticket_forms (create/update)` | 3 | Create or change a customer-visible intake form |
+| `manage_ticket_forms (delete)` | 3 | Delete an intake form (four-eyes) |
+| `manage_ticket_response_templates (list)` | 1 | Read the partner's canned ticket replies |
+| `manage_ticket_response_templates (create/update)` | 3 | Create or change a canned reply |
+| `manage_ticket_response_templates (delete)` | 3 | Delete a canned reply (four-eyes) |
+| `manage_time_suggestions (list)` | 1 | See your own time-entry suggestions from remote sessions for a day |
+| `manage_time_suggestions (confirm/dismiss/undo)` | 2 | Log a suggestion as a time entry, dismiss it, or restore a dismissed one. Your own suggestions only |
+
+AI agents can use the read actions. A write an agent attempts becomes a proposal that waits for a person to approve it. Most of these write actions refuse to run under an agent identity, because the record they create or change needs a signed-in person as its author; creating a ticket form and converting an inbound email are the two that run as the approver once approved. Make the other changes in chat or in the web app. Writing the same settings from the web app is unchanged.
 
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
@@ -890,10 +775,6 @@ Tier 3 actions require manual approval. Open **Security → AI Risk → Approval
 **AI Risk Engine dashboard shows no data**
 
 The dashboard requires at least one AI tool execution to have occurred. Ask the AI assistant a question about your fleet to generate initial data.
-
-**Fleet Orchestration stat cards showing zeros**
-
-Some endpoints (deployments, reports) return empty results if no data exists yet. Cards populate independently — a zero on one card does not indicate a general problem. Partial endpoint failures are shown as warnings in the UI.
 
 **Context entries not appearing for a device**
 

@@ -1,10 +1,10 @@
 {
   "title": "Abläufe",
   "subtitle": "Mehrstufige Automatisierungen, die Werkzeuge miteinander verketten.",
-  "previewNotice": "Abläufe sind in dieser Version schreibgeschützt. Entwerfen Sie sie im KI-Chat; Aktivierung und Ausführungen folgen in einer späteren Version.",
+  "previewNotice": "Flows sind in diesem Release schreibgeschützt. Entwerfen Sie sie in Breeze AI; Aktivierung und Ausführungen folgen in einem späteren Release.",
   "empty": {
     "title": "Noch keine Abläufe",
-    "body": "Bitten Sie den KI-Assistenten, einen Ablauf zu entwerfen, und prüfen Sie ihn dann hier."
+    "body": "Bitten Sie Breeze AI, einen Flow zu entwerfen, und prüfen Sie ihn dann hier."
   },
   "list": {
     "name": "Name",
@@ -33,7 +33,7 @@
     "inputs": "Eingaben",
     "steps": "Schritte",
     "version": "Version {{version}}",
-    "createdInChat": "Im KI-Chat erstellt"
+    "createdInChat": "In Breeze AI erstellt"
   },
   "step": {
     "tool": "Werkzeug",

@@ -21,11 +21,11 @@
     "manual": "Manuelle",
     "deliverable": "Livrable",
     "checklist_template": "Modèle",
-    "operator_task": "Étape de l'Opérateur"
+    "operator_task": "Étape de tâche IA"
   },
   "operator": {
     "viewTask": "Voir la tâche",
-    "badgeTitle": "Créée par une tâche de l'Opérateur IA. Cochez-la une fois le travail fait et la tâche se poursuivra."
+    "badgeTitle": "Créée par une tâche IA. Cochez-la une fois le travail fait et la tâche se poursuivra."
   },
   "editDoneWarning": "Modifier le texte de l’étape efface qui l’a terminée et quand. Modifier seulement la note conserve la coche.",
   "resolveConfirm": {
@@ -40,7 +40,7 @@
     "saveFailed": "Impossible d'enregistrer l'étape de la liste de vérification.",
     "reorderFailed": "Impossible de réordonner la liste de vérification.",
     "tickRequiresUser": "Cocher une étape exige une session utilisateur connectée.",
-    "operatorStepWaiting": "Une tâche de l'Opérateur attend encore cette étape : impossible de la supprimer. Cochez-la une fois le travail fait, ou arrêtez d'abord la tâche."
+    "operatorStepWaiting": "Une tâche IA attend encore cette étape : impossible de la supprimer. Cochez-la une fois le travail fait, ou arrêtez d'abord la tâche."
   },
   "templates": {
     "title": "Modèles de liste de vérification",
@@ -74,7 +74,7 @@
       "loadFailed": "Impossible de charger les modèles de liste de vérification.",
       "saveFailed": "Impossible d'enregistrer le modèle de liste de vérification.",
       "applyFailed": "Impossible d'appliquer le modèle de liste de vérification.",
-      "operatorStepWaiting": "Une tâche de l'Opérateur attend une étape non cochée de ce billet : le modèle ne peut donc pas les remplacer. Choisissez plutôt « Ajouter ces étapes à la liste de vérification existante », cochez l'étape une fois le travail fait, ou arrêtez d'abord la tâche.",
+      "operatorStepWaiting": "Une tâche IA attend une étape non cochée de ce billet : le modèle ne peut donc pas les remplacer. Choisissez plutôt « Ajouter ces étapes à la liste de vérification existante », cochez l'étape une fois le travail fait, ou arrêtez d'abord la tâche.",
       "saveAsFailed": "Échec de l’enregistrement de la liste comme modèle.",
       "noSteps": "Ce billet n’a aucune étape réutilisable à enregistrer.",
       "duplicateFailed": "Échec de la duplication du modèle de liste de vérification."
@@ -87,7 +87,7 @@
       "allOrganizations": "Rendre disponible pour toutes les organisations",
       "submit": "Enregistrer le modèle",
       "success": "Enregistrée comme modèle « {{name}} ».",
-      "skipped": "Exclues : {{operator}} étape(s) Operator et {{duplicates}} étape(s) en double."
+      "skipped": "Exclues : {{operator}} étape(s) de tâche IA et {{duplicates}} étape(s) en double."
     }
   }
 }

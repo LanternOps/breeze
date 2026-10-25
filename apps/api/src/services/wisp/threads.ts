@@ -6,14 +6,17 @@
  * handle) and recalled memory — every user/model-authored piece fenced as
  * untrusted data. Context, never authority.
  *
- * Every read/write runs in SYSTEM context (`inSystemContext`): callers are the
- * request path (createSession), the SDK background processor and the eviction
- * sweep, and the thread's partner axis is not visible to an org-scoped request
- * context. Ids are authorised by the caller (validateWispGrantForSession) —
- * this module never takes an id from the model.
+ * Every read/write runs in SYSTEM scope: callers are the request path
+ * (createSession), the SDK background processor and the eviction sweep, and
+ * the thread's partner axis is not visible to an org-scoped request context.
+ * Most paths use `inSystemContext` (a separate system connection); the one
+ * write that must see the request transaction's uncommitted rows —
+ * `attachSession` — elevates the caller's own connection instead
+ * (`asSystemOnCallerConnection`). Ids are authorised by the caller
+ * (validateWispGrantForSession) — this module never takes an id from the model.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { db, withDbTransaction } from '../../db';
+import { db, getCurrentDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
@@ -153,13 +156,56 @@ export async function getOrCreateThread(grantId: string): Promise<WispThread> {
 }
 
 /**
+ * Run `fn` in SYSTEM scope **on the caller's own connection** when a request
+ * context is open; open a fresh system context only when none is.
+ *
+ * `createSession` INSERTs the `ai_sessions` row inside the request transaction
+ * and attaches it before COMMIT. A fresh system connection (`inSystemContext`
+ * exits the request context first) cannot see that row — the attach failed
+ * with "AI session … not found" and POST /ai/sessions answered 500 for every
+ * Wisp turn — and the composite FK to `ai_sessions` needs the same transaction
+ * too. Joining the caller's context is not enough either: a partner-wide grant
+ * may be opened from an ORGANIZATION-scoped token (W04 Review Focus 4), whose
+ * `accessiblePartnerIds` is empty, so the partner-axis policies on
+ * `wisp_threads` / `wisp_thread_sessions` would hide the thread and refuse the
+ * insert.
+ *
+ * So the attach flips the transaction-local `breeze.scope` GUC to `system`
+ * inside a driver-owned savepoint (`withDbTransaction`): on success the
+ * previous value (read back from Postgres, not assumed from the JS context) is
+ * restored; on ANY throw the savepoint rollback undoes the elevation and the
+ * original error propagates untouched (a restore after a failed statement
+ * would itself fail with 25P02 and mask it). Contract — private, non-nesting,
+ * and the callback must be the only user of the transaction connection while
+ * elevated (no concurrent sibling queries, no context-aware services):
+ * `getCurrentDbAccessContext()` keeps reporting the caller's narrower scope
+ * for the duration. The ids are already authorised
+ * (`validateWispGrantForSession` matched the grant's partner to the session
+ * org's partner under a system read) and the reads here are by primary key.
+ */
+async function asSystemOnCallerConnection<T>(fn: () => Promise<T>): Promise<T> {
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx) return withSystemDbAccessContext(fn, 'wisp.threads.attachSession');
+  if (ctx.scope === 'system') return fn();
+  return withDbTransaction(async () => {
+    const rows = (await db.execute(sql`select current_setting('breeze.scope', true) as scope`)) as unknown as Array<{ scope: string | null }>;
+    const previous = rows[0]?.scope ?? '';
+    const elevated = 'system';
+    await db.execute(sql`select set_config('breeze.scope', ${elevated}, true)`);
+    const result = await fn();
+    await db.execute(sql`select set_config('breeze.scope', ${previous}, true)`);
+    return result;
+  });
+}
+
+/**
  * Link a session to its thread: (thread_id, session_id, partner_id from the
  * thread, org_id from ai_sessions), and point `last_session_id` at it.
  * Idempotent on the (thread_id, session_id) PK; a session already attached to
  * a DIFFERENT thread still violates `wisp_thread_sessions_session_uq` loudly.
  */
 export async function attachSession(threadId: string, sessionId: string): Promise<void> {
-  await inSystemContext(async () => {
+  await asSystemOnCallerConnection(async () => {
     const [thread] = await db
       .select({ partnerId: wispThreads.partnerId })
       .from(wispThreads)

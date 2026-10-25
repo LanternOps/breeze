@@ -167,6 +167,16 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_tickets: 'tickets',
   send_endpoint_message: 'tickets',
   manage_ticket_checklist: 'tickets',
+  // Full-control W06 (#6776): PSA configuration + ticket ops. Reachable in the catalog; the
+  // classes (aiGuardrails) make every write a proposal, and each handler refuses an ai_agent
+  // principal for the write actions (users-FK actors; an agent must not reconfigure its queue).
+  manage_ticket_config: 'tickets',
+  manage_ticket_checklist_templates: 'tickets',
+  manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets',
+  manage_ticket_forms: 'tickets',
+  manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',

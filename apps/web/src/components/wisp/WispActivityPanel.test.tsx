@@ -31,6 +31,14 @@ describe('WispActivityPanel', () => {
     expect(h.fetch).toHaveBeenCalledWith('t1', null);
   });
 
+  it('shows the item cost in dollars, not cents', async () => {
+    h.fetch.mockResolvedValue({ items: [mk('costly', { costCents: 42 })], nextCursor: null });
+    render(<WispActivityPanel threadId="t1" />);
+    const row = await screen.findByTestId('wisp-activity-row');
+    expect(row.textContent).toContain('$0.42');
+    expect(row.textContent).not.toContain('¢');
+  });
+
   it('links only safe hrefs', async () => {
     h.fetch.mockResolvedValue({ items: [mk('safe', { href: '/tickets/1' }), mk('evil', { href: 'https://evil.example' })], nextCursor: null });
     render(<WispActivityPanel threadId="t1" />);

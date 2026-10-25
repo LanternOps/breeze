@@ -4,7 +4,7 @@
  * Tools for network change monitoring, baseline configuration, IP history, and discovery.
  * - get_network_changes (Tier 1): Query network change events
  * - acknowledge_network_device (Tier 2): Acknowledge a network change event
- * - configure_network_baseline (Tier 2): Create/update network baseline configuration
+ * - configure_network_baseline (Tier 3 supervised, W04): Create/update network baseline configuration
  * - get_ip_history (Tier 1): Query historical IP assignments
  * - network_discovery (Tier 3): Initiate a network discovery scan
  * - get_network_asset_reachability (Tier 1): Sourced, dated reachability for a discovered asset
@@ -468,11 +468,13 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // 3. configure_network_baseline - Tier 2 (mutating)
+  // 3. configure_network_baseline - Tier 3 supervised (arms recurring scans, W04-D7)
   // ============================================
 
   registerTool({
-    tier: 2,
+    // Full-control W04 (#6758, W04-D7): 2 → 3 supervised. Creating a baseline
+    // arms a recurring on-site discovery scan; aiGuardrails TIER3_SUPERVISED_TOOLS.
+    tier: 3,
     domain: 'network',
     searchHint: 'network baseline configuration, scheduled scan cadence and change alerts',
     definition: {

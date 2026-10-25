@@ -215,7 +215,7 @@ export default function ContractWorkspace({ contractId }: Props) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
         <WispLinkButton kind="contract" id={contract.id} orgId={contract.orgId} size="sm" />
-        {can('agreements', 'write') && (
+        {can('agreements', 'send') && (
           <button
             type="button"
             onClick={() => setRecordOpen(true)}
@@ -237,7 +237,7 @@ export default function ContractWorkspace({ contractId }: Props) {
         )}
         </div>
       </div>
-      {can('agreements', 'write') && (
+      {can('agreements', 'send') && (
         <RecordSignedAgreementDialog
           open={recordOpen}
           onClose={() => setRecordOpen(false)}

@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "No patch jobs yet. Jobs created by policies, update rings, or the AI assistant will appear here.",
+    "empty": "No patch jobs yet. Jobs created by policies, update rings, or Breeze AI will appear here.",
     "loading": "Loading patch jobs...",
     "columns": {
       "name": "Job",

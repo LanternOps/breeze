@@ -400,6 +400,16 @@ vi.mock('../services/mcpTier3Lifecycle', () => ({
   beginMcpReleaseLifecycle: mcpReleaseMock.beginMcpReleaseLifecycle,
   writeMcpIntentOutcomeAudit: mcpReleaseMock.writeMcpIntentOutcomeAudit,
 }));
+// #10129: the AI Operator release ledger seam. The real predicate runs; the
+// ledger writes are covered by aiOperatorRevealFeed.integration.test.ts.
+const operatorLedgerMock = vi.hoisted(() => ({
+  finish: vi.fn(async () => undefined),
+  beginOperatorReleaseLedger: vi.fn(),
+}));
+vi.mock('../services/aiOperator/operatorReleaseLedger', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  beginOperatorReleaseLedger: operatorLedgerMock.beginOperatorReleaseLedger,
+}));
 vi.mock('../services/mcpPrincipalAuth', () => ({
   rebuildMcpOriginAuthContext: mcpReleaseMock.rebuildMcpOriginAuthContext,
   checkMcpOriginReleaseAuthority: mcpReleaseMock.checkMcpOriginReleaseAuthority,
@@ -4323,6 +4333,104 @@ describe('releaseApprovedIntent', () => {
       expect(operationServiceMock.recordOperationResult).not.toHaveBeenCalled();
       expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
       expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
+    });
+
+    describe('AI Operator release ledger (#10129)', () => {
+      const operatorIntent = (o: Partial<ActionIntent> = {}) => taskIntent({
+        source: 'mcp_api', originPrincipalKind: 'user_session', ...o,
+      } as Partial<ActionIntent>);
+
+      beforeEach(() => {
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValue({
+          sessionId: 'operator-session-1', executionId: 'operator-exec-1', finish: operatorLedgerMock.finish,
+        });
+      });
+
+      it('an operator child opens the ledger before dispatch and closes it with a compact result', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id, taskId: 'task-1' }));
+        const beganAt = operatorLedgerMock.beginOperatorReleaseLedger.mock.invocationCallOrder[0]!;
+        expect(beganAt).toBeLessThan(aiToolsMock.executeTool.mock.invocationCallOrder[0]!);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success', ledgerResult: expect.any(String) });
+        // Not MCP-origin: the MCP lifecycle never runs for it.
+        expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+        // The dispatched auth is untouched (no aiOrigin swap, unlike MCP).
+        expect(aiToolsMock.executeTool.mock.calls[0]?.[2]).toBe(fakeAuth);
+      });
+
+      it('ledger unavailable → failed operator_ledger_unavailable, a clean dispatch failure, nothing dispatched', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValueOnce(null);
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(operationServiceMock.markOperationDispatchFailed).toHaveBeenCalledWith(intent.id, 'operator_ledger_unavailable');
+        const failed = intentServiceMock.transitionIntent.mock.calls.find((c) => c[2] === 'failed');
+        expect(failed?.[3]).toMatchObject({ errorCode: 'operator_ledger_unavailable' });
+        expect(operatorLedgerMock.finish).not.toHaveBeenCalled();
+      });
+
+      it('a thrown dispatch closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure', error: expect.any(Error) }));
+      });
+
+      it('a returned tool error closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ error: 'nope' }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+      });
+
+      it('a secret-bearing child (m365_create_user) records no result body on the ledger', async () => {
+        const intent = operatorIntent({ actionName: 'm365_create_user' });
+        primeTaskLinkedThroughClaim(intent);
+        m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(true);
+        m365HeadlessMock.executeM365ToolHeadless.mockResolvedValueOnce(
+          JSON.stringify({ success: true, action: 'm365.user.create', userId: 'u1' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success' });
+      });
+
+      it.each([
+        ['a chat-source task intent', { source: 'chat', originPrincipalKind: 'user_session' }],
+        ['a user_session mcp_api intent with no task', { source: 'mcp_api', originPrincipalKind: 'user_session', taskId: null, taskStepKey: null, operationKey: null }],
+      ] as const)('%s is not wrapped', async (_label, o) => {
+        const intent = operatorIntent(o as Partial<ActionIntent>);
+        if (intent.taskId) primeTaskLinkedThroughClaim(intent);
+        else primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).not.toHaveBeenCalled();
+      });
     });
   });
 });

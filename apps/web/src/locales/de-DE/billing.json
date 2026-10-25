@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "KI-Nutzung",
       "sectionTitle": "KI-Nutzung",
-      "sectionHelp": "Wie die Nutzung des KI-Assistenten durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
+      "sectionHelp": "Wie die Nutzung von Breeze AI durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
       "coverage": "Abrechnung der KI-Nutzung",
       "coverageBillable": "Abrechenbar",
       "coverageIncluded": "Inklusive",

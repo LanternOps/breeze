@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "Yapay zekâ asistanı",
+    "assistant": "Breeze AI",
     "agent": "Yapay zekâ ajanı",
     "flow": "Akış",
     "originUnavailable": "Kaynak kullanılamıyor",
@@ -671,7 +671,7 @@
     },
     "apps": {
       "title": "Bağlı uygulamalar",
-      "description": "AI asistanları ve diğer MCP istemcileri (Claude.ai, ChatGPT, Cursor,…) sizin adınıza hareket etme yetkisine sahipsiniz. Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
+      "description": "Sizin adınıza hareket etme yetkisi verdiğiniz AI istemcileri (Claude.ai, ChatGPT, Cursor, …). Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
       "empty": "Bağlı uygulama yok",
       "emptyDescription": "Bir Claude.ai sohbetine, ChatGPT'ye, Cursor'a veya başka bir MCP istemcisine yetki verdiğinizde, daha sonra iptal edebilmeniz için burada görünecektir.",
       "authorized": "Yetkili",
@@ -681,7 +681,7 @@
       "revokeTitle": "{{app}} iptal edilsin mi?",
       "revokeDescription": "Bu müşteriye yönelik tüm hibeler ve yenileme jetonları silinecek. Jetonlar 10 dakika içinde çalışmayı durdurur. Bir sonraki kullanımınızda yeniden yetkilendirmeniz gerekecektir.",
       "onlyAppTitle": "Bu sizin tek yetkili uygulamanızdır.",
-      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI asistanının kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
+      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI istemcisinin kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
       "reasonPlaceholder": "Artık gerekmiyor, şüpheli etkinlik, …",
       "revokeAction": "Erişimi iptal et"
     }
@@ -738,8 +738,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Gezinme menüsünü aç",
-      "ai": "Yapay Zeka Asistanı",
-      "aiTitle": "Yapay Zeka Asistanı (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Yardım ve dokümanlar",
       "helpTitle": "Yardım ve Belgeler (Cmd+Shift+H)",
       "theme": "Tema",
@@ -2013,7 +2013,7 @@
           "reports": "Raporlar"
         },
         "aiFleetActions": "Yapay Zeka Filo Eylemleri",
-        "aiFleetActionsHint": "Yapay zeka asistanına sormak için tıklayın",
+        "aiFleetActionsHint": "Breeze AI'a sormak için tıklayın",
         "quickActions": {
           "checkCompliance": "Uyumluluğu kontrol edin",
           "activeDeployments": "Etkin dağıtımlar",
@@ -2400,8 +2400,8 @@
             "description": "Birden fazla müşteriyi mi yönetiyorsunuz? Burada kuruluşlar arasında geçiş yapın."
           },
           "aiHelp": {
-            "title": "Yapay zeka destekli yardım",
-            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman Cmd+Shift+A tuşlarına basın."
+            "title": "Breeze AI",
+            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman ⌘⇧A tuşlarına basın."
           }
         },
         "skipTour": "Turu atla",

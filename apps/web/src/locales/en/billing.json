@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "AI usage",
       "sectionTitle": "AI usage",
-      "sectionHelp": "How AI assistant usage by organizations on this billing profile is charged. Bill Breeze's cost plus a markup, or set a price per model.",
+      "sectionHelp": "How Breeze AI usage by organizations on this billing profile is charged. Bill Breeze's cost plus a markup, or set a price per model.",
       "coverage": "AI usage billing",
       "coverageBillable": "Billable",
       "coverageIncluded": "Included",

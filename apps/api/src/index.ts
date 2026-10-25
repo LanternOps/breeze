@@ -48,6 +48,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
 import { quotesPublicRoutes } from './routes/quotesPublic';
+import { agreementsPublicRoutes } from './routes/agreementsPublic';
 import { routeReferrerPolicyWins } from './middleware/routeReferrerPolicy';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
@@ -810,6 +811,12 @@ api.route('/trust/attestation', trustPageAttestationRoutes);
 // Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
 api.route('/trust/access', trustAccessPublicRoutes);
 api.route('/trust', trustPagePublicRoutes);
+// Public, token-gated agreement signing (#9075 W2b, no auth). Mounted with the
+// other public surfaces, before every root-mounted router and before the
+// auth-gated /contracts router, so no `.use('*')` auth middleware can run ahead
+// of it (mirrors /quotes/public). The signed request token is the only
+// authorisation; its own isolated 'agreementpublic' rate bucket.
+api.route('/agreements/public', agreementsPublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);

@@ -24,7 +24,7 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
 
   it('renders the assistant variant', () => {
     render(<AiInitiatorChip kind="ai_assistant" />);
-    expect(screen.getByTestId('ai-initiator-chip')).toHaveTextContent('AI assistant');
+    expect(screen.getByTestId('ai-initiator-chip')).toHaveTextContent('Breeze AI');
   });
 
   it('renders the autonomous-agent variant distinctly from the assistant one', () => {
@@ -54,7 +54,7 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
         kind="ai_assistant"
         loadOrigin={async () => ({
           kind: 'ai_assistant',
-          label: 'AI assistant',
+          label: 'Breeze AI',
           occurredAt: ISO,
           toolName: 'run_script',
           resolvable: false,

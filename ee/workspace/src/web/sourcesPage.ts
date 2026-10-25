@@ -1,5 +1,5 @@
 /**
- * <workspace-sources-page> — the Workspace sources administration page.
+ * <workspace-sources-page> — the Knowledge sources administration page.
  *
  * The host assigns `context` (ExtensionPageContextV1); everything else is
  * fetched through the safe API client. All API data reaches the DOM as
@@ -53,7 +53,7 @@ export class WorkspaceSourcesPage extends WorkspaceBaseElement {
     } catch {
       this.#context = null;
       // Malformed host context: render the failure, make NO network call.
-      this.renderError('Wisp received an invalid host context.');
+      this.renderError('Knowledge received an invalid host context.');
       return;
     }
     this.#context = parsed;
@@ -74,8 +74,8 @@ export class WorkspaceSourcesPage extends WorkspaceBaseElement {
     } catch (error) {
       if (error instanceof WorkspaceApiError && error.kind === 'aborted') return;
       const message = error instanceof WorkspaceApiError && error.kind === 'unauthorized'
-        ? 'You are not authorized to manage Wisp sources.'
-        : 'Wisp sources could not be loaded.';
+        ? 'You are not authorized to manage Knowledge sources.'
+        : 'Knowledge sources could not be loaded.';
       this.renderError(message, () => this.track(this.#load()));
       return;
     }
@@ -88,7 +88,7 @@ export class WorkspaceSourcesPage extends WorkspaceBaseElement {
 
   #render(): void {
     this.clearContent();
-    const heading = this.el('h1', { text: 'Wisp Sources' });
+    const heading = this.el('h1', { text: 'Knowledge sources' });
     const addButton = this.el('button', { text: 'Add source', attrs: { type: 'button' } });
     addButton.addEventListener('click', () => {
       this.#form = this.#form.kind === 'create' ? { kind: 'closed' } : { kind: 'create' };

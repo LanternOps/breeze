@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Tier 1 — Reads"
+      },
+      "tier2": {
+        "label": "Tier 2 — Acts and logs"
+      },
+      "tier3": {
+        "label": "Tier 3 — Asks first"
+      },
+      "tier4": {
+        "label": "Tier 4 — Blocked"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "AI Risk Engine",
     "analytics": "Analytics",
@@ -2488,7 +2504,7 @@
       "origin": {
         "web": "Web",
         "api": "API",
-        "ai_chat": "AI chat",
+        "ai_chat": "Breeze AI",
         "mcp": "MCP"
       },
       "scanType": {
