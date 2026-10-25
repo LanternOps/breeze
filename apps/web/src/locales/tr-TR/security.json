@@ -2361,6 +2361,7 @@
       "requiresMdmApproval": "MDM onayı gerekiyor",
       "platformNotSelected": "Platform seçilmedi",
       "varMissing": "Dağıtım değişkeni eksik",
+      "varSecret": "Dağıtım değişkeni gizli olarak işaretlenmiş",
       "vendorUnavailable": "Sağlayıcı kullanılamıyor",
       "installFailed": "Kurulum başarısız oldu",
       "installNotArmed": "Kurulum etkinleştirilmedi",
