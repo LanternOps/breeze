@@ -852,3 +852,55 @@ describe('W03 approval descriptions say what changes, where (#6757)', () => {
     expect(d).toMatch(/keep 2/i);
   });
 });
+
+// ── W03 class rows (#6757, spec checklist item 3) ──────────────────────────
+// Copied from the W03 plan's "Final per-action classes" table, NOT derived
+// from the guardrail tables. Every action-enum member of the multiplexers has
+// a row, so a new action reds here until someone classifies it. The
+// input-aware manage_backup_profiles:create is pinned on EMPTY input (its
+// partner-wide arm is covered by the input-aware suite above).
+const W03_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_hyperv_vm: {
+    start: 'supervised', stop: 'supervised', force_stop: 'supervised',
+    pause: 'supervised', resume: 'supervised', save: 'supervised',
+  },
+  manage_hyperv_checkpoints: { create: 'supervised', delete: 'four_eyes', apply: 'four_eyes' },
+  manage_dr_plan: {
+    create_plan: 't2', update_plan: 't2', add_group: 't2', update_group: 't2', delete_group: 'supervised',
+  },
+  manage_backup_profiles: { list: 't1', get: 't1', create: 't2', update: 'supervised', delete: 'supervised' },
+  configure_backup_sla: { create: 't2', update: 't2' },
+  configure_vault: { create: 'supervised', update: 'supervised' },
+};
+/** Single-purpose W03 tools (no action enum): the whole tool has one class. */
+const W03_WHOLE_TOOL: Record<string, W02Class> = {
+  trigger_backup: 'supervised', trigger_hyperv_backup: 'supervised', trigger_mssql_backup: 'supervised',
+  trigger_vault_sync: 'supervised', trigger_c2c_sync: 'supervised', verify_mssql_backup: 'supervised',
+  restore_snapshot: 'four_eyes', restore_as_vm: 'four_eyes', restore_hyperv_vm: 'four_eyes',
+  restore_mssql_database: 'four_eyes', restore_c2c_items: 'four_eyes', instant_boot_vm: 'four_eyes',
+  execute_dr_plan: 'four_eyes',
+};
+
+describe('W03 class rows (#6757)', () => {
+  it('covers all 19 W03 tools exactly once', () => {
+    expect([...Object.keys(W03_EXPECTED), ...Object.keys(W03_WHOLE_TOOL)].sort()).toHaveLength(19);
+  });
+
+  it.each(Object.keys(W03_EXPECTED))('%s: W03_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W03_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W03_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W03_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+});
+
