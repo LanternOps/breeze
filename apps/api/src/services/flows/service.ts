@@ -95,6 +95,14 @@ function toDetailDto(row: FlowRow): FlowDetailDto {
     createdByUserId: row.createdByUserId,
     aiSessionId: row.aiSessionId,
     createdAt: iso(row.createdAt),
+    enabledPublicationSeq: row.enabledPublicationSeq,
+    enabledAt: row.enabledAt ? iso(row.enabledAt) : null,
+    enabledByUserId: row.enabledByUserId,
+    pausedReason: row.pausedReason,
+    // Task A6 computes these in getFlow (rule-4 eligibility per step and the
+    // live publication's pre-approved step ids).
+    preApprovalEligibility: {},
+    preApprovedStepIds: [],
   };
 }
 

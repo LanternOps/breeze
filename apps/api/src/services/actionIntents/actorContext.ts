@@ -126,12 +126,23 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId/
+  // requestingFlowRunId is set.
   // An agent-originated intent reconstructs the RUN's agent identity (wave
   // 3b): structural, never a user token — checkToolPermission keeps denying
   // the resulting principal, and release authority is checkAgentReleaseAuthority.
   if (intent.requestingAgentRunId) {
     return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
+  }
+  // Tool catalog W04 (#5219): a flow-originated intent (requestingFlowRunId,
+  // the fourth actor root) has no rebuildable AuthContext until the flow
+  // principal and its release branch land (plan Tasks A4/A5). Refuse it
+  // explicitly — never let it fall through to a user or agent rebuild.
+  if (intent.requestingFlowRunId) {
+    console.error(
+      `[actorContext] intent ${intent.id} is flow-originated (requestingFlowRunId set); no flow release authority exists yet — refusing`,
+    );
+    return null;
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -176,6 +187,13 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
             runId: intent.requestingAgentRunId,
           }
         : { kind: 'unknown' };
+    case 'flow':
+      // Tool catalog W04 (#5219): the stored origin of a parked Tier-3 flow
+      // step. AuthContext gains a `flow` principal in plan Task A4; until then
+      // a flow origin is trusted by nothing — the same fail-closed `unknown`
+      // an unrecoverable origin gets, chosen explicitly rather than via the
+      // exhaustiveness fallback below.
+      return { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,
       // this assignment errors instead of silently downgrading the new kind
