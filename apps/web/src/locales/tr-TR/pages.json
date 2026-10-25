@@ -186,7 +186,9 @@
     "settingsWispMemory": "Wisp belleği",
     "wispThread": "Wisp konuşması",
     "wisp": "Wisp",
-    "wispChat": "Breeze AI"
+    "wispChat": "Breeze AI",
+    "aiTasks": "Yapay Zekâ Görevleri",
+    "aiTask": "Yapay zekâ görevi"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

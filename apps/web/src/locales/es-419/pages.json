@@ -186,7 +186,9 @@
     "settingsWispMemory": "Memoria de Wisp",
     "wispThread": "Hilo de Wisp",
     "wisp": "Wisp",
-    "wispChat": "Breeze AI"
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tareas de IA",
+    "aiTask": "Tarea de IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

@@ -186,7 +186,9 @@
     "settingsWispMemory": "Wisp memory",
     "wispThread": "Wisp thread",
     "wisp": "Wisp",
-    "wispChat": "Breeze AI"
+    "wispChat": "Breeze AI",
+    "aiTasks": "AI Tasks",
+    "aiTask": "AI task"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
