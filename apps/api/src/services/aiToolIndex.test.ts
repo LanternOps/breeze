@@ -333,17 +333,12 @@ function stubAllFlagsOn(): void {
 }
 
 /**
- * The 38 tools W03 (#6757) and W04 (#6758) will wire into chat. All are
- * registered today but not chat-declared, so `getToolDomain`/hints resolve
- * from the real registry: `[...chat, ...FIXTURE]` is the catalog after both
- * waves, with no synthetic registry.
+ * The tools W04 (#6758) will wire into chat (W03 #6757 wired its 19 and
+ * removed them here). All are registered today but not chat-declared, so
+ * `getToolDomain`/hints resolve from the real registry: `[...chat, ...FIXTURE]`
+ * is the catalog after the wave, with no synthetic registry.
  */
 const FIXTURE_W03_W04 = [
-  // W03 (#6757)
-  'manage_dr_plan', 'manage_hyperv_vm', 'manage_backup_profiles', 'manage_hyperv_checkpoints', 'configure_backup_sla',
-  'configure_vault', 'restore_mssql_database', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'verify_mssql_backup',
-  'trigger_vault_sync', 'restore_hyperv_vm', 'restore_c2c_items', 'trigger_c2c_sync', 'restore_snapshot',
-  'instant_boot_vm', 'execute_dr_plan', 'trigger_backup', 'restore_as_vm',
   // W04 (#6758)
   'remediate_sensitive_data', 'manage_peripheral_policy', 'registry_operations', 'manage_software_policy',
   'manage_scheduled_tasks', 'manage_browser_policy', 'manage_processes', 'remediate_software_violation',
@@ -362,8 +357,8 @@ describe('W19 lazy chat tool index (#10065)', () => {
   const simulated = [...names, ...FIXTURE_W03_W04];
   const alwaysOn = renderAlwaysOnIndex(names);
 
-  it('the W03/W04 fixture is 38 registered tools that chat does not declare yet', () => {
-    expect(FIXTURE_W03_W04).toHaveLength(38);
+  it('the W03/W04 fixture is the 19 W04 tools, registered and not chat-declared yet (W03 #6757 wired its 19)', () => {
+    expect(FIXTURE_W03_W04).toHaveLength(19);
     expect(FIXTURE_W03_W04.filter((n) => !registered.has(n)), 'renamed or removed fixture tool').toEqual([]);
     expect(FIXTURE_W03_W04.filter((n) => names.includes(n)), 'already chat-declared: drop it from the fixture').toEqual([]);
     expect(listToolIndex(FIXTURE_W03_W04).map((e) => e.name).sort()).toEqual([...FIXTURE_W03_W04].sort());
@@ -381,7 +376,7 @@ describe('W19 lazy chat tool index (#10065)', () => {
     }
   });
 
-  it('B1 invariance: 38 more tools change the always-on index by 0 bytes', () => {
+  it('B1 invariance: the remaining W04 tools change the always-on index by 0 bytes', () => {
     expect(renderAlwaysOnIndex(simulated)).toBe(alwaysOn);
   });
 
