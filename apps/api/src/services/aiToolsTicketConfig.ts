@@ -141,7 +141,7 @@ export function registerTicketConfigTools(aiTools: Map<string, AiTool>): void {
           if (!page.ok) return jsonError(page.error, page.code);
           const listed = await listCategoryRows(auth);
           if ('error' in listed) return listed.error;
-          const items = listed.rows.slice(page.offset, page.offset + page.limit + 1);
+          const items = listed.rows.slice(page.offset, page.offset + page.limit);
           return json(pageEnvelope({ key: 'categories', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: listed.rows.length }));
         }
         if (action === 'create_category') return await createCategory(auth, input.data);
@@ -168,7 +168,7 @@ export function registerTicketConfigTools(aiTools: Map<string, AiTool>): void {
           const page = readPageArgs('manage_ticket_config', input, LIST_PAGE);
           if (!page.ok) return jsonError(page.error, page.code);
           const rows = await listCustomerEmailDomains(partnerId);
-          const items = rows.slice(page.offset, page.offset + page.limit + 1);
+          const items = rows.slice(page.offset, page.offset + page.limit);
           return json(pageEnvelope({ key: 'domains', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: rows.length }));
         }
         if (action === 'create_status') {

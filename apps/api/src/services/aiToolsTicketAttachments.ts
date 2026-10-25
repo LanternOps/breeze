@@ -184,7 +184,7 @@ export function registerTicketAttachmentTools(aiTools: Map<string, AiTool>): voi
           const visible = rows
             .filter((r) => (r.commentId ? !r.commentDeletedAt : r.uploadedByUserId === auth.user.id))
             .map(({ uploadedByUserId: _u, commentDeletedAt: _d, ...meta }) => ({ ...meta, pending: !meta.commentId }));
-          const items = visible.slice(page.offset, page.offset + page.limit + 1);
+          const items = visible.slice(page.offset, page.offset + page.limit);
           return json(pageEnvelope({ key: 'attachments', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: visible.length }));
         }
 

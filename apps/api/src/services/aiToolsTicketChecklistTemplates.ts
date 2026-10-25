@@ -114,7 +114,7 @@ export function registerTicketChecklistTemplateTools(aiTools: Map<string, AiTool
             orgId: orgId?.success ? orgId.data : undefined,
             includeInactive: input.includeInactive === true,
           });
-          const items = rows.slice(page.offset, page.offset + page.limit + 1);
+          const items = rows.slice(page.offset, page.offset + page.limit);
           return json(pageEnvelope({ key: 'templates', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: rows.length }));
         }
         if (action === 'create') {

@@ -114,7 +114,7 @@ export function registerTicketFormTools(aiTools: Map<string, AiTool>): void {
             .from(ticketForms)
             .where(formAccessCondition(auth))
             .orderBy(asc(ticketForms.sortOrder), asc(ticketForms.name));
-          const window = rows.slice(page.offset, page.offset + page.limit + 1);
+          const window = rows.slice(page.offset, page.offset + page.limit);
           const linkMap = await getTicketFormOrgLinkMap(window.map((r) => r.id));
           const items = window.map((r) => ({ ...r, visibleOrgIds: linkMap.get(r.id) ?? null }));
           return json(pageEnvelope({ key: 'forms', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: rows.length }));

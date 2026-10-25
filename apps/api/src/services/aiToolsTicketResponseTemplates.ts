@@ -89,7 +89,7 @@ export function registerTicketResponseTemplateTools(aiTools: Map<string, AiTool>
           .from(ticketResponseTemplates)
           .where(and(eq(ticketResponseTemplates.partnerId, partnerId), eq(ticketResponseTemplates.isActive, true)))
           .orderBy(asc(ticketResponseTemplates.category), asc(ticketResponseTemplates.sortOrder), asc(ticketResponseTemplates.name));
-        const items = rows.slice(page.offset, page.offset + page.limit + 1);
+        const items = rows.slice(page.offset, page.offset + page.limit);
         return json(pageEnvelope({ key: 'templates', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: rows.length }));
       }
 
