@@ -155,7 +155,7 @@ async function revalidate(intentId: string) {
   return revalidateApprovedIntentForRelease(await readIntent(intentId), null);
 }
 
-function keyFor(stepKey: string, row: { planRevision: number; toolName: string; targetId: string; ordinal: number }, ordinal = row.ordinal) {
+function keyFor(stepKey: string, row: { planRevision: number; toolName: string; targetId: string | null; ordinal: number }, ordinal = row.ordinal) {
   return planEffectOperationKey({ stepKey, planRevision: row.planRevision, toolName: row.toolName, targetId: row.targetId, ordinal });
 }
 
