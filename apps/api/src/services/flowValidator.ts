@@ -46,7 +46,6 @@ import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import {
-  findDeviceGroupIdsInSites,
   findDeviceIdsInSites,
   findOwnedDeviceGroupIds,
   findOwnedDeviceIds,
@@ -664,9 +663,9 @@ function zodMessage(error: z.ZodError): string {
  *    (groups, devices) — a partner-wide flow included, since a run has one
  *    org. Foreign and missing share one message.
  *  - with `siteIds` (Task A9: a site-limited manual-run triggerer's live
- *    ceiling, services/flows/triggererAccess.ts) every device must also sit in
- *    one of those sites and every device group must be pinned to one; an
- *    empty set admits no device or group at all.
+ *    ceiling, services/flows/triggererAccess.ts) the step's whole reach must
+ *    be provably inside those sites (`reachConfinedToSites`); an empty set
+ *    admits no non-builtin step at all.
  */
 export async function revalidateRenderedStep(
   pin: FlowStepPin,
@@ -732,19 +731,70 @@ export async function revalidateRenderedStep(
       const owned = await find(ids);
       return ids.some((id) => !owned.has(id));
     };
-    const sites = ctx.siteIds ? [...ctx.siteIds] : null;
     if (
       await anyNotOwned(scriptIds, (ids) => findOwnedScriptIds(ctx.owner, ids))
       || await anyNotOwned(groupIds, (ids) => findOwnedDeviceGroupIds(ctx.runOrgId, ids))
       || await anyNotOwned(deviceIds, (ids) => findOwnedDeviceIds(ctx.runOrgId, ids))
-      || (sites !== null && (
-        await anyNotOwned(groupIds, (ids) => findDeviceGroupIdsInSites(ctx.runOrgId, ids, sites))
-        || await anyNotOwned(deviceIds, (ids) => findDeviceIdsInSites(ctx.runOrgId, ids, sites))
-      ))
     ) {
       return { ok: false, code: 'reference_not_owned', message: REFERENCE_NOT_OWNED_MESSAGE };
     }
   }
 
+  if (ctx.siteIds && !(await reachConfinedToSites(entry, pin, rendered, ctx.runOrgId, [...ctx.siteIds]))) {
+    return { ok: false, code: 'reference_not_owned', message: SITE_REACH_MESSAGE };
+  }
+
   return { ok: true, tier, approvalScope };
+}
+
+const SITE_REACH_MESSAGE =
+  'The person who started this run is limited to specific sites, and this step could act outside them.';
+
+/** Input keys that widen a call past the devices it names (org/site/partner/tenant ids). */
+const SCOPE_WIDENING_KEY = /^(?:org|organization|site|partner|tenant|customer)_?ids?$/i;
+
+/**
+ * Task A9 security review — under a site-limited manual-run triggerer's
+ * ceiling a step may execute (or park) ONLY when its reach is provably inside
+ * those sites. Fail closed:
+ *  - builtins (`set`, `wait`) act on no tenant data ⇒ allowed;
+ *  - tenant (external) tools have no site model ⇒ refused;
+ *  - a core tool is allowed only when ALL of:
+ *      · no org/site/partner/tenant-id-style input key is present
+ *        (`SCOPE_WIDENING_KEY`), whatever its value;
+ *      · no device-group reference is present (a group's membership is not
+ *        site-confined, and resolves at execution time);
+ *      · the tool declares `deviceArgs` (the aiTools metadata that names the
+ *        inputs carrying device ids — the platform has no separate site-arg
+ *        metadata) and EVERY declared device arg is present and non-empty
+ *        (an omitted optional device arg means org-wide behaviour);
+ *      · every rendered device id is a device of the run org in one of the
+ *        sites.
+ * A refusal is `reference_not_owned` (policy: the run fails whatever
+ * onFailure says); the executor is never called.
+ */
+async function reachConfinedToSites(
+  entry: FlowCatalogEntry,
+  pin: FlowStepPin,
+  rendered: Record<string, unknown>,
+  runOrgId: string,
+  sites: string[],
+): Promise<boolean> {
+  if (entry.source === 'builtin') return true;
+  if (entry.source !== 'core') return false;
+  if (Object.keys(rendered).some((key) => SCOPE_WIDENING_KEY.test(key))) return false;
+  for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
+    if (kind !== 'script' && rendered[field] !== undefined && rendered[field] !== null) return false;
+  }
+  if (entry.deviceArgs.length === 0) return false;
+  const deviceIds: string[] = [];
+  for (const field of entry.deviceArgs) {
+    const value = rendered[field];
+    const ids = renderedStrings(value);
+    const count = Array.isArray(value) ? value.length : value === undefined || value === null ? 0 : 1;
+    if (ids.length === 0 || ids.length !== count) return false;
+    deviceIds.push(...ids);
+  }
+  const inSites = await findDeviceIdsInSites(runOrgId, deviceIds, sites);
+  return deviceIds.every((id) => inSites.has(id));
 }

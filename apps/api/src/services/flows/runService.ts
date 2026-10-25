@@ -47,7 +47,7 @@ import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
 import { assertFlowRunAdmission, type FlowRunAdmissionRefusal } from './runAdmission';
 import { TERMINAL_FLOW_RUN_STATUSES } from './runStore';
 import type { FlowTriggerScope } from './triggerScope';
-import { triggererPermissions, triggererPermsCleared } from './triggererAccess';
+import { clampToCallerCredential, triggererPermissions, triggererPermsCleared } from './triggererAccess';
 import { cancelOpenFlowRunIntents, missingPermissionsFor } from './versions';
 
 // ── types ───────────────────────────────────────────────────────────────────
@@ -312,8 +312,10 @@ function parsePins(raw: unknown): FlowStepPin[] | null {
  *     publication is a manual flow;
  *  3. the run org: an org flow's own org; a partner-wide flow needs
  *     `orgId`, reachable by the caller and under the flow's partner;
- *  4. the triggerer's own permissions in the run org exist, reach it, and
- *     pass rule 7 for every step of the live publication;
+ *  4. the triggerer's own permissions in the run org exist, reach it, and —
+ *     clamped to the credential (an API key's scopes; an unclampable
+ *     credential holds nothing, `clampToCallerCredential`) — pass rule 7
+ *     for every step of the live publication;
  *  5. inputs coerce against the publication's declarations.
  * `preApprovalsHonored` = `ui` AND the triggerer is cleared (no site ceiling
  * on the membership or the token; all-orgs access for a partner-wide flow).
@@ -371,7 +373,9 @@ export async function startManualRun(
 
   const perms = await triggererPermissions(auth.user.id, orgPartnerId, orgId);
   if (!perms || !canAccessOrg(perms, orgId)) return { ok: false, error: 'org_forbidden' };
-  const missing = missingPermissionsFor(doc, pins, perms);
+  // A key acts only within its scopes; an unclampable credential has none.
+  const usable = (await clampToCallerCredential(auth, perms, orgId)) ?? { ...perms, permissions: [] };
+  const missing = missingPermissionsFor(doc, pins, usable);
   if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
 
   const coerced = coerceFlowInputs(doc.inputs, req.inputs ?? {});

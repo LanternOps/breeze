@@ -136,6 +136,10 @@ function perms(over: Partial<UserPermissions> = {}): UserPermissions {
 }
 
 const callsOf = (kind: string) => calls.filter((c) => c.kind === kind);
+/** The api_keys row the clamp reads for an api_key principal. */
+const keyRow = (over: Record<string, unknown> = {}) => ({
+  scopes: ['ai:read', 'ai:write', 'ai:execute'], principalType: 'human', createdBy: USER, orgId: ORG, status: 'active', ...over,
+});
 const setOf = (rec: Call) => rec.ops.find((o) => o.op === 'set')!.args[0] as Record<string, unknown>;
 
 /** Every interpolated value in a raw `sql` template (StringChunks skipped, nested SQL walked). */
@@ -279,6 +283,7 @@ describe('startManualRun', () => {
 
   it('api-key run does not', async () => {
     queueStart();
+    queues.select.push([keyRow()]);
     queueCreate();
     const r = await startManualRun(apiKeyAuth(), FLOW_ID, { inputs: {} }, 'api');
     expect(r).toMatchObject({ ok: true, preApprovalsHonored: false });
@@ -287,6 +292,43 @@ describe('startManualRun', () => {
     expect(values).not.toContain(true);
     // The key's creator is the triggerer.
     expect(values).toContain(USER);
+  });
+
+  it('a key whose scopes lack scripts.execute is permission_missing even though its creator holds it', async () => {
+    queueStart();
+    queues.select.push([keyRow({ scopes: ['ai:read', 'ai:write'] })]);
+    const r = await startManualRun(apiKeyAuth(), FLOW_ID, { inputs: {} }, 'api');
+    expect(r).toMatchObject({ ok: false, error: 'permission_missing' });
+    const missing = (r as { missing: Array<{ stepId: string; permission: string }> }).missing;
+    expect(missing).toContainEqual({ stepId: 'run', permission: 'scripts.execute' });
+    expect(missing.some((m) => m.stepId === 'read')).toBe(false);
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it.each([
+    ['the key row is gone', () => queues.select.push([])],
+    ['a service-principal key', () => queues.select.push([keyRow({ principalType: 'service' })])],
+    ['a key of another creator', () => queues.select.push([keyRow({ createdBy: OTHER_ORG })])],
+    ['a revoked key', () => queues.select.push([keyRow({ status: 'revoked' })])],
+    ['scopes the creator no longer backs', () => {
+      queues.select.push([keyRow()]);
+      vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'devices', action: 'read' }, { resource: 'scripts', action: 'read' }] }));
+    }],
+  ])('the key clamp fails closed: %s ⇒ permission_missing', async (_label, arrange) => {
+    queueStart();
+    arrange();
+    const r = await startManualRun(apiKeyAuth(), FLOW_ID, { inputs: {} }, 'api');
+    expect(r).toMatchObject({ ok: false, error: 'permission_missing' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('an OAuth grant or partner service principal cannot be clamped and is permission_missing', async () => {
+    for (const principal of [{ kind: 'oauth_grant', grantId: 'g' }, { kind: 'api_key', apiKeyId: 'k', partnerServicePrincipalId: 'sp' }]) {
+      queueStart();
+      const r = await startManualRun(auth({ principal } as Partial<AuthContext>), FLOW_ID, { inputs: {} }, 'api');
+      expect(r, JSON.stringify(principal)).toMatchObject({ ok: false, error: 'permission_missing' });
+    }
+    expect(callsOf('execute')).toHaveLength(0);
   });
 
   it('an api key cannot claim the ui lane', async () => {

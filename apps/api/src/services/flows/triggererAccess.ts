@@ -20,8 +20,13 @@
  * Schedule and event runs have no triggerer and no ceiling (the delegator's
  * unrestricted scope, Decision 13, governs them).
  */
+import { eq } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { apiKeys } from '../../db/schema/apiKeys';
 import type { FlowRunRow } from '../../db/schema/flowRuns';
-import { canAccessOrg, getUserPermissions, type UserPermissions } from '../permissions';
+import type { AuthContext } from '../../middleware/auth';
+import { requiredPermissionsForApiKeyScopes, validateApiKeyScopeDelegation } from '../apiKeyScopes';
+import { canAccessOrg, getUserPermissions, hasPermission, type UserPermissions } from '../permissions';
 
 /**
  * The triggerer's own permissions where the run executes: org membership in
@@ -55,4 +60,67 @@ export async function triggererSiteCeiling(
   const perms = await triggererPermissions(run.triggeredByUserId, partnerId, run.orgId);
   if (!perms || !canAccessOrg(perms, run.orgId)) return EMPTY;
   return perms.allowedSiteIds === undefined ? null : new Set(perms.allowedSiteIds);
+}
+
+/**
+ * The triggerer's permissions as THIS credential may use them (security
+ * review, Task A9). A user session acts with the user's own permissions. A
+ * human API key acts as its creator but only within its scopes: the platform
+ * clamp is `API_KEY_SCOPE_POLICIES` (services/apiKeyScopes.ts) — every
+ * scope maps to the permissions it confers, re-validated against the
+ * creator's LIVE permissions (`validateApiKeyScopeDelegation`, the same
+ * check authorizeHumanApiKeyCreator runs per request). The AuthContext does
+ * not carry the key's scopes, so they are re-read from `api_keys` by the
+ * principal's key id. The result's permission list is the INTERSECTION:
+ * scope-conferred permissions the creator still holds.
+ *
+ * Returns null — fail closed, the caller treats it as "no permissions" —
+ * whenever the clamp cannot be computed: an OAuth grant (its scopes live on
+ * the bearer, not in the AuthContext), a partner service principal, a
+ * service-principal key (no human creator), a key row that is gone, revoked,
+ * of another creator or another org, or scopes the creator no longer backs.
+ *
+ * Step time never widens past this: rule 7 is a START-time check (the
+ * delegator's authority governs execution, Decision 7), and the only thing
+ * re-derived per step is the site ceiling (`triggererSiteCeiling`), which
+ * for a human key IS its creator's (authorizeHumanApiKeyCreator returns
+ * `permissions.allowedSiteIds`). API-key runs never honour pre-approvals
+ * (Decision 4, `flow_runs_pre_approvals_chk`).
+ */
+export async function clampToCallerCredential(
+  auth: Pick<AuthContext, 'principal' | 'user'>,
+  perms: UserPermissions,
+  runOrgId: string,
+): Promise<UserPermissions | null> {
+  const principal = auth.principal;
+  if (principal.kind === 'user_session') return perms;
+  if (principal.kind !== 'api_key' || !principal.apiKeyId || principal.partnerServicePrincipalId) return null;
+  const keyId = principal.apiKeyId;
+  let row: { scopes: string[] | null; principalType: string; createdBy: string; orgId: string; status: string } | undefined;
+  try {
+    [row] = await runOutsideDbContext(() => withSystemDbAccessContext(
+      async () => db
+        .select({
+          scopes: apiKeys.scopes,
+          principalType: apiKeys.principalType,
+          createdBy: apiKeys.createdBy,
+          orgId: apiKeys.orgId,
+          status: apiKeys.status,
+        })
+        .from(apiKeys)
+        .where(eq(apiKeys.id, keyId))
+        .limit(1),
+      'flows.triggererAccess.apiKeyScopes',
+    ));
+  } catch {
+    return null;
+  }
+  if (!row || row.status !== 'active' || row.principalType !== 'human' || row.createdBy !== auth.user?.id || row.orgId !== runOrgId) {
+    return null;
+  }
+  const delegation = validateApiKeyScopeDelegation(row.scopes ?? [], perms);
+  if (!delegation.ok) return null;
+  const permissions = requiredPermissionsForApiKeyScopes(delegation.scopes)
+    .filter((p) => hasPermission(perms, p.resource, p.action));
+  return { ...perms, permissions };
 }

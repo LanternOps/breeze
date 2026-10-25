@@ -35,7 +35,6 @@ vi.mock('./ownedReferences', () => ({
   findOwnedDeviceGroupIds: vi.fn(),
   findOwnedDeviceIds: vi.fn(),
   findDeviceIdsInSites: vi.fn(),
-  findDeviceGroupIdsInSites: vi.fn(),
 }));
 vi.mock('./triggererAccess', () => ({ triggererSiteCeiling: vi.fn() }));
 vi.mock('../actionIntents/intentService', async (importOriginal) => ({
@@ -52,7 +51,6 @@ import { executeTool } from '../aiTools';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, resolveTenantToolsForOwner, type TenantToolDescriptor } from '../toolSources/resolver';
 import {
-  findDeviceGroupIdsInSites,
   findDeviceIdsInSites,
   findOwnedDeviceGroupIds,
   findOwnedDeviceIds,
@@ -180,7 +178,6 @@ beforeEach(() => {
   vi.mocked(findOwnedDeviceIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === DEVICE || i === DEVICE_2)));
   vi.mocked(findOwnedDeviceGroupIds).mockReset().mockResolvedValue(new Set());
   vi.mocked(findDeviceIdsInSites).mockReset().mockResolvedValue(new Set());
-  vi.mocked(findDeviceGroupIdsInSites).mockReset().mockResolvedValue(new Set());
   vi.mocked(triggererSiteCeiling).mockReset().mockResolvedValue(null);
   noSleep.sleep.mockClear();
 });
@@ -299,7 +296,62 @@ describe('executeFlowStep — site-limited triggerer (Task A9)', () => {
     vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set([GROUP]));
     const out = await executeFlowStep(input({ run: manualRun(), step: step('fix', 'run_script', { scriptId: SCRIPT, groupId: GROUP }) }));
     expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned' });
-    expect(findDeviceGroupIdsInSites).toHaveBeenCalledWith(ORG, [GROUP], ['site-1']);
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  // Security review follow-up: under a site ceiling a step may act only when
+  // its reach is provably inside the triggerer's sites.
+  const QUERY_PIN: FlowStepPin = { stepId: 'q', tool: 'query_devices', source: 'core', tier: 1, approvalScope: null };
+  const LOGS_PIN: FlowStepPin = { stepId: 'logs', tool: 'search_agent_logs', source: 'core', tier: 1, approvalScope: null };
+  const SET_PIN: FlowStepPin = { stepId: 'note', tool: 'set', source: 'builtin', tier: 1, approvalScope: null };
+
+  it('an org-wide core tool (no deviceArgs) is reference_not_owned under a site ceiling', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const out = await executeFlowStep(input({ run: manualRun(), step: step('q', 'query_devices', {}), pin: QUERY_PIN }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+
+  it('an org-wide core tool still runs for a cleared triggerer', async () => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({ devices: [] }));
+    const out = await executeFlowStep(input({ run: manualRun(), step: step('q', 'query_devices', {}), pin: QUERY_PIN }));
+    expect(out).toMatchObject({ kind: 'completed' });
+  });
+
+  it('a tenant tool is reference_not_owned under a site ceiling', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const out = await executeFlowStep(input({
+      run: manualRun(), step: step('t1', TENANT_T1.qualifiedName, { summary: 'x' }), pin: tenantPin(TENANT_T1, 't1'),
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+
+  it('a device tool with its device arg omitted (org-wide behaviour) is reference_not_owned', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const out = await executeFlowStep(input({ run: manualRun(), step: step('logs', 'search_agent_logs', { level: 'error' }), pin: LOGS_PIN }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+
+  it('a device tool with an in-site device and an org/site widening key is reference_not_owned', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    vi.mocked(findDeviceIdsInSites).mockResolvedValue(new Set([DEVICE]));
+    for (const extra of [{ orgId: ORG }, { siteId: 'site-2' }, { siteIds: ['site-2'] }]) {
+      const out = await executeFlowStep(input({ run: manualRun(), step: step('look', 'get_device_details', { deviceId: DEVICE, ...extra }), pin: LOOKUP_PIN }));
+      expect(out, JSON.stringify(extra)).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    }
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+
+  it('builtins (set, wait) are unaffected by a site ceiling', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const set = await executeFlowStep(input({ run: manualRun(), step: step('note', 'set', { values: { a: 1 } }), pin: SET_PIN }));
+    expect(set).toMatchObject({ kind: 'completed' });
+    const wait = await executeFlowStep(input({
+      run: manualRun(), step: step('pause', 'wait', { minutes: 5 }), pin: { ...SET_PIN, stepId: 'pause', tool: 'wait' },
+    }));
+    expect(wait).toMatchObject({ kind: 'park_wait' });
   });
 
   it('no ceiling (schedule/event or unrestricted triggerer) uses only the org check', async () => {

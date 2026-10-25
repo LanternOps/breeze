@@ -88,18 +88,3 @@ export async function findDeviceIdsInSites(orgId: string, ids: Iterable<string>,
   );
   return new Set(rows.map((r) => r.id));
 }
-
-/** Task A9 — device groups of `orgId` pinned to one of `siteIds`; an org-wide group (no site) never passes. */
-export async function findDeviceGroupIdsInSites(orgId: string, ids: Iterable<string>, siteIds: readonly string[]): Promise<Set<string>> {
-  const wanted = uuidsOnly(ids);
-  const sites = uuidsOnly(siteIds);
-  if (wanted.length === 0 || sites.length === 0) return new Set();
-  const rows = await system(
-    async () => db
-      .select({ id: deviceGroups.id })
-      .from(deviceGroups)
-      .where(and(inArray(deviceGroups.id, wanted), eq(deviceGroups.orgId, orgId), inArray(deviceGroups.siteId, sites))),
-    'flowValidator.deviceGroupsInSites',
-  );
-  return new Set(rows.map((r) => r.id));
-}
