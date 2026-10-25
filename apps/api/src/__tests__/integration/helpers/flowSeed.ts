@@ -124,6 +124,58 @@ export async function seedEnabledFlowRun(opts: SeedFlowRunOptions): Promise<Seed
   });
 }
 
+/**
+ * Task A9 — an ENABLED flow with a live publication of `definition` and no
+ * run (the trigger suites create the runs). Org-owned by default; `owner:
+ * 'partner'` makes it partner-wide.
+ */
+export async function seedEnabledFlow(opts: {
+  partnerId: string;
+  orgId?: string;
+  owner?: 'org' | 'partner';
+  delegatorUserId: string;
+  definition: Record<string, unknown>;
+  pins: FlowStepPin[];
+  enabledAt?: Date;
+}): Promise<{ flowId: string; publicationId: string }> {
+  const partnerWide = opts.owner === 'partner';
+  if (!partnerWide && !opts.orgId) throw new Error('seedEnabledFlow: an org flow needs orgId');
+  const tier = Math.max(1, ...opts.pins.map((p) => p.tier)) as 1 | 2 | 3;
+  return withSystemDbAccessContext(async () => {
+    const [flow] = await db
+      .insert(flows)
+      .values({
+        orgId: partnerWide ? null : opts.orgId!,
+        partnerId: partnerWide ? opts.partnerId : null,
+        slug: `seed_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        name: String(opts.definition.name ?? 'Seeded flow'),
+        definition: opts.definition,
+        effectiveTier: tier,
+      })
+      .returning({ id: flows.id });
+    const [publication] = await db
+      .insert(flowVersions)
+      .values({
+        flowId: flow!.id,
+        orgId: partnerWide ? null : opts.orgId!,
+        partnerId: partnerWide ? opts.partnerId : null,
+        publicationSeq: 1,
+        definitionVersion: 1,
+        definition: opts.definition,
+        effectiveTier: tier,
+        stepPins: opts.pins as unknown as Record<string, unknown>[],
+        preApprovals: [],
+        enabledByUserId: opts.delegatorUserId,
+      })
+      .returning({ id: flowVersions.id });
+    await db
+      .update(flows)
+      .set({ status: 'enabled', enabledPublicationSeq: 1, enabledByUserId: opts.delegatorUserId, enabledAt: opts.enabledAt ?? new Date() })
+      .where(eq(flows.id, flow!.id));
+    return { flowId: flow!.id, publicationId: publication!.id };
+  });
+}
+
 /** The runner's park write (Task A8 step 7, `park_approval`): step + run → awaiting_approval on `intentId`. */
 export async function parkFlowRunOnIntent(seed: SeededFlowRun, intentId: string): Promise<void> {
   await withSystemDbAccessContext(async () => {

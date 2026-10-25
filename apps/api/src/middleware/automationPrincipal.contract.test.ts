@@ -89,6 +89,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // site ceiling is its own `allowedSiteIds` (undefined for a flow — the
   // delegation ceiling is enforced at enable). Checked via AUTOMATION_KIND_SETS.
   "services/resilienceSiteAuthorization.ts:'ai_agent',": 'automation',
+  // Task A9: starting a run uses the flow's delegation; only a person (or an
+  // API key acting as its creator) may, never an agent or another flow.
+  "services/flows/runService.ts:if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };": 'automation',
 
   // --- agent_only: needs the agent identity / agent run state --------------
   // Ticket actor attribution (agentId) and the agent-run triage lane.

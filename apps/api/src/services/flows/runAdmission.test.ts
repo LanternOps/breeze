@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../../db', () => ({
   db: {},
+  getCurrentDbAccessContext: () => undefined,
   withSystemDbAccessContext: async (fn: () => unknown) => {
     h.order.push('tx:begin');
     const out = await fn();

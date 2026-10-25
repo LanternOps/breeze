@@ -55,6 +55,7 @@ import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
 import { withFlowExecutionContext } from './flowExecutionContext';
+import { triggererSiteCeiling } from './triggererAccess';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
 
@@ -452,7 +453,10 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
   // 4. run-time revalidation, unmasked, against the RUN org
   const owner = ownerOf(i.version, i.run, i.auth);
   if (!owner) return failedPolicy('drift', 'This run no longer belongs to the flow\'s owner.', { renderedInput: rendered });
-  const check = await revalidateRenderedStep(i.pin, rendered, { owner, runOrgId: i.run.orgId });
+  // Task A9: a manual run carries its triggerer's live site ceiling (null for
+  // schedule/event runs and unrestricted triggerers; empty = fail closed).
+  const siteIds = await triggererSiteCeiling(i.run, owner.partnerId);
+  const check = await revalidateRenderedStep(i.pin, rendered, { owner, runOrgId: i.run.orgId, siteIds });
   if (!check.ok) return failedPolicy(check.code, check.message, { renderedInput: rendered });
 
   // A flow never dispatches a step's own run context for run_script (the

@@ -346,7 +346,7 @@ const EXPECTED_NAMES = [
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
   // Tool catalog W04 (#5219), Task A8.
-  'flowRunner', 'flowRunReconciler', 'flowRunRetention',
+  'flowRunner', 'flowRunReconciler', 'flowRunRetention', 'flowScheduleTick',
   // Partner sending domains W03 (#6183).
   'sendingDomainsWorker',
   // AI Suggested Fixes W1.

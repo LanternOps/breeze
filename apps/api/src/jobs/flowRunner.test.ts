@@ -65,6 +65,7 @@ function assertStepChecks(step: Row): void {
 
 vi.mock('../db', () => ({
   db: {},
+  getCurrentDbAccessContext: () => undefined,
   withSystemDbAccessContext: async (fn: () => unknown) => {
     const snapshot = clone({ run: h.state.run, steps: h.state.steps });
     try {
@@ -839,6 +840,22 @@ describe('processFlowRunJob — slice preconditions', () => {
     await run();
     expect(h.execute).not.toHaveBeenCalled();
     expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
+  });
+
+  it('a parked run cancelled by the user ends cancelled, never drift', async () => {
+    // cancelFlowRun (Task A9): cancel_requested_at first, then the intent is
+    // cancelled and its terminal outbox row wakes the run.
+    seed({
+      steps: [{ id: 'a' }, { id: 'b' }], tiers: { a: 3 },
+      run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1, cancelRequestedAt: new Date() },
+    });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'cancelled', result: null, errorCode: null, executedAt: null, decidedByUserId: null });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
+    expect(stepRow('a')!.status).toBe('cancelled');
+    expect(h.pauseFlow).not.toHaveBeenCalled();
   });
 
   it('a terminal run is left alone', async () => {

@@ -43,8 +43,15 @@ import { eventDispatchMode, eventDispatchQueueSubscribers } from '../config/env'
 import { checkGuardrails, tierDecidingInputKeys } from './aiGuardrails';
 import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
+import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalogEntry } from './flows/catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
+import {
+  findDeviceGroupIdsInSites,
+  findDeviceIdsInSites,
+  findOwnedDeviceGroupIds,
+  findOwnedDeviceIds,
+  findOwnedScriptIds,
+} from './flows/ownedReferences';
 import { guardrailCheckForTenantTool } from './toolSources/guardrails';
 import type { ToolOwnerRef } from './toolSources/resolver';
 import type { FlowPreApprovalBinding } from './flows/preApproval';
@@ -368,12 +375,10 @@ function isValidTimeZone(tz: string): boolean {
 const KNOWN_EVENTS: ReadonlySet<string> = new Set(Object.values(EVENT_TYPES) as string[]);
 
 /**
- * The durable event subscriber that admits event-triggered flow runs (Task
- * A9). Not yet in EVENT_SUBSCRIBER_IDS, so the membership test below widens
- * the set to plain strings; until A9 registers it no deployment can list it
- * and every event flow enable is refused — fail closed.
+ * The durable event subscriber that admits event-triggered flow runs
+ * (services/flows/eventTrigger.ts, registered in eventSubscribers.ts).
  */
-export const FLOW_EVENT_TRIGGER_SUBSCRIBER_ID = 'flow-event-trigger';
+export const FLOW_EVENT_TRIGGER_SUBSCRIBER_ID = 'flow-event-trigger' satisfies SubscriberId;
 
 const EVENT_NOT_DURABLE_MESSAGE =
   'Events are not delivered durably on this deployment, so an event-triggered flow could silently miss events. '
@@ -388,7 +393,7 @@ const EVENT_NOT_DURABLE_MESSAGE =
  */
 export function isFlowEventDeliveryDurable(): boolean {
   return eventDispatchMode() === 'enforce'
-    && (eventDispatchQueueSubscribers() as ReadonlySet<string>).has(FLOW_EVENT_TRIGGER_SUBSCRIBER_ID);
+    && eventDispatchQueueSubscribers().has(FLOW_EVENT_TRIGGER_SUBSCRIBER_ID);
 }
 
 export async function validateFlowDocument(doc: unknown, ctx: FlowValidationContext): Promise<FlowDocumentValidation> {
@@ -658,11 +663,15 @@ function zodMessage(error: z.ZodError): string {
  *    deviceArgs) must belong to the owner (scripts) or to the RUN's org
  *    (groups, devices) — a partner-wide flow included, since a run has one
  *    org. Foreign and missing share one message.
+ *  - with `siteIds` (Task A9: a site-limited manual-run triggerer's live
+ *    ceiling, services/flows/triggererAccess.ts) every device must also sit in
+ *    one of those sites and every device group must be pinned to one; an
+ *    empty set admits no device or group at all.
  */
 export async function revalidateRenderedStep(
   pin: FlowStepPin,
   rendered: Record<string, unknown>,
-  ctx: { owner: ToolOwnerRef; runOrgId: string },
+  ctx: { owner: ToolOwnerRef; runOrgId: string; siteIds?: ReadonlySet<string> | null },
 ): Promise<RenderedStepCheck> {
   const catalog = await loadFlowCatalog(ctx.owner);
   const entry = catalog.get(pin.tool);
@@ -723,10 +732,15 @@ export async function revalidateRenderedStep(
       const owned = await find(ids);
       return ids.some((id) => !owned.has(id));
     };
+    const sites = ctx.siteIds ? [...ctx.siteIds] : null;
     if (
       await anyNotOwned(scriptIds, (ids) => findOwnedScriptIds(ctx.owner, ids))
       || await anyNotOwned(groupIds, (ids) => findOwnedDeviceGroupIds(ctx.runOrgId, ids))
       || await anyNotOwned(deviceIds, (ids) => findOwnedDeviceIds(ctx.runOrgId, ids))
+      || (sites !== null && (
+        await anyNotOwned(groupIds, (ids) => findDeviceGroupIdsInSites(ctx.runOrgId, ids, sites))
+        || await anyNotOwned(deviceIds, (ids) => findDeviceIdsInSites(ctx.runOrgId, ids, sites))
+      ))
     ) {
       return { ok: false, code: 'reference_not_owned', message: REFERENCE_NOT_OWNED_MESSAGE };
     }

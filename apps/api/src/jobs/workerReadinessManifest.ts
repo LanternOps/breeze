@@ -355,6 +355,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('flowRunner'),
   consumers('flowRunReconciler'),
   consumers('flowRunRetention'),
+  // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
+  consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
   // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
   // every self-hosted install and on hosted until W05 — so a plain-required row

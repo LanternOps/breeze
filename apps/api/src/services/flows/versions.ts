@@ -93,7 +93,12 @@ function ceilingAllowsDelegation(perms: UserPermissions | null, owner: ToolOwner
 
 // ── rule 7 ─────────────────────────────────────────────────────────────────
 
-function missingPermissionsFor(
+/**
+ * Rule 7: every permission a step of `doc` needs that `perms` lacks, listed
+ * per step. Used for the delegator at enable and for the triggerer of a
+ * manual run (runService.startManualRun) — the same rule for both.
+ */
+export function missingPermissionsFor(
   doc: FlowDocumentV1,
   pins: FlowStepPin[],
   perms: UserPermissions,
@@ -374,28 +379,7 @@ export async function disableFlow(auth: AuthContext, flowId: string): Promise<Di
     .where(and(eq(flowRuns.flowId, flowId), eq(flowRuns.status, 'awaiting_approval')))
     .returning({ id: flowRuns.id });
 
-  let cancelledIntents = 0;
-  if (parked.length > 0) {
-    // Flow intents are never task-linked; the predicate keeps it that way, so
-    // the aiOperator operation lock order never applies here.
-    const intents = await db
-      .update(actionIntents)
-      .set({ status: 'cancelled' })
-      .where(and(
-        inArray(actionIntents.requestingFlowRunId, parked.map((r) => r.id)),
-        inArray(actionIntents.status, ['pending_approval', 'approved']),
-        isNull(actionIntents.taskId),
-      ))
-      .returning({ id: actionIntents.id, orgId: actionIntents.orgId, requestingFlowRunId: actionIntents.requestingFlowRunId });
-    for (const intent of intents) {
-      await publishIntentTerminalOutbox(
-        db,
-        { id: intent.id, orgId: intent.orgId, taskId: null, requestingFlowRunId: intent.requestingFlowRunId },
-        'intent_cancelled',
-      );
-    }
-    cancelledIntents = intents.length;
-  }
+  const cancelledIntents = await cancelOpenFlowRunIntents(parked.map((r) => r.id));
 
   const running = await db
     .update(flowRuns)
@@ -411,6 +395,40 @@ export async function disableFlow(auth: AuthContext, flowId: string): Promise<Di
     cancelledIntents,
   });
   return { ok: true, cancelledRuns: cancelled.length };
+}
+
+// ── parked-run intent cancellation ─────────────────────────────────────────
+
+/**
+ * Cancel the open intents of parked runs the way `cancelActionIntent` cancels
+ * one: CAS `pending_approval | approved → cancelled` plus the
+ * `intent_cancelled` terminal outbox row, whose consumer wakes the run. The
+ * caller sets `cancel_requested_at` on the runs FIRST (same transaction), so
+ * the wake ends each run `cancelled`, never `drift`. Runs on the ambient
+ * `db` — the caller's transaction (disableFlow, runService.cancelFlowRun).
+ * Returns how many intents were cancelled.
+ */
+export async function cancelOpenFlowRunIntents(runIds: readonly string[]): Promise<number> {
+  if (runIds.length === 0) return 0;
+  // Flow intents are never task-linked; the predicate keeps it that way, so
+  // the aiOperator operation lock order never applies here.
+  const intents = await db
+    .update(actionIntents)
+    .set({ status: 'cancelled' })
+    .where(and(
+      inArray(actionIntents.requestingFlowRunId, [...runIds]),
+      inArray(actionIntents.status, ['pending_approval', 'approved']),
+      isNull(actionIntents.taskId),
+    ))
+    .returning({ id: actionIntents.id, orgId: actionIntents.orgId, requestingFlowRunId: actionIntents.requestingFlowRunId });
+  for (const intent of intents) {
+    await publishIntentTerminalOutbox(
+      db,
+      { id: intent.id, orgId: intent.orgId, taskId: null, requestingFlowRunId: intent.requestingFlowRunId },
+      'intent_cancelled',
+    );
+  }
+  return intents.length;
 }
 
 // ── pause (system) ─────────────────────────────────────────────────────────

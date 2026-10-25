@@ -274,6 +274,27 @@ describe('enableFlow — refusals', () => {
     expect(setOf(callsOf('update')[0]!).scheduleLastOccurrenceKey).toBeNull();
   });
 
+  it('event flow enables through the real env parser now that flow-event-trigger is a known subscriber (Task A9)', async () => {
+    const real = await vi.importActual<typeof import('../../config/env')>('../../config/env');
+    const prev = process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS;
+    process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS = 'webhook-delivery, flow-event-trigger';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(eventDispatchQueueSubscribers).mockImplementation(real.eventDispatchQueueSubscribers);
+      vi.mocked(eventDispatchMode).mockReturnValue('enforce');
+      expect(real.eventDispatchQueueSubscribers().has('flow-event-trigger' as never)).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+      const doc = { ...MANUAL_DOC, trigger: { type: 'event', event: 'device.offline', filter: {} } };
+      queueEnable(row({ definition: doc }));
+      const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+      expect(r.ok).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS;
+      else process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS = prev;
+      warn.mockRestore();
+    }
+  });
+
   it('forEach concurrency 2 refused', async () => {
     const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[0]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
     queues.select.push([row({ definition: doc })]);

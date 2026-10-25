@@ -34,7 +34,10 @@ vi.mock('./ownedReferences', () => ({
   findOwnedScriptIds: vi.fn(),
   findOwnedDeviceGroupIds: vi.fn(),
   findOwnedDeviceIds: vi.fn(),
+  findDeviceIdsInSites: vi.fn(),
+  findDeviceGroupIdsInSites: vi.fn(),
 }));
+vi.mock('./triggererAccess', () => ({ triggererSiteCeiling: vi.fn() }));
 vi.mock('../actionIntents/intentService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../actionIntents/intentService')>()),
   createActionIntent: vi.fn(),
@@ -48,7 +51,14 @@ import { FLOW_RUN_LIMITS, type FlowDocumentV1, type FlowScope } from '@breeze/sh
 import { executeTool } from '../aiTools';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, resolveTenantToolsForOwner, type TenantToolDescriptor } from '../toolSources/resolver';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './ownedReferences';
+import {
+  findDeviceGroupIdsInSites,
+  findDeviceIdsInSites,
+  findOwnedDeviceGroupIds,
+  findOwnedDeviceIds,
+  findOwnedScriptIds,
+} from './ownedReferences';
+import { triggererSiteCeiling } from './triggererAccess';
 import { createActionIntent } from '../actionIntents/intentService';
 import { buildRunScriptSnapshot, type RunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
 import type { FlowStepPin } from '../flowValidator';
@@ -169,6 +179,9 @@ beforeEach(() => {
   vi.mocked(findOwnedScriptIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === SCRIPT)));
   vi.mocked(findOwnedDeviceIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === DEVICE || i === DEVICE_2)));
   vi.mocked(findOwnedDeviceGroupIds).mockReset().mockResolvedValue(new Set());
+  vi.mocked(findDeviceIdsInSites).mockReset().mockResolvedValue(new Set());
+  vi.mocked(findDeviceGroupIdsInSites).mockReset().mockResolvedValue(new Set());
+  vi.mocked(triggererSiteCeiling).mockReset().mockResolvedValue(null);
   noSleep.sleep.mockClear();
 });
 
@@ -248,6 +261,52 @@ describe('executeFlowStep — run-time revalidation and ownership', () => {
     // The real revalidateRenderedStep checked the RENDERED id against the RUN org.
     expect(findOwnedDeviceIds).toHaveBeenCalledWith(ORG, [FOREIGN_DEVICE]);
     for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeFlowStep — site-limited triggerer (Task A9)', () => {
+  const TRIGGERER = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const GROUP = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const manualRun = () => run({ triggerKind: 'manual', triggeredVia: 'ui', preApprovalsHonored: false, triggeredByUserId: TRIGGERER, chainDepth: 0 });
+  const lookStep = () => step('look', 'get_device_details', { deviceId: DEVICE });
+
+  it("site-limited triggerer's rendered device outside its sites is reference_not_owned", async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const out = await executeFlowStep(input({ run: manualRun(), step: lookStep(), pin: LOOKUP_PIN }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned', policy: true });
+    expect(triggererSiteCeiling).toHaveBeenCalledWith(expect.objectContaining({ id: RUN, triggeredByUserId: TRIGGERER }), PARTNER);
+    expect(findDeviceIdsInSites).toHaveBeenCalledWith(ORG, [DEVICE], ['site-1']);
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
+
+  it('a device inside the triggerer\'s sites runs', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    vi.mocked(findDeviceIdsInSites).mockResolvedValue(new Set([DEVICE]));
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({ hostname: 'pc-1' }));
+    const out = await executeFlowStep(input({ run: manualRun(), step: lookStep(), pin: LOOKUP_PIN }));
+    expect(out).toMatchObject({ kind: 'completed' });
+  });
+
+  it('a tier-3 step of a site-limited run is site-checked before it parks', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    const out = await executeFlowStep(input({ run: manualRun(), step: step('fix', 'run_script', { scriptId: SCRIPT, deviceIds: [DEVICE] }) }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned' });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('a device group outside the triggerer\'s sites is reference_not_owned', async () => {
+    vi.mocked(triggererSiteCeiling).mockResolvedValue(new Set(['site-1']));
+    vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set([GROUP]));
+    const out = await executeFlowStep(input({ run: manualRun(), step: step('fix', 'run_script', { scriptId: SCRIPT, groupId: GROUP }) }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'reference_not_owned' });
+    expect(findDeviceGroupIdsInSites).toHaveBeenCalledWith(ORG, [GROUP], ['site-1']);
+  });
+
+  it('no ceiling (schedule/event or unrestricted triggerer) uses only the org check', async () => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({ hostname: 'pc-1' }));
+    const out = await executeFlowStep(input({ step: lookStep(), pin: LOOKUP_PIN }));
+    expect(out).toMatchObject({ kind: 'completed' });
+    expect(findDeviceIdsInSites).not.toHaveBeenCalled();
   });
 });
 

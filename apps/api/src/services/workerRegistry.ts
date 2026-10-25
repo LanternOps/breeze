@@ -1976,6 +1976,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Task A9 — 60 s schedule-trigger tick (one global repeatable over the
+    // enabled schedule flows; partner-wide flows fan out per live org).
+    // socket-owner, not `global`: createFlowRun's module (runService.ts)
+    // imports the rule-7 helper and intent cancel from versions.ts, whose
+    // runtime closure reaches routes/agentWs.ts (the flowRunReconciler note
+    // above; workerEntrypointClosure.contract.test.ts).
+    name: 'flowScheduleTick',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowScheduleTick');
+      return { init: m.initializeFlowScheduleTick, shutdown: m.shutdownFlowScheduleTick };
+    },
+  },
+  {
     // Partner sending domains W03. The ONE place that calls the email-domain
     // provider (spec §2). `initializeSendingDomainsWorker` returns before
     // constructing anything when EMAIL_DOMAINS_PROVIDER is unset, which is the

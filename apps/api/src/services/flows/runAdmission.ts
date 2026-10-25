@@ -17,7 +17,7 @@
  * deadlock").
  */
 import { flowMaxRunningPerOwner } from '../../config/env';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import * as store from './runStore';
 
@@ -51,10 +51,17 @@ export async function claimRunSlot(
   }, 'flows.runAdmission.claimRunSlot');
 }
 
+/**
+ * Joins an ambient SYSTEM transaction (run creation, Task A9, counts inside
+ * the transaction that inserts — no second pooled connection per event);
+ * otherwise opens a fresh short one.
+ */
 export async function assertActiveCapacity(
   owner: ToolOwnerRef,
 ): Promise<{ ok: true } | { ok: false; error: 'flow_queue_full' }> {
-  const active = await inSystemTx(() => store.countActiveRunsForOwner(owner), 'flows.runAdmission.activeCapacity');
+  const active = getCurrentDbAccessContext()?.scope === 'system'
+    ? await store.countActiveRunsForOwner(owner)
+    : await inSystemTx(() => store.countActiveRunsForOwner(owner), 'flows.runAdmission.activeCapacity');
   return active < FLOW_MAX_ACTIVE_RUNS_PER_OWNER ? { ok: true } : { ok: false, error: 'flow_queue_full' };
 }
 

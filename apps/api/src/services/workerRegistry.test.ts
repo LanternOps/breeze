@@ -126,6 +126,8 @@ const EXPECTED_WORKER_NAMES = [
   'flowRunner',
   'flowRunReconciler',
   'flowRunRetention',
+  // Task A9 — the schedule-trigger tick.
+  'flowScheduleTick',
   // Partner sending domains W03 (#6183) — the one place that calls the
   // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
   'sendingDomainsWorker',
