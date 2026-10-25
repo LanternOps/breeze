@@ -8,6 +8,12 @@
  *    and principal labels exactly as approved. The ordinal is shown, because
  *    an approved plan IS the dispatch order.
  *  - A `null` operation state is "not started / unknown" — never success.
+ *  - W07 R2b: a task with MORE than one approval (onboarding approves its
+ *    account creation, then its licences and groups) renders each approval as
+ *    a labelled stage block, oldest first. A creation approval that ran and
+ *    was then followed by the next stage is `superseded` in the data; it stays
+ *    visible and says it was followed, not replaced. A one-approval task
+ *    renders exactly as R1 shipped it (snapshot-pinned).
  */
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -58,7 +64,19 @@ const STATE_CLASS: Record<AiOperatorPlanApprovalDto['state'], string> = {
   superseded: 'border-muted-foreground/30 bg-muted text-muted-foreground',
 };
 
-function Revision({ rev }: { rev: AiOperatorPlanApprovalDto }) {
+/** The onboarding stage an approval is, read off its own effects. Null for any other recipe. */
+type StageKind = 'creation' | 'provision' | null;
+const CREATE_TOOLS = new Set(['m365_create_user']);
+const PROVISION_TOOLS = new Set([
+  'm365_assign_license', 'm365_add_to_group', 'google_move_ou', 'google_assign_license', 'google_add_to_group',
+]);
+function stageKind(rev: AiOperatorPlanApprovalDto): StageKind {
+  if (rev.effects.some((e) => CREATE_TOOLS.has(e.toolName))) return 'creation';
+  if (rev.effects.length > 0 && rev.effects.every((e) => PROVISION_TOOLS.has(e.toolName))) return 'provision';
+  return null;
+}
+
+function Revision({ rev, stage }: { rev: AiOperatorPlanApprovalDto; stage?: StageKind }) {
   const { t } = useTranslation('aiOperator');
   const ordered = [...rev.effects].sort((a, b) => a.ordinal - b.ordinal);
   const providers: AiOperatorPlanEffectDto['provider'][] = [];
@@ -83,7 +101,11 @@ function Revision({ rev }: { rev: AiOperatorPlanApprovalDto }) {
         </span>
       </header>
       {superseded && rev.supersededByRevision !== null && (
-        <p className="text-xs text-muted-foreground">{t('taskPanels.plan.supersededBy', { n: rev.supersededByRevision })}</p>
+        // A creation approval that was approved and then moved on to the next
+        // stage was not replaced: what it approved ran.
+        stage === 'creation' && rev.approvedAt !== null
+          ? <p className="text-xs text-muted-foreground">{t('taskPanels.plan.followedBy', { n: rev.supersededByRevision })}</p>
+          : <p className="text-xs text-muted-foreground">{t('taskPanels.plan.supersededBy', { n: rev.supersededByRevision })}</p>
       )}
       <p className="text-xs text-muted-foreground">{t('taskPanels.plan.orderNote')}</p>
       {providers.map((p) => (
@@ -120,9 +142,29 @@ export default function OperatorTaskPlan({ plan }: { plan: AiOperatorPlanApprova
   if (plan.length === 0) {
     return <p data-testid="task-plan-empty" className="text-sm text-muted-foreground">{t('taskPanels.plan.empty')}</p>;
   }
+  const ordered = [...plan].sort((a, b) => a.planRevision - b.planRevision);
+  if (ordered.length === 1) {
+    return (
+      <div data-testid="task-plan" className="space-y-4">
+        {ordered.map((rev) => <Revision key={rev.id} rev={rev} />)}
+      </div>
+    );
+  }
   return (
     <div data-testid="task-plan" className="space-y-4">
-      {[...plan].sort((a, b) => a.planRevision - b.planRevision).map((rev) => <Revision key={rev.id} rev={rev} />)}
+      {ordered.map((rev, i) => {
+        const kind = stageKind(rev);
+        return (
+          <div key={rev.id} data-testid={`task-plan-stage-${rev.planRevision}`} className="space-y-2">
+            <h4 className="text-sm font-semibold">
+              {t('taskPanels.planStage', { n: i + 1 })}
+              {kind === 'creation' && <span className="font-normal text-muted-foreground"> · {t('taskPanels.plan.stageCreation')}</span>}
+              {kind === 'provision' && <span className="font-normal text-muted-foreground"> · {t('taskPanels.plan.stageProvision')}</span>}
+            </h4>
+            <Revision rev={rev} stage={kind} />
+          </div>
+        );
+      })}
     </div>
   );
 }

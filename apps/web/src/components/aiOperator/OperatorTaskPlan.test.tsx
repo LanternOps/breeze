@@ -68,3 +68,53 @@ describe('OperatorTaskPlan', () => {
     expect(screen.getByTestId('task-plan-effect-2')).toHaveTextContent('Result unknown');
   });
 });
+
+// W07 R2b (Task 19). The snapshot below was RECORDED against R1's component
+// before R2b touched it, so a one-approval task must keep rendering exactly
+// as R1 shipped it.
+describe('OperatorTaskPlan — onboarding stages (W07 R2b)', () => {
+  it('7. a one-approval task renders byte-identical to R1', () => {
+    const { container } = render(<OperatorTaskPlan plan={[revision(1, { effects: [
+      effect(0, 'google_set_vacation'),
+      effect(1, 'm365_disable_user', { operationState: 'succeeded' }),
+    ] })]} />);
+    // formatDateTime renders in the runner's timezone: pin structure and copy, not the clock.
+    expect(container.innerHTML.replace(/\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2}\s?[AP]M/g, '<time>')).toMatchSnapshot();
+  });
+});
+
+describe('OperatorTaskPlan — two approval stages (W07 R2b)', () => {
+  const UPN = 'priya@customer.example';
+  const create = revision(1, {
+    state: 'superseded', supersededByRevision: 2, approvedByUserId: 'u-approver', approvedAt: '2026-10-20T10:00:00.000Z',
+    effectCount: 1,
+    effects: [effect(0, 'm365_create_user', { principalLabel: UPN, idempotencyClass: 'non_idempotent', operationState: 'succeeded' })],
+  });
+  const provision = revision(2, {
+    id: 'a-2', effectCount: 2, approvedAt: '2026-10-20T11:00:00.000Z',
+    effects: [effect(0, 'm365_assign_license', { principalLabel: UPN }), effect(1, 'm365_add_to_group', { principalLabel: UPN })],
+  });
+
+  it('6. renders each approval as its own labelled stage, oldest first, the superseded creation stage still visible', () => {
+    render(<OperatorTaskPlan plan={[provision, create]} />);
+    const stages = screen.getAllByTestId(/^task-plan-stage-\d+$/);
+    expect(stages.map((s) => s.getAttribute('data-testid'))).toEqual(['task-plan-stage-1', 'task-plan-stage-2']);
+    const s1 = screen.getByTestId('task-plan-stage-1');
+    expect(s1).toHaveTextContent('Approval 1');
+    expect(s1).toHaveTextContent('Account creation');
+    expect(s1).toHaveTextContent('Superseded');
+    // The creation stage names the account it created by the requested sign-in name.
+    expect(within(s1).getByTestId('task-plan-effect-0')).toHaveTextContent(UPN);
+    const s2 = screen.getByTestId('task-plan-stage-2');
+    expect(s2).toHaveTextContent('Approval 2');
+    expect(s2).toHaveTextContent('Licences, groups and organizational unit');
+    expect(s2).toHaveTextContent('Approved');
+  });
+
+  it('a superseded creation approval is not described as "replaced": it ran, and the next stage followed', () => {
+    render(<OperatorTaskPlan plan={[create, provision]} />);
+    const s1 = screen.getByTestId('task-plan-stage-1');
+    expect(s1).toHaveTextContent(/followed by approval 2/i);
+    expect(s1).not.toHaveTextContent('Superseded by revision 2');
+  });
+});

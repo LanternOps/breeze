@@ -389,7 +389,8 @@
     "tabs": {
       "steps": "Steps",
       "plan": "Plan",
-      "events": "Timeline"
+      "events": "Timeline",
+      "accounts": "Accounts"
     },
     "steps": {
       "empty": "No steps have started yet.",
@@ -410,7 +411,14 @@
         "effects": "Approve and make the changes",
         "manualWork": "Checklist work",
         "verifyOutcome": "Verify the outcome",
-        "document": "Write the record"
+        "document": "Write the record",
+        "confirmDetails": "Confirm the new person's details",
+        "createAccounts": "Approve and create the accounts",
+        "manualCreateGoogle": "Create the Google account by hand",
+        "resolveAccounts": "Find the new accounts",
+        "provisionEffects": "Approve and assign licences and groups",
+        "waitStart": "Wait for the start date",
+        "handoverWork": "Handover checklist"
       },
       "kind": {
         "reason": "Reasoning",
@@ -461,7 +469,10 @@
         "failed": "Failed",
         "unknown": "Result unknown",
         "superseded": "Superseded"
-      }
+      },
+      "stageCreation": "Account creation",
+      "stageProvision": "Licences, groups and organizational unit",
+      "followedBy": "Approved and carried out, then followed by approval {{n}} for the next stage. Kept here as the record of what was approved."
     },
     "events": {
       "empty": "No events recorded yet.",
@@ -494,6 +505,22 @@
         "humanWorkUnticked": "Checklist item unticked",
         "taskSettled": "Task finished"
       }
-    }
+    },
+    "accounts": "Accounts created",
+    "planStage": "Approval {{n}}"
+  },
+  "credential": {
+    "availableTo": "Temporary password available to {{name}} until {{date}}",
+    "availableToNoDate": "Temporary password available to {{name}}",
+    "askTo": "Ask {{name}} to share the temporary password — only they can reveal it",
+    "reveal": "Reveal it in the AI activity feed (Approvals)",
+    "revealed": "Temporary password already revealed",
+    "expired": "Temporary password expired without being revealed",
+    "expiredRecovery": "Reset the password. Do not create a second account.",
+    "unretrievable": "The temporary password was never stored, so nobody can reveal it.",
+    "setByHand": "Password set by hand during onboarding",
+    "unknown": "Temporary password state unknown",
+    "theApprover": "the person who approved the account creation",
+    "whoReveals": "Only the person who approved the account creation can reveal a temporary password, once — not the technician who started this task. Hand it over in person or by phone."
   }
 }
