@@ -5120,14 +5120,33 @@ function recordCrossTenantDrop(agentId: string, deviceId: string | undefined, ki
     // hands after this socket authenticated (a reattach confirm or an in-place
     // re-enroll), nothing was suspended and the row belongs to another
     // install, so no `agent.token.suspended` row is attributed to it; the
-    // superseded socket closes at its next lease re-check (4040).
+    // superseded socket closes at its next lease re-check (4040). The probe
+    // itself still happened, so it gets its own durable row (wave 1b-2, from
+    // the #9896 review): `agent.cross_tenant_probe.stale_caller`, denied.
     const drops = counter.drops;
     void suspendAgentToken({ deviceId, agentId }, AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe).then((outcome) => {
       if (outcome === 'stale_caller') {
         console.warn(
           `[AgentWs] cross-tenant probe from a superseded install: agent=${agentId} device=${deviceId} ` +
-          `kind=${kind}; the device row changed hands, nothing suspended, not audited`
+          `kind=${kind}; the device row changed hands, nothing suspended, audited as a stale-caller probe`
         );
+        void createAuditLogAsync({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'agent.cross_tenant_probe.stale_caller',
+          resourceType: 'device',
+          resourceId: deviceId,
+          details: {
+            reason: 'cross-tenant-probe',
+            kind,
+            dropsInWindow: drops,
+            agentId,
+            suspended: false,
+          },
+          result: 'denied',
+          initiatedBy: 'automation',
+        });
         return;
       }
       void createAuditLogAsync({

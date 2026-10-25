@@ -7039,7 +7039,9 @@ describe('late terminal_start failure binds to the exact terminal generation', (
 
   // #8318 §6.4 (review of wave 1b-1): a superseded install's socket whose
   // suspension write finds the row in another install's hands suspends
-  // nothing, so no `agent.token.suspended` row is attributed to the device.
+  // nothing, so no `agent.token.suspended` row is attributed to the device;
+  // the probe is still recorded, as `agent.cross_tenant_probe.stale_caller`
+  // (wave 1b-2).
   it('writes no suspension audit when the suspending write finds the row in another install\'s hands', async () => {
     const sessionId = '10000000-0000-4000-8000-000000000005';
     const owner = await openAgentSocket('agent-term-owner-2', TERM_DEVICE_ID);
@@ -7062,6 +7064,39 @@ describe('late terminal_start failure binds to the exact terminal generation', (
     expect(warnSpy.mock.calls.some((call) =>
       typeof call[0] === 'string' && call[0].includes('cross-tenant probe from a superseded install'))).toBe(true);
     warnSpy.mockRestore();
+
+    // The probe itself is a durable, denied audit row of its own kind.
+    const probeAudits = vi.mocked(createAuditLogAsync).mock.calls.filter(
+      (call) => (call[0] as { action?: string } | undefined)?.action === 'agent.cross_tenant_probe.stale_caller',
+    );
+    expect(probeAudits).toHaveLength(1);
+    expect(probeAudits[0]![0]).toMatchObject({
+      action: 'agent.cross_tenant_probe.stale_caller',
+      result: 'denied',
+      resourceType: 'device',
+      resourceId: 'device-term-superseded',
+      details: expect.objectContaining({
+        reason: 'cross-tenant-probe',
+        kind: 'term_failed',
+        agentId: 'agent-term-superseded',
+        suspended: false,
+      }),
+    });
+  });
+
+  it('a suspension that did happen writes no stale-caller probe row', async () => {
+    const sessionId = '10000000-0000-4000-8000-000000000006';
+    const owner = await openAgentSocket('agent-term-owner-3', TERM_DEVICE_ID);
+    const foreign = await openAgentSocket('agent-term-foreign-3', 'device-term-foreign-3');
+    const gen = await openTerminalGeneration(sessionId, 'agent-term-owner-3', owner.ws);
+    for (let i = 0; i < 5; i += 1) {
+      await foreign.handlers.onMessage(failedStartResult(gen.startCommandId), foreign.ws as any);
+    }
+    await new Promise((r) => setImmediate(r));
+    expect(suspendAudits()).toHaveLength(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls.some(
+      (call) => (call[0] as { action?: string } | undefined)?.action === 'agent.cross_tenant_probe.stale_caller',
+    )).toBe(false);
   });
 
   it('counts a LIVE start failure claimed by a different agent as a cross-tenant probe', async () => {
