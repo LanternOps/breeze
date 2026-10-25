@@ -18,6 +18,7 @@ import {
   listRoles,
   listStates,
   listUsers,
+  ZAMMAD_USER_PAGES_IN_FLIGHT,
 } from './api';
 import { stateTypeName } from './directory';
 import { cleanText, isCustomTicketAttribute, personName, usableEmail } from './mapping';
@@ -104,6 +105,37 @@ async function tokenUser(src: SourceHandle<unknown>): Promise<{ me: Me | null; p
   return { me, permissions, access: access.size > 0 ? access : null };
 }
 
+type TokenUser = Awaited<ReturnType<typeof tokenUser>>;
+type Groups = Awaited<ReturnType<typeof listGroups>> | null;
+
+/**
+ * Within one handle (one preflight: connect, then catalog), the token user
+ * and the groups are read once and shared. A handle lives for one request or
+ * one slice, so nothing outlives it.
+ */
+const SHARED = new WeakMap<object, { token?: Promise<TokenUser>; groups?: Promise<Groups> }>();
+
+function shared(src: SourceHandle<unknown>) {
+  let entry = SHARED.get(src);
+  if (!entry) {
+    entry = {};
+    SHARED.set(src, entry);
+  }
+  return entry;
+}
+
+function tokenUserOnce(src: SourceHandle<unknown>): Promise<TokenUser> {
+  const entry = shared(src);
+  entry.token ??= tokenUser(src);
+  return entry.token;
+}
+
+function groupsOnce(src: SourceHandle<unknown>): Promise<Groups> {
+  const entry = shared(src);
+  entry.groups ??= quiet(listGroups(src));
+  return entry.groups;
+}
+
 function canRead(access: GroupAccess | null, groupId: number): boolean | undefined {
   if (!access) return undefined;
   return [...(access.get(String(groupId)) ?? [])].some((level) => READ_ACCESS.has(level));
@@ -120,14 +152,14 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   if (sourceVersion === null) warnings.push({ code: 'version_unreadable' });
   else if (!isZammad72(sourceVersion)) warnings.push({ code: 'version_unsupported', detail: sourceVersion });
 
-  const { me, permissions, access } = await tokenUser(src);
+  const { me, permissions, access } = await tokenUserOnce(src);
   if (!me) warnings.push({ code: 'identity_unreadable' });
   if (me && permissions === null) warnings.push({ code: 'permissions_unreadable' });
   if (permissions && !permissions.includes('ticket.agent')) warnings.push({ code: 'token_user_not_agent' });
   // Unknown group access: one warning, never a per-group guess.
   if (!access) warnings.push({ code: 'group_access_unknown' });
 
-  const groups = await quiet(listGroups(src));
+  const groups = await groupsOnce(src);
   if (!groups) warnings.push({ code: 'groups_unreadable' });
   for (const group of groups?.rows ?? []) {
     const label = `${cleanText(group.name)} (id ${group.id})`;
@@ -147,19 +179,29 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   };
 }
 
+/**
+ * What the wizard maps (§5.11), read concurrently (the source client's
+ * semaphore bounds how many at once). Within one preflight the token user
+ * and the groups come from connect. The user count is exact: the users index
+ * has no total, so it is paged to the end, two pages at a time.
+ */
 export async function catalogZammad(src: SourceHandle<unknown>): Promise<SourceCatalog> {
-  const organizations = await listOrganizations(src);
-  const groups = await listGroups(src);
-  const priorities = await listPriorities(src);
-  const states = await listStates(src);
-  const { access } = await tokenUser(src);
+  const [organizations, groupList, priorities, states, token, definitions, users] = await Promise.all([
+    listOrganizations(src),
+    groupsOnce(src),
+    listPriorities(src),
+    listStates(src),
+    tokenUserOnce(src),
+    // Definitions need admin.object (Z17); without it the dry run discovers attribute names from ticket keys.
+    quiet(listObjectAttributes(src)),
+    listUsers(src, ZAMMAD_USER_PAGES_IN_FLIGHT),
+  ]);
+  const { access } = token;
+  const groups = groupList ?? { rows: [], invalid: 0 };
   const lists = [organizations, groups, priorities, states];
-  // Definitions need admin.object (Z17); without it the dry run discovers attribute names from ticket keys.
-  const definitions = await quiet(listObjectAttributes(src));
   const attributes = (definitions?.rows ?? [])
     .filter((a) => (a.object == null || a.object === 'Ticket') && isCustomTicketAttribute(a.name))
     .map((a) => ({ key: a.name, name: cleanText(a.display ?? a.name), active: a.active !== false }));
-  const users = await listUsers(src);
   return {
     orgs: organizations.rows.map((o) => ({ key: String(o.id), name: cleanText(o.name), active: o.active !== false })),
     groups: groups.rows.map((g) => {
@@ -179,6 +221,7 @@ export async function catalogZammad(src: SourceHandle<unknown>): Promise<SourceC
       states: states.rows.length,
       priorities: priorities.rows.length,
       attributeDefinitionsReadable: definitions ? 1 : 0,
+      groupsReadable: groupList ? 1 : 0,
       // Rows of these lists the module could not read, skipped one by one.
       invalidRows: [...lists, users, ...(definitions ? [definitions] : [])].reduce((n, l) => n + l.invalid, 0),
     },

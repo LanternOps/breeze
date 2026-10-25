@@ -348,7 +348,8 @@ describe('the directory (users cached 30 min per source; one read per missing us
     expect(second.get(999)).toBeNull();
     await zammadPeople(src, [999, 13, 3], 3_000);
     expect(fake.requestedPaths().filter((p) => p.startsWith('/api/v1/users'))).toEqual([
-      '/api/v1/users?page=1&per_page=1000', '/api/v1/users/13', '/api/v1/users/999',
+      // The index, two pages at a time (the second is past its end), then two users on their own.
+      '/api/v1/users?page=1&per_page=1000', '/api/v1/users?page=2&per_page=1000', '/api/v1/users/13', '/api/v1/users/999',
     ]);
     // After 30 minutes the index is read again.
     await zammadPeople(src, [3], 1_000 + 30 * 60_000);

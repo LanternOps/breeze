@@ -82,25 +82,38 @@ function positiveId(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-/** Every row of a paged index, page by page until a short page (Z15, Z18), each row checked on its own. */
+/** Pages of the users index read at once (the index has no total): at most one page read past its end. */
+export const ZAMMAD_USER_PAGES_IN_FLIGHT = 2;
+
+/**
+ * Every row of a paged index, until a short page (Z15, Z18), each row
+ * checked on its own. `inFlight` pages are read at once (the source client's
+ * semaphore still bounds the requests); they are taken in order, and a page
+ * past the short one is ignored.
+ */
 async function allPages<S extends z.ZodType>(
   src: SourceHandle<unknown>,
   path: ReadonlyArray<string | number>,
   row: S,
   query: Query = {},
+  inFlight = 1,
 ): Promise<ZammadRows<z.infer<S>>> {
   const out: ZammadRows<z.infer<S>> = { rows: [], invalid: 0 };
+  const width = Math.max(1, inFlight);
   let previousFirst: unknown;
-  for (let page = 1; page <= MAX_INDEX_PAGES; page += 1) {
-    const { items } = await zammadArray(src, path, { ...query, page, per_page: ZAMMAD_INDEX_PAGE_SIZE });
-    const first = (items[0] as { id?: unknown } | undefined)?.id;
-    // A server that ignores `page` would answer the same page forever.
-    if (page > 1 && first !== undefined && first === previousFirst) throw new ZammadShapeError(`GET /api/v1/${String(path[0])} (repeated page)`);
-    previousFirst = first;
-    const parsed = rowsOf(items, row);
-    out.rows.push(...parsed.rows);
-    out.invalid += parsed.invalid;
-    if (items.length < ZAMMAD_INDEX_PAGE_SIZE) return out;
+  for (let start = 1; start <= MAX_INDEX_PAGES; start += width) {
+    const pages = Array.from({ length: Math.min(width, MAX_INDEX_PAGES - start + 1) }, (_, i) => start + i);
+    const answers = await Promise.all(pages.map((page) => zammadArray(src, path, { ...query, page, per_page: ZAMMAD_INDEX_PAGE_SIZE })));
+    for (const [i, { items }] of answers.entries()) {
+      const first = (items[0] as { id?: unknown } | undefined)?.id;
+      // A server that ignores `page` would answer the same page forever.
+      if (pages[i]! > 1 && first !== undefined && first === previousFirst) throw new ZammadShapeError(`GET /api/v1/${String(path[0])} (repeated page)`);
+      previousFirst = first;
+      const parsed = rowsOf(items, row);
+      out.rows.push(...parsed.rows);
+      out.invalid += parsed.invalid;
+      if (items.length < ZAMMAD_INDEX_PAGE_SIZE) return out;
+    }
   }
   throw new ZammadShapeError(`GET /api/v1/${String(path[0])} (too many pages)`);
 }
@@ -168,8 +181,8 @@ export async function ticketLinks(src: SourceHandle<unknown>, ticketId: number) 
   return (await zammadGet(src, ['links'], zammadLinksSchema, { link_object: 'Ticket', link_object_value: ticketId })).body;
 }
 
-export function listUsers(src: SourceHandle<unknown>) {
-  return allPages(src, ['users'], zammadUserSchema);
+export function listUsers(src: SourceHandle<unknown>, inFlight = ZAMMAD_USER_PAGES_IN_FLIGHT) {
+  return allPages(src, ['users'], zammadUserSchema, {}, inFlight);
 }
 
 export async function getUser(src: SourceHandle<unknown>, userId: number) {

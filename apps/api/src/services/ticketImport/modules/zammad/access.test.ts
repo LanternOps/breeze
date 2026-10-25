@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceHttpError } from '../../sourceFetch';
 import { catalogZammad, connectZammad, isZammad72 } from './access';
 import { clearZammadDirectoryCache } from './directory';
-import { FakeZammad, zammadTestHandle } from './fakeZammad.fixtures';
+import { buildSourceHandle } from '../../sourceHandle';
+import { createSourceClient } from '../../sourceFetch';
+import type { SafeFetchInit } from '../../../urlSafety';
+import { FAKE_ZAMMAD_BASE_URL, FAKE_ZAMMAD_TOKEN, FakeZammad, zammadTestHandle } from './fakeZammad.fixtures';
 
 /** Token, access and catalog (spec 2026-10-19 §6.1, §5.11 preflight). */
 
@@ -157,8 +160,45 @@ describe('catalog', () => {
     // No admin.object: attribute names are discovered from tickets during the dry run.
     expect(catalog.attributes).toEqual([]);
     expect(catalog.counts).toEqual({
-      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 8, priorities: 4, attributeDefinitionsReadable: 0, invalidRows: 0,
+      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 8, priorities: 4, attributeDefinitionsReadable: 0, groupsReadable: 1, invalidRows: 0,
     });
+  });
+
+  it('within one preflight, reuses connect\'s token user and groups, and reads the rest concurrently (review 14)', async () => {
+    const fake = new FakeZammad();
+    let inFlight = 0;
+    let peak = 0;
+    const slow = async (url: string, init?: SafeFetchInit) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return fake.fetchImpl(url, init);
+    };
+    const http = createSourceClient(FAKE_ZAMMAD_BASE_URL, { timeoutMs: 5_000, concurrency: 2, fetchImpl: slow as never, sleep: async () => undefined });
+    const src = buildSourceHandle({ sourceId: 'preflight', baseUrl: FAKE_ZAMMAD_BASE_URL, credentials: { token: FAKE_ZAMMAD_TOKEN }, options: {}, http });
+    await connectZammad(src);
+    peak = 0;
+    await catalogZammad(src);
+    const count = (path: string) => fake.requestedPaths().filter((p) => p.startsWith(path)).length;
+    expect(count('/api/v1/users/me')).toBe(1);
+    expect(count('/api/v1/roles')).toBe(1);
+    expect(count('/api/v1/groups')).toBe(1);
+    // Concurrent, and never past the source client's limit.
+    expect(peak).toBe(2);
+  });
+
+  it('counts the users exactly, paging the index to its end two pages at a time (review 14)', async () => {
+    const fake = new FakeZammad();
+    const template = fake.data.users.find((u) => u.id === 10)!;
+    fake.data.users = Array.from({ length: 2_500 }, (_, i) => ({ ...template, id: i + 1, login: `u${i + 1}` }));
+    const catalog = await catalogZammad(zammadTestHandle(fake));
+    expect(catalog.counts.users).toBe(2_500);
+    // Pages 1 and 2, then 3 (short, the end) and 4 (read alongside it, ignored).
+    expect(fake.requestedPaths().filter((p) => p.startsWith('/api/v1/users?')).sort()).toEqual([
+      '/api/v1/users?page=1&per_page=1000', '/api/v1/users?page=2&per_page=1000',
+      '/api/v1/users?page=3&per_page=1000', '/api/v1/users?page=4&per_page=1000',
+    ]);
   });
 
   it('lists the custom ticket attributes when the token may read their definitions', async () => {
