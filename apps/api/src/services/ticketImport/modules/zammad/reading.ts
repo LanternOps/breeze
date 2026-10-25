@@ -241,11 +241,12 @@ export const __zammadReadingTestHooks = {
  */
 export async function zammadArticles(src: SourceHandle<unknown>, ticketId: number): Promise<ZammadArticle[]> {
   const ids = await getTicketArticleIds(src, ticketId);
-  if (ids.length > bigTicketArticles) return articlesOneByOne(src, ids);
+  // Without article_ids in the answer only by_ticket can read the ticket, as before this read existed.
+  if (ids && ids.length > bigTicketArticles) return articlesOneByOne(src, ids);
   try {
     return await articlesByTicket(src, ticketId);
   } catch (error) {
-    if (error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ids);
+    if (ids && error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ids);
     throw error;
   }
 }

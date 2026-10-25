@@ -246,6 +246,14 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
     }
   });
 
+  it('an expand answer without article_ids reads by_ticket, as before the count was read', async () => {
+    const fake = new FakeZammad();
+    fake.data.ticketsExpand.set(101, { ...fake.data.tickets.find((t) => t.id === 101)! });
+    const { data } = await load(fake, 101);
+    expect(data.articles.map((a) => a.id)).toEqual([1001, 1002, 1003]);
+    expect(fake.requestedPaths()).toContain('/api/v1/ticket_articles/by_ticket/101');
+  });
+
   it('the per-article read stops starting requests at the first failure (review 4)', async () => {
     const fake = new FakeZammad();
     const template = fake.data.byTicket.get(114)![0]!;

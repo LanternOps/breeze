@@ -157,9 +157,12 @@ export async function getTicket(src: SourceHandle<unknown>, ticketId: number) {
   return (await zammadGet(src, ['tickets', ticketId], zammadTicketSchema)).body;
 }
 
-/** The ticket with `article_ids`, for a ticket too large for `by_ticket` (§6.2, §11). */
-export async function getTicketArticleIds(src: SourceHandle<unknown>, ticketId: number): Promise<number[]> {
-  return (await zammadGet(src, ['tickets', ticketId], zammadExpandedTicketSchema, { expand: true })).body.article_ids;
+/** The ids of every article of the ticket (System included), from `?expand=true`; null when the answer carries none (§6.2, §11). */
+export async function getTicketArticleIds(src: SourceHandle<unknown>, ticketId: number): Promise<number[] | null> {
+  const { body } = await zammadGet(src, ['tickets', ticketId], z.looseObject({}), { expand: true });
+  const parsed = zammadExpandedTicketSchema.pick({ article_ids: true }).safeParse(body);
+  // An answer without them (a release that expands differently): the caller reads by_ticket, as before.
+  return parsed.success ? parsed.data.article_ids : null;
 }
 
 /** Unpaginated, ordered `created_at, id`, internal and inline attachments included (Z5). */
