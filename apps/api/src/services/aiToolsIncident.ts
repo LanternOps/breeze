@@ -25,6 +25,7 @@ import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { HIGH_RISK_CONTAINMENT_ACTIONS, listIncidentsSchema } from '../routes/incidents.validation';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { captureException } from './sentry';
+import { checkScreenAccessConsentGate } from '../routes/remote/screenAccessConsentGate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -426,6 +427,21 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       // device in another org under this incident.
       if (deviceAccess.device.orgId !== incident.orgId) {
         return JSON.stringify({ error: 'The device must belong to the same organization as the incident' });
+      }
+
+      // W04 quorum QW8 (#6758): a screenshot is screen capture, so it honours
+      // the device's remote-access consent policy exactly like take_screenshot.
+      // Other evidence types are not screen access.
+      if ((input.evidenceTypes as unknown[]).includes('screenshot')) {
+        const gate = await checkScreenAccessConsentGate({
+          deviceId: deviceAccess.device.id,
+          orgId: deviceAccess.device.orgId,
+          hostname: deviceAccess.device.hostname,
+          surface: 'collect_evidence',
+          actor: auth,
+          isEphemeral: deviceAccess.device.isEphemeral === true,
+        });
+        if (!gate.ok) return JSON.stringify(gate.body);
       }
 
       const payload = {
