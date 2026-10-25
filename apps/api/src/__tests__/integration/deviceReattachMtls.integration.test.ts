@@ -40,7 +40,6 @@ import { deviceMtlsCertificates, devices } from '../../db/schema';
 import { agentRoutes } from '../../routes/agents/index';
 import { CloudflareMtlsService, type CfCertResult } from '../../services/cloudflareMtls';
 import { requestDeviceReattach } from '../../services/deviceReattach/requestIntent';
-import { ensureActiveSigningKey } from '../../services/manifestSigning';
 import {
   parkedSource,
   readDevice,
@@ -145,14 +144,13 @@ async function arrange() {
 const certRow = async (id: string) => (await getTestDb().select().from(deviceMtlsCertificates).where(eq(deviceMtlsCertificates.id, id)))[0];
 
 const originalBindingMode = process.env.AGENT_MTLS_BINDING_MODE;
-beforeEach(async () => {
+beforeEach(() => {
   provider.issued.length = 0;
   provider.revoked.length = 0;
   fakeCloudflare.issueCertificate.mockClear();
   fakeCloudflare.revokeCertificate.mockClear();
   vi.spyOn(CloudflareMtlsService, 'fromEnv').mockReturnValue(fakeCloudflare as unknown as CloudflareMtlsService);
   process.env.AGENT_MTLS_BINDING_MODE = 'enforce';
-  await ensureActiveSigningKey();
 });
 afterEach(() => {
   vi.restoreAllMocks();

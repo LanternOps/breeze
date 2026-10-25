@@ -69,6 +69,7 @@ import {
   sha256,
   silentTarget,
   stagedSet,
+  useDeploymentSigningKey,
   type ReattachTenant,
   type SeededAgentDevice,
 } from './deviceReattachFixtures';
@@ -168,9 +169,9 @@ async function clearCredentialUseMarker(deviceId: string): Promise<void> {
   await getRedis()!.del(agentCredentialUseKey(deviceId));
 }
 
-beforeEach(async () => {
+useDeploymentSigningKey();
+beforeEach(() => {
   redisSeam.down = false;
-  await ensureActiveSigningKey();
 });
 
 describe('the bounded rebind, happy path (#8318 §6.1–§6.4)', () => {

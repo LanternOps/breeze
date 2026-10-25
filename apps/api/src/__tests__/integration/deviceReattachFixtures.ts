@@ -6,14 +6,39 @@
  * connection.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
-import { deviceReattachIntents, devices, partnerUsers } from '../../db/schema';
+import { eq, notInArray, sql } from 'drizzle-orm';
+import { afterAll, beforeAll, beforeEach } from 'vitest';
+import { deviceReattachIntents, devices, manifestSigningKeys, partnerUsers } from '../../db/schema';
+import { ensureActiveSigningKey, invalidateManifestTrustCaches } from '../../services/manifestSigning';
 import { declareParkedDeviceAdmission } from '../../services/unassignedPool/admission';
 import { createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 import { seedHoldingOrg } from './unassignedPoolFixtures';
 
 export const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+
+/**
+ * The directive is signed with the deployment key, which the server never
+ * creates on its own. A suite that needs one creates it before each test and
+ * removes what it created afterwards: `manifest_signing_keys` is not truncated
+ * between tests, and later suites in the same run expect a deployment without
+ * a key (heartbeatRetainState pins `"manifestTrustKeys":[]`).
+ */
+export function useDeploymentSigningKey(): void {
+  let preexisting: string[] = [];
+  beforeAll(async () => {
+    preexisting = (await getTestDb().select({ keyId: manifestSigningKeys.keyId }).from(manifestSigningKeys)).map((r) => r.keyId);
+  });
+  beforeEach(async () => {
+    await ensureActiveSigningKey();
+  });
+  afterAll(async () => {
+    await getTestDb().delete(manifestSigningKeys).where(
+      preexisting.length > 0 ? notInArray(manifestSigningKeys.keyId, preexisting) : sql`true`,
+    );
+    invalidateManifestTrustCaches();
+  });
+}
 
 const DEVICE_GRANTS = [
   { resource: 'devices', action: 'read' },
