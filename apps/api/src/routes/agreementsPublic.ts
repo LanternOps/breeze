@@ -54,7 +54,7 @@ import { captureException } from '../services/sentry';
  * consulted by the auth/portal/helper middlewares, none of which run here, so
  * no ambient request transaction is ever opened on this surface.
  *
- * Every token route goes through ONE resolve() and ONE isAgreementLinkDead();
+ * Every token route goes through ONE resolveAgreementLink() and ONE isAgreementLinkDead();
  * agreementsPublic.resolve.test.ts walks the registered routes and fails if a
  * new route skips either.
  */
@@ -81,7 +81,7 @@ agreementsPublicRoutes.use('*', async (c, next) => {
 /**
  * ONE predicate for "the MSP killed this link": the DB-authoritative
  * public_link_revoked_at (void writes it) or a voided status. Used by every
- * token route via resolve().
+ * token route via resolveAgreementLink().
  */
 export function isAgreementLinkDead(row: Pick<AgreementRequestRow, 'status' | 'publicLinkRevokedAt'>): boolean {
   return row.publicLinkRevokedAt != null || row.status === 'voided';
@@ -116,7 +116,7 @@ type ResolveOutcome = { ok: true; link: ResolvedAgreementLink } | { ok: false; r
  * LINK_REVOKED; an open request past its expiry instant (or reaper-expired) →
  * 410 AGREEMENT_EXPIRED. 410 bodies carry the partner name only.
  */
-async function resolve(c: Context, token: string, now: Date): Promise<ResolveOutcome> {
+async function resolveAgreementLink(c: Context, token: string, now: Date): Promise<ResolveOutcome> {
   const invalid = (): ResolveOutcome => ({ ok: false, response: c.json(INVALID_LINK, 401) });
 
   const claims = await verifyAgreementAcceptToken(token);
@@ -153,7 +153,7 @@ async function loadLogoUrl(orgId: string, partnerId: string): Promise<string | n
 }
 
 function presentedStatus(status: AgreementRequestRow['status']): PublicAgreementStatus {
-  // resolve() refuses draft / voided / expired before any handler runs.
+  // resolveAgreementLink() refuses draft / voided / expired before any handler runs.
   return status as PublicAgreementStatus;
 }
 
@@ -162,13 +162,13 @@ function presentedStatus(status: AgreementRequestRow['status']): PublicAgreement
 agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
   const now = new Date();
-  const resolved = await resolve(c, token, now);
+  const resolved = await resolveAgreementLink(c, token, now);
   if (!resolved.ok) return resolved.response;
   const { request, claims, partnerName } = resolved.link;
   try {
     const view = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       // The pinned version, read under system scope — never the authorisation
-      // guard (resolve() already was).
+      // guard (resolveAgreementLink() already was).
       const renderData = await loadTemplateVersionRenderData(request.templateVersionId);
       const { html } = renderRequestForClient(frozenRenderSnapshot(request, now), renderData, request.variableValues ?? {});
       const logoUrl = await loadLogoUrl(request.orgId, claims.partnerId);
@@ -211,7 +211,7 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
 // the page's viewer can embed it; the filename is sanitized on the way out.
 agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
-  const resolved = await resolve(c, token, new Date());
+  const resolved = await resolveAgreementLink(c, token, new Date());
   if (!resolved.ok) return resolved.response;
   const { request } = resolved.link;
   const renderData = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
@@ -242,7 +242,7 @@ agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), asyn
 const RESPOND_LIMIT_PER_MINUTE = 10;
 
 /**
- * Per-token limiter, run BEFORE resolve() and before any DB context. Keyed on
+ * Per-token limiter, run BEFORE resolveAgreementLink() and before any DB context. Keyed on
  * sha256(token) — the raw bearer credential never lands in Redis. Fails OPEN
  * on a Redis outage (rateLimiter itself fails closed): the durable jti
  * consumption on the row is the real single-use guard, so availability wins
@@ -315,7 +315,7 @@ agreementsPublicRoutes.post(
     const body = c.req.valid('json');
     if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
     const now = new Date();
-    const resolved = await resolve(c, token, now);
+    const resolved = await resolveAgreementLink(c, token, now);
     if (!resolved.ok) return resolved.response;
     const { claims, orgIds, request } = resolved.link;
 
@@ -362,7 +362,7 @@ agreementsPublicRoutes.post(
     const { reason } = c.req.valid('json');
     if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
     const now = new Date();
-    const resolved = await resolve(c, token, now);
+    const resolved = await resolveAgreementLink(c, token, now);
     if (!resolved.ok) return resolved.response;
     const { claims, orgIds, request } = resolved.link;
 

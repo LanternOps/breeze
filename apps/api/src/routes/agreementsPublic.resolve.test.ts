@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Enumeration guard (#9075 W2b; spec §3.3 last paragraph, §8): EVERY token
-// route on agreementsPublicRoutes goes through the shared resolve() and
+// route on agreementsPublicRoutes goes through the shared resolveAgreementLink() and
 // isAgreementLinkDead(). The registered-route inventory is compared strictly
 // with the list below, so adding a route without adding it here fails — and
 // adding it here asserts it 401s on a forged / revoked / stale token and 410s

@@ -129,7 +129,7 @@ beforeEach(() => {
   vi.mocked(markAgreementRequestViewed).mockResolvedValue(true);
 });
 
-describe('resolve(): every miss is the SAME 401 (no enumeration)', () => {
+describe('resolveAgreementLink(): every miss is the SAME 401 (no enumeration)', () => {
   const causes: Array<[string, () => void]> = [
     ['bad signature / wrong kind / expired token', () => vi.mocked(verifyAgreementAcceptToken).mockResolvedValue(null)],
     ['revoked jti (Redis marker; also Redis down — fails closed)', () => vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true)],
@@ -207,7 +207,7 @@ describe('resolve(): every miss is the SAME 401 (no enumeration)', () => {
   }, 30_000); // dynamic import of the whole quotesPublic module graph
 });
 
-describe('resolve(): 410 states carry branding only', () => {
+describe('resolveAgreementLink(): 410 states carry branding only', () => {
   it('org/partner gate blocked → 410 ORG_UNAVAILABLE', async () => {
     vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({ gate: { orgId: ORG_ID, status: 'active', partnerStatus: 'suspended', blocked: true } }) as never);
     const res = await get();
