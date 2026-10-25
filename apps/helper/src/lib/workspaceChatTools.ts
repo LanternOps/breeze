@@ -109,7 +109,7 @@ export async function executeWorkspaceChatTool(
 ): Promise<unknown> {
   try {
     const config = useChatStore.getState().agentConfig;
-    if (!config) return { error: 'Workspace is not connected.' };
+    if (!config) return { error: 'Knowledge sources are not connected.' };
 
     if (name === 'search_workspace_files') {
       const params = new URLSearchParams({ q: queryString(input.q) });

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXTENSION_HOST_EVENT_NAME, type ExtensionHostEventV1 } from '@breeze/extension-web-sdk';
 import { defineWorkspaceElements, WorkspaceSourcesPage } from './index';
@@ -94,7 +96,7 @@ describe('workspace-sources-page', () => {
     const element = await mountPage(context as Record<string, unknown>);
     expect(fetchMock).not.toHaveBeenCalled();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('Wisp received an invalid host context');
+    expect(alert?.textContent).toContain('Knowledge received an invalid host context');
   });
 
   it('renders source rows as inert text, never as markup', async () => {
@@ -118,7 +120,7 @@ describe('workspace-sources-page', () => {
     const element = await mountPage();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('not authorized');
-    expect(alert?.textContent).toContain('Wisp sources');
+    expect(alert?.textContent).toContain('Knowledge sources');
     expect(alert?.textContent).not.toMatch(/workspace/i);
   });
 
@@ -289,12 +291,30 @@ describe('workspace-sources-page', () => {
 });
 
 describe('workspace-sources-page copy', () => {
-  it('renders the Wisp Sources heading', async () => {
+  it('renders the Knowledge sources heading', async () => {
     defineWorkspaceElements();
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ sources: [] })));
     const element = await mountPage();
-    expect(element.shadowRoot?.querySelector('h1')?.textContent).toBe('Wisp Sources');
+    expect(element.shadowRoot?.querySelector('h1')?.textContent).toBe('Knowledge sources');
     expect(shadowText(element)).not.toMatch(/workspace/i);
     vi.unstubAllGlobals();
+  });
+
+  it('never says Workspace or Wisp Sources', () => {
+    // vitest runs from the package root (ee/workspace); jsdom's import.meta.url is not a file URL.
+    for (const f of ['src/web/deviceIndex.ts', 'src/web/sourcesPage.ts', 'src/web/filingCard.ts', 'manifest.json']) {
+      const lines = readFileSync(resolve(process.cwd(), f), 'utf8')
+        .split('\n')
+        .filter((l) => !/^\s*(\/\/|\*|\/\*|import )/.test(l));
+      // Quoted literals containing a space are user-visible copy; identifiers,
+      // paths and tag names have none and legitimately keep the workspace name.
+      const literals = [...lines.join('\n').matchAll(/(['"`])((?:\\.|(?!\1).)*)\1/g)]
+        .map((m) => m[2])
+        .filter((s) => s.includes(' '));
+      expect(literals.length).toBeGreaterThan(0);
+      for (const s of literals) {
+        expect(s, `${f}: ${s}`).not.toMatch(/workspace|Wisp Sources|Wisp Dashboard/i);
+      }
+    }
   });
 });
