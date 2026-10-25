@@ -59,7 +59,18 @@ let resourceHookInstalled = false;
 function installResourceHooks(): void {
   if (resourceHookInstalled) return;
   DOMPurify.addHook('afterSanitizeElements', (node) => {
-    if (!(node instanceof HTMLElement) || node.tagName !== 'IMG') return;
+    if (!(node instanceof HTMLElement)) return;
+    if (node.tagName === 'INPUT') {
+      // Preserve GFM task-list checkboxes without admitting image inputs or
+      // interactive controls supplied through raw HTML.
+      if (node.getAttribute('type')?.toLowerCase() !== 'checkbox') {
+        node.remove();
+      } else {
+        node.setAttribute('disabled', '');
+      }
+      return;
+    }
+    if (node.tagName !== 'IMG') return;
     const doc = node.ownerDocument;
     const src = node.getAttribute('src') ?? '';
     const alt = node.getAttribute('alt') ?? '';
@@ -77,21 +88,24 @@ function installResourceHooks(): void {
   resourceHookInstalled = true;
 }
 
-/**
- * Elements that load a remote subresource with no click and no chat-pane use:
- * media containers and SVG (which can nest `<image>`, and `<video>`/`<picture>`
- * which can load posters/srcsets). Dropped outright rather than rewritten —
- * there is no useful text to preserve and no legitimate add-in feature needs
- * them. `<img>` is handled by the hook above so its alt text survives.
- */
-const RESOURCE_LOADING_TAGS = ['video', 'audio', 'source', 'track', 'picture', 'svg', 'image'] as const;
-
 const SANITIZE_CONFIG: Config = {
-  // Allow target so our new-tab attribute survives sanitization.
-  ADD_ATTR: ['target'],
-  // Defense in depth even though marked never emits these.
-  FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', ...RESOURCE_LOADING_TAGS],
-  FORBID_ATTR: ['style'],
+  // Limit output to chat formatting rather than DOMPurify's broader default
+  // HTML/SVG/MathML policy. IMG and INPUT are constrained by the hook above.
+  ALLOWED_TAGS: [
+    'p', 'br', 'hr', 'div', 'span', 'blockquote', 'pre', 'code',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
+    'strong', 'b', 'em', 'i', 'del', 's', 'u', 'small', 'mark',
+    'sub', 'sup', 'kbd', 'samp', 'var', 'abbr', 'details', 'summary',
+    'dl', 'dt', 'dd', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+    'a', 'img', 'input',
+  ],
+  // No src/srcset, background, poster, or style attributes can survive. The
+  // image hook reads src before attribute sanitization and emits only a link.
+  ALLOWED_ATTR: [
+    'href', 'title', 'target', 'rel', 'class', 'align', 'start',
+    'colspan', 'rowspan', 'type', 'checked', 'disabled',
+  ],
+  ALLOW_DATA_ATTR: false,
 };
 
 /**
