@@ -360,9 +360,23 @@ export function buildOrgTerms(
   return out;
 }
 
+/**
+ * Agent-denied tools a HUMAN may still call from a Wisp chat turn under a
+ * grant. `launch_specialist` (W07 Task 6, spec §7.5) sits in
+ * AGENT_HUMAN_ONLY_TOOLS so an `ai_agent` principal can never hand work to a
+ * specialist — but the human's own Wisp session is the one intended caller
+ * (the coordinator re-gates by kind: sweep/analysis admitted, the rest become
+ * `wisp_specialist_request` approval cards). Folding the registry into the
+ * ceiling floor unchanged denied it there as well, which left no path to the
+ * coordinator from chat at all.
+ */
+const WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS: ReadonlySet<string> = new Set(['launch_specialist']);
+
 /** Both agent deny registries — the floor every ceiling carries. */
 export function agentDeniedToolNames(): string[] {
-  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()];
+  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()].filter(
+    (name) => !WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS.has(name),
+  );
 }
 
 // ---------------------------------------------------------------------------

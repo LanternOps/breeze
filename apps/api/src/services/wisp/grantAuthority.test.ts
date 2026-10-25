@@ -32,6 +32,7 @@ vi.mock('../unassignedPool/visibility', () => ({
 }));
 
 import {
+  agentDeniedToolNames,
   assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingSnapshotHash,
@@ -287,8 +288,22 @@ describe('resolveGrantCeiling', () => {
     expect(c.siteIds).toBeNull();
     expect([...c.toolAllowlist!]).toEqual(['get_device']);
     expect(c.deniedTools.has('snapshot_denied_tool')).toBe(true);
-    for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(true);
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(t !== 'launch_specialist');
     for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(c.deniedTools.has(t)).toBe(true);
+  });
+
+  // W07 Task 6: `launch_specialist` is the Tier-2 chat tool a human uses UNDER
+  // a grant to hand work to the coordinator — the only chat path to a
+  // specialist. It sits in AGENT_HUMAN_ONLY_TOOLS so an ai_agent principal can
+  // never call it; folding that registry into the ceiling floor denied it to
+  // the human's own Wisp turn too, so no path remained (live stack: "Wisp
+  // can't use this tool under your current grant." for a *:* grantor).
+  it('the ceiling floor keeps every agent deny except launch_specialist, which only a human under a grant may call', () => {
+    const floor = new Set(agentDeniedToolNames());
+    expect(floor.has('launch_specialist')).toBe(false);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('launch_specialist')).toBe(true); // agents stay denied by the registry itself
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) if (t !== 'launch_specialist') expect(floor.has(t)).toBe(true);
+    for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(floor.has(t)).toBe(true);
   });
 
   it('clamps an org-scoped grant to its scope org even when the snapshot lists another', async () => {
