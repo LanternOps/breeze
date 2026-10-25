@@ -128,7 +128,14 @@ export async function sendSignedAgreementCopy(input: {
         .filter((e): e is string => e !== null))];
       return { req, doc: doc ?? null, to };
     }));
-    if (!prepared) return { sent: false, reason: 'not_found' };
+    if (!prepared) {
+      // Called right after the accept committed: a missing row is an integrity
+      // signal, not a quiet no-op.
+      const msg = `[agreementSignedCopyEmail] request ${input.requestId} not found after signing — signed copy not sent`;
+      console.error(msg);
+      captureException(new Error(msg));
+      return { sent: false, reason: 'not_found' };
+    }
     const { req, doc, to } = prepared;
     if (to.length === 0) {
       console.warn('[agreementSignedCopyEmail] signed copy skipped', `requestId=${input.requestId}`, 'reason=no_recipients');
@@ -143,11 +150,20 @@ export async function sendSignedAgreementCopy(input: {
     // Phase 2 — the attachment. Delivery never blocks on it: a load failure or
     // an oversized file sends the mail without it (and says so).
     let attachment: SignedCopyAttachment | null = null;
+    let loadThrew = false;
     try {
       attachment = await loadSignedCopyAttachment(input.signedAgreementId);
     } catch (err) {
       console.error('[agreementSignedCopyEmail] attachment load failed — sending without it', { requestId: input.requestId, err });
       captureException(err instanceof Error ? err : new Error(String(err)));
+      loadThrew = true;
+    }
+    if (attachment === null && !loadThrew) {
+      // Not thrown, just gone: the mail still goes,
+      // saying the file could not be attached — record why on our side too.
+      const msg = `[agreementSignedCopyEmail] signed agreement ${input.signedAgreementId} unavailable for request ${input.requestId} — sending without the attachment`;
+      console.error(msg);
+      captureException(new Error(msg));
     }
     let tooLarge = false;
     if (attachment && attachment.content.byteLength > SIGNED_COPY_ATTACHMENT_MAX_BYTES) {
@@ -204,7 +220,8 @@ export interface SignedCopyEmailParams {
 
 /** Vocabulary (spec §3.8): "electronically accepted", never "signed by". */
 export function buildSignedCopyTemplate(params: SignedCopyEmailParams): EmailTemplate {
-  const subject = `Your signed copy: ${params.agreementName}`;
+  // Header-safe: a staff-authored label must not carry a line break into Subject.
+  const subject = `Your signed copy: ${params.agreementName}`.replace(/[\r\n]+/g, ' ');
   const signature = params.signature?.trim() || null;
   const who = params.signerName?.trim() || 'You';
   const acceptedLine = `${who} electronically accepted ${params.agreementName} from ${params.partnerName} on ${params.signedDate}.`;

@@ -47,6 +47,8 @@ vi.mock('../services/agreementSignedCopyEmail', () => ({ sendSignedAgreementCopy
 vi.mock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
 vi.mock('../services/rate-limit', () => ({ rateLimiter: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+// The trusted-proxy policy decides the signer IP — never the raw header.
+vi.mock('../services/clientIp', () => ({ getTrustedClientIpOrUndefined: vi.fn(() => '203.0.113.9') }));
 
 import {
   isAgreementAcceptJtiRevoked,
@@ -151,9 +153,26 @@ describe('POST /:token/accept', () => {
       renderData,
       signerName: 'Dana Buyer',
       signerEmail: 'dana@example.com',
+      // From getTrustedClientIpOrUndefined (mocked), NOT the raw x-forwarded-for.
+      ipAddress: '203.0.113.9',
       userAgent: 'customer-browser',
       now: expect.any(Date),
     }));
+  });
+
+  it('no trusted client IP → ipAddress null (never the spoofable header)', async () => {
+    const { getTrustedClientIpOrUndefined } = await import('../services/clientIp');
+    vi.mocked(getTrustedClientIpOrUndefined).mockReturnValueOnce(undefined);
+    await post('accept', ACCEPT_BODY, { 'x-forwarded-for': '198.51.100.7' });
+    expect(vi.mocked(acceptAgreementRequest).mock.calls[0]![0].ipAddress).toBeNull();
+  });
+
+  it('per-token limiter allowed → proceeds; called with the per-token limit (10/min)', async () => {
+    vi.mocked(getRedis).mockReturnValue({} as never);
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true } as never);
+    expect((await post('accept', ACCEPT_BODY)).status).toBe(200);
+    expect(vi.mocked(rateLimiter).mock.calls[0]!.slice(2, 4)).toEqual([10, 60]);
+    expect(acceptAgreementRequest).toHaveBeenCalledTimes(1);
   });
 
   it('post-commit, in order, with no transaction open: revoke → notify → signed copy', async () => {
@@ -234,10 +253,13 @@ describe('POST /:token/accept', () => {
     expect(key).not.toContain(TOKEN);
   });
 
-  it('the limiter fails OPEN on a Redis error (the durable jti consumption is the real single-use guard)', async () => {
+  it('an unexpected limiter throw is logged + captured and does not block (the durable jti is the single-use guard)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(getRedis).mockReturnValue({} as never);
-    vi.mocked(rateLimiter).mockRejectedValue(new Error('redis down'));
+    vi.mocked(rateLimiter).mockRejectedValue(new Error('unexpected'));
     expect((await post('accept', ACCEPT_BODY)).status).toBe(200);
+    expect(captureException).toHaveBeenCalled();
+    err.mockRestore();
   });
 
   it('a dead link never reaches the service', async () => {
@@ -284,6 +306,21 @@ describe('POST /:token/decline', () => {
     expect(res.status).toBe(status);
     expect((await res.json()).code).toBe(code);
     expect(notifyAgreementOutcome).not.toHaveBeenCalled();
+  });
+
+  it('post-commit failures on decline are swallowed + captured — the 200 stands', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(revokeAgreementAcceptJti).mockRejectedValue(new Error('redis down'));
+    vi.mocked(notifyAgreementOutcome).mockRejectedValue(new Error('should never reject, but'));
+    expect((await post('decline', {})).status).toBe(200);
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalledTimes(2));
+    err.mockRestore();
+  });
+
+  it('RESPONSE_CONSUMED on decline re-arms the Redis revoke', async () => {
+    vi.mocked(declineAgreementRequest).mockRejectedValue(new AgreementRequestServiceError('nope', 401, 'RESPONSE_CONSUMED'));
+    expect((await post('decline', {})).status).toBe(401);
+    expect(revokeAgreementAcceptJti).toHaveBeenCalledWith(JTI, EXPIRES);
   });
 
   it('per-token limiter applies to decline too', async () => {

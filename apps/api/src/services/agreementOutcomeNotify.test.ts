@@ -126,6 +126,13 @@ describe('buildAgreementOutcomeTemplate', () => {
     expect(t.text).toContain('Their note: Not this year.');
   });
 
+  it('a line break in a staff-authored label never reaches the Subject', () => {
+    const t = buildAgreementOutcomeTemplate({
+      outcome: 'signed', agreementName: 'BAA\r\nBcc: x@example.com', orgName: 'Example Clinic', signerName: null, declineReason: null, agreementsUrl: null,
+    });
+    expect(t.subject).not.toMatch(/[\r\n]/);
+  });
+
   it('signed: names the signer and links to Signed agreements when a web base exists', () => {
     const t = buildAgreementOutcomeTemplate({
       outcome: 'signed', agreementName: 'BAA', orgName: 'Example Clinic', signerName: 'Dana Buyer',

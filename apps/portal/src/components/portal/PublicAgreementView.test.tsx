@@ -103,7 +103,8 @@ describe('PublicAgreementView', () => {
     await waitFor(() => expect(accept).toHaveBeenCalledWith(TOKEN, 'Jane Doe', 'jane@example.com'));
     const signed = await screen.findByTestId('public-agreement-signed');
     // Delivery is post-commit and best-effort: promise it, never claim it happened.
-    expect(signed.textContent).toContain('Signed. A copy will be emailed to jane@example.com.');
+    expect(signed.textContent).toContain("Signed. We're emailing a copy to jane@example.com.");
+    expect(signed.textContent).toContain("If it doesn't arrive, contact");
     expect(screen.queryByTestId('public-agreement-sign')).toBeNull();
   });
 

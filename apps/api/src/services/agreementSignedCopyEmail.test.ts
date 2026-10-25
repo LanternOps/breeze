@@ -135,10 +135,33 @@ describe('sendSignedAgreementCopy', () => {
     err.mockRestore();
   });
 
-  it('a missing request is a quiet no-op', async () => {
+  it('a request missing right after signing sends nothing and is logged + captured (integrity signal)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     dbResults.push([]);
     expect(await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: 'x@example.com' }))
       .toEqual({ sent: false, reason: 'not_found' });
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
+  it('a signed-agreement row that is gone (not thrown) → mail still sent without it, captured once', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queuePrepared(['ops@example.com']);
+    dbResults.push([]); // loadSignedCopyAttachment finds no row
+    const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false });
+    expect(sendEmailMock.mock.calls[0]![0].text).toContain('could not be attached');
+    expect(captureException).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+});
+
+describe('subject header safety', () => {
+  it('a line break in a staff-authored label never reaches the Subject', () => {
+    const t = buildSignedCopyTemplate({ partnerName: 'Acme', agreementName: 'BAA\r\nBcc: x@example.com', signerName: null, signedDate: 'January 1, 2027', attached: true });
+    expect(t.subject).not.toMatch(/[\r\n]/);
+    expect(t.subject).toBe('Your signed copy: BAA Bcc: x@example.com');
   });
 });
 

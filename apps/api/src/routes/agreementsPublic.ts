@@ -115,6 +115,14 @@ type ResolveOutcome = { ok: true; link: ResolvedAgreementLink } | { ok: false; r
  * indistinguishable. Then: tenant gate → 410 ORG_UNAVAILABLE; dead link → 410
  * LINK_REVOKED; an open request past its expiry instant (or reaper-expired) →
  * 410 AGREEMENT_EXPIRED. 410 bodies carry the partner name only.
+ *
+ * Reachability, honestly: the token's own `exp` IS the request's expires_at,
+ * so a normally-expired link fails step 1 (401); the 410 AGREEMENT_EXPIRED is
+ * the backstop for a reaper-expired row or verifier clock skew. Likewise a
+ * signed/declined request's jti is revoked in Redis post-commit, so a reload
+ * after answering is a 401; the read-only signed/declined render only happens
+ * when that hot-path marker was lost (the durable columns still refuse any
+ * second answer).
  */
 async function resolveAgreementLink(c: Context, token: string, now: Date): Promise<ResolveOutcome> {
   const invalid = (): ResolveOutcome => ({ ok: false, response: c.json(INVALID_LINK, 401) });
@@ -158,7 +166,8 @@ function presentedStatus(status: AgreementRequestRow['status']): PublicAgreement
 }
 
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. A signed or
-// declined request still renders, read-only (the page shows no sign affordance).
+// declined request that still resolves (only when its Redis marker was lost —
+// see the resolver note) renders read-only; the page shows no sign affordance.
 agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
   const now = new Date();
@@ -242,11 +251,17 @@ agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), asyn
 const RESPOND_LIMIT_PER_MINUTE = 10;
 
 /**
- * Per-token limiter, run BEFORE resolveAgreementLink() and before any DB context. Keyed on
- * sha256(token) — the raw bearer credential never lands in Redis. Fails OPEN
- * on a Redis outage (rateLimiter itself fails closed): the durable jti
- * consumption on the row is the real single-use guard, so availability wins
- * (invoicesPublic overPublicOpLimit shape).
+ * Per-token limiter, run BEFORE resolveAgreementLink() and before any DB
+ * context. Keyed on sha256(token) — the raw bearer credential never lands in
+ * Redis.
+ *
+ * Redis outage behaviour, stated plainly: with no client configured the
+ * limiter is skipped; with a client whose round-trip fails, rateLimiter itself
+ * fails CLOSED (429 here). That does not change availability — the resolver's
+ * jti revocation gate also fails closed without Redis — and the durable jti
+ * consumption on the row stays the real single-use guard. An unexpected throw
+ * (rateLimiter catches Redis errors itself) is logged + captured and does not
+ * block (invoicesPublic overPublicOpLimit shape).
  */
 async function overRespondLimit(token: string): Promise<boolean> {
   const redis = getRedis();
@@ -255,7 +270,9 @@ async function overRespondLimit(token: string): Promise<boolean> {
     const key = `agreement-public:respond:${createHash('sha256').update(token).digest('hex')}`;
     const result = await rateLimiter(redis, key, RESPOND_LIMIT_PER_MINUTE, 60);
     return !result.allowed;
-  } catch {
+  } catch (err) {
+    console.error('[agreementsPublic] respond limiter threw — not blocking', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return false;
   }
 }
@@ -294,7 +311,13 @@ function fireAndForget(label: string, work: () => Promise<unknown>): void {
 async function respondError(c: Context, err: unknown, claims: AgreementAcceptClaims, request: AgreementRequestRow): Promise<Response> {
   if (err instanceof AgreementRequestServiceError) {
     if (err.code === 'RESPONSE_CONSUMED') {
-      try { await revokeAgreementAcceptJti(claims.jti, request.acceptTokenExpiresAt); } catch { /* durable backstop holds */ }
+      try {
+        await revokeAgreementAcceptJti(claims.jti, request.acceptTokenExpiresAt);
+      } catch (revokeErr) {
+        // The durable backstop holds; a failed re-arm only costs a DB read on
+        // the next replay — logged, not captured (Redis is already ailing).
+        console.warn('[agreementsPublic] RESPONSE_CONSUMED jti re-arm failed', revokeErr);
+      }
     }
     return c.json({ error: err.message, code: err.code }, err.status);
   }

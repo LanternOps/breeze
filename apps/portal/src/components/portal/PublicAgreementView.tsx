@@ -72,6 +72,13 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
         setLoadError(res.error ?? GENERIC_INVALID);
       }
       setLoading(false);
+    }).catch((err: unknown) => {
+      // portalApi normally resolves to { error }; never leave the page on
+      // "Loading agreement…" if it ever rejects.
+      if (cancelled) return;
+      console.error('[PublicAgreementView] load failed', err);
+      setLoadError(GENERIC_INVALID);
+      setLoading(false);
     });
     return () => { cancelled = true; };
   }, [token, initial]);
@@ -207,7 +214,7 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
       {live === 'signed' && (
         <div data-testid="public-agreement-signed" role="status" className="rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
           {signedEmail
-            ? `Signed. A copy will be emailed to ${signedEmail}.`
+            ? `Signed. We're emailing a copy to ${signedEmail}. If it doesn't arrive, contact ${parties.partnerName}.`
             : 'This agreement has been signed.'}
         </div>
       )}

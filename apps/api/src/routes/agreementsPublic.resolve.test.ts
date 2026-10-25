@@ -126,6 +126,7 @@ describe('agreementsPublic token-route enumeration', () => {
     ['revoked jti', () => vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true)],
     ['stale (reissued) jti', () => vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({ acceptTokenJti: 'jti-new' }) as never)],
     ['re-parented org', () => vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue({ ...live(), partnerId: 'other-partner' } as never)],
+    ['never-sent draft', () => vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({ status: 'draft' }) as never)],
   ];
 
   for (const route of TOKEN_ROUTES) {
@@ -142,6 +143,17 @@ describe('agreementsPublic token-route enumeration', () => {
       const res = await send(route);
       expect(res.status).toBe(410);
       expect((await res.json()).code).toBe('LINK_REVOKED');
+      expectNoServiceWork();
+    });
+
+    it.each([
+      ['past its expiry instant', { expiresAt: new Date(Date.now() - 1) }],
+      ['reaper-expired', { status: 'expired' }],
+    ])(`${route.method} ${route.path}: %s → 410 AGREEMENT_EXPIRED, nothing else runs`, async (_n, rowOver) => {
+      vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live(rowOver) as never);
+      const res = await send(route);
+      expect(res.status).toBe(410);
+      expect((await res.json()).code).toBe('AGREEMENT_EXPIRED');
       expectNoServiceWork();
     });
 

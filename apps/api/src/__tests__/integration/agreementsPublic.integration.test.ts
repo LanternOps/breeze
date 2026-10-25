@@ -8,7 +8,16 @@
  * partner continuity and merge continuity are all exercised for real.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Capture outbound mail so the post-commit email paths run their REAL SQL
+// (joins, recipients, the stored bytes) against Postgres; only the transport
+// is stubbed.
+const { sendEmailMock } = vi.hoisted(() => ({ sendEmailMock: vi.fn() }));
+vi.mock('../../services/email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/email')>()),
+  getEmailService: () => ({ sendEmail: sendEmailMock }),
+}));
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -23,6 +32,15 @@ import {
 } from '../../services/agreementRequestLifecycle';
 import type { AuthContext } from '../../middleware/auth';
 import { agreementsPublicRoutes } from '../../routes/agreementsPublic';
+import { markAgreementRequestViewed } from '../../services/agreementRequestAcceptService';
+import { notifyAgreementOutcome } from '../../services/agreementOutcomeNotify';
+
+beforeEach(() => {
+  sendEmailMock.mockReset().mockResolvedValue(undefined);
+});
+
+type Envelope = { to: string | string[]; purpose: string; attachments?: Array<{ content: Buffer; contentType: string; filename: string }>; text: string };
+const mailsFor = (purpose: string) => sendEmailMock.mock.calls.map((c) => c[0] as Envelope).filter((e) => e.purpose === purpose);
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -214,6 +232,71 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     const r2 = await post(l2.token, 'accept', SIGN);
     expect(r2.status).toBe(410);
     expect(await documentsFor(l2.requestId)).toHaveLength(0);
+  });
+
+  runDb('post-commit mail runs its real SQL: signed copy to signer + recipients with the stored bytes; creator told', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    expect((await post(token, 'accept', SIGN)).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mailsFor('agreement.signed_copy')).toHaveLength(1);
+      expect(mailsFor('staff.agreement_outcome')).toHaveLength(1);
+    }, { timeout: 15_000 });
+    const copy = mailsFor('agreement.signed_copy')[0]!;
+    expect(copy.to).toEqual(['dana@customer.example', 'office@customer.example']);
+    const [doc] = await documentsFor(requestId);
+    expect(copy.attachments).toHaveLength(1);
+    expect(Buffer.compare(copy.attachments![0]!.content, Buffer.from(doc!.pdf_data as Buffer))).toBe(0);
+    expect(copy.attachments![0]!.contentType).toBe(doc!.mime);
+    expect(copy.attachments![0]!.filename).toBe('BAA 2027 (signed).pdf');
+    const staff = mailsFor('staff.agreement_outcome')[0]!;
+    expect(staff.to).toBe(s.tech.email);
+    expect(staff.text).toContain('Dana Buyer at Example Clinic');
+  });
+
+  runDb('outcome notice falls back to the partner billing inbox when the creator is gone', async () => {
+    const s = await seed();
+    const { requestId } = await createAndSend(s);
+    await sys(async () => {
+      await db.execute(sql`UPDATE agreement_requests SET created_by = NULL WHERE id = ${requestId}::uuid`);
+      await db.update(partners).set({ billingEmail: 'billing@msp.example' }).where(eq(partners.id, s.partner.id));
+    });
+    await notifyAgreementOutcome({ requestId, outcome: 'declined', source: 'customer' });
+    expect(mailsFor('staff.agreement_outcome').map((m) => m.to)).toEqual(['billing@msp.example']);
+  });
+
+  runDb('markAgreementRequestViewed only stamps a sent row of the given org, and keeps the first view time', async () => {
+    const s = await seed();
+    const { requestId } = await createAndSend(s);
+    const t1 = new Date('2027-01-02T10:00:00.000Z');
+    const otherOrg = await sys(() => createOrganization({ partnerId: s.partner.id }));
+    expect(await sys(() => markAgreementRequestViewed(requestId, otherOrg.id, t1))).toBe(false);
+    expect((await requestRow(requestId)).status).toBe('sent');
+    expect(await sys(() => markAgreementRequestViewed(requestId, s.org.id, t1))).toBe(true);
+    const first = (await requestRow(requestId)).first_viewed_at as Date;
+    expect(new Date(first).toISOString()).toBe(t1.toISOString());
+    expect(await sys(() => markAgreementRequestViewed(requestId, s.org.id, new Date('2027-01-03T10:00:00.000Z')))).toBe(false);
+    for (const status of ['signed', 'declined', 'voided']) {
+      await sys(() => db.execute(sql`UPDATE agreement_requests SET status = ${status} WHERE id = ${requestId}::uuid`));
+      expect(await sys(() => markAgreementRequestViewed(requestId, s.org.id, new Date()))).toBe(false);
+      expect((await requestRow(requestId)).status).toBe(status);
+    }
+    expect(new Date((await requestRow(requestId)).first_viewed_at as Date).toISOString()).toBe(t1.toISOString());
+  });
+
+  runDb('a request moved to an org outside the token\'s merge lineage → the identical 401 (no 410, no render)', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    const unrelated = await sys(() => createOrganization({ partnerId: s.partner.id, name: 'Unrelated Clinic' }));
+    await sys(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await db.execute(sql`UPDATE agreement_request_recipients SET org_id = ${unrelated.id}::uuid WHERE request_id = ${requestId}::uuid`);
+      await db.execute(sql`UPDATE agreement_requests SET org_id = ${unrelated.id}::uuid WHERE id = ${requestId}::uuid`);
+    });
+    const res = await get(token);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'This link is invalid or has expired' });
+    expect((await requestRow(requestId)).first_viewed_at).toBeNull();
   });
 
   runDb('decline stores the reason; a later accept on the same link is refused', async () => {

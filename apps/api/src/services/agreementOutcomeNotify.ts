@@ -77,7 +77,10 @@ export async function notifyAgreementOutcome(input: {
 
     // Phase 2 — the SMTP round trip, with no DB context held open underneath.
     const emailService = getEmailService();
-    if (!emailService) return;
+    if (!emailService) {
+      console.warn('[agreementOutcomeNotify] Email not configured — outcome notice not sent', { requestId: input.requestId, outcome: input.outcome });
+      return;
+    }
 
     const webBase = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL || '').replace(/\/+$/, '');
     const template = buildAgreementOutcomeTemplate({
@@ -116,7 +119,8 @@ export interface AgreementOutcomeEmailParams {
 
 export function buildAgreementOutcomeTemplate(params: AgreementOutcomeEmailParams): EmailTemplate {
   const verb = params.outcome;
-  const subject = `Agreement ${params.agreementName} ${verb} — ${params.orgName}`;
+  // Header-safe: a staff-authored label must not carry a line break into Subject.
+  const subject = `Agreement ${params.agreementName} ${verb} — ${params.orgName}`.replace(/[\r\n]+/g, ' ');
   const who = params.signerName?.trim() ? `${params.signerName.trim()} at ${params.orgName}` : params.orgName;
   const reason = params.outcome === 'declined' ? params.declineReason?.trim() : undefined;
   const reasonBlock = reason
