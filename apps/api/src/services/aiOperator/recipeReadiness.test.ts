@@ -277,7 +277,7 @@ describe('identity_onboarding is wired into readiness (R2a)', () => {
     const readiness = computeRecipeReadiness(identityOnboardingRecipe as unknown as AnyRecipeDefinition, {
       orgId: '00000000-0000-4000-8000-0000000000a1', m365: null, google: null, agent: null,
       callerVerificationBlocked: false, flagEnabled: false,
-    } as ReadinessInputs);
+    } as unknown as ReadinessInputs);
     const dto = toWorkflowDto(readiness);
     expect(dto.name).toBe('Onboard a person');
     expect(dto.summary.length).toBeGreaterThan(0);
