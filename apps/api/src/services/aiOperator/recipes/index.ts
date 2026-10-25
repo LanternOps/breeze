@@ -113,7 +113,10 @@ export function resolveAdmissionRecipe(
  * every registered recipe — not a module-load validator.
  *
  * Covers: `planningSnapshotStepKey` and `entryStepKey` name declared steps,
- * and no `unobservableEffects` tool subsumes itself. Whether each declared
+ * no `unobservableEffects` tool subsumes itself, and (W07 B2) every
+ * `planningSnapshotStepFor` key and value names a declared step, every value
+ * is a `probe`-kind step, the map is declared only with
+ * `planningSnapshotStepKey`, and that key is one of its values. Whether each declared
  * tool is structurally unobservable and each subsumer has a probe needs the
  * probe registry, which `recipes/` must not import (purity), so that rule is
  * asserted in `effectProbes/index.test.ts`.
@@ -129,6 +132,25 @@ export function recipeDataProblems(recipe: AnyRecipeDefinition): string[] {
   }
   for (const [tool, subsumer] of Object.entries(recipe.unobservableEffects ?? {})) {
     if (tool === subsumer) problems.push(`${recipe.key}: unobservable effect '${tool}' cannot subsume itself`);
+  }
+  // W07 Amendment B2: the per-step snapshot map.
+  const snapshotFor = recipe.planningSnapshotStepFor;
+  if (snapshotFor !== undefined) {
+    for (const [consumer, snapshotStep] of Object.entries(snapshotFor)) {
+      if (!steps.includes(consumer)) {
+        problems.push(`${recipe.key}: planningSnapshotStepFor key '${consumer}' is not a declared step`);
+      }
+      if (!steps.includes(snapshotStep)) {
+        problems.push(`${recipe.key}: planningSnapshotStepFor value '${snapshotStep}' (for '${consumer}') is not a declared step`);
+      } else if (recipe.steps[snapshotStep]!.kind !== 'probe') {
+        problems.push(`${recipe.key}: planningSnapshotStepFor value '${snapshotStep}' is a '${recipe.steps[snapshotStep]!.kind}' step, not a probe`);
+      }
+    }
+    if (recipe.planningSnapshotStepKey === undefined) {
+      problems.push(`${recipe.key}: planningSnapshotStepFor is declared without planningSnapshotStepKey`);
+    } else if (!Object.values(snapshotFor).includes(recipe.planningSnapshotStepKey)) {
+      problems.push(`${recipe.key}: planningSnapshotStepKey '${recipe.planningSnapshotStepKey}' is not one of planningSnapshotStepFor's values`);
+    }
   }
   return problems;
 }

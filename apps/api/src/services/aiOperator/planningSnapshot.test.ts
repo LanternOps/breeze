@@ -176,3 +176,79 @@ describe('loadPlanningFacts — one case per reason', () => {
     await expect(loadPlanningFacts(task, recipe, checkpoint())).rejects.toThrow('pool timeout');
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2a Task 3a (W07 Amendment B2): per-step planning snapshots. Appended; every
+// case above is unchanged. A synthetic two-stage recipe (the onboarding recipe
+// does not exist yet): snapshot 1 at `discover`, snapshot 2 at
+// `resolve_accounts`, and a TOTAL consumer map — an unmapped step fails
+// closed, never falling back to `planningSnapshotStepKey`.
+// ---------------------------------------------------------------------------
+describe('loadPlanningFacts — planningSnapshotStepFor (R2a Task 3a)', () => {
+  const twoStage = {
+    key: 'fixture_two_stage',
+    planningSnapshotStepKey: 'discover',
+    planningSnapshotStepFor: {
+      review: 'discover', create_accounts: 'discover', resolve_accounts: 'discover',
+      provision_effects: 'resolve_accounts', document: 'resolve_accounts',
+    },
+    steps: {
+      discover: { kind: 'probe', phase: 'plan' },
+      review: { kind: 'reason', phase: 'plan' },
+      create_accounts: { kind: 'effect', phase: 'execute' },
+      resolve_accounts: { kind: 'probe', phase: 'execute' },
+      provision_effects: { kind: 'effect', phase: 'execute' },
+      manual_work: { kind: 'human_work', phase: 'execute' },
+      document: { kind: 'document', phase: 'document', terminal: true },
+    },
+  } as never;
+
+  it('a provision_effects wake reads snapshot 2 (the resolve_accounts row)', async () => {
+    h.rows = [stepRow({ stepKey: 'resolve_accounts' })];
+    await expect(loadPlanningFacts(task, twoStage, checkpoint(), 'provision_effects')).resolves.toEqual({ ok: true, facts });
+    expectScopedRead();
+  });
+
+  it('snapshot_wrong_step: a provision_effects wake whose ref still points at discover fails closed', async () => {
+    h.rows = [stepRow({ stepKey: 'discover' })];
+    const out = await loadPlanningFacts(task, twoStage, checkpoint(), 'provision_effects');
+    expect(out).toMatchObject({ ok: false, reason: 'snapshot_wrong_step' });
+    expect((out as { detail: string }).detail).toContain("'discover', not 'resolve_accounts'");
+    expectScopedRead();
+  });
+
+  // PIN: stage 1's mapped step equals planningSnapshotStepKey, so this held
+  // before the map existed too; it pins that the map keeps it.
+  it('PIN snapshot_wrong_step: a create_accounts wake whose ref points at resolve_accounts fails closed', async () => {
+    h.rows = [stepRow({ stepKey: 'resolve_accounts' })];
+    const out = await loadPlanningFacts(task, twoStage, checkpoint(), 'create_accounts');
+    expect(out).toMatchObject({ ok: false, reason: 'snapshot_wrong_step' });
+    expect((out as { detail: string }).detail).toContain("'resolve_accounts', not 'discover'");
+  });
+
+  it('PIN: a create_accounts wake reads snapshot 1 (the discover row)', async () => {
+    h.rows = [stepRow({ stepKey: 'discover' })];
+    await expect(loadPlanningFacts(task, twoStage, checkpoint(), 'create_accounts')).resolves.toEqual({ ok: true, facts });
+  });
+
+  it.each([
+    ['a declared step the map does not name', 'manual_work'],
+    ['a prototype member name', 'constructor'],
+    ['no current step', undefined],
+    ['a null current step', null],
+  ])('snapshot_step_unmapped: %s fails closed, reads nothing, never falls back to planningSnapshotStepKey', async (_label, stepKey) => {
+    h.rows = [stepRow({ stepKey: 'discover' })];
+    await expect(loadPlanningFacts(task, twoStage, checkpoint(), stepKey as never))
+      .resolves.toMatchObject({ ok: false, reason: 'snapshot_step_unmapped' });
+    expect(h.froms).toEqual([]);
+  });
+
+  it('PIN (map absent ⇒ unchanged): a stepKey argument does not change a single-snapshot recipe', async () => {
+    h.rows = [stepRow()];
+    await expect(loadPlanningFacts(task, recipe, checkpoint(), 'provision_effects')).resolves.toEqual({ ok: true, facts });
+    h.rows = [stepRow({ stepKey: 'review' })];
+    await expect(loadPlanningFacts(task, recipe, checkpoint(), 'review'))
+      .resolves.toMatchObject({ ok: false, reason: 'snapshot_wrong_step' });
+    await expect(loadPlanningFacts(task, noSnapshotRecipe, checkpoint(null), 'anything')).resolves.toEqual({ ok: true, facts: {} });
+  });
+});

@@ -215,3 +215,158 @@ describe('renderingsMatchRows — what the approver read must be what the seal b
     expect(renderingsMatchRows('nope', [row])).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2a Task 3a (W07 Amendment B2/B7): `bumpPlanRevisionInTx`, the
+// transaction-bound core of `bumpPlanRevision`. Appended; every case above is
+// unchanged and still runs against the module as first imported.
+//
+// This section loads a FRESH `./planApproval` with `../../db` replaced
+// (`vi.doMock` + `vi.resetModules`, so nothing above sees the stub). Every
+// statement either function issues is recorded on a handle and rendered to
+// SQL text + params with drizzle's own Postgres dialect, so "identical rows"
+// means the identical statements, in the identical order, with the identical
+// predicates — including the `(id, org_id, revision, lease_epoch)` CAS.
+// Row-level behaviour against real Postgres stays with the integration suites
+// (`aiOperatorPlanApproval*.integration.test.ts`).
+// ---------------------------------------------------------------------------
+import { beforeAll, vi } from 'vitest';
+import { Column, SQL, Table, getTableName, is } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+describe('bumpPlanRevisionInTx — the transaction-bound core (R2a Task 3a)', () => {
+  type Stmt = { op: string; table: string | null; calls: Array<[string, unknown[]]> };
+  type Script = Record<string, unknown[][]>;
+  const dialect = new PgDialect();
+  const norm = (v: unknown): unknown => {
+    if (v instanceof Date) return '<date>';
+    if (is(v, SQL)) return dialect.sqlToQuery(v);
+    if (is(v, Table)) return getTableName(v);
+    if (is(v, Column)) return (v as Column).name;
+    if (Array.isArray(v)) return v.map(norm);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, norm(x)]));
+    return v;
+  };
+
+  /** A handle that records every statement and answers from `script`, keyed `op:table`, in order. */
+  function recordingHandle(script: Script) {
+    const log: Stmt[] = [];
+    const queues = new Map(Object.entries(script).map(([k, v]) => [k, [...v]]));
+    const start = (op: string, table: unknown) => {
+      const stmt: Stmt = { op, table: table ? getTableName(table as Table) : null, calls: [] };
+      log.push(stmt);
+      const chain: Record<string, unknown> = {};
+      for (const m of ['set', 'where', 'returning', 'values', 'onConflictDoNothing', 'from', 'for', 'limit']) {
+        chain[m] = (...args: unknown[]) => {
+          if (m === 'from') stmt.table = getTableName(args[0] as Table);
+          stmt.calls.push([m, args.map(norm)]);
+          return chain;
+        };
+      }
+      chain.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => {
+        const q = queues.get(`${stmt.op}:${stmt.table}`);
+        return Promise.resolve(q && q.length > 0 ? q.shift() : []).then(res, rej);
+      };
+      return chain;
+    };
+    return {
+      log,
+      handle: {
+        select: (fields?: unknown) => {
+          const c = start('select', null);
+          log[log.length - 1]!.calls.push(['select', [norm(fields)]]);
+          return c;
+        },
+        update: (table: unknown) => start('update', table),
+        insert: (table: unknown) => start('insert', table),
+      },
+    };
+  }
+
+  const ORG = '00000000-0000-4000-8000-0000000000b1';
+  const TASK = '00000000-0000-4000-8000-0000000000a1';
+  const ARGS = { orgId: ORG, taskId: TASK, fromRevision: 2, leaseEpoch: 7, detail: 'accounts resolved' };
+  /** Won CAS; a superseded approval whose plan intent and one reserved child are both cancelled. */
+  const wonScript = (): Script => ({
+    'update:ai_operator_tasks': [[{ revision: 3 }], [{ eventSeq: 11 }]],
+    'update:ai_operator_plan_approvals': [[{ id: 'ap-2', intentId: 'plan-intent' }]],
+    'select:ai_operator_operations': [[{ intentId: 'child-1' }, { intentId: null }]],
+    'update:action_intents': [[{ id: 'plan-intent', orgId: ORG, taskId: TASK }, { id: 'child-1', orgId: ORG, taskId: TASK }]],
+  });
+  const lostScript = (): Script => ({ 'update:ai_operator_tasks': [[]] });
+  /** Normal path (B7): approval superseded, nothing left to cancel. */
+  const quietScript = (): Script => ({
+    'update:ai_operator_tasks': [[{ revision: 3 }], [{ eventSeq: 11 }]],
+    'update:ai_operator_plan_approvals': [[{ id: 'ap-2', intentId: 'plan-intent-done' }]],
+    'select:ai_operator_operations': [[]],
+    'update:action_intents': [[]],
+  });
+
+  let moduleDb: ReturnType<typeof recordingHandle>;
+  const ctx = { outside: 0, system: 0 };
+  let mod: typeof import('./planApproval');
+
+  beforeAll(async () => {
+    vi.resetModules();
+    vi.doMock('../../db', async (orig) => ({
+      ...(await orig<typeof import('../../db')>()),
+      get db() { return moduleDb.handle; },
+      runOutsideDbContext: (fn: () => unknown) => { ctx.outside += 1; return fn(); },
+      withSystemDbAccessContext: (fn: () => unknown) => { ctx.system += 1; return fn(); },
+    }));
+    mod = await import('./planApproval');
+  });
+
+  const runWrapper = async (script: Script) => {
+    moduleDb = recordingHandle(script);
+    ctx.outside = 0; ctx.system = 0;
+    const result = await mod.bumpPlanRevision({ ...ARGS });
+    return { result, log: moduleDb.log, ctx: { ...ctx } };
+  };
+  const runCore = async (script: Script) => {
+    moduleDb = recordingHandle({});
+    ctx.outside = 0; ctx.system = 0;
+    const callerTx = recordingHandle(script);
+    const result = await mod.bumpPlanRevisionInTx(callerTx.handle as never, { ...ARGS });
+    return { result, log: callerTx.log, moduleLog: moduleDb.log, ctx: { ...ctx } };
+  };
+
+  it.each([
+    ['a won CAS that supersedes and cancels', wonScript],
+    ['a won CAS on the normal path (nothing to cancel)', quietScript],
+    ['a lost CAS', lostScript],
+  ])('the wrapper and the core issue identical statements and return identical results: %s', async (_label, script) => {
+    const wrapped = await runWrapper(script());
+    const core = await runCore(script());
+    expect(core.result).toEqual(wrapped.result);
+    expect(core.log).toEqual(wrapped.log);
+    expect(wrapped.log.length).toBeGreaterThan(0);
+  });
+
+  it('the CAS is on (id, org_id, revision, lease_epoch); a lost CAS writes nothing else', async () => {
+    const { result, log } = await runCore(lostScript());
+    expect(result).toEqual({ bumped: false, newRevision: 2, supersededApprovalId: null, cancelledIntentIds: [] });
+    expect(log).toHaveLength(1);
+    const where = log[0]!.calls.find(([m]) => m === 'where')![1][0] as { sql: string; params: unknown[] };
+    for (const col of ['"id"', '"org_id"', '"revision"', '"lease_epoch"']) expect(where.sql).toContain(col);
+    expect(where.params).toEqual([TASK, ORG, 2, 7]);
+  });
+
+  it('a won core reports the bump, the superseded approval and the cancelled intents, and records the event', async () => {
+    const { result, log } = await runCore(wonScript());
+    expect(result).toEqual({ bumped: true, newRevision: 3, supersededApprovalId: 'ap-2', cancelledIntentIds: ['plan-intent', 'child-1'] });
+    expect(log.some((s) => s.op === 'insert' && s.table === 'ai_operator_task_events')).toBe(true);
+  });
+
+  it('the core participates in the CALLER\'s transaction: every statement goes to the passed handle, and it opens no context of its own', async () => {
+    const { log, moduleLog, ctx: seen } = await runCore(wonScript());
+    expect(log.length).toBeGreaterThan(0);
+    expect(moduleLog).toEqual([]);
+    expect(seen).toEqual({ outside: 0, system: 0 });
+  });
+
+  it('PIN: the wrapper keeps its own single system-scoped transaction around the core', async () => {
+    const { ctx: seen } = await runWrapper(wonScript());
+    expect(seen).toEqual({ outside: 1, system: 1 });
+  });
+});

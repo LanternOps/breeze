@@ -780,83 +780,112 @@ export async function markPlanApproved(args: { orgId: string; intentId: string }
  *
  * Not called by any recipe in E4 (none changes its plan yet); R1's discovery
  * path calls it. Distinct from `admitReasoningRun`'s boolean of the same name.
+ *
+ * A thin wrapper: it opens its own system-scoped transaction and runs
+ * `bumpPlanRevisionInTx` on it, so its signature and behaviour are what they
+ * were before the core was extracted (W07 Amendment B2/B7).
  */
-export async function bumpPlanRevision(args: {
+export async function bumpPlanRevision(args: BumpPlanRevisionArgs): Promise<BumpPlanRevisionResult> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => bumpPlanRevisionInTx(db, args)));
+}
+
+export interface BumpPlanRevisionArgs {
   orgId: string; taskId: string; fromRevision: number; leaseEpoch: number; detail: string;
-}): Promise<{ bumped: boolean; newRevision: number; supersededApprovalId: string | null; cancelledIntentIds: string[] }> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const moved = await db
-      .update(aiOperatorTasks)
-      .set({ revision: sql`${aiOperatorTasks.revision} + 1`, updatedAt: new Date() })
+}
+
+export interface BumpPlanRevisionResult {
+  bumped: boolean; newRevision: number; supersededApprovalId: string | null; cancelledIntentIds: string[];
+}
+
+/**
+ * The transaction-bound core of `bumpPlanRevision` (W07 Amendment B2/B7):
+ * the same CAS on `(id, org_id, revision, lease_epoch)`, the same
+ * supersede / cancel / event writes, in the same order, on the CALLER's
+ * handle. It opens no transaction or DB context of its own, so a caller that
+ * already holds one (onboarding's `resolve_accounts` stage transition, inside
+ * a leased write) bumps atomically with its other writes; a lost CAS returns
+ * `bumped: false` having written nothing, and the caller decides whether to
+ * throw and roll back. The single writer of `revision` the coordinator
+ * describes is this function (the wrapper delegates to it).
+ *
+ * The handle must be in system scope (the wrapper provides it); the explicit
+ * `org_id` / `task_id` predicates on every statement are the isolation.
+ */
+export async function bumpPlanRevisionInTx(
+  dbh: PlanDbHandle,
+  args: BumpPlanRevisionArgs,
+): Promise<BumpPlanRevisionResult> {
+  const moved = await dbh
+    .update(aiOperatorTasks)
+    .set({ revision: sql`${aiOperatorTasks.revision} + 1`, updatedAt: new Date() })
+    .where(and(
+      eq(aiOperatorTasks.id, args.taskId),
+      eq(aiOperatorTasks.orgId, args.orgId),
+      eq(aiOperatorTasks.revision, args.fromRevision),
+      eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+    ))
+    .returning({ revision: aiOperatorTasks.revision });
+  if (moved.length !== 1) {
+    return { bumped: false, newRevision: args.fromRevision, supersededApprovalId: null, cancelledIntentIds: [] };
+  }
+  const newRevision = moved[0]!.revision;
+
+  const superseded = await dbh
+    .update(aiOperatorPlanApprovals)
+    .set({ state: 'superseded', supersededByRevision: newRevision, updatedAt: new Date() })
+    .where(and(
+      eq(aiOperatorPlanApprovals.orgId, args.orgId),
+      eq(aiOperatorPlanApprovals.taskId, args.taskId),
+      eq(aiOperatorPlanApprovals.planRevision, args.fromRevision),
+      inArray(aiOperatorPlanApprovals.state, ['pending', 'approved']),
+    ))
+    .returning({ id: aiOperatorPlanApprovals.id, intentId: aiOperatorPlanApprovals.intentId });
+  const supersededRow = superseded[0] ?? null;
+
+  // Child intents whose operation never left `reserved` (lock the operation
+  // rows first: task → operation → intent).
+  const reservedOps = await dbh
+    .select({ intentId: aiOperatorOperations.intentId })
+    .from(aiOperatorOperations)
+    .where(and(
+      eq(aiOperatorOperations.orgId, args.orgId),
+      eq(aiOperatorOperations.taskId, args.taskId),
+      eq(aiOperatorOperations.planRevision, args.fromRevision),
+      eq(aiOperatorOperations.dispatchState, 'reserved'),
+    ))
+    .for('update');
+  const candidateIds = [
+    ...(supersededRow?.intentId ? [supersededRow.intentId] : []),
+    ...reservedOps.map((o) => o.intentId).filter((v): v is string => !!v),
+  ];
+  let cancelledIntentIds: string[] = [];
+  if (candidateIds.length > 0) {
+    const { publishIntentTerminalOutbox } = await import('./taskOutbox');
+    const cancelled = await dbh
+      .update(actionIntents)
+      .set({ status: 'cancelled', errorCode: 'plan_superseded' })
       .where(and(
-        eq(aiOperatorTasks.id, args.taskId),
-        eq(aiOperatorTasks.orgId, args.orgId),
-        eq(aiOperatorTasks.revision, args.fromRevision),
-        eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+        eq(actionIntents.orgId, args.orgId),
+        inArray(actionIntents.id, candidateIds),
+        inArray(actionIntents.status, ['pending_approval', 'approved']),
       ))
-      .returning({ revision: aiOperatorTasks.revision });
-    if (moved.length !== 1) {
-      return { bumped: false, newRevision: args.fromRevision, supersededApprovalId: null, cancelledIntentIds: [] };
+      .returning({ id: actionIntents.id, orgId: actionIntents.orgId, taskId: actionIntents.taskId });
+    for (const c of cancelled) {
+      await publishIntentTerminalOutbox(dbh, c, 'intent_cancelled');
     }
-    const newRevision = moved[0]!.revision;
-
-    const superseded = await db
-      .update(aiOperatorPlanApprovals)
-      .set({ state: 'superseded', supersededByRevision: newRevision, updatedAt: new Date() })
-      .where(and(
-        eq(aiOperatorPlanApprovals.orgId, args.orgId),
-        eq(aiOperatorPlanApprovals.taskId, args.taskId),
-        eq(aiOperatorPlanApprovals.planRevision, args.fromRevision),
-        inArray(aiOperatorPlanApprovals.state, ['pending', 'approved']),
-      ))
-      .returning({ id: aiOperatorPlanApprovals.id, intentId: aiOperatorPlanApprovals.intentId });
-    const supersededRow = superseded[0] ?? null;
-
-    // Child intents whose operation never left `reserved` (lock the operation
-    // rows first: task → operation → intent).
-    const reservedOps = await db
-      .select({ intentId: aiOperatorOperations.intentId })
-      .from(aiOperatorOperations)
-      .where(and(
-        eq(aiOperatorOperations.orgId, args.orgId),
-        eq(aiOperatorOperations.taskId, args.taskId),
-        eq(aiOperatorOperations.planRevision, args.fromRevision),
-        eq(aiOperatorOperations.dispatchState, 'reserved'),
-      ))
-      .for('update');
-    const candidateIds = [
-      ...(supersededRow?.intentId ? [supersededRow.intentId] : []),
-      ...reservedOps.map((o) => o.intentId).filter((v): v is string => !!v),
-    ];
-    let cancelledIntentIds: string[] = [];
-    if (candidateIds.length > 0) {
-      const { publishIntentTerminalOutbox } = await import('./taskOutbox');
-      const cancelled = await db
-        .update(actionIntents)
-        .set({ status: 'cancelled', errorCode: 'plan_superseded' })
-        .where(and(
-          eq(actionIntents.orgId, args.orgId),
-          inArray(actionIntents.id, candidateIds),
-          inArray(actionIntents.status, ['pending_approval', 'approved']),
-        ))
-        .returning({ id: actionIntents.id, orgId: actionIntents.orgId, taskId: actionIntents.taskId });
-      for (const c of cancelled) {
-        await publishIntentTerminalOutbox(db, c, 'intent_cancelled');
-      }
-      cancelledIntentIds = cancelled.map((c) => c.id);
-      if (cancelledIntentIds.length > 0) {
-        const { markOperationCancelled } = await import('./operationService');
-        for (const id of cancelledIntentIds) await markOperationCancelled(db, id);
-      }
+    cancelledIntentIds = cancelled.map((c) => c.id);
+    if (cancelledIntentIds.length > 0) {
+      const { markOperationCancelled } = await import('./operationService');
+      for (const id of cancelledIntentIds) await markOperationCancelled(dbh, id);
     }
+  }
 
-    await appendTaskEvent(db, {
-      orgId: args.orgId, taskId: args.taskId, eventType: 'plan_revision_bumped', actor: { kind: 'coordinator' },
-      stepKey: null, targetId: null,
-      detail: `plan revision ${args.fromRevision} -> ${newRevision}: ${args.detail}`.slice(0, 1000),
-    });
-    return { bumped: true, newRevision, supersededApprovalId: supersededRow?.id ?? null, cancelledIntentIds };
-  }));
+  await appendTaskEvent(dbh, {
+    orgId: args.orgId, taskId: args.taskId, eventType: 'plan_revision_bumped', actor: { kind: 'coordinator' },
+    stepKey: null, targetId: null,
+    detail: `plan revision ${args.fromRevision} -> ${newRevision}: ${args.detail}`.slice(0, 1000),
+  });
+  return { bumped: true, newRevision, supersededApprovalId: supersededRow?.id ?? null, cancelledIntentIds };
 }
 
 // ---------------------------------------------------------------------------
