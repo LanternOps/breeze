@@ -5,7 +5,8 @@ import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
-  notificationChannels,
+  notificationChannels, ticketForms, ticketResponseTemplates,
+  ticketChecklistTemplates, ticketChecklistTemplateItems,
 } from '../../db/schema';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
 import { yaraRuleSets } from '../../db/schema/yara';
@@ -298,6 +299,57 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     } catch {
       return TARGET_ABSENT;
     }
+  },
+
+  // W06 (#6776) hard deletes. The approver signs off on deleting a specific
+  // row by its CONTENT, so pin the content fields (not just updated_at):
+  // an edit between approval and release changes the digest and the release
+  // fails closed instead of destroying a different template than was approved.
+  'manage_ticket_forms:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database.select().from(ticketForms).where(eq(ticketForms.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, description: row.description, categoryId: row.categoryId,
+      fields: row.fields, titleTemplate: row.titleTemplate, descriptionIntro: row.descriptionIntro,
+      defaultPriority: row.defaultPriority, defaultTags: row.defaultTags, showInPortal: row.showInPortal,
+      isActive: row.isActive, version: row.version, updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  'manage_ticket_response_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketResponseTemplates).where(eq(ticketResponseTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, body: row.body, category: row.category, isActive: row.isActive,
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  // Items are separate rows (item edits do not always bump the template's
+  // updated_at), so they are hashed explicitly, ordered for stability.
+  'manage_ticket_checklist_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketChecklistTemplates).where(eq(ticketChecklistTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    const items = await database
+      .select({
+        id: ticketChecklistTemplateItems.id, label: ticketChecklistTemplateItems.label,
+        detail: ticketChecklistTemplateItems.detail, sortOrder: ticketChecklistTemplateItems.sortOrder,
+      })
+      .from(ticketChecklistTemplateItems)
+      .where(eq(ticketChecklistTemplateItems.templateId, id))
+      .orderBy(ticketChecklistTemplateItems.sortOrder, ticketChecklistTemplateItems.id);
+    return material(JSON.stringify({
+      name: row.name, description: row.description, instructions: row.instructions,
+      isActive: row.isActive, updatedAt: row.updatedAt.toISOString(), items,
+    }));
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
