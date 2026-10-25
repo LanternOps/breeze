@@ -611,7 +611,10 @@
       "refresh": "Renovar permiso",
       "revoke": "Desactivar Wisp",
       "revokeConfirm": "¿Desactivar Wisp para este alcance? Los hilos abiertos seguirán siendo legibles.",
-      "widening": "Puedes hacer más de lo que permite este permiso; renuévalo para que Wisp se mantenga al día."
+      "widening": "Puedes hacer más de lo que permite este permiso; renuévalo para que Wisp se mantenga al día.",
+      "refreshKeepsTerms": "Esta conversación conserva las condiciones anteriores del permiso. Inicia una conversación nueva para usar el permiso renovado.",
+      "startNewConversation": "Iniciar una conversación nueva",
+      "dismissNote": "Descartar"
     },
     "settings": {
       "title": "Presupuesto y revisión periódica",

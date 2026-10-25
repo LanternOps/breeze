@@ -49,7 +49,7 @@ The home has these sections:
 | **This morning's brief** | The sections of the most recent morning brief from the last 36 hours. A brief older than about 20 hours carries a **From an earlier day** badge. |
 | **Needs your attention** | Open and snoozed concerns for your grant, approvals first and then by severity, with a count of items waiting for your approval. Snooze, dismiss and give feedback exactly as on the thread page. Approvals open in the Approvals page. |
 | Activity | A timeline of what Wisp did. |
-| **Talk to Wisp** | The conversation, inline. It resumes the thread's last session instead of starting a new one on every visit. Nothing starts while the grant is paused or ended. |
+| **Talk to Wisp** | The conversation, inline. It resumes the thread's last session instead of starting a new one on every visit; **New conversation** closes it and starts a fresh one on the thread. Nothing starts while the grant is paused or ended. |
 | **Linked items** | The tickets, devices and other items you pinned to Wisp; see [Linked items](#linked-items). |
 
 The page also links to **All chats** (`/wisp/chat`) and to **Memory** (`/settings/wisp-memory`).
@@ -60,7 +60,7 @@ The docked chat sidebar's Wisp mode has an **Open in Wisp** link that goes to th
 
 ### Wisp chats
 
-The multi-tab chat page now lives at `/wisp/chat`, titled **Wisp chats**. It is unchanged: the same tabs (open tabs survive a reload), the same shortcuts, and it works with Wisp off exactly as before. The old `/workspace` address redirects permanently to it, and old `#session=<id>` links still open their tab. In the side panel, the control that moves a conversation to the page is now **Open in Wisp chats**. See [AI assistant](/features/ai/#chat-surfaces-the-side-panel-and-wisp-chats).
+The multi-tab chat page now lives at `/wisp/chat`, titled **Wisp chats**: the same tabs (open tabs survive a reload), the same shortcuts, and it works with Wisp off exactly as before. When you have an active grant for the organization selected in the header (or a grant for all organizations), **New Conversation** starts the tab under that grant, the way the side panel does, and the tab header says **Wisp**. With no active grant, Wisp off, or an organization-scoped sign-in, the tab is an ordinary chat and its header says **Breeze AI**. A conversation you open from history keeps whatever grant it started under. The old `/workspace` address redirects permanently to it, and old `#session=<id>` links still open their tab. In the side panel, the control that moves a conversation to the page is now **Open in Wisp chats**. See [AI assistant](/features/ai/#chat-surfaces-the-side-panel-and-wisp-chats).
 
 ## Linked items
 
@@ -90,6 +90,7 @@ A grant is the standing permission you give Wisp.
 - **Scope.** Either partner-wide or one organization. You can hold one live grant per scope.
 - **Reach is a snapshot.** The grant records what you can reach at the time. If your access later shrinks, Wisp's does too; if it grows, you refresh the grant to widen it.
 - **90-day expiry.** A grant lasts 90 days. Refreshing re-snapshots your current reach and renews the 90 days.
+- **A conversation keeps the terms it started with.** Refreshing does not change a conversation that is already open; the header says so and offers **Start a new conversation**, which runs on the refreshed grant.
 - **Revoke.** You, or a partner admin, can revoke a grant at any time.
 
 A grant can be **paused** rather than ended. You can pause and resume it yourself, and Wisp stays quiet while you are paused. Breeze also pauses a grant by itself, and shows the reason:

@@ -146,4 +146,23 @@ describe('WispHomeThread (W08 Task 9)', () => {
     expect(screen.queryByTestId('wisp-home-thread-binding')).toBeNull();
     expect(h.state.switchSession).toHaveBeenCalledTimes(1);
   });
+
+  // #10142: the home card can start over, like the side panel's "New conversation".
+  it('"New conversation" closes the live session and starts a fresh one on this grant', async () => {
+    const closeSession = vi.fn(async () => { Object.assign(h.state, { sessionId: null }); });
+    reset({ wisp, sessionId: 's-live', closeSession });
+    render(<WispHomeThread wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wisp-home-new-conversation'));
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(closeSession.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(h.state.enterWispMode as () => void).mock.invocationCallOrder[0]);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    expect(h.state.sessionId).toBe('s-new');
+  });
+
+  it('offers no "New conversation" for a paused grant', () => {
+    render(<WispHomeThread wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
+    expect(screen.queryByTestId('wisp-home-new-conversation')).toBeNull();
+  });
 });

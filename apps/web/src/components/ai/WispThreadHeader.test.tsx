@@ -8,6 +8,9 @@ const h = vi.hoisted(() => ({
   exitWispMode: vi.fn(),
   setWispFocus: vi.fn(),
   updateWisp: vi.fn(),
+  closeSession: vi.fn(),
+  enterWispMode: vi.fn(),
+  chat: { sessionId: null as string | null, wisp: null as null | { grantId: string } },
   limits: { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 20 } as unknown,
   modalProps: null as null | Record<string, unknown>,
   orgs: [
@@ -25,7 +28,10 @@ vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => ({ state: 'enab
 vi.mock('@/stores/orgStore', () => ({ useOrgStore: (sel: (s: unknown) => unknown) => sel({ organizations: h.orgs }) }));
 vi.mock('@/stores/aiStore', () => ({
   useAiStore: (sel: (s: unknown) => unknown) =>
-    sel({ exitWispMode: h.exitWispMode, setWispFocus: h.setWispFocus, updateWisp: h.updateWisp }),
+    sel({
+      exitWispMode: h.exitWispMode, setWispFocus: h.setWispFocus, updateWisp: h.updateWisp,
+      closeSession: h.closeSession, enterWispMode: h.enterWispMode, ...h.chat,
+    }),
 }));
 vi.mock('./WispGrantStepUpModal', () => ({
   default: (props: Record<string, unknown>) => {
@@ -48,6 +54,7 @@ describe('WispThreadHeader (W04 Task 8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
     h.limits = { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 20 };
     h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => {
       const r = await o.request();
@@ -257,5 +264,43 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
       />,
     );
     expect(screen.getByTestId('wisp-live-line').textContent).toContain('Greenwood');
+  });
+
+  // #10142: a session's grant revision is immutable, so a refresh never
+  // reaches the conversation already open — say so and offer a fresh one.
+  describe('after "Refresh grant"', () => {
+    const refreshTo = async (fresh: NonNullable<WispState>) => {
+      fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+      await act(async () => { (h.modalProps!.onGranted as (w: unknown) => void)(fresh); });
+    };
+
+    it('tells the user the open conversation keeps the previous terms and starts a new one on request', async () => {
+      h.chat = { sessionId: 's-open', wisp: { grantId: 'g-1' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      const fresh = wisp({ expiresAt: '2027-04-01T00:00:00.000Z' });
+      await refreshTo(fresh);
+      expect(screen.getByTestId('wisp-refresh-hint')).toHaveTextContent('This conversation keeps the previous grant terms');
+      fireEvent.click(screen.getByTestId('wisp-refresh-new-conversation'));
+      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith(fresh));
+      expect(h.closeSession).toHaveBeenCalledTimes(1);
+      expect(h.closeSession.mock.invocationCallOrder[0]).toBeLessThan(h.enterWispMode.mock.invocationCallOrder[0]);
+      await waitFor(() => expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull());
+    });
+
+    it('says nothing when no conversation is open under this grant', async () => {
+      h.chat = { sessionId: 's-other', wisp: { grantId: 'g-other' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      await refreshTo(wisp());
+      expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull();
+    });
+
+    it('the note can be dismissed without starting over', async () => {
+      h.chat = { sessionId: 's-open', wisp: { grantId: 'g-1' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      await refreshTo(wisp());
+      fireEvent.click(screen.getByTestId('wisp-refresh-hint-dismiss'));
+      expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull();
+      expect(h.enterWispMode).not.toHaveBeenCalled();
+    });
   });
 });

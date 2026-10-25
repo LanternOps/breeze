@@ -611,7 +611,10 @@
       "refresh": "Rinnova autorizzazione",
       "revoke": "Disattiva Wisp",
       "revokeConfirm": "Disattivare Wisp per questo ambito? I thread aperti restano leggibili.",
-      "widening": "Puoi fare più di quanto consente questa autorizzazione: rinnovala perché Wisp stia al passo."
+      "widening": "Puoi fare più di quanto consente questa autorizzazione: rinnovala perché Wisp stia al passo.",
+      "refreshKeepsTerms": "Questa conversazione mantiene i termini precedenti dell’autorizzazione. Avvia una nuova conversazione per usare l’autorizzazione rinnovata.",
+      "startNewConversation": "Avvia una nuova conversazione",
+      "dismissNote": "Chiudi"
     },
     "settings": {
       "title": "Budget e controllo periodico",

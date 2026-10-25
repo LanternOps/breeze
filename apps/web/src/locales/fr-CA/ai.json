@@ -611,7 +611,10 @@
       "refresh": "Renouveler l’autorisation",
       "revoke": "Désactiver Wisp",
       "revokeConfirm": "Désactiver Wisp pour cette portée? Les fils ouverts restent consultables.",
-      "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive."
+      "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive.",
+      "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
+      "startNewConversation": "Démarrer une nouvelle conversation",
+      "dismissNote": "Fermer"
     },
     "settings": {
       "title": "Budget et suivi",

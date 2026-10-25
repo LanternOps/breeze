@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, Plus } from 'lucide-react';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
@@ -48,8 +48,23 @@ async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promis
     if (after.sessionId === lastSessionId && after.wisp?.grantId === wisp.grantId) return true;
   }
   await useAiStore.getState().enterWispMode(wisp);
+  return boundTo(wisp);
+}
+
+function boundTo(wisp: Wisp): boolean {
   const bound = useAiStore.getState();
   return bound.wisp?.threadId === wisp.threadId && bound.sessionId !== null;
+}
+
+/**
+ * #10142 "New conversation", as the side panel's: close the open session (its
+ * summary lands on the thread, as a focus change does), then start a fresh
+ * one under the grant's current terms.
+ */
+async function startNewWispSession(wisp: Wisp): Promise<boolean> {
+  if (useAiStore.getState().sessionId) await useAiStore.getState().closeSession();
+  await useAiStore.getState().enterWispMode(wisp);
+  return boundTo(wisp);
 }
 
 /**
@@ -76,16 +91,21 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
 
-  useEffect(() => {
-    if (!active) return;
+  /** Run one (re)bind; only the latest attempt may set the outcome. */
+  const rebind = (bind: () => Promise<boolean>) => {
     const token = ++attempt.current;
     setBinding('binding');
-    bindWispSession(wisp, lastSessionRef.current)
+    void bind()
       .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
       .catch((err: unknown) => {
         console.error('[WispHomeThread] opening the Wisp session failed', err);
         if (token === attempt.current) setBinding('failed');
       });
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    rebind(() => bindWispSession(wisp, lastSessionRef.current));
     // The grant id and thread id identify the session; other Wisp fields (spend, summary) changing must not rebind.
   },[active, wisp.grantId, wisp.threadId]);
 
@@ -94,10 +114,24 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
 
   return (
     <section id="thread" className="flex min-h-[28rem] flex-col overflow-hidden rounded-lg border bg-card" data-testid="wisp-home-thread" aria-labelledby="wisp-home-thread-title">
-      <h2 id="wisp-home-thread-title" className="flex items-center gap-1.5 border-b px-4 py-2 text-sm font-semibold">
-        <MessageSquare className="h-4 w-4 text-primary" aria-hidden="true" />
-        {t('wisp.home.threadTitle')}
-      </h2>
+      <div className="flex items-center justify-between gap-2 border-b px-4 py-2">
+        <h2 id="wisp-home-thread-title" className="flex items-center gap-1.5 text-sm font-semibold">
+          <MessageSquare className="h-4 w-4 text-primary" aria-hidden="true" />
+          {t('wisp.home.threadTitle')}
+        </h2>
+        {active && binding === 'live' && showingThisThread && (
+          <button
+            type="button"
+            data-testid="wisp-home-new-conversation"
+            onClick={() => rebind(() => startNewWispSession(wisp))}
+            disabled={isLoading}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            {t('aiChatSidebar.newConversation')}
+          </button>
+        )}
+      </div>
 
       {!active ? (
         <p className="p-4 text-sm text-muted-foreground" data-testid="wisp-home-thread-inactive">
@@ -111,16 +145,7 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
           <button
             type="button"
             data-testid="wisp-home-thread-retry"
-            onClick={() => {
-              const token = ++attempt.current;
-              setBinding('binding');
-              void bindWispSession(wisp, null)
-                .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
-                .catch((err: unknown) => {
-                  console.error('[WispHomeThread] opening the Wisp session failed', err);
-                  if (token === attempt.current) setBinding('failed');
-                });
-            }}
+            onClick={() => rebind(() => bindWispSession(wisp, null))}
             className="rounded border px-3 py-1 hover:bg-muted"
           >
             {t('wisp.thread.retry')}

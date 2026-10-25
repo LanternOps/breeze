@@ -611,7 +611,10 @@
       "refresh": "Refresh grant",
       "revoke": "Turn off Wisp",
       "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
-      "widening": "You can do more than this grant allows — refresh it to let Wisp keep up."
+      "widening": "You can do more than this grant allows — refresh it to let Wisp keep up.",
+      "refreshKeepsTerms": "This conversation keeps the previous grant terms. Start a new conversation to use the refreshed grant.",
+      "startNewConversation": "Start a new conversation",
+      "dismissNote": "Dismiss"
     },
     "settings": {
       "title": "Budget and check-in",

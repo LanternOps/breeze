@@ -611,7 +611,10 @@
       "refresh": "Renovar permissão",
       "revoke": "Desativar o Wisp",
       "revokeConfirm": "Desativar o Wisp para este escopo? As conversas abertas continuam legíveis.",
-      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar."
+      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar.",
+      "refreshKeepsTerms": "Esta conversa mantém os termos anteriores da permissão. Inicie uma nova conversa para usar a permissão renovada.",
+      "startNewConversation": "Iniciar uma nova conversa",
+      "dismissNote": "Dispensar"
     },
     "settings": {
       "title": "Orçamento e verificação periódica",
