@@ -753,3 +753,84 @@ function enforceByteBudget(facts: OnboardingDiscoveryFacts): void {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// The draft's reads (W07 R2a Task 14, Amendment G7)
+// ---------------------------------------------------------------------------
+
+/** What `POST /task-drafts` may know before anything exists: the two collision checks and the seats. */
+export interface OnboardingDraftReads {
+  collisions: OnboardingDiscoveryFacts['collisions'];
+  seats: OnboardingDiscoveryFacts['seats'];
+  flags: DiscoveryFlagRow[];
+}
+
+/**
+ * The read-only subset of discovery a DRAFT runs (G7): at most ONE audited
+ * `m365.user.get` (the sign-in name), ONE `m365.org.skus.list` (B6's live
+ * seat read) and ONE Google `users.get` (the primary email). No group, no
+ * model-after and no Breeze read.
+ *
+ * NEVER THROWS FOR A PROVIDER. Discovery rethrows a transient fault so the
+ * wake retries; a draft has no wake, and a provider outage must not reach the
+ * technician as a 5xx. Each read is therefore wrapped: whatever escapes it is
+ * "could not check" plus a flag (`m365_collision_check_failed`,
+ * `google_collision_check_failed`, `m365_seats_read_failed`), which the
+ * recipe treats exactly as it treats discovery's: blocking, never "free".
+ * Nothing is retried.
+ */
+export async function readOnboardingDraftFacts(args: DiscoverOnboardingFactsInput): Promise<OnboardingDraftReads> {
+  const { orgId, input } = args;
+  const observedAt = (args.now ?? new Date()).toISOString();
+  const c = new OnboardingCollector();
+
+  const readM365Draft = async (): Promise<{ collision: OnboardingDiscoveryFacts['collisions']['m365']; seats: OnboardingSeatFact[] }> => {
+    const m = input.m365;
+    if (m === null) return { collision: null, seats: [] };
+    const subject = canonicalizeUserEmail(m.userPrincipalName) ?? m.userPrincipalName;
+    let collision: M365Collision;
+    try {
+      collision = await m365Collision(orgId, m.userPrincipalName, c);
+    } catch (err) {
+      c.flag('m365_collision_check_failed', subject,
+        `Breeze could not check whether ${subject} is free in Microsoft 365: ${errorMessage(err)}`);
+      collision = { ...COULD_NOT_CHECK_M365 };
+    }
+    let seats: OnboardingSeatFact[];
+    try {
+      seats = await m365Seats(orgId, m.skuIds, subject, observedAt, c);
+    } catch (err) {
+      c.flag('m365_seats_read_failed', subject, `Breeze could not read the organization's licences: ${errorMessage(err)}`);
+      seats = m.skuIds.map((skuId): OnboardingSeatFact => ({
+        skuId: skuId.slice(0, SKU_ID_MAX), skuPartNumber: null, state: 'unknown', available: null, observedAt,
+        reason: 'Breeze could not read the organization\'s licences.',
+      }));
+    }
+    return { collision, seats };
+  };
+
+  const readGoogleDraft = async (): Promise<OnboardingDiscoveryFacts['collisions']['google']> => {
+    const g = input.google;
+    if (g === null) return null;
+    const subject = canonicalizeUserEmail(g.primaryEmail) ?? g.primaryEmail;
+    try {
+      const ctx = await inOrgContext(orgId, () => resolveContextByOrg(orgId));
+      if ('error' in ctx) {
+        c.flag('google_connection_unavailable', subject, 'No usable Google Workspace connection for this organization.');
+        return { ...COULD_NOT_CHECK_GOOGLE };
+      }
+      return await googleCollision(getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail), g.primaryEmail, c);
+    } catch (err) {
+      c.flag('google_collision_check_failed', subject,
+        `Breeze could not check whether ${subject} is free in Google Workspace: ${errorMessage(err)}`);
+      return { ...COULD_NOT_CHECK_GOOGLE };
+    }
+  };
+
+  const [m365, google] = await Promise.all([readM365Draft(), readGoogleDraft()]);
+  return {
+    collisions: { m365: m365.collision, google },
+    seats: { m365: m365.seats },
+    flags: c.flags as DiscoveryFlagRow[],
+  };
+}

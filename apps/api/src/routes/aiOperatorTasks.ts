@@ -43,7 +43,12 @@ import {
   operatorTaskListQuerySchema,
   type CreateOperatorTaskInput,
   type IdentityOffboardingInput,
+  type IdentityOnboardingInput,
   type AiOperatorIdentityTaskDraftDto,
+  type AiOperatorIdentityOnboardingTaskDraftDto,
+  type AiOperatorOnboardingDraftEffectDto,
+  type CreatedAccountView,
+  type AiOperatorWorkflowDto,
   type AiOperatorPlanApprovalDto,
   type AiOperatorPlanEffectDto,
   type AiOperatorTaskDto,
@@ -63,6 +68,7 @@ import {
   aiOperatorTasks,
   contacts,
   devices,
+  sites,
   users,
   wispGrants,
 } from '../db/schema';
@@ -76,12 +82,26 @@ import {
   computeRecipeReadiness,
   listWorkflowReadiness,
   toWorkflowDto,
+  type RecipeReadiness,
 } from '../services/aiOperator/recipeReadiness';
 import {
   IDENTITY_OFFBOARDING_EFFECT_TOOLS,
   IDENTITY_OFFBOARDING_WORKFLOW_KEY,
   buildIdentityOffboardingManualWork,
 } from '../services/aiOperator/recipes/identityOffboarding';
+import {
+  IDENTITY_ONBOARDING_WORKFLOW_KEY,
+  buildIdentityOnboardingCreatePlan,
+  buildIdentityOnboardingManualWork,
+  buildIdentityOnboardingProvisionPlan,
+  buildManualCreateGoogleItem,
+  capOnboardingManualWork,
+  type IdentityOnboardingCreateFacts,
+} from '../services/aiOperator/recipes/identityOnboarding';
+import { readOnboardingDraftFacts } from '../services/aiOperator/identityProvisioning';
+import { listCreatedAccountsForTask } from '../services/aiOperator/credentialHandover';
+import { normalizeContactEmail } from '../services/contacts/crud';
+import type { AnyRecipeDefinition, PlannedEffect } from '../services/aiOperator/recipes/types';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import {
@@ -244,6 +264,13 @@ aiOperatorTasksRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+
+    // R2a: `identity_onboarding` sends no device and its own inputs. It takes
+    // its own path after the org check, before the shipped device-field parse.
+    if (body.recipeKey === IDENTITY_ONBOARDING_WORKFLOW_KEY) {
+      if (!auth.canAccessOrg(body.orgId)) return c.json({ error: 'Organization not found' }, 404);
+      return admitIdentityOnboardingFromRoute(c, body);
+    }
 
     // `deviceId` and `inputs` are loose on the wire since R1a (a contact-
     // targeted recipe sends no device and its own inputs). Every other key
@@ -650,6 +677,13 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
   );
   // Appended AFTER every shipped field, so their bytes and order are unchanged.
   const plan = await readTaskPlan(task.id, task.orgId);
+  // R2a (G6): an onboarding task appends `accounts` AFTER `plan`, read on this
+  // request's own db context. Every other recipe's detail is left exactly as
+  // it shipped (the R1b detail test pins `plan` as its last key).
+  if (task.workflowKey === IDENTITY_ONBOARDING_WORKFLOW_KEY) {
+    const accounts = (await listCreatedAccountsForTask(task.orgId, task.id)) satisfies CreatedAccountView[];
+    return c.json({ data: { ...dto, plan, accounts } });
+  }
   return c.json({ data: { ...dto, plan } });
 });
 
@@ -1027,6 +1061,11 @@ aiOperatorTasksRoutes.post(
     const readiness = all.find((r) => r.recipeKey === recipe.key)
       ?? computeRecipeReadiness(recipe, { orgId: body.orgId, m365: null, google: null, agent: null, flagEnabled: false });
     const workflow = toWorkflowDto(readiness);
+    if (recipe.key === IDENTITY_ONBOARDING_WORKFLOW_KEY) {
+      return draftIdentityOnboardingFromRoute(c, {
+        orgId: body.orgId, recipe, input: parsed.data as IdentityOnboardingInput, readiness, workflow,
+      });
+    }
     if (recipe.key !== IDENTITY_OFFBOARDING_WORKFLOW_KEY) {
       return c.json({ data: { recipeKey: recipe.key, recipeVersion: recipe.version, input: parsed.data, workflow } });
     }
@@ -1079,3 +1118,240 @@ aiOperatorTasksRoutes.post(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// W07 R2a (Task 14; Amendment G6, G7, G9): identity_onboarding through the
+// shipped routes. Appended — nothing above changes behaviour for another key.
+// ---------------------------------------------------------------------------
+
+/** Never leaves the server: the draft's facts need a contact target id, and there is no contact. */
+const DRAFT_CONTACT_TARGET_ID = '00000000-0000-0000-0000-000000000000';
+/** Never leaves the server either: the account a stage-1 create would produce has no id yet. */
+const DRAFT_PENDING_ACCOUNT_ID = 'pending-account';
+/** Arguments that name the account or audit the call; the preview states the account through `principalLabel`. */
+const DRAFT_HIDDEN_ARGUMENTS: ReadonlySet<string> = new Set(['userIdentifier', 'userEmail', 'reason']);
+
+function draftEffect(effect: PlannedEffect, input: IdentityOnboardingInput): AiOperatorOnboardingDraftEffectDto {
+  const provider = effect.provider === 'google' ? 'google' : 'm365';
+  const principalLabel = provider === 'google' ? input.google?.primaryEmail ?? '' : input.m365?.userPrincipalName ?? '';
+  return {
+    ordinal: effect.ordinal,
+    toolName: effect.toolName,
+    provider,
+    principalLabel,
+    arguments: Object.fromEntries(Object.entries(effect.canonicalArguments).filter(([k]) => !DRAFT_HIDDEN_ARGUMENTS.has(k))),
+  };
+}
+
+/**
+ * `POST /task-drafts` for `identity_onboarding` (G7). After the SAME two gates
+ * as offboarding (org-wide governance, recipe flag), and only then, it runs
+ * `readOnboardingDraftFacts`: at most one `m365.user.get`, one
+ * `m365.org.skus.list` and one Google `users.get`, every failure a flag. It
+ * resolves no contact and writes nothing.
+ *
+ * Both previews come from the recipe's OWN builders over draft facts, so the
+ * draft cannot preview what `discover` would refuse on the same reads. The
+ * draft reads no group, so each requested group is described as unknown
+ * (planned, as an unknown-role group is at discover), and the provision
+ * preview says it is provisional in its name. A provider whose name is not
+ * strictly free gets no account and so no provisioning, as at stage 2.
+ */
+async function draftIdentityOnboardingFromRoute(c: Context, args: {
+  orgId: string;
+  recipe: Pick<AnyRecipeDefinition, 'key' | 'version'>;
+  input: IdentityOnboardingInput;
+  readiness: RecipeReadiness;
+  workflow: AiOperatorWorkflowDto;
+}) {
+  const auth = c.get('auth');
+  const { orgId, recipe, input, readiness, workflow } = args;
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Onboarding creates organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (!recipeEnabled(recipe.key)) {
+    return c.json({ error: 'The onboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+
+  const reads = await readOnboardingDraftFacts({ orgId, input });
+  const facts: IdentityOnboardingCreateFacts = {
+    stage: 'create',
+    targets: { contactTargetId: DRAFT_CONTACT_TARGET_ID, contactLabel: input.displayName.slice(0, 512) },
+    collisions: reads.collisions,
+    seats: reads.seats,
+    groups: {
+      m365: (input.m365?.groupIds ?? []).map((id) => ({ id, name: null, dynamic: null, roleAssignable: null })),
+      google: (input.google?.groupEmails ?? []).map((email) => ({ email, name: null, modelAfterRole: null })),
+    },
+    modelAfter: null,
+    degradedTools: [...readiness.degradedEffects],
+    capabilityReadiness: { ...readiness.capabilityReadiness },
+    flags: reads.flags.map((f) => ({ code: f.code, subject: f.subject, detail: f.detail })),
+    truncated: [],
+  };
+  const m365Free = reads.collisions.m365?.upnTaken === false;
+  const googleFree = reads.collisions.google?.emailTaken === false;
+  const provisionFacts = {
+    ...facts,
+    stage: 'provision' as const,
+    accounts: {
+      m365: m365Free && input.m365 ? { externalId: DRAFT_PENDING_ACCOUNT_ID, principalLabel: input.m365.userPrincipalName } : null,
+      google: googleFree && input.google ? { externalId: DRAFT_PENDING_ACCOUNT_ID, principalLabel: input.google.primaryEmail } : null,
+    },
+  };
+
+  // A collision is a fact the reads found, not a read failure: a flag, never an error.
+  const flags = reads.flags.map((f) => ({ code: f.code, subject: f.subject, detail: f.detail }));
+  if (input.m365 && reads.collisions.m365?.upnTaken === true) {
+    flags.push({ code: 'upn_collision', subject: input.m365.userPrincipalName,
+      detail: 'A Microsoft 365 account already holds this sign-in name, so Breeze would not create one.' });
+  }
+  if (input.google && reads.collisions.google?.emailTaken === true) {
+    flags.push({ code: 'email_collision', subject: input.google.primaryEmail,
+      detail: 'A Google Workspace user already holds this address, so Breeze would not provision Google.' });
+  }
+
+  const googleItem = buildManualCreateGoogleItem(input, facts);
+  const manualWork = capOnboardingManualWork([
+    ...(googleItem ? [googleItem] : []),
+    ...buildIdentityOnboardingManualWork(input, facts, readiness.capabilityReadiness, []),
+  ]).map((i) => ({ key: i.key, label: i.label, detail: i.detail, origin: i.origin }));
+
+  return c.json({
+    data: {
+      recipeKey: recipe.key,
+      recipeVersion: recipe.version,
+      input,
+      workflow,
+      createPlanPreview: buildIdentityOnboardingCreatePlan(input, facts).map((e) => draftEffect(e, input)),
+      provisionPlanPreview: buildIdentityOnboardingProvisionPlan(input, provisionFacts).map((e) => draftEffect(e, input)),
+      flags,
+      manualWork,
+    } satisfies AiOperatorIdentityOnboardingTaskDraftDto,
+  });
+}
+
+/**
+ * `POST /tasks` for `identity_onboarding`, with the offboarding path's
+ * posture: organizations:write, org-wide governance, no device or source
+ * citation, readiness re-read, every referenced contact and site visible to
+ * the caller in their own db context, the SERVER picks the agent, admission
+ * idempotent. Admission CREATES the contact (Task 10), so a person who
+ * already has one is a conflict for a human: 409 naming the existing contact.
+ */
+async function admitIdentityOnboardingFromRoute(c: Context, body: CreateOperatorTaskInput) {
+  const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Onboarding creates organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (body.deviceId !== undefined || body.sourceKind !== undefined) {
+    return c.json({ error: 'This workflow takes no deviceId and no source citation.', code: 'INVALID_INPUT' }, 400);
+  }
+  if (!aiOperatorTasksEnabled()) {
+    return c.json({ error: 'AI Operator tasks are not enabled for this deployment', code: 'OPERATOR_TASKS_DISABLED' }, 422);
+  }
+  if (!recipeEnabled(body.recipeKey)) {
+    return c.json({ error: 'The onboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+  const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+  if (!resolution.ok) {
+    return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+  }
+  const recipe = resolution.recipe;
+  const parsed = recipe.inputSchema.safeParse(body.inputs);
+  if (!parsed.success) {
+    return c.json({
+      error: 'Invalid workflow inputs',
+      code: 'INVALID_INPUT',
+      issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    }, 400);
+  }
+  const input = parsed.data as IdentityOnboardingInput;
+
+  // Non-enumerating: the same 404 whether a referenced row is another org's or nobody's.
+  for (const contactId of [input.managerContactId, input.modelAfterContactId]) {
+    if (contactId === null) continue;
+    const [row] = await db.select({ id: contacts.id }).from(contacts)
+      .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, contactId))).limit(1);
+    if (!row) return c.json({ error: 'Contact not found' }, 404);
+  }
+  if (input.siteId !== null) {
+    const [site] = await db.select({ id: sites.id }).from(sites)
+      .where(and(eq(sites.orgId, body.orgId), eq(sites.id, input.siteId))).limit(1);
+    if (!site || (auth.canAccessSite && !auth.canAccessSite(site.id))) return c.json({ error: 'Site not found' }, 404);
+  }
+
+  const kind = RECIPE_AGENT_KINDS[recipe.key];
+  const effectiveAgent = kind ? await resolveEffectiveAgent(auth, body.orgId, kind) : null;
+  const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
+  if (!agent) {
+    return c.json({
+      error: 'No enabled helpdesk AI agent is available for this organization. '
+        + 'Enable one in Settings → AI Agents before starting an onboarding.',
+      code: 'OPERATOR_NO_AGENT',
+    }, 422);
+  }
+
+  const result = await admitTask({
+    orgId: body.orgId,
+    agentId: agent.id,
+    workflowKey: recipe.key,
+    workflowVersion: recipe.version,
+    objective: `Onboard ${input.displayName}`.slice(0, 4000),
+    originKind: 'manual',
+    requesterUserId: auth.user?.id ?? null,
+    recipeInput: input,
+    clientIdempotencyKey: body.clientIdempotencyKey,
+  });
+  if (!result.ok) {
+    switch (result.refusal) {
+      case 'contact_already_exists': {
+        // Admission's refusal carries no id; re-read it on the CALLER's
+        // context with admission's rule (one match; none for a shared
+        // mailbox), so the body can only name a contact the caller can see.
+        const email = normalizeContactEmail(input.m365?.userPrincipalName ?? input.google?.primaryEmail ?? null);
+        const rows = email === null ? [] : await db.select({ id: contacts.id }).from(contacts)
+          .where(and(eq(contacts.orgId, body.orgId), sql`lower(${contacts.email}) = ${email}`)).limit(2);
+        return c.json({
+          error: 'A contact already uses this person\'s address: this onboarding may already be started, '
+            + 'or the address belongs to someone else.',
+          code: 'OPERATOR_CONTACT_ALREADY_EXISTS',
+          existingContactId: rows.length === 1 ? rows[0]!.id : null,
+        }, 409);
+      }
+      case 'start_at_beyond_deadline': {
+        const deadlineDays = Math.floor(recipe.bounds.deadlineMs / (24 * 60 * 60 * 1000));
+        return c.json({
+          error: `The start date is after this task's ${deadlineDays}-day deadline. `
+            + `Pick a start date within ${deadlineDays} days, or start the onboarding nearer to it.`,
+          code: 'START_AT_BEYOND_DEADLINE',
+          deadlineDays,
+        }, 422);
+      }
+      case 'contact_not_in_org': return c.json({ error: 'Contact not found' }, 404);
+      case 'duplicate_live_task':
+        return c.json({
+          error: 'An onboarding task is already running for this person.',
+          code: 'OPERATOR_DUPLICATE_LIVE_TASK',
+          taskId: result.existingTaskId ?? null,
+        }, 409);
+      case 'pending_cap_reached':
+        return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
+      case 'unknown_recipe':
+        return c.json({ error: result.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+      default:
+        return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+    }
+  }
+  return c.json({ taskId: result.taskId, replayed: result.replayed }, 202);
+}

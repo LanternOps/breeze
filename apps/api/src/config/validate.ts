@@ -747,6 +747,8 @@ const envObjectSchema = z
     // runtime by aiOperatorIdentityOffboardingEnabled() in env.ts. Validated
     // here for boolean format only. Default off; nothing enables it.
     AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: z.string().optional(),
+    // R2: gates identity_onboarding, read by aiOperatorIdentityOnboardingEnabled().
+    AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED: z.string().optional(),
 
     // Task A7 (tool-catalog W1). Platform kill switch for tool sources, read
     // at runtime by toolSourcesEnabled() in env.ts. Validated here for
