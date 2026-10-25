@@ -165,16 +165,17 @@ Re-record the 14 files under `apps/api/src/services/aiOperator/__fixtures__/prov
 
 ## Gate status at R1c (automated clauses)
 
-This table is filled in by the R1c PR from real output. It records the gate **as shipped**: shipped and unmet, with the flag off.
+The R1c PR filled this table from real output on 2026-10-24, at the head the PR was opened from. The automated runs used local stacks with mocked providers; no lab run was involved. The table records the gate **as shipped**: shipped and unmet, with the flag off. All commands run from `apps/api`; integration runs add `--config vitest.integration.config.ts` and need a test stack.
 
 | Clause | Evidence | Command | Result | Status |
 |---|---|---|---|---|
-| (a) per-effect contracts | `apps/api/src/services/aiOperator/effectContracts.test.ts` + `__fixtures__/providers/*.json` | `npx vitest run src/services/aiOperator/effectContracts.test.ts` | TODO | TODO |
-| (a) tripwire | same file, gate mode | `BREEZE_GATE_SIGNOFF=1 npx vitest run …effectContracts.test.ts` | TODO | TODO |
-| (b) ordering | `apps/api/src/__tests__/integration/aiOperatorIdentityGate.integration.test.ts` (ordering block); `recipes/identityOffboarding.ordering.test.ts`; R1a E2E | integration config | TODO | TODO |
-| (c) plan-approval membership | `aiOperatorIdentityGate.integration.test.ts` (membership block) | integration config | TODO | TODO |
-| (d) intake eval | `apps/api/src/services/aiOperator/evals/identityIntake.eval.test.ts` + `identityIntake.cases.json` | `npx vitest run src/services/aiOperator/evals/identityIntake.eval.test.ts` | TODO | TODO |
+| (a) per-effect contracts | `src/services/aiOperator/effectContracts.test.ts` + `__fixtures__/providers/*.json` (14 tools × 7 cases + 6) | `npx vitest run src/services/aiOperator/effectContracts.test.ts` | 1 file, 104 passed, 1 skipped (the tripwire) | PASS on reference fixtures |
+| (a) tripwire | same file, gate mode | `BREEZE_GATE_SIGNOFF=1 npx vitest run src/services/aiOperator/effectContracts.test.ts` | 1 failed (`no fixture is still marked _source: "reference"`), 104 passed | **RED by design** until §9 re-records the fixtures |
+| (b) ordering | `src/__tests__/integration/aiOperatorIdentityGate.integration.test.ts` (ordering block: k = 0..11, two off-path cases, the product-default case); `recipes/identityOffboarding.ordering.test.ts`; the R1a E2E | gate + E2E suites (integration config) | 2 files, 35 passed, 4 skipped (gate: the #9979 cancel case; E2E: its 3 BUG cases) | PASS (plan prefixes, the happy-path run, every dispatch stopping point). The mid-plan stop is BLOCKED on #9979 |
+| (c) plan-approval membership | `aiOperatorIdentityGate.integration.test.ts` (membership block: cases 3, 4, 5, 6, 7a, 7b, 8a, 8b, 9, 10) | same run | included above | PASS |
+| (d) intake eval | `src/services/aiOperator/evals/identityIntake.eval.test.ts` + `identityIntake.cases.json` (25 cases) | `npx vitest run src/services/aiOperator/evals/identityIntake.eval.test.ts` | 1 file, 34 passed, 1 skipped (the tripwire) | Structural PASS. Recall at prompt level is pending a live run: in gate mode the `authored` tripwire is **RED** |
+| (a)+(d) gate run | the recipe tests, both ordering files, contracts, eval | `BREEZE_GATE_SIGNOFF=1 npx vitest run src/services/aiOperator/recipes/identityOffboarding.test.ts src/services/aiOperator/recipes/identityOffboarding.ordering.test.ts src/services/aiOperator/effectContracts.test.ts src/services/aiOperator/evals/identityIntake.eval.test.ts` | 4 files, 2 failed (both tripwires), 317 passed | As expected |
 | (e) lab run | this document, §1–§11 | by hand | not performed | **BLOCKED — not yet performed** |
-| (f) own flag | `.env.example`, `deploy/.env.example`, both compose files | `grep -rn AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED …` | TODO | TODO |
+| (f) own flag | `.env.example:1461` and `deploy/.env.example:540` (commented out); `docker-compose.yml:357` and `deploy/docker-compose.prod.yml:550` (`${…:-false}`) | `grep -rn AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED .env.example deploy/.env.example docker-compose.yml deploy/docker-compose.prod.yml apps/api/src/routes/config.ts e2e-tests/` | no live assignment; no hit in `routes/config.ts`; the only `e2e-tests` hit is the spec-header comment | PASS (off) |
 
 **Do not enable the flag until (e) is PASS.**
