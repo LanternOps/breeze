@@ -40,6 +40,7 @@ import {
   type LockedReattachDevice,
 } from './intentStore';
 import { REATTACH_REQUESTED_TTL_MS, type ReattachCancelReason } from './protocol';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 
 /** Org statuses a reattach may touch: the same set parked assignment accepts. */
 const ACTIVE_ORG_STATUSES = new Set(['active', 'trial']);
@@ -80,15 +81,6 @@ export type RequestDeviceReattachResult =
 
 function refuse(status: ReattachRefusal['status'], code: string, message: string): never {
   throw new ReattachRefusedError(reattachRefusal(status, code, message));
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  let cur: unknown = err;
-  for (let depth = 0; depth < 4 && cur && typeof cur === 'object'; depth += 1) {
-    if ((cur as { code?: unknown }).code === '23505') return true;
-    cur = (cur as { cause?: unknown }).cause;
-  }
-  return false;
 }
 
 /** The device-side refusals shared by both roles. */
@@ -196,7 +188,9 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
     })));
   } catch (err) {
     if (err instanceof ReattachRefusedError) return err.refusal;
-    if (isUniqueViolation(err)) {
+    // The partial unique indexes: a racing request that slipped past the
+    // either-role check (it cannot, under the holding-area lock; backstop).
+    if (isPgUniqueViolation(err)) {
       return reattachRefusal(409, 'device_in_open_intent', 'One of the devices is already in an open reattach');
     }
     throw err;
