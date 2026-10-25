@@ -43,34 +43,13 @@ function humanOnlyProblems(
   map: ReadonlyMap<string, string>,
   registered: ReadonlySet<string>,
   tiers: Record<string, number>,
-  missing: ReadonlySet<string>,
 ): string[] {
   return [...map].flatMap(([name, reason]) => [
     ...(!registered.has(name) ? [`${name}: not registered`] : []),
     ...(name in tiers ? [`${name}: also in TOOL_TIERS — human-only means never tiered`] : []),
-    ...(missing.has(name) ? [`${name}: also in KNOWN_MISSING_TOOL_TIERS`] : []),
     ...(reason.trim().length < 20 ? [`${name}: reason must say why (>= 20 chars)`] : []),
   ]);
 }
-
-/**
- * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
- * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
- * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
- * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
- * (14 of them after their route-permission parity fixes landed), leaving 45.
- * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38. W03 (#6757)
- * wired the 19 backup, DR and virtualization write tools and W04 (#6758) the
- * 19 security, incident and device-operation tools, leaving none.
- * Deleted entirely at the end of W04, not W01.
- *
- * **This list may only shrink.** Removing a name means the tool was given a
- * tier and is now reachable. Adding one means a new tool shipped mute, which
- * is exactly what this file exists to prevent — fix the tool, don't widen the
- * list.
- */
-const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
-]);
 
 /**
  * `TOOL_TIERS` keys with no registry entry. These are advertised to the SDK
@@ -85,20 +64,27 @@ const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
   'propose_action_plan',
 ]);
 
-describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {
-  it('every registered tool is tiered, human-only with a reason, or a known pre-existing gap', () => {
+/**
+ * Spec 2026-09-23 "Contracts": registry ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS, with
+ * no exceptions. The frozen `KNOWN_MISSING_TOOL_TIERS` allowlist (#3300: 86
+ * mute tools at f400fc315, re-frozen at 88 on d1cbf4fe27) reached zero when
+ * full-control W03 (#6757) and W04 (#6758) wired the last 38, and was deleted
+ * in W04. A newly registered tool with no tier now fails here outright.
+ */
+describe('aiTools registry ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS — a registered tool must be reachable from chat (#3300)', () => {
+  it('every registered tool is tiered, or human-only with a reason', () => {
     const uncovered = getAllRegisteredToolNames()
-      .filter((n) => !(n in TOOL_TIERS) && !HUMAN_ONLY_TOOLS.has(n) && !KNOWN_MISSING_TOOL_TIERS.has(n))
+      .filter((n) => !(n in TOOL_TIERS) && !HUMAN_ONLY_TOOLS.has(n))
       .sort();
     expect(
       uncovered,
-      'Give the tool a TOOL_TIERS entry, or list it in HUMAN_ONLY_TOOLS (aiToolExposure.ts) with a written reason. Never widen KNOWN_MISSING_TOOL_TIERS.',
+      'Give the tool a TOOL_TIERS entry, or list it in HUMAN_ONLY_TOOLS (aiToolExposure.ts) with a written reason.',
     ).toEqual([]);
   });
 
-  it('HUMAN_ONLY_TOOLS entries are registered, untiered, not also KNOWN_MISSING, and carry a reason', () => {
+  it('HUMAN_ONLY_TOOLS entries are registered, untiered, and carry a reason', () => {
     const registered = new Set(getAllRegisteredToolNames());
-    const bad = humanOnlyProblems(HUMAN_ONLY_TOOLS, registered, TOOL_TIERS, KNOWN_MISSING_TOOL_TIERS);
+    const bad = humanOnlyProblems(HUMAN_ONLY_TOOLS, registered, TOOL_TIERS);
     expect(bad).toEqual([]);
   });
 
@@ -107,7 +93,6 @@ describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachabl
       new Map([['query_devices', 'x']]),
       new Set(['query_devices']),
       TOOL_TIERS,
-      new Set(),
     );
     expect(bad).toEqual([
       'query_devices: also in TOOL_TIERS — human-only means never tiered',
@@ -115,19 +100,6 @@ describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachabl
     ]);
   });
 
-  it('KNOWN_MISSING_TOOL_TIERS contains no stale entries — the list may only shrink', () => {
-    const registered = new Set(getAllRegisteredToolNames());
-    const resolved = [...KNOWN_MISSING_TOOL_TIERS]
-      .filter((name) => name in TOOL_TIERS || HUMAN_ONLY_TOOLS.has(name) || !registered.has(name))
-      .sort();
-
-    expect(
-      resolved,
-      'These names are in KNOWN_MISSING_TOOL_TIERS but are no longer missing ' +
-        '(they now have a tier, are human-only, or are no longer registered). Delete them from ' +
-        'the allowlist so it keeps shrinking toward empty.',
-    ).toEqual([]);
-  });
 });
 
 describe('TOOL_TIERS ⊆ aiTools registry — an advertised tool must be executable (#3300)', () => {
@@ -296,7 +268,6 @@ describe('manage_delivery has every registration', () => {
   it('does not add a frozen-gap exception', () => {
     expect(getAllRegisteredToolNames()).toContain('manage_delivery');
     expect(TOOL_TIERS.manage_delivery).toBe(1);
-    expect(KNOWN_MISSING_TOOL_TIERS.has('manage_delivery')).toBe(false);
   });
   it.each(['resolve', 'list_routing', 'list_escalation'])('%s is read-only', action => {
     expect(checkGuardrails('manage_delivery', { action }).tier).toBe(1);
@@ -390,7 +361,6 @@ const W02_WRITE_TOOLS = [
 describe('W02 write wiring (#6756)', () => {
   it.each(W02_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === toolInputSchemas', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
-    expect(KNOWN_MISSING_TOOL_TIERS.has(name)).toBe(false);
     const decl = declaredToolsByName().get(name);
     expect(decl, `${name} not declared`).toBeDefined();
     expect(Object.keys(decl!.inputSchema).sort()).toEqual(
@@ -422,7 +392,6 @@ function expectedSdkShapeKeys(name: string): string[] {
 describe('W03 write wiring (#6757)', () => {
   it.each(W03_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
-    expect(KNOWN_MISSING_TOOL_TIERS.has(name)).toBe(false);
     const decl = declaredToolsByName().get(name);
     expect(decl, `${name} not declared`).toBeDefined();
     const sdkKeys = Object.keys(decl!.inputSchema).sort();
