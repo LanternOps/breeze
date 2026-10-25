@@ -671,13 +671,14 @@ describe('W02 static classes (#6756)', () => {
 type W02Class = 't1' | 't2' | 'supervised' | 'four_eyes';
 const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
   manage_tickets: {
-    list: 't1', get: 't1', list_work_types: 't1', list_links: 't1',
+    list: 't1', get: 't1', list_work_types: 't1', list_links: 't1', merge_preview: 't1',
     create: 't2', assign: 't2', link_alert: 't2', unlink_alert: 't2', create_from_alert: 't2',
     log_time_entry: 't2', start_timer: 't2', stop_timer: 't2', update_time_entry: 't2',
     link_device: 't2', draft: 't2', link_ticket: 't2', unlink_ticket: 't2',
     comment: 't2', update_status: 't2', update_fields: 't2',
     edit_comment: 'supervised', delete_comment: 'supervised',
     move_org: 'four_eyes',
+    merge: 'supervised',
   },
   manage_quotes: {
     create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',

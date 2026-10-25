@@ -681,7 +681,6 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // #8972: merging two tickets of ONE org (spec §5.7: Tier 3, approval). It is
   // irreversible, which is why it needs approval at all; it is not tenant-
   // shaping like move_org (four_eyes), so one approver suffices.
-  manage_tickets: ['merge'],
   // #8883 W5: routing rules are config objects, not externally binding: one approver.
   manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
@@ -737,7 +736,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
   // W02 (#6756) — see the TIER3_ACTIONS notes for each.
-  manage_tickets: ['edit_comment', 'delete_comment'],
+  manage_tickets: ['edit_comment', 'delete_comment', 'merge'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
   manage_notification_channels: ['create', 'update'],
