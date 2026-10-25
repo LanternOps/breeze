@@ -313,6 +313,18 @@ export class EmsisoftClient {
     return this.listAll('workspace', '/v1/workspaces/{ws}/devices', `/v1/workspaces/${wsGuid}/devices`, {}, deviceSchema, { name: 'devices' });
   }
 
+  /** Connection-test probe: can this key read a workspace's devices at all? One tiny page, never the whole fleet. */
+  async probeWorkspaceDevices(wsGuid: string): Promise<void> {
+    this.checkGuid(wsGuid, 'workspace id');
+    const body = await this.get(
+      'workspace', '/v1/workspaces/{ws}/devices', `/v1/workspaces/${wsGuid}/devices`,
+      new URLSearchParams({ Skip: '0', Take: '1' }),
+    );
+    if (!z.object({ data: z.array(z.unknown()), totalCount: z.number() }).safeParse(body).success) {
+      throw this.fail('Emsisoft GET /v1/workspaces/{ws}/devices: malformed response', { code: 'malformed_response', scope: 'tenant' });
+    }
+  }
+
   async getDeviceDetails(dvGuid: string): Promise<EmsiDeviceDetails> {
     this.checkGuid(dvGuid, 'device id');
     const template = '/v1/devices/{dv}/details';

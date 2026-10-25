@@ -122,6 +122,13 @@ describe('EmsisoftClient transport', () => {
     expect(url.searchParams.get('Take')).toBe('100');
   });
 
+  it('probeWorkspaceDevices asks for exactly one device', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('devices-page1.json') }]);
+    await makeClient(impl).client.probeWorkspaceDevices(WS);
+    expect(new URL(calls[0]!.url).searchParams.get('Take')).toBe('1');
+    expect(calls).toHaveLength(1);
+  });
+
   it('device details parse (nullable and unknown fields tolerated)', async () => {
     const { impl, calls } = makeFetch([{ body: fx('device-details.json') }]);
     const d = await makeClient(impl).client.getDeviceDetails(DV);
