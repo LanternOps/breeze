@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('./pamActuationLifecycle', () => ({
+  requestPamCleanup: vi.fn(),
+}));
+
 import {
   SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
+  cleanupSoftwarePolicyElevations,
   compareSoftwareVersions,
   evaluateSoftwareInventory,
   matchesSoftwareRule,
@@ -8,6 +14,7 @@ import {
   withStableViolationTimestamps,
 } from './softwarePolicyService';
 import type { SoftwarePolicyViolation } from '../db/schema';
+import { requestPamCleanup } from './pamActuationLifecycle';
 
 describe('softwarePolicyService', () => {
   it('compares semantic-like versions correctly', () => {
@@ -302,5 +309,28 @@ describe('missing violations carry the rule catalogId', () => {
     const stabilised = withStableViolationTimestamps(next, previous);
     expect(stabilised[0]?.detectedAt).toBe('2026-01-01T00:00:00.000Z');
     expect(stabilised[0]?.rule?.catalogId).toBe(CATALOG_ID);
+  });
+});
+
+describe('cleanupSoftwarePolicyElevations', () => {
+  it('creates cleanup generations for only the active requests transitioned by the policy removal', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }, { id: 'elevation-2' }] });
+    const tx = { execute } as any;
+
+    await cleanupSoftwarePolicyElevations(tx, 'policy-1');
+
+    expect(requestPamCleanup).toHaveBeenCalledTimes(2);
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(1, tx, {
+      elevationRequestId: 'elevation-1', cause: 'policy_removed',
+    });
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(2, tx, {
+      elevationRequestId: 'elevation-2', cause: 'policy_removed',
+    });
+  });
+
+  it('propagates cleanup failure so the caller transaction rolls back', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }] }) } as any;
+    vi.mocked(requestPamCleanup).mockRejectedValueOnce(new Error('cleanup failed'));
+    await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).rejects.toThrow('cleanup failed');
   });
 });

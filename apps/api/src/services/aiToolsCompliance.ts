@@ -32,7 +32,8 @@ import {
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { MAX_REMEDIATION_DEVICES } from './softwarePolicyRemediationPreview';
-import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { cleanupSoftwarePolicyElevations, evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { willBeArmedForInstall } from './softwarePolicyAuthorization';
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
@@ -441,6 +442,23 @@ registerTool({
         return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
       }
 
+      // QW10: gate the RESULTING (stored + input) state, as REST does. An update
+      // that omits remediationOptions would otherwise keep an install-armed
+      // policy armed while bumping approvalGeneration (re-approving it under
+      // the AI). Disarming is allowed, same as REST.
+      const resultingArmed = willBeArmedForInstall(existing, {
+        mode: typeof input.mode === 'string' ? input.mode : undefined,
+        enforceMode: typeof input.enforceMode === 'boolean' ? input.enforceMode : undefined,
+        remediationOptions: input.remediationOptions && typeof input.remediationOptions === 'object'
+          ? input.remediationOptions
+          : undefined,
+      });
+      if (resultingArmed) {
+        return JSON.stringify({
+          error: 'This policy is armed for automatic install; the AI cannot change it. Edit it in the software policy page.',
+        });
+      }
+
       const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
         updatedAt: new Date(),
         // Site-ceiling gate contract §3: this AI-tool write bypasses
@@ -470,11 +488,19 @@ registerTool({
         updates.rules = rules;
       }
 
-      const [updated] = await db
-        .update(softwarePolicies)
-        .set(updates)
-        .where(eq(softwarePolicies.id, existing.id))
-        .returning();
+      // Same transaction shape as REST PATCH: the write and the PAM elevation
+      // cleanup (W04-D15) commit or roll back together.
+      const [updated] = await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(softwarePolicies)
+          .set(updates)
+          .where(eq(softwarePolicies.id, existing.id))
+          .returning();
+        if (existing.isActive && input.isActive === false) {
+          await cleanupSoftwarePolicyElevations(tx, existing.id);
+        }
+        return rows;
+      });
 
       let scheduleWarning: string | undefined;
       try {
@@ -545,6 +571,9 @@ registerTool({
             approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
           })
           .where(eq(softwarePolicies.id, existing.id));
+
+        // W04-D15: revoke elevations this policy minted, as REST DELETE does.
+        await cleanupSoftwarePolicyElevations(tx, existing.id);
 
         await tx
           .delete(softwareComplianceStatus)

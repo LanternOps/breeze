@@ -113,7 +113,13 @@ function auditLogCalls() {
   return vi.mocked(writeAuditEvent).mock.calls.map((c) => c[1]);
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Update writes now run in a transaction (W04-D15); route tx.update to the
+  // same mock the tests already configure.
+  mockDb.transaction.mockImplementation(async (fn: any) =>
+    fn({ update: (...a: unknown[]) => mockDb.update(...a), delete: () => chain([]), execute: vi.fn(async () => ({ rows: [] })) }));
+});
 
 describe('manage_software_policy create — writes both audit stores (#3543)', () => {
   it('records policy_created + software_policy.create with the AI actor and the enforcement fields', async () => {
@@ -244,7 +250,7 @@ describe('manage_software_policy delete — writes both audit stores (#3543)', (
   it('records policy_deleted + software_policy.delete', async () => {
     mockDb.select.mockImplementation(() => chain([policyRow()]));
     mockDb.transaction.mockImplementation(async (fn: any) =>
-      fn({ update: () => chain([]), delete: () => chain([]) }));
+      fn({ update: () => chain([]), delete: () => chain([]), execute: vi.fn(async () => ({ rows: [] })) }));
 
     const result = JSON.parse(await handlerFor('manage_software_policy')({
       action: 'delete', policyId: POLICY_ID,
@@ -300,6 +306,7 @@ describe('manage_software_policy update/delete — approval_generation bump (sit
           },
         }),
         delete: () => chain([]),
+        execute: vi.fn(async () => ({ rows: [] })),
       }));
 
     const result = JSON.parse(await handlerFor('manage_software_policy')({
