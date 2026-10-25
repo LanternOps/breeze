@@ -678,6 +678,10 @@
     "wed": "Mi"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
+    },
     "activeScans": "Aktive Scans",
     "allScanRequestsFailed": "Alle {{count}} Scan-Anfragen sind fehlgeschlagen",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "Diese Bedrohung wurde nicht gefunden. Sie wurde möglicherweise gelöscht, oder Sie haben keinen Zugriff auf ihr Gerät.",
     "relatedLoadFailed": "Verwandte Bedrohungen konnten nicht geladen werden.",
     "rule": {
+      "version": "Version Nr. {{version}}",
       "title": "Erkennungsregel",
       "legacy": "Integrierte Signatur (älterer Scan)",
       "ruleName": "Regel",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "IOC-Sweeps",
     "iocScans": "IOC-Scans",
     "subtitle": "Signaturbasierte Malware- und IOC-Sweeps in Ihrer Flotte. Kein Ersatz für umfassenden Endpunktschutz.",
     "scansTab": "Scans",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    }
+  },
+  "sweeps": {
+    "title": "IOC-Sweeps",
+    "started": "Sweep gestartet",
+    "cancelled": "Sweep abgebrochen. Vor der Zustellung gestoppt: {{queued}}. Bereits zugestellt und auf dem Gerät noch in Arbeit: {{stillRunning}}.",
+    "detectOnly": "Sweeps erkennen nur. Nichts wird automatisch in Quarantäne verschoben, und es wird kein Defender-Scan gestartet.",
+    "version": "Version Nr. {{version}}",
+    "sweepNow": "Jetzt Sweep starten",
+    "sweepNowUnpublished": "Veröffentlichen Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
+    "sweepNowDisabled": "Aktivieren Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
+    "progress": {
+      "label": "{{done}} von {{total}} Geräten abgeschlossen"
+    },
+    "errors": {
+      "orgOutOfScope": "Mindestens eine Organisation liegt außerhalb Ihres Zugriffs.",
+      "siteOutOfScope": "Mindestens ein Standort liegt außerhalb Ihres Zugriffs.",
+      "deviceOutOfScope": "Mindestens ein Gerät liegt außerhalb Ihres Zugriffs.",
+      "ruleSetNotFound": "Ein ausgewählter Regelsatz existiert nicht mehr.",
+      "ruleSetNotPublished": "Ein ausgewählter Regelsatz ist deaktiviert oder wurde nie veröffentlicht.",
+      "sweepTooLarge": "Dieser Sweep würde {{targeted}} Geräte scannen; ein Sweep ist auf {{max}} begrenzt. Schränken Sie den Bereich ein.",
+      "noEligibleDevices": "Kein Gerät in diesem Bereich kann den Sweep derzeit ausführen. Prüfen Sie die Agent-Versionen und den Bereich.",
+      "scopeChanged": "Die Geräte oder Regelsätze haben sich seit der Vorschau geändert. Prüfen Sie die neuen Zahlen.",
+      "alreadyRunning": "Dieser Sweep läuft bereits auf diesen Geräten.",
+      "tooManyActive": "Diese Organisation hat bereits {{max}} aktive Sweeps. Warten Sie, bis einer abgeschlossen ist, oder brechen Sie einen ab.",
+      "mfaRequired": "Dieser Sweep betrifft {{targeted}} Geräte, mehr als {{threshold}}. Melden Sie sich mit Multi-Faktor-Authentifizierung an oder schränken Sie den Bereich ein.",
+      "rateLimited": "Es wurden zu viele Sweeps in kurzer Zeit gestartet. Versuchen Sie es später erneut."
+    },
+    "skipReasons": {
+      "agent_too_old": "Geräte mit zu altem Agent",
+      "busy_same_sweep": "Geräte, auf denen dieser Sweep bereits läuft",
+      "rule_set_not_eligible": "Geräte, für die die Regelsätze nicht gelten"
+    },
+    "skipExplain": {
+      "agent_too_old": "Der Agent muss aktualisiert werden, bevor er YARA-Regelsätze ausführen kann.",
+      "busy_same_sweep": "Auf diesen Geräten ist noch ein identischer Sweep aktiv.",
+      "rule_set_not_eligible": "Betriebssystem oder Organisation des Geräts liegen außerhalb der Reichweite des Regelsatzes."
+    },
+    "dialog": {
+      "title": "Geräte auf IOC-Treffer prüfen",
+      "ruleSets": "Regelsätze: {{names}}",
+      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze und Scan-Typ bleiben erhalten.",
+      "back": "Zurück",
+      "next": "Weiter",
+      "previewAction": "Vorschau",
+      "confirm": "{{targeted}} Geräte prüfen",
+      "viewRunning": "Laufenden Sweep anzeigen",
+      "confirmSummary": "{{targeted}} Geräte in {{orgs}} Organisationen werden anhand der in der Vorschau gezeigten Regelsatz-Versionen gescannt. Treffer werden als Bedrohungen gemeldet; auf den Geräten wird nichts verändert.",
+      "steps": {
+        "scope": "Bereich",
+        "type": "Scan-Typ",
+        "duration": "Dauer",
+        "preview": "Vorschau",
+        "confirm": "Bestätigen"
+      },
+      "scope": {
+        "legend": "Welche Geräte?",
+        "all": "Alle erreichbaren Geräte",
+        "orgs": "Organisationen",
+        "sites": "Standorte",
+        "groups": "Gerätegruppen",
+        "devices": "Geräte",
+        "allHelp": "Jedes Gerät, auf das Sie zugreifen können und das den Sweep ausführen kann.",
+        "noOrgs": "Keine Organisationen verfügbar.",
+        "siteOrg": "Organisation",
+        "pickOrg": "Organisation auswählen",
+        "noSites": "Diese Organisation hat keine Standorte.",
+        "sitesFailed": "Die Standorte konnten nicht geladen werden.",
+        "sitesSelected": "Ausgewählte Standorte: {{selected}}"
+      },
+      "type": {
+        "label": "Scan-Typ",
+        "quick": "Schnell",
+        "full": "Vollständig",
+        "custom": "Eigene Pfade",
+        "paths": "Pfade, einer pro Zeile",
+        "pathsHelp": "Bis zu {{max}} Pfade mit je {{chars}} Zeichen."
+      },
+      "duration": {
+        "label": "Laufzeit (Stunden)",
+        "help": "Offline-Geräte führen den Scan aus, wenn sie innerhalb dieser Zeit wieder online kommen. Zwischen 1 und {{max}} Stunden."
+      },
+      "preview": {
+        "targeted": "{{devices}} Geräte in {{orgs}} Organisationen",
+        "org": "{{org}}: {{devices}} Geräte",
+        "ruleSets": "Regelsätze",
+        "skipped": "Übersprungen",
+        "scopeChanged": "Die Geräte oder Regelsätze haben sich seit der Vorschau geändert. Prüfen Sie die neuen Zahlen und bestätigen Sie erneut."
+      }
+    },
+    "panel": {
+      "empty": "Noch keine IOC-Sweeps. Starten Sie einen über einen Regelsatz für Erkennungsregeln.",
+      "refreshFailed": "Die Liste konnte nicht aktualisiert werden. Die Anzeige ist möglicherweise veraltet.",
+      "allSweeps": "Alle Sweeps",
+      "openGroup": "Gruppe öffnen",
+      "cancel": "Abbrechen",
+      "cancelAll": "Alle abbrechen",
+      "resweep": "Erneut mit den aktuellen Regeln prüfen",
+      "rulesChanged": "Regeln seit dem Start dieses Sweeps geändert",
+      "queued": "In der Warteschlange: {{queued}}",
+      "columns": {
+        "ruleSets": "Regelsätze",
+        "origin": "Gestartet über",
+        "progress": "Fortschritt",
+        "skipped": "Übersprungen",
+        "degraded": "Eingeschränkt",
+        "threats": "Bedrohungen",
+        "created": "Erstellt",
+        "state": "Status"
+      },
+      "state": {
+        "active": "Aktiv",
+        "completed": "Abgeschlossen",
+        "cancelled": "Abgebrochen",
+        "expired": "Abgelaufen"
+      },
+      "origin": {
+        "web": "Weboberfläche",
+        "api": "API-Zugriff",
+        "ai_chat": "KI-Chat",
+        "mcp": "MCP-Client"
+      },
+      "scanType": {
+        "quick": "Schnellscan",
+        "full": "Vollscan",
+        "custom": "Eigene Pfade"
+      }
     }
   },
   "detectionRules": {

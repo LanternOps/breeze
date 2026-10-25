@@ -74,6 +74,7 @@ export default function AiChatInput({
           }
           disabled={disabled || isStreaming}
           rows={1}
+          data-testid="ai-chat-input"
           className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary disabled:opacity-50"
         />
         {isStreaming ? (
@@ -82,6 +83,7 @@ export default function AiChatInput({
             disabled={isInterrupting || !onInterrupt}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:opacity-50"
             title={t("aiChatInput.stopResponse")}
+            data-testid="ai-chat-stop"
           >
             {isInterrupting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -93,6 +95,7 @@ export default function AiChatInput({
           <button
             onClick={handleSubmit}
             disabled={!value.trim() || disabled}
+            data-testid="ai-chat-send"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             <Send className="h-4 w-4" />

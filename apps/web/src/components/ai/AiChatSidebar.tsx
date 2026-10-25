@@ -211,6 +211,7 @@ export default function AiChatSidebar() {
                 onClick={toggleHistory}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title={t("aiChatSidebar.conversationHistory")}
+                data-testid="ai-chat-history-toggle"
               >
                 <History className="h-4 w-4" />
               </button>
@@ -232,6 +233,7 @@ export default function AiChatSidebar() {
                 onClick={handleNewConversation}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title={t("aiChatSidebar.newConversation")}
+                data-testid="ai-chat-new-conversation"
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -260,6 +262,7 @@ export default function AiChatSidebar() {
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               title={t("aiChatSidebar.closeShortcut")}
+              data-testid="ai-chat-close"
             >
               <X className="h-4 w-4" />
             </button>

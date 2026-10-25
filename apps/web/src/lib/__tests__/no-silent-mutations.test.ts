@@ -537,6 +537,10 @@ const TARGET_GLOBS = [
   'src/components/security/SecurityScanManager.tsx',
   'src/components/security/ThreatList.tsx',
   'src/components/security/ThreatDetail.tsx',
+  // #6263 W05 PR C: the IOC sweep client. Preview, create and the two cancels
+  // are POSTs that start or stop a fleet-wide scan; a swallowed failure would
+  // leave a tech believing a sweep ran (or stopped) when it did not.
+  'src/components/security/sweeps/sweepsApi.ts',
   // Alert workflows typed filter (#6367 W05c2 Task 9): the save handler now
   // wraps its create/update POST/PUT in runAction — a silent failure here is
   // a tech believing a workflow's severity/kind restriction is live when the
@@ -1003,7 +1007,8 @@ describe('no silent mutations in targeted set', () => {
     // bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 269).
     // #6958 PR D adds software/BuiltinPackagesPanel.tsx: 269 → 270.
     // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 270 → 272.
-    expect(absoluteFiles.length).toBe(272);
+    // IOC sweeps W05 PR C (#6263) adds security/sweeps/sweepsApi.ts: 272 → 273.
+    expect(absoluteFiles.length).toBe(273);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

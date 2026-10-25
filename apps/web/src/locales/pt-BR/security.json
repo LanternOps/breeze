@@ -678,6 +678,10 @@
     "wed": "Qua"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Cancelada",
+      "expired": "Expirada"
+    },
     "activeScans": "Varreduras ativas",
     "allScanRequestsFailed": "Todas as {{count}} solicitações de varredura falharam",
     "cData": "C:\\\\Dados\\\\",
@@ -762,6 +766,7 @@
     "notFound": "Esta ameaça não foi encontrada. Ela pode ter sido excluída ou você pode não ter acesso ao dispositivo dela.",
     "relatedLoadFailed": "Não foi possível carregar as ameaças relacionadas.",
     "rule": {
+      "version": "Versão {{version}}",
       "title": "Regra de detecção",
       "legacy": "Assinatura integrada (varredura legada)",
       "ruleName": "Regra",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Varreduras",
     "iocScans": "Varreduras de IOC",
     "subtitle": "Varreduras de malware e IOC baseadas em assinatura em toda a sua frota. Não substitui a proteção completa de endpoints.",
     "scansTab": "Varreduras",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "Aguardando relatório do fornecedor",
       "awaitingEvaluation": "Aguardando avaliação",
       "vendorOrgMismatch": "O fornecedor informa outra organização"
+    }
+  },
+  "sweeps": {
+    "title": "Varreduras de IOC",
+    "started": "Varredura iniciada",
+    "cancelled": "Varredura cancelada. Interrompidas antes da entrega: {{queued}}. Já entregues e sendo concluídas no dispositivo: {{stillRunning}}.",
+    "detectOnly": "As varreduras apenas detectam. Nada é colocado em quarentena automaticamente e nenhuma verificação do Defender é iniciada.",
+    "version": "Versão {{version}}",
+    "sweepNow": "Varrer agora",
+    "sweepNowUnpublished": "Publique este conjunto de regras antes de usá-lo em uma varredura.",
+    "sweepNowDisabled": "Ative este conjunto de regras antes de usá-lo em uma varredura.",
+    "progress": {
+      "label": "{{done}} de {{total}} dispositivos concluídos"
+    },
+    "errors": {
+      "orgOutOfScope": "Uma ou mais organizações estão fora do seu acesso.",
+      "siteOutOfScope": "Um ou mais locais estão fora do seu acesso.",
+      "deviceOutOfScope": "Um ou mais dispositivos estão fora do seu acesso.",
+      "ruleSetNotFound": "Um conjunto de regras selecionado não existe mais.",
+      "ruleSetNotPublished": "Um conjunto de regras selecionado está desativado ou nunca foi publicado.",
+      "sweepTooLarge": "Esta varredura verificaria {{targeted}} dispositivos; o limite de uma varredura é {{max}}. Restrinja o escopo.",
+      "noEligibleDevices": "Nenhum dispositivo deste escopo pode executar a varredura agora. Verifique as versões do agente e o escopo.",
+      "scopeChanged": "Os dispositivos ou conjuntos de regras mudaram desde a pré-visualização. Confira os novos números.",
+      "alreadyRunning": "Esta varredura já está em execução nestes dispositivos.",
+      "tooManyActive": "Esta organização já tem {{max}} varreduras ativas. Aguarde uma terminar ou cancele uma.",
+      "mfaRequired": "Esta varredura envolve {{targeted}} dispositivos, mais de {{threshold}}. Entre com autenticação multifator ou restrinja o escopo.",
+      "rateLimited": "Muitas varreduras foram iniciadas recentemente. Tente novamente mais tarde."
+    },
+    "skipReasons": {
+      "agent_too_old": "dispositivos com agente desatualizado demais",
+      "busy_same_sweep": "dispositivos que já executam esta varredura",
+      "rule_set_not_eligible": "dispositivos aos quais os conjuntos de regras não se aplicam"
+    },
+    "skipExplain": {
+      "agent_too_old": "O agente precisa ser atualizado antes de poder executar conjuntos de regras YARA.",
+      "busy_same_sweep": "Uma varredura idêntica ainda está ativa nestes dispositivos.",
+      "rule_set_not_eligible": "O sistema operacional ou a organização do dispositivo está fora do alcance do conjunto de regras."
+    },
+    "dialog": {
+      "title": "Varrer dispositivos em busca de correspondências de IOC",
+      "ruleSets": "Conjuntos de regras: {{names}}",
+      "rescopeNote": "Uma varredura não guarda seus dispositivos. Escolha o escopo novamente; os conjuntos de regras e o tipo de verificação são mantidos.",
+      "back": "Voltar",
+      "next": "Avançar",
+      "previewAction": "Pré-visualizar",
+      "confirm": "Varrer {{targeted}} dispositivos",
+      "viewRunning": "Ver a varredura em andamento",
+      "confirmSummary": "{{targeted}} dispositivos em {{orgs}} organizações serão verificados com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado nos dispositivos.",
+      "steps": {
+        "scope": "Escopo",
+        "type": "Tipo de verificação",
+        "duration": "Duração",
+        "preview": "Pré-visualização",
+        "confirm": "Confirmar"
+      },
+      "scope": {
+        "legend": "Quais dispositivos?",
+        "all": "Todos os dispositivos alcançáveis",
+        "orgs": "Organizações",
+        "sites": "Locais",
+        "groups": "Grupos de dispositivos",
+        "devices": "Dispositivos",
+        "allHelp": "Todos os dispositivos aos quais você tem acesso e que podem executar a varredura.",
+        "noOrgs": "Nenhuma organização disponível.",
+        "siteOrg": "Organização",
+        "pickOrg": "Escolha uma organização",
+        "noSites": "Esta organização não tem locais.",
+        "sitesFailed": "Não foi possível carregar os locais.",
+        "sitesSelected": "Locais selecionados: {{selected}}"
+      },
+      "type": {
+        "label": "Tipo de verificação",
+        "quick": "Rápida",
+        "full": "Completa",
+        "custom": "Caminhos personalizados",
+        "paths": "Caminhos, um por linha",
+        "pathsHelp": "Até {{max}} caminhos, com {{chars}} caracteres cada."
+      },
+      "duration": {
+        "label": "Executar por (horas)",
+        "help": "Dispositivos offline executam a verificação quando voltam dentro deste prazo. Entre 1 e {{max}} horas."
+      },
+      "preview": {
+        "targeted": "{{devices}} dispositivos em {{orgs}} organizações",
+        "org": "{{org}}: {{devices}} dispositivos",
+        "ruleSets": "Conjuntos de regras",
+        "skipped": "Ignorados",
+        "scopeChanged": "Os dispositivos ou conjuntos de regras mudaram desde a pré-visualização. Confira os novos números e confirme novamente."
+      }
+    },
+    "panel": {
+      "empty": "Ainda não há varreduras de IOC. Inicie uma a partir de um conjunto de regras de detecção.",
+      "refreshFailed": "Não foi possível atualizar a lista. O que você vê pode estar desatualizado.",
+      "allSweeps": "Todas as varreduras",
+      "openGroup": "Abrir grupo",
+      "cancel": "Cancelar",
+      "cancelAll": "Cancelar tudo",
+      "resweep": "Varrer novamente com as regras atuais",
+      "rulesChanged": "Regras alteradas desde o início desta varredura",
+      "queued": "Na fila: {{queued}}",
+      "columns": {
+        "ruleSets": "Conjuntos de regras",
+        "origin": "Iniciada por",
+        "progress": "Progresso",
+        "skipped": "Ignorados",
+        "degraded": "Cobertura reduzida",
+        "threats": "Ameaças",
+        "created": "Criada",
+        "state": "Situação"
+      },
+      "state": {
+        "active": "Ativa",
+        "completed": "Concluída",
+        "cancelled": "Cancelada",
+        "expired": "Expirada"
+      },
+      "origin": {
+        "web": "Interface web",
+        "api": "Acesso por API",
+        "ai_chat": "Chat de IA",
+        "mcp": "Cliente MCP"
+      },
+      "scanType": {
+        "quick": "Verificação rápida",
+        "full": "Verificação completa",
+        "custom": "Caminhos personalizados"
+      }
     }
   },
   "detectionRules": {
