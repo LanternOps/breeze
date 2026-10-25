@@ -156,9 +156,13 @@ describe('tier-3 approval scope classification', () => {
     }
     expect(enumerated.sort()).toEqual([
       // edr_endpoint_action (#8167 W03): whole-tool four_eyes backstop; isolate/unisolate/scan classified.
-      'edr_endpoint_action', 'manage_ai_agents', 'manage_services', 'manage_startup_items',
+      'edr_endpoint_action', 'manage_ai_agents',
+      // W04 (#6758): whole-tool supervised backstops; every action classified.
+      'manage_browser_policy', 'manage_peripheral_policy',
+      'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',
+      'remediate_sensitive_data',
       's1_threat_action', 'security_scan',
       'send_endpoint_message',
     ]);
@@ -500,6 +504,147 @@ describe('tier-3 approval scope classification', () => {
     expect(getToolTier('test_webhook')).toBe(3);
     expect(resolveApprovalScope('test_webhook', undefined, {})).toBe('supervised');
     expect(TIER3_SUPERVISED_TOOLS.has('test_webhook')).toBe(true);
+  });
+});
+
+// ── W04 (#6758): security, incident and device-operation write classes ─────
+// Class table: docs/superpowers/plans/ai-mcp/2026-10-25-ai-full-control-w04-
+// security-device-ops-writes.md, "Final per-action classes".
+describe('W04 static classes (#6758)', () => {
+  it.each([
+    // Whole-tool supervised: each touches a customer machine.
+    ['execute_containment', undefined, 3, 'supervised'],
+    ['trigger_agent_restart', undefined, 3, 'supervised'],
+    ['trigger_agent_upgrade', undefined, 3, 'supervised'],
+    ['remediate_software_violation', undefined, 3, 'supervised'],
+    // W04-D7: arms a recurring on-site discovery scan (network_discovery is supervised).
+    ['configure_network_baseline', undefined, 3, 'supervised'],
+    // Whole-tool four-eyes.
+    ['create_remote_session', undefined, 3, 'four_eyes'],
+    ['request_elevation', undefined, 3, 'four_eyes'],
+    // Whole-tool tier 2 (tenant-internal, reach nobody).
+    ['create_incident', undefined, 2, undefined],
+    ['revoke_elevation', undefined, 2, undefined],
+    ['assign_security_training', undefined, 2, undefined],
+    ['acknowledge_network_device', undefined, 2, undefined],
+    // System tools: live device reads stay tier 2; writes supervised.
+    ['manage_processes', 'list', 2, undefined],
+    ['manage_processes', 'kill', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'list', 2, undefined],
+    ['manage_scheduled_tasks', 'run', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'disable', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'enable', 3, 'supervised'],
+    ['registry_operations', 'read_key', 2, undefined],
+    ['registry_operations', 'get_value', 2, undefined],
+    ['registry_operations', 'set_value', 3, 'supervised'],
+    ['registry_operations', 'create_key', 3, 'supervised'],
+    ['registry_operations', 'delete_key', 3, 'supervised'],
+    // W04-D2 loosenings: policy reads leave the tier-3 backstop.
+    ['manage_software_policy', 'list', 1, undefined],
+    ['manage_software_policy', 'get', 1, undefined],
+    ['manage_software_policy', 'create', 3, 'supervised'],
+    ['manage_software_policy', 'update', 3, 'supervised'],
+    ['manage_software_policy', 'delete', 3, 'supervised'],
+    ['manage_browser_policy', 'list', 1, undefined],
+    ['manage_browser_policy', 'create', 3, 'supervised'],
+    ['manage_browser_policy', 'update', 3, 'supervised'],
+    ['manage_browser_policy', 'apply', 3, 'supervised'],
+    ['manage_peripheral_policy', 'create', 3, 'supervised'],
+    ['manage_peripheral_policy', 'update', 3, 'supervised'],
+    ['manage_peripheral_policy', 'disable', 3, 'supervised'],
+    ['manage_peripheral_policy', 'add_exception', 3, 'supervised'],
+    ['manage_peripheral_policy', 'remove_exception', 3, 'supervised'],
+    ['remediate_sensitive_data', 'encrypt', 3, 'supervised'],
+    ['remediate_sensitive_data', 'quarantine', 3, 'supervised'],
+    ['remediate_sensitive_data', 'secure_delete', 3, 'supervised'],
+    ['remediate_sensitive_data', 'accept_risk', 3, 'supervised'],
+    ['remediate_sensitive_data', 'false_positive', 3, 'supervised'],
+    ['remediate_sensitive_data', 'mark_remediated', 3, 'supervised'],
+  ] as const)('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, action ? { action } : {});
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('the backstop tools classify every write per action (enumeration, not the whole-tool default)', () => {
+    expect(TIER3_SUPERVISED_ACTIONS.manage_software_policy?.sort()).toEqual(['create', 'delete', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.manage_browser_policy?.sort()).toEqual(['apply', 'create', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.manage_peripheral_policy?.sort()).toEqual(['add_exception', 'create', 'disable', 'remove_exception', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.remediate_sensitive_data?.sort()).toEqual(
+      ['accept_risk', 'encrypt', 'false_positive', 'mark_remediated', 'quarantine', 'secure_delete'],
+    );
+    expect(TIER1_ACTIONS.manage_software_policy?.sort()).toEqual(['get', 'list']);
+    expect(TIER1_ACTIONS.manage_browser_policy).toEqual(['list']);
+  });
+
+  it('configure_network_baseline moved registry tier 2 → 3 with the whole-tool supervised class (D1)', () => {
+    expect(getToolTier('configure_network_baseline')).toBe(3);
+    expect(TIER3_SUPERVISED_TOOLS.has('configure_network_baseline')).toBe(true);
+  });
+});
+
+describe('collect_evidence input-aware escalation (W04, #6758)', () => {
+  const base = { incidentId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222' };
+  it.each([
+    [{ evidenceTypes: ['logs', 'screenshot'] }, 3, 'supervised'],
+    [{ evidenceTypes: ['screenshot'] }, 3, 'supervised'],
+    [{ evidenceTypes: ['logs'] }, 2, undefined],
+    [{ evidenceTypes: ['processes', 'connections'] }, 2, undefined],
+    [{ evidenceTypes: 'screenshot' }, 3, 'supervised'],   // non-array: fail-safe
+    [{}, 3, 'supervised'],                                // missing: fail-safe
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = checkGuardrails('collect_evidence', { ...base, ...input });
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('is a whole-tool input-aware surface, absent from the static scope tables', () => {
+    expect(TIER3_INPUT_AWARE_TOOLS.has('collect_evidence')).toBe(true);
+    expect(TIER3_SUPERVISED_TOOLS.has('collect_evidence')).toBe(false);
+    expect(TIER3_FOUR_EYES_TOOLS.has('collect_evidence')).toBe(false);
+    expect(isInputAwareTier3('collect_evidence', undefined, { evidenceTypes: ['screenshot'] })).toBe(true);
+    expect(isInputAwareTier3('collect_evidence', undefined, { evidenceTypes: ['logs'] })).toBe(false);
+  });
+
+  it('the screenshot headline says a screenshot is captured', () => {
+    expect(checkGuardrails('collect_evidence', { ...base, evidenceTypes: ['logs', 'screenshot'] }).description).toMatch(/screenshot/i);
+  });
+});
+
+describe('W04 approval descriptions say what changes, where (#6758)', () => {
+  const DEV = '22222222-2222-4222-8222-222222222222';
+  const desc = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+  it('a kill names the PID and the process name, marked as unverified', () => {
+    const d = desc('manage_processes', { action: 'kill', deviceId: DEV, processId: '4412', processName: 'chrome.exe' });
+    expect(d).toContain('4412');
+    expect(d).toContain('chrome.exe');
+    expect(d).toMatch(/not verified|as given/i);
+    expect(d).toContain('22222222');
+  });
+
+  it('a registry write names the capped key path and value name, never the value data', () => {
+    const d = desc('registry_operations', {
+      action: 'set_value', deviceId: DEV, keyPath: `HKLM\\SOFTWARE\\${'K'.repeat(300)}`, valueName: 'Enabled', valueData: 'TOPSECRET-DATA',
+    });
+    expect(d).toContain('HKLM');
+    expect(d).toContain('Enabled');
+    expect(d).not.toContain('TOPSECRET');
+    expect(d).not.toContain('K'.repeat(81));
+  });
+
+  it('containment names the action type and the device', () => {
+    const d = desc('execute_containment', { incidentId: DEV, deviceId: DEV, actionType: 'network_isolation' });
+    expect(d).toMatch(/network.isolation/i);
+    expect(d).toContain('22222222');
+  });
+
+  it('an elevation request names the device', () => {
+    expect(desc('request_elevation', { deviceId: DEV, reason: 'install' })).toContain('22222222');
+  });
+
+  it('falls back to the humanized label without a device id', () => {
+    expect(desc('execute_containment', { actionType: 'usb_block' })).toBeTruthy();
   });
 });
 

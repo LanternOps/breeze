@@ -296,6 +296,12 @@ export const TIER1_ACTIONS: Record<string, string[]> = {
   manage_tags: ['list'],
   // Endpoint messaging history reads (#8742); `send` stays at the tool's base Tier 3.
   send_endpoint_message: ['list', 'get'],
+  // Full-control W04 (#6758, W04-D2 — LOOSENING, Todd signs off in the PR):
+  // reads of staff-written policy config, already tier 1 on the plural sibling
+  // tools that read the same tables (manage_software_policies list/get). The
+  // writes stay at the base tier 3, classified per action below.
+  manage_software_policy: ['list', 'get'],
+  manage_browser_policy: ['list'],
 };
 
 /**
@@ -656,10 +662,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // EDR response actions whole-tool catch-all (#8167): an unknown action
   // string fails closed to four_eyes instead of falling through.
   'edr_endpoint_action',
-  // PAM elevation grant: rule auto-approve can grant elevated device access
-  // with no further human review (see TOOL_PERMISSIONS comment on
-  // request_elevation above). Not named in spec §3.2; classified four_eyes
-  // out of caution — flagged in the task report "concerns".
+  // PAM elevation request. Classified four_eyes out of caution (not named in
+  // spec §3.2). Full-control W04 (#6758) re-read the handler: it always
+  // inserts a PENDING request and applies only an auto_deny rule verdict —
+  // an auto_approve rule is NOT applied (aiToolsPam.ts), so a separate
+  // pam:approve holder still answers it. Four-eyes is kept, not loosened.
   'request_elevation',
 ]);
 
@@ -735,6 +742,17 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_dr_plan: ['delete_group'],
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
+  // Full-control W04 (#6758): base-tier-3 policy and remediation tools whose
+  // whole-tool TIER3_SUPERVISED_TOOLS entry was the only classifier. Every
+  // write is enumerated so a new enum member reds the enumeration contract
+  // instead of landing on the backstop. Software update can arm fleet
+  // uninstall; peripheral writes queue device syncs; secure_delete is
+  // irreversible but single-device and tenant-internal (sup by the class
+  // rule); the three finding status flips have no reopen path (kept sup).
+  manage_software_policy: ['create', 'update', 'delete'],
+  manage_browser_policy: ['create', 'update', 'apply'],
+  manage_peripheral_policy: ['create', 'update', 'disable', 'add_exception', 'remove_exception'],
+  remediate_sensitive_data: ['encrypt', 'quarantine', 'secure_delete', 'accept_risk', 'false_positive', 'mark_remediated'],
   // W02 (#6756) — see the TIER3_ACTIONS notes for each.
   manage_tickets: ['edit_comment', 'delete_comment', 'merge'],
   manage_quotes: ['decline', 'create_pay_link'],
@@ -798,6 +816,11 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // ("backup triggers, ... agent upgrades").
   'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup',
   'trigger_agent_upgrade', 'trigger_agent_restart',
+  // Full-control W04 (#6758, W04-D7): registry tier 2 → 3. Creating a
+  // baseline arms a RECURRING on-site discovery scan of a model-chosen subnet
+  // (every 1-168 h) — the one-shot network_discovery is already supervised,
+  // and at tier 2 auto_approve would schedule it with no prompt.
+  'configure_network_baseline',
   // Topology M4 Task 4 (#6000), same class as network_discovery: every
   // accepted recipe is ONE bounded, same-site OBSERVATIONAL check from the
   // fixed M1/M3 set (gateway/DNS/internet/configured target/routed trace) —
@@ -915,6 +938,13 @@ export function isInputAwareTier3(
     }
     return false;
   }
+  if (toolName === 'collect_evidence') {
+    // W04-D3 (#6758): a screenshot is screen capture (take_screenshot is tier
+    // 3 supervised). A non-array evidenceTypes cannot be read, so it fails
+    // safe; Zod rejects it a moment later anyway.
+    const types = input.evidenceTypes;
+    return !Array.isArray(types) || types.includes('screenshot');
+  }
   if (toolName !== 'manage_policy_feature_link') return false;
   if (action !== 'add' && action !== 'update') return false;
   return (
@@ -931,6 +961,10 @@ export function isInputAwareTier3(
  */
 export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   's1_isolate_device',
+  // Full-control W04 (#6758, W04-D3): base tier 2 with no `action` string;
+  // escalated to tier 3 SUPERVISED by isInputAwareTier3 when `evidenceTypes`
+  // asks for a screenshot (the take_screenshot class) or is not an array.
+  'collect_evidence',
   // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
   // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
   'run_script',
@@ -963,6 +997,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   manage_organizations: ['status'],
   // resolveApprovalScope: sweep above the four-eyes device threshold (or with no count) is four-eyes.
   ioc_hunt: ['expectedDeviceCount'],
+  // isInputAwareTier3: evidenceTypes containing 'screenshot' (or not an array) is supervised (W04, #6758).
+  collect_evidence: ['evidenceTypes'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -1964,7 +2000,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     false_positive: { resource: 'devices', action: 'write' },
     mark_remediated: { resource: 'devices', action: 'write' },
   },
-  request_elevation: { resource: 'devices', action: 'execute' },   // requesting is not approving — unchanged (fix/pam-dedicated-permissions); rule auto-approve makes this privilege-granting; an admin-authored auto_approve rule yields elevation with no pam:approve holder in the loop
+  request_elevation: { resource: 'devices', action: 'execute' },   // requesting is not approving — unchanged (fix/pam-dedicated-permissions); the AI handler inserts a pending request and ignores an auto_approve rule verdict (W04 re-read), so a pam:approve holder still answers it
   revoke_elevation: { resource: 'pam', action: 'approve' },    // routes/pam.ts revoke gates on requirePamApprove (fix/pam-dedicated-permissions)
   get_elevation_history: { resource: 'devices', action: 'read' },  // requirePamRead, unchanged
 
@@ -3212,6 +3248,11 @@ export async function checkToolRateLimit(
   return null;
 }
 
+/** Model-chosen free text in a W04 headline, capped at 80 characters (#6758). */
+function w04Cap(text: string): string {
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 /** A trimmed string, or a finite number coerced to a string — never '', null, undefined, NaN. */
 function nonEmptyText(value: unknown): string | null {
   if (typeof value === 'string' && value.trim()) return value.trim();
@@ -3703,11 +3744,40 @@ export function buildApprovalDescription(
 
     case 'manage_processes':
       if (action === 'kill') {
-        parts.push(`Kill process PID ${input.processId}`);
+        // W04 (#6758): the name is the model's claim — the handler sends the
+        // PID only and never checks it (#4149), so the approver is told so.
+        const processName = nonEmptyText(input.processName);
+        parts.push(`Kill process PID ${input.processId}`
+          + (processName ? ` ("${w04Cap(processName)}" as given — not verified against the PID)` : ''));
       } else {
         parts.push('List processes');
       }
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    // W04 (#6758): containment, evidence and elevation name what and where.
+    case 'execute_containment': {
+      const actionType = nonEmptyText(input.actionType);
+      if (!nonEmptyText(input.deviceId)) {
+        parts.push(humanizeToolAction(toolName, action));
+        break;
+      }
+      parts.push(`Containment: ${actionType ? w04Cap(actionType.replace(/_/g, ' ')) : '(unspecified action)'} on device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
+    case 'collect_evidence': {
+      const types = Array.isArray(input.evidenceTypes) ? input.evidenceTypes.filter((t): t is string => typeof t === 'string') : [];
+      parts.push(`Collect evidence (${types.length ? types.map(w04Cap).join(', ') : 'unspecified'})`);
+      if (types.includes('screenshot')) parts.push('— includes a SCREENSHOT of the device screen');
+      if (input.deviceId) parts.push(`from device ${String(input.deviceId).slice(0, 8)}...`);
+      break;
+    }
+    case 'request_elevation':
+      if (!nonEmptyText(input.deviceId)) {
+        parts.push(humanizeToolAction(toolName, action));
+        break;
+      }
+      parts.push(`Request local admin elevation for you on device ${String(input.deviceId).slice(0, 8)}... (a second approver must grant it)`);
       break;
 
     // W02 (#6756): the approver must see WHERE alert data will go — the
@@ -3790,8 +3860,9 @@ export function buildApprovalDescription(
       break;
 
     case 'registry_operations':
-      parts.push(`Registry ${action?.replace(/_/g, ' ')}: ${input.keyPath}`);
-      if (input.valueName) parts.push(`\\${input.valueName}`);
+      // W04 (#6758): key path and value name capped; the value data is never echoed.
+      parts.push(`Registry ${action?.replace(/_/g, ' ')}: ${w04Cap(nonEmptyText(input.keyPath) ?? '(no key)')}`);
+      if (input.valueName) parts.push(`\\${w04Cap(String(input.valueName))}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
 
