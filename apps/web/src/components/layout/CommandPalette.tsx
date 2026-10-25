@@ -5,10 +5,12 @@ import {
   FileCode,
   Keyboard,
   Loader2,
+  MessageSquare,
   Monitor,
   Plus,
   Search,
   Settings,
+  Sparkles,
   Terminal,
   Zap,
   type LucideIcon
@@ -19,7 +21,10 @@ import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
+import { useAiStore } from '../../stores/aiStore';
 import { getJwtClaims } from '../../lib/authScope';
+import { getPartnersMe } from '../../lib/api/partnersMe';
+import { hasPermission } from '../../lib/permissions';
 import { searchSettingsCatalog } from '../../lib/settingsSearch';
 import { useUiStore } from '../../stores/uiStore';
 import { useRecentsStore } from '../../stores/recentsStore';
@@ -210,6 +215,51 @@ const buildResultHref = (result: SearchResult): string => {
   return config.baseHref;
 };
 
+type PartnerAiFlags = { wispEnabled: boolean; aiForOfficeEnabled: boolean };
+const PARTNER_AI_FLAGS_OFF: PartnerAiFlags = { wispEnabled: false, aiForOfficeEnabled: false };
+
+/**
+ * The partner's Wisp and AI for Office flags, from one GET /orgs/partners/me
+ * answer (#10135). The palette mounts on every page, so it asks only once it has
+ * been opened, at most once per mount while the answer is good (the shared read
+ * also coalesces with the sidebar's). Partner tokens only: the route is
+ * partner-level. Unknown, failed or non-partner reads as both off — an entry
+ * stays hidden rather than offering what may 404 — and a failed read is retried
+ * on the next open.
+ */
+function usePartnerAiFlags(active: boolean): PartnerAiFlags {
+  const [flags, setFlags] = useState<PartnerAiFlags>(PARTNER_AI_FLAGS_OFF);
+  const askedRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  useEffect(() => {
+    if (!active || askedRef.current) return;
+    if (getJwtClaims().scope !== 'partner') return;
+    askedRef.current = true;
+    getPartnersMe()
+      .then((read) => {
+        if (!read.ok) {
+          askedRef.current = false;
+          if (read.status !== 403 && read.status !== 404) {
+            console.warn('[CommandPalette] partner AI flags read returned', read.status);
+          }
+          return;
+        }
+        const data = read.data as { wispEnabled?: unknown; aiForOfficeEnabled?: unknown } | null;
+        if (!mountedRef.current) return;
+        setFlags({ wispEnabled: data?.wispEnabled === true, aiForOfficeEnabled: data?.aiForOfficeEnabled === true });
+      })
+      .catch((err: unknown) => {
+        askedRef.current = false;
+        console.warn('[CommandPalette] reading partner AI flags failed', err);
+      });
+  }, [active]);
+  return flags;
+}
+
 export default function CommandPalette() {
   const { t } = useTranslation(['common', 'pages', 'settings']);
   // Open state lives in the ui store so the "/" shortcut (useGlobalShortcuts)
@@ -233,6 +283,11 @@ export default function CommandPalette() {
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
   const toolSourcesEnabled = useFeaturesStore((s) => s.features.toolSources);
+  const { wispEnabled, aiForOfficeEnabled } = usePartnerAiFlags(open);
+  const openAiPanel = useAiStore((s) => s.open);
+  // #6396: every own-session /ai/* route requires ai_sessions:use — the same
+  // gate as the header's Breeze AI button and the sidebar's AI doors.
+  const canUseAi = hasPermission(permissions, 'ai_sessions', 'use');
   const [modifierLabel, setModifierLabel] = useState('');
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -357,7 +412,7 @@ export default function CommandPalette() {
   );
 
   const quickActionItems = useMemo<CommandItem[]>(() => {
-    return QUICK_ACTIONS.map((action) => ({
+    const items: CommandItem[] = QUICK_ACTIONS.map((action) => ({
       key: action.key,
       title: t(/* i18n-dynamic */ `layout.search.actions.${action.id}`),
       description: t(/* i18n-dynamic */ `layout.search.actions.${action.id}Description`),
@@ -366,7 +421,31 @@ export default function CommandPalette() {
       icon: action.icon,
       kind: 'action'
     }));
-  }, [openShortcutsHelp, t]);
+    // #10135: the two AI doors. "Ask Breeze AI" opens the side panel (open, not
+    // the header button's toggle, so an open panel stays open); "Open Wisp"
+    // only when the server has Wisp on.
+    if (canUseAi) {
+      items.push({
+        key: 'action:ask-breeze-ai',
+        title: t('layout.search.actions.askBreezeAi'),
+        description: t('layout.search.actions.askBreezeAiDescription'),
+        onSelect: openAiPanel,
+        icon: MessageSquare,
+        kind: 'action'
+      });
+      if (wispEnabled) {
+        items.push({
+          key: 'action:open-wisp',
+          title: t('layout.search.actions.wispHome'),
+          description: t('layout.search.actions.wispHomeDescription'),
+          href: '/wisp',
+          icon: Sparkles,
+          kind: 'action'
+        });
+      }
+    }
+    return items;
+  }, [canUseAi, openAiPanel, openShortcutsHelp, t, wispEnabled]);
 
   // Recents come from the shared store (sidebar shows the same devices). Pages
   // carry their path as the description so two pages with one title (e.g. two
@@ -420,10 +499,9 @@ export default function CommandPalette() {
         permissions,
         getScope: () => getJwtClaims().scope,
         toolSourcesEnabled,
-        aiForOfficeEnabled: false,
-        // Like aiForOffice: the palette mounts everywhere and must not fetch
-        // /orgs/partners/me, so Wisp-gated settings stay out of palette search.
-        wispEnabled: false,
+        // Read on first open, never at mount (usePartnerAiFlags).
+        aiForOfficeEnabled,
+        wispEnabled,
         serviceManagementMode,
       },
       (key, fallback) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string
@@ -436,7 +514,7 @@ export default function CommandPalette() {
       kind: 'result',
       category: 'settings'
     }));
-  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, serviceManagementMode, t]);
+  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
 
   const resultItemsByCategory = useMemo(() => {
     const grouped = CATEGORY_ORDER.reduce((acc, category) => {

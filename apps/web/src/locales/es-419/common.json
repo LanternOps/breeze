@@ -811,7 +811,11 @@
         "alertRules": "Reglas de alerta",
         "alertRulesDescription": "Administrar alertas en Políticas de configuración",
         "keyboardShortcuts": "Atajos de teclado",
-        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta"
+        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta",
+        "askBreezeAi": "Preguntar a Breeze AI",
+        "askBreezeAiDescription": "Abre el panel lateral de Breeze AI",
+        "wispHome": "Abrir Wisp",
+        "wispHomeDescription": "Ir a tu inicio de Wisp"
       },
       "numberHint": "{{mod}}1–9 para abrir"
     },

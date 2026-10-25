@@ -811,7 +811,11 @@
         "alertRules": "Regole di avviso",
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
-        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda",
+        "askBreezeAi": "Chiedi a Breeze AI",
+        "askBreezeAiDescription": "Apri il pannello laterale di Breeze AI",
+        "wispHome": "Apri Wisp",
+        "wispHomeDescription": "Vai alla tua home di Wisp"
       },
       "numberHint": "{{mod}}1–9 per aprire"
     },

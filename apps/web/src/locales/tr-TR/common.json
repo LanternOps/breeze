@@ -811,7 +811,11 @@
         "alertRules": "Uyarı kuralları",
         "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
         "keyboardShortcuts": "Klavye kısayolları",
-        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
+        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta",
+        "askBreezeAi": "Breeze AI’a sor",
+        "askBreezeAiDescription": "Breeze AI yan panelini aç",
+        "wispHome": "Wisp’i aç",
+        "wispHomeDescription": "Wisp ana sayfanıza gidin"
       },
       "numberHint": "Açmak için {{mod}}1–9"
     },

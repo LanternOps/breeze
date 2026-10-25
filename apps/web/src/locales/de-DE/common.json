@@ -811,7 +811,11 @@
         "alertRules": "Alarmregeln",
         "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
         "keyboardShortcuts": "Tastenkürzel",
-        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte",
+        "askBreezeAi": "Breeze AI fragen",
+        "askBreezeAiDescription": "Den Breeze AI-Seitenbereich öffnen",
+        "wispHome": "Wisp öffnen",
+        "wispHomeDescription": "Zu Ihrer Wisp-Startseite wechseln"
       },
       "numberHint": "{{mod}}1–9 zum Öffnen"
     },

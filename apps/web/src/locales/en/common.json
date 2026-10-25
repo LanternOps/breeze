@@ -811,7 +811,11 @@
         "alertRules": "Alert rules",
         "alertRulesDescription": "Manage alerting in Configuration Policies",
         "keyboardShortcuts": "Keyboard shortcuts",
-        "keyboardShortcutsDescription": "Every key and chord, on one card"
+        "keyboardShortcutsDescription": "Every key and chord, on one card",
+        "askBreezeAi": "Ask Breeze AI",
+        "askBreezeAiDescription": "Open the Breeze AI side panel",
+        "wispHome": "Open Wisp",
+        "wispHomeDescription": "Go to your Wisp home"
       },
       "numberHint": "{{mod}}1–9 to open"
     },
