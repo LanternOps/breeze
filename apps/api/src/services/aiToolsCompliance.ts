@@ -31,6 +31,7 @@ import {
 } from './softwarePolicyExecutableRulesAuthorization';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
+import { MAX_REMEDIATION_DEVICES } from './softwarePolicyRemediationPreview';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
 import {
   auditSoftwarePolicyToolEvent,
@@ -642,6 +643,17 @@ registerTool({
       ? Array.from(new Set((input.deviceIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
       : [];
 
+    // Mirror POST /software-policies/:id/remediate: an explicit list over the
+    // cap is refused (the route's zod .max()); the implicit set is truncated.
+    if (deviceIds.length > MAX_REMEDIATION_DEVICES) {
+      return JSON.stringify({
+        error: `Too many devices: remediation is limited to ${MAX_REMEDIATION_DEVICES} devices per request`,
+        policyId: policy.id,
+        requested: deviceIds.length,
+        maxDevices: MAX_REMEDIATION_DEVICES,
+      });
+    }
+
     if (deviceIds.length === 0) {
       const complianceConditions: SQL[] = [
         eq(softwareComplianceStatus.policyId, policy.id),
@@ -682,7 +694,8 @@ registerTool({
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
         .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
-        .where(and(...complianceConditions));
+        .where(and(...complianceConditions))
+        .limit(MAX_REMEDIATION_DEVICES);
 
       deviceIds = Array.from(new Set(rows.map((row) => row.deviceId)));
     }
