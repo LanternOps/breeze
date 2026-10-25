@@ -402,18 +402,40 @@ var failoverReloadConfigFn = func() (*config.Config, error) { return config.Load
 // successful reload also refreshes the ECH switches; a failed one is
 // journaled and leaves them as they were.
 func resolveFailoverBaseURL(cfg *config.Config, journal *watchdog.Journal) string {
-	baseURL := cfg.ServerURL
+	baseURL, _ := resolveFailoverTarget(cfg, nil, journal)
+	return baseURL
+}
+
+// resolveFailoverTarget is resolveFailoverBaseURL that also follows an
+// identity change on disk: when agent.yaml names another agent id than the
+// one this process holds (a reinstall reattach, #8318, swapped the install
+// to an existing device; or a re-enrollment), the on-disk agent id and
+// watchdog token are adopted together — a failover beat under the old agent
+// id would only be refused, with either token. tokens nil: URL only. Called
+// from the main loop only (cfg is not shared with other goroutines).
+func resolveFailoverTarget(cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) (baseURL string, identityChanged bool) {
+	baseURL = cfg.ServerURL
 	reloaded, err := failoverReloadConfigFn()
 	if err != nil {
 		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
-		return baseURL
+		return baseURL, false
 	}
 	// ech.Shared() reads no config; every process configures it.
 	ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
 	if reloaded.ServerURL != "" {
 		baseURL = reloaded.ServerURL
 	}
-	return baseURL
+	if tokens != nil && reloaded.AgentID != "" && reloaded.AgentID != cfg.AgentID && reloaded.WatchdogAuthToken != "" {
+		journal.Log(watchdog.LevelInfo, "failover.identity_reloaded", map[string]any{
+			"from_agent_id": cfg.AgentID,
+			"to_agent_id":   reloaded.AgentID,
+		})
+		cfg.AgentID = reloaded.AgentID
+		cfg.DeviceID = reloaded.DeviceID
+		tokens.Replace(reloaded.WatchdogAuthToken)
+		identityChanged = true
+	}
+	return baseURL, identityChanged
 }
 
 func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
@@ -1040,7 +1062,11 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 				// client built from the stale startup URL would keep working
 				// against the rolled-back control plane if that URL answers —
 				// the failure-only reload path below would then never run.
-				failoverBaseURL := resolveFailoverBaseURL(cfg, journal)
+				failoverBaseURL, identityChanged := resolveFailoverTarget(cfg, tokenStore, journal)
+				if identityChanged {
+					// A new identity is not refused yet: no inherited backoff.
+					failoverAuthMon.Reset()
+				}
 				failoverClient = watchdog.NewFailoverClient(
 					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)
