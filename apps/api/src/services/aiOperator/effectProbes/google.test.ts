@@ -14,6 +14,8 @@ const usersGet = vi.fn();
 const groupsList = vi.fn();
 const mobileList = vi.fn();
 const licenseList = vi.fn();
+const licenseListForProductAndSku = vi.fn();
+const membersGet = vi.fn();
 const getVacation = vi.fn();
 const getAutoForwarding = vi.fn();
 const forwardingGet = vi.fn();
@@ -24,7 +26,7 @@ const dirFor = vi.fn();
 vi.mock('../../googleClient', () => ({
   getDirectoryClient: (...a: unknown[]) => {
     dirFor(...a);
-    return { users: { get: usersGet }, groups: { list: groupsList }, mobiledevices: { list: mobileList } };
+    return { users: { get: usersGet }, groups: { list: groupsList }, members: { get: membersGet }, mobiledevices: { list: mobileList } };
   },
   getGmailClient: (...a: unknown[]) => {
     gmailFor(...a);
@@ -36,7 +38,7 @@ vi.mock('../../googleClient', () => ({
       } },
     };
   },
-  getLicensingClient: () => ({ licenseAssignments: { listForProduct: licenseList } }),
+  getLicensingClient: () => ({ licenseAssignments: { listForProduct: licenseList, listForProductAndSku: licenseListForProductAndSku } }),
 }));
 const resolveContextByOrg = vi.fn();
 const dbCtx = vi.hoisted(() => ({ opened: [] as unknown[], depth: 0, depthAtResolve: [] as number[] }));
@@ -57,7 +59,7 @@ vi.mock('../../aiToolsGoogle', () => ({
 }));
 
 import {
-  probeGoogleAddMailDelegate, probeGoogleRemoveFromGroup, probeGoogleRemoveLicense,
+  probeGoogleAddMailDelegate, probeGoogleAddToGroup, probeGoogleAssignLicense, probeGoogleMoveOu, probeGoogleRemoveFromGroup, probeGoogleRemoveLicense,
   probeGoogleSetForwarding, probeGoogleSetVacation, probeGoogleSignout,
   probeGoogleSuspendUser, probeGoogleWipeMobileDevice, registerGoogleEffectProbes,
 } from './google';
@@ -342,11 +344,12 @@ describe('probeGoogleWipeMobileDevice', () => {
 });
 
 describe('registerGoogleEffectProbes', () => {
-  it('registers exactly the nine Google write tools and returns their names', () => {
+  it('registers exactly the twelve Google write tools and returns their names', () => {
     __resetEffectProbesForTest();
     const names = registerGoogleEffectProbes();
     const expected = [
-      'google_account_wipe_mobile_device', 'google_add_mail_delegate', 'google_remove_from_group', 'google_remove_license',
+      'google_account_wipe_mobile_device', 'google_add_mail_delegate', 'google_add_to_group', 'google_assign_license',
+      'google_move_ou', 'google_remove_from_group', 'google_remove_license',
       'google_set_forwarding', 'google_set_vacation', 'google_signout',
       'google_suspend_user', 'google_wipe_mobile_device',
     ];
@@ -370,5 +373,110 @@ describe('the connection lookup runs in an org-scoped db context', () => {
     // forced-RLS connection table reads as "not connected".
     expect(dbCtx.depthAtResolve).toEqual([1]);
     expect(dbCtx.opened).toEqual([expect.objectContaining({ scope: 'organization', orgId: 'o1', accessibleOrgIds: ['o1'] })]);
+  });
+});
+
+describe('probeGoogleAssignLicense', () => {
+  const e = eff('google_assign_license', {
+    userEmail: 'priya@customer.example', productId: 'Google-Apps', skuId: '1010020020', reason: 'onboarding',
+  });
+
+  it('is satisfied when the assignment list contains the user, case-insensitively', async () => {
+    licenseListForProductAndSku.mockResolvedValue({ data: { items: [{ userId: 'Priya@Customer.Example', skuId: '1010020020' }] } });
+    await expect(probeGoogleAssignLicense(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
+  });
+
+  it('is unsatisfied when the complete list has no match', async () => {
+    licenseListForProductAndSku.mockResolvedValue({ data: { items: [{ userId: 'someone@customer.example' }] } });
+    await expect(probeGoogleAssignLicense(e, ctx)).resolves.toMatchObject({ state: 'unsatisfied' });
+  });
+
+  it('is UNKNOWN, never unsatisfied, when the list truncates before a match', async () => {
+    licenseListForProductAndSku.mockResolvedValue({
+      data: { items: Array.from({ length: 100 }, (_, i) => ({ userId: `u${i}@customer.example` })), nextPageToken: 'more' },
+    });
+    const r = await probeGoogleAssignLicense(e, ctx);
+    expect(r.state).toBe('unknown');
+    expect(r.detail).toMatch(/truncat/i);
+  });
+
+  it('finds a match on a later page', async () => {
+    licenseListForProductAndSku
+      .mockResolvedValueOnce({ data: { items: [{ userId: 'a@customer.example' }], nextPageToken: 'p2' } })
+      .mockResolvedValueOnce({ data: { items: [{ userId: 'priya@customer.example' }] } });
+    await expect(probeGoogleAssignLicense(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
+  });
+
+  it('is unknown when the read throws', async () => {
+    licenseListForProductAndSku.mockRejectedValue(new Error('backend error'));
+    await expect(probeGoogleAssignLicense(e, ctx)).rejects.toThrow('backend error');
+  });
+
+  it('is unknown on a missing skuId', async () => {
+    await expect(probeGoogleAssignLicense(eff('google_assign_license', { userEmail: 'a@customer.example', productId: 'p' }), ctx))
+      .resolves.toMatchObject({ state: 'unknown' });
+  });
+
+  it('reads the SAME product and sku the write wrote', async () => {
+    licenseListForProductAndSku.mockResolvedValue({ data: { items: [] } });
+    await probeGoogleAssignLicense(e, ctx);
+    expect(licenseListForProductAndSku).toHaveBeenCalledWith(expect.objectContaining({
+      productId: 'Google-Apps', skuId: '1010020020', customerId: 'my_customer',
+    }));
+  });
+});
+
+describe('probeGoogleAddToGroup', () => {
+  const e = eff('google_add_to_group', {
+    userEmail: 'priya@customer.example', groupEmail: 'fin@customer.example', role: 'MEMBER', reason: 'onboarding',
+  });
+
+  it('is satisfied when the targeted member read returns a resource', async () => {
+    membersGet.mockResolvedValue({ data: { id: '900100', email: 'priya@customer.example', role: 'MEMBER' } });
+    await expect(probeGoogleAddToGroup(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
+    expect(membersGet).toHaveBeenCalledWith(expect.objectContaining({
+      groupKey: 'fin@customer.example', memberKey: 'priya@customer.example',
+    }));
+  });
+
+  it('is unsatisfied on a 404', async () => {
+    membersGet.mockRejectedValue(Object.assign(new Error('Not Found'), { code: 404 }));
+    await expect(probeGoogleAddToGroup(e, ctx)).resolves.toMatchObject({ state: 'unsatisfied' });
+  });
+
+  it('propagates any other failure (registry converts to unknown)', async () => {
+    membersGet.mockRejectedValue(Object.assign(new Error('Rate Limit Exceeded'), { code: 429 }));
+    await expect(probeGoogleAddToGroup(e, ctx)).rejects.toThrow('Rate Limit');
+  });
+
+  it('does NOT assert the role: membership, not privilege', async () => {
+    membersGet.mockResolvedValue({ data: { id: '900100', role: 'MANAGER' } });
+    await expect(probeGoogleAddToGroup(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
+  });
+});
+
+describe('probeGoogleMoveOu', () => {
+  const e = eff('google_move_ou', {
+    userEmail: 'priya@customer.example', orgUnitPath: '/Staff/Finance', reason: 'onboarding',
+  });
+
+  it('is satisfied on an exact orgUnitPath match', async () => {
+    usersGet.mockResolvedValue({ data: { primaryEmail: 'priya@customer.example', orgUnitPath: '/Staff/Finance' } });
+    await expect(probeGoogleMoveOu(e, ctx)).resolves.toMatchObject({ state: 'satisfied' });
+  });
+
+  it('is unsatisfied when the path differs, including a PREFIX of the target', async () => {
+    usersGet.mockResolvedValue({ data: { orgUnitPath: '/Staff' } });
+    await expect(probeGoogleMoveOu(e, ctx)).resolves.toMatchObject({ state: 'unsatisfied' });
+  });
+
+  it('is unknown when orgUnitPath is absent from the response', async () => {
+    usersGet.mockResolvedValue({ data: { primaryEmail: 'priya@customer.example' } });
+    await expect(probeGoogleMoveOu(e, ctx)).resolves.toMatchObject({ state: 'unknown' });
+  });
+
+  it('is unknown when the user 404s', async () => {
+    usersGet.mockRejectedValue(Object.assign(new Error('Not Found'), { code: 404 }));
+    await expect(probeGoogleMoveOu(e, ctx)).resolves.toMatchObject({ state: 'unknown' });
   });
 });
