@@ -31,12 +31,14 @@ import {
  *   reappears (a row is listed twice, and the id filter drops the repeat). A
  *   page shorter than 100 is the last. The header comes from the list row, so
  *   an unchanged ticket costs no other request.
- * - **load** reads the articles with `by_ticket` (unpaginated; inline
+ * - **load** reads the article ids (`?expand=true`, System articles
+ *   included), then the articles with `by_ticket` (unpaginated; inline
  *   attachments included, Z5), never `GET /tickets/:id?all=true`, which omits
- *   them and runs Core Workflow. A ticket whose `article_count` passes 500,
- *   or whose `by_ticket` answer passes the JSON cap, is read article by article
- *   from its `article_ids` (§11). Then its tags (Z18), the final survivor of a
- *   merged ticket from its `parent` link (Z9), and the people it names.
+ *   them, carries every article as an asset and runs Core Workflow. A ticket
+ *   over 500 articles in all, or whose `by_ticket` answer passes the JSON
+ *   cap, is read article by article (§11), a few at a time, stopping at the
+ *   first failure. Then its tags (Z18), the final survivor of a merged ticket
+ *   from its `parent` link (Z9), and the people it names.
  */
 
 export const ZAMMAD_BIG_TICKET_ARTICLES = 500;
@@ -135,19 +137,69 @@ export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: st
 
 // ------------------------------------------------------------------- load
 
-/** By the article ids of `GET /tickets/:id?expand=true`, in `by_ticket` order. */
-async function articlesOneByOne(src: SourceHandle<unknown>, ticketId: number): Promise<ZammadArticle[]> {
-  const ids = await getTicketArticleIds(src, ticketId);
-  const articles = await Promise.all(ids.map((id) => getArticle(src, id)));
+/**
+ * Requests in flight for one ticket's per-article read: the source client's
+ * own semaphore (TICKET_IMPORT_SOURCE_CONCURRENCY, default 2) still bounds
+ * the whole slice; this bounds how many this loop starts at once.
+ */
+export const ZAMMAD_ARTICLE_READS_IN_FLIGHT = 2;
+
+/**
+ * `fn` over `items`, at most `limit` at a time, in order. After the first
+ * failure no new call starts; the ones in flight settle, then that first
+ * error is thrown. Results keep the items' order.
+ */
+export async function boundedInOrder<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  let failure: { error: unknown } | null = null;
+  const worker = async () => {
+    while (failure === null && next < items.length) {
+      const i = next;
+      next += 1;
+      try {
+        out[i] = await fn(items[i]!);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  if (failure) throw (failure as { error: unknown }).error;
+  return out;
+}
+
+/** Each article on its own (`GET /ticket_articles/:id`), in `by_ticket` order. */
+async function articlesOneByOne(src: SourceHandle<unknown>, ids: readonly number[]): Promise<ZammadArticle[]> {
+  const articles = await boundedInOrder(ids, ZAMMAD_ARTICLE_READS_IN_FLIGHT, (id) => getArticle(src, id));
   return articles.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
 }
 
-export async function zammadArticles(src: SourceHandle<unknown>, ticket: ZammadTicket): Promise<ZammadArticle[]> {
-  if ((ticket.article_count ?? 0) > ZAMMAD_BIG_TICKET_ARTICLES) return articlesOneByOne(src, ticket.id);
+let bigTicketArticles = ZAMMAD_BIG_TICKET_ARTICLES;
+
+/** Tests only: the article count above which a ticket is read article by article. */
+export const __zammadReadingTestHooks = {
+  setBigTicketArticles(n: number | null): void {
+    bigTicketArticles = n ?? ZAMMAD_BIG_TICKET_ARTICLES;
+  },
+};
+
+/**
+ * A ticket's articles. The path is decided from the TOTAL article count,
+ * System articles included: `article_count` counts non-System articles only
+ * (Z5), so a ticket full of trigger notes would otherwise be read whole with
+ * `by_ticket` first. `GET /tickets/:id?expand=true` gives every article id in
+ * a small answer. (Not `?all=true`: its assets carry every visible article,
+ * so it would itself be the large read this avoids.) Over 500, or when
+ * `by_ticket` passes the JSON cap, each article is read on its own (§11).
+ */
+export async function zammadArticles(src: SourceHandle<unknown>, ticketId: number): Promise<ZammadArticle[]> {
+  const ids = await getTicketArticleIds(src, ticketId);
+  if (ids.length > bigTicketArticles) return articlesOneByOne(src, ids);
   try {
-    return await articlesByTicket(src, ticket.id);
+    return await articlesByTicket(src, ticketId);
   } catch (error) {
-    if (error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ticket.id);
+    if (error instanceof SourceResponseTooLargeError) return articlesOneByOne(src, ids);
     throw error;
   }
 }
@@ -179,7 +231,7 @@ export async function loadZammad(src: SourceHandle<unknown>, row: SourceRow): Pr
   if (!parsed.success || String(parsed.data.id) !== row.key) throw new ZammadShapeError('the ticket list row');
   const ticket = parsed.data;
   const state = await zammadState(src, ticket.state_id);
-  const [articles, tags] = await Promise.all([zammadArticles(src, ticket), ticketTags(src, ticket.id)]);
+  const [articles, tags] = await Promise.all([zammadArticles(src, ticket.id), ticketTags(src, ticket.id)]);
   const merge = state?.type === 'merged' ? await survivorOf(src, ticket.id) : null;
   const priorityName = await zammadPriorityName(src, ticket.priority_id);
 

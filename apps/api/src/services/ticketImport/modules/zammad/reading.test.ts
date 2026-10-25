@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
 import { clearZammadDirectoryCache, takeZammadInvalidRows, zammadPeople } from './directory';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
-import { loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
+import { __zammadReadingTestHooks, boundedInOrder, loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
 
 /**
@@ -188,16 +188,47 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
     expect((await load(fake, 105)).data.merge).toEqual({ survivorId: null, survivorNumber: null, survivorCreatedAt: null });
   });
 
-  it('reads a ticket over 500 articles one article at a time from article_ids (§11)', async () => {
+  it('decides the path from the total article count, System articles included (review 12)', async () => {
     const fake = new FakeZammad();
-    const { data } = await load(fake, 114);
-    expect(data.articles.map((a) => a.id)).toEqual([1027, 1028, 1029]);
-    const paths = fake.requestedPaths();
-    expect(paths).toContain('/api/v1/tickets/114?expand=true');
-    expect(paths.filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p)).sort()).toEqual([
-      '/api/v1/ticket_articles/1027', '/api/v1/ticket_articles/1028', '/api/v1/ticket_articles/1029',
-    ]);
-    expect(paths).not.toContain('/api/v1/ticket_articles/by_ticket/114');
+    // 114: article_count (non-System) is 3, the total 6. With the threshold at 5 it is read article by article.
+    __zammadReadingTestHooks.setBigTicketArticles(5);
+    try {
+      const { data } = await load(fake, 114);
+      expect(data.ticket.article_count).toBe(3);
+      expect(data.articles.map((a) => a.id)).toEqual([1027, 1037, 1028, 1038, 1029, 1039]);
+      const paths = fake.requestedPaths();
+      expect(paths).toContain('/api/v1/tickets/114?expand=true');
+      expect(paths.filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p))).toHaveLength(6);
+      expect(paths).not.toContain('/api/v1/ticket_articles/by_ticket/114');
+      // At the default threshold the same ticket is one by_ticket read.
+      __zammadReadingTestHooks.setBigTicketArticles(null);
+      fake.requests.length = 0;
+      await load(fake, 114);
+      expect(fake.requestedPaths()).toContain('/api/v1/ticket_articles/by_ticket/114');
+    } finally {
+      __zammadReadingTestHooks.setBigTicketArticles(null);
+    }
+  });
+
+  it('the per-article read stops starting requests at the first failure (review 4)', async () => {
+    const fake = new FakeZammad();
+    const template = fake.data.byTicket.get(114)![0]!;
+    // 40 articles; the second one is gone (404).
+    fake.data.byTicket.set(114, Array.from({ length: 40 }, (_, i) => ({ ...template, id: 3000 + i, created_at: `2026-07-05T08:${String(i).padStart(2, '0')}:00.000Z` })));
+    const original = fake.handle.bind(fake);
+    fake.handle = (method, url, auth) => (url.pathname === '/api/v1/ticket_articles/3001'
+      ? { status: 404, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":"gone"}') }
+      : original(method, url, auth));
+    __zammadReadingTestHooks.setBigTicketArticles(5);
+    try {
+      const error = await load(fake, 114).catch((e: unknown) => e);
+      expect(error).toMatchObject({ name: 'SourceHttpError', status: 404 });
+      // Two in flight when 3001 failed; none started after it (was: all 40 at once).
+      const reads = fake.requestedPaths().filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p));
+      expect(reads.length).toBeLessThanOrEqual(3);
+    } finally {
+      __zammadReadingTestHooks.setBigTicketArticles(null);
+    }
   });
 
   it('falls back to one article at a time when by_ticket passes the JSON cap', async () => {
@@ -205,7 +236,6 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
     // Two articles of 9 MiB each: together over the 16 MiB JSON cap, each under it.
     const big = 'x'.repeat(9 * 1024 * 1024);
     fake.data.byTicket.set(113, fake.data.byTicket.get(113)!.map((a) => ({ ...a, body: big })));
-    fake.data.ticketsExpand.set(113, { ...fake.data.tickets.find((t) => t.id === 113)!, article_ids: [1025, 1026] });
     const { data } = await load(fake, 113);
     expect(data.articles.map((a) => a.id)).toEqual([1025, 1026]);
     expect(fake.requestedPaths()).toContain('/api/v1/tickets/113?expand=true');
@@ -270,5 +300,28 @@ describe('the directory (users cached 30 min per source; one read per missing us
     // Another source never shares the entry.
     await zammadPeople(zammadTestHandle(fake, { sourceId: 'dir-2' }), [3], 1_000);
     expect(fake.requestedPaths().filter((p) => p === '/api/v1/users?page=1&per_page=1000')).toHaveLength(3);
+  });
+});
+
+describe('boundedInOrder', () => {
+  it('keeps the order, never runs more than the limit at once, and stops starting work after the first failure', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const started: number[] = [];
+    const slow = async (n: number) => {
+      started.push(n);
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      inFlight -= 1;
+      if (n === 4) throw new Error(`failed ${n}`);
+      return n * 10;
+    };
+    expect(await boundedInOrder([1, 2, 3], 2, slow)).toEqual([10, 20, 30]);
+    expect(peak).toBe(2);
+    started.length = 0;
+    await expect(boundedInOrder(Array.from({ length: 20 }, (_, i) => i), 2, slow)).rejects.toThrow('failed 4');
+    expect(Math.max(...started)).toBeLessThanOrEqual(5);
+    expect(await boundedInOrder([], 2, slow)).toEqual([]);
   });
 });

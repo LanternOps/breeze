@@ -804,7 +804,12 @@ exports[`every fixture ticket (§6.8) > base 114 matches its snapshot 1`] = `
 {
   "kind": "ticket",
   "links": [],
-  "notes": [],
+  "notes": [
+    {
+      "count": 3,
+      "kind": "comments_system_skipped",
+    },
+  ],
   "ticket": {
     "assigneeUserId": "11111111-1111-4111-8111-111111111111",
     "categoryId": "cccccccc-0000-4000-8000-00000000000c",

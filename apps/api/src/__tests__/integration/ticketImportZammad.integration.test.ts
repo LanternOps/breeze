@@ -52,6 +52,7 @@ import {
 import { createSourceClient } from '../../services/ticketImport/sourceFetch';
 import { normalizeCounters } from '../../services/ticketImport/runReport';
 import { clearZammadDirectoryCache } from '../../services/ticketImport/modules/zammad/directory';
+import { __zammadReadingTestHooks } from '../../services/ticketImport/modules/zammad/reading';
 import {
   FAKE_ZAMMAD_BASE_URL,
   FAKE_ZAMMAD_TOKEN,
@@ -170,7 +171,14 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     const fx = await seedZammad();
     const windowsBefore = await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.partnerId, fx.partner.id));
     const run = await startImportRun(fx, 'dry_run');
-    const steps = await drive(fx, run.id, { deps });
+    // 114 has 3 counted articles and 6 in all: with the threshold at 5 it is read article by article (review 12).
+    __zammadReadingTestHooks.setBigTicketArticles(5);
+    let steps: Awaited<ReturnType<typeof drive>> = [];
+    try {
+      steps = await drive(fx, run.id, { deps });
+    } finally {
+      __zammadReadingTestHooks.setBigTicketArticles(null);
+    }
     expect(steps.at(-1)).toMatchObject({ outcome: 'finished' });
 
     const row = await runRow(run.id);
@@ -183,7 +191,8 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
       // 102's four files; 111's oversized and empty ones are skipped by their declared size.
       attachments: 4, attachmentBytes: 70 + 53 + 70 + 70, attachmentsSkipped: 2,
     });
-    expect(counters.comments.systemSkipped).toBe(1);
+    // 103's trigger note and 114's three.
+    expect(counters.comments.systemSkipped).toBe(4);
     expect(counters.attachments.alternativesIgnored).toBe(1);
     expect(counters.customAttributes).toEqual({ cf_billable: 1, cf_customer_reference: 1 });
     // Raised: 1011 and 1012 on 106, 1018 and 1019 on 109 (moved in, older than their survivor).
@@ -198,6 +207,7 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(requested('/api/v1/ticket_attachment/')).toEqual([]);
     expect(requested('/api/v1/ticket_articles/by_ticket/114')).toEqual([]);
     expect(requested('/api/v1/tickets/114?expand=true')).toHaveLength(1);
+    expect(requested('/api/v1/ticket_articles/').filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p))).toHaveLength(6);
     expect(await importedTickets(fx)).toEqual(new Map());
     expect(await getTestDb().select().from(ticketImportItems).where(eq(ticketImportItems.sourceId, fx.sourceId))).toEqual([]);
     expect(await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.partnerId, fx.partner.id))).toEqual(windowsBefore);
@@ -268,7 +278,7 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     const c1 = normalizeCounters(bulkRow.counters);
     expect(c1.tickets).toMatchObject({ seen: 19, created: 19, failed: 0, skipped: 0 });
     expect(c1.attachments).toMatchObject({ written: 4, skipped: 2, bytes: 70 + 53 + 70 + 70, alternativesIgnored: 1 });
-    expect(c1.comments.systemSkipped).toBe(1);
+    expect(c1.comments.systemSkipped).toBe(4);
     expect(c1.linksAsNotes).toBe(3);
 
     const t = await importedTickets(fx);
@@ -340,7 +350,10 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
       '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/104',
       '/api/v1/ticket_articles/by_ticket/106', '/api/v1/ticket_articles/by_ticket/113', '/api/v1/ticket_articles/by_ticket/118', '/api/v1/ticket_articles/by_ticket/119',
     ]);
-    expect(requested('/api/v1/tickets/').sort()).toEqual(['/api/v1/tickets/112', '/api/v1/tickets/115']);
+    // The deletions probe: one GET each for the tickets the list no longer shows.
+    expect(requested('/api/v1/tickets/').filter((p) => /^\/api\/v1\/tickets\/\d+$/.test(p)).sort()).toEqual(['/api/v1/tickets/112', '/api/v1/tickets/115']);
+    // Every changed ticket's article count (System included) is read before its articles.
+    expect(requested('/api/v1/tickets/').filter((p) => p.endsWith('?expand=true'))).toHaveLength(7);
 
     expect(await issuesOf(delta.id)).toEqual([
       'comments_changed:101:made_internal',

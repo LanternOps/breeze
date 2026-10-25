@@ -46,6 +46,7 @@ export type ZammadFixtureData = {
   /** The 403 body of the object manager index (the token has no admin.object). */
   objectAttributesForbidden: Json;
   tickets: Row[];
+  /** `?expand=true` answers that differ from the derived one (the ticket plus its `article_ids`). */
   ticketsExpand: Map<number, Row>;
   byTicket: Map<number, Row[]>;
   tags: Map<number, string[]>;
@@ -232,7 +233,12 @@ export class FakeZammad {
         const tid = id(second);
         const gate = ticketGate(tid);
         if (gate) return gate;
-        if (query.expand === 'true' && d.ticketsExpand.has(tid)) return jsonResponse(200, d.ticketsExpand.get(tid), now);
+        if (query.expand === 'true') {
+          // `article_ids`: every article of the ticket, System ones included.
+          const expanded = d.ticketsExpand.get(tid)
+            ?? { ...d.tickets.find((t) => t.id === tid), article_ids: (d.byTicket.get(tid) ?? []).map((a) => a.id) };
+          return jsonResponse(200, expanded, now);
+        }
         return jsonResponse(200, d.tickets.find((t) => t.id === tid), now);
       }
       case 'ticket_articles': {

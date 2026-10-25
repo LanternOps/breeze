@@ -47,7 +47,7 @@ unit tests, and as a node `http` server on 127.0.0.1 for the end-to-end test.
 | `ticket_priorities.json` | `GET /api/v1/ticket_priorities` |
 | `object_manager_attributes.403.json` | `GET /api/v1/object_manager_attributes`: 403, the token has no `admin.object` |
 | `tickets.json` | `GET /api/v1/tickets?page=N&per_page=100`, `id ASC`; also each `GET /api/v1/tickets/:id` |
-| `tickets-expand/<id>.json` | `GET /api/v1/tickets/:id?expand=true` (`article_ids`) |
+| (derived) | `GET /api/v1/tickets/:id?expand=true`: the ticket plus `article_ids`, every article of `by_ticket/<id>.json` (System ones included) |
 | `by_ticket/<id>.json` | `GET /api/v1/ticket_articles/by_ticket/:id`; also each `GET /api/v1/ticket_articles/:id` |
 | `tags.json` | `GET /api/v1/tags?object=Ticket&o_id=:id`, by ticket id |
 | `links/<id>.json` | `GET /api/v1/links?link_object=Ticket&link_object_value=:id` (merged tickets) |
@@ -68,7 +68,7 @@ unit tests, and as a node `http` server on 127.0.0.1 for the end-to-end test.
 | 111 | a customer without email; an oversized (20 MiB declared) and an empty file; a `body_rendering_error` |
 | 112 | a legacy `removed` state |
 | 113 | a plain ticket (merged into 106 in the delta) |
-| 114 | `article_count` over 500: the module reads `article_ids` and each article |
+| 114 | System-heavy: `article_count` (non-System only) is 3, the total 6; the module decides from the total, and tests lower the 500 threshold to see it read article by article |
 | 115 | a closed ticket (hidden in the delta) |
 | 116 | an organization the mapping leaves out |
 | 117 | a custom `pending action` state with no next state ("Paused") |
