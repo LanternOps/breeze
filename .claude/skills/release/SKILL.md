@@ -432,6 +432,17 @@ deploy <EU|US> <tag> <YYYY-MM-DD> <sha256:digest>
 
 for example `deploy EU v0.X.Y 2026-10-24 sha256:<64 hex>`, with the tag as pushed (`v` prefix) and the UTC date of the deploy. One line per region, written after that region's deploy, never ahead of it. The security steward publishes security advisories only against these lines: a tag missing the line for either region holds every advisory for that tag. `/health` is not a substitute.
 
+Then commit and push that line in the register's own repository. The steward may read a different clone, so a line that is only on this machine counts as missing:
+
+```bash
+REG=$(sed -n 's/^SECURITY_RELEASE_REGISTER=//p' ~/breeze/internal/ops/release-infra.md); REG=${REG/#\~/$HOME}
+D=$(dirname "$REG")
+git -C "$D" pull --rebase && git -C "$D" add "$REG" && \
+  git -C "$D" commit -m "register: deploy <EU|US> <tag>" -- "$REG" && git -C "$D" push
+```
+
+Commit only the register file. If `pull --rebase` refuses because that checkout has other local changes, do not stash, commit or discard them: run `git -C "$D" fetch` and, if the branch is not behind its upstream, commit and push as above. If it is behind, stop and ask Todd.
+
 ### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
 
 `autoMigrate` applies each migration file in its own transaction and records success per file. If migration #7 of 10 fails, files #1–6 have **already committed**. Rolling `BREEZE_VERSION` back to `$PREV` restores the old *code* but the DB is now on a **newer-than-$PREV schema**, and the old code can choke on it. This bit us on v0.95.0: the auth-epochs migration committed a `NOT NULL`-no-default column (`refresh_token_families.absolute_expires_at`) before a *later* migration failed; after rolling back, the old version could not `INSERT` a refresh-token family (the column it doesn't know about is `NOT NULL`), so **new logins silently failed while `/health` stayed green**.
@@ -547,6 +558,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] Confirmed rollout with Todd
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
+- [ ] Deploy lines recorded and pushed for EU and US
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
 - [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)
