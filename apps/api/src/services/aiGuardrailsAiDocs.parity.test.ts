@@ -165,7 +165,34 @@ const W02_DOCUMENTED_TOOLS = [
   'manage_tags', 'manage_notification_channels', 'test_webhook',
 ] as const;
 
+/**
+ * Spec 2026-09-23 W04 (#6758): the 19 security / incident / device-operation
+ * write tools reach chat and agents. Every tool must appear in a
+ * `| Tool | Tier | Description |` row and every action-enum member must carry a
+ * documented tier, so a customer can read what needs approval.
+ */
+const W04_DOCUMENTED = [
+  'execute_containment', 'create_incident', 'collect_evidence', 'request_elevation',
+  'revoke_elevation', 'create_remote_session', 'manage_processes', 'manage_scheduled_tasks',
+  'registry_operations', 'trigger_agent_restart', 'trigger_agent_upgrade', 'manage_software_policy',
+  'manage_browser_policy', 'manage_peripheral_policy', 'remediate_sensitive_data',
+  'remediate_software_violation', 'assign_security_training', 'configure_network_baseline',
+  'acknowledge_network_device',
+] as const;
+
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(W04_DOCUMENTED)('W04 (#6758): %s is documented in a tool table with every action', (tool) => {
+    const rows = claims.filter((c) => c.tool === tool);
+    expect(rows.length, `${tool} needs a \`| Tool | Tier | Description |\` row in ${DOC_REL}`).toBeGreaterThan(0);
+    const actions = toolActionEnum(tool) ?? [];
+    if (actions.length === 0) {
+      expect(rows.some((c) => c.actions.length === 0), `${tool} needs a bare row in ${DOC_REL}`).toBe(true);
+      return;
+    }
+    const documented = new Set(rows.flatMap((c) => c.actions));
+    expect(actions.filter((a) => !documented.has(a)), `Undocumented ${tool} actions in ${DOC_REL}`).toEqual([]);
+  });
+
   it.each(W02_DOCUMENTED_TOOLS)('W02 (#6756): every %s action has a documented tier row', (tool) => {
     const actions = toolActionEnum(tool) ?? [];
     const rows = claims.filter((c) => c.tool === tool);
