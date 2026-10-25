@@ -201,7 +201,9 @@ export async function markAgreementRequestViewed(requestId: string, orgId: strin
     .update(agreementRequests)
     .set({
       status: 'viewed',
-      firstViewedAt: sql`COALESCE(${agreementRequests.firstViewedAt}, ${now})`,
+      // An ISO string cast in SQL: a raw Date bound inside a sql`` template is
+      // not serialized by the driver (TypeError at bind time).
+      firstViewedAt: sql`COALESCE(${agreementRequests.firstViewedAt}, ${now.toISOString()}::timestamptz)`,
       updatedAt: now,
     })
     .where(and(

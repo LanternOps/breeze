@@ -137,7 +137,7 @@ describe('agreement request: send → customer accept (real Postgres)', () => {
     const s = await seed();
     const { requestId, sent, claims, ctx, auth } = await createAndSend(s);
 
-    expect(sent.emailed).toBe(false);
+    expect(typeof sent.deliverEmail).toBe('function'); // W2b: emailed after commit by the route
     expect(sent.recipients).toEqual(['dana@customer.example', 'office@customer.example']);
     expect(claims).toMatchObject({ requestId, orgId: s.org.id, partnerId: s.partner.id });
 
