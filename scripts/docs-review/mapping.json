@@ -5029,6 +5029,30 @@
       ]
     },
     {
+      "pattern": "apps/api/src/services/wisp/**",
+      "docs": [
+        "features/wisp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/wisp*.ts",
+      "docs": [
+        "features/wisp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/wisp.ts",
+      "docs": [
+        "features/wisp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/wisp/**",
+      "docs": [
+        "features/wisp.mdx"
+      ]
+    },
+    {
       "pattern": "apps/api/src/middleware/userRateLimit.ts",
       "docs": [
         "security/hardening.mdx",

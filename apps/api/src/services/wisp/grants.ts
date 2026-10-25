@@ -42,6 +42,9 @@ import { loadWispEntitlement } from './wispEntitlementLimits';
 // budget.ts imports only types from this module, so this is not a runtime cycle.
 import { WISP_BUDGET_DEFAULT_BY_PLAN } from './budget';
 import { incWispGrantPause } from '../wispMetrics';
+// partnerSettings.ts imports pauseGrant/resumeGrant from here; both sides use
+// the other only inside function bodies, so the cycle is harmless at load time.
+import { getPartnerSettings } from './partnerSettings';
 
 export type { WispGrantStatus } from '../../db/schema/wisp';
 
@@ -78,7 +81,9 @@ export type WispGrantErrorCode =
   /** The partner's `wisp` entitlement is disabled (plan default, row, or expired past grace). */
   | 'entitlement_required'
   /** Entitlements could not be resolved (resolver past its stale ceiling); transient. */
-  | 'entitlement_check_failed';
+  | 'entitlement_check_failed'
+  /** W08 (w00 A35): a partner administrator turned Wisp off for the partner. */
+  | 'partner_disabled';
 
 export class WispGrantError extends Error {
   constructor(public readonly code: WispGrantErrorCode, message: string) {
@@ -231,6 +236,19 @@ async function consumeWispStepUp(auth: AuthContext, scope: WispGrantScope, ceili
   return 'step_up';
 }
 
+/**
+ * W08 (w00 A35): the partner enable switch is governance — while it is off no
+ * grant is created, resumed or refreshed (the wake tick pauses the live ones
+ * with 'partner_disabled' and resumes them when it is back on). Read in system
+ * context so the answer never depends on the caller's RLS reach.
+ */
+async function assertPartnerEnabled(partnerId: string): Promise<void> {
+  const settings = await systemContext(() => getPartnerSettings(partnerId));
+  if (!settings.enabled) {
+    throw new WispGrantError('partner_disabled', 'Wisp is turned off for your organization by a partner administrator.');
+  }
+}
+
 async function loadGrantInContext(grantId: string): Promise<WispGrantRow> {
   const [row] = await db.select().from(wispGrants).where(eq(wispGrants.id, grantId)).limit(1);
   if (!row) throw new WispGrantError('not_found', 'Wisp grant not found.');
@@ -305,6 +323,9 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
   // creates at max−1 can both pass: the cap is a commercial limit, not an
   // authority term, so a transient +1 is accepted and the next create refuses.
   const maxGrants = await resolveMaxGrants(scope.partnerId);
+  // W08 governance switch: after the entitlement (commercial) gate, before the
+  // cap count and before the step-up is consumed.
+  await assertPartnerEnabled(scope.partnerId);
   if (maxGrants !== null) {
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -382,6 +403,9 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
   const scope: WispGrantScope = { partnerId: row.partnerId, orgId: row.orgId ?? null };
   assertInteractivePartnerCaller(auth, scope);
   assertMfa(auth);
+  // A refresh never changes the status, but it renews and re-pins: refused
+  // while the partner switch is off, before the step-up is consumed.
+  await assertPartnerEnabled(scope.partnerId);
 
   const live = liveOrThrow(await computeLiveHumanTerm(auth.user.id, scope.partnerId));
   const snapshot = buildGrantSnapshot(live, scope);
@@ -540,6 +564,7 @@ export async function userResumeGrant(input: { auth: AuthContext; grantId: strin
     throw new WispGrantError('not_user_paused', 'This Wisp grant is not paused by you, so it cannot be resumed here.');
   }
   if (row.expiresAt.getTime() <= Date.now()) throw new WispGrantError('not_active', 'This Wisp grant has expired; turn Wisp on again.');
+  await assertPartnerEnabled(row.partnerId);
   liveOrThrow(await computeLiveHumanTerm(row.grantorUserId, row.partnerId));
 
   const [updated] = await db

@@ -561,6 +561,61 @@
         "mfaRequired": "Cambiar el interruptor de emergencia de IA requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Resumen por socio de las concesiones de Wisp y la actividad de hoy. Solo lectura.",
+      "refresh": "Actualizar",
+      "retry": "Reintentar",
+      "loading": "Cargando...",
+      "empty": "Aún no hay socios con concesiones de Wisp",
+      "disabled": "Wisp no está habilitado en esta implementación (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "No se pudo cargar el resumen de Wisp"
+      },
+      "platformAdmin": {
+        "title": "Solo para administradores de la plataforma",
+        "description": "El resumen de Wisp está disponible para los administradores de la plataforma."
+      },
+      "table": {
+        "partner": "Socio",
+        "plan": "Plan",
+        "activeGrants": "Concesiones activas",
+        "pausedGrants": "Concesiones en pausa",
+        "assessmentsToday": "Evaluaciones de hoy",
+        "specialistRequestsToday": "Solicitudes de especialistas de hoy",
+        "openConcerns": "Preocupaciones abiertas",
+        "budgetExhaustedToday": "Concesiones sin presupuesto hoy"
+      },
+      "grants": {
+        "loading": "Cargando concesiones...",
+        "error": "No se pudieron cargar las concesiones",
+        "empty": "Este socio no tiene concesiones",
+        "grantor": "Otorgante",
+        "scope": "Alcance",
+        "status": "Estado",
+        "pausedReason": "Motivo de pausa",
+        "expires": "Vence",
+        "budget": "Presupuesto (centavos/día)",
+        "tickMinutes": "Intervalo (min)",
+        "assessmentsToday": "Evaluaciones de hoy",
+        "partnerWide": "Todo el socio"
+      },
+      "status": {
+        "active": "Activa",
+        "paused": "En pausa",
+        "revoked": "Revocada",
+        "expired": "Vencida"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Presupuesto agotado",
+        "grantor_suspended": "Otorgante suspendido",
+        "grantor_access_lost": "El otorgante perdió acceso",
+        "factor_expired": "Factor vencido",
+        "entitlement_lost": "Derecho perdido",
+        "user_paused": "Pausada por el usuario",
+        "partner_disabled": "Socio deshabilitado"
+      }
+    },
     "systemPage": {
       "title": "Sistema",
       "description": "Estado de toda la implementación para administradores de plataforma. Esta página es de solo lectura.",

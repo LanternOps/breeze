@@ -173,6 +173,38 @@ describe('OperatorTaskDetail', () => {
   });
 });
 
+// Wisp W07 (#9920) — "Wisp for <user>" provenance on the task's origin grid.
+describe('OperatorTaskDetail Wisp provenance', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  const WISP = {
+    grantId: '7d0c1e2f-0000-4000-8000-000000000001',
+    grantorUserId: '3f2a1b9c-0000-4000-8000-000000000002',
+    grantorName: 'Todd',
+    depth: 1 as const,
+    requestedByRunId: '9a8b7c6d-0000-4000-8000-000000000003',
+  };
+
+  it('renders "Wisp for Todd" when task.wisp is set', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: { ...buildTask(), wisp: WISP } }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('operator-task-wisp')).toBeInTheDocument());
+    expect(screen.getByTestId('operator-task-wisp')).toHaveTextContent('Wisp for Todd');
+  });
+
+  it('renders nothing wisp-related when task.wisp is null', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: { ...buildTask(), wisp: null } }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('operator-task-state')).toBeInTheDocument());
+    expect(screen.queryByTestId('operator-task-wisp')).toBeNull();
+    expect(screen.queryByText(/Wisp for/)).toBeNull();
+  });
+});
+
 /**
  * W06 R1b Task 21 — MOUNT proof: the steps, plan and timeline panels render
  * THROUGH the task page component, with the selected panel in `#panel=`.

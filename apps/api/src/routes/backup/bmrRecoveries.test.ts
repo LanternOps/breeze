@@ -195,9 +195,18 @@ vi.mock('./bmr', () => ({
   BMR_PROGRESS_IP_LIMIT: 10_000,
 }));
 
+// Lets a test drop the token-mode download descriptor from an otherwise real
+// bootstrap (#7081 R19 guard); false = the real builder, unchanged.
+const bootstrapHook = vi.hoisted(() => ({ dropDownload: false }));
 vi.mock('../../services/recoveryBootstrap', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/recoveryBootstrap')>();
-  return { ...actual };
+  return {
+    ...actual,
+    buildAuthenticatedBootstrapPayload: (...args: Parameters<typeof actual.buildAuthenticatedBootstrapPayload>) => {
+      const payload = actual.buildAuthenticatedBootstrapPayload(...args);
+      return bootstrapHook.dropDownload ? { ...payload, bootstrap: { ...payload.bootstrap, download: null } } : payload;
+    },
+  };
 });
 
 const resolveRestoreIntegrityMock = vi.hoisted(() => vi.fn(async (_snapshotDbId: string): Promise<unknown> => null));
@@ -665,6 +674,84 @@ describe('bare-metal recoveries routes', () => {
       expect(updateCall.nonceHash).toBe(hashRecoveryNonce(body.bootstrap.bootstrap.recovery.nonce));
       expect(updateCall.status).toBe('media_booted');
       expect(updateCall.codeUsedAt).toBeInstanceOf(Date);
+    });
+
+    // #7081 R19: a prefixed snapshot's objects live under `<prefix>/`, which
+    // only the API's token-mode download resolves; the helper's direct mode
+    // reads bare logical keys. So its bootstrap must carry the download
+    // descriptor and never the destination's raw configuration.
+    const exchangeRows = (snapshotRow: Record<string, unknown>) => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: RECOVERY_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, identity: 'original',
+          status: 'created', codeHash: hashRecoveryCode('ABCDEFGHJ'), codeExpiresAt: new Date(Date.now() + 60_000),
+          codeUsedAt: null, nonceHash: 'x'.repeat(64), createdBy: 'user-123',
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'none', manifestSha256: null, externalCount: null, error: null, jobId: null, storageIdentity: null,
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: null, configId: null, snapshotId: 'snap-ext-1',
+          label: null, location: null, timestamp: new Date(), size: 1, fileCount: 1, metadata: {},
+          hardwareProfile: null, systemStateManifest: null, backupType: 'full', isIncremental: false,
+          storageIdentity: null, ...snapshotRow,
+        }]))
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'rig-01', osType: 'linux', architecture: 'x86_64', displayName: null }]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: 'token-1', orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'bare_metal', targetConfig: {}, expiresAt: new Date(Date.now() + 86_400_000), authenticatedAt: new Date() }]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: RECOVERY_ID, status: 'media_booted' }]));
+    };
+    const exchange = () => publicApp.request('/backup/bmr/recover/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'abc-def-ghj' }),
+    });
+
+    it('exchange (#7081): a prefixed snapshot gets a token-mode download with the logical path and no raw destination config', async () => {
+      exchangeRows({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' });
+      const res = await exchange();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.bootstrap.bootstrap.download).toMatchObject({ type: 'breeze_proxy', pathPrefix: 'snapshots/snap-ext-1' });
+      expect(JSON.stringify(body)).not.toMatch(/providerConfig|secretKey|accessKey/);
+    });
+
+    it('exchange (#7081): a prefixed snapshot whose bootstrap lacks a token-mode download is refused 409 recovery_requires_token_mode', async () => {
+      bootstrapHook.dropDownload = true;
+      try {
+        exchangeRows({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' });
+        const res = await exchange();
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({
+          error: 'recovery_requires_token_mode',
+          code: 'recovery_requires_token_mode',
+          // The one-time code is already claimed, so the operator also needs a new one.
+          message: 'This snapshot uses a key prefix and can only be recovered with token-mode download. Update the recovery media, then reissue the recovery code.',
+        });
+        expect(body).not.toHaveProperty('bootstrap');
+        expect(body).not.toHaveProperty('token');
+        expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'bmr.recovery.bootstrap_refused',
+          resourceType: 'bare_metal_recovery',
+          resourceId: RECOVERY_ID,
+          result: 'failure',
+          details: expect.objectContaining({ reason: 'recovery_requires_token_mode' }),
+        }));
+      } finally {
+        bootstrapHook.dropDownload = false;
+      }
+    });
+
+    it('exchange (#7081): a legacy snapshot without a download descriptor is unchanged', async () => {
+      bootstrapHook.dropDownload = true;
+      try {
+        exchangeRows({ keyLayout: 'legacy_flat', keyPrefix: null });
+        const res = await exchange();
+        expect(res.status).toBe(200);
+        expect((await res.json()).bootstrap.bootstrap.download).toBeNull();
+      } finally {
+        bootstrapHook.dropDownload = false;
+      }
     });
 
     it('the exchange bootstrap carries the decided integrity block (override for a confirmed unattested restore)', async () => {

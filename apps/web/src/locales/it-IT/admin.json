@@ -561,6 +561,61 @@
         "mfaRequired": "Attivare l'interruttore di emergenza IA richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Panoramica per partner delle autorizzazioni Wisp e dell'attività di oggi. Sola lettura.",
+      "refresh": "Aggiorna",
+      "retry": "Riprova",
+      "loading": "Caricamento...",
+      "empty": "Nessun partner ha ancora autorizzazioni Wisp",
+      "disabled": "Wisp non è abilitato in questa distribuzione (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Impossibile caricare la panoramica di Wisp"
+      },
+      "platformAdmin": {
+        "title": "Solo per amministratori della piattaforma",
+        "description": "La panoramica di Wisp è disponibile per gli amministratori della piattaforma."
+      },
+      "table": {
+        "partner": "Partner",
+        "plan": "Piano",
+        "activeGrants": "Autorizzazioni attive",
+        "pausedGrants": "Autorizzazioni in pausa",
+        "assessmentsToday": "Valutazioni di oggi",
+        "specialistRequestsToday": "Richieste a specialisti di oggi",
+        "openConcerns": "Segnalazioni aperte",
+        "budgetExhaustedToday": "Autorizzazioni senza budget oggi"
+      },
+      "grants": {
+        "loading": "Caricamento autorizzazioni...",
+        "error": "Impossibile caricare le autorizzazioni",
+        "empty": "Questo partner non ha autorizzazioni",
+        "grantor": "Concedente",
+        "scope": "Ambito",
+        "status": "Stato",
+        "pausedReason": "Motivo della pausa",
+        "expires": "Scade",
+        "budget": "Budget (centesimi/giorno)",
+        "tickMinutes": "Intervallo (min)",
+        "assessmentsToday": "Valutazioni di oggi",
+        "partnerWide": "Intero partner"
+      },
+      "status": {
+        "active": "Attiva",
+        "paused": "In pausa",
+        "revoked": "Revocata",
+        "expired": "Scaduta"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget esaurito",
+        "grantor_suspended": "Concedente sospeso",
+        "grantor_access_lost": "Il concedente ha perso l'accesso",
+        "factor_expired": "Fattore scaduto",
+        "entitlement_lost": "Diritto perso",
+        "user_paused": "Messa in pausa dall'utente",
+        "partner_disabled": "Partner disabilitato"
+      }
+    },
     "systemPage": {
       "title": "Sistema",
       "description": "Stato dell'intera installazione per gli amministratori di piattaforma. Questa pagina è di sola lettura.",

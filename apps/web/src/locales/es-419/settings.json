@@ -3049,6 +3049,8 @@
           "cost": "Costo",
           "duration": "Duración",
           "trigger": "Disparador",
+          "requestedBy": "Solicitado por",
+          "wispFor": "Wisp para {{name}}",
           "queuedAt": "En cola",
           "startedAt": "Iniciado",
           "finishedAt": "Finalizado",

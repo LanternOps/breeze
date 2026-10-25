@@ -26,7 +26,7 @@ import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
-import { AGENT_COORDINATOR_CARRIER_TOOLS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+import { AGENT_COORDINATOR_CARRIER_TOOLS, AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
 // Leaf data module (no imports) — the specialist kind table, so the tier
 // tables below derive from it instead of re-typing kind names.
 import {
@@ -45,7 +45,7 @@ import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
 // amendment WQ4, #6755): the two agent-denial registries now live in one
 // data-only file, enforced here.
-export { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS };
+export { AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS };
 // Re-exported for the tier-parity contract tests, which read every tier table
 // from this module.
 export { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead };
@@ -98,8 +98,14 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'link_alert',
     'unlink_alert',
     'create_from_alert',
-    'edit_comment',
-    'delete_comment',
+    // edit_comment/delete_comment moved to TIER3_ACTIONS (W02, #6756): a
+    // public comment's text changes or disappears in the portal with no
+    // restore path (ticketService.ts editTicketComment / deleteTicketComment).
+    //
+    // comment, update_status and update_fields stay here: their BASE class is
+    // tier 2, and isInputAwareTier3 escalates the customer-reaching inputs
+    // (public comment, resolve, requester repoint) on top.
+    //
     // Time-tracking downgraded from Tier 3 (2026-07-20): starting/stopping a
     // timer or logging time is org-internal bookkeeping, consistent with
     // create/comment above. move_org stays Tier 3 (tenant-shape mutation).
@@ -208,8 +214,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // here deliberately; see the note in TIER3_ACTIONS for the full rationale.
   manage_backup_configs: ['create', 'update'],
   manage_backup_profiles: ['create', 'update', 'delete'],
-  // Notification channel & saved filter tools — Tier 2 actions
-  manage_notification_channels: ['test', 'create', 'update', 'delete'],
+  // Notification channel & saved filter tools — Tier 2 actions.
+  // manage_notification_channels `test` stays tier 2 ONLY because the AI
+  // handler is a lookup stub that sends nothing (W02-D9, pinned by
+  // aiToolsAlerts.channelSecrets.test.ts); create/update/delete are tier 3
+  // below (W02, #6756).
+  manage_notification_channels: ['test'],
   manage_saved_filters: ['create', 'delete'],
 };
 
@@ -452,7 +462,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
-  manage_tickets: ['move_org', 'merge'],
+  // edit_comment/delete_comment (W02, #6756): no restore — a public comment's
+  // text changes or disappears in the portal at once (the old text survives
+  // only in the audit log).
+  manage_tickets: ['move_org', 'merge', 'edit_comment', 'delete_comment'],
   // #8883 W5: ticket routing rule writes (partner-wide gate enforced in the service).
   manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
@@ -474,7 +487,22 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
-  manage_quotes: ['send'],
+  // decline (W02, #6756) records the CUSTOMER's decision on their behalf with
+  // no reopen (only revise), and its route requires quotes:accept;
+  // create_pay_link opens a Stripe Checkout session on the partner's
+  // connected account for the converted invoice.
+  manage_quotes: ['send', 'decline', 'create_pay_link'],
+  // Billing price book (W02, #6756). Contract renewals read the price book
+  // LIVE (generateDueInvoice → addContractLine → resolvePrice in
+  // catalogService.ts), so every price-affecting edit reaches future
+  // invoices. Supervised, not four-eyes, because each handler returns the
+  // value it replaced (`previous`), making it reversible within a minute.
+  // create_item stays tier 2: a new, unreferenced item changes no document.
+  manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
+  // Notification channels (W02, #6756). update redirects live, already-routed
+  // alert data to a new destination; delete silences every linked route and
+  // destroys the stored destination; create points at an unverified owner.
+  manage_notification_channels: ['create', 'update', 'delete'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
   // add_contact (#3258) writes customer PII (a first-class contact record),
   // so it escalates too, even though it reshapes no tenant boundary.
@@ -549,6 +577,11 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // #8972: `merge` is Tier 3 (one approver, spec §5.7), not four-eyes: it is
   // same-org, unlike move_org's re-tenanting.
   manage_tickets: ['move_org'],
+  // W02 QV3 (#6756): deleting a PARTNER-WIDE channel is irreversible (its
+  // destination and secret config are gone) and silences alerting for every
+  // org. Guardrails are DB-free and cannot tell a partner-wide channel from an
+  // org one by id, so the fail-safe applies to every delete.
+  manage_notification_channels: ['delete'],
   // Grants an AUTHORITY, not a device action: it converts "this agent must ask
   // a human for <opKey>" into "this agent may run <opKey> unattended for this
   // org from now on". Proposing that and authorising it are separate
@@ -648,7 +681,6 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // #8972: merging two tickets of ONE org (spec §5.7: Tier 3, approval). It is
   // irreversible, which is why it needs approval at all; it is not tenant-
   // shaping like move_org (four_eyes), so one approver suffices.
-  manage_tickets: ['merge'],
   // #8883 W5: routing rules are config objects, not externally binding: one approver.
   manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
@@ -703,6 +735,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_dr_plan: ['delete_group'],
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   manage_contracts: ['pause', 'resume'],
+  // W02 (#6756) — see the TIER3_ACTIONS notes for each.
+  manage_tickets: ['edit_comment', 'delete_comment', 'merge'],
+  manage_quotes: ['decline', 'create_pay_link'],
+  manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
+  manage_notification_channels: ['create', 'update'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
   // add_contact (#3258) writes customer PII but is neither externally-binding
@@ -796,6 +833,12 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // INPUT (`isPublic`) says which one a given call is, so it cannot be
   // classified by (tool, action) alone in the static tables.
   'manage_tickets:comment',
+  // W02 (#6756): resolving a ticket emails the requester (with the supplied
+  // resolution note), and a custom statusName resolves to a base status only
+  // through the DB, so it fails safe. Repointing the requester redirects every
+  // later requester email to an address the model chose.
+  'manage_tickets:update_status',
+  'manage_tickets:update_fields',
   // RMM-QA-176 D9: a 'maintenance' feature link is the canonical
   // monitoring-suppression source, so authoring one is a different class of
   // act from authoring any other link — but only the INPUT says which it is,
@@ -812,7 +855,12 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * ask the SAME question — a second copy of this predicate is how a tier and
  * its scope drift apart.
  *
- * Two arms, both on manage_policy_feature_link's add/update:
+ * manage_tickets (W02, #6756): a public comment, a resolve (or any custom
+ * statusName) and an update_fields that repoints the requester — each reaches
+ * the ticket requester by email. Internal notes and other status/field edits
+ * stay at the base tier.
+ *
+ * Two arms on manage_policy_feature_link's add/update:
  *
  *  - `featureType === 'maintenance'` (RMM-QA-176 D9). Strict `===`: a
  *    non-string featureType stays at the base tier, which is safe here because
@@ -835,16 +883,37 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * stray featureType or inlineSettings argument would be escalated into an
  * approval that the MCP transport then denies outright.
  */
+/** `manage_tickets update_fields` keys that change who receives requester email (W02, #6756). */
+const TICKET_REQUESTER_FIELD_KEYS = ['submittedBy', 'submitterName', 'submitterEmail'] as const;
+
 export function isInputAwareTier3(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
 ): boolean {
-  if (toolName === 'manage_tickets' && action === 'comment') {
-    // Mirrors the handler's own default (aiToolsTicketing.ts): only an
-    // EXPLICIT `isPublic: true` requests a customer-visible reply. Absent or
-    // `false` stays an internal note at the tool's base Tier 2.
-    return input.isPublic === true;
+  if (toolName === 'manage_tickets') {
+    if (action === 'comment') {
+      // Mirrors the handler's own default (aiToolsTicketing.ts): only an
+      // EXPLICIT `isPublic: true` requests a customer-visible reply. Absent,
+      // `false` or a non-boolean stays an internal note at the base Tier 2 —
+      // the handler writes `isPublic: input.isPublic === true`, the same
+      // expression, so the guard and the write cannot disagree.
+      return input.isPublic === true;
+    }
+    if (action === 'update_status') {
+      // `to === 'resolved'` emails the requester (ticketNotifyWorker.ts
+      // ticket.status_changed). A custom `statusName` is resolved to a base
+      // status only in the DB; guardrails are DB-free, so it escalates.
+      return input.status === 'resolved' || input.statusName !== undefined;
+    }
+    if (action === 'update_fields') {
+      // Repointing the requester redirects every later public comment and
+      // resolve email to a model-chosen address.
+      const fields = input.fields;
+      return typeof fields === 'object' && fields !== null
+        && TICKET_REQUESTER_FIELD_KEYS.some((key) => Object.hasOwn(fields, key));
+    }
+    return false;
   }
   if (toolName !== 'manage_policy_feature_link') return false;
   if (action !== 'add' && action !== 'update') return false;
@@ -880,8 +949,10 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
  * never applies to a flow, which runs without a chat session.)
  */
 export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
-  // isInputAwareTier3: comment + isPublic === true escalates to tier 3.
-  manage_tickets: ['isPublic'],
+  // isInputAwareTier3: comment + isPublic === true, update_status to
+  // 'resolved' or any statusName, and update_fields carrying a requester key
+  // (inside `fields`) escalate to tier 3 (W02, #6756).
+  manage_tickets: ['isPublic', 'status', 'statusName', 'fields'],
   // isInputAwareTier3: featureType === 'maintenance' or an HP CMSL inlineSettings payload.
   manage_policy_feature_link: ['featureType', 'inlineSettings'],
   // resolveApprovalScope: isolate === false is four-eyes.
@@ -1155,12 +1226,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   search_catalog: { resource: 'catalog', action: 'read' },
   get_catalog_item: { resource: 'catalog', action: 'read' },
   lookup_distributor_product: { resource: 'catalog', action: 'read' },
-  manage_catalog: {
+  manage_billing_catalog: {
     create_item: { resource: 'catalog', action: 'write' },
     update_item: { resource: 'catalog', action: 'write' },
     // Matches POST /catalog/items/:id/archive
     // (routes/catalog/catalog.ts:24,75 — `deletePerm`, i.e. catalog:delete).
     archive_item: { resource: 'catalog', action: 'delete' },
+    // W02-D5 (#6756): implemented and documented but unmapped, so
+    // resolveToolPermissionRequirements failed closed with "Unknown action".
+    // PUT/DELETE /catalog/items/:id/prices/:currencyCode (catalog/pricing.ts) are catalog:write.
+    set_price: { resource: 'catalog', action: 'write' },
+    remove_price: { resource: 'catalog', action: 'write' },
     set_org_price: { resource: 'catalog', action: 'write' },
     remove_org_price: { resource: 'catalog', action: 'write' },
     set_bundle_components: { resource: 'catalog', action: 'write' },
@@ -1280,6 +1356,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   snooze_concern: { resource: 'ai_sessions', action: 'use' },
   resolve_concern: { resource: 'ai_sessions', action: 'use' },
   create_watch: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W08 thread links (services/wisp/linkTools.ts): the chat-use
+  // permission, same as the /wisp/thread/:id/links routes. The object's own
+  // read permission is checked per object by resolveEntityRef.
+  link_entity: { resource: 'ai_sessions', action: 'use' },
+  list_links: { resource: 'ai_sessions', action: 'use' },
   // Wisp W07 specialists (services/aiToolsWisp.ts), w00 A1: the chat-use
   // permission. The kind's own permissions (SPECIALIST_KIND_POLICY) are
   // ceiling terms the coordinator checks against the grantor AND the acting
@@ -2769,6 +2850,15 @@ export function checkAgentGuardrails(
     return deny(neverAgentToolDenyReason(toolName));
   }
 
+  // W02-D2 (#6756): single human-only ACTIONS of an otherwise reachable tool
+  // (AGENT_HUMAN_ONLY_ACTIONS). Same placement rule as the whole-tool deny
+  // above: before the site gate, the allowlist and every mode branch, so an
+  // allowlist entry naming the action cannot reach past it.
+  const humanOnlyAction = resolveActionForTool(toolName, input);
+  if (humanOnlyAction !== undefined && AGENT_HUMAN_ONLY_ACTIONS.has(`${toolName}:${humanOnlyAction}`)) {
+    return deny(`Action "${toolName}:${humanOnlyAction}" is human-only and is never available to agents`);
+  }
+
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
   if (siteDenial) return deny(`Denied: ${siteDenial}`);
 
@@ -3262,6 +3352,60 @@ function iocHuntHeadline(action: string | undefined, input: Record<string, unkno
 /**
  * Build a human-readable description of what the tool is about to do.
  */
+/**
+ * Where a notification channel's alerts would go, for an approval headline:
+ * the URL HOST only (never the path — webhook paths embed tokens) or a
+ * recipient count. Null when the input carries no recognisable destination.
+ */
+function describeChannelDestination(config: unknown): string | null {
+  if (!config || typeof config !== 'object') return null;
+  const c = config as Record<string, unknown>;
+  // Type-agnostic on purpose (an `update` carries no `type`): name EVERY
+  // destination the config holds, so a decoy key (a Slack-looking
+  // `webhookUrl` beside the `url` a webhook channel actually posts to) can
+  // never hide the real one. Hosts only — webhook paths and queries carry
+  // tokens. Email recipients by domain, never full address (PR review, #6756).
+  const parts: string[] = [];
+  const hosts = new Set<string>();
+  let unparseable = false;
+  // The keys the senders post to come first, then any other *Url key.
+  const urlKeys = ['url', 'webhookUrl', ...Object.keys(c).filter((k) => /url$/i.test(k) && k !== 'url' && k !== 'webhookUrl')];
+  for (const key of urlKeys) {
+    const value = c[key];
+    if (typeof value !== 'string' || value.length === 0) continue;
+    try {
+      hosts.add(new URL(value).host);
+    } catch {
+      unparseable = true;
+    }
+  }
+  if (hosts.size > 0) parts.push(`host ${[...hosts].join(', ')}`);
+  if (unparseable) parts.push('an unparseable URL');
+
+  const recipients = [c.recipients, c.to, c.phoneNumbers]
+    .flatMap((v) => (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []))
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  const domains = new Set<string>();
+  let phones = 0;
+  for (const r of recipients) {
+    const at = r.lastIndexOf('@');
+    if (at > 0 && at < r.length - 1) domains.add(r.slice(at + 1).toLowerCase());
+    else phones += 1;
+  }
+  const emailCount = recipients.length - phones;
+  // Every distinct domain, never a truncated list.
+  if (emailCount > 0) parts.push(`${emailCount} recipient(s) at ${[...domains].sort().join(', ')}`);
+  if (phones > 0) parts.push(`${phones} phone number(s)`);
+
+  if (['routingKey', 'integrationKey'].some((k) => typeof c[k] === 'string' && (c[k] as string).length > 0)) {
+    parts.push('a new routing key (not shown)');
+  }
+  if (['token', 'user', 'userKey', 'botToken'].some((k) => typeof c[k] === 'string' && (c[k] as string).length > 0)) {
+    parts.push('new credentials (not shown)');
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
 /** "Wisp wants to run <kind> at <org>: <reason>" — plus the exact batch for a bulk reply (w00 A30). */
 function describeSpecialistRequest(input: Record<string, unknown>): string {
   const kind = typeof input.kind === 'string' ? input.kind : '';
@@ -3361,13 +3505,25 @@ export function buildApprovalDescription(
           ? Object.keys(input.fields as Record<string, unknown>)
           : [];
         parts.push(`Update ticket #${shortTicketId} fields (${fieldNames.join(', ') || 'none'})`);
+        if (fieldNames.some((name) => (TICKET_REQUESTER_FIELD_KEYS as readonly string[]).includes(name))) {
+          parts.push('— changes the requester (future customer emails go to the new requester)');
+        }
       } else if (action === 'link_device') {
         const target = typeof input.hostname === 'string'
           ? input.hostname
           : (typeof input.serial === 'string' ? input.serial : 'unknown device');
         parts.push(`Link device ${target} to ticket #${shortTicketId}`);
       } else if (action === 'comment') {
-        parts.push(`Post private AI triage note on ticket #${shortTicketId}`);
+        // W02 (#6756): the same predicate the tier uses, so the headline can
+        // never call a public reply an internal note. Content is never shown.
+        parts.push(input.isPublic === true
+          ? `Post PUBLIC comment on ticket #${shortTicketId} (customer-visible; emails the requester)`
+          : `Post internal note on ticket #${shortTicketId}`);
+      } else if (action === 'update_status') {
+        const target = typeof input.statusName === 'string' ? `"${input.statusName}"` : String(input.status ?? 'unknown');
+        parts.push(`Set ticket #${shortTicketId} status to ${target}`
+          + (input.status === 'resolved' ? ' (resolved: emails the requester)' : '')
+          + (typeof input.statusName === 'string' ? ' (custom status; may resolve and email the requester)' : ''));
       } else if (action === 'draft') {
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
@@ -3553,6 +3709,79 @@ export function buildApprovalDescription(
       }
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
+
+    // W02 (#6756): the approver must see WHERE alert data will go — the
+    // destination host or the recipient count, never a URL path or token
+    // (webhook paths carry secrets).
+    case 'manage_notification_channels': {
+      const channelRef = typeof input.channelId === 'string' ? `${input.channelId.slice(0, 8)}...` : 'unknown';
+      if (action === 'create' || action === 'update') {
+        const verb = action === 'create'
+          ? `Create ${typeof input.type === 'string' ? `${input.type} ` : ''}notification channel`
+          : `Update notification channel ${channelRef}`;
+        // Destination before the model-chosen name, and the name capped, so
+        // free text can never push the destination out of view.
+        const destination = describeChannelDestination(input.config);
+        parts.push(verb);
+        if (destination) parts.push(`→ ${destination}`);
+        if (typeof input.name === 'string') {
+          parts.push(`named "${input.name.length > 80 ? `${input.name.slice(0, 80)}…` : input.name}"`);
+        }
+      } else if (action === 'delete') {
+        parts.push(`Delete notification channel ${channelRef} (linked alert routes go silent; cannot be undone)`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
+
+    case 'manage_quotes': {
+      const quoteRef = typeof input.quoteId === 'string' ? `${input.quoteId.slice(0, 8)}...` : 'unknown';
+      if (action === 'decline') {
+        parts.push(`Record quote ${quoteRef} as DECLINED by the customer`
+          + (typeof input.method === 'string' ? ` (via ${input.method})` : '')
+          + ' — cannot be reopened, only revised');
+      } else if (action === 'create_pay_link') {
+        parts.push(`Create a Stripe payment link for converted quote ${quoteRef}`);
+      } else if (action === 'send' && typeof input.quoteId === 'string') {
+        parts.push(`Send quote ${quoteRef} to the customer`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
+
+    case 'manage_billing_catalog': {
+      const itemRef = typeof input.catalogId === 'string' ? `${input.catalogId.slice(0, 8)}...` : 'unknown';
+      const orgRef = typeof input.orgId === 'string' ? `${input.orgId.slice(0, 8)}...` : 'unknown';
+      const price = input.price && typeof input.price === 'object' ? (input.price as Record<string, unknown>).unitPrice : undefined;
+      const override = input.override && typeof input.override === 'object' ? input.override as Record<string, unknown> : {};
+      const currency = typeof input.currencyCode === 'string' ? input.currencyCode.toUpperCase() : '';
+      if (action === 'set_price') {
+        parts.push(`Set the ${currency} price of catalog item ${itemRef} to ${String(price ?? 'unknown')} (contract renewals bill at it)`);
+      } else if (action === 'remove_price') {
+        parts.push(`Remove the ${currency} price of catalog item ${itemRef}`);
+      } else if (action === 'set_org_price') {
+        parts.push(`Set organization ${orgRef} price of catalog item ${itemRef} to ${String(override.unitPrice ?? 'unknown')}`
+          + (typeof override.currencyCode === 'string' ? ` ${override.currencyCode}` : ''));
+      } else if (action === 'remove_org_price') {
+        parts.push(`Remove organization ${orgRef} price override of catalog item ${itemRef}`);
+      } else if (action === 'archive_item') {
+        parts.push(`Archive catalog item ${itemRef}`);
+      } else if (action === 'update_item') {
+        // Price-affecting fields show their new value (contract renewals bill
+        // the live price); other fields are named only (PR review, #6756).
+        const item = input.item && typeof input.item === 'object' ? input.item as Record<string, unknown> : {};
+        const PRICE_FIELDS = ['unitPrice', 'costBasis', 'markupPercent', 'taxable', 'isActive'];
+        const fields = Object.keys(item).map((k) => (PRICE_FIELDS.includes(k) ? `${k} → ${String(item[k])}` : k));
+        parts.push(`Update catalog item ${itemRef} (${fields.join(', ') || 'no fields'})`);
+      } else if (action === 'set_bundle_components') {
+        parts.push(`Replace the components of bundle ${itemRef} (${Array.isArray(input.components) ? input.components.length : 0} component(s))`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
 
     case 'manage_tags':
       parts.push(`${action?.toUpperCase()} tags`);

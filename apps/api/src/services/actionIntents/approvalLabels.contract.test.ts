@@ -37,6 +37,18 @@ describe('approval card labels (#9657)', () => {
     expect(buildApprovalDescription('remediate_vulnerability', undefined, {})).toBe('Remediate vulnerabilities');
   });
 
+  // W02 (#6756) call-specific copy keeps its detail when the id is present,
+  // and its non-special actions use the same humanized fallback (merge with #9657).
+  it('W02 write tools: specific copy with an id, humanized fallback otherwise', () => {
+    expect(buildApprovalDescription('manage_quotes', 'send', { quoteId: '0123456789abcdef' }))
+      .toBe('Send quote 01234567... to the customer');
+    expect(buildApprovalDescription('manage_quotes', 'create', {})).toBe('Create quote');
+    expect(buildApprovalDescription('manage_billing_catalog', 'create_item', {}))
+      .toBe('Manage billing catalog: create item');
+    expect(buildApprovalDescription('manage_notification_channels', 'test', {}))
+      .toBe('Manage notification channels: test');
+  });
+
   it('prettifies an unmapped tool instead of showing the identifier', () => {
     expect(buildApprovalDescription('some_unmapped_tool', 'do_thing', {})).toBe('Some unmapped tool: do thing');
   });

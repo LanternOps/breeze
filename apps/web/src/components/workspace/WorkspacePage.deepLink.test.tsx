@@ -24,10 +24,14 @@ vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider:
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 const ai = vi.hoisted(() => ({
   adoptSession: vi.fn(async (..._args: unknown[]) => 'ok'), releaseSession: vi.fn(),
-  sessionId: null as string | null, composerDraft: '', isStreaming: false,
+  sessionId: null as string | null, composerDraft: '', isStreaming: false, isOpen: false,
 }));
 const panelHarness = vi.hoisted(() => ({ props: null as Record<string, any> | null }));
-vi.mock('@/stores/aiStore', () => ({ useAiStore: { getState: () => ai } }));
+// #9840 W5: WorkspacePage also reads `useAiStore((s) => s.isOpen)` (the
+// panel-open padding), so the mock is callable as a selector hook too.
+vi.mock('@/stores/aiStore', () => ({
+  useAiStore: Object.assign((sel: (s: typeof ai) => unknown) => sel(ai), { getState: () => ai }),
+}));
 vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
 vi.mock('./WorkspaceChatPanel', () => ({
   default: (props: Record<string, any>) => {

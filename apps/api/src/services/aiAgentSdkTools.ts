@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -498,6 +498,12 @@ export const TOOL_TIERS = {
   snooze_concern: 2,
   resolve_concern: 2,
   create_watch: 2,
+  // Wisp W08 thread links (services/wisp/linkTools.ts). Declared to chat only
+  // when wispEnabled() (wispLinkToolDefinitions). link_entity is Tier 2 like
+  // raise_concern: auto-executes with an audit row, no approval card, and is
+  // not a plain Tier-1 read (which would bypass agent allowlists).
+  link_entity: 2,
+  list_links: 1,
   // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
   // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
   // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
@@ -598,6 +604,16 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
+  // in aiGuardrails (input-aware public comment / resolve / requester edit,
+  // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
+  manage_tickets: 1,
+  manage_quotes: 2,
+  manage_billing_catalog: 2,
+  manage_saved_filters: 1,
+  manage_tags: 2,
+  manage_notification_channels: 1,
+  test_webhook: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 /**
@@ -1382,6 +1398,27 @@ export function wispConcernToolDefinitions(
 }
 
 /**
+ * Wisp W08 thread-link tools — the same `wispEnabled()` EXPOSURE gate as the
+ * W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and both
+ * handlers refuse without `auth.wispGrant`.
+ */
+export function wispLinkToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('link_entity', registryDescription('link_entity'), linkEntityShape, handler('link_entity')),
+    tool('list_links', registryDescription('list_links'), listLinksShape, handler('list_links')),
+  ];
+}
+
+/**
  * Wisp W07 specialist chat tool — the same `wispEnabled()` EXPOSURE gate as
  * the W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
  * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and the
@@ -1919,6 +1956,12 @@ export function buildBreezeSdkTools(
       makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(
+      'manage_tickets',
+      registryDescription('manage_tickets'),
+      inputShape('manage_tickets'),
+      makeHandler('manage_tickets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
       'get_running_timer',
       registryDescription('get_running_timer'),
       {},
@@ -2045,6 +2088,27 @@ export function buildBreezeSdkTools(
       registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_notification_channels',
+      registryDescription('manage_notification_channels'),
+      inputShape('manage_notification_channels'),
+      makeHandler('manage_notification_channels', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_saved_filters',
+      registryDescription('manage_saved_filters'),
+      inputShape('manage_saved_filters'),
+      makeHandler('manage_saved_filters', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tags',
+      registryDescription('manage_tags'),
+      inputShape('manage_tags'),
+      makeHandler('manage_tags', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // #6930. No `done`: ticking a checklist step is a human attestation.
@@ -2360,6 +2424,13 @@ export function buildBreezeSdkTools(
       registryDescription('query_webhooks'),
       inputShape('query_webhooks'),
       makeHandler('query_webhooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'test_webhook',
+      registryDescription('test_webhook'),
+      inputShape('test_webhook'),
+      makeHandler('test_webhook', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -4081,6 +4152,18 @@ export function buildBreezeSdkTools(
       },
       makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
     ),
+    tool(
+      'manage_quotes',
+      registryDescription('manage_quotes'),
+      inputShape('manage_quotes'),
+      makeHandler('manage_quotes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'manage_billing_catalog',
+      registryDescription('manage_billing_catalog'),
+      inputShape('manage_billing_catalog'),
+      makeHandler('manage_billing_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
 
     tool(
       'get_quote',
@@ -4543,6 +4626,8 @@ export function buildBreezeSdkTools(
     ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
     ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W08 link_entity / list_links — behind wispEnabled() (see the factory).
+    ...wispLinkToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
     ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a

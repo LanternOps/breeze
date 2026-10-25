@@ -3,6 +3,7 @@ import { TOOL_TIERS } from './aiAgentSdkTools';
 import { ACT_MANIFEST, resolveActOperation } from './aiAgents/actManifest';
 import {
   AGENT_DENIED_READ_TOOLS,
+  AGENT_HUMAN_ONLY_ACTIONS,
   AGENT_HUMAN_ONLY_TOOLS,
   BLOCKED_TOOLS,
   checkAgentGuardrails,
@@ -19,6 +20,7 @@ import {
 } from './aiGuardrails';
 import { listAgentReachableTools } from './aiAgents/agentToolCatalog';
 import { aiTools } from './aiToolNames';
+import { toolActionEnum } from './aiToolActions';
 import {
   isSecretBearingTool,
   SECRET_BEARING_TOOLS,
@@ -296,6 +298,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
+  'list_links', // Wisp W08: Tier 1 thread-link read; refuses without auth.wispGrant, every link re-resolved
   // W01 (#6755)
   'list_monitors',
   'list_network_assets', // A-W06 Tier-1 read
@@ -975,3 +978,55 @@ describe('AGENT_DENIED_READ_TOOLS (W01-D5 / WQ1 / WQ2, #6755)', () => {
     }
   });
 });
+
+// W02 (#6756), spec D4 action level: single actions of an otherwise
+// agent-reachable tool that a headless agent may never call.
+describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is exactly manage_tags add/remove (tags feed run scope directly and via dynamic groups), each with a real reason', () => {
+    expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual(['manage_tags:add', 'manage_tags:remove']);
+    for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('every key names a real registry action of a tool that is not already never-agent', () => {
+    for (const key of AGENT_HUMAN_ONLY_ACTIONS.keys()) {
+      const [tool, action] = key.split(':');
+      expect(toolActionEnum(tool!), key).toContain(action);
+      expect(isNeverAgentTool(tool!), key).toBe(false);
+    }
+  });
+
+  const tagPolicy = policyWith({ mode: 'act', toolAllowlist: ['manage_tags', 'manage_tags:add', 'manage_tags:remove'] });
+
+  it('denies an allowlisted manage_tags:add (self-scope widening)', () => {
+    const check = checkAgentGuardrails('manage_tags', { action: 'add', deviceId: 'dev-1', tags: ['x'] }, tagPolicy);
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/never available to agents/);
+  });
+
+  it('denies an allowlisted manage_tags:remove (a removal can admit a device to a negative-rule dynamic group)', () => {
+    const check = checkAgentGuardrails('manage_tags', { action: 'remove', deviceId: 'dev-1', tags: ['x'] }, tagPolicy);
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/never available to agents/);
+  });
+
+  it('control: an allowlisted mutation of another tool is not denied for the human-only reason', () => {
+    const check = checkAgentGuardrails('manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_services:restart'] }));
+    expect(check.reason ?? '').not.toMatch(/human-only/);
+    expect(check.disposition).toBe('propose');
+  });
+
+  it('control: manage_tags:list still reaches an agent', () => {
+    const check = checkAgentGuardrails('manage_tags', { action: 'list', deviceId: 'dev-1' }, tagPolicy);
+    expect(check.disposition).toBe('allow');
+  });
+});
+

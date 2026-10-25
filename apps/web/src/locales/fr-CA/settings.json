@@ -3049,6 +3049,8 @@
           "cost": "Coût",
           "duration": "Durée",
           "trigger": "Déclencheur",
+          "requestedBy": "Demandé par",
+          "wispFor": "Wisp pour {{name}}",
           "queuedAt": "En file d'attente",
           "startedAt": "Démarré",
           "finishedAt": "Terminé",

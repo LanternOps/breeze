@@ -611,9 +611,9 @@ describe('delivering a queued database backup', () => {
 });
 
 // #7081 / #8731: every write-session storage call composes its physical key
-// from the reservation's recorded key root. The writer stays legacy in this
-// wave, so these tests force a prefixed root through the injectable
-// `resolveMintKeyRoot` dependency.
+// from the reservation's recorded key root. Most tests pin the mint root
+// through the injectable `resolveMintKeyRoot` dependency; (6a)/(6b) use the
+// production one (the destination's prefix, W03).
 describe('write sessions resolve physical keys from the reservation key root', () => {
   const PREFIX = 'msp/acme';
   const P_ROOT = { layout: 'prefixed_flat', prefix: PREFIX } as const;
@@ -833,6 +833,39 @@ describe('write sessions resolve physical keys from the reservation key root', (
     expect(rows).toHaveLength(0);
     const sessions = await getTestDb().execute(sql`SELECT 1 FROM backup_storage_sessions WHERE job_id = ${t.jobId}`);
     expect(sessions).toHaveLength(0);
+  });
+
+  // W03: the writer is on — the default mint root follows the destination's prefix.
+  runDb('(6a) default mint on a prefixed S3 destination records prefixed_flat and presigns under the prefix', async () => {
+    const destination = { ...WRITE_DESTINATION, prefix: '/msp/acme/' };
+    const t = await seedWriteTenant({ destination });
+    const calls: Call[] = [];
+    const recorded = recordingDeps(calls);
+    const { resolveMintKeyRoot: _injected, ...deps } = recorded; // the production mint root, not an injected one
+    const minted = await withDbAccessContext(orgContext(t.orgId), () => mintBackupWriteSession({
+      orgId: t.orgId, jobId: t.jobId, deviceId: t.deviceId, configId: t.configId,
+      provider: 's3', providerConfig: destination, baseManifestKey: null,
+    }, deps));
+    if (minted.mode !== 'brokered') throw new Error(`expected brokered, got ${minted.reason}`);
+    expect(await reservationRow(minted.snapshotId)).toMatchObject({ key_layout: 'prefixed_flat', key_prefix: PREFIX });
+
+    const session = await authed(t, minted.envelope);
+    const key = `snapshots/${minted.snapshotId}/manifest.json`;
+    const put = await asAgent(t, session, (r) => resolveWriteSessionObjects(session, r, [{ method: 'PUT', key, size: 1 }], deps));
+    expect(put.status).toBe(200);
+    expect(calls).toEqual([{ op: 'presignPut', key: `${PREFIX}/${key}` }]);
+  });
+
+  runDb('(6b) default mint on an S3 destination with an invalid stored prefix refuses: nothing reserved, never the bucket root', async () => {
+    const destination = { ...WRITE_DESTINATION, prefix: 'a//b' };
+    const t = await seedWriteTenant({ destination });
+    const result = await withDbAccessContext(orgContext(t.orgId), () => mintBackupWriteSession({
+      orgId: t.orgId, jobId: t.jobId, deviceId: t.deviceId, configId: t.configId,
+      provider: 's3', providerConfig: destination, baseManifestKey: null,
+    }, fakeDeps()));
+    expect(result).toEqual({ mode: 'unbrokered', reason: 'invalid_destination_prefix' });
+    const rows = await getTestDb().execute(sql`SELECT 1 FROM backup_snapshot_id_reservations WHERE current_job_id = ${t.jobId}`);
+    expect(rows).toHaveLength(0);
   });
 
   runDb('(7) resume onto an earlier prefixed reservation aborts and writes under ITS root, not the current mint root', async () => {

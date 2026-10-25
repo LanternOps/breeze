@@ -57,6 +57,93 @@ Line numbers drift, so re-grep before editing. Paths are under `apps/api/src/` u
 
 ---
 
+## Quorum amendments (implementation, 2026-10-17)
+
+The plan was written against `d1cbf4fe27` (2026-09-23). About 120 commits have touched `aiTools*.ts` since. Re-verified on `origin/main` `0b146d32d7`. This section **supersedes** the class tables and tasks below wherever they disagree.
+
+### Already on main (no W02 work left)
+
+| Plan item | Landed in | Evidence |
+|---|---|---|
+| T6 `manage_quotes.decline` → `quotes:accept`; `create_pay_link` → `invoices:send` + `quotes:read` extra | #7199 | `aiGuardrails.ts` TOOL_PERMISSIONS.manage_quotes, TOOL_ACTION_EXTRA_PERMISSIONS.manage_quotes |
+| T6 `manage_catalog.archive_item` → `catalog:delete` | #7199 | TOOL_PERMISSIONS.manage_catalog |
+| T6 `test_webhook` → `organizations:write`; T7e registry tier 3 + `TIER3_SUPERVISED_TOOLS` | #7199 | `aiToolsIntegrations.ts` registry `tier: 3`; `aiGuardrails.ts` TIER3_SUPERVISED_TOOLS |
+| T7b quote decline: `method`/`reference` required, `QUOTE_NOT_DECLINABLE` pre-check, `quote.declined_on_behalf` audit | #7199 | `aiToolsQuotes.ts` decline branch |
+| T7d channel `create` takes an explicit `orgId` via `resolveWritableToolOrgId` | #7199 | `aiToolsAlerts.ts` create branch |
+| T5 org-scope refusal pins for quotes and catalog | #6110 | `aiToolsQuotes.test.ts`, `aiToolsCatalog.test.ts` "refuse organization scope" |
+| `manage_tickets:comment` input-aware arm (public comment → supervised) | #7199 | `isInputAwareTier3`, `TIER3_INPUT_AWARE_ACTIONS` |
+
+### Amendments to the class table
+
+- **QA1 — the comment arm keeps `isPublic === true`, not the plan's `!== false`.** The handler's default flipped to private (`aiToolsTicketing.ts` comment branch: `isPublic: input.isPublic === true`; registry description "default false = internal note"). The guard must be the *same expression* as the handler, so a missing or non-boolean `isPublic` is an internal note on both sides. Consequences: the plan's `isPublic: 'false'` test row resolves tier 2 (the handler writes a private note for it), and the triage-note fix (T7c) is no longer load-bearing. It still lands as an explicit `isPublic: false`, because that is truthful.
+- **QA2 — pre-deploy triage intents (decision c): no shim and no human click.** A minted triage note has no `isPublic`, so it resolves tier 2 before and after this PR (QA1). `revalidateRelease.ts` re-checks only the registry base tier (`getToolTier`), which W02 does not change for `manage_tickets`.
+- **QA3 — classification for actions added since the plan.**
+  - `update_time_entry` (#8708): **t2**, the same class as `log_time_entry`.
+  - `list_links` (#8627): **t1-read**.
+  - `link_ticket` and `unlink_ticket` (#8627): **t2**. They are internal and reversible, and the service refuses cross-org links. They also stay in `TIER2_ACTIONS` because `ticketShadowGuardrail.contract.test.ts` derives the ticket-run mutation set from it.
+- **QA4 — the customer work approval gate (#8537) does not escalate time writes.** A billable time write over a ticket's budget, or on after-hours work, can open a `ticket_approval_request`. That emails the customer approver (`ticketApproval/writerGate.ts` → `ticket.approval_requested` → `ticketNotifyWorker.ts`). `log_time_entry`, `start_timer`, `stop_timer` and `update_time_entry` stay **t2**:
+  1. The mail is template-only and carries no AI-authored text.
+  2. It is the consent step that protects the customer: it asks before anything is billed and bills nothing itself.
+  3. It is throttled per request (`admitApprovalMail`).
+  4. The REST time-entry routes reach the same gate.
+  5. Whether a write trips the gate depends on DB state (budget consumed, settings), and guardrails are DB-free. Escalating on input would mean escalating every billable entry, which reverses #2551.
+
+  Recorded as an accepted risk for the codex quorum.
+- **QA5 — `update_status` and `update_fields` arms as planned.**
+  - `update_status` is supervised when `status === 'resolved'` or `statusName` is present (a custom status resolves to a base status only through the DB). The resolve email also renders the AI-supplied `resolutionNote` to the requester, which strengthens the case.
+  - `update_fields` is supervised when `fields` carries `submittedBy`, `submitterName` or `submitterEmail`. All three keys are still in Zod.
+  - `ticketType` (added since) is an internal classification: no escalation.
+- **QA6 — approval description.** The `comment` branch of `buildApprovalDescription` printed "Post private AI triage note" for every comment, public ones included. It is fixed here, together with the new arms.
+- **QA7 — catalog.** `manage_catalog`'s Zod schema still lacks `set_price`, `remove_price`, `currencyCode`, `price` and `allocationCurrency`. The registry and handler already have them. T7a stands as written, including returning `previous`.
+- **QA8 — `manage_notification_channels:test` is still a stub** (no outbound send). It stays t2 with the W02-D9 no-outbound pin.
+
+### Final per-action classes (Task 11's `W02_EXPECTED` copies this)
+
+| Tool | t1 (read) | t2 | supervised | four-eyes |
+|---|---|---|---|---|
+| `manage_tickets` | list, get, list_work_types, list_links | create, assign, link_alert, unlink_alert, create_from_alert, log_time_entry, start_timer, stop_timer, update_time_entry, link_device, draft, link_ticket, unlink_ticket; comment (internal); update_status (not resolved); update_fields (no requester keys) | edit_comment, delete_comment; comment (`isPublic: true`); update_status (`resolved` or any `statusName`); update_fields (requester keys) | move_org |
+| `manage_quotes` | — | create_draft, update, delete_draft, add_block, update_block, delete_block, reorder_blocks, add_manual_line, add_catalog_line, update_line, remove_line, move_line, reorder_lines | decline, create_pay_link | send |
+| `manage_billing_catalog` | — | create_item | update_item, archive_item, set_price, remove_price, set_org_price, remove_org_price, set_bundle_components | — |
+| `manage_saved_filters` | list, get | create, delete | — | — |
+| `manage_tags` | list | add, remove (both in `AGENT_HUMAN_ONLY_ACTIONS`, QV2) | — | — |
+| `manage_notification_channels` | list | test | create, update | delete (QV3) |
+| `test_webhook` | — | — | (whole tool) | — |
+
+### QV — codex quorum (Task 0b; `codex exec`, read-only, medium, 2026-10-17)
+
+Codex agreed with QA1, QA2 and QA5, and agreed with changes to QA6 and QA7, noting that the code was not written yet. It also agreed with the `test_webhook` row. The other points were resolved on the merits:
+
+- **QV1 — QA4, billable time writes. Codex: DISAGREE (supervise potentially billable writes). Kept at t2; flagged for Todd.**
+  - Codex's point stands: the approval-request email does leave the tenant.
+  - Two independent human gates sit downstream of a wrong entry:
+    1. The customer must actively approve the over-budget hours.
+    2. Even then, the time reaches money only through invoice `issue`, which is four-eyes.
+  - The mail is the partner's own configured consent workflow. Its body is a template; the figures come from the entry.
+  - Whether a given write mails anyone depends on DB state that guardrails cannot see. The input-aware alternative, escalating every write with `isBillable !== false` (the default), reverses the 2026-07-20 approval-fatigue decision for all time logging.
+  - **Todd decision** in the PR. Flipping it is one arm in `isInputAwareTier3`.
+  - **QV1: Todd kept t2 (2026-10-22).** No `isBillable` arm.
+- **QI — chat tool-index budget (Todd, 2026-10-22).** W02 took the index to 6,919 B (6,968 B flag-on) against the 6,656 B ceiling. Option 2, `MAX_INLINE_ACTIONS` 8 → 7 (renderer only), saved 245 B and still left it over (6,674 / 6,723). Option 1 then raised the ceiling to 6.75 KB (6,912 B), re-using the Tool Catalog W3 sign-off. After the rename: 6,682 / 6,731 B.
+- **QV2 — `manage_tags:remove`. Codex: DISAGREE. Accepted.**
+  - Removing a tag can *add* a device to a dynamic group whose rule uses `isEmpty`, `notContains` or a similar negative condition (`filterEngine.ts` array operators).
+  - `manage_tags` re-evaluates group membership on every change (`aiToolsDevice.ts` `requestDeviceGroupReevaluationAfterCommit`).
+  - `triggers.deviceGroupIds` feeds the agent's own run scope (`runResourceScope.ts`).
+  - So `remove` widens self-scope exactly as `add` does. `AGENT_HUMAN_ONLY_ACTIONS = {manage_tags:add, manage_tags:remove}`, and agents keep `list` only.
+- **QV3 — channel `delete` → four-eyes. Accepted.**
+  - Deleting a partner-wide channel is irreversible: its stored destination and secret config are gone, and alerting goes silent for every org.
+  - That is partner-wide, which the class rule maps to four-eyes.
+  - Guardrails are DB-free and cannot tell a partner-wide channel from an org one by `channelId`, so the fail-safe applies to every `delete`.
+  - `update` stays supervised (W02-D1: the approver sees the new destination).
+- **QV4 — rejected stricter classes, each with the plan's recorded reason:**
+  - `assign` and `create`: the notifications go to the MSP's own staff, not a customer.
+  - Quote draft, block and line deletes: never-sent drafts only (#2551).
+  - Catalog `create_item`: inert until referenced.
+  - Saved filter `delete`: an inert object that nothing references.
+- **QV5 — channel `test` → t1 (codex). Rejected.**
+  - It stays t2 with the no-outbound pin.
+  - The action's intent is outbound. If the stub ever becomes real, the pin reds and forces reclassification, and t2 keeps the audit row until then.
+
+---
+
 ## Measured starting state (2026-09-23, W01 worktree)
 
 | Fact | Value | How |

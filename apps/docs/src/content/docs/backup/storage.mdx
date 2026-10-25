@@ -25,8 +25,8 @@ The storage configuration wizard walks you through four steps:
      <TabItem label="Amazon S3">
        - **Region** — AWS region (e.g., `us-east-1`)
        - **Bucket Name** — the S3 bucket to store backups in
-       - **Base Path** — optional prefix within the bucket (e.g., `breeze-backups/`)
-       - **Access Key** and **Secret Key** — IAM credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, and `s3:DeleteObject` permissions
+       - **Path Prefix** — optional key prefix within the bucket (e.g., `breeze-backups`). New snapshots are stored under `<prefix>/snapshots/`; see [Key prefix](#key-prefix) below
+       - **Access Key** and **Secret Key** — IAM credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, and `s3:DeleteObject` permissions (scoped to `<prefix>/*` when you set a prefix)
 
        Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly. Enter the endpoint as a host (`s3.example.com`) or host and port (`minio.local:9000`), optionally prefixed with `http://` or `https://`; a scheme-less endpoint is treated as `https://`. Other schemes (such as `s3://` or `ftp://`) are rejected with a validation error rather than failing later at backup time.
      </TabItem>
@@ -88,6 +88,26 @@ File backups are written to the target as one object per file, under a `snapshot
 On S3 storage the `.gz` suffix is only part of the object name. Expect an S3 target to use roughly as much space as the files you protect, and size buckets and quotas on that basis. If you download a file object directly from the bucket, it is the original file. Rename it to drop the `.gz` instead of running `gunzip` on it, which fails with `not in gzip format`.
 
 Breeze relies on this layout: restores, bare-metal recovery media, integrity verification and older agents all read S3 objects as raw bytes. Don't rename, compress or recompress objects in the bucket.
+
+### Key prefix
+
+An S3 destination's **Path Prefix** decides where its new snapshots are written:
+
+| Destination | New snapshot objects |
+|-------------|----------------------|
+| No prefix | `snapshots/<snapshot-id>/...` at the bucket root |
+| Prefix `msp/acme` | `msp/acme/snapshots/<snapshot-id>/...` |
+
+Each snapshot records the location it was written to, and Breeze reads, verifies, restores and cleans it up there for its whole life. As a result:
+
+- **Existing snapshots are never moved.** Snapshots taken before you set or changed the prefix stay where they are and keep restoring normally.
+- **Changing the prefix makes the next backup a full backup.** An incremental never builds on a snapshot stored under a different prefix, so the first run scheduled after a change uploads everything again. An incremental run that was already scheduled against a base under the old prefix when you changed it fails with a message saying so; the next scheduled run takes the full backup.
+- **Several organizations can share one bucket** with a prefix each. The storage cleanup sweep lists and deletes under one prefix at a time and never touches another prefix's objects.
+- **Scope IAM policies to the prefix.** A policy that only allows `bucket/snapshots/*` stops working once a prefix is set; allow `bucket/<prefix>/*` instead. **Test connection** writes a probe object under the prefix, so it catches this before the first backup fails.
+
+A valid prefix is at most 256 characters, made of `/`-separated segments that use only letters, digits and `! _ . * ' ( ) -`. Leading and trailing slashes are ignored. Empty segments (`a//b`), `.` and `..` are not allowed, and no segment may be `snapshots` (in any letter case), so one prefix can never contain another prefix's snapshots. The form flags an invalid prefix as you type and the API rejects it on save. A destination saved with an invalid prefix by an older version is not backed up to the bucket root instead: its backups fail with a message asking you to correct the prefix, and **Test connection** fails naming the rule the prefix breaks.
+
+Bare-metal recovery of a snapshot stored under a prefix always downloads through Breeze (token-mode download), which is the default for recovery media. Agent-side tools that read a bucket directly with a hand-supplied configuration (the `breeze-backup rebuild --provider-config` command and the `agent.yaml` backup manager) do not apply the prefix.
 
 ### How destination credentials are stored
 

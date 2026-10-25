@@ -48,6 +48,7 @@ const h = vi.hoisted(() => {
     loadWispEntitlement: vi.fn(),
     getEntitlements: vi.fn(),
     hasSatisfiedMfa: vi.fn(),
+    getPartnerSettings: vi.fn(),
   };
 });
 
@@ -70,6 +71,9 @@ vi.mock('../entitlements', async (orig) => ({
   getEntitlements: h.getEntitlements,
 }));
 vi.mock('../../middleware/auth', () => ({ hasSatisfiedMfa: h.hasSatisfiedMfa }));
+// W08 (w00 A35): the partner enable switch. Mocked so the chain fake's result
+// queue is not shifted by the switch read.
+vi.mock('./partnerSettings', () => ({ getPartnerSettings: h.getPartnerSettings }));
 vi.mock('./grantAuthority', async (orig) => ({
   ...(await orig<typeof import('./grantAuthority')>()),
   computeLiveHumanTerm: h.computeLiveHumanTerm,
@@ -140,6 +144,7 @@ beforeEach(() => {
   h.computeLiveHumanTerm.mockResolvedValue(LIVE);
   h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: null });
   h.getEntitlements.mockResolvedValue({ plan: 'pro', entitlements: { wisp: { state: 'enabled', limits: null } } });
+  h.getPartnerSettings.mockResolvedValue({ enabled: true, urgentCapableSeverities: [] });
 });
 
 describe('createGrant', () => {
@@ -579,5 +584,45 @@ describe('pauseGrant metrics', () => {
     h.results.push([grantRow()], [grantRow({ status: 'paused', pausedReason: 'grantor_suspended' })]);
     await pauseGrant('g1', 'grantor_suspended');
     expect(wm.incWispGrantPause).toHaveBeenCalledExactlyOnceWith('grantor_suspended');
+  });
+});
+
+describe('partner enable switch (W08 Task 6, w00 A35)', () => {
+  const disabled = () => h.getPartnerSettings.mockResolvedValue({ enabled: false, urgentCapableSeverities: [] });
+
+  it('createGrant refuses partner_disabled before consuming the step-up; nothing inserted', async () => {
+    disabled();
+    await expect(createGrant({ auth: auth(), scope: { partnerId: PARTNER, orgId: null }, stepUpGrantId: 's' }))
+      .rejects.toMatchObject({ code: 'partner_disabled', message: expect.stringMatching(/turned off/) });
+    expect(h.getPartnerSettings).toHaveBeenCalledWith(PARTNER);
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(valuesInserted()).toEqual([]);
+  });
+
+  it('createGrant admits when the switch is on (the default for a missing row)', async () => {
+    h.results.push([grantRow({ currentRevisionId: null })], [{ id: 'r1' }], [grantRow()]);
+    await expect(createGrant({ auth: auth(), scope: { partnerId: PARTNER, orgId: null }, stepUpGrantId: 's' })).resolves.toMatchObject({ status: 'active' });
+    expect(h.getPartnerSettings).toHaveBeenCalledWith(PARTNER);
+  });
+
+  it('userResumeGrant refuses partner_disabled while the switch is off; nothing updated', async () => {
+    disabled();
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'user_paused' })]);
+    await expect(userResumeGrant({ auth: auth(), grantId: 'g1' })).rejects.toMatchObject({ code: 'partner_disabled' });
+    expect(callsOf('update')).toEqual([]);
+  });
+
+  it('refreshGrant refuses partner_disabled while the switch is off; step-up not consumed, nothing written', async () => {
+    disabled();
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'partner_disabled' })]);
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 's' })).rejects.toMatchObject({ code: 'partner_disabled' });
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(valuesInserted()).toEqual([]);
+    expect(callsOf('update')).toEqual([]);
+  });
+
+  it('partner_disabled is a system pause: userResumeGrant on it is not_user_paused even with the switch back on', async () => {
+    h.results.push([grantRow({ status: 'paused', pausedReason: 'partner_disabled' })]);
+    await expect(userResumeGrant({ auth: auth(), grantId: 'g1' })).rejects.toMatchObject({ code: 'not_user_paused' });
   });
 });

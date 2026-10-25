@@ -18,6 +18,73 @@ Six capabilities extend and govern this system:
 
 ---
 
+## Chat surfaces: the side panel and the AI Assistant
+
+You can talk to the assistant in two places:
+
+- **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
+- **The AI Assistant** — the full page at `/workspace` (**AI Assistant** in the sidebar). It holds up to five conversations, one per tab.
+
+A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
+
+### Move a conversation to the AI Assistant
+
+<Steps>
+
+1. In the side panel, click **Open in AI Assistant** (the arrow icon in the panel header).
+2. The AI Assistant opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
+3. The side panel closes and lets the conversation go. It stays in your history.
+
+</Steps>
+
+If the AI Assistant already has five tabs, nothing moves and you see **Close a tab in the AI Assistant to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
+
+### Move a conversation back to the side panel
+
+Use either **Continue in side panel** in the chat header, or **Tab options** (the tab's menu) → **Continue in side panel**. The side panel opens with the conversation and your unsent text, then the tab closes. If the side panel already holds a different conversation with unsent text or a reply in progress, you are asked first: **Replace the conversation in the side panel? It stays in your history.**
+
+### A reply that is still being written
+
+You do not have to wait for the assistant to finish. If you move a conversation while a reply is streaming, the destination shows the reply so far and keeps following it to the end. Nothing is sent again.
+
+An approval card that is waiting moves with the conversation and keeps its **original** deadline — moving it does not give you more time. You can approve or deny it from the destination.
+
+For a very long reply you may see **Joined mid-response. The full reply appears when it finishes.** The complete reply appears as soon as the assistant is done.
+
+### Open a past conversation
+
+- In the side panel, click **History** (the clock icon).
+- In the AI Assistant, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
+
+Both lists show your active conversations from every organization you can access, most recent first, and each has a search box:
+
+- An **organization chip** names the conversation's organization when you work in more than one. It reads **Another organization** until the name loads.
+- A **Device** chip marks a conversation bound to a device.
+- A conversation already open on the other surface is labelled **Open in AI Assistant** (in the side panel's History) or **Open in side panel** (in the AI Assistant's list). Picking it moves it there.
+- Topology investigations are listed in the side panel only. Script-authoring and MCP sessions are not chat conversations and do not appear in either list.
+
+Opening a conversation from another organization does not change the organization switcher.
+
+### Links to a conversation
+
+`/workspace#session=<conversation id>` opens that conversation in the AI Assistant, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
+
+| Message | Meaning |
+|---|---|
+| **This conversation isn't available** | The conversation does not exist or you cannot access it. |
+| **This conversation was closed** | The conversation has ended and can no longer be continued. |
+| **Close a tab to open this conversation** | The AI Assistant already has five tabs. Nothing is closed for you. |
+| **Investigations open from the topology map** | Topology investigations live in the side panel; the message offers to open it there. |
+| **Continue in side panel to choose a model** | The next message needs a model choice, which is made in the side panel. |
+
+Both surfaces need the **`ai_sessions:use`** permission (see [Who can approve](#who-can-approve)). Signing out clears both surfaces in that browser: the next sign-in starts with no tabs and an empty side panel.
+
+<Aside type="note" title="For self-hosters">
+The conversation list now shows only chat conversations: script-authoring and MCP sessions no longer appear in the side panel's History, and the mobile app's history list changes the same way. API users: `GET /api/v1/ai/sessions` and `/search` return only chat sessions and now include `orgId`, `type` and `deviceId` (search also `status`), and `GET /api/v1/ai/sessions/:id/stream` is a new read-only route that follows a conversation's current reply. No environment variable, migration or proxy change is needed beyond what `POST …/messages` already requires for streaming.
+</Aside>
+
+---
+
 ## AI Risk Engine
 
 The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Security → AI Risk** in the sidebar.
@@ -674,18 +741,43 @@ See [Playbooks](/features/playbooks/) for playbook definitions and step types.
 
 ## Ticketing & Billing AI Tools
 
-Breeze also provides AI tools for the PSA side of the platform — tickets, invoices, the product catalog, contracts, and quotes:
+Breeze also provides AI tools for the PSA side of the platform — tickets, invoices, the billing catalog, contracts, and quotes:
 
 | Tool | Description |
 |------|-------------|
-| `manage_tickets` | Full ticket lifecycle: create, comment, assign, update status and fields, link/unlink alerts, create a ticket from an alert, edit/delete comments, track time, and move a ticket between organizations |
 | `list_invoices` / `get_invoice` / `manage_invoices` | Browse invoices and manage the invoice lifecycle — drafts, lines, assembling a draft from an organization's billable period or a ticket, issuing, voiding, payments, and Stripe pay links |
-| `search_catalog` / `get_catalog_item` / `manage_catalog` | Search and maintain the partner product catalog, including per-organization price overrides and bundles |
+| `search_catalog` / `get_catalog_item` | Search the partner billing catalog, including per-organization price overrides and bundles |
 | `lookup_distributor_product` | Look up live TD SYNNEX price and availability for a distributor SKU that isn't in your catalog yet — handy when pricing a quote line for a product you don't stock. Reseller cost is hidden for organization-scoped callers |
 | `list_contracts` / `get_contract` / `manage_contracts` | Browse recurring contracts and manage drafts, lines, and lifecycle (activate, pause, resume, cancel) |
-| `manage_quotes` | Build and manage quotes/proposals — drafts, content blocks, lines, sending, declining, and pay links |
 
-This list is exposed to external AI clients through the [MCP Server](/features/mcp-server/#ticketing-tools); as of #6755 it is stale for the assistant chat itself — `list_invoices`, `get_invoice`, `manage_invoices`, `search_catalog`, `get_catalog_item`, `list_contracts`, `get_contract`, and `manage_contracts` are tiered and reach chat today, while `manage_catalog`, `manage_quotes`, and `manage_tickets` remain untiered (MCP-only) until a later wave. Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, and moving a ticket to another organization — are classified Tier 3, so they are gated behind the execute scope and production allowlist rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
+The ticket, quote, billing-catalog, and PSA admin write tools are tiered per action:
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_tickets (list/get/list_work_types/list_links/merge_preview)` | 1 | Search and read tickets, work types, and ticket links |
+| `manage_tickets (create/assign/link_alert/unlink_alert/create_from_alert/link_device/draft/link_ticket/unlink_ticket)` | 2 | Open and assign tickets, link alerts, devices, and related tickets, and store a draft reply for human review |
+| `manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)` | 2 | Track time against tickets |
+| `manage_tickets (comment/update_status/update_fields)` | 2 | Internal notes and ticket updates. A public comment (`isPublic: true`), resolving a ticket or setting a custom status, and changing the requester need approval (Tier 3) |
+| `manage_tickets (edit_comment/delete_comment)` | 3 | Edit or delete a comment — customer-visible text with no restore |
+| `manage_tickets (merge)` | 3 | Merge two tickets of one organization — irreversible, one approver |
+| `manage_tickets (move_org)` | 3 | Move a ticket to a different organization (four-eyes) |
+| `manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)` | 2 | Draft a quote: header, content blocks, and lines on a quote that has not been sent |
+| `manage_quotes (decline/create_pay_link)` | 3 | Record a customer's decline, or create a payment link |
+| `manage_quotes (send)` | 3 | Send a quote to the customer (four-eyes) |
+| `manage_billing_catalog (create_item)` | 2 | Add a billing catalog item (inert until a quote, invoice, or contract uses it) |
+| `manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)` | 3 | Change items, price-book prices, organization price overrides, and bundles — contract renewals bill the live price |
+| `manage_saved_filters (list/get)` | 1 | List and view saved device filters |
+| `manage_saved_filters (create/delete)` | 2 | Create or delete a saved device filter |
+| `manage_tags (list)` | 1 | List device tags |
+| `manage_tags (add/remove)` | 2 | Add or remove device tags. AI agents can never change tags, because tags can change which devices an agent is scoped to |
+| `manage_notification_channels (list)` | 1 | List notification channels |
+| `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
+| `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
+| `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
+
+Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.
 
 ---
 

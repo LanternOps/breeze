@@ -40,6 +40,7 @@ import type {
 } from '@breeze/shared';
 import { TicketProposalCard } from './TicketProposalCard';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { readWispProvenance, wispGrantorLabel } from '../wisp/wispProvenance';
 
 interface RunDetailPageProps {
   runId: string;
@@ -1742,6 +1743,10 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const runTouchedDevices = run.deviceId !== null
     || (run.sweep?.findings.some((finding) => finding.deviceId !== null) ?? false);
 
+  // Wisp W07 (#9920, spec §13) — a run admitted under a Wisp grant names the
+  // person whose authority it ran under. Null for every other run.
+  const wispProvenance = readWispProvenance(run);
+
   return (
     <div className="space-y-6" data-testid="run-detail-page">
       <a href="/ai-agents/runs" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
@@ -1857,6 +1862,14 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.trigger')}</dt>
               <dd>{triggerLabel(t, run.triggerKind)}</dd>
             </div>
+            {wispProvenance && (
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.requestedBy')}</dt>
+                <dd data-testid="run-detail-wisp">
+                  {t('aiAgentsPage.runs.detail.labels.wispFor', { name: wispGrantorLabel(wispProvenance) })}
+                </dd>
+              </div>
+            )}
             <div>
               <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
               <dd>{formatCurrency(run.costCents / 100)}</dd>
