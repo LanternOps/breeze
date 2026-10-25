@@ -152,7 +152,13 @@
     "m365RemoveLicense": "Lizenzen von Microsoft 365 entfernen",
     "m365RetireIntuneDevice": "Über Intune verwaltete Smartphones außer Betrieb nehmen",
     "m365RevokeSessions": "Anmeldesitzungen bei Microsoft 365 widerrufen",
-    "m365DisableUser": "Anmeldung bei Microsoft 365 blockieren"
+    "m365DisableUser": "Anmeldung bei Microsoft 365 blockieren",
+    "m365CreateUser": "Microsoft 365-Konto erstellen",
+    "m365AssignLicense": "Microsoft 365-Lizenzen zuweisen",
+    "m365AddToGroup": "Zu einer Microsoft 365-Gruppe hinzufügen",
+    "googleMoveOu": "In die Organisationseinheit verschieben",
+    "googleAssignLicense": "Eine Google Workspace-Lizenz zuweisen",
+    "googleAddToGroup": "Zu einer Google-Gruppe hinzufügen"
   },
   "workspace": {
     "tabs": {
@@ -214,13 +220,16 @@
     "start": {
       "offboard": "Offboarding für eine Person",
       "notEnabled": "Dieses Rezept ist für diese Bereitstellung nicht aktiviert.",
-      "fromDeviceOrAlert": "Starten Sie dieses Rezept über ein Gerät oder eine Warnung."
+      "fromDeviceOrAlert": "Starten Sie dieses Rezept über ein Gerät oder eine Warnung.",
+      "onboard": "Onboarding für eine Person"
     },
     "recipe": {
       "identityOffboardingName": "Offboarding für eine Person",
       "identityOffboardingSummary": "Bestätigen Sie, wer ausscheidet, leiten Sie die E-Mails um und entfernen Sie den Zugriff in Microsoft 365 und Google Workspace in sicherer Reihenfolge mit einer einzigen Genehmigung. Manuelle Arbeit wird im Ticket nachverfolgt.",
       "serviceRecoveryName": "Einen gestoppten Dienst wiederherstellen",
-      "serviceRecoverySummary": "Untersuchen Sie einen gestoppten Windows-Dienst, starten Sie ihn mit Genehmigung neu und prüfen Sie, dass er weiterläuft."
+      "serviceRecoverySummary": "Untersuchen Sie einen gestoppten Windows-Dienst, starten Sie ihn mit Genehmigung neu und prüfen Sie, dass er weiterläuft.",
+      "identityOnboardingName": "Onboarding für eine Person",
+      "identityOnboardingSummary": "Erstellen Sie das Microsoft 365-Konto einer neuen Person mit einer Genehmigung und weisen Sie anschließend mit einer zweiten die gewählten Lizenzen und Gruppen zu. Google Workspace-Konten werden von Hand über einen Checklisten-Punkt angelegt. Das temporäre Passwort wird einmalig von der genehmigenden Person angezeigt."
     },
     "refreshFailed": "Die Rezeptbibliothek konnte nicht aktualisiert werden; die Anzeige ist möglicherweise veraltet."
   },
@@ -314,14 +323,88 @@
     "failed": "Das Offboarding konnte nicht gestartet werden.",
     "duplicate": "Für diese Person läuft bereits ein Offboarding.",
     "duplicateLink": "Laufende Aufgabe öffnen",
-    "replayed": "Dieses Offboarding wurde bereits gestartet; es wird geöffnet."
+    "replayed": "Dieses Offboarding wurde bereits gestartet; es wird geöffnet.",
+    "onboarding": {
+      "title": "Onboarding für eine Person",
+      "personLabel": "Neue Person",
+      "displayName": "Vollständiger Name",
+      "personWillBeCreated": "Diese Person wird beim Start der Aufgabe als Kontakt angelegt.",
+      "jobTitle": "Position (optional)",
+      "site": "Standort (optional)",
+      "noSite": "Kein Standort",
+      "providersLabel": "Zu erstellende Konten",
+      "upn": "Anmeldename (UPN)",
+      "checkAvailability": "Verfügbarkeit prüfen",
+      "upnAvailable": "Verfügbar: Kein Microsoft 365-Konto verwendet diesen Anmeldenamen.",
+      "upnTaken": "Vergeben: Ein Microsoft 365-Konto verwendet diesen Anmeldenamen bereits.",
+      "upnUnchecked": "Dieser Anmeldename konnte nicht geprüft werden. Breeze legt kein Konto unter einem Namen an, den niemand geprüft hat.",
+      "mailNickname": "Mail-Alias",
+      "usageLocation": "Nutzungsstandort (zweistelliger Ländercode)",
+      "usageLocationHelp": "Das Land, in dem die Lizenzen genutzt werden, zum Beispiel DE oder US. Erforderlich, bevor Microsoft 365 eine Lizenz zuweist.",
+      "skus": "Microsoft 365-Lizenzen (SKU-IDs)",
+      "skusHelp": "Eine Lizenz ohne freien Lizenzplatz bleibt erhalten: Die Aufgabe macht daraus einen Checklisten-Punkt.",
+      "groups": "Microsoft 365-Gruppen (Gruppen-IDs)",
+      "groupsHelp": "Dynamische Gruppen und Gruppen mit Administratorrolle werden nie automatisch hinzugefügt: Die Aufgabe macht daraus Checklisten-Punkte.",
+      "add": "Hinzufügen",
+      "invalidEntry": "Geben Sie einen Wert im angezeigten Format ein.",
+      "noSeats": "Kein freier Lizenzplatz bestätigt: wird zum Checklisten-Punkt",
+      "needsTechnician": "Ein Techniker ergänzt dies von Hand",
+      "googleManual": "Breeze kann Google-Konten noch nicht erstellen. Die Aufgabe legt einen Checklisten-Punkt mit den genauen Angaben an, damit das Konto von Hand erstellt wird; danach geht es mit den Lizenzen und Gruppen weiter.",
+      "googlePrimaryEmail": "Primäre E-Mail-Adresse",
+      "givenName": "Vorname",
+      "familyName": "Nachname",
+      "orgUnitPath": "Organisationseinheit (optional)",
+      "orgUnitPathHelp": "Beginnt mit einem Schrägstrich, zum Beispiel /Staff/Sales.",
+      "googleLicenses": "Google Workspace-Lizenzen",
+      "googleProductId": "Produkt-ID",
+      "googleSkuId": "SKU-ID",
+      "googleGroups": "Google-Gruppen (Adressen)",
+      "modelAfter": "Einrichtung wie bei (optional)",
+      "modelAfterHelp": "Die Aufgabe liest die Gruppen und Lizenzen dieser Person aus und bittet Sie, sie im ersten Schritt zu bestätigen. Admin-Gruppen und dynamische Gruppen werden nie kopiert: Die Aufgabe fügt sie als Checklisten-Punkte hinzu.",
+      "manager": "Vorgesetzte Person (optional)",
+      "managerHelp": "Wird beim neuen Kontakt gespeichert und in der Übergabe genannt. Breeze ändert nie die Konten der vorgesetzten Person.",
+      "managerPrefilled": "Aus dem Ticket vorausgefüllt: Die Person, die es erstellt hat, ist als vorgesetzte Person eingetragen, nicht als neue Person.",
+      "nobody": "Niemand",
+      "startAt": "Startdatum (optional)",
+      "startNow": "Leer lassen, um die Konten jetzt einzurichten und zu übergeben",
+      "startScheduled": "Die Konten werden jetzt erstellt; die Übergabe wartet bis zu diesem Zeitpunkt.",
+      "startBeyondDeadline_one": "Diese Aufgabe muss innerhalb von {{count}} Tag abgeschlossen sein. Wählen Sie ein Startdatum innerhalb von {{count}} Tag oder starten Sie das Onboarding näher am Termin.",
+      "startBeyondDeadline_other": "Diese Aufgabe muss innerhalb von {{count}} Tagen abgeschlossen sein. Wählen Sie ein Startdatum innerhalb von {{count}} Tagen oder starten Sie das Onboarding näher am Termin.",
+      "invalid": "Einige Angaben fehlen oder haben nicht das richtige Format:",
+      "previewStage1": "Schritt 1 — Kontoerstellung (Sie genehmigen diesen zuerst)",
+      "previewStage1Empty": "Es wird nichts automatisch erstellt.",
+      "previewStage2": "Schritt 2 — Lizenzen, Gruppen und Organisationseinheit (Sie genehmigen dies, sobald das Konto existiert)",
+      "previewProvisional": "Vorläufig: Breeze bestätigt dies, sobald das Konto existiert",
+      "flagsTitle": "Das haben die Prüfungen ergeben",
+      "previewNote": "Die Aufgabe eröffnet für die Checklisten-Punkte ein eigenes Ticket.",
+      "submit": "Onboarding starten",
+      "started": "Onboarding gestartet.",
+      "failed": "Das Onboarding konnte nicht gestartet werden.",
+      "duplicate": "Für diese Person läuft bereits ein Onboarding.",
+      "replayed": "Dieses Onboarding wurde bereits gestartet; es wird geöffnet.",
+      "existingContactLink": "Kontakte der Organisation öffnen",
+      "upnManual": "Microsoft 365-Konten werden für diese Organisation von Hand erstellt, deshalb hat Breeze dieses Konto weder geprüft noch eingeplant.",
+      "sitesFailed": "Die Standorte konnten nicht geladen werden.",
+      "startAtIncomplete": "Geben Sie ein vollständiges Startdatum mit Uhrzeit ein oder leeren Sie das Feld.",
+      "invalidNoProvider": "Aktivieren Sie mindestens ein Konto, das erstellt werden soll.",
+      "flagLabel": {
+        "upnCollision": "Anmeldename vergeben",
+        "emailCollision": "Google-Adresse vergeben",
+        "m365CollisionCheckFailed": "Prüfung des Anmeldenamens",
+        "m365SeatsReadFailed": "Prüfung der Lizenzplätze",
+        "googleCollisionCheckFailed": "Prüfung der Google-Adresse",
+        "googleConnectionUnavailable": "Google Workspace-Verbindung",
+        "other": "Prüfung"
+      }
+    }
   },
   "taskPanels": {
     "tabsLabel": "Aufgabenansichten",
     "tabs": {
       "steps": "Schritte",
       "plan": "Ablaufplan",
-      "events": "Zeitleiste"
+      "events": "Zeitleiste",
+      "accounts": "Konten"
     },
     "steps": {
       "empty": "Es wurde noch kein Schritt gestartet.",
@@ -342,7 +425,14 @@
         "effects": "Genehmigen und die Änderungen durchführen",
         "manualWork": "Arbeit aus der Checkliste",
         "verifyOutcome": "Das Ergebnis überprüfen",
-        "document": "Den Nachweis verfassen"
+        "document": "Den Nachweis verfassen",
+        "confirmDetails": "Angaben der neuen Person bestätigen",
+        "createAccounts": "Konten genehmigen und erstellen",
+        "manualCreateGoogle": "Google-Konto von Hand erstellen",
+        "resolveAccounts": "Neue Konten finden",
+        "provisionEffects": "Lizenzen und Gruppen genehmigen und zuweisen",
+        "waitStart": "Auf das Startdatum warten",
+        "handoverWork": "Checkliste für die Übergabe"
       },
       "kind": {
         "reason": "Analyse",
@@ -393,7 +483,10 @@
         "failed": "Fehlgeschlagen",
         "unknown": "Ergebnis unbekannt",
         "superseded": "Ersetzt"
-      }
+      },
+      "stageCreation": "Kontoerstellung",
+      "stageProvision": "Lizenzen, Gruppen und Organisationseinheit",
+      "followedBy": "Genehmigt und ausgeführt, gefolgt von Genehmigung {{n}} für die nächste Phase. Hier als Nachweis dessen aufbewahrt, was genehmigt wurde."
     },
     "events": {
       "empty": "Noch keine Ereignisse aufgezeichnet.",
@@ -426,6 +519,24 @@
         "humanWorkUnticked": "Checklisten-Punkt abgewählt",
         "taskSettled": "Aufgabe abgeschlossen"
       }
-    }
+    },
+    "accounts": "Erstellte Konten",
+    "planStage": "Genehmigung {{n}}"
+  },
+  "credential": {
+    "availableTo": "Temporäres Passwort für {{name}} verfügbar bis {{date}}",
+    "availableToNoDate": "Temporäres Passwort für {{name}} verfügbar",
+    "askTo": "Bitten Sie {{name}}, das temporäre Passwort weiterzugeben — nur diese Person kann es anzeigen",
+    "reveal": "In der KI-Aktivität (Genehmigungen) anzeigen",
+    "revealed": "Temporäres Passwort bereits angezeigt",
+    "expired": "Temporäres Passwort ist abgelaufen, ohne angezeigt worden zu sein",
+    "expiredRecovery": "Setzen Sie das Passwort zurück. Erstellen Sie kein zweites Konto.",
+    "unretrievable": "Das temporäre Passwort wurde nie gespeichert, daher kann es niemand anzeigen.",
+    "setByHand": "Passwort beim Onboarding von Hand festgelegt",
+    "unknown": "Status des temporären Passworts unbekannt",
+    "theApprover": "die Person, die die Kontoerstellung genehmigt hat",
+    "whoReveals": "Nur die Person, die die Kontoerstellung genehmigt hat, kann ein temporäres Passwort anzeigen, und zwar einmalig – nicht der Techniker, der diese Aufgabe gestartet hat. Übergeben Sie es persönlich oder telefonisch.",
+    "noRevealer": "Breeze hat niemanden gefunden, der dieses temporäre Passwort anzeigen kann.",
+    "revealNeedsFeedAccess": "Nur Sie können es in der KI-Aktivität (Genehmigungen) anzeigen, aber Ihre Rolle kann diese Seite nicht öffnen. Bitten Sie einen Administrator um Zugriff auf das KI-Sitzungsprotokoll."
   }
 }

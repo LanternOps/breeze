@@ -285,7 +285,7 @@
     "subtitle": "Conecta proveedores, elige qué modelos están disponibles y define el modelo predeterminado de cada función de IA.",
     "forbidden": "No tienes permiso para administrar proveedores y modelos de IA.",
     "loadFailed": "No se pudieron cargar los proveedores y modelos de IA.",
-    "workspaceNote": "El enriquecimiento de contenido de Workspace usa tu proveedor de IA configurado y aparece en tu uso de IA.",
+    "workspaceNote": "La indexación de conocimiento usa tu proveedor de IA configurado y aparece en tu uso de IA.",
     "connections": {
       "title": "Conexiones",
       "subtitle": "A dónde se envían tus solicitudes de IA y quién las paga.",

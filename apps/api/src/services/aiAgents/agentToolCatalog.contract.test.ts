@@ -176,6 +176,49 @@ it('makes delivery reachable without changing prior frozen gaps', () => {
   // (#6756) wired it; see the W02 pins below.
 });
 
+/** Spec 2026-09-23 W04 (#6758): every W04 tool is agent-reachable; its writes
+ * are allowlisted (t2) or proposals (supervised / four-eyes), never unattended. */
+const W04_AGENT_CAPABILITY: Readonly<Record<string, string>> = {
+  execute_containment: 'security_response', create_incident: 'security_response', collect_evidence: 'security_response',
+  request_elevation: 'security_response', revoke_elevation: 'security_response', remediate_sensitive_data: 'security_response',
+  assign_security_training: 'security_response', create_remote_session: 'remote_access',
+  manage_processes: 'scripts_commands', manage_scheduled_tasks: 'scripts_commands', registry_operations: 'scripts_commands',
+  trigger_agent_restart: 'endpoint_agent', trigger_agent_upgrade: 'endpoint_agent',
+  manage_software_policy: 'patching_software', remediate_software_violation: 'patching_software',
+  manage_browser_policy: 'config_policies', manage_peripheral_policy: 'config_policies',
+  configure_network_baseline: 'network', acknowledge_network_device: 'network',
+};
+
+describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
+  it('pins all 19 W04 tools', () => {
+    expect(Object.keys(W04_AGENT_CAPABILITY)).toHaveLength(19);
+  });
+
+  it.each(Object.entries(W04_AGENT_CAPABILITY))('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('only the pre-existing scheduled-task keys are pre-authorisable; every other W04 tier-3 call is a proposal', () => {
+    // manage_scheduled_tasks run/disable/enable were quorum-approved policy-
+    // decidable keys before W04 (policyDecidableKeys.ts, the manage_services:
+    // restart class: one device, one named task). Wiring the tool makes them
+    // live for an agent an admin explicitly grants them to (W04 PR, Todd).
+    const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => key.split(':')[0]! in W04_AGENT_CAPABILITY);
+    expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
+  });
+
+  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+    const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
+    expect(groups, 'manage_groups is agent-reachable').toBeDefined();
+    const keys = groups!.operations.map((op) => op.key);
+    expect(keys).not.toContain('manage_groups:add_devices');
+    expect(keys).not.toContain('manage_groups:remove_devices');
+    expect(keys).toContain('manage_groups:list');
+  });
+});
+
 // Spec 2026-09-23 W02 (#6756): PSA and billing write tools are agent-reachable.
 // Their tier-3 actions still become proposals for a human (none is
 // policy-decidable), and manage_tags add/remove stay human-only (QV2).

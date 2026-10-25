@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // W07 R2b: the accounts panel reads the viewer's id to decide who may reveal.
+  useAuthStore: (sel: (s: { user: { id: string } | null }) => unknown) => sel({ user: { id: 'u-viewer' } }),
+}));
 
 import OperatorTaskDetail from './OperatorTaskDetail';
 import { fetchWithAuth } from '../../stores/auth';
@@ -347,5 +351,47 @@ describe('OperatorTaskDetail panels (W06 R1b)', () => {
     fetchMock.mockResolvedValueOnce(json({ data: task }));
     render(<OperatorTaskDetail taskId="task-1" />);
     expect(await screen.findByTestId('task-plan-unavailable')).toBeInTheDocument();
+  });
+});
+
+// W07 R2b (Task 19 case 8): the created-accounts panel is MOUNTED in the task
+// page behind `#panel=accounts`, and only for a task that has accounts.
+describe('OperatorTaskDetail — accounts panel (W07 R2b)', () => {
+  const accounts: NonNullable<AiOperatorTaskDto['accounts']> = [{
+    provider: 'm365', principalLabel: 'priya@customer.example', externalId: 'cccccccc-0000-4000-8000-000000000001',
+    credentialState: 'expired', intentId: 'i-create', revealableByUserId: null, revealableByName: null, revealExpiresAt: null,
+  }];
+  const onboardingTask = (overrides: Partial<AiOperatorTaskDto> = {}) => buildTask({
+    workflowKey: 'identity_onboarding', objective: 'Onboard Priya Patel',
+    target: { deviceId: null, label: null, detachedAt: null, detachedReason: null },
+    plan: [], accounts, ...overrides,
+  });
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    window.location.hash = '';
+  });
+
+  it('#panel=accounts renders task-accounts through the page; the hash round-trips and the other panels still render', async () => {
+    window.location.hash = 'panel=accounts';
+    fetchMock.mockResolvedValueOnce(json({ data: onboardingTask() }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    expect(await screen.findByTestId('task-accounts')).toBeInTheDocument();
+    expect(screen.getByTestId('task-account-credential-m365')).toHaveTextContent('Do not create a second account.');
+    fireEvent.click(screen.getByTestId('task-panel-tab-plan'));
+    expect(await screen.findByTestId('task-plan-empty')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#panel=plan');
+    fireEvent.click(screen.getByTestId('task-panel-tab-accounts'));
+    expect(await screen.findByTestId('task-accounts')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#panel=accounts');
+  });
+
+  it('a task with no accounts grows no accounts tab, and #panel=accounts falls back to the steps', async () => {
+    window.location.hash = 'panel=accounts';
+    fetchMock.mockResolvedValueOnce(json({ data: onboardingTask({ workflowKey: 'service_recovery', accounts: [] }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    expect(await screen.findByTestId('task-steps-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-panel-tab-accounts')).toBeNull();
+    expect(screen.queryByTestId('task-accounts')).toBeNull();
   });
 });

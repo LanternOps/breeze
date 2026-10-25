@@ -18,7 +18,7 @@ import { LIVE_READ_INPUT_FLAGS } from './aiLiveDeviceReads';
  */
 describe('TIER_DECIDING_INPUT_KEYS', () => {
   it('covers every whole-tool input-aware tier-3 tool and the input-aware action tools', () => {
-    const required = [...TIER3_INPUT_AWARE_TOOLS, 'manage_tickets', 'manage_policy_feature_link', 'manage_organizations', 'ioc_hunt', 'manage_backup_profiles'];
+    const required = [...TIER3_INPUT_AWARE_TOOLS, 'manage_tickets', 'manage_policy_feature_link', 'manage_organizations', 'ioc_hunt', 'manage_backup_profiles', 'collect_evidence'];
     for (const name of required) {
       expect(TIER_DECIDING_INPUT_KEYS[name], name).toBeDefined();
       expect(TIER_DECIDING_INPUT_KEYS[name]!.length, name).toBeGreaterThan(0);
@@ -35,6 +35,8 @@ describe('TIER_DECIDING_INPUT_KEYS', () => {
     expect(TIER_DECIDING_INPUT_KEYS.ioc_hunt).toEqual(['expectedDeviceCount']);
     // W03 (#6757): create with ownerScope === 'partner' is supervised.
     expect(TIER_DECIDING_INPUT_KEYS.manage_backup_profiles).toEqual(['ownerScope']);
+    // W04 (#6758): evidenceTypes containing 'screenshot' (or not an array) is supervised.
+    expect(TIER_DECIDING_INPUT_KEYS.collect_evidence).toEqual(['evidenceTypes']);
   });
 
   it('tierDecidingInputKeys leads with the action selector and includes every live-read flag', () => {

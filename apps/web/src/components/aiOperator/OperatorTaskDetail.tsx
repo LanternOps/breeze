@@ -33,10 +33,15 @@ import { useHashState } from '@/lib/useHashState';
 import OperatorTaskSteps from './OperatorTaskSteps';
 import OperatorTaskPlan from './OperatorTaskPlan';
 import OperatorTaskEvents from './OperatorTaskEvents';
+import OperatorTaskAccounts from './OperatorTaskAccounts';
 import { readHashParam, writeHashParam } from './operatorHash';
 
-/** W06 R1b: the task-page panels, selected by `#panel=`. */
-const PANELS = ['steps', 'plan', 'events'] as const;
+/**
+ * W06 R1b: the task-page panels, selected by `#panel=`. W07 R2b adds
+ * `accounts`, offered only for a task that created accounts — a task with
+ * none grows no tab, and `#panel=accounts` then falls back to the steps.
+ */
+const PANELS = ['steps', 'plan', 'events', 'accounts'] as const;
 type Panel = (typeof PANELS)[number];
 
 interface OperatorTaskDetailProps {
@@ -261,7 +266,11 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
     : contactTarget?.label ?? t('operatorTaskDetail.target.none');
   const panelLabel = (p: Panel) => (p === 'steps'
     ? t('taskPanels.tabs.steps')
-    : p === 'plan' ? t('taskPanels.tabs.plan') : t('taskPanels.tabs.events'));
+    : p === 'plan' ? t('taskPanels.tabs.plan')
+      : p === 'accounts' ? t('taskPanels.tabs.accounts') : t('taskPanels.tabs.events'));
+  const accounts = task.accounts ?? [];
+  const panels = PANELS.filter((p) => p !== 'accounts' || accounts.length > 0);
+  const shownPanel: Panel = panels.includes(panel) ? panel : 'steps';
   // Wisp W07 (#9920, spec §13) — a task admitted under a Wisp grant names the
   // person whose authority it runs under. Null for every other task.
   const wispProvenance = readWispProvenance(task);
@@ -348,29 +357,30 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
 
       <div className="space-y-3">
         <div role="tablist" aria-label={t('taskPanels.tabsLabel')} className="flex gap-1 border-b">
-          {PANELS.map((p) => (
+          {panels.map((p) => (
             <button
               key={p}
               id={`task-panel-tab-${p}`}
               type="button"
               role="tab"
-              aria-selected={panel === p}
-              aria-controls={panel === p ? `task-panel-${p}` : undefined}
+              aria-selected={shownPanel === p}
+              aria-controls={shownPanel === p ? `task-panel-${p}` : undefined}
               data-testid={`task-panel-tab-${p}`}
               onClick={() => selectPanel(p)}
               className={cn(
                 '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
-                panel === p ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+                shownPanel === p ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
               )}
             >
               {panelLabel(p)}
             </button>
           ))}
         </div>
-        <div role="tabpanel" id={`task-panel-${panel}`} aria-labelledby={`task-panel-tab-${panel}`}>
-          {panel === 'steps' && <OperatorTaskSteps task={task} />}
-          {panel === 'plan' && <OperatorTaskPlan plan={task.plan} />}
-          {panel === 'events' && <OperatorTaskEvents events={task.events} />}
+        <div role="tabpanel" id={`task-panel-${shownPanel}`} aria-labelledby={`task-panel-tab-${shownPanel}`}>
+          {shownPanel === 'steps' && <OperatorTaskSteps task={task} />}
+          {shownPanel === 'plan' && <OperatorTaskPlan plan={task.plan} />}
+          {shownPanel === 'events' && <OperatorTaskEvents events={task.events} />}
+          {shownPanel === 'accounts' && <OperatorTaskAccounts accounts={accounts} />}
         </div>
       </div>
 

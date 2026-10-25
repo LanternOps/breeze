@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  AiOperatorIdentityOnboardingTaskDraftDto,
   AiOperatorIdentityTaskDraftDto,
   AiOperatorWorkflowDto,
   OperatorTaskDraftInput,
@@ -94,6 +95,29 @@ export function parseOperatorTaskDraft(data: unknown): AiOperatorIdentityTaskDra
   return draft as AiOperatorIdentityTaskDraftDto;
 }
 
+/**
+ * The `identity_onboarding` draft (W07 R2a, G7): two plan previews, flags and
+ * checklist items — no person resolution, because the person does not exist.
+ */
+export function parseOnboardingTaskDraft(data: unknown): AiOperatorIdentityOnboardingTaskDraftDto {
+  const draft = (data as { data?: unknown } | null)?.data as Partial<AiOperatorIdentityOnboardingTaskDraftDto> | undefined;
+  if (
+    !draft
+    || draft.recipeKey !== 'identity_onboarding'
+    || !draft.workflow
+    || !Array.isArray(draft.createPlanPreview)
+    || !Array.isArray(draft.provisionPlanPreview)
+    || !Array.isArray(draft.flags)
+    || !Array.isArray(draft.manualWork)
+    || !draft.input || typeof draft.input !== 'object'
+    // The form matches flags to fields by subject: a flag without one is a broken response.
+    || draft.flags.some((f) => !f || typeof f.code !== 'string' || typeof f.subject !== 'string' || typeof f.detail !== 'string')
+  ) {
+    throw new Error('Malformed onboarding task draft');
+  }
+  return draft as AiOperatorIdentityOnboardingTaskDraftDto;
+}
+
 export interface StartOperatorTaskArgs {
   /** The Library row the technician reviewed: its key AND version go on the wire. */
   workflow: Pick<AiOperatorWorkflowDto, 'recipeKey' | 'recipeVersion'>;
@@ -134,8 +158,8 @@ export function parseStartedOperatorTask(data: unknown): { taskId: string; repla
 }
 
 /** `createOperatorTaskSchema.clientIdempotencyKey` is 8–200 chars. */
-export function newClientIdempotencyKey(): string {
-  return `offboard-${crypto.randomUUID()}`;
+export function newClientIdempotencyKey(prefix: 'offboard' | 'onboard' = 'offboard'): string {
+  return `${prefix}-${crypto.randomUUID()}`;
 }
 
 function syntheticJson(payload: unknown, status: number): Response {
