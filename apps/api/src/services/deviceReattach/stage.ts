@@ -205,13 +205,23 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
         };
       }
 
-      // A staged set that reuses one of the source's own credentials is an
-      // agent defect: refused, and nothing changes.
-      const sourceHashes = new Set(collectAgentCredentialHashes(source));
-      if (values.some((value) => sourceHashes.has(value))) {
-        throw new ReattachRefusedError(
-          reattachRefusal(400, 'invalid_staged_set', 'The staged set must be new credentials, not the source\'s own'),
-        );
+      // A staged secret equal to ANY credential either device holds (current,
+      // previous or pending, agent/watchdog/helper) is not a freshly
+      // generated one: whoever sent it holds an existing credential. Treated
+      // like a second staged set (§3): the intent is cancelled and audited as
+      // a possible credential copy; a human requests again.
+      const existingHashes = new Set([...collectAgentCredentialHashes(source), ...collectAgentCredentialHashes(target)]);
+      if (values.some((value) => existingHashes.has(value))) {
+        const ended = await endIntentInTransaction(tx, intent, { state: 'cancelled', reason: 'staged_credential_reused' }, now);
+        return {
+          kind: 'refused',
+          refusal: reattachRefusal(409, 'staged_credential_reused', 'The staged set reuses an existing credential of the source or the target; the reattach is cancelled and must be requested again', {
+            state: 'cancelled',
+            cancelReason: 'staged_credential_reused',
+          }),
+          ended: ended ?? undefined,
+          intent,
+        };
       }
 
       // A confirmation token identifies exactly one intent (§6.3, one staged
@@ -303,7 +313,11 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
     if (issued) await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
     if (committed.ended && committed.intent) {
       await revokeCertificatesAfterCommit(committed.ended.revokeCertificateIds);
-      const restage = committed.ended.cancelReason === 'restage_refused';
+      const copyWarning = committed.ended.cancelReason === 'restage_refused'
+        ? 'A second, different staged set was sent for this reattach. The source device\'s credentials may have been copied; request the reattach again only after checking the source.'
+        : committed.ended.cancelReason === 'staged_credential_reused'
+          ? 'The staged set reused a credential the source or the target already holds. Whoever sent it may hold a copy of that credential; request the reattach again only after checking both devices.'
+          : null;
       await writeReattachAudit({
         action: committed.ended.state === 'expired' ? 'device.reinstall.expired' : 'device.reinstall.cancelled',
         actorUserId: null,
@@ -318,11 +332,7 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
           sourceDeviceId: committed.intent.sourceDeviceId,
           phase: 'rebind',
           ...(committed.ended.cancelReason ? { cancelReason: committed.ended.cancelReason } : {}),
-          ...(restage
-            ? {
-                warning: 'A second, different staged set was sent for this reattach. The source device\'s credentials may have been copied; request the reattach again only after checking the source.',
-              }
-            : {}),
+          ...(copyWarning ? { warning: copyWarning } : {}),
         },
       });
     }

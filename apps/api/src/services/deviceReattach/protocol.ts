@@ -49,6 +49,7 @@ export type ReattachCancelReason =
   | 'org_draining'
   | 'requester_revoked'
   | 'restage_refused'
+  | 'staged_credential_reused'
   | 'key_revoked'
   | 'device_limit_reached';
 

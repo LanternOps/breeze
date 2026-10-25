@@ -510,15 +510,40 @@ describe('phase 1 (#8318 §6.3)', () => {
     expect((await phase1(source, intent.id, set.hashes, '')).status).toBe(401);
   });
 
-  it('validates the body: four 64-hex hashes, distinct, none of them the source\'s own', async () => {
+  it('validates the body: four 64-hex hashes, all distinct (400, nothing changes)', async () => {
     const { source, intent } = await arrange();
     const set = stagedSet();
     expect((await phase1(source, intent.id, { ...set.hashes, stagedTokenHash: 'nothex' })).status).toBe(400);
     const dup = await phase1(source, intent.id, { ...set.hashes, stagedHelperTokenHash: set.hashes.stagedTokenHash });
     expect(dup).toMatchObject({ status: 400, body: { code: 'invalid_staged_set' } });
-    const own = await phase1(source, intent.id, { ...set.hashes, stagedTokenHash: sha256(source.agentToken) });
-    expect(own).toMatchObject({ status: 400, body: { code: 'invalid_staged_set' } });
     expect(await readIntent(intent.id)).toMatchObject({ state: 'requested' });
+  });
+
+  // Review of wave 1b-2, finding 9: a staged secret equal to any credential
+  // either device holds is a possible copy: refused and the intent cancelled.
+  it.each([
+    ['the source\'s current agent token', (d: { source: SeededAgentDevice; target: SeededAgentDevice }) => ({ stagedTokenHash: sha256(d.source.agentToken) })],
+    ['the source\'s watchdog token', (d: { source: SeededAgentDevice; target: SeededAgentDevice }) => ({ stagedWatchdogTokenHash: sha256(d.source.watchdogToken) })],
+    ['the target\'s current agent token', (d: { source: SeededAgentDevice; target: SeededAgentDevice }) => ({ stagedTokenHash: sha256(d.target.agentToken) })],
+    ['the target\'s helper token, as the confirmation hash', (d: { source: SeededAgentDevice; target: SeededAgentDevice }) => ({ confirmationTokenHash: sha256(d.target.helperToken) })],
+  ])('a staged set reusing %s → 409 staged_credential_reused, the intent cancelled and audited', async (_label, collide) => {
+    const { source, target, intent } = await arrange();
+    const res = await phase1(source, intent.id, { ...stagedSet().hashes, ...collide({ source, target }) });
+    expect(res).toMatchObject({ status: 409, body: { code: 'staged_credential_reused', state: 'cancelled', cancelReason: 'staged_credential_reused' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'staged_credential_reused', stagedTokenHash: null });
+    const audits = await getTestDb().select({ details: auditLogs.details }).from(auditLogs)
+      .where(and(eq(auditLogs.action, 'device.reinstall.cancelled'), eq(auditLogs.resourceId, target.id)));
+    expect(audits.length).toBe(2);
+    expect(JSON.stringify(audits[0]!.details)).toMatch(/may hold a copy of that credential/);
+  });
+
+  it('a target pending (staged rotation) hash counts too', async () => {
+    const { source, target, intent } = await arrange();
+    const pending = stagedSet().hashes.stagedTokenHash;
+    await getTestDb().update(devices).set({ pendingTokenHash: pending, pendingTokenExpiresAt: new Date(Date.now() + 3_600_000) })
+      .where(eq(devices.id, target.id));
+    expect(await phase1(source, intent.id, { ...stagedSet().hashes, stagedHelperTokenHash: pending }))
+      .toMatchObject({ status: 409, body: { code: 'staged_credential_reused' } });
   });
 });
 
