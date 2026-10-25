@@ -442,6 +442,8 @@ const EXEMPT: Record<string, string> = {
   'services/unassignedPool/visibility.ts': 'the hidden-org visibility helpers themselves; select nothing',
   'services/unassignedPool/assignParkedDevice.ts': 'lifecycle: the assignment operation itself; acts on the one parked device a full partner admin named',
   'services/unassignedPool/assignParkedDeviceSteps.ts': 'lifecycle: locked reads of the one named parked device and of its destination identity rows, for the assignment operation',
+  'services/deviceReattach/intentStore.ts': 'reinstall reattach (#8318): locked reads of the TWO devices one intent names (source and target, by id); selects no targets and dispatches nothing',
+  'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
   'services/devicePolicySet.ts': 'derived: every candidate policy assignment of the one device a heartbeat already identified (loaded in its org-scoped context); selects no work',
   'services/helperSettings.ts': 'derived: the effective Helper setting of the one device a heartbeat or Helper token already identified; selects no work',
