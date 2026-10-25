@@ -300,9 +300,9 @@ describe('workspace-sources-page copy', () => {
     vi.unstubAllGlobals();
   });
 
-  it('never says Workspace or Wisp Sources', () => {
+  it('never says Workspace or Wisp', () => {
     // vitest runs from the package root (ee/workspace); jsdom's import.meta.url is not a file URL.
-    for (const f of ['src/web/deviceIndex.ts', 'src/web/sourcesPage.ts', 'src/web/filingCard.ts', 'manifest.json']) {
+    for (const f of ['src/web/deviceIndex.ts', 'src/web/sourcesPage.ts', 'src/web/filingCard.ts', 'src/web/dashboard.ts', 'src/web/api.ts', 'manifest.json']) {
       const lines = readFileSync(resolve(process.cwd(), f), 'utf8')
         .split('\n')
         .filter((l) => !/^\s*(\/\/|\*|\/\*|import )/.test(l));
@@ -310,10 +310,10 @@ describe('workspace-sources-page copy', () => {
       // paths and tag names have none and legitimately keep the workspace name.
       const literals = [...lines.join('\n').matchAll(/(['"`])((?:\\.|(?!\1).)*)\1/g)]
         .map((m) => m[2])
-        .filter((s) => s.includes(' '));
+        .filter((s) => s.includes(' ') && !/^workspace-[\w-]+:/.test(s)); // dev console prefixes are not UI copy
       expect(literals.length).toBeGreaterThan(0);
       for (const s of literals) {
-        expect(s, `${f}: ${s}`).not.toMatch(/workspace|Wisp Sources|Wisp Dashboard/i);
+        expect(s, `${f}: ${s}`).not.toMatch(/workspace|wisp/i);
       }
     }
   });
