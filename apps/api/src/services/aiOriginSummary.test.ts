@@ -145,6 +145,23 @@ describe('resolveAiOriginSummary (#5022 W02, OD-9)', () => {
     expect(dto!.kind).toBe('ai_assistant');
   });
 
+  it('labels a flow-origin row "Flow" and resolves no session or run (W04 #5219, Open Decision 16)', async () => {
+    queueSourceRow({
+      aiInitiatorKind: 'flow',
+      aiSessionId: null,
+      aiAgentRunId: null,
+      createdAt: new Date('2026-02-08T00:00:00.000Z'),
+    });
+    queueAuditRow(undefined);
+
+    const dto = await resolveAiOriginSummary(authFor('tech'), { kind: 'execution', id: EXEC, deviceId: DEV });
+
+    expect(dto).toMatchObject({ kind: 'flow', label: 'Flow', resolvable: false });
+    expect(dto).not.toHaveProperty('session');
+    expect(dto).not.toHaveProperty('agentRun');
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
   it('returns null for a row with no AI marker at all', async () => {
     queueSourceRow({ aiInitiatorKind: null, aiSessionId: null, aiAgentRunId: null, createdAt: new Date() });
 

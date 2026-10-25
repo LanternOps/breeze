@@ -5,6 +5,7 @@
   "aiInitiator": {
     "assistant": "AI assistant",
     "agent": "AI agent",
+    "flow": "Flow",
     "originUnavailable": "Origin not available",
     "openSession": "Open conversation",
     "openAgentRun": "Open agent run",

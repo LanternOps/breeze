@@ -2,6 +2,7 @@
   "aiInitiator": {
     "assistant": "KI-Assistent",
     "agent": "KI-Agent",
+    "flow": "Ablauf",
     "originUnavailable": "Ursprung nicht verfügbar",
     "openSession": "Unterhaltung öffnen",
     "openAgentRun": "Agentenlauf öffnen",

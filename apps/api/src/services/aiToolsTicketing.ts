@@ -13,6 +13,7 @@ import { deviceHardware, devices, organizations, ticketDrafts, tickets } from '.
 import { getTicketApprovalSummary } from './ticketApproval/summary';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
+import { isFlowPrincipal } from '../middleware/principalKind';
 import { deviceInSiteScope, ticketCounterpartScopeCondition, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
 // One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
@@ -169,6 +170,26 @@ function agentIdFrom(auth: AuthContext): string | null {
  */
 function refuseAgentPrincipal(action: string): string {
   return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
+}
+
+/**
+ * Tool catalog W04 (#5219): `manage_tickets` actions that write nothing and
+ * credit no actor (the Tier-1 reads, aiGuardrails.ts TIER1_ACTIONS).
+ */
+const FLOW_TICKET_READ_ACTIONS: ReadonlySet<string> = new Set([
+  'list', 'get', 'list_work_types', 'list_links', 'merge_preview',
+]);
+
+/**
+ * Tool catalog W04 (#5219): a flow principal has neither an agent id (the
+ * ai_agent TicketActor, the agent-run triage lane) nor a users row behind its
+ * synthetic `auth.user.id` (the user TicketActor). No flow attribution design
+ * exists for ticket writes, so they refuse rather than mislabel the flow as a
+ * person or substitute its run id for an agent id. Same bare `{ error, … }`
+ * shape as refuseAgentPrincipal, for the same classifier reason.
+ */
+function refuseFlowPrincipal(action: string): string {
+  return JSON.stringify({ error: 'flow_principal_unsupported_action', action });
 }
 
 /** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */
@@ -865,6 +886,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
     handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
+      if (isFlowPrincipal(auth) && !FLOW_TICKET_READ_ACTIONS.has(action)) return refuseFlowPrincipal(action);
       const actor = actorFrom(auth);
 
       // ── list ──────────────────────────────────────────────────────────────
@@ -1809,6 +1831,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       // for an ai_agent principal is an aiAgents id, not a users row (see
       // refuseAgentPrincipal). No agent attribution design exists for these.
       if (!reads.has(action) && agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
+      if (!reads.has(action) && isFlowPrincipal(auth)) return refuseFlowPrincipal(action);
 
       try {
         // ── template reads ──────────────────────────────────────────────────

@@ -35,6 +35,19 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
     expect(screen.getByTestId('ai-initiator-chip')).toHaveTextContent('AI agent');
   });
 
+  it('renders a flow-origin marker as "Flow", distinct from both AI variants (W04 #5219)', () => {
+    const { rerender } = render(<AiInitiatorChip kind="ai_assistant" />);
+    const assistant = screen.getByTestId('ai-initiator-chip').className;
+    rerender(<AiInitiatorChip kind="ai_agent" />);
+    const agent = screen.getByTestId('ai-initiator-chip').className;
+    rerender(<AiInitiatorChip kind="flow" />);
+    const chip = screen.getByTestId('ai-initiator-chip');
+    expect(chip).toHaveTextContent('Flow');
+    expect(chip).not.toHaveTextContent('AI');
+    expect(chip.className).not.toEqual(assistant);
+    expect(chip.className).not.toEqual(agent);
+  });
+
   it('shows "origin not available" when the summary is unresolvable, and offers no link', async () => {
     render(
       <AiInitiatorChip

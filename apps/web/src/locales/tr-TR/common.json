@@ -2,6 +2,7 @@
   "aiInitiator": {
     "assistant": "Yapay zekâ asistanı",
     "agent": "Yapay zekâ ajanı",
+    "flow": "Akış",
     "originUnavailable": "Kaynak kullanılamıyor",
     "openSession": "Görüşmeyi aç",
     "openAgentRun": "Ajan çalıştırmasını aç",

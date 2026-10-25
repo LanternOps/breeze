@@ -1,4 +1,5 @@
 import type { AuthContext } from '../../middleware/auth';
+import { isFlowPrincipal } from '../../middleware/principalKind';
 import { createAuditLogAsync } from '../../services/auditService';
 import { resolveRemoteSessionPromptConfig, type SessionPromptMode } from './helpers';
 import {
@@ -33,6 +34,12 @@ type ScreenAccessActor = Pick<AuthContext, 'user' | 'principal'>;
 
 function auditActor(actor: ScreenAccessActor): { actorType: 'user' | 'agent' | 'system' | 'ai_agent'; actorId: string } {
   const kind = actor.principal?.kind;
+  const id = actor.user?.id;
+  const actorId = typeof id === 'string' && UUID_RE.test(id) ? id : NIL_ACTOR_ID;
+  // Tool catalog W04 (#5219): a flow run is unattended automation — neither an
+  // AI agent (no agent id) nor a person. Audited as `system`, attributed to
+  // the flow id.
+  if (isFlowPrincipal(actor)) return { actorType: 'system', actorId };
   const actorType = kind === 'ai_agent'
     ? 'ai_agent'
     : kind === 'helper'
@@ -40,8 +47,7 @@ function auditActor(actor: ScreenAccessActor): { actorType: 'user' | 'agent' | '
       : kind === 'system'
         ? 'system'
         : 'user';
-  const id = actor.user?.id;
-  return { actorType, actorId: typeof id === 'string' && UUID_RE.test(id) ? id : NIL_ACTOR_ID };
+  return { actorType, actorId };
 }
 
 /**

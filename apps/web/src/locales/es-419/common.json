@@ -2,6 +2,7 @@
   "aiInitiator": {
     "assistant": "Asistente de IA",
     "agent": "Agente de IA",
+    "flow": "Flujo",
     "originUnavailable": "Origen no disponible",
     "openSession": "Abrir conversación",
     "openAgentRun": "Abrir ejecución del agente",

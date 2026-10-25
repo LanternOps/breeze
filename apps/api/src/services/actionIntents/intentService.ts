@@ -33,6 +33,7 @@ import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
+import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import {
   checkAgentGuardrails,
@@ -1301,6 +1302,18 @@ export async function createActionIntent(
       'coordinator_carrier_only',
     );
   }
+  // Tool catalog W04 (#5219): flow-origin intents (source 'flow', a flow
+  // principal, requesting_flow_run_id) are created by the flow runner in plan
+  // Task A5, together with their fan-out, claim and release authority (and
+  // `CreateActionIntentInput.source` does not admit 'flow' yet). Until that
+  // lands, a flow principal is refused here so it never falls into the
+  // human/agent lanes below (its synthetic user id is not a users row).
+  if (isFlowPrincipal(auth)) {
+    throw new ActionIntentError(
+      `Flow-origin action intents are not available yet (source '${input.source}')`,
+      'principal_not_supported',
+    );
+  }
   const isAgentIntent = auth.principal.kind === 'ai_agent';
   if (isAgentIntent !== (input.source === 'ai_agent')) {
     throw new ActionIntentError(
@@ -1889,7 +1902,7 @@ export async function createActionIntent(
   // -------------------------------------------------------------------------
   let planApprovalDecision: Extract<PlanMembershipResult, { ok: true }> | null = null;
   if (input.planApproval !== undefined) {
-    if (!taskContext || auth.principal.kind === 'ai_agent') {
+    if (!taskContext || isAutomationPrincipal(auth)) {
       throw new ActionIntentError(
         'planApproval requires task context and a human principal (the plan\'s approver)',
         'plan_approval_invalid',
@@ -2091,7 +2104,7 @@ export async function createActionIntent(
       });
     };
     // A verified caller authorizes a HUMAN technician's request, never an agent run.
-    if (agentRun || auth.principal.kind === 'ai_agent') await refuseCaller('technician_mismatch');
+    if (agentRun || isAutomationPrincipal(auth)) await refuseCaller('technician_mismatch');
     try {
       const { resolveM365CallerTarget } = await import('../aiToolsM365');
       callerTarget = await withDbAccessContext(dbContext, () => resolveM365CallerTarget(
