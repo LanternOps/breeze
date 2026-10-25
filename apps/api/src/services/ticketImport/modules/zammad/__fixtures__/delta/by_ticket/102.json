@@ -1,0 +1,113 @@
+[
+  {
+    "id": 1004,
+    "ticket_id": 102,
+    "type_id": 1,
+    "sender_id": 2,
+    "from": "Dana Customer <dana@acme.example.test>",
+    "to": "support@msp.example.test",
+    "cc": "",
+    "subject": "Error after the update",
+    "reply_to": null,
+    "message_id": null,
+    "message_id_md5": null,
+    "in_reply_to": null,
+    "content_type": "text/html",
+    "body": "<div>Hello,</div><div>see the error below:</div><div><img src=\"/api/v1/ticket_attachment/102/1004/5001?view=inline\" style=\"max-width:100%;\"></div><div><img src=\"https://tracker.example.net/open.gif\" width=\"1\" height=\"1\"></div><div><img src=\"cid:missing-part@mail.example.test\"></div><p>Report attached.</p>",
+    "internal": false,
+    "preferences": {},
+    "detected_language": "en",
+    "updated_by_id": 10,
+    "created_by_id": 10,
+    "origin_by_id": null,
+    "created_at": "2026-03-05T08:00:00.000Z",
+    "updated_at": "2026-03-05T08:00:00.000Z",
+    "attachments": [
+      {
+        "id": 5001,
+        "store_file_id": 9001,
+        "filename": "screenshot.png",
+        "size": "70",
+        "preferences": {
+          "Content-Type": "image/png",
+          "Mime-Type": "image/png",
+          "Content-ID": "part1.abc@mail.example.test",
+          "resizable": true
+        }
+      },
+      {
+        "id": 5002,
+        "store_file_id": 9002,
+        "filename": "message.html",
+        "size": "97",
+        "preferences": {
+          "content-alternative": true,
+          "original-format": true,
+          "Mime-Type": "text/html",
+          "Charset": "UTF-8"
+        }
+      },
+      {
+        "id": 5003,
+        "store_file_id": 9003,
+        "filename": "report.pdf",
+        "size": "53",
+        "preferences": {
+          "Content-Type": "application/pdf",
+          "Mime-Type": "application/pdf"
+        }
+      }
+    ],
+    "body_rendering_error": false,
+    "time_unit": null,
+    "type": "email",
+    "sender": "Customer",
+    "created_by": "dana@acme.example.test",
+    "updated_by": "dana@acme.example.test"
+  },
+  {
+    "id": 1005,
+    "ticket_id": 102,
+    "type_id": 1,
+    "sender_id": 1,
+    "from": "Bob Former via MSP Support <support@msp.example.test>",
+    "to": "dana@acme.example.test",
+    "cc": "",
+    "subject": "RE: Error after the update",
+    "reply_to": null,
+    "message_id": null,
+    "message_id_md5": null,
+    "in_reply_to": null,
+    "content_type": "text/html",
+    "body": "<p>Hi Dana,</p><p>Fixed by the 3.2 patch, see <a href=\"https://kb.example.com/article/42\">KB 42</a>.</p><blockquote><p>see the error below</p></blockquote><p><img src=\"/api/v1/ticket_attachment/102/1005/5004?view=inline\" style=\"width: 120px;\"></p>",
+    "internal": false,
+    "preferences": {},
+    "detected_language": "en",
+    "updated_by_id": 4,
+    "created_by_id": 4,
+    "origin_by_id": null,
+    "created_at": "2026-03-06T11:58:00.000Z",
+    "updated_at": "2026-09-02T10:00:00.000Z",
+    "attachments": [
+      {
+        "id": 5004,
+        "store_file_id": 9001,
+        "filename": "image001.png",
+        "size": "70",
+        "preferences": {
+          "Content-Type": "image/png",
+          "Mime-Type": "image/png",
+          "Content-ID": "102.d1b2c3@zammad.example.test",
+          "Content-Disposition": "inline",
+          "resizable": true
+        }
+      }
+    ],
+    "body_rendering_error": false,
+    "time_unit": null,
+    "type": "email",
+    "sender": "Agent",
+    "created_by": "bob.former@msp.example.test",
+    "updated_by": "bob.former@msp.example.test"
+  }
+]

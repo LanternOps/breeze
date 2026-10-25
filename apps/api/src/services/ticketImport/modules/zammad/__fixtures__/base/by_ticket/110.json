@@ -1,0 +1,33 @@
+[
+  {
+    "id": 1021,
+    "ticket_id": 110,
+    "type_id": 11,
+    "sender_id": 2,
+    "from": "Grace Solo",
+    "to": "",
+    "cc": "",
+    "subject": null,
+    "reply_to": null,
+    "message_id": null,
+    "message_id_md5": null,
+    "in_reply_to": null,
+    "content_type": "text/plain",
+    "body": "My laptop will not boot.",
+    "internal": false,
+    "preferences": {},
+    "detected_language": "en",
+    "updated_by_id": 13,
+    "created_by_id": 13,
+    "origin_by_id": null,
+    "created_at": "2026-07-01T08:00:00.000Z",
+    "updated_at": "2026-07-01T08:00:00.000Z",
+    "attachments": [],
+    "body_rendering_error": false,
+    "time_unit": null,
+    "type": "web",
+    "sender": "Customer",
+    "created_by": "grace@solo.example.org",
+    "updated_by": "grace@solo.example.org"
+  }
+]

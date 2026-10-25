@@ -1,0 +1,64 @@
+# Zammad 7.2.2 fixtures (synthesized)
+
+**These responses were synthesized, not captured.** No live Zammad was available
+when the module was written (#8313 W5). Every file is shaped after the Zammad
+7.2.2 API as the research notes and the 7.2.2 source they cite describe it
+(spec `docs/superpowers/specs/api-platform/2026-10-19-ticket-import-modules-design.md`
+§3, Z1–Z20): the columns of the base migration, the `attributes_with_association_names`
+form of `by_ticket`, attachment `size` as a string, the API's rewrite of
+`cid:` images to `/api/v1/ticket_attachment/{ticket}/{article}/{store id}?view=inline`,
+the merge marker, the `parent` link of a merged ticket, the 404/403 answers.
+All people, organizations, addresses and texts are invented; every domain is an
+`example.*` name. When a disposable 7.2.2 instance becomes available, record
+the same cases from it and replace these files (spec §6.8).
+
+Two sets, one invented instance:
+
+- `base/`: the source at the bulk pass. One file per endpoint response.
+- `delta/`: an overlay of the files that changed before the delta pass. A file
+  absent from `delta/` is the same as in `base/`.
+
+`fakeZammad.fixtures.ts` (next to this directory) serves them: in process for
+unit tests, and as a node `http` server on 127.0.0.1 for the end-to-end test.
+
+## Files
+
+| File | Endpoint |
+|---|---|
+| `users-me.json` | `GET /api/v1/users/me?expand=true` (the token user, `breeze-import`) |
+| `roles.json` | `GET /api/v1/roles?expand=true` (with `permissions` names) |
+| `users.json` | `GET /api/v1/users?page=N&per_page=1000` (inactive users and user 1 included) |
+| `organizations.json` | `GET /api/v1/organizations?page=N&per_page=1000` |
+| `groups.json` | `GET /api/v1/groups?page=N&per_page=1000` (inactive groups included) |
+| `ticket_states.json` | `GET /api/v1/ticket_states?expand=true` (`state_type` by name) |
+| `ticket_priorities.json` | `GET /api/v1/ticket_priorities` |
+| `object_manager_attributes.403.json` | `GET /api/v1/object_manager_attributes`: 403, the token has no `admin.object` |
+| `tickets.json` | `GET /api/v1/tickets?page=N&per_page=100`, `id ASC`; also each `GET /api/v1/tickets/:id` |
+| `tickets-expand/<id>.json` | `GET /api/v1/tickets/:id?expand=true` (`article_ids`) |
+| `by_ticket/<id>.json` | `GET /api/v1/ticket_articles/by_ticket/:id`; also each `GET /api/v1/ticket_articles/:id` |
+| `tags.json` | `GET /api/v1/tags?object=Ticket&o_id=:id`, by ticket id |
+| `links/<id>.json` | `GET /api/v1/links?link_object=Ticket&link_object_value=:id` (merged tickets) |
+| `files.json` | `GET /api/v1/ticket_attachment/:ticket/:article/:id`, the original bytes (base64) |
+| `hidden.json` | ticket ids that answer 403 (a deactivated group); any other unknown id answers 404 |
+
+## Cases (spec §6.8)
+
+| Ticket | Case |
+|---|---|
+| 101 | a plain mail ticket: customer mail, agent reply with `To`/`Cc`, internal note; owner matched; requester one contact; tags |
+| 102 | an HTML mail: an inline image by API URL, an external tracking pixel, an unmatched `cid:`, the `message.html` copy (`content-alternative`), a PDF; a pasted inline image in the reply; closed twice (`close_at`, `last_close_at`); owner deactivated in Zammad; `time_unit` "45.0" |
+| 103 | an agent phone ticket: `pending reminder`, owner gone (no Breeze user), a System trigger note, an SMS; a customer whose email two Breeze contacts share; type `Incident` |
+| 104 | `pending close` (state type `pending action`); a custom priority `4 critical`; a web ticket; a custom attribute set |
+| 105 → 106 | a merged pair: 105 holds only the merge marker; its articles, older than 106 itself, now live on 106 |
+| 107 → 108 → 109 | a chain: both links resolve to the final survivor 109 |
+| 110 | no organization |
+| 111 | a customer without email; an oversized (20 MiB declared) and an empty file; a `body_rendering_error` |
+| 112 | a legacy `removed` state |
+| 113 | a plain ticket (merged into 106 in the delta) |
+| 114 | `article_count` over 500: the module reads `article_ids` and each article |
+| 115 | a closed ticket (hidden in the delta) |
+| 116 | an organization the mapping leaves out |
+
+The delta: 101 gains an article and one of its articles turns internal; an
+article of 102 is edited; 104 closes; 112 is deleted (404); 113 is merged into
+106; 115 is hidden (403).

@@ -1,0 +1,22 @@
+{
+  "links": [
+    {
+      "link_type": "parent",
+      "link_object": "Ticket",
+      "link_object_value": 109
+    }
+  ],
+  "assets": {
+    "Ticket": {
+      "109": {
+        "id": 109,
+        "number": "31009",
+        "title": "Mailbox quota exceeded",
+        "state_id": 2,
+        "group_id": 2,
+        "created_at": "2026-06-02T12:00:00.000Z",
+        "updated_at": "2026-06-04T10:00:00.000Z"
+      }
+    }
+  }
+}

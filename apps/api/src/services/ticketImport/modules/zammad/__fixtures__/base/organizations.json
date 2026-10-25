@@ -1,0 +1,73 @@
+[
+  {
+    "id": 1,
+    "name": "Zammad Foundation",
+    "shared": true,
+    "domain": "",
+    "domain_assignment": false,
+    "active": true,
+    "vip": false,
+    "note": "",
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-05T09:00:00.000Z",
+    "updated_at": "2025-01-05T09:00:00.000Z",
+    "member_ids": [
+      14
+    ],
+    "secondary_member_ids": []
+  },
+  {
+    "id": 2,
+    "name": "Acme Ltd",
+    "shared": true,
+    "domain": "",
+    "domain_assignment": false,
+    "active": true,
+    "vip": false,
+    "note": "",
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-05T09:00:00.000Z",
+    "updated_at": "2025-01-05T09:00:00.000Z",
+    "member_ids": [
+      10,
+      11
+    ],
+    "secondary_member_ids": []
+  },
+  {
+    "id": 3,
+    "name": "Globex Inc",
+    "shared": true,
+    "domain": "",
+    "domain_assignment": false,
+    "active": true,
+    "vip": false,
+    "note": "",
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-05T09:00:00.000Z",
+    "updated_at": "2025-01-05T09:00:00.000Z",
+    "member_ids": [
+      12
+    ],
+    "secondary_member_ids": []
+  },
+  {
+    "id": 4,
+    "name": "Initech",
+    "shared": true,
+    "domain": "",
+    "domain_assignment": false,
+    "active": false,
+    "vip": false,
+    "note": "",
+    "updated_by_id": 1,
+    "created_by_id": 1,
+    "created_at": "2025-01-05T09:00:00.000Z",
+    "updated_at": "2025-01-05T09:00:00.000Z",
+    "member_ids": [],
+    "secondary_member_ids": []
+  }
+]
