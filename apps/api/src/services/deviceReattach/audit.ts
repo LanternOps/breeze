@@ -36,18 +36,22 @@ export interface ReattachAuditEvent {
 
 export async function writeReattachAudit(event: ReattachAuditEvent): Promise<void> {
   const orgIds = [...new Set([event.targetOrgId, event.sourceOrgId])];
+  // audit_logs.actor_id is a uuid: an agent id (64 hex) goes into the details,
+  // with the anonymous actor id, as writeAuditEvent does for any non-uuid actor.
+  const agentActor = !event.actorUserId && event.actorAgentId ? event.actorAgentId : null;
   for (const orgId of orgIds) {
     try {
       await createAuditLog({
         orgId,
-        actorType: event.actorUserId ? 'user' : event.actorAgentId ? 'agent' : 'system',
-        actorId: event.actorUserId ?? event.actorAgentId ?? ANONYMOUS_ACTOR_ID,
+        actorType: event.actorUserId ? 'user' : agentActor ? 'agent' : 'system',
+        actorId: event.actorUserId ?? ANONYMOUS_ACTOR_ID,
         action: event.action,
         resourceType: 'device',
         resourceId: event.targetDeviceId,
         ...(event.targetHostname ? { resourceName: event.targetHostname } : {}),
         details: {
           ...event.details,
+          ...(agentActor ? { actorAgentId: agentActor } : {}),
           auditOrgRole: orgId === event.targetOrgId ? 'target' : 'source',
         },
         result: event.result ?? 'success',
