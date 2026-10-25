@@ -9,6 +9,7 @@ import type {
   EdrDetectionPage,
   EdrErrorScope,
   VendorEdrEndpoint,
+  VendorEdrDetection,
   VendorEdrEndpointDetail,
   VendorEdrTenant,
 } from './types';
@@ -402,6 +403,19 @@ export async function persistInventory(
 // Detections
 // ---------------------------------------------------------------------------
 
+/**
+ * `details._breeze` is framework-reserved: the vendor locator + group key sync
+ * wrote from vendor data. An adapter-supplied `_breeze` is always discarded, so
+ * nothing a vendor's free-form `details` carries can forge a locator.
+ */
+function withBreezeLocator(d: VendorEdrDetection): Record<string, unknown> {
+  const { _breeze: _discarded, ...rest } = d.details;
+  const vendorRef = clip(d.vendorRef, 255);
+  const groupKey = clip(d.groupKey, 128);
+  if (vendorRef === null && groupKey === null) return rest;
+  return { ...rest, _breeze: { vendorRef, groupKey } };
+}
+
 export async function persistDetections(
   tx: EdrSyncTx,
   conn: PersistConnection,
@@ -500,7 +514,7 @@ export async function persistDetections(
         detectedAt: d.detectedAt,
         resolvedAt: d.resolvedAt,
         lastVendorUpdateAt: d.lastVendorUpdateAt,
-        details: d.details,
+        details: withBreezeLocator(d),
         updatedAt: now,
       };
     });
@@ -530,8 +544,11 @@ export async function persistDetections(
             resolvedAt: sql`excluded.resolved_at`,
             lastVendorUpdateAt: sql`excluded.last_vendor_update_at`,
             details: sql`excluded.details`,
-            vendorEndpointId: sql`COALESCE(excluded.vendor_endpoint_id, ${edrDetections.vendorEndpointId})`,
-            endpointId: sql`COALESCE(excluded.endpoint_id, ${edrDetections.endpointId})`,
+            // STICKY attribution: a detection's vendor endpoint is fixed at its first non-null
+            // attribution. A later rename / name reuse can never re-bind it to another machine;
+            // a later value only fills a null. (No-op for GravityZone: its endpoint id never changes.)
+            vendorEndpointId: sql`COALESCE(${edrDetections.vendorEndpointId}, excluded.vendor_endpoint_id)`,
+            endpointId: sql`COALESCE(${edrDetections.endpointId}, excluded.endpoint_id)`,
             // A closed detection keeps its historical device; refreshDetectionDeviceLinks
             // re-points open ones. Only fill a missing link here.
             breezeDeviceId: sql`COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id)`,

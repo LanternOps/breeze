@@ -338,6 +338,46 @@ describe('persistDetections', () => {
     expect((resyncInsert.values as Array<Record<string, unknown>>)[0]).not.toHaveProperty('notifiedSeverity');
   });
 
+  describe('A4: locator, group key, sticky attribution', () => {
+    const run = async (d: VendorEdrDetection) => {
+      const { tx, ops } = makeTx({ selects: [tenantRows, []], returning: [[{ id: 'd1' }]] });
+      await persistDetections(tx, CONN, [{ vendorTenantId: 'co1', ok: true, value: page([d]) }], NOW);
+      return ops.find((o) => o.kind === 'insert')!;
+    };
+
+    it('vendorRef / groupKey land in details._breeze', async () => {
+      const insert = await run(detection('x1', { vendorRef: 'a'.repeat(40), groupKey: 'inc-guid-1', details: { k: 1 } }));
+      const [row] = insert.values as Array<{ details: Record<string, unknown> }>;
+      expect(row!.details).toEqual({ k: 1, _breeze: { vendorRef: 'a'.repeat(40), groupKey: 'inc-guid-1' } });
+    });
+
+    it('an adapter-supplied details._breeze is overwritten (or stripped when there is no locator)', async () => {
+      const forged = await run(detection('x1', { vendorRef: 'real', groupKey: null, details: { _breeze: { vendorRef: 'forged', groupKey: 'forged' } } }));
+      expect((forged.values as Array<{ details: Record<string, unknown> }>)[0]!.details._breeze).toEqual({ vendorRef: 'real', groupKey: null });
+      const none = await run(detection('x2', { details: { _breeze: { vendorRef: 'forged' }, other: true } }));
+      expect((none.values as Array<{ details: Record<string, unknown> }>)[0]!.details).toEqual({ other: true });
+    });
+
+    it('clips the locator (255) and group key (128)', async () => {
+      const insert = await run(detection('x1', { vendorRef: 'r'.repeat(400), groupKey: 'g'.repeat(400) }));
+      const b = (insert.values as Array<{ details: { _breeze: { vendorRef: string; groupKey: string } } }>)[0]!.details._breeze;
+      expect(b.vendorRef).toHaveLength(255);
+      expect(b.groupKey).toHaveLength(128);
+    });
+
+    it('a detection\'s vendor endpoint / endpoint are STICKY: the stored value wins, a later value only fills a null', async () => {
+      const insert = await run(detection('x1'));
+      const set = insert.conflict!.set!;
+      expect(render(set.vendorEndpointId)).toMatch(/COALESCE\("edr_detections"\."vendor_endpoint_id", excluded\.vendor_endpoint_id\)/);
+      expect(render(set.endpointId)).toMatch(/COALESCE\("edr_detections"\."endpoint_id", excluded\.endpoint_id\)/);
+    });
+
+    it('a GravityZone-shaped detection (no locator) keeps its details byte-for-byte', async () => {
+      const insert = await run(detection('x1', { details: { raw: 'gz' } }));
+      expect((insert.values as Array<{ details: unknown }>)[0]!.details).toEqual({ raw: 'gz' });
+    });
+  });
+
   it('counts a conflict row owned by another tenant (filtered by the DO UPDATE WHERE) as skipped', async () => {
     const { tx } = makeTx({ selects: [tenantRows, []], returning: [[{ id: 'd1' }]] });
     const out = await persistDetections(tx, CONN, [

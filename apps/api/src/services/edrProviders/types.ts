@@ -88,6 +88,14 @@ export interface VendorEdrDetection {
   category: string | null; threatName: string | null; filePath: string | null;
   processName: string | null; mitreTechniques: string[]; detectedAt: Date | null;
   resolvedAt: Date | null; lastVendorUpdateAt: Date | null; details: Record<string, unknown>;
+  /**
+   * Adapter-owned vendor locator for later reads/actions on this object (Emsisoft: the incident's
+   * sha1 / host / IP). Written by sync from vendor data only, never from a request. Stored in
+   * `details._breeze`, clipped to 255 chars.
+   */
+  vendorRef?: string | null;
+  /** Rows sharing a groupKey are ONE vendor object (one Emsisoft incident across N devices). Clipped to 128 chars. */
+  groupKey?: string | null;
 }
 export interface EdrDetectionPage {
   detections: VendorEdrDetection[];
