@@ -85,11 +85,26 @@ export function preApprovalEligibility(step: FlowDocumentV1['steps'][number], pi
   return { eligible: true };
 }
 
-/** The literal run context folded into the binding: every input key except the target keys. */
+/**
+ * run_script keys a flow NEVER dispatches (A7, #5219). `run_script` ignores a
+ * caller-chosen run context for every automation principal (aiToolsScripts.ts
+ * `isUnattendedAgentDispatch`) and dispatches the SAVED script's own `runAs`,
+ * which is already in the content material (`snapshot.script.runAs`). The step
+ * executor strips these keys before it parks or executes, so neither an
+ * approver nor this binding is ever shown a run context that will not run, and
+ * the binding covers exactly what reaches dispatch.
+ */
+export const FLOW_IGNORED_RUN_SCRIPT_KEYS: ReadonlySet<string> = new Set(['runAs', 'targetSessionId']);
+
+/**
+ * The literal run context folded into the binding: every input key except the
+ * target keys and the keys a flow never dispatches (`parameters` — passed to
+ * dispatch verbatim — and anything a future schema adds stay in, fail-closed).
+ */
 function runContextOf(input: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
-    if (!TARGET_KEYS.has(key) && value !== undefined) out[key] = value;
+    if (!TARGET_KEYS.has(key) && !FLOW_IGNORED_RUN_SCRIPT_KEYS.has(key) && value !== undefined) out[key] = value;
   }
   return out;
 }

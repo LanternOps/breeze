@@ -1498,10 +1498,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       const invoke = tenantTool
         ? async () => {
             const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
-              surface: 'chat',
+              // Tool catalog W04 (#5219): a released flow step runs on the
+              // 'flow' surface, attributed to its RUN, never to the synthetic
+              // flow user id.
+              surface: flowFrame ? 'flow' : 'chat',
               orgId: intent.orgId,
-              // Tool catalog W04 (#5219): a flow step is attributed to its
-              // RUN, never to the synthetic flow user id.
               actor: flowFrame ? { kind: 'flow', id: flowFrame.runId } : { kind: 'user', id: auth.user.id },
             });
             externalIsError = outcome.isError;

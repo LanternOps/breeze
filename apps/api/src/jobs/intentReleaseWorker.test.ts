@@ -5780,7 +5780,7 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
     await releaseApprovedIntent(intent.id);
 
     expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
-      descriptor, args, flowAuth, { surface: 'chat', orgId: intent.orgId, actor: { kind: 'flow', id: RUN_ID } },
+      descriptor, args, flowAuth, { surface: 'flow', orgId: intent.orgId, actor: { kind: 'flow', id: RUN_ID } },
     );
     expect(aiGuardrailsMock.checkPermissionRequirements).not.toHaveBeenCalled();
   });

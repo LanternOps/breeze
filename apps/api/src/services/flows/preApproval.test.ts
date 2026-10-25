@@ -138,9 +138,28 @@ describe('scriptPreApprovalMaterial', () => {
     selectQueue.push([scriptRow()], [scriptRow()], [scriptRow()]);
     const a = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Temp' } });
     const b = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Windows' } });
-    const c = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Temp' }, runAs: 'user' });
+    const c = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Temp' }, expectedContentSha256: 'a'.repeat(64) });
     expect(a!.contentDigest).not.toBe(b!.contentDigest);
     expect(a!.contentDigest).not.toBe(c!.contentDigest);
+  });
+
+  // A7 (#5219), coherence with run_script under an automation principal: a
+  // flow never dispatches a step's runAs / targetSessionId (the saved script's
+  // own run context, which IS in the content material, governs), so they are
+  // not part of what the binding covers. The digest covers exactly what reaches
+  // dispatch.
+  it('the digest ignores runAs / targetSessionId, which never reach dispatch for a flow', async () => {
+    selectQueue.push([scriptRow()], [scriptRow()]);
+    const a = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Temp' } });
+    const b = await scriptPreApprovalMaterial(SCRIPT, { ...ELIGIBLE_INPUT, parameters: { path: 'C:\\Temp' }, runAs: 'user', targetSessionId: 2 });
+    expect(a!.contentDigest).toBe(b!.contentDigest);
+  });
+
+  it('the digest changes when the saved script\'s own runAs changes', async () => {
+    selectQueue.push([scriptRow()], [scriptRow({ runAs: 'user' })]);
+    const a = await scriptPreApprovalMaterial(SCRIPT, ELIGIBLE_INPUT);
+    const b = await scriptPreApprovalMaterial(SCRIPT, ELIGIBLE_INPUT);
+    expect(a!.contentDigest).not.toBe(b!.contentDigest);
   });
 
   it('the digest does not change when the device set changes (run-time snapshot vs enable-time placeholder)', async () => {

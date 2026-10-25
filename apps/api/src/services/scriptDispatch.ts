@@ -21,7 +21,7 @@ import {
 } from './commandDispatch';
 import { cancelledCommandError } from './commandCancelMessage';
 import { CommandTypes, queueCommand } from './commandQueue';
-import { aiOriginColumns } from './aiOriginColumns';
+import { aiOriginAuditActor, aiOriginColumns } from './aiOriginColumns';
 import type { AiOriginRef } from '@breeze/shared';
 import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
@@ -1010,22 +1010,27 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // source.proposal.authorKind while actorId came from the invoker, so an
     // AI-AUTHORED script hand-run by a human wrote actor_type='ai_agent'
     // against a HUMAN user id.) Authorship is a separate fact and now lives in
-    // `details.authorKind`.
-    const principalIsAgent = input.aiOrigin?.kind === 'ai_agent';
-    const auditActorType = principalIsAgent ? ('ai_agent' as const) : ('user' as const);
-    const auditActorId = principalIsAgent
-      ? (input.principalActorId ?? SYSTEM_ACTOR_ID)
-      : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
+    // `details.authorKind`. Tool catalog W04 (#5219), Decision 16: the shared
+    // mapping makes a flow origin system automation carrying its run.
+    const humanActorId = safeCreatedBy ?? safeTriggeredBy;
+    const actor = input.aiOrigin
+      ? aiOriginAuditActor(input.aiOrigin, { agentActorId: input.principalActorId, humanActorId })
+      : {
+        actorType: 'user' as const,
+        actorId: humanActorId ?? SYSTEM_ACTOR_ID,
+        initiatedBy: 'ai' as const,
+        originDetails: aiOriginColumns(undefined),
+      };
     void createAuditLogAsync({
       trigger: input.trigger,
       orgId: device.orgId,
-      actorType: auditActorType,
-      actorId: auditActorId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       action: 'ai.script.executed',
       resourceType: 'device',
       resourceId: device.id,
       resourceName: device.hostname,
-      initiatedBy: 'ai',
+      initiatedBy: actor.initiatedBy,
       result: 'dispatched',
       details: {
         executionId,
@@ -1039,7 +1044,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // arm indexes); `deviceId` is set as well so the feed's details arm can
         // also find it.
         deviceId: device.id,
-        ...aiOriginColumns(input.aiOrigin),
+        ...actor.originDetails,
         approvalMethod: input.provenance?.approvalMethod ?? null,
         reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
         reviewSummary: input.provenance?.reviewSummary ?? null,
