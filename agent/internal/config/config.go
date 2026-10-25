@@ -1010,17 +1010,19 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	}
 
 	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
+	agentID, deviceID := cfg.AgentID, cfg.DeviceID
 	if identity == identityFromDisk {
 		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
+		agentID, deviceID = resolveReattachedIDsForSave(cfgPath, agentID, deviceID)
 	}
 
-	viper.Set("agent_id", cfg.AgentID)
+	viper.Set("agent_id", agentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
 	viper.Set("ownership_epoch", ownershipEpoch)
-	viper.Set("device_id", cfg.DeviceID)
+	viper.Set("device_id", deviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)

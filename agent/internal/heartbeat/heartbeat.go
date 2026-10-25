@@ -6346,13 +6346,6 @@ func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
-	if h.rebindOwnsIdentity() {
-		// #8318 — the reattached identity is on disk; h.config is the retired
-		// source's, and SaveTo would write its ids and certificate back.
-		h.mu.Unlock()
-		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
-		return
-	}
 	h.config.MtlsCertPEM = m.Certificate
 	h.config.MtlsKeyPEM = m.PrivateKey
 	h.config.MtlsCertExpires = m.ExpiresAt
@@ -6395,13 +6388,6 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
-	if h.rebindOwnsIdentity() {
-		// #8318 — the reattached identity is on disk; h.config is the retired
-		// source's, and SaveTo would write its ids and certificate back.
-		h.mu.Unlock()
-		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
-		return
-	}
 	h.config.PendingMTLSCertificate = renewResp.Mtls.Certificate
 	h.config.PendingMTLSPrivateKey = renewResp.Mtls.PrivateKey
 	h.config.PendingMTLSCertificateID = renewResp.CertificateID
@@ -6595,13 +6581,6 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
-	if h.rebindOwnsIdentity() {
-		// #8318 — the reattached identity is on disk; h.config is the retired
-		// source's, and SaveTo would write its ids and certificate back.
-		h.mu.Unlock()
-		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
-		return
-	}
 	// FINAL-REVIEW C4 (inert retry): snapshot every field this write mutates
 	// so a failed SaveTo can restore ALL of them. The previous version zeroed
 	// the in-memory pending fields BEFORE SaveTo and left them zeroed when the
@@ -6670,13 +6649,6 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 func (h *Heartbeat) clearPendingMTLSCert() {
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
-	if h.rebindOwnsIdentity() {
-		// #8318 — the reattached identity is on disk; h.config is the retired
-		// source's, and SaveTo would write its ids and certificate back.
-		h.mu.Unlock()
-		log.Warn("not saving certificate state of the retired source identity; restarting into the reattached one")
-		return
-	}
 	// FINAL-REVIEW C4 (same defect class as promotePendingMTLSCert): restore
 	// the in-memory pending fields when SaveTo fails. Zeroing them and leaving
 	// them zeroed made hasPendingMTLSCert report "nothing pending" while the

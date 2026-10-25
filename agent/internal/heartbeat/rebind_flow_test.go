@@ -605,13 +605,19 @@ func TestRebindProbesAsTheTargetWhenTheSourceIsRefused(t *testing.T) {
 	r.assertSwapped(set)
 }
 
-// After the swap no SaveTo from this process may write the retired source's
-// ids or certificate back over the reattached identity.
-func TestRebindSwapBlocksStaleConfigSaves(t *testing.T) {
+// #8318 review fix 12: after the swap, the old process's SaveTo(h.config)
+// (its mTLS paths; h.config still holds the source's ids) cannot write the
+// source's agent or device id back: SaveTo keeps them from disk while
+// agent.yaml records a reattach. A certificate such a save writes back is a
+// revert the next start re-applies (the staged set is still on disk).
+func TestRebindStaleConfigSavesCannotRevertTheSwap(t *testing.T) {
 	r := newRebindHarness(t)
 	r.drive(r.directive(rebindGoldenIntent))
 	r.waitRestarts(1)
-	before := r.onDisk()
+	set := r.staged()
+	if r.h.config.AgentID != rebindGoldenSource {
+		t.Fatal("the test needs the old process's stale config")
+	}
 
 	r.h.config.PendingMTLSCertificate, r.h.config.PendingMTLSPrivateKey = "P", "K"
 	r.h.clearPendingMTLSCert()
@@ -619,9 +625,16 @@ func TestRebindSwapBlocksStaleConfigSaves(t *testing.T) {
 	r.h.promoteLegacyCertImmediately(&api.MtlsCertData{Certificate: cert.Certificate, PrivateKey: cert.PrivateKey, ExpiresAt: cert.ExpiresAt})
 
 	after := r.onDisk()
-	if after.AgentID != before.AgentID || after.DeviceID != before.DeviceID || after.MtlsCertPEM != before.MtlsCertPEM {
-		t.Fatal("a stale SaveTo overwrote the reattached identity")
+	if after.AgentID != rebindTestStagedAgentID || after.DeviceID != rebindGoldenDevice {
+		t.Fatalf("a stale SaveTo wrote the source identity back: %s/%s", after.AgentID, after.DeviceID)
 	}
+	if after.MtlsCertPEM != cert.Certificate {
+		t.Fatal("the test expected the stale save to write its certificate")
+	}
+	if !r.startProcess() {
+		t.Fatal("start-up did not re-apply the reverted certificate")
+	}
+	r.assertSwapped(set)
 }
 
 // A NEW token rotation waits while a reattach is in flight.
