@@ -1837,7 +1837,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Agent version & remote session tools
   query_agent_versions: { resource: 'devices', action: 'read' },
   trigger_agent_upgrade: { resource: 'devices', action: 'execute' },
-  trigger_agent_restart: { resource: 'devices', action: 'execute' },
+  // Mirrors routes/devices/agentRecovery.ts POST /:id/agent-recovery, which gates on
+  // devices:recover_agent (PERMISSIONS.DEVICES_RECOVER_AGENT), not devices:execute
+  // (W04 route-binding, aiGuardrails.routeBinding.contract.test.ts).
+  trigger_agent_restart: { resource: 'devices', action: 'recover_agent' },
   list_remote_sessions: { resource: 'devices', action: 'read' },
   create_remote_session: { resource: 'devices', action: 'execute' },
   // Compliance policy tools
@@ -1947,7 +1950,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Registration-debt payoff: RBAC entries for tools that were registered in
   // aiTools but had no TOOL_PERMISSIONS entry (legacyPermissionGaps in
   // aiToolsRegistryParity.test.ts). See that file's history for context.
-  create_incident: { resource: 'organizations', action: 'write' },
+  // Mirrors routes/incidents.ts POST / (requireIncidentWrite = alerts:write, L42/66-71),
+  // not organizations:write (W04 route-binding).
+  create_incident: { resource: 'alerts', action: 'write' },
   // Route requires alerts:read (routes/incidents.ts:37, requireIncidentRead),
   // matching list_incidents above (aiGuardrails.routeBinding.contract.test.ts).
   get_incident_timeline: { resource: 'alerts', action: 'read' },
@@ -1996,9 +2001,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     encrypt: { resource: 'devices', action: 'execute' },
     quarantine: { resource: 'devices', action: 'execute' },
     secure_delete: { resource: 'devices', action: 'execute' },
-    accept_risk: { resource: 'devices', action: 'write' },
-    false_positive: { resource: 'devices', action: 'write' },
-    mark_remediated: { resource: 'devices', action: 'write' },
+    // All six actions share POST /sensitive-data/remediate, which gates on
+    // devices:execute (routes/sensitiveData.ts requireSensitiveDataExecute, L43/808-812).
+    accept_risk: { resource: 'devices', action: 'execute' },
+    false_positive: { resource: 'devices', action: 'execute' },
+    mark_remediated: { resource: 'devices', action: 'execute' },
   },
   request_elevation: { resource: 'devices', action: 'execute' },   // requesting is not approving — unchanged (fix/pam-dedicated-permissions); the AI handler inserts a pending request and ignores an auto_approve rule verdict (W04 re-read), so a pam:approve holder still answers it
   revoke_elevation: { resource: 'pam', action: 'approve' },    // routes/pam.ts revoke gates on requirePamApprove (fix/pam-dedicated-permissions)
@@ -2136,6 +2143,10 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   create_remote_session: [{ resource: 'remote', action: 'access' }],
   list_remote_sessions: [{ resource: 'remote', action: 'access' }],
   computer_control: [{ resource: 'remote', action: 'access' }],
+  // W04-D9/QW6: devices:execute (base) dispatches the containment command, and the
+  // tool also writes incident_actions (moves the incident to contained), which REST
+  // gates on alerts:write (routes/incidentActions.ts POST /:id/contain).
+  execute_containment: [{ resource: 'alerts', action: 'write' }],
 };
 
 /**

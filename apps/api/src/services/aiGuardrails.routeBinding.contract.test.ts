@@ -393,6 +393,55 @@ const BINDINGS: readonly Binding[] = [
   },
   { tool: 'manage_billing_catalog', action: 'archive_item', routeFile: 'catalog/catalog.ts', method: 'post', path: '/:id/archive' },
   { tool: 'test_webhook', routeFile: 'webhooks.ts', method: 'post', path: '/:id/test' },
+  // Full-control W04 (#6758) — every write action of the security / incident /
+  // device-operation tools is bound to the route it mirrors (spec #6096/#6110:
+  // a tool is never weaker than its route). Actions with no single REST twin
+  // are in UNBOUND below.
+  { tool: 'collect_evidence', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands' },
+  { tool: 'create_incident', routeFile: 'incidents.ts', method: 'post', path: '/' },
+  {
+    tool: 'execute_containment', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands',
+    toolOnly: {
+      extra: ['alerts:write'],
+      reason: 'the tool dispatches the containment command (the route bound here) AND writes incident_actions, which moves the incident to contained; REST gates that incident mutation separately on alerts:write (routes/incidentActions.ts POST /:id/contain), so the single AI call must hold both (W04-D9, quorum QW6).',
+    },
+  },
+  { tool: 'revoke_elevation', routeFile: 'pam.ts', method: 'post', path: '/elevation-requests/:id/revoke' },
+  { tool: 'manage_processes', action: 'kill', routeFile: 'systemTools/processes.ts', method: 'post', path: '/devices/:deviceId/processes/:pid/kill', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'run', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/run', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'disable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/disable', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'enable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/enable', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'set_value', routeFile: 'systemTools/registry.ts', method: 'put', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'create_key', routeFile: 'systemTools/registry.ts', method: 'post', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'delete_key', routeFile: 'systemTools/registry.ts', method: 'delete', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'trigger_agent_restart', routeFile: 'devices/agentRecovery.ts', method: 'post', path: '/:id/agent-recovery' },
+  { tool: 'manage_software_policy', action: 'list', routeFile: 'softwarePolicies.ts', method: 'get', path: '/' },
+  { tool: 'manage_software_policy', action: 'get', routeFile: 'softwarePolicies.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'create', routeFile: 'softwarePolicies.ts', method: 'post', path: '/' },
+  { tool: 'manage_software_policy', action: 'update', routeFile: 'softwarePolicies.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'delete', routeFile: 'softwarePolicies.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_browser_policy', action: 'list', routeFile: 'browserSecurity.ts', method: 'get', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'create', routeFile: 'browserSecurity.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'update', routeFile: 'browserSecurity.ts', method: 'put', path: '/policies/:policyId' },
+  // manage_peripheral_policy: create and update share POST /policies (update = body `id`);
+  // add_exception and remove_exception share POST /exceptions (body `operation`).
+  { tool: 'manage_peripheral_policy', action: 'create', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'update', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'disable', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies/:id/disable' },
+  { tool: 'manage_peripheral_policy', action: 'add_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'manage_peripheral_policy', action: 'remove_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'remediate_sensitive_data', action: 'encrypt', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'quarantine', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'secure_delete', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'accept_risk', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'false_positive', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'mark_remediated', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_software_violation', routeFile: 'softwarePolicies.ts', method: 'post', path: '/:id/remediate' },
+  { tool: 'assign_security_training', routeFile: 'userRisk.ts', method: 'post', path: '/assign-training' },
+  // configure_network_baseline has no action enum: it creates AND updates. POST / and
+  // PATCH /:id both gate on devices:write, so the create route stands for both.
+  { tool: 'configure_network_baseline', routeFile: 'networkBaselines.ts', method: 'post', path: '/' },
+  { tool: 'acknowledge_network_device', routeFile: 'networkChanges.ts', method: 'post', path: '/:id/acknowledge' },
   // W02 (#6756) — every write action of the PSA/billing write tools is bound
   // to its route (W02-D11). The only actions with no REST twin are the
   // agent-only ticket-triage executors (link_device, draft): their
@@ -512,6 +561,20 @@ const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> 
   {
     tool: 'list_script_templates',
     reason: 'global template table with no matching HTTP route: no endpoint reads script_templates directly',
+  },
+  // Full-control W04 (#6758)
+  {
+    tool: 'request_elevation',
+    reason: 'no human REST create route; requests are agent-ingested (routes/agents/elevationRequests.ts) or remediation-created',
+  },
+  {
+    tool: 'trigger_agent_upgrade',
+    reason: "no per-device REST upgrade route; agentRecovery.ts deliberately rejects update_agent ('a release decision, not a button'); upgrades are heartbeat/pin-driven",
+  },
+  {
+    tool: 'manage_browser_policy',
+    action: 'apply',
+    reason: 'no REST twin: applying queues browser-policy deviceCommands from the AI tool only; it requires devices:execute (parity with apply_cis_remediation)',
   },
   {
     tool: 'query_agent_versions',
