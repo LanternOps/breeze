@@ -371,7 +371,11 @@ describe('persistDetections', () => {
       const insert = await run(detection('x1'));
       const set = insert.conflict!.set!;
       expect(render(set.vendorEndpointId)).toMatch(/COALESCE\("edr_detections"\."vendor_endpoint_id", excluded\.vendor_endpoint_id\)/);
-      expect(render(set.endpointId)).toMatch(/COALESCE\("edr_detections"\."endpoint_id", excluded\.endpoint_id\)/);
+      // the link columns only FILL while they agree with the kept vendor endpoint (no split attribution)
+      for (const col of [set.endpointId, set.breezeDeviceId]) {
+        expect(render(col)).toMatch(/CASE WHEN "edr_detections"\."vendor_endpoint_id" IS NULL OR "edr_detections"\."vendor_endpoint_id" = excluded\.vendor_endpoint_id THEN COALESCE\(/);
+      }
+      expect(render(set.endpointId)).toMatch(/COALESCE\("edr_detections"\."endpoint_id", excluded\.endpoint_id\) ELSE "edr_detections"\."endpoint_id" END/);
     });
 
     it('a GravityZone-shaped detection (no locator) keeps its details byte-for-byte', async () => {
@@ -494,7 +498,8 @@ describe('reread_open_on_inventory writers (A5)', () => {
     expect(q).toMatch(/rn <= \$/);
     expect(q).toContain("details->'_breeze'->>'vendorRef'");
     expect(q).toContain(CONN.id);
-    expect(q).toContain('7');
+    expect(q).toMatch(/rn <= \$\d+/);
+    expect(ops[0]!.sql).toMatch(/\[[^\]]*\b7\b[^\]]*\]$/);
     expect(out.get(T1)).toEqual([
       { vendorDetectionId: 'a', vendorKind: 'incident', vendorRef: 'sha', groupKey: 'g' },
       { vendorDetectionId: 'b', vendorKind: 'incident', vendorRef: null, groupKey: null },
@@ -511,7 +516,7 @@ describe('reread_open_on_inventory writers (A5)', () => {
 
   it('applyDetectionStatusUpdates: narrow UPDATE scoped by connection+tenant+org+kind+id, live rows only, never moves org/tenant, never touches notified_severity', async () => {
     const { tx, ops } = makeTx({ executes: [[{ id: 'row-1' }], [], []] });
-    const n = await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')] });
+    const n = await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')], attempted: [] });
     expect(n).toBe(1);
     const q = ops.find((e) => e.kind === 'execute' && /UPDATE edr_detections/.test(e.sql!))!.sql!;
     expect(q).toMatch(/SET\s+status = v\.status/);
@@ -530,7 +535,7 @@ describe('reread_open_on_inventory writers (A5)', () => {
 
   it('applyDetectionStatusUpdates: recomputes the tenant\'s open count when anything changed', async () => {
     const { tx, ops } = makeTx({ executes: [[{ id: 'row-1' }], []] });
-    await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')] });
+    await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')], attempted: [] });
     const count = ops.filter((e) => e.kind === 'execute').map((e) => e.sql!).find((q) => /open_detection_count/.test(q));
     expect(count).toBeDefined();
     expect(count).toMatch(/detached_at IS NULL/);
@@ -552,7 +557,7 @@ describe('reread_open_on_inventory writers (A5)', () => {
 
   it('applyDetectionStatusUpdates: nothing to do -> no statements', async () => {
     const { tx, ops } = makeTx();
-    expect(await applyDetectionStatusUpdates(tx, { ...o, updates: [] })).toBe(0);
+    expect(await applyDetectionStatusUpdates(tx, { ...o, updates: [], attempted: [] })).toBe(0);
     expect(ops).toHaveLength(0);
   });
 });

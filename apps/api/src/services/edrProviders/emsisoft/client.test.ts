@@ -69,11 +69,16 @@ describe('EmsisoftClient transport', () => {
     expect(limiter.acquire).toHaveBeenCalledTimes(2);
   });
 
-  it('stops on an empty page even when totalCount overstates', async () => {
-    const { impl, calls } = makeFetch([{ body: page([{ guid: DV }], 5) }, { body: page([], 5) }]);
-    const { client } = makeClient(impl);
-    expect(await client.listDevicesAll(WS)).toHaveLength(1);
-    expect(calls).toHaveLength(2);
+  it('an empty page while skip < totalCount fails the list (never returned as a complete, truncated one)', async () => {
+    const { impl } = makeFetch([{ body: page([{ guid: DV }], 5) }, { body: page([], 5) }]);
+    const err = await rejection(makeClient(impl).client.listDevicesAll(WS));
+    expect(err).toMatchObject({ code: 'malformed_response', scope: 'tenant' });
+    const ws = await rejection(makeClient(makeFetch([{ body: page([{ guid: DV }], 5) }, { body: page([], 5) }]).impl).client.listWorkspacesAll());
+    expect(ws).toMatchObject({ code: 'malformed_response', scope: 'connection' });
+  });
+
+  it('an empty first page with totalCount 0 is a legitimate empty list', async () => {
+    expect(await makeClient(makeFetch([{ body: page([], 0) }]).impl).client.listDevicesAll(WS)).toEqual([]);
   });
 
   it('devices over the page cap -> too_many_devices (tenant scope) and no partial list', async () => {

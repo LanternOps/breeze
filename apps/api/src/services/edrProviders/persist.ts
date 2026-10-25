@@ -552,10 +552,13 @@ export async function persistDetections(
             // attribution. A later rename / name reuse can never re-bind it to another machine;
             // a later value only fills a null. (No-op for GravityZone: its endpoint id never changes.)
             vendorEndpointId: sql`COALESCE(${edrDetections.vendorEndpointId}, excluded.vendor_endpoint_id)`,
-            endpointId: sql`COALESCE(${edrDetections.endpointId}, excluded.endpoint_id)`,
+            // endpoint_id / breeze_device_id may only be FILLED while they describe the SAME vendor endpoint the
+            // row keeps. If the stored vendor id differs from the incoming one (name reuse after a re-enrol), a
+            // NULLed link (endpoint row pruned -> FK SET NULL) must not be filled from the other machine.
+            endpointId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.endpointId}, excluded.endpoint_id) ELSE ${edrDetections.endpointId} END`,
             // A closed detection keeps its historical device; refreshDetectionDeviceLinks
-            // re-points open ones. Only fill a missing link here.
-            breezeDeviceId: sql`COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id)`,
+            // re-points open ones. Only fill a missing link here (same-endpoint rule as above).
+            breezeDeviceId: sql`CASE WHEN ${edrDetections.vendorEndpointId} IS NULL OR ${edrDetections.vendorEndpointId} = excluded.vendor_endpoint_id THEN COALESCE(${edrDetections.breezeDeviceId}, excluded.breeze_device_id) ELSE ${edrDetections.breezeDeviceId} END`,
             updatedAt: sql`excluded.updated_at`,
             // org_id / tenant_id / notified_severity / detached_at / last_site_id are
             // DELIBERATELY absent: a live row never moves across orgs.
@@ -657,7 +660,7 @@ export async function applyDetectionStatusUpdates(
     orgId: string;
     updates: EdrDetectionStatusUpdate[];
     /** Every ref the adapter was asked about (for rotation of the omitted ones). */
-    attempted?: Array<{ vendorDetectionId: string; vendorKind: string }>;
+    attempted: Array<{ vendorDetectionId: string; vendorKind: string }>;
   },
 ): Promise<number> {
   let changed = 0;
@@ -689,12 +692,13 @@ export async function applyDetectionStatusUpdates(
         AND d.vendor_kind = v.vendor_kind
         AND d.vendor_detection_id = v.vendor_detection_id
         AND d.detached_at IS NULL
+        AND d.status IN ('open', 'in_progress', 'unknown')
       RETURNING d.id
     `);
     changed += (written as unknown as unknown[]).length;
   }
 
-  const omitted = (o.attempted ?? []).filter((a) => !updatedKeys.has(`${a.vendorKind}\u0000${a.vendorDetectionId}`));
+  const omitted = o.attempted.filter((a) => !updatedKeys.has(`${a.vendorKind}\u0000${a.vendorDetectionId}`));
   for (const batch of chunk(omitted, 200)) {
     await tx.execute(sql`
       UPDATE edr_detections SET updated_at = now()

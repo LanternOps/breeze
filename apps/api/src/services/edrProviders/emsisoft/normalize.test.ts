@@ -297,6 +297,16 @@ describe('toStatusUpdate', () => {
     expect(u.resolvedAt).toEqual(new Date('2026-10-21T09:30:00Z'));
   });
 
+  it('a mitigated detail is resolved at the LATEST detection time (unordered detections)', () => {
+    const u = toStatusUpdate(ref, {
+      verdict: 'New', actionTaken: 'Remediated', actionsTaken: ['Remediated'], severity: 'Malicious',
+      detections: [{ dateTime: '2026-10-22T00:00:00Z' }, { dateTime: '2026-10-25T00:00:00Z' }, { dateTime: '2026-10-21T00:00:00Z' }],
+    });
+    expect(u.status).toBe('mitigated');
+    expect(u.resolvedAt).toEqual(new Date('2026-10-25T00:00:00Z'));
+    expect(u.lastVendorUpdateAt).toEqual(new Date('2026-10-25T00:00:00Z'));
+  });
+
   it('an open detail keeps resolvedAt null; no detections -> lastVendorUpdateAt null', () => {
     const u = toStatusUpdate(ref, { verdict: 'New', actionTaken: 'None', actionsTaken: ['None'], severity: 'Malicious', detections: [] });
     expect(u).toMatchObject({ status: 'open', severity: 'critical', resolvedAt: null, lastVendorUpdateAt: null });

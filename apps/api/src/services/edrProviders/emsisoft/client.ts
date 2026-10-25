@@ -287,7 +287,14 @@ export class EmsisoftClient {
         if (!byGuid.has(item.guid)) byGuid.set(item.guid, item);
       }
       skip += shape.data.data.length;
-      if (shape.data.data.length === 0 || skip >= shape.data.totalCount) break;
+      if (skip >= shape.data.totalCount) break;
+      if (shape.data.data.length === 0) {
+        // The vendor promised more (skip < totalCount) but served nothing: returning what we have would
+        // read as "the rest is gone" (stale-endpoint pruning, unattributed detections). Fail the list.
+        throw this.fail(`Emsisoft GET ${template}: incomplete list`, {
+          code: 'malformed_response', scope: kind === 'workspaces' ? 'connection' : 'tenant',
+        });
+      }
       if (pageNo >= maxPages) {
         throw this.fail(`Emsisoft GET ${template}: more than ${maxPages * EMSI_PAGE_SIZE} items`, {
           code: `too_many_${cap.name}`, scope: kind === 'workspaces' ? 'connection' : 'tenant',

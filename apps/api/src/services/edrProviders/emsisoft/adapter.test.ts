@@ -147,6 +147,18 @@ describe('testConnection', () => {
     ]);
   });
 
+  it('a non-forbidden probe failure is surfaced as a note, never a clean bill of health', async () => {
+    const { ctx } = makeCtx(routes(ok('account-partner.json'), { [`/v1/workspaces/${WS1}/devices`]: { status: 500, body: '' } }));
+    const r = await adapter.testConnection(ctx);
+    expect(r).toMatchObject({ ok: true });
+    expect((r as { capabilityNotes: string[] }).capabilityNotes).toEqual(['workspaces: device probe failed (vendor_error)']);
+  });
+
+  it('a connection-scope probe failure (rate limited) fails the test rather than reporting ok', async () => {
+    const { ctx } = makeCtx(routes(ok('account-partner.json'), { [`/v1/workspaces/${WS1}/devices`]: { status: 429, body: '', headers: { 'Retry-After': '0' } } }));
+    expect(await adapter.testConnection(ctx)).toMatchObject({ ok: false, reauth: false });
+  });
+
   it('the probe asks for ONE device (Take=1) rather than paging the whole fleet', async () => {
     const { ctx, calls } = makeCtx(routes(ok('account-partner.json')));
     await adapter.testConnection(ctx);
@@ -234,7 +246,6 @@ describe('listDetections', () => {
     expect(q.get('DateTo')).toBe(NOW.toISOString());
     expect(JSON.parse(page.cursor!)).toEqual({ v: 1, windowEnd: NOW.toISOString() });
     expect(page).toMatchObject({ detections: [], warnings: [] });
-    await adapter.listDetections(makeCtx({ [incidentsPath(WS1)]: ok('incidents-empty.json') }).ctx, T(WS1), 'garbage', NOW);
   });
 
   it('one detection per distinct device, attributed from the SAME workspace device list', async () => {
@@ -340,6 +351,28 @@ describe('rereadDetectionStatus', () => {
     expect(await rejection(adapter.rereadDetectionStatus!(forbidden.ctx, T(WS1), [ref('a')]))).toMatchObject({ code: 'forbidden', scope: 'tenant' });
     const limited = makeCtx({ [incPath]: { status: 429, body: '', headers: { 'Retry-After': '0' } } });
     expect(await rejection(adapter.rereadDetectionStatus!(limited.ctx, T(WS1), [ref('a')]))).toMatchObject({ code: 'rate_limited', scope: 'connection' });
+  });
+
+  it('skipped groups are counted by code in a code-only warning (a dead re-read must be visible)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { ctx } = makeCtx({ [incPath]: { status: 400, body: '{"code":"SomethingElse"}' } });
+    expect(await adapter.rereadDetectionStatus!(ctx, T(WS1), [ref('a')])).toEqual([]);
+    expect(warn).toHaveBeenCalledWith('[edr:emsisoft] status re-read skipped incident groups', { invalid_params: 1 });
+    warn.mockRestore();
+  });
+
+  it('refs with a NULL groupKey are separate groups (one call and one verdict each), never collapsed into one', async () => {
+    const SHA2 = 'c'.repeat(40);
+    const { ctx, count } = makeCtx({
+      [incPath]: ok('incident-detail.json'),
+      [`/v1/workspaces/${WS1}/incidents/${SHA2}`]: json({ verdict: 'New', actionTaken: 'None', actionsTaken: ['None'], severity: 'Malicious', detections: [] }),
+    });
+    const out = await adapter.rereadDetectionStatus!(ctx, T(WS1), [
+      ref('a', { groupKey: null }), ref('b', { groupKey: null, vendorRef: SHA2 }),
+    ]);
+    expect(count(incPath)).toBe(1);
+    expect(count(`/v1/workspaces/${WS1}/incidents/${SHA2}`)).toBe(1);
+    expect(out.map((u) => [u.vendorDetectionId, u.status])).toEqual([['a', 'false_positive'], ['b', 'open']]);
   });
 
   it('refs sharing a vendorRef across groups cost one call', async () => {

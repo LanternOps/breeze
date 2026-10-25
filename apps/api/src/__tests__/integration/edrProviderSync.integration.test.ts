@@ -939,6 +939,14 @@ describe('edr sync — Emsisoft-shaped framework behaviour on real rows (W04 PR-
 
     await persist('inc-2:pc02', null, '2026-12-16T12:00:00Z');
     expect(await row('inc-2:pc02')).toEqual({ vendor_endpoint_id: 'em-e2', endpoint_id: e2 }); // a later null keeps the link
+
+    // No split attribution: the original endpoint row is pruned (FK nulls endpoint_id) and the name is re-used by
+    // another machine. The row keeps its vendor id AND does not get linked to the new machine's endpoint row.
+    await persist('inc-3:pc01', 'em-e1', '2026-12-16T10:00:00Z');
+    await withSystemDbAccessContext(() => db.execute(sql`DELETE FROM edr_endpoints WHERE id = ${e1}::uuid`));
+    expect(await row('inc-3:pc01')).toEqual({ vendor_endpoint_id: 'em-e1', endpoint_id: null });
+    await persist('inc-3:pc01', 'em-e2', '2026-12-16T13:00:00Z');
+    expect(await row('inc-3:pc01')).toEqual({ vendor_endpoint_id: 'em-e1', endpoint_id: null });
   });
 
   runDb('(b2) details._breeze holds the vendor locator + group key; an adapter-supplied _breeze is overwritten', async () => {
@@ -1024,11 +1032,39 @@ describe('edr sync — Emsisoft-shaped framework behaviour on real rows (W04 PR-
     const n = await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
       connectionId: fx.connectionId, tenantId: t2.id, orgId: fx.orgB.id,
       updates: [{ vendorDetectionId: 'mine', vendorKind: 'incident', status: 'false_positive', vendorStatus: 'x', severity: 'low', vendorSeverity: null, resolvedAt: null, lastVendorUpdateAt: null }],
+      attempted: [],
     }));
     expect(n).toBe(0);
     const [r] = await adminRows<{ status: string }>(sql`
       SELECT status FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'mine'`);
     expect(r!.status).toBe('open');
+  });
+
+  runDb('(c3) closed and tombstoned rows are never loaded for re-read and never rewritten by an update', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    await withSystemDbAccessContext(() => persistDetections(db as never, fx.conn, [{
+      vendorTenantId: tenant.vendorTenantId, ok: true,
+      value: { detections: ['live', 'closed', 'tomb'].map((id) => vendorDetection(tenant.vendorTenantId, id)), cursor: null, warnings: [] },
+    }], new Date('2026-10-01T08:00:00Z')));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE edr_detections SET status = 'false_positive' WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'closed'`));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE edr_detections SET detached_at = now(), tenant_id = NULL WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'tomb'`));
+    const loaded = await withSystemDbAccessContext(() => loadOpenDetectionRefs(db as never, fx.connectionId, [tenant.id], 10));
+    expect((loaded.get(tenant.id) ?? []).map((r) => r.vendorDetectionId)).toEqual(['live']);
+    const mk = (id: string) => ({ vendorDetectionId: id, vendorKind: 'incident' as const, status: 'mitigated' as const, vendorStatus: 'x', severity: 'low' as const, vendorSeverity: null, resolvedAt: null, lastVendorUpdateAt: null });
+    const n = await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
+      connectionId: fx.connectionId, tenantId: tenant.id, orgId: fx.orgA.id, updates: [mk('closed'), mk('tomb')], attempted: [],
+    }));
+    expect(n).toBe(0);
+    const rows = await adminRows<{ vendor_detection_id: string; status: string }>(sql`
+      SELECT vendor_detection_id, status FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid ORDER BY vendor_detection_id`);
+    expect(rows).toEqual([
+      { vendor_detection_id: 'closed', status: 'false_positive' },
+      { vendor_detection_id: 'live', status: 'open' },
+      { vendor_detection_id: 'tomb', status: 'open' },
+    ]);
   });
 
   runDb('(d) detail-owned fields survive a list-only inventory run; an explicit null clears; hostname/policy still overwrite', async () => {

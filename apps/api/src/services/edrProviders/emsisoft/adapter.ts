@@ -144,8 +144,12 @@ export const emsisoftAdapter: EdrProviderAdapter = {
             notes.push('workspaces: device access denied for at least one workspace (licence-manager role?)');
           } else if (isReq(e) && e.scope === 'connection') {
             throw e;
+          } else if (isReq(e)) {
+            // Not a connection failure, but do not report a clean bill of health either.
+            notes.push(`workspaces: device probe failed (${e.code})`);
+          } else {
+            throw e;
           }
-          // Any other probe failure says nothing about the connection.
         }
       }
       return { ok: true, rootId, rootName, rootType, tenantCount: workspaces.length, capabilityNotes: notes };
@@ -175,18 +179,28 @@ export const emsisoftAdapter: EdrProviderAdapter = {
   async enrichEndpoints(ctx, _tenant, ids): Promise<VendorEdrEndpointDetail[]> {
     const client = await clientFor(ctx);
     const out: VendorEdrEndpointDetail[] = [];
+    const skipped = new Map<string, number>();
+    const warnSkipped = () => {
+      if (skipped.size > 0) console.warn('[edr:emsisoft] device enrichment skipped devices', Object.fromEntries(skipped));
+    };
     for (const id of ids) {
       try {
         out.push(toEndpointDetail(id, await client.getDeviceDetails(id)));
       } catch (e) {
         if (!isReq(e) || e.scope !== 'operation') throw e; // connection / tenant failures fail the run / tenant
-        // A vanished or unaddressable device: skip it, it stays stale and is retried.
-        if (e.code === 'not_found' || e.code === 'invalid_params' || e.code === 'invalid_vendor_id') continue;
+        // A vanished or unaddressable device: skip it, it stays stale and is retried. Counted by code so a
+        // vendor-wide change (every lookup suddenly 400) is visible instead of silent.
+        if (e.code === 'not_found' || e.code === 'invalid_params' || e.code === 'invalid_vendor_id') {
+          skipped.set(e.code, (skipped.get(e.code) ?? 0) + 1);
+          continue;
+        }
         // forbidden / vendor_error: systemic for this tenant. Stop and keep what we have. Code only, never the body.
+        warnSkipped();
         console.warn(`[edr:emsisoft] device enrichment stopped early (${e.code})`);
         return out;
       }
     }
+    warnSkipped();
     return out;
   },
 
@@ -228,6 +242,7 @@ export const emsisoftAdapter: EdrProviderAdapter = {
 
     const byRef = new Map<string, Awaited<ReturnType<EmsisoftClient['getIncident']>>>();
     const out: EdrDetectionStatusUpdate[] = [];
+    const skipped = new Map<string, number>();
     for (const group of groups.values()) {
       const vendorRef = group.find((r) => r.vendorRef)?.vendorRef ?? null;
       if (vendorRef === null) continue; // nothing to ask the vendor: the framework rotates it
@@ -242,11 +257,14 @@ export const emsisoftAdapter: EdrProviderAdapter = {
         // connection / tenant scope fails the run / the tenant; an operation-scope error only drops this group,
         // so one dead or purged incident never blocks a tenant's inventory or the rotation.
         if (!isReq(e) || e.scope !== 'operation') throw e;
+        // Counted by code: if EVERY group starts failing (vendor route change) the re-read is dead and must be visible.
+        skipped.set(e.code, (skipped.get(e.code) ?? 0) + 1);
         continue;
       }
       if (!detail) continue; // the vendor no longer knows it: never auto-closed
       for (const r of group) out.push(toStatusUpdate(r, detail));
     }
+    if (skipped.size > 0) console.warn('[edr:emsisoft] status re-read skipped incident groups', Object.fromEntries(skipped));
     return out;
   },
 };

@@ -498,8 +498,9 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
       let cap = 0;
       try {
         cap = rereadCap(getEdrProvider(row.provider));
-      } catch {
-        // an unknown provider fails loudly later, in the main flow
+      } catch (error) {
+        // An unknown provider fails loudly later, in the main flow; log so a bug here cannot silently disable the re-read.
+        console.error(`[EdrProviderSync] Connection ${connectionId}: re-read capability lookup failed:`, error);
       }
       if (cap > 0) {
         openDetections = await loadOpenDetectionRefs(
