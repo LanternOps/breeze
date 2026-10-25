@@ -34,7 +34,7 @@
  *     src/__tests__/integration/deviceReattachProtocol.integration.test.ts
  */
 import './setup';
-import { createPublicKey, verify } from 'node:crypto';
+import { createPublicKey, randomUUID, verify } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -45,6 +45,7 @@ import {
   devicePoolAssignmentEvents,
   deviceReattachIntents,
   deviceReattachments,
+  enrollmentKeys,
   devices,
   organizations,
   users,
@@ -60,8 +61,34 @@ import { requestDeviceReattach, cancelReattachIntent } from '../../services/devi
 import { ensureActiveSigningKey } from '../../services/manifestSigning';
 import { getRedis } from '../../services/redis';
 import { holdingAreaLockSql } from '../../services/unassignedPool/holdingAreaLock';
+import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { enrollmentRoutes } from '../../routes/agents/enrollment';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** An org enrollment key for the site, as reattachStaleCallers seeds one. */
+async function seedEnrollmentKey(place: { orgId: string; siteId: string }): Promise<string> {
+  const rawKey = `reattach-enroll-${randomUUID()}`;
+  await withSystemDbAccessContext(() => db.insert(enrollmentKeys).values({
+    orgId: place.orgId, siteId: place.siteId, name: 'Reattach restore race', key: hashEnrollmentKey(rawKey),
+    keySecretHash: null, usageCount: 0, maxUsage: null, expiresAt: null,
+  }));
+  return rawKey;
+}
+
+/** A fresh enrollment (no device token) of a hostname: the decom bypass when a removed row has it. */
+function enrollWithHostname(rawKey: string, hostname: string): Promise<Response> {
+  const enrollApp = new Hono();
+  enrollApp.route('/agents', enrollmentRoutes);
+  return Promise.resolve(enrollApp.request('/agents/enroll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      enrollmentKey: rawKey, hostname, osType: 'windows', osVersion: 'Integration Windows',
+      architecture: 'amd64', agentVersion: '1.0.0-test',
+    }),
+  }));
+}
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
   ageIntent,
@@ -786,9 +813,79 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     // One licensed device already fills a limit of 1.
     await seedAgentDevice(tenant.orgB);
     await getTestDb().execute(sql`UPDATE partners SET max_devices = 1 WHERE id = ${tenant.partnerId}::uuid`);
+    // Review finding 8: one outcome, whichever check catches it: cancelled.
     expect(await confirm(source.agentId, set.tokens.confirmationToken))
-      .toMatchObject({ status: 409, body: { code: 'device_limit_reached' } });
+      .toMatchObject({ status: 409, body: { code: 'device_limit_reached', state: 'cancelled', cancelReason: 'device_limit_reached' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'device_limit_reached' });
     expect(await readDevice(target.id)).toMatchObject({ status: 'decommissioned', installIncarnation: 1 });
+  });
+
+  it('a restore that fits the limit once the source is retired is admitted (the source is left out of the count)', async () => {
+    const tenant = await seedReattachTenant();
+    // A REAL-org source takes a licensed slot until the confirm retires it.
+    const source = await seedAgentDevice(tenant.orgB, { rebindProtocolVersion: 1 });
+    const target = await silentTarget(tenant.orgA, { status: 'decommissioned' });
+    const intent = await requestIntent(tenant, source, target, { restoreDecommissioned: true });
+    const set = stagedSet();
+    expect((await phase1(source, intent.id, set.hashes)).status).toBe(200);
+    await getTestDb().execute(sql`UPDATE partners SET max_devices = 1 WHERE id = ${tenant.partnerId}::uuid`);
+    expect((await confirm(source.agentId, set.tokens.confirmationToken)).status).toBe(200);
+    expect(await readDevice(target.id)).toMatchObject({ status: 'pending', installIncarnation: 2 });
+  });
+
+  // Review finding 11: on restore the partner row is locked BEFORE the device
+  // rows (advisory → partners → devices → intent), the order enrollment's
+  // decom bypass and restoreRemovedDevice use.
+  describe('restore and enrollment\'s decom bypass do not deadlock', () => {
+    async function arrangeRestore() {
+      const tenant = await seedReattachTenant();
+      const hostname = `restore-${randomUUID().slice(0, 8)}`;
+      const source = await parkedSource(tenant);
+      const target = await silentTarget(tenant.orgA, { status: 'decommissioned', hostname });
+      const intent = await requestIntent(tenant, source, target, { restoreDecommissioned: true });
+      const set = stagedSet();
+      expect((await phase1(source, intent.id, set.hashes)).status).toBe(200);
+      return { tenant, hostname, source, target, intent, set };
+    }
+
+    it('a decom-bypass enrollment of the same hostname that starts while the confirm holds its locks: both finish', async () => {
+      const { tenant, hostname, source, intent, set } = await arrangeRestore();
+      const rawKey = await seedEnrollmentKey(tenant.orgA);
+      let enrollment: Promise<Response> | null = null;
+      const confirmed = await confirmRebindIntent({
+        sourceAgentId: source.agentId,
+        token: set.tokens.confirmationToken,
+        assertion: { assertionTrusted: false, assertedVerified: false, assertedSerial: null },
+        hooks: {
+          afterLocks: async () => {
+            enrollment = enrollWithHostname(rawKey, hostname);
+            await sleep(500); // the enrollment now waits on the partner row
+          },
+        },
+      });
+      expect(confirmed).toMatchObject({ ok: true, replay: false });
+      const enrolled = await enrollment!;
+      expect(enrolled.status, await enrolled.clone().text()).toBe(201);
+      expect(await readIntent(intent.id)).toMatchObject({ state: 'confirmed' });
+    });
+
+    it('a transaction in enrollment\'s order (partner row, then the decommissioned row) racing the confirm: both finish', async () => {
+      const { tenant, source, target, intent, set } = await arrangeRestore();
+      let partnerLocked!: () => void;
+      const partnerIsLocked = new Promise<void>((resolve) => { partnerLocked = resolve; });
+      const enrollmentShaped = getTestDb().transaction(async (tx: any) => {
+        await tx.execute(sql`SELECT id FROM partners WHERE id = ${tenant.partnerId}::uuid FOR UPDATE`);
+        partnerLocked();
+        await sleep(500); // the confirm starts and queues
+        await tx.execute(sql`UPDATE devices SET hostname = hostname || '.decom' WHERE id = ${target.id}::uuid`);
+        await sleep(200);
+      });
+      await partnerIsLocked;
+      const confirming = confirm(source.agentId, set.tokens.confirmationToken);
+      await enrollmentShaped;
+      expect((await confirming).status).toBe(200);
+      expect(await readIntent(intent.id)).toMatchObject({ state: 'confirmed' });
+    });
   });
 });
 

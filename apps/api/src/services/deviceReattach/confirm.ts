@@ -14,10 +14,15 @@
  *    a requested one → 409 `not_staged`.
  *
  * Locks (§6.4, F13): the intent was read unlocked for its ids; then the
- * partner's holding-area advisory lock, both device rows FOR UPDATE in
- * ascending order, the intent FOR UPDATE (re-read; it must name the same
- * devices), and the `partners` row LAST, through admitPartnerDeviceCapacity,
- * only when a decommissioned target is restored.
+ * partner's holding-area advisory lock; when a decommissioned target is
+ * restored, the `partners` row through admitPartnerDeviceCapacity, BEFORE the
+ * device rows (restoreRemovedDevice's and enrollment's order: enrollment's
+ * decom bypass admits on the partner row, then renames the decommissioned
+ * row, so taking the device first here would be AB-BA); both device rows FOR
+ * UPDATE in ascending order; the intent FOR UPDATE (re-read; it must name the
+ * same devices). So: advisory → partners (restore only) → devices → intent.
+ * That admission is the one capacity check: a refusal cancels the intent
+ * with `device_limit_reached`, like every other revalidation failure.
  *
  * Revalidation (any failure → 409 with its code and the intent CANCELLED with
  * that reason, committed): staged and unexpired; ./revalidation.ts (partner,
@@ -78,7 +83,7 @@ import { decommissionDeviceInTransaction } from '../deviceDecommission';
 import { queueCertificateRevocationCore } from '../deviceMtlsCertificateLifecycle';
 import { runInstallIncarnationBoundary, type InstallBoundaryResult } from '../deviceInstallBoundary';
 import { publishEvent } from '../eventBus';
-import { admitPartnerDeviceCapacity, previewPartnerDeviceCapacity } from '../partnerDeviceCapacity';
+import { admitPartnerDeviceCapacity, PartnerDeviceCapacityError } from '../partnerDeviceCapacity';
 import { getRedis } from '../redis';
 import { captureException } from '../sentry';
 import { lockPartnerHoldingArea } from '../unassignedPool/holdingAreaLock';
@@ -222,6 +227,25 @@ async function confirmUnderLocks(
   redisLiveness: RedisLivenessSignals,
 ): Promise<ConfirmOutcome> {
   await lockPartnerHoldingArea(tx, located.partnerId);
+  // Restoring a decommissioned target re-takes a licensed slot: the partner
+  // row comes BEFORE the device rows (see the header). The source is retired
+  // in this same transaction, so it is left out of the count.
+  let admission: 'allowed' | 'refused' | 'not_needed' = 'not_needed';
+  if (located.restoreDecommissioned) {
+    try {
+      const result = await admitPartnerDeviceCapacity(tx, {
+        orgId: located.targetOrgId,
+        expectedPartnerId: located.partnerId,
+        excludeDeviceId: located.sourceDeviceId,
+      });
+      admission = result.allowed ? 'allowed' : 'refused';
+    } catch (err) {
+      // The org left the partner, or the partner is gone: the revalidation
+      // below answers partner_mismatch / target_changed from the locked rows.
+      if (!(err instanceof PartnerDeviceCapacityError)) throw err;
+      admission = 'refused';
+    }
+  }
   const locked = await lockReattachDevices(tx, [located.sourceDeviceId, located.targetDeviceId], 'update');
   const intent = await readIntentForUpdate(tx, located.id);
   if (
@@ -290,17 +314,9 @@ async function confirmUnderLocks(
   if (liveness.state === 'alive') return cancel('target_alive');
 
   const restoring = target.status === 'decommissioned' && intent.restoreDecommissioned;
-  if (restoring) {
-    // Advisory and unlocked: refuse before the boundary runs. The locked
-    // admission comes last, below. The source is retired in this same
-    // transaction, so it is left out of the count, as it will be then.
-    const preview = await previewPartnerDeviceCapacity(tx, {
-      orgId: target.orgId,
-      expectedPartnerId: intent.partnerId,
-      excludeDeviceId: source.id,
-    });
-    if (!preview.allowed) return cancel('device_limit_reached');
-  }
+  // The admission taken under the partner row lock, before the device rows:
+  // the count cannot move until commit, so this is the only capacity check.
+  if (restoring && admission !== 'allowed') return cancel('device_limit_reached');
 
   // ── Effects ───────────────────────────────────────────────────────────
   // (1) The boundary FIRST: it advances the incarnation and invalidates the
@@ -445,19 +461,6 @@ async function confirmUnderLocks(
     .where(and(eq(deviceReattachIntents.id, intent.id), eq(deviceReattachIntents.state, 'staged')))
     .returning();
   if (!confirmed) throw new Error('reattach intent was not confirmed');
-
-  // The partners row, last: a restored target re-takes a licensed slot.
-  if (restoring) {
-    const admission = await admitPartnerDeviceCapacity(tx, {
-      orgId: target.orgId,
-      expectedPartnerId: intent.partnerId,
-      excludeDeviceId: target.id,
-    });
-    if (!admission.allowed) {
-      // Rolled back; the intent stays staged and the agent may retry.
-      throw new ReattachRefusedError(reattachRefusal(409, 'device_limit_reached', 'The partner device limit is reached'));
-    }
-  }
 
   return {
     kind: 'confirmed',
