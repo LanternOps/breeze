@@ -279,7 +279,7 @@ export function WispConcernsPanel({
             {t('wispConcerns.reviewApproval')}
           </a>
         )}
-        {typeof c.evidence.href === 'string' && safeActivityHref(c.evidence.href) && (
+        {c.signature?.startsWith('wisp-readiness:') && typeof c.evidence.href === 'string' && safeActivityHref(c.evidence.href) && (
           <a
             href={safeActivityHref(c.evidence.href) as string}
             data-testid={`wisp-concern-link-${c.id}`}

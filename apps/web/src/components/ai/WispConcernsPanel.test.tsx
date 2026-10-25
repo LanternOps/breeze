@@ -162,15 +162,19 @@ describe('WispConcernsPanel', () => {
     expect(screen.queryAllByTestId('wisp-concern-row')).toHaveLength(0);
   });
 
-  it('#10143: a concern whose evidence carries a same-origin href renders an open link; unsafe hrefs do not', async () => {
+  it('#10143: a system readiness concern with a same-origin href renders an open link; unsafe hrefs and model-raised concerns do not', async () => {
     await mountWith([
-      concern('a', 'low', { evidence: { href: '/settings/ai-agents' } }),
-      concern('b', 'low', { evidence: { href: 'https://evil.example/x' } }),
-      concern('c', 'low', { evidence: { href: '//evil.example' } }),
-      concern('d', 'low'),
+      concern('a', 'low', { signature: 'wisp-readiness:no-effective-agent:o1', evidence: { href: '/settings/ai-agents' } }),
+      concern('b', 'low', { signature: 'wisp-readiness:x', evidence: { href: 'https://evil.example/x' } }),
+      concern('c', 'low', { signature: 'wisp-readiness:x', evidence: { href: '//evil.example' } }),
+      concern('d', 'low', { signature: 'wisp-readiness:x', evidence: { href: 'javascript:alert(1)' } }),
+      concern('e', 'low', { signature: 'wisp-readiness:x', evidence: { href: 5 } }),
+      concern('f', 'low'),
+      // Model-authored evidence (raise_concern) never links, even to a same-origin path.
+      concern('g', 'low', { evidence: { href: '/settings/ai-agents' } }),
     ]);
     expect(screen.getByTestId('wisp-concern-link-a').getAttribute('href')).toBe('/settings/ai-agents');
-    for (const id of ['b', 'c', 'd']) expect(screen.queryByTestId(`wisp-concern-link-${id}`)).toBeNull();
+    for (const id of ['b', 'c', 'd', 'e', 'f', 'g']) expect(screen.queryByTestId(`wisp-concern-link-${id}`)).toBeNull();
   });
 
   it('W06 T7: a concern with an approval intent links to its approval card', async () => {

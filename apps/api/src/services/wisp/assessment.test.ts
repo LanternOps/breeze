@@ -355,7 +355,28 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     });
     expect(arg.summary).toMatch(/no AI agent is configured/);
     expect(arg.summary).toMatch(/Settings → AI Agents/);
-    expect(arg.evidence.href).toBe('/settings/ai-agents');
+    expect(arg.evidence).toEqual({ href: '/settings/ai-agents', reason: 'no_effective_agent' });
+    expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
+  });
+
+  it('a second skipped tick re-upserts the same signature (idempotent key, no new row)', async () => {
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockResolvedValue({ id: 'c-1', created: false });
+    for (let i = 0; i < 2; i++) {
+      h.results.push([grantRow()], [{ at: null }]);
+      await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    }
+    const sigs = h.upsertConcern.mock.calls.map((c) => (c[0] as { signature: string }).signature);
+    expect(sigs).toEqual([SIG, SIG]);
+  });
+
+  it('a different org gets a different signature', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.resolveGrantCeiling.mockResolvedValueOnce(ceiling({ orgIds: new Set([ORG, OTHER_ORG]) }));
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    await enqueueAssessment({ grantId: GRANT, orgId: OTHER_ORG, reason: { kind: 'tick' } });
+    expect((h.upsertConcern.mock.calls[0]![0] as { signature: string }).signature)
+      .toBe(`wisp-readiness:no-effective-agent:${OTHER_ORG}`);
   });
 
   it('a failing raise never changes the skip result (reported, not thrown)', async () => {
@@ -366,18 +387,19 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(h.captureException).toHaveBeenCalled();
   });
 
-  it('other admission skips raise nothing', async () => {
+  it('another admission skip raises nothing and closes a stale "no agent" concern (an agent resolved)', async () => {
     h.results.push([grantRow()], [{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'agent_disabled' });
     await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
     expect(h.upsertConcern).not.toHaveBeenCalled();
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, 'ai_agent_configured');
   });
 
   it('resolves the concern by signature once an assessment is actually admitted', async () => {
     h.results.push([grantRow()], [{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: RUN } });
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ runId: RUN });
-    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, expect.any(String));
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, 'ai_agent_configured');
     expect(h.upsertConcern).not.toHaveBeenCalled();
   });
 

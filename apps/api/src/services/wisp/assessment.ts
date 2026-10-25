@@ -250,7 +250,9 @@ export async function enqueueAssessment(
     await clearNoAgentReadiness(ceiling.partnerId, orgId);
     return { runId: result.run.id };
   }
+  // An agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
   if (result.skipped === 'no_effective_agent') await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
+  else await clearNoAgentReadiness(ceiling.partnerId, orgId);
   return skipAssessment(result.skipped, 'skipped_admission');
 }
 
@@ -274,7 +276,7 @@ async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: 
       raisedByGrantId: grantId,
     });
   } catch (err) {
-    captureException(err);
+    captureException(err, undefined, { wisp_op: 'raise_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'raise'] });
   }
 }
 
@@ -283,7 +285,7 @@ async function clearNoAgentReadiness(partnerId: string, orgId: string): Promise<
   try {
     await resolveConcernBySignature(partnerId, noAgentSignature(orgId), 'ai_agent_configured');
   } catch (err) {
-    captureException(err);
+    captureException(err, undefined, { wisp_op: 'clear_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'clear'] });
   }
 }
 
