@@ -67,6 +67,8 @@ interface TokenRoute { method: 'GET' | 'POST'; path: string; body?: Record<strin
 const TOKEN_ROUTES: TokenRoute[] = [
   { method: 'GET', path: '/:token' },
   { method: 'GET', path: '/:token/file' },
+  { method: 'POST', path: '/:token/accept', body: { signerName: 'Dana Buyer', signerEmail: 'dana@example.com' } },
+  { method: 'POST', path: '/:token/decline', body: { reason: 'Not now' } },
 ];
 
 function row(over: Record<string, unknown> = {}) {

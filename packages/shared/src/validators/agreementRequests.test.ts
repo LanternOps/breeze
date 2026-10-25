@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGREEMENT_SIGNED_AT_SKEW_MS,
+  acceptPublicAgreementSchema,
   createAgreementRequestSchema,
   listAgreementRequestsQuerySchema,
   updateAgreementRequestSchema,
@@ -214,5 +215,24 @@ describe('listAgreementRequestsQuerySchema', () => {
   it('accepts org/contract/template filters as uuids', () => {
     expect(listAgreementRequestsQuerySchema.safeParse({ orgId: ORG, contractId: CONTRACT, templateId: VERSION }).success).toBe(true);
     expect(listAgreementRequestsQuerySchema.safeParse({ orgId: 'x' }).success).toBe(false);
+  });
+});
+
+describe('acceptPublicAgreementSchema (#9075 W2b)', () => {
+  it('accepts a trimmed name and a lowercased, trimmed email', () => {
+    expect(acceptPublicAgreementSchema.parse({ signerName: '  Dana Buyer ', signerEmail: ' Dana@Example.COM ' }))
+      .toEqual({ signerName: 'Dana Buyer', signerEmail: 'dana@example.com' });
+  });
+
+  it('requires the signer email on the public page (spec §3.2 wins over §5)', () => {
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: 'Dana' }).success).toBe(false);
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: 'Dana', signerEmail: '' }).success).toBe(false);
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: 'Dana', signerEmail: 'not-an-email' }).success).toBe(false);
+  });
+
+  it('refuses a blank or over-long name (code points, zod 4.6)', () => {
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: '   ', signerEmail: 'a@example.com' }).success).toBe(false);
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: 'x'.repeat(201), signerEmail: 'a@example.com' }).success).toBe(false);
+    expect(acceptPublicAgreementSchema.safeParse({ signerName: '😀'.repeat(200), signerEmail: 'a@example.com' }).success).toBe(true);
   });
 });

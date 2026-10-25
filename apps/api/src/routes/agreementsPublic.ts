@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { ERROR_CODES } from '@breeze/shared';
+import { acceptPublicAgreementSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema/orgs';
@@ -10,6 +11,7 @@ import type { AgreementRequestRow } from '../db/schema/contractDocuments';
 import {
   verifyAgreementAcceptToken,
   isAgreementAcceptJtiRevoked,
+  revokeAgreementAcceptJti,
   type AgreementAcceptClaims,
 } from '../services/agreementAcceptToken';
 import { resolveMergedOrgIds } from '../services/orgMergeProvenance';
@@ -17,9 +19,19 @@ import {
   resolveAgreementRequestLinkOrgGate,
   PUBLIC_LINK_ORG_UNAVAILABLE,
 } from '../services/publicLinkOrgGate';
-import { isAgreementRequestExpired } from '../services/agreementRequestService';
+import { AgreementRequestServiceError, isAgreementRequestExpired } from '../services/agreementRequestService';
 import { frozenRenderSnapshot, renderRequestForClient } from '../services/agreementRequestLifecycle';
-import { markAgreementRequestViewed } from '../services/agreementRequestAcceptService';
+import {
+  acceptAgreementRequest,
+  declineAgreementRequest,
+  markAgreementRequestViewed,
+  type AgreementResponseRevoke,
+} from '../services/agreementRequestAcceptService';
+import { notifyAgreementOutcome } from '../services/agreementOutcomeNotify';
+import { sendSignedAgreementCopy } from '../services/agreementSignedCopyEmail';
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 import { loadTemplateVersionRenderData } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
 import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
@@ -219,3 +231,155 @@ agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), asyn
     'X-Content-Type-Options': 'nosniff',
   });
 });
+
+// ---------------------------------------------------------------------------
+// Responses (accept / decline)
+// ---------------------------------------------------------------------------
+
+/** Accept/decline attempts per token per minute. A human answers once; this
+ *  only bounds one leaked token being hammered from many IPs (the isolated
+ *  per-IP 'agreementpublic' bucket caps the surface as a whole). */
+const RESPOND_LIMIT_PER_MINUTE = 10;
+
+/**
+ * Per-token limiter, run BEFORE resolve() and before any DB context. Keyed on
+ * sha256(token) — the raw bearer credential never lands in Redis. Fails OPEN
+ * on a Redis outage (rateLimiter itself fails closed): the durable jti
+ * consumption on the row is the real single-use guard, so availability wins
+ * (invoicesPublic overPublicOpLimit shape).
+ */
+async function overRespondLimit(token: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    const key = `agreement-public:respond:${createHash('sha256').update(token).digest('hex')}`;
+    const result = await rateLimiter(redis, key, RESPOND_LIMIT_PER_MINUTE, 60);
+    return !result.allowed;
+  } catch {
+    return false;
+  }
+}
+
+const TOO_MANY = { error: 'Too many attempts — please wait a minute and try again', code: 'RATE_LIMITED' } as const;
+
+/** Post-commit Redis revoke. The durable column already holds, so a failure
+ *  only costs a DB read on the next hit — but a lost marker is
+ *  security-relevant, so it is captured. */
+async function revokePostCommit(revoke: AgreementResponseRevoke): Promise<void> {
+  try {
+    await revokeAgreementAcceptJti(revoke.jti, revoke.tokenExpiresAt);
+  } catch (err) {
+    console.error('[agreementsPublic] post-commit jti revoke failed', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
+/** Fire-and-forget a post-commit side effect: never awaited by the response,
+ *  never able to fail it. The callees swallow their own errors; this is the
+ *  belt for one that grows an uncaught path. */
+function fireAndForget(label: string, work: () => Promise<unknown>): void {
+  void (async () => {
+    try {
+      await work();
+    } catch (err) {
+      console.error(`[agreementsPublic] ${label} failed`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  })();
+}
+
+/** Map a known service error to its response; a RESPONSE_CONSUMED (the
+ *  durable backstop fired because the Redis marker was lost) re-arms the hot
+ *  path. Unknown errors rethrow (500 via the app handler). */
+async function respondError(c: Context, err: unknown, claims: AgreementAcceptClaims, request: AgreementRequestRow): Promise<Response> {
+  if (err instanceof AgreementRequestServiceError) {
+    if (err.code === 'RESPONSE_CONSUMED') {
+      try { await revokeAgreementAcceptJti(claims.jti, request.acceptTokenExpiresAt); } catch { /* durable backstop holds */ }
+    }
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
+  if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+// POST /:token/accept — typed signature + required signer email (spec §3.2).
+// The pinned version is pre-fetched OUTSIDE the accept transaction under system
+// scope; acceptAgreementRequest then runs as ONE system transaction (its
+// CONTEXT CONTRACT). Side effects run only after it commits (spec §3.3 step 8).
+agreementsPublicRoutes.post(
+  '/:token/accept',
+  zValidator('param', tokenParam),
+  zValidator('json', acceptPublicAgreementSchema),
+  async (c) => {
+    const { token } = c.req.valid('param');
+    const body = c.req.valid('json');
+    if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
+    const now = new Date();
+    const resolved = await resolve(c, token, now);
+    if (!resolved.ok) return resolved.response;
+    const { claims, orgIds, request } = resolved.link;
+
+    let result: Awaited<ReturnType<typeof acceptAgreementRequest>>;
+    try {
+      const renderData = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        loadTemplateVersionRenderData(request.templateVersionId, { includeFileData: true })));
+      result = await runOutsideDbContext(() => withSystemDbAccessContext(() => acceptAgreementRequest({
+        claims,
+        allowedOrgIds: orgIds,
+        renderData,
+        signerName: body.signerName,
+        signerEmail: body.signerEmail,
+        // Never the raw header: the trusted-proxy policy applies.
+        ipAddress: getTrustedClientIpOrUndefined(c) ?? null,
+        userAgent: c.req.header('user-agent') ?? null,
+        now,
+      })));
+    } catch (err) {
+      return respondError(c, err, claims, request);
+    }
+
+    // ---- Post-commit. Order: revoke, then tell the creator, then the copy.
+    await revokePostCommit(result.revoke);
+    fireAndForget('outcome notify', () => notifyAgreementOutcome({
+      requestId: result.requestId, outcome: 'signed', source: 'customer', signerName: body.signerName,
+    }));
+    fireAndForget('signed copy', () => sendSignedAgreementCopy({
+      requestId: result.requestId, signedAgreementId: result.signedAgreementId, signerEmail: body.signerEmail,
+    }));
+    // W3b: emit agreement.signed on the events bus here.
+    return c.json({ data: { status: 'signed' as const, signedAt: now.toISOString() } });
+  },
+);
+
+// POST /:token/decline — reason optional; the jti is consumed durably in the
+// same statement as the status change (declineAgreementRequest).
+agreementsPublicRoutes.post(
+  '/:token/decline',
+  zValidator('param', tokenParam),
+  zValidator('json', declineQuoteSchema),
+  async (c) => {
+    const { token } = c.req.valid('param');
+    const { reason } = c.req.valid('json');
+    if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
+    const now = new Date();
+    const resolved = await resolve(c, token, now);
+    if (!resolved.ok) return resolved.response;
+    const { claims, orgIds, request } = resolved.link;
+
+    let result: Awaited<ReturnType<typeof declineAgreementRequest>>;
+    try {
+      result = await runOutsideDbContext(() => withSystemDbAccessContext(() => declineAgreementRequest({
+        claims, allowedOrgIds: orgIds, reason: reason ?? null, now,
+      })));
+    } catch (err) {
+      return respondError(c, err, claims, request);
+    }
+
+    await revokePostCommit(result.revoke);
+    fireAndForget('outcome notify', () => notifyAgreementOutcome({
+      requestId: result.requestId, outcome: 'declined', source: 'customer',
+    }));
+    // W3b: emit agreement.declined on the events bus here.
+    return c.json({ data: { status: 'declined' as const } });
+  },
+);

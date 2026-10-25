@@ -152,3 +152,15 @@ export const listAgreementRequestsQuerySchema = z.object({
 });
 
 export type ListAgreementRequestsQuery = z.infer<typeof listAgreementRequestsQuerySchema>;
+
+/** POST /agreements/public/:token/accept (#9075 W2b). The signer email is
+ *  REQUIRED here (spec §3.2): the link is shared by every recipient, so the
+ *  typed address is the only way to know where the signed copy goes. Spec §5's
+ *  "acceptQuoteSchema reused (signerEmail optional)" is superseded by §3.2.
+ *  Decline reuses declineQuoteSchema. */
+export const acceptPublicAgreementSchema = z.object({
+  signerName: z.string().trim().min(1).max(200),
+  signerEmail: recipientEmail,
+});
+
+export type AcceptPublicAgreementInput = z.infer<typeof acceptPublicAgreementSchema>;
