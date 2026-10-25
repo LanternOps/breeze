@@ -23,8 +23,8 @@ import { RECIPE_GATE_CLASSES, STEP_KINDS, TARGET_KINDS } from './types';
 import { AI_OPERATOR_TASK_PHASES } from '../../../db/schema/aiOperatorTasks';
 
 describe('RECIPES registry', () => {
-  it('contains exactly the released recipes: identity_offboarding (R1a) and service_recovery', () => {
-    expect(RECIPE_KEYS).toEqual(['identity_offboarding', 'service_recovery']);
+  it('contains exactly the released recipes: identity_offboarding (R1a), identity_onboarding (R2a) and service_recovery', () => {
+    expect(RECIPE_KEYS).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
   });
 
   it('every map key equals its recipe own key, so a lookup can never return a different recipe', () => {
@@ -253,9 +253,11 @@ describe('recipeDataProblems — planningSnapshotStepFor (R2a Task 3a, B2)', () 
     expect(problems).toEqual([expect.stringContaining("planningSnapshotStepKey 'discover' is not one of planningSnapshotStepFor's values")]);
   });
 
-  it('PIN: neither registered recipe declares the map (absent ⇒ today\'s single-snapshot path)', () => {
-    for (const recipe of Object.values(RECIPES)) {
-      expect(Object.hasOwn(recipe as object, 'planningSnapshotStepFor')).toBe(false);
+  it('PIN: neither single-snapshot recipe declares the map (absent ⇒ today\'s single-snapshot path)', () => {
+    // identity_onboarding (R2a Task 3) is the one recipe that declares it.
+    for (const key of ['service_recovery', 'identity_offboarding']) {
+      expect(Object.hasOwn(RECIPES[key] as object, 'planningSnapshotStepFor'), key).toBe(false);
     }
+    expect(Object.hasOwn(RECIPES.identity_onboarding as object, 'planningSnapshotStepFor')).toBe(true);
   });
 });

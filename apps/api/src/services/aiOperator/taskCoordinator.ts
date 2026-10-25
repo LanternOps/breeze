@@ -66,6 +66,7 @@ import { publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import {
   isIdentityOffboardingCheckpoint,
+  isIdentityOnboardingCheckpoint,
   isServiceRecoveryCheckpoint,
   serviceRecoveryCheckpointSchema,
   type ServiceRecoveryCheckpoint,
@@ -73,6 +74,7 @@ import {
 } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
 import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_ONBOARDING_WORKFLOW_KEY } from './recipes/identityOnboarding';
 import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
@@ -735,6 +737,7 @@ function withServiceRecoveryCheckpoint(
 export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
   [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
   [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: isIdentityOffboardingCheckpoint,
+  [IDENTITY_ONBOARDING_WORKFLOW_KEY]: isIdentityOnboardingCheckpoint,
 });
 
 /**

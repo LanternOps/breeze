@@ -737,6 +737,7 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     const json = await res.json() as { code: string; supportedRecipeKeys: string[]; error: string };
     expect(json.code).toBe('OPERATOR_UNKNOWN_RECIPE');
     expect(json.supportedRecipeKeys).toContain('service_recovery');
+    expect(json.supportedRecipeKeys).toContain('identity_onboarding');
     expect(json.error).toContain('no_such_recipe');
     expect(admitMock).not.toHaveBeenCalled();
   });
