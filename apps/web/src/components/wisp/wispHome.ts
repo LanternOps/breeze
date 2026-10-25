@@ -27,7 +27,8 @@ export async function fetchWispHome(): Promise<HomeLoad> {
   const body = (await res.json().catch(() => null)) as { code?: unknown; data?: WispHomePayload } | null;
   if (res.status === 404 && body?.code === 'no_grant') return { kind: 'noGrant' };
   if (res.status === 403 && body?.code === 'entitlement_required') return { kind: 'locked' };
-  if (res.status === 403) return { kind: 'forbidden' };
+  // A JSON permission refusal only: a non-JSON 403 (proxy/WAF) or MFA_REQUIRED stays a load error with retry.
+  if (res.status === 403 && body && body.code !== 'MFA_REQUIRED') return { kind: 'forbidden' };
   if (!res.ok) throw new Error(`wisp home read failed: ${res.status}`);
   // The home payload is a superset of GET /wisp/thread/:id, so the panel's
   // parser applies as-is.

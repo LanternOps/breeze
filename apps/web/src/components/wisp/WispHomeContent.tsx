@@ -67,7 +67,12 @@ export default function WispHomeContent() {
       if (token !== loadToken.current) return;
       failedPolls.current = 0;
       if (home.kind === 'locked') { setView({ kind: 'locked' }); return; }
-      if (home.kind === 'forbidden') { setView({ kind: 'forbidden' }); return; }
+      if (home.kind === 'forbidden') {
+        // A 403 on a background poll must not tear down a working page: treat it as a failed poll.
+        if (silent && viewRef.current.kind === 'ready') throw new Error('wisp home poll refused (403)');
+        setView({ kind: 'forbidden' });
+        return;
+      }
       if (home.kind === 'noGrant') {
         // A missing switch read must not hide the start card: the grant route refuses PARTNER_DISABLED itself.
         const partnerEnabled = await fetchWispPartnerEnabled().catch((err: unknown) => {
