@@ -11,6 +11,8 @@ import { BODY_PARA, MUTED_PARA, getEmailService, type EmailTemplate } from './em
 import { escapeHtml, renderLayout } from './emailLayout';
 import { sanitizeAttachmentFilename } from './attachmentFilename';
 import { captureException } from './sentry';
+import { loadCertifiedAgreementInput, renderCertifiedAgreementPdf } from './agreementCertificate';
+import { PdfMergeError } from './pdfMerge';
 
 /**
  * "Your signed copy" (#9075 W2b, spec §3.6): after a client signs an agreement
@@ -19,10 +21,11 @@ import { captureException } from './sentry';
  * agreement by email. No portal account is needed and the signing link is
  * already spent, so the attachment IS the delivery.
  *
- * INTERIM until W2c: the attachment is the ORIGINAL frozen bytes
- * (contract_documents.pdf_data). W2c swaps loadSignedCopyAttachment — the ONE
- * seam — to the certified copy (renderCertifiedAgreementPdf) with its
- * PdfMergeError → original fallback.
+ * The attachment is the CERTIFIED copy (#9075 W2c, spec §3.8): the frozen
+ * agreement plus its signature certificate page, rendered on demand by
+ * renderCertifiedAgreementPdf through the ONE seam, loadSignedCopyAttachment.
+ * If the certificate cannot be rendered the original frozen bytes go instead —
+ * delivery never blocks on the certificate.
  *
  * Built with renderLayout (not partner-editable), like quoteOnBehalfNotify.
  * Post-commit, fire-and-forget: never throws; the outcome is returned for
@@ -46,32 +49,41 @@ export interface SignedCopyAttachment {
 }
 
 /**
- * THE attachment seam (W2c replaces its body with the certified copy). Reads
- * the signed agreement's stored bytes under system scope; the filename is
- * derived from the stored MIME and sanitized. Null when the row is gone.
+ * THE attachment seam: the certified copy of the signed agreement, read under
+ * system scope (loadCertifiedAgreementInput). Null when the row is gone.
+ *
+ * Fallback (spec §3.8): when the certificate cannot be rendered, the ORIGINAL
+ * stored bytes are attached under their stored MIME — warned for a
+ * PdfMergeError (an unreadable/oversized original), an error for anything else
+ * (a bug), captured either way. A load failure still throws to the caller,
+ * which sends the mail without an attachment.
  */
 export async function loadSignedCopyAttachment(documentId: string): Promise<SignedCopyAttachment | null> {
-  const [doc] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db
-      .select({
-        pdfData: contractDocuments.pdfData,
-        mime: contractDocuments.mime,
-        templateName: contractTemplates.name,
-        label: agreementRequests.label,
-      })
-      .from(contractDocuments)
-      .leftJoin(contractTemplates, eq(contractTemplates.id, contractDocuments.templateId))
-      .leftJoin(agreementRequests, eq(agreementRequests.id, contractDocuments.agreementRequestId))
-      .where(eq(contractDocuments.id, documentId))
-      .limit(1)));
-  if (!doc) return null;
-  const base = doc.label?.trim() || doc.templateName?.trim() || 'Agreement';
-  const ext = EXTENSION_BY_MIME[doc.mime] ?? 'pdf';
-  return {
-    filename: sanitizeAttachmentFilename(`${base} (signed).${ext}`),
-    content: Buffer.from(doc.pdfData),
-    contentType: doc.mime,
-  };
+  const input = await loadCertifiedAgreementInput(documentId);
+  if (!input) return null;
+  const base = input.agreement.name.trim() || 'Agreement';
+  try {
+    const pdf = await renderCertifiedAgreementPdf(input);
+    return {
+      filename: sanitizeAttachmentFilename(`${base} (signed).pdf`),
+      content: pdf,
+      contentType: 'application/pdf',
+    };
+  } catch (err) {
+    const detail = { documentId, err: err instanceof Error ? err.message : String(err) };
+    if (err instanceof PdfMergeError) {
+      console.warn('[agreementSignedCopyEmail] certified copy unavailable — attaching the original', detail);
+    } else {
+      console.error('[agreementSignedCopyEmail] certified copy render failed — attaching the original', detail);
+    }
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    const ext = EXTENSION_BY_MIME[input.document.mime] ?? 'pdf';
+    return {
+      filename: sanitizeAttachmentFilename(`${base} (signed).${ext}`),
+      content: Buffer.from(input.document.pdfData),
+      contentType: input.document.mime,
+    };
+  }
 }
 
 export type SignedCopyOutcome =
