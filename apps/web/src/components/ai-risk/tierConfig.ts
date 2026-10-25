@@ -96,6 +96,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
       { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
+      { name: 'ioc_hunt (list_rule_sets/preview_sweep/list_sweeps/sweep_status)', description: 'Detection rule sets, IOC sweep preview, list and status', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
@@ -288,6 +289,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Fleet Operations
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
+      { name: 'ioc_hunt (cancel_sweep)', description: 'Cancel an IOC sweep', category: 'Security & Compliance' },
       { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
@@ -305,6 +307,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'snooze_concern', description: 'Snooze a Wisp concern for up to 30 days', category: 'AI Governance' },
       { name: 'resolve_concern', description: 'Resolve a Wisp concern and remember the outcome', category: 'AI Governance' },
       { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
+      // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
+      { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
     ],
   },
   {
@@ -335,6 +339,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       // Security & Compliance
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
+      { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
@@ -385,6 +390,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
       { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      // Wisp specialists (W07a #9913): every other kind asks first; an assessment's
+      // request for one becomes the wisp_specialist_request approval card.
+      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an Operator task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
+      { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
       { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
@@ -441,6 +450,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   // Security & Compliance
   { toolName: 'security_scan', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'ioc_hunt', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   // Files, Disk & Registry
   { toolName: 'file_operations', tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'analyze_disk_usage', tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
@@ -540,6 +550,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'create_watch', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'snooze_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
+  { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -607,6 +619,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   manage_scheduled_tasks: { list: 'devices.execute', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
+  ioc_hunt: { list_rule_sets: 'devices.read', preview_sweep: 'devices.read', list_sweeps: 'devices.read', sweep_status: 'devices.read', sweep: 'devices.execute', cancel_sweep: 'devices.execute', import_iocs: 'devices.write' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
   // Tool Catalog W03 (#5218)
@@ -785,6 +798,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   snooze_concern: 'ai_sessions.use',
   resolve_concern: 'ai_sessions.use',
   create_watch: 'ai_sessions.use',
+  // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
+  launch_specialist: 'ai_sessions.use',
+  wisp_specialist_request: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',
     generate: 'reports.export',

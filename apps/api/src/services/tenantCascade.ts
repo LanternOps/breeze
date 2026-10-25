@@ -924,6 +924,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',
+  'security_scan_sweeps',
   'security_scans',
   'security_status',
   'security_threats',
@@ -1485,6 +1486,11 @@ export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
   // grants, CASCADE) is the real ownership, so the partner-axis sweep deletes
   // revisions first and the grant's pointer falls to NULL.
   'wisp_grants_current_revision_fk',
+  // Wisp W07: ai_operator_tasks.requested_by_run_id -> ai_agent_runs is ON
+  // DELETE SET NULL (requested_by_run_id) — a lineage back-pointer. The
+  // reverse edge (ai_agent_runs.task_id -> ai_operator_tasks) is the real
+  // ordering, so runs go first and a specialist task's pointer falls to NULL.
+  'ai_operator_tasks_requested_by_run_fk',
 ]);
 
 /**

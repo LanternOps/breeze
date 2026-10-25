@@ -441,6 +441,27 @@ describe('maybeDispatchEditionMigration', () => {
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
+  // #8318 §6.4 (review of wave 1b-1): the release is bound to the agent_id the
+  // claim was taken under. A reattach or an in-place re-enroll in between
+  // makes it a 0-row no-op; that is said, not swallowed.
+  it('warns when the claim release matches no row because the device changed hands since the claim', async () => {
+    const claim = primeHappyPath();
+    claim.returning.mockResolvedValueOnce([{ id: 'device-1' }]).mockResolvedValueOnce([]);
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'insert_failed',
+      error: 'Failed to create command',
+    } as never);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(claim.set).toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+    const releaseWarnings = warnSpy.mock.calls.filter((call) => String(call[0]).includes('claim release for device device-1 matched no row'));
+    expect(releaseWarnings).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
   /**
    * #4919 — dispatch now refuses a device inside a maintenance window that
    * suppresses scripts. The migration IS this device's update, so deferring is

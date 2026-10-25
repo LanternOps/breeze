@@ -134,5 +134,298 @@
     "confirmLabel": "Devret",
     "queued": "Görev Operatöre devredildi.",
     "failed": "Görev Operatöre devredilemedi."
+  },
+  "nav": {
+    "operator": "Operatör"
+  },
+  "effectTool": {
+    "googleSetVacation": "Gmail otomatik yanıtını ayarla",
+    "googleSetForwarding": "Gmail'i devralan kişiye yönlendir",
+    "googleAddMailDelegate": "Devralan kişiye Gmail posta kutusuna erişim ver",
+    "googleRemoveFromGroup": "Google gruplarından çıkar",
+    "googleRemoveLicense": "Google Workspace lisanslarını kaldır",
+    "googleAccountWipeMobileDevice": "İş hesabını kayıtlı telefonlardan kaldır",
+    "googleSignout": "Google oturumlarını kapat",
+    "googleSuspendUser": "Google hesabını askıya al",
+    "m365SetAutoReply": "Outlook otomatik yanıtını ayarla",
+    "m365RemoveFromGroup": "Microsoft 365 gruplarından çıkar",
+    "m365RemoveLicense": "Microsoft 365 lisanslarını kaldır",
+    "m365RetireIntuneDevice": "Intune ile yönetilen telefonları devre dışı bırak",
+    "m365RevokeSessions": "Microsoft 365 oturum açma oturumlarını iptal et",
+    "m365DisableUser": "Microsoft 365 oturum açmayı engelle"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Operatör bölümleri",
+      "tasks": "Görevler",
+      "library": "Kitaplık"
+    },
+    "noOrg": "Hangi tarifleri çalıştırabileceğini görmek için bir kuruluş seçin."
+  },
+  "taskList": {
+    "loading": "Görevler yükleniyor...",
+    "loadFailed": "Görevler yüklenemedi.",
+    "empty": "Henüz Operatör görevi yok.",
+    "emptyHint": "Kitaplıktan, bir talepten, bir kişiden veya bir uyarıdan başlattığınız görevler burada görünür.",
+    "loadMore": "Daha fazla yükle",
+    "loadMoreFailed": "Daha fazla görev yüklenemedi."
+  },
+  "recipeLibrary": {
+    "loading": "Tarifler yükleniyor...",
+    "loadFailed": "Tarif kitaplığı yüklenemedi.",
+    "empty": "Bu kuruluş için henüz kullanılabilir tarif yok.",
+    "readiness": {
+      "ready": "Hazır",
+      "setupRequired": "Kurulum gerekli",
+      "unavailable": "Kullanılamıyor"
+    },
+    "setupBlock": {
+      "title": "Kurulum gerekli",
+      "description": "Bunlar tamamlanana kadar ilgili adımlar elle yapılır."
+    },
+    "manualSteps": {
+      "count_one": "1 adım elle yapılacak",
+      "count_other": "{{count}} adım elle yapılacak",
+      "expand": "Hangi adımlar olduğunu gör",
+      "collapse": "Bu adımları gizle",
+      "explainer": "Breeze bu adımları henüz otomatikleştirmiyor. Görev bunları talebe kontrol listesi öğesi olarak ekleyecek."
+    },
+    "degraded": {
+      "title": "Elle yapılacak işler",
+      "description": "Bu kuruluş için bu adımlar, otomatik çalışmak yerine görevin talebinde kontrol listesi öğelerine dönüşür."
+    },
+    "action": {
+      "reconsentM365": "Güncellenmiş Microsoft 365 izinlerini bu kuruluşun entegrasyon ayarlarından verin.",
+      "connectGoogle": "Google Workspace'i bu kuruluşa entegrasyonlarından bağlayın.",
+      "connectM365": "Microsoft 365'i bu kuruluşa entegrasyonlarından bağlayın.",
+      "open": "Aç",
+      "allowTools_one": "{{agent}} için {{count}} araca izin ver",
+      "allowTools_other": "{{agent}} için {{count}} araca izin ver",
+      "allowToolsScope": "Bu, {{agent}} aracısını yalnızca bu tarif için değil, kullanıldığı her yerde değiştirir.",
+      "allowToolsScopeAllOrgs": "Bu, {{agent}} aracısını yalnızca bu tarif için değil, kullanıldığı her yerde ve hizmet verdiği tüm kuruluşlarda değiştirir.",
+      "allowToolsList": "İzin verilecek araçlar:",
+      "agentFallback": "yardım masası aracısı",
+      "allowToolsSuccess": "{{agent}} için araçlara izin verildi.",
+      "allowToolsFailed": "Araçlara izin verilemedi.",
+      "mfaRequired": "Bir aracının araçlarını değiştirmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Oturumu kapatın, MFA ile yeniden oturum açın ve tekrar deneyin.",
+      "allowlistFull": "Bu aracının araç listesi dolu ({{limit}} araç). Artık gerekmeyen araçları Ayarlar → Yapay Zeka Aracıları bölümünden kaldırıp tekrar deneyin.",
+      "allowToolsScopeUnknown": "Breeze bu aracının kapsamını okuyamadı; değişikliğin hizmet verdiği her kuruluşta geçerli olduğunu varsayın."
+    },
+    "start": {
+      "offboard": "Bir kişinin ayrılış işlemlerini yap",
+      "notEnabled": "Bu tarif bu dağıtım için etkin değil.",
+      "fromDeviceOrAlert": "Bu tarifi bir cihazdan veya bir uyarıdan başlatın."
+    },
+    "recipe": {
+      "identityOffboardingName": "Bir kişinin ayrılış işlemlerini yap",
+      "identityOffboardingSummary": "Kimin ayrıldığını doğrulayın, e-postalarını yönlendirin ve Microsoft 365 ile Google Workspace'teki erişimini güvenli bir sırayla, tek bir onayla kaldırın. Elle yapılan işler talepte izlenir.",
+      "serviceRecoveryName": "Durmuş bir hizmeti geri getir",
+      "serviceRecoverySummary": "Durmuş bir Windows hizmetini inceleyin, onayla yeniden başlatın ve çalışmaya devam ettiğini doğrulayın."
+    },
+    "refreshFailed": "Tarif kitaplığı yenilenemedi; gösterilen bilgiler güncel olmayabilir."
+  },
+  "startRecipe": {
+    "title": "Bir kişinin ayrılış işlemlerini yap",
+    "close": "Kapat",
+    "person": {
+      "label": "Ayrılan kişi",
+      "hintLabel": "Ad veya e-posta",
+      "hintPlaceholder": "ör. Dana Yılmaz veya dana@example.com",
+      "contactChosen": "Kişi: {{name}}",
+      "useHint": "Bunun yerine ad veya e-posta kullan",
+      "readOnly": "Bu kişiden başlatıldı."
+    },
+    "inheritor": {
+      "label": "E-postalarını kim devralır",
+      "none": "Hiç kimse",
+      "contact": "Bir kişi",
+      "address": "Bir e-posta adresi",
+      "pickContact": "Bir kişi seçin",
+      "addressPlaceholder": "ad@example.com",
+      "contactsFailed": "Kişiler yüklenemedi.",
+      "loadMore": "Daha fazla kişi yükle"
+    },
+    "autoReply": {
+      "label": "Otomatik yanıt iletisi",
+      "defaultWithInheritor": "E-postanız için teşekkürler. {{person}} artık şirketle çalışmıyor. Yardım için lütfen {{inheritor}} ile iletişime geçin.",
+      "defaultNoInheritor": "E-postanız için teşekkürler. {{person}} artık şirketle çalışmıyor ve bu posta kutusu artık izlenmiyor.",
+      "thePerson": "Bu kişi"
+    },
+    "cutoff": {
+      "label": "Son gün (kesim zamanı)",
+      "now": "Boş bırakılırsa hemen başlar: onaylanan adımlar plan onaylanır onaylanmaz çalışır.",
+      "scheduled": "Onaylanan adımlar çalışmadan önce bu zamana kadar bekler."
+    },
+    "keepMailbox": {
+      "label": "Posta kutusunu koru",
+      "help": "Breeze, Microsoft 365 lisansını yerinde bırakır ve posta kutusunu paylaşılan posta kutusuna dönüştürmek için elle yapılacak bir adım ekler. Lisans önce kaldırılırsa posta kutusunun 30 günlük silinme süresi başlar."
+    },
+    "effects": {
+      "label": "Yapılacaklar",
+      "autoReply": "Otomatik yanıt ayarla",
+      "autoReplyHelp": "Yeni e-postaları yukarıdaki iletiyle yanıtlar.",
+      "forwarding": "E-postaları yönlendir",
+      "forwardingHelp": "Yeni e-postaları devralan kişiye yönlendirir.",
+      "mailDelegate": "Devralan kişiye posta kutusu erişimi ver",
+      "mailDelegateHelp": "Devralan kişinin posta kutusunun tamamını okumasına izin verir. Bunu bilinçli olarak seçin.",
+      "removeGroups": "Gruplardan çıkar",
+      "removeGroupsHelp": "Kişiyi gruplardan ve dağıtım listelerinden çıkarır.",
+      "removeLicenses": "Lisansları kaldır",
+      "removeLicensesHelp": "E-postalar ele alındıktan sonra ücretli lisansları serbest bırakır.",
+      "revokeSessions": "Her yerden çıkış yaptır",
+      "revokeSessionsHelp": "Kişinin etkin oturum açma oturumlarını sonlandırır.",
+      "wipeMobile": "İş hesabını telefonlardan kaldır",
+      "wipeMobileHelp": "İş hesabını kayıtlı telefonlardan kaldırır. Cihazın kendisi silinmez.",
+      "disableAccount": "Oturum açmayı engelle",
+      "disableAccountHelp": "Hesabı devre dışı bırakır. Bu adım e-postalar yönlendirildikten sonra, en son gelir."
+    },
+    "devices": {
+      "label": "Teslim alınacak veya kilitlenecek cihazlar",
+      "help": "İsteğe bağlı. Breeze bu tarifte cihazlar üzerinde işlem yapmaz: seçtiğiniz her cihaz bir teknisyen için kontrol listesi öğesi olur.",
+      "searchPlaceholder": "Cihazları ada göre ara",
+      "selectedByYou": "Sizin seçtikleriniz",
+      "limit": "En fazla {{max}} cihaz seçebilirsiniz.",
+      "loading": "Cihazlar yükleniyor...",
+      "loadFailed": "Cihazlar yüklenemedi.",
+      "empty": "Eşleşen cihaz yok.",
+      "selectedTitle": "Seçilen: {{count}} / {{max}}",
+      "remove": "Kaldır"
+    },
+    "preview": {
+      "button": "Önizleme",
+      "refresh": "Önizlemeyi yenile",
+      "stale": "Form önizlemeden sonra değişti. Başlatmadan önce önizlemeyi yenileyin.",
+      "failed": "Önizleme oluşturulamadı.",
+      "title": "Önizleme",
+      "personResolved": "Ayrılış işlemleri yapılacak kişi: {{name}}",
+      "personUnresolved": "Tek bir kişi eşleşmiyor. Aşağıdan birini seçin veya adı değiştirin.",
+      "personNone": "Bu ad veya e-postayla eşleşen kişi yok.",
+      "candidatesLabel": "Olası eşleşmeler (birini seçin):",
+      "plannedTitle": "Breeze'in çalıştıracağı adımlar",
+      "orderNote": "Hizmete göre gruplandırılmıştır, sıralı değildir. Kesin sıra, bir teknisyen kimliği doğruladıktan sonra belirlenir ve herhangi bir şey çalışmadan önce onay için gösterilir.",
+      "plannedEmpty": "Otomatik çalışacak adım yok.",
+      "degradedTitle": "Elle yapılacak adımlar",
+      "manualTitle": "Görevin ekleyeceği kontrol listesi öğeleri",
+      "ticketNote": "Görev, bu kontrol listesi öğeleri için kendi talebini açar.",
+      "ticketSourceNote": "Bir talepten başlatıldı: görev kendi kontrol listesi talebini açar ve bunu değiştirmez."
+    },
+    "submit": "Ayrılış işlemlerini başlat",
+    "started": "Ayrılış işlemleri başlatıldı.",
+    "failed": "Ayrılış işlemleri başlatılamadı.",
+    "duplicate": "Bu kişi için zaten devam eden bir ayrılış işlemi var.",
+    "duplicateLink": "Çalışan görevi aç",
+    "replayed": "Bu ayrılış işlemleri zaten başlatılmıştı; açılıyor."
+  },
+  "taskPanels": {
+    "tabsLabel": "Görev görünümleri",
+    "tabs": {
+      "steps": "Adımlar",
+      "plan": "Uygulama planı",
+      "events": "Zaman çizelgesi"
+    },
+    "steps": {
+      "empty": "Henüz başlayan adım yok.",
+      "current": "Geçerli adım",
+      "started": "Başlangıç {{time}}",
+      "settled": "Bitiş {{time}}",
+      "waitingApproval": "Planın onaylanması bekleniyor.",
+      "waitingMaintenanceWindow": "Sonraki değişiklik çalışmadan önce bakım penceresi bekleniyor.",
+      "waitingExecution": "Çalışıyor: geçerli değişikliğin bitmesi bekleniyor.",
+      "waitingOther": "Bekliyor: {{reason}}.",
+      "waitingHumanWork": "Bir teknisyenin talepteki kontrol listesi öğesini işaretlemesi bekleniyor.",
+      "openTicket": "Kontrol listesi talebini aç",
+      "stepKey": {
+        "intake": "Talebi anla",
+        "confirmIdentity": "Kimin ayrıldığını doğrula",
+        "discover": "Hesaplarını bul",
+        "review": "Bulunanları gözden geçir",
+        "effects": "Onayla ve değişiklikleri yap",
+        "manualWork": "Kontrol listesi işi",
+        "verifyOutcome": "Sonucu doğrula",
+        "document": "Kaydı yaz"
+      },
+      "kind": {
+        "reason": "Akıl yürütme",
+        "effect": "Değişiklikler",
+        "probe": "Denetim",
+        "wait": "Bekleme",
+        "humanWork": "İnsan işi",
+        "document": "Kayıt"
+      },
+      "state": {
+        "pending": "Başlamadı",
+        "running": "Çalışıyor",
+        "waiting": "Bekliyor",
+        "succeeded": "Bitti",
+        "failed": "Başarısız",
+        "skipped": "Atlandı"
+      }
+    },
+    "plan": {
+      "unavailable": "Bu sunucu, bu görevin planını göndermedi.",
+      "empty": "Henüz bir plan önerilmedi.",
+      "revision": "Düzenleme {{n}}",
+      "effectCount_one": "{{count}} değişiklik",
+      "effectCount_other": "{{count}} değişiklik",
+      "approvedAt": "Onay zamanı {{time}}",
+      "proposedAt": "Öneri zamanı {{time}}",
+      "supersededBy": "{{n}}. düzenleme ile değiştirildi. Neyin onaylanıp sonra değiştirildiğinin kaydı olarak burada tutulur.",
+      "orderNote": "Değişiklikler hizmetler arasında numaralı sırayla, tek tek çalışır.",
+      "target": "Hedef: {{label}}",
+      "principal": "Hesap: {{label}}",
+      "noop": "Zaten uygulanmış: hiçbir şey gönderilmedi.",
+      "state": {
+        "pending": "Onay bekliyor",
+        "approved": "Onaylandı",
+        "rejected": "Reddedildi",
+        "expired": "Süresi doldu",
+        "superseded": "Değiştirildi"
+      },
+      "idempotency": {
+        "idempotent": "Tekrarlamak güvenli",
+        "idempotentByProbe": "Tekrarlanmadan önce denetlenir",
+        "nonIdempotent": "Otomatik olarak asla tekrarlanmaz"
+      },
+      "operation": {
+        "none": "Başlamadı / bilinmiyor",
+        "pending": "Sürüyor",
+        "succeeded": "Başarılı",
+        "failed": "Başarısız",
+        "unknown": "Sonuç bilinmiyor",
+        "superseded": "Değiştirildi"
+      }
+    },
+    "events": {
+      "empty": "Henüz kaydedilmiş olay yok.",
+      "showAll": "{{count}} olayın tümünü göster",
+      "showRecent": "Yalnızca en son {{count}} olayı göster",
+      "hiddenOlder_one": "{{count}} eski olay gizli.",
+      "hiddenOlder_other": "{{count}} eski olay gizli.",
+      "capped": "En son {{count}} olay gösteriliyor. Daha eski olaylar burada gösterilmez.",
+      "actor": {
+        "coordinator": "Koordinatör",
+        "reconciler": "Uzlaştırıcı",
+        "user": "Kişi",
+        "agent": "Yapay zeka aracısı",
+        "system": "Sistem"
+      },
+      "type": {
+        "taskAdmitted": "Görev kabul edildi",
+        "leaseClaimed": "İş üstlenildi",
+        "stepOpened": "Adım başladı",
+        "stepSettled": "Adım bitti",
+        "waitEntered": "Bekliyor",
+        "waitResolved": "Bekleme bitti",
+        "targetAttached": "Hedef eklendi",
+        "targetDetached": "Hedef ayrıldı",
+        "targetAccountFrozen": "Hesap kaydedildi",
+        "operationReserved": "Değişiklik ayrıldı",
+        "operationSettled": "Değişiklik bitti",
+        "verificationRecorded": "Doğrulama kaydedildi",
+        "planRevisionBumped": "Plan düzenlemesi değişti",
+        "humanWorkUnticked": "Kontrol listesi öğesinin işareti kaldırıldı",
+        "taskSettled": "Görev bitti"
+      }
+    }
   }
 }

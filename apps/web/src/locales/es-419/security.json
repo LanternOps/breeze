@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Agregar integración",
       "syncNow": "Sincronizar ahora",
-      "deleteIntegration": "Eliminar integración"
+      "deleteIntegration": "Eliminar integración",
+      "editRetention": "Cambiar el período de retención"
     },
     "messages": {
       "loadHttpError": "No se pudieron cargar las integraciones (HTTP {{status}})",
       "loadFailed": "No se pudieron cargar las integraciones",
       "syncFailed": "No se pudo activar la sincronización para {{name}}",
       "syncQueued": "Sincronización en cola para {{name}}",
-      "deleteConfirm": "¿Eliminar {{name}}? Los eventos almacenados se conservan según la política de retención.",
+      "deleteConfirm": "¿Eliminar {{name}}? Sus políticas, eventos y estadísticas se eliminan en segundo plano.",
       "deleteFailed": "No se pudo eliminar {{name}}",
-      "deleteSuccess": "Eliminado {{name}}"
+      "deleteSuccess": "Eliminando {{name}} en segundo plano"
     },
     "loading": "Cargando integraciones…",
     "empty": {
@@ -1750,7 +1751,25 @@
       "actions": "Acciones"
     },
     "lastSyncFailedSuffix": "- fallido",
-    "never": "Nunca"
+    "lastSyncPartialSuffix": " - poniéndose al día",
+    "never": "Nunca",
+    "deletingInBackground": "Eliminando…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Retención de datos",
+    "description": "Los eventos y las estadísticas diarias más antiguos se eliminan en la limpieza nocturna de retención.",
+    "fieldLabel": "Conservar eventos y estadísticas de DNS durante (días)",
+    "fieldHelp": "De 1 a 365 días. Déjalo vacío para usar el valor predeterminado de la instalación (90 días, salvo que tu administrador lo haya cambiado).",
+    "invalid": "Ingresa un número entero de días entre 1 y 365, o déjalo vacío.",
+    "actions": {
+      "dismiss": "Cancelar",
+      "submit": "Guardar",
+      "saving": "Guardando…"
+    },
+    "messages": {
+      "saved": "Retención actualizada para {{name}}",
+      "saveFailed": "No se pudo actualizar la retención de {{name}}"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Bloquear/Permitir políticas",

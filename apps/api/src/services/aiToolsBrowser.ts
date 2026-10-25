@@ -20,23 +20,11 @@ import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { aiDispatchDeviceCommand } from './aiDispatch';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
-import type { ToolExecutionContext } from './toolExecutionContext';
+// #6911: manage_browser_policy:create writes auth.user.id into browser_policies.created_by, a users FK; refused on an approver-release mismatch.
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-/**
- * #6911: `manage_browser_policy:create` is user-owned on release
- * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
- * `auth.user.id` into `browser_policies.created_by`, a `users` FK. Under the
- * rebuilt agent auth that id is an `aiAgents.id`, so refuse rather than write
- * a row whose owner the worker and this handler's auth disagree about.
- * Mirrors `aiToolsFleet.ts`'s `approverReleaseMismatch` and
- * `aiToolsAlerts.ts`'s copy of the same guard.
- */
-function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
-  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
-}
 
 
 // A site-restricted caller may only mutate policies that target sites entirely

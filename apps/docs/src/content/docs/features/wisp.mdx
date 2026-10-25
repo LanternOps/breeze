@@ -97,4 +97,8 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 
 The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
 
+`launch_specialist` itself runs only `sweep` and `analysis` on the call. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
+
+Two refusals are user-visible. `bulk_reply_incomplete` means a bulk reply stopped part-way; what was sent and what was not is stored on the intent. `uncertain` means Wisp could not tell whether the work had taken effect, so it did not retry.
+
 Work started this way is labeled **Wisp for** followed by the person's name on the agent run and the Operator task detail pages, so the audit trail shows who it was done for. Platform admins also have an `/admin/wisp` page with fleet-level health and counts.

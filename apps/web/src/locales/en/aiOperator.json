@@ -134,5 +134,298 @@
     "confirmLabel": "Delegate",
     "queued": "Task delegated to the Operator.",
     "failed": "Failed to delegate to the Operator."
+  },
+  "nav": {
+    "operator": "Operator"
+  },
+  "effectTool": {
+    "googleSetVacation": "Set the Gmail auto-reply",
+    "googleSetForwarding": "Forward Gmail to the inheritor",
+    "googleAddMailDelegate": "Give the inheritor access to the Gmail mailbox",
+    "googleRemoveFromGroup": "Remove from Google groups",
+    "googleRemoveLicense": "Remove Google Workspace licences",
+    "googleAccountWipeMobileDevice": "Remove the work account from enrolled phones",
+    "googleSignout": "Sign out of Google sessions",
+    "googleSuspendUser": "Suspend the Google account",
+    "m365SetAutoReply": "Set the Outlook auto-reply",
+    "m365RemoveFromGroup": "Remove from Microsoft 365 groups",
+    "m365RemoveLicense": "Remove Microsoft 365 licences",
+    "m365RetireIntuneDevice": "Retire Intune-managed phones",
+    "m365RevokeSessions": "Revoke Microsoft 365 sign-in sessions",
+    "m365DisableUser": "Block Microsoft 365 sign-in"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Operator sections",
+      "tasks": "Tasks",
+      "library": "Library"
+    },
+    "noOrg": "Select an organization to see which recipes it can run."
+  },
+  "taskList": {
+    "loading": "Loading tasks...",
+    "loadFailed": "Tasks failed to load.",
+    "empty": "No Operator tasks yet.",
+    "emptyHint": "Tasks you start from the Library, a ticket, a contact or an alert appear here.",
+    "loadMore": "Load more",
+    "loadMoreFailed": "More tasks failed to load."
+  },
+  "recipeLibrary": {
+    "loading": "Loading recipes...",
+    "loadFailed": "The recipe library failed to load.",
+    "empty": "No recipes are available for this organization yet.",
+    "readiness": {
+      "ready": "Ready",
+      "setupRequired": "Setup required",
+      "unavailable": "Not available"
+    },
+    "setupBlock": {
+      "title": "Setup required",
+      "description": "Until these are fixed, the steps behind them are done by hand."
+    },
+    "manualSteps": {
+      "count_one": "1 step will be done by hand",
+      "count_other": "{{count}} steps will be done by hand",
+      "expand": "See which steps",
+      "collapse": "Hide these steps",
+      "explainer": "Breeze does not automate these yet. The task will add them to the ticket as checklist items."
+    },
+    "degraded": {
+      "title": "What will be done by hand",
+      "description": "For this organization, these steps become checklist items on the task's ticket instead of running automatically."
+    },
+    "action": {
+      "reconsentM365": "Grant the updated Microsoft 365 permissions in this organization's integration settings.",
+      "connectGoogle": "Connect Google Workspace for this organization from its integrations.",
+      "connectM365": "Connect Microsoft 365 for this organization from its integrations.",
+      "open": "Open",
+      "allowTools_one": "Allow {{count}} tool for {{agent}}",
+      "allowTools_other": "Allow {{count}} tools for {{agent}}",
+      "allowToolsScope": "This changes {{agent}} everywhere it is used, not only for this recipe.",
+      "allowToolsScopeAllOrgs": "This changes {{agent}} everywhere it is used, in every organization it serves, not only for this recipe.",
+      "allowToolsList": "Tools to allow:",
+      "agentFallback": "the helpdesk agent",
+      "allowToolsSuccess": "Tools allowed for {{agent}}.",
+      "allowToolsFailed": "The tools could not be allowed.",
+      "mfaRequired": "Changing an agent's tools needs a session signed in with multi-factor authentication. Sign out, sign in again with MFA, then retry.",
+      "allowlistFull": "This agent's tool list is full ({{limit}} tools). Remove tools it no longer needs in Settings → AI Agents, then retry.",
+      "allowToolsScopeUnknown": "Breeze could not read this agent's scope, so assume the change applies in every organization it serves."
+    },
+    "start": {
+      "offboard": "Offboard a person",
+      "notEnabled": "This recipe is not enabled for this deployment.",
+      "fromDeviceOrAlert": "Start this recipe from a device or an alert."
+    },
+    "recipe": {
+      "identityOffboardingName": "Offboard a person",
+      "identityOffboardingSummary": "Confirm who is leaving, route their mail, and remove their access across Microsoft 365 and Google Workspace in a safe order with one approval. Hand work is tracked on the ticket.",
+      "serviceRecoveryName": "Restore a stopped service",
+      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
+    },
+    "refreshFailed": "The recipe library could not be refreshed; what is shown may be out of date."
+  },
+  "startRecipe": {
+    "title": "Offboard a person",
+    "close": "Close",
+    "person": {
+      "label": "Person leaving",
+      "hintLabel": "Name or email",
+      "hintPlaceholder": "e.g. Dana Smith or dana@example.com",
+      "contactChosen": "Contact: {{name}}",
+      "useHint": "Use a name or email instead",
+      "readOnly": "Started from this contact."
+    },
+    "inheritor": {
+      "label": "Who inherits their mail",
+      "none": "No one",
+      "contact": "A contact",
+      "address": "An email address",
+      "pickContact": "Choose a contact",
+      "addressPlaceholder": "name@example.com",
+      "contactsFailed": "Contacts failed to load.",
+      "loadMore": "Load more contacts"
+    },
+    "autoReply": {
+      "label": "Auto-reply message",
+      "defaultWithInheritor": "Thank you for your email. {{person}} is no longer with the company. Please contact {{inheritor}} for help.",
+      "defaultNoInheritor": "Thank you for your email. {{person}} is no longer with the company, and this mailbox is no longer monitored.",
+      "thePerson": "This person"
+    },
+    "cutoff": {
+      "label": "Last day (cutoff)",
+      "now": "Empty means start now: approved steps run as soon as the plan is approved.",
+      "scheduled": "Approved steps wait until this time before they run."
+    },
+    "keepMailbox": {
+      "label": "Keep the mailbox",
+      "help": "Breeze will leave the Microsoft 365 licence in place and add a manual step to convert the mailbox to shared. Removing the licence first would start the mailbox's 30-day deletion clock."
+    },
+    "effects": {
+      "label": "What to do",
+      "autoReply": "Set an auto-reply",
+      "autoReplyHelp": "Answers new mail with the message above.",
+      "forwarding": "Forward mail",
+      "forwardingHelp": "Forwards new mail to the inheritor.",
+      "mailDelegate": "Give the inheritor mailbox access",
+      "mailDelegateHelp": "Lets the inheritor read the whole mailbox. Choose this deliberately.",
+      "removeGroups": "Remove from groups",
+      "removeGroupsHelp": "Removes the person from groups and distribution lists.",
+      "removeLicenses": "Remove licences",
+      "removeLicensesHelp": "Frees paid licences once mail is handled.",
+      "revokeSessions": "Sign out everywhere",
+      "revokeSessionsHelp": "Ends the person's active sign-in sessions.",
+      "wipeMobile": "Remove work account from phones",
+      "wipeMobileHelp": "Removes the work account from enrolled phones. The device itself is not erased.",
+      "disableAccount": "Block sign-in",
+      "disableAccountHelp": "Disables the account. This comes last, after mail is routed."
+    },
+    "devices": {
+      "label": "Devices to collect or lock",
+      "help": "Optional. Breeze does not act on devices in this recipe: each device you select becomes a checklist item for a technician.",
+      "searchPlaceholder": "Search devices by name",
+      "selectedByYou": "Selected by you",
+      "limit": "You can select up to {{max}} devices.",
+      "loading": "Loading devices...",
+      "loadFailed": "Devices failed to load.",
+      "empty": "No devices match.",
+      "selectedTitle": "Selected: {{count}} of {{max}}",
+      "remove": "Remove"
+    },
+    "preview": {
+      "button": "Preview",
+      "refresh": "Preview again",
+      "stale": "The form changed since the preview. Preview again before starting.",
+      "failed": "The preview could not be made.",
+      "title": "Preview",
+      "personResolved": "Will offboard: {{name}}",
+      "personUnresolved": "No single contact matches. Choose one below, or change the name.",
+      "personNone": "No contact matches this name or email.",
+      "candidatesLabel": "Possible matches (choose one):",
+      "plannedTitle": "Steps Breeze will run",
+      "orderNote": "Grouped by service, not in order. The exact order is fixed after a technician confirms the identity, and is shown for approval before anything runs.",
+      "plannedEmpty": "No steps will run automatically.",
+      "degradedTitle": "Steps that will be done by hand",
+      "manualTitle": "Checklist items the task will add",
+      "ticketNote": "The task opens its own ticket for these checklist items.",
+      "ticketSourceNote": "Started from a ticket: the task opens its own checklist ticket and does not change this one."
+    },
+    "submit": "Start offboarding",
+    "started": "Offboarding started.",
+    "failed": "The offboarding could not be started.",
+    "duplicate": "An offboarding is already running for this person.",
+    "duplicateLink": "Open the running task",
+    "replayed": "This offboarding had already been started; opening it."
+  },
+  "taskPanels": {
+    "tabsLabel": "Task views",
+    "tabs": {
+      "steps": "Steps",
+      "plan": "Plan",
+      "events": "Timeline"
+    },
+    "steps": {
+      "empty": "No steps have started yet.",
+      "current": "Current step",
+      "started": "Started {{time}}",
+      "settled": "Finished {{time}}",
+      "waitingApproval": "Waiting for approval of the plan.",
+      "waitingMaintenanceWindow": "Waiting for the maintenance window before the next change runs.",
+      "waitingExecution": "Running: waiting for the current change to finish.",
+      "waitingOther": "Waiting: {{reason}}.",
+      "waitingHumanWork": "Waiting for a technician to tick the checklist item on the ticket.",
+      "openTicket": "Open the checklist ticket",
+      "stepKey": {
+        "intake": "Understand the request",
+        "confirmIdentity": "Confirm who is leaving",
+        "discover": "Look up their accounts",
+        "review": "Review what was found",
+        "effects": "Approve and make the changes",
+        "manualWork": "Checklist work",
+        "verifyOutcome": "Verify the outcome",
+        "document": "Write the record"
+      },
+      "kind": {
+        "reason": "Reasoning",
+        "effect": "Changes",
+        "probe": "Check",
+        "wait": "Wait",
+        "humanWork": "Human work",
+        "document": "Record"
+      },
+      "state": {
+        "pending": "Not started",
+        "running": "Running",
+        "waiting": "Waiting",
+        "succeeded": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      }
+    },
+    "plan": {
+      "unavailable": "This server did not send the plan for this task.",
+      "empty": "No plan has been proposed yet.",
+      "revision": "Revision {{n}}",
+      "effectCount_one": "{{count}} change",
+      "effectCount_other": "{{count}} changes",
+      "approvedAt": "Approved {{time}}",
+      "proposedAt": "Proposed {{time}}",
+      "supersededBy": "Superseded by revision {{n}}. Kept here as the record of what was approved and then replaced.",
+      "orderNote": "Changes run one at a time in the numbered order, across services.",
+      "target": "For: {{label}}",
+      "principal": "Account: {{label}}",
+      "noop": "Already in place: nothing was sent.",
+      "state": {
+        "pending": "Waiting for approval",
+        "approved": "Approved",
+        "rejected": "Rejected",
+        "expired": "Expired",
+        "superseded": "Superseded"
+      },
+      "idempotency": {
+        "idempotent": "Safe to repeat",
+        "idempotentByProbe": "Checked before repeating",
+        "nonIdempotent": "Never repeated automatically"
+      },
+      "operation": {
+        "none": "Not started / unknown",
+        "pending": "In progress",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "unknown": "Result unknown",
+        "superseded": "Superseded"
+      }
+    },
+    "events": {
+      "empty": "No events recorded yet.",
+      "showAll": "Show all {{count}} events",
+      "showRecent": "Show only the most recent {{count}}",
+      "hiddenOlder_one": "{{count}} older event is hidden.",
+      "hiddenOlder_other": "{{count}} older events are hidden.",
+      "capped": "Showing the most recent {{count}} events. Older events are not shown here.",
+      "actor": {
+        "coordinator": "Coordinator",
+        "reconciler": "Reconciler",
+        "user": "Person",
+        "agent": "AI agent",
+        "system": "System"
+      },
+      "type": {
+        "taskAdmitted": "Task admitted",
+        "leaseClaimed": "Work picked up",
+        "stepOpened": "Step started",
+        "stepSettled": "Step finished",
+        "waitEntered": "Waiting",
+        "waitResolved": "Wait ended",
+        "targetAttached": "Target attached",
+        "targetDetached": "Target detached",
+        "targetAccountFrozen": "Account recorded",
+        "operationReserved": "Change reserved",
+        "operationSettled": "Change finished",
+        "verificationRecorded": "Verification recorded",
+        "planRevisionBumped": "Plan revision changed",
+        "humanWorkUnticked": "Checklist item unticked",
+        "taskSettled": "Task finished"
+      }
+    }
   }
 }

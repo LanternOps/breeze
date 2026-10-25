@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { AiPageContext } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { deviceEventLogHash, reliabilityScoringWindow } from '@/lib/deviceEventLogLink';
 import { fetchWithAuth } from '../../stores/auth';
 import { createCancellableRequest, type CancellableRequest } from '../../lib/cancellableRequest';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
@@ -240,6 +241,45 @@ function factorEvidenceText(
 // Factors whose raw events appear in the offenders drill-down.
 const OFFENDER_FACTORS = new Set(['serviceFailures', 'hardwareErrors', 'hangs']);
 
+// Fault factors that link to the event log (uptime is exempt, spec §3.7).
+const LINKED_FACTORS = new Set(['crashes', 'hangs', 'serviceFailures', 'hardwareErrors']);
+
+type OffenderGroupKey = keyof ReliabilityOffenders;
+
+// The Windows SCM source every service-failure event is stored under. The
+// event-log `source` filter is one exact value, so this is the only
+// factor-level source that can be named (R2).
+const WINDOWS_SCM_SOURCE = 'Service Control Manager';
+
+type EventLogLink = { href: string; label: string; title: string; ariaLabel: string };
+
+// Which single event-log `source` a row's link carries, and whether that
+// filter is exactly the row's subject. Only an exact filter may read "View in
+// event log"; a link that merely narrows to a related source, or carries the
+// window only, reads "Open event log" (R2: never claim a view it does not
+// deliver).
+// - factor rows: only Windows serviceFailures maps to one source (SCM).
+// - offenders: hardware/hang keys ARE the source; a service key is the source
+//   on macOS/Linux, but on Windows it is a service name parsed from the SCM
+//   message, so the link falls back to the SCM source (not exact).
+function eventLogSource(
+  osType: ReliabilitySnapshot['osType'],
+  row: { factor: string } | { group: OffenderGroupKey; key: string },
+): { source?: string; exact: boolean } {
+  if ('factor' in row) {
+    return row.factor === 'serviceFailures' && osType === 'windows'
+      ? { source: WINDOWS_SCM_SOURCE, exact: true }
+      : { exact: false };
+  }
+  if (row.group !== 'services') return { source: row.key, exact: true };
+  if (osType === 'windows') return { source: WINDOWS_SCM_SOURCE, exact: false };
+  return osType ? { source: row.key, exact: true } : { exact: false };
+}
+
+const EVENT_LOG_LINK_CLASS =
+  'ml-2 underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:decoration-current hover:text-foreground ' +
+  'rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1';
+
 function formatOffenderWhen(value: string | null): string | null {
   if (!value) return null;
   const date = new Date(value);
@@ -252,11 +292,13 @@ function OffenderGroup({
   Icon,
   offenders,
   testId,
+  linkFor,
 }: {
   title: string;
   Icon: typeof Wrench;
   offenders: ReliabilityOffender[];
   testId: string;
+  linkFor: (offender: ReliabilityOffender) => EventLogLink | null;
 }) {
   if (offenders.length === 0) return null;
   return (
@@ -268,6 +310,7 @@ function OffenderGroup({
       <ul className="mt-2 space-y-1.5">
         {offenders.map((offender) => {
           const when = formatOffenderWhen(offender.lastOccurrence);
+          const link = linkFor(offender);
           return (
             <li key={offender.key} className="flex items-center justify-between gap-3 text-sm">
               <span className="min-w-0 truncate">
@@ -284,6 +327,17 @@ function OffenderGroup({
                 >
                   {formatCount(offender.count)}×
                 </span>
+                {link && (
+                  <a
+                    href={link.href}
+                    title={link.title}
+                    aria-label={link.ariaLabel}
+                    data-testid={`reliability-offender-link-${offender.key}`}
+                    className={EVENT_LOG_LINK_CLASS}
+                  >
+                    {link.label}
+                  </a>
+                )}
               </span>
             </li>
           );
@@ -542,6 +596,33 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   const offenderWindowText = t('deviceReliabilityPanel.lastDays', { count: OFFENDER_WINDOW_DAYS });
   // Short form for inline evidence: "24 in 30d".
   const windowPhrase = `in ${OFFENDER_WINDOW_DAYS}d`;
+
+  // One scoring window per render, shared by every factor and offender link.
+  const scoringWindow = reliabilityScoringWindow({
+    computedAt: snapshot.computedAt,
+    enrolledAt: snapshot.enrolledAt,
+    baselineAt: snapshot.baseline?.baselineAt,
+  });
+  const buildEventLogLink = (
+    row: { factor: string } | { group: OffenderGroupKey; key: string },
+    subject: string,
+  ): EventLogLink | null => {
+    if (!scoringWindow) return null;
+    const { source, exact } = eventLogSource(snapshot.osType, row);
+    const fmt = (iso: string) => formatDateTime(new Date(iso), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const range = { from: fmt(scoringWindow.from), to: fmt(scoringWindow.to) };
+    const label = exact ? t('deviceReliabilityPanel.eventLogLinkExact') : t('deviceReliabilityPanel.eventLogLinkWindow');
+    return {
+      href: `#${deviceEventLogHash({ source, ...scoringWindow })}`,
+      label,
+      // Starts with the visible text (WCAG 2.5.3) and names the row so the
+      // identical per-row links are distinguishable in a link list.
+      ariaLabel: `${label}: ${subject}`,
+      title: source
+        ? t('deviceReliabilityPanel.eventLogLinkTitleWithSource', { source, ...range })
+        : t('deviceReliabilityPanel.eventLogLinkTitle', range),
+    };
+  };
   // Young devices haven't lived a full window yet; a tooltip carries that
   // context instead of relabeling every window (the old "since enroll · Nd").
   const youngDevice = ageDays !== null && ageDays < OFFENDER_WINDOW_DAYS;
@@ -737,6 +818,23 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               const unweighted = driver.weight === 0;
               const problem = !unweighted && driver.lostPoints > 0;
               const evidenceText = factorEvidenceText(driver, snapshot, windowPhrase);
+              // Unweighted (workstation) fault rows still link when there is evidence.
+              const factorLink =
+                LINKED_FACTORS.has(driver.factor) &&
+                (problem || (unweighted && (factorCount30d(snapshot, driver.factor) ?? 0) > 0))
+                  ? buildEventLogLink({ factor: driver.factor }, driver.label)
+                  : null;
+              const eventLogLinkEl = factorLink ? (
+                <a
+                  href={factorLink.href}
+                  title={factorLink.title}
+                  aria-label={factorLink.ariaLabel}
+                  data-testid={`reliability-factor-link-${driver.factor}`}
+                  className={EVENT_LOG_LINK_CLASS}
+                >
+                  {factorLink.label}
+                </a>
+              ) : null;
               const showDetailsLink =
                 problem && OFFENDER_FACTORS.has(driver.factor) && offenderEventTotal > 0 && !offendersOpen;
               return (
@@ -760,10 +858,11 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   </span>
                   <span className="min-w-0 flex-1 text-xs text-muted-foreground">
                     {unweighted ? (
-                      <>{t('deviceReliabilityPanel.notScoredForType')}{evidenceText ? ` — ${evidenceText}` : ''}</>
+                      <>{t('deviceReliabilityPanel.notScoredForType')}{evidenceText ? ` — ${evidenceText}` : ''}{eventLogLinkEl}</>
                     ) : problem ? (
                       <>
                         {evidenceText}
+                        {eventLogLinkEl}
                         {showDetailsLink && (
                           <button
                             type="button"
@@ -856,18 +955,21 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                       title={t('deviceReliabilityPanel.offenders.topServices')}
                       Icon={Settings}
                       offenders={offenders.services}
+                      linkFor={(offender) => buildEventLogLink({ group: 'services', key: offender.key }, offender.label)}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hardware"
                       title={t('deviceReliabilityPanel.offenders.topHardware')}
                       Icon={Cpu}
                       offenders={offenders.hardware}
+                      linkFor={(offender) => buildEventLogLink({ group: 'hardware', key: offender.key }, offender.label)}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hangs"
                       title={t('deviceReliabilityPanel.offenders.topProcesses')}
                       Icon={Activity}
                       offenders={offenders.hangs}
+                      linkFor={(offender) => buildEventLogLink({ group: 'hangs', key: offender.key }, offender.label)}
                     />
                     <p className="text-xs text-muted-foreground">
                       {t('deviceReliabilityPanel.distinctEvents', { window: offenderWindowText })}

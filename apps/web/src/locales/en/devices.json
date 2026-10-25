@@ -1887,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Loading device logs...",
     "noLogsMatchTheSelectedFilters": "No logs match the selected filters.",
-    "noDeviceLogsRecordedYet": "No device logs recorded yet."
+    "noDeviceLogsRecordedYet": "No device logs recorded yet.",
+    "linkedWindow": "Showing the reliability scoring window {{from}} – {{to}}",
+    "linkedWindowWithSource": "Showing the reliability scoring window {{from}} – {{to}} for {{source}}",
+    "clearLinkedFilter": "Clear link filter"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Loading management posture...",
@@ -2308,7 +2311,11 @@
       "savedNotActive": "Marker saved. A later marker is still in effect, so the score didn't change.",
       "clearNotFound": "This marker no longer exists.",
       "clearAlreadyCleared": "This marker was already cleared."
-    }
+    },
+    "eventLogLinkExact": "View in event log",
+    "eventLogLinkWindow": "Open event log",
+    "eventLogLinkTitle": "Event log, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Event log for {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copy to clipboard",

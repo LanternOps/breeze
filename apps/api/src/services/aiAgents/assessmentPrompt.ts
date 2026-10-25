@@ -120,7 +120,8 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- Known concern changed or is fixed → update_concern (resolve it with an outcome when it is fixed).');
   lines.push('- The person should act now → nudge (one concern, one next step).');
   lines.push('- A Tier-2/3 change would help → propose_action (it becomes an approval request; nothing runs).');
-  lines.push('- Needs a specialist → request_specialist (not available yet: recorded and refused).');
+  lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
+    + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');
   lines.push(`Why this assessment: ${a ? reasonLine(a.reason) : 'unknown'}.`);
   lines.push('');
 

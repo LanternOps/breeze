@@ -26,9 +26,20 @@ import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
-import { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+import { AGENT_COORDINATOR_CARRIER_TOOLS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+// Leaf data module (no imports) — the specialist kind table, so the tier
+// tables below derive from it instead of re-typing kind names.
+import {
+  ASK_FIRST_SPECIALIST_KINDS,
+  AUTO_ADMIT_SPECIALIST_KINDS,
+  SPECIALIST_KIND_LABELS,
+  isSpecialistKind,
+} from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+// Env-only operator knob; the module imports nothing but @breeze/shared.
+import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
+import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -55,6 +66,8 @@ export const BLOCKED_TOOLS: ReadonlySet<string> = new Set<string>([
 // Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
 export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
   execute_command: 'commandType',
+  // Wisp W07: launch_specialist is multiplexed on the specialist KIND.
+  launch_specialist: 'kind',
 };
 
 // Actions that are Tier 2 (auto-execute + audit):
@@ -64,6 +77,9 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
+  // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
+  // from SPECIALIST_KIND_POLICY (leaf data module).
+  launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
   manage_policy_feature_link: ['describe'],
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
@@ -174,6 +190,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
   // consistent with approve/decline/defer here. install/rollback stay Tier 3.
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
+  // #6268: stopping an IOC sweep is the safe direction (queued scans are
+  // cancelled, running ones finish), so it auto-executes with an audit row.
+  ioc_hunt: ['cancel_sweep'],
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
@@ -287,6 +306,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // changes no device state. Reclassifying it is W04's call (spec W01-D3).
   disk_cleanup: ['preview'],
   generate_report: ['list', 'data', 'history', 'download'],
+  // #6268 (base Tier 1): reads over PR A's sweep services; preview writes nothing.
+  ioc_hunt: ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status'],
   get_dns_security: ['allowed', 'blocked', 'redirected'],
   get_service_monitoring_status: ['status', 'summary', 'results', 'known_services'],
   manage_alert_rules: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'],
@@ -325,6 +346,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
+  // Wisp W07 (spec §3 "asks first"): every specialist kind the policy does not
+  // auto-admit needs the person's approval in chat — for a bulk reply the card
+  // shows the exact ticket list and message.
+  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
   // Customer-visible: the text is shown to an end user under the MSP's brand,
   // so a human must always have read it (same class as a public ticket reply).
   send_endpoint_message: ['send'],
@@ -358,6 +383,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // through configuration policies"), so the gate costs no live workflow —
   // it is here so re-enabling the handler cannot silently reopen the hole.
   manage_patches: ['install', 'rollback', 'setup_auto_approval'],
+  // #6268: a fleet IOC sweep (detect-only, single org; scope input-aware in
+  // resolveApprovalScope) and an IOC rule import (publishes a rule set every
+  // policy using it then scans with).
+  ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
   manage_groups: ['create', 'update', 'delete'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
@@ -606,6 +635,13 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
 // near the top of this file so every existing importer keeps working.
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
+  // Wisp W07: one approver (the person asking, or a colleague) — the
+  // specialist's own effects still mint their own intents.
+  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
+  // #6268 Gate B 8: an IOC import authors detection rules (a set with
+  // auto-quarantine on is refused in the handler, under the set lock).
+  // ioc_hunt:sweep is NOT here: its scope is input-aware (expectedDeviceCount).
+  ioc_hunt: ['import_iocs'],
   // Supervised, not four_eyes: same class as a public ticket reply. list/get
   // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
   send_endpoint_message: ['send'],
@@ -679,6 +715,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
+  // Wisp W07: the specialist approval carrier — one approver, no four-eyes and
+  // no effect-digest pin (the coordinator re-runs every gate at release under
+  // the approver). launch_specialist is NOT here: its base tier is 2, and its
+  // tier-3 kinds are classified by TIER3_SUPERVISED_ACTIONS above.
+  'wisp_specialist_request',
   // #8742: customer-visible endpoint message; every action is enumerated in
   // TIER1_ACTIONS / TIER3_SUPERVISED_ACTIONS.
   'send_endpoint_message',
@@ -745,6 +786,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // #6268 Gate B 6: supervised up to IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD
+  // expected devices, four_eyes above it or when the count is missing.
+  'ioc_hunt:sweep',
   // A customer-visible ticket reply is a different class of act from an
   // internal note — the note stays at the tool's base Tier 2 (auto-execute
   // + audit), but an AI-composed comment that will be shown to the ticket
@@ -846,6 +890,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   run_script: ['proposalId'],
   // resolveApprovalScope: update_org with a `status` key is four-eyes.
   manage_organizations: ['status'],
+  // resolveApprovalScope: sweep above the four-eyes device threshold (or with no count) is four-eyes.
+  ioc_hunt: ['expectedDeviceCount'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -927,6 +973,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
+    // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
+    // supervised up to the four-eyes threshold, four_eyes above it. A count
+    // that is missing or not a non-negative integer cannot be trusted to bound
+    // the sweep, so it takes the stricter scope. createSweep refuses the
+    // released call as a scope change when it would target more devices.
+    const n = input.expectedDeviceCount;
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= iocHuntFourEyesDeviceThreshold()
+      ? 'supervised'
+      : 'four_eyes';
   }
   if (isInputAwareTier3(toolName, action, input)) {
     // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
@@ -1223,6 +1280,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   snooze_concern: { resource: 'ai_sessions', action: 'use' },
   resolve_concern: { resource: 'ai_sessions', action: 'use' },
   create_watch: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W07 specialists (services/aiToolsWisp.ts), w00 A1: the chat-use
+  // permission. The kind's own permissions (SPECIALIST_KIND_POLICY) are
+  // ceiling terms the coordinator checks against the grantor AND the acting
+  // human — not tool gates.
+  launch_specialist: { resource: 'ai_sessions', action: 'use' },
+  wisp_specialist_request: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -1248,6 +1311,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove: { resource: 'devices', action: 'execute' },
     restore: { resource: 'devices', action: 'execute' },
     vulnerabilities: { resource: 'devices', action: 'read' },
+  },
+  // #6268: mirrors routes/security/sweeps.ts (reads devices:read, create/cancel
+  // devices:execute) and routes/security/yaraIocImport.ts (devices:write).
+  ioc_hunt: {
+    list_rule_sets: { resource: 'devices', action: 'read' },
+    preview_sweep: { resource: 'devices', action: 'read' },
+    list_sweeps: { resource: 'devices', action: 'read' },
+    sweep_status: { resource: 'devices', action: 'read' },
+    sweep: { resource: 'devices', action: 'execute' },
+    cancel_sweep: { resource: 'devices', action: 'execute' },
+    import_iocs: { resource: 'devices', action: 'write' },
   },
   // Stored snapshot read. `refresh: true` scans the device live and requires
   // devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
@@ -2741,11 +2815,22 @@ export function checkAgentGuardrails(
   // reachable only by this run). It is still allowlist- and
   // protected-resource-gated below.
   const workspaceTool = TIER1_NON_READONLY_TOOLS.has(toolName);
-  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool) {
+  // Wisp W07 exemption: a coordinator approval CARRIER (AGENT_COORDINATOR_
+  // CARRIER_TOOLS — every entry is also HUMAN_ONLY_TOOLS, so no model can
+  // raise one) is minted by deterministic code under a device-less assessment
+  // run. It executes nothing org-wide by itself: its release re-runs every
+  // coordinator gate (grant ceiling, org, budget, per-kind permissions held by
+  // the APPROVER). Exempt from the device-less deny and from the agent's own
+  // mutation allowlist — which an operator would never list it in — and
+  // nothing else: the kill switch, disabled/off, tier-4 and never-agent
+  // denies above still apply, and shadow mode still yields 'propose'.
+  const coordinatorCarrier = AGENT_COORDINATOR_CARRIER_TOOLS.has(toolName);
+  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool && !coordinatorCarrier) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
-  const allowlisted = policy.toolAllowlist.includes(toolName)
+  const allowlisted = coordinatorCarrier
+    || policy.toolAllowlist.includes(toolName)
     || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
   if (!readOnly && !allowlisted) {
     return deny(`Tool "${toolName}"${action ? `:${action}` : ''} is not in the agent's allowlist`);
@@ -3134,9 +3219,66 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
   },
 };
 
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+function iocSweepScopeLabel(scope: unknown): string {
+  const s = (scope && typeof scope === 'object' ? scope : {}) as Record<string, unknown>;
+  const count = (key: string) => (Array.isArray(s[key]) ? (s[key] as unknown[]).length : 0);
+  switch (s.kind) {
+    case 'sites': return plural(count('siteIds'), 'site', 'sites');
+    case 'groups': return plural(count('groupIds'), 'group', 'groups');
+    case 'devices': return plural(count('deviceIds'), 'device', 'devices');
+    case 'orgs': return 'this organization';
+    default: return 'all reachable devices';
+  }
+}
+
+/**
+ * #6268 approval headlines for ioc_hunt. Sync and DB-free, so a sweep names
+ * the rule-set COUNT and "this organization" rather than set and org names
+ * (the approval card shows the ids and the org beside it).
+ */
+function iocHuntHeadline(action: string | undefined, input: Record<string, unknown>): string {
+  const idPrefix = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v.slice(0, 8) : 'unknown');
+  if (action === IOC_HUNT_RUN_ACTION) {
+    const sets = Array.isArray(input.ruleSetIds) ? input.ruleSetIds.length : 0;
+    const n = input.expectedDeviceCount;
+    const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0
+      ? `up to ${plural(n, 'device', 'devices')}`
+      : 'an unconfirmed number of devices';
+    const scan = input.scanType === 'custom'
+      ? `custom scan of ${plural(Array.isArray(input.paths) ? input.paths.length : 0, 'path', 'paths')}`
+      : input.scanType === 'full' ? 'full scan' : 'quick scan';
+    return `IOC sweep (${scan}): ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
+  }
+  if (action === 'import_iocs') {
+    const count = Array.isArray(input.iocs) ? input.iocs.length : 0;
+    return `Import ${plural(count, 'IOC', 'IOCs')} into rule set ${idPrefix(input.ruleSetId)}`;
+  }
+  if (action === 'cancel_sweep') return `Cancel IOC sweep ${idPrefix(input.sweepId)}`;
+  return humanizeToolAction('ioc_hunt', action);
+}
+
 /**
  * Build a human-readable description of what the tool is about to do.
  */
+/** "Wisp wants to run <kind> at <org>: <reason>" — plus the exact batch for a bulk reply (w00 A30). */
+function describeSpecialistRequest(input: Record<string, unknown>): string {
+  const kind = typeof input.kind === 'string' ? input.kind : '';
+  const label = isSpecialistKind(kind) ? SPECIALIST_KIND_LABELS[kind] : 'a specialist';
+  const org = typeof input.orgId === 'string' ? input.orgId.slice(0, 8) : 'this organization';
+  const reason = nonEmptyText(input.reason);
+  let text = `Wisp wants to run ${label} at ${org}${reason ? `: ${reason}` : ''}`;
+  const params = input.params && typeof input.params === 'object' ? input.params as Record<string, unknown> : {};
+  if (kind === 'bulk_ticket_reply') {
+    const ids = Array.isArray(params.ticketIds) ? params.ticketIds.length : 0;
+    const message = nonEmptyText(params.message);
+    text += ` — sends this message to ${ids} ticket(s)${params.holdTickets === true ? ' and sets them to pending' : ''}`;
+    if (message) text += `: "${message.length > 300 ? `${message.slice(0, 300)}…` : message}"`;
+  }
+  return text;
+}
+
 export function buildApprovalDescription(
   toolName: string,
   action: string | undefined,
@@ -3148,6 +3290,12 @@ export function buildApprovalDescription(
     case 'operator_plan': {
       const n = Array.isArray(input.effects) ? input.effects.length : 0;
       parts.push(`Approve a ${n}-effect plan for AI Operator task ${String(input.taskId ?? '')}`);
+      break;
+    }
+    // Wisp W07: the specialist approval card and the chat escalation.
+    case 'wisp_specialist_request':
+    case 'launch_specialist': {
+      parts.push(describeSpecialistRequest(input));
       break;
     }
     case 'execute_command': {
@@ -3255,6 +3403,10 @@ export function buildApprovalDescription(
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }
+      break;
+
+    case 'ioc_hunt':
+      parts.push(iocHuntHeadline(action, input));
       break;
 
     case 'security_scan':

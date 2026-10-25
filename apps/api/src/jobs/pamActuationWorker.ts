@@ -211,7 +211,10 @@ async function pushCommittedPamCommand(agentId: string | null, command: AgentCom
 
     // The facade also reaches agents owned by another API process. No database
     // transaction is held during its Redis/socket I/O or acknowledgement wait.
-    const outcome = await dispatchCommandToAgent(agentId, command);
+    // #8318 §6.4: to the agent_id read IN the claim, not `agentId` read with the
+    // actuation row before it (a reattach or re-enroll may have committed
+    // since); `agentId` above only decides whether a claim is worth taking.
+    const outcome = await dispatchCommandToAgent(claim.agentId, command);
     if (outcome.status === 'sent' || outcome.status === 'indeterminate') return;
     await releaseClaimedCommandDelivery(command.id, claim.executedAt);
   } catch (error) {

@@ -29,6 +29,15 @@ import type {
 import { taskStateLabel } from './operatorTaskLabels';
 import { usePageItemName } from '../layout/usePageItemName';
 import { readWispProvenance, wispGrantorLabel } from '../wisp/wispProvenance';
+import { useHashState } from '@/lib/useHashState';
+import OperatorTaskSteps from './OperatorTaskSteps';
+import OperatorTaskPlan from './OperatorTaskPlan';
+import OperatorTaskEvents from './OperatorTaskEvents';
+import { readHashParam, writeHashParam } from './operatorHash';
+
+/** W06 R1b: the task-page panels, selected by `#panel=`. */
+const PANELS = ['steps', 'plan', 'events'] as const;
+type Panel = (typeof PANELS)[number];
 
 interface OperatorTaskDetailProps {
   taskId: string;
@@ -140,6 +149,14 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   // OperatorTaskActivityFeed's `error` state shape.
   const [error, setError] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [panel, setPanel] = useHashState<Panel>('steps', (hash) => {
+    const v = readHashParam(hash, 'panel');
+    return (PANELS as readonly string[]).includes(v ?? '') ? (v as Panel) : undefined;
+  });
+  const selectPanel = (next: Panel) => {
+    setPanel(next);
+    writeHashParam('panel', next);
+  };
 
   // Monotonic request id + mount guard — same pattern as RunDetailPage's
   // `load()`/`requestIdRef`/`mountedRef`.
@@ -224,9 +241,14 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
     );
   }
 
+  // A contact-targeted task (W06) has no inline device target; name its contact.
+  const contactTarget = task.targets.find((x) => x.targetKind === 'contact');
   const targetText = task.target.deviceId
     ? (task.target.label ?? task.target.deviceId)
-    : t('operatorTaskDetail.target.none');
+    : contactTarget?.label ?? t('operatorTaskDetail.target.none');
+  const panelLabel = (p: Panel) => (p === 'steps'
+    ? t('taskPanels.tabs.steps')
+    : p === 'plan' ? t('taskPanels.tabs.plan') : t('taskPanels.tabs.events'));
   // Wisp W07 (#9920, spec §13) — a task admitted under a Wisp grant names the
   // person whose authority it runs under. Null for every other task.
   const wispProvenance = readWispProvenance(task);
@@ -302,6 +324,34 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
           )}
         </div>
       )}
+
+      <div className="space-y-3">
+        <div role="tablist" aria-label={t('taskPanels.tabsLabel')} className="flex gap-1 border-b">
+          {PANELS.map((p) => (
+            <button
+              key={p}
+              id={`task-panel-tab-${p}`}
+              type="button"
+              role="tab"
+              aria-selected={panel === p}
+              aria-controls={panel === p ? `task-panel-${p}` : undefined}
+              data-testid={`task-panel-tab-${p}`}
+              onClick={() => selectPanel(p)}
+              className={cn(
+                '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
+                panel === p ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {panelLabel(p)}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id={`task-panel-${panel}`} aria-labelledby={`task-panel-tab-${panel}`}>
+          {panel === 'steps' && <OperatorTaskSteps task={task} />}
+          {panel === 'plan' && <OperatorTaskPlan plan={task.plan} />}
+          {panel === 'events' && <OperatorTaskEvents events={task.events} />}
+        </div>
+      </div>
 
       <div>
         <h3 className="mb-2 text-sm font-semibold">{t('operatorTaskDetail.operations.heading')}</h3>

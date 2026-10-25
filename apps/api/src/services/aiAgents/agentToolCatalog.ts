@@ -189,6 +189,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- security_response (tone: high) ----
   security_scan: 'security_response',
+  // #6268: mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (Gate B 10).
+  ioc_hunt: 'security_response',
   s1_isolate_device: 'security_response',
   s1_threat_action: 'security_response',
   get_s1_status: 'security_response',
@@ -406,6 +409,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   snooze_concern: 'tenancy',
   resolve_concern: 'tenancy',
   create_watch: 'tenancy',
+  // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
+  // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
+  // (raised only by the coordinator); mapped for completeness.
+  launch_specialist: 'tenancy',
+  wisp_specialist_request: 'tenancy',
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

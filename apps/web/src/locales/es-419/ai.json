@@ -121,7 +121,8 @@
     "chooseModelInPanel": "Continúa en el panel lateral para elegir un modelo",
     "tabMenu": "Opciones de pestaña",
     "anotherOrg": "Otra organización",
-    "device": "Dispositivo"
+    "device": "Dispositivo",
+    "newChat": "Nuevo chat"
   },
   "aiContextBadge": {
     "context": "Contexto",

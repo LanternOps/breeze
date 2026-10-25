@@ -27,6 +27,7 @@
  * it announces and enqueues after its own transaction commits (#1105; the same
  * seam as metricAnomalySubscriber.ts).
  */
+import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -58,6 +59,7 @@ import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
 import { getOrCreateThread, seedContextForSession, updateThreadSummary } from './threads';
 import { listWatches } from './watches';
+import { incWispAssessment } from '../wispMetrics';
 import type {
   AssessmentDigest,
   AssessmentReason,
@@ -163,32 +165,52 @@ export type DeterministicDigestHint = {
   failed?: boolean;
 };
 
+function skipAssessment(
+  skipped: string,
+  outcome: 'skipped_budget' | 'skipped_grant' | 'skipped_admission',
+): { skipped: string } {
+  incWispAssessment(outcome);
+  return { skipped };
+}
+
 /**
  * Admit one assessment run for (grant, org). `subject` / `failed` are used
  * only on the budget-exhausted path (see DeterministicDigestHint). Never call
  * this from inside a DB transaction you still hold open: admission enqueues.
  */
 export async function enqueueAssessment(
-  input: { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint,
+  input: {
+    grantId: string;
+    orgId: string;
+    reason: AssessmentReason;
+    /**
+     * The queue job's identity (`<jobId>@<job.timestamp>`). When set the
+     * dedupe key is derived from it, so a BullMQ retry of the SAME job
+     * occurrence lands on the same `(org_id, dedupe_key)` and admission
+     * returns `duplicate` instead of a second assessment (W05 carry-over,
+     * fixed in W07). Unset → a time-based key (direct callers).
+     */
+    occurrenceKey?: string;
+  } & DeterministicDigestHint,
 ): Promise<{ runId: string } | { skipped: string }> {
-  if (!wispEnabled()) return { skipped: 'wisp_disabled' };
+  if (!wispEnabled()) return skipAssessment('wisp_disabled', 'skipped_admission');
   const { grantId, orgId, reason } = input;
 
   const grant = await loadGrantPin(grantId);
-  if (!grant?.currentRevisionId) return { skipped: 'grant_inactive' };
+  if (!grant?.currentRevisionId) return skipAssessment('grant_inactive', 'skipped_grant');
   // Spec §10 claim-time re-check: a partner that lost the entitlement admits nothing.
-  if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return { skipped: 'not_entitled' };
+  if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return skipAssessment('not_entitled', 'skipped_admission');
 
   let ceiling: GrantCeiling;
   try {
     ceiling = await resolveGrantCeiling(grantId, grant.currentRevisionId);
   } catch (err) {
-    if (err instanceof GrantInactiveError) return { skipped: 'grant_inactive' };
+    if (err instanceof GrantInactiveError) return skipAssessment('grant_inactive', 'skipped_grant');
     throw err;
   }
   // Same spelling as W02's admission skip (step 1d), which re-checks it.
-  if (!ceiling.orgIds.has(orgId)) return { skipped: 'grant_org_out_of_ceiling' };
-  if (!assessableOrgIds(ceiling).has(orgId)) return { skipped: 'grant_org_site_restricted' };
+  if (!ceiling.orgIds.has(orgId)) return skipAssessment('grant_org_out_of_ceiling', 'skipped_grant');
+  if (!assessableOrgIds(ceiling).has(orgId)) return skipAssessment('grant_org_site_restricted', 'skipped_grant');
 
   const budget = await chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN);
   if (!budget.ok) {
@@ -199,7 +221,7 @@ export async function enqueueAssessment(
     await recordDeterministicDigest(grantId, orgId, reason, { subject: input.subject, failed: input.failed, ceiling })
       .catch((err: unknown) => { failures.push(err); });
     if (failures.length > 0) throw failures[0];
-    return { skipped: 'budget_exhausted' };
+    return skipAssessment('budget_exhausted', 'skipped_budget');
   }
 
   const watermark = await lastAssessmentWatermark(grantId, orgId);
@@ -217,11 +239,17 @@ export async function enqueueAssessment(
     triggerKind: 'schedule',
     deviceId: null,
     profile: 'assessment',
-    dedupeKey: `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
+    dedupeKey: input.occurrenceKey
+      ? `wisp-assess-${grantId}-${orgId}-o${createHash('sha256').update(input.occurrenceKey).digest('hex').slice(0, 24)}`
+      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
   }));
-  return result.created ? { runId: result.run.id } : { skipped: result.skipped };
+  if (result.created) {
+    incWispAssessment('admitted');
+    return { runId: result.run.id };
+  }
+  return skipAssessment(result.skipped, 'skipped_admission');
 }
 
 /** Run statuses that finished an assessment cleanly enough to advance the watermark. */

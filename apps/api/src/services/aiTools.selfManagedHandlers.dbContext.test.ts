@@ -164,7 +164,6 @@ const CASES: Array<[string, Record<string, unknown>]> = [
   ['analyze_screen', { deviceId: D }],
   ['computer_control', { deviceId: D, action: 'left_click', x: 1, y: 1 }],
   ['network_discovery', { deviceId: D, subnet: '192.0.2.0/24' }],
-  ['security_scan', { deviceId: D, action: 'scan' }],
   ['security_scan', { deviceId: D, action: 'status' }],
   ['trigger_agent_upgrade', { deviceIds: [D] }],
   ['trigger_agent_restart', { deviceIds: [D] }],

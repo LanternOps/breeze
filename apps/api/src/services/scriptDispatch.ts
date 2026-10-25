@@ -896,8 +896,10 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         });
         let sent: boolean;
         try {
+          // #8318 §6.4: to the agent_id read IN the claim, not `device.agentId`
+          // read before it (a reattach or re-enroll may have committed since).
           sent = deliverable
-            ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
+            ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable))
             : false;
         } catch (sendErr) {
           // The claim already flipped the row to 'sent'. Hand it back to

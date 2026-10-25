@@ -28,6 +28,7 @@ workloadsRoutes.put(
     if (!device) return c.json({ error: 'Device not found' }, 404);
     const result = await ingestWorkloadsReport({
       deviceId: agent.deviceId,
+      agentId: agent.agentId,
       orgId: agent.orgId,
       report: c.req.valid('json'),
       receivedAt: new Date(),

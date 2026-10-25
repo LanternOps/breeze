@@ -3,7 +3,10 @@ import type {
   FileVersionOperator,
   RegistryHive,
 } from "@breeze/shared";
-import { FILE_VERSION_OPERATORS } from "@breeze/shared";
+import {
+  FILE_VERSION_OPERATORS,
+  serviceRunningDetectionRuleSchema,
+} from "@breeze/shared";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 interface DetectionRulesEditorProps {
@@ -11,14 +14,22 @@ interface DetectionRulesEditorProps {
   onChange: (rules: DetectionRule[]) => void;
 }
 const REGISTRY_HIVES: RegistryHive[] = ["HKLM", "HKCU", "HKCR", "HKU", "HKCC"];
-// service_running is not authorable in the UI yet (#6958 PR D adds it).
-type EditableRuleType = Exclude<DetectionRule["type"], "service_running">;
+type EditableRuleType = DetectionRule["type"];
 const RULE_TYPE_LABELS: Record<EditableRuleType, string> = {
   registry: "Registry key/value",
   file_exists: "File or folder exists",
   msi_product_code: "MSI product code",
   file_version: "File version (Windows)",
+  service_running: "Service running",
 };
+function isEditableRuleType(type: string): type is EditableRuleType {
+  return Object.prototype.hasOwnProperty.call(RULE_TYPE_LABELS, type);
+}
+// Mirrors the shared schema (and the agent's validServiceName): no control
+// characters, no leading "-", not blank, at most 256 UTF-8 bytes.
+function isValidServiceName(name: string): boolean {
+  return serviceRunningDetectionRuleSchema.shape.serviceName.safeParse(name).success;
+}
 // A fresh clause for a given type, with sensible defaults.
 function blankRule(type: EditableRuleType): DetectionRule {
   switch (type) {
@@ -30,6 +41,8 @@ function blankRule(type: EditableRuleType): DetectionRule {
       return { type: "msi_product_code", productCode: "" };
     case "file_version":
       return { type: "file_version", path: "", operator: ">=", version: "" };
+    case "service_running":
+      return { type: "service_running", serviceName: "" };
   }
 }
 const inputClass =
@@ -84,9 +97,11 @@ export default function DetectionRulesEditor({
       ) : (
         <div className="mt-3 space-y-3">
           {rules.map((rule, index) => {
-            // Rule types the editor cannot author (e.g. service_running, created via
-            // the API) render read-only; they stay in `rules` untouched on save.
-            if (rule.type === "service_running") {
+            // A rule type this build cannot author (e.g. one added to the
+            // shared schema later, created via the API) renders read-only and
+            // stays in `rules` untouched on save.
+            if (!isEditableRuleType(rule.type)) {
+              const unknownType = String((rule as { type: unknown }).type);
               return (
                 <div
                   key={index}
@@ -94,12 +109,7 @@ export default function DetectionRulesEditor({
                   data-testid="detection-rule-readonly"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">
-                      {i18n.t(
-                        "policies:software.detectionRulesEditor.serviceRunning",
-                      )}
-                    </span>
-                    <span className="font-mono text-sm">{rule.serviceName}</span>
+                    <span className="font-mono text-sm">{unknownType}</span>
                     <button
                       type="button"
                       onClick={() => removeRule(index)}
@@ -272,6 +282,50 @@ export default function DetectionRulesEditor({
                   </div>
                 )}
   
+                {rule.type === "service_running" && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={rule.serviceName}
+                      maxLength={256}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.serviceNamePlaceholder",
+                      )}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.serviceName",
+                      )}
+                      aria-invalid={
+                        rule.serviceName !== "" && !isValidServiceName(rule.serviceName)
+                      }
+                      data-testid="detection-rule-service-name"
+                      onChange={(event) =>
+                        updateRule(index, {
+                          ...rule,
+                          serviceName: event.target.value,
+                        })
+                      }
+                      className={inputClass}
+                    />
+                    {rule.serviceName !== "" && !isValidServiceName(rule.serviceName) ? (
+                      <p
+                        className="mt-1 text-xs text-destructive"
+                        role="alert"
+                        data-testid="detection-rule-service-invalid"
+                      >
+                        {i18n.t(
+                          "policies:software.detectionRulesEditor.serviceNameInvalid",
+                        )}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:software.detectionRulesEditor.serviceNameHint",
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {rule.type === "file_version" && (
                   <>
                     <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_1fr]">

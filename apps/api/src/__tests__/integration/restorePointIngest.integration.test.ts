@@ -172,6 +172,7 @@ async function postHttpResult(t: Tenant, commandId: string, body: Record<string,
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: t.device.id,
       agentId: t.device.agentId,
       orgId: t.orgId,
@@ -194,6 +195,9 @@ async function postHttpResult(t: Tenant, commandId: string, body: Record<string,
 
 async function sendWsResult(t: Tenant, commandId: string, body: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(t.device.agentId, {
+    agentId: t.device.agentId,
+    siteId: t.siteId,
+    installIncarnation: 1,
     deviceId: t.device.id, orgId: t.orgId, partnerId: t.partnerId,
   });
   await handlers.onOpen({}, fakeWs);

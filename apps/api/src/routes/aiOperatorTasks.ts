@@ -43,6 +43,9 @@ import {
   operatorTaskListQuerySchema,
   type CreateOperatorTaskInput,
   type IdentityOffboardingInput,
+  type AiOperatorIdentityTaskDraftDto,
+  type AiOperatorPlanApprovalDto,
+  type AiOperatorPlanEffectDto,
   type AiOperatorTaskDto,
   type AiOperatorTaskListItemDto,
 } from '@breeze/shared';
@@ -51,6 +54,8 @@ import { db } from '../db';
 import {
   aiAgentRuns,
   aiOperatorOperations,
+  aiOperatorPlanApprovalEffects,
+  aiOperatorPlanApprovals,
   aiOperatorTaskEvents,
   aiOperatorTaskSteps,
   aiOperatorTaskTargetAccounts,
@@ -58,6 +63,8 @@ import {
   aiOperatorTasks,
   contacts,
   devices,
+  users,
+  wispGrants,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
@@ -95,6 +102,7 @@ import {
   operatorTasksCursorFromRow,
 } from '../services/aiOperator/operatorTasksListCursor';
 import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
+import { planEffectOperationKey } from '../services/aiOperator/planApproval';
 
 /**
  * The agent kind an operator task is delegated to. The effective agent is
@@ -165,6 +173,13 @@ const TASK_ROW_COLUMNS = {
   successorOfTaskId: aiOperatorTasks.successorOfTaskId,
   createdAt: aiOperatorTasks.createdAt,
   updatedAt: aiOperatorTasks.updatedAt,
+  // W07 "Wisp for <user>" provenance — joined under the request db context;
+  // an RLS-hidden grant row yields a null grantorUserId and `wisp: null`.
+  grantId: aiOperatorTasks.grantId,
+  requestedByRunId: aiOperatorTasks.requestedByRunId,
+  depth: aiOperatorTasks.depth,
+  grantorUserId: wispGrants.grantorUserId,
+  grantorName: users.name,
 } as const;
 
 /**
@@ -434,6 +449,8 @@ aiOperatorTasksRoutes.get(
         createdAtRaw: sql<string>`to_char(${aiOperatorTasks.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       })
       .from(aiOperatorTasks)
+      .leftJoin(wispGrants, eq(aiOperatorTasks.grantId, wispGrants.id))
+      .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
       .$dynamic();
 
     // LEFT-join `devices` only when the caller is actually site-restricted
@@ -482,6 +499,8 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
   const [task] = await db
     .select(TASK_ROW_COLUMNS)
     .from(aiOperatorTasks)
+    .leftJoin(wispGrants, eq(aiOperatorTasks.grantId, wispGrants.id))
+    .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
     // LEFT — present only to evaluate the site-visibility predicate below.
     .leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id))
     .where(
@@ -629,8 +648,162 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
     stepRows as OperatorStepRowInput[],
     eventRows as OperatorEventRowInput[],
   );
-  return c.json({ data: dto });
+  // Appended AFTER every shipped field, so their bytes and order are unchanged.
+  const plan = await readTaskPlan(task.id, task.orgId);
+  return c.json({ data: { ...dto, plan } });
 });
+
+// ---------------------------------------------------------------------------
+// W06 R1b (G2): the plan a task proposed, read-only
+// ---------------------------------------------------------------------------
+
+/** Same cap as every sibling read on this route. */
+const PLAN_READ_LIMIT = 500;
+
+type PlanApprovalRow = {
+  id: string; taskId: string; stepKey: string; planRevision: number; effectSetDigest: string; effectCount: number;
+  intentId: string | null; state: AiOperatorPlanApprovalDto['state']; approvedByUserId: string | null;
+  approvedAt: Date | null; supersededByRevision: number | null; createdAt: Date;
+};
+type PlanEffectRow = {
+  approvalId: string; planRevision: number; ordinal: number; toolName: string;
+  provider: AiOperatorPlanEffectDto['provider']; targetId: string | null; targetLabel: string;
+  principalLabel: string | null; rendering: string; idempotencyClass: AiOperatorPlanEffectDto['idempotencyClass'];
+};
+type PlanOperationLinkRow = {
+  operationKey: string; taskStepKey: string; planRevision: number | null;
+  resultState: NonNullable<AiOperatorPlanEffectDto['operationState']>; noop: boolean;
+};
+
+/**
+ * Every plan revision of one task, `superseded` included, on the REQUEST's db
+ * context (RLS applies) with explicit `task_id` + `org_id` predicates on both
+ * plan tables and on the operation link read, each capped like its siblings.
+ *
+ * An effect's `operationState` / `noop` come only from the operation row the
+ * walk keyed to it: `planEffectOperationKey` over the approval's step and the
+ * effect's revision, tool, target and ordinal (the key the walk itself
+ * reserves under), AND that row's own `task_step_key` and `plan_revision`
+ * agreeing. Anything else is `null` / `false` — never a guess. The raw
+ * `result` jsonb never leaves SQL: only its `noop` flag is compared there.
+ */
+async function readTaskPlan(taskId: string, orgId: string): Promise<AiOperatorPlanApprovalDto[]> {
+  const approvals = await db
+    .select({
+      id: aiOperatorPlanApprovals.id,
+      taskId: aiOperatorPlanApprovals.taskId,
+      stepKey: aiOperatorPlanApprovals.stepKey,
+      planRevision: aiOperatorPlanApprovals.planRevision,
+      effectSetDigest: aiOperatorPlanApprovals.effectSetDigest,
+      effectCount: aiOperatorPlanApprovals.effectCount,
+      intentId: aiOperatorPlanApprovals.intentId,
+      state: aiOperatorPlanApprovals.state,
+      approvedByUserId: aiOperatorPlanApprovals.approvedByUserId,
+      approvedAt: aiOperatorPlanApprovals.approvedAt,
+      supersededByRevision: aiOperatorPlanApprovals.supersededByRevision,
+      createdAt: aiOperatorPlanApprovals.createdAt,
+    })
+    .from(aiOperatorPlanApprovals)
+    .where(and(eq(aiOperatorPlanApprovals.taskId, taskId), eq(aiOperatorPlanApprovals.orgId, orgId)))
+    // NEWEST first under the cap, so a long re-plan history drops the OLDEST
+    // revisions, never the current one; re-sorted ascending below.
+    .orderBy(desc(aiOperatorPlanApprovals.planRevision))
+    .limit(PLAN_READ_LIMIT) as PlanApprovalRow[];
+  if (approvals.length === 0) return [];
+  approvals.sort((a, b) => a.planRevision - b.planRevision);
+
+  const effects = await db
+    .select({
+      approvalId: aiOperatorPlanApprovalEffects.approvalId,
+      planRevision: aiOperatorPlanApprovalEffects.planRevision,
+      ordinal: aiOperatorPlanApprovalEffects.ordinal,
+      toolName: aiOperatorPlanApprovalEffects.toolName,
+      provider: aiOperatorPlanApprovalEffects.provider,
+      targetId: aiOperatorPlanApprovalEffects.targetId,
+      targetLabel: aiOperatorPlanApprovalEffects.targetLabel,
+      principalLabel: aiOperatorPlanApprovalEffects.principalLabel,
+      rendering: aiOperatorPlanApprovalEffects.rendering,
+      idempotencyClass: aiOperatorPlanApprovalEffects.idempotencyClass,
+    })
+    .from(aiOperatorPlanApprovalEffects)
+    .where(and(eq(aiOperatorPlanApprovalEffects.taskId, taskId), eq(aiOperatorPlanApprovalEffects.orgId, orgId)))
+    // Same rule: the newest revisions' effects survive the cap.
+    .orderBy(desc(aiOperatorPlanApprovalEffects.planRevision), aiOperatorPlanApprovalEffects.ordinal)
+    .limit(PLAN_READ_LIMIT) as PlanEffectRow[];
+
+  const approvalById = new Map(approvals.map((a) => [a.id, a]));
+  const keyed = effects.flatMap((e) => {
+    const approval = approvalById.get(e.approvalId);
+    // An effect whose approval is not in this task's read is dropped, not re-homed.
+    if (!approval || approval.planRevision !== e.planRevision) return [];
+    let key: string | null = null;
+    try {
+      key = planEffectOperationKey({
+        stepKey: approval.stepKey, planRevision: e.planRevision, toolName: e.toolName, targetId: e.targetId, ordinal: e.ordinal,
+      });
+    } catch {
+      key = null; // an over-long key cannot be the walk's: no link
+    }
+    return [{ effect: e, approval, key }];
+  });
+
+  const keys = [...new Set(keyed.map((k) => k.key).filter((k): k is string => k !== null))];
+  const ops = keys.length === 0 ? [] : await db
+    .select({
+      operationKey: aiOperatorOperations.operationKey,
+      taskStepKey: aiOperatorOperations.taskStepKey,
+      planRevision: aiOperatorOperations.planRevision,
+      resultState: aiOperatorOperations.resultState,
+      noop: sql<boolean>`coalesce((${aiOperatorOperations.result} ->> 'noop') = 'true', false)`,
+    })
+    .from(aiOperatorOperations)
+    .where(and(
+      eq(aiOperatorOperations.taskId, taskId),
+      eq(aiOperatorOperations.orgId, orgId),
+      inArray(aiOperatorOperations.operationKey, keys),
+    ))
+    .limit(PLAN_READ_LIMIT) as PlanOperationLinkRow[];
+  const opsByKey = new Map<string, PlanOperationLinkRow[]>();
+  for (const op of ops) opsByKey.set(op.operationKey, [...(opsByKey.get(op.operationKey) ?? []), op]);
+
+  const effectsByApproval = new Map<string, AiOperatorPlanEffectDto[]>();
+  for (const { effect, approval, key } of keyed) {
+    const candidates = key ? opsByKey.get(key) ?? [] : [];
+    const op = candidates.length === 1
+      && candidates[0]!.taskStepKey === approval.stepKey
+      && candidates[0]!.planRevision === effect.planRevision
+      ? candidates[0]!
+      : null;
+    const list = effectsByApproval.get(approval.id) ?? [];
+    list.push({
+      ordinal: effect.ordinal,
+      toolName: effect.toolName,
+      provider: effect.provider,
+      targetLabel: effect.targetLabel,
+      principalLabel: effect.principalLabel,
+      rendering: effect.rendering,
+      idempotencyClass: effect.idempotencyClass,
+      operationState: op ? op.resultState : null,
+      noop: op ? op.noop === true : false,
+    });
+    effectsByApproval.set(approval.id, list);
+  }
+
+  return approvals.map((a) => ({
+    id: a.id,
+    taskId: a.taskId,
+    planRevision: a.planRevision,
+    effectSetDigest: a.effectSetDigest,
+    effectCount: a.effectCount,
+    intentId: a.intentId,
+    state: a.state,
+    approvedByUserId: a.approvedByUserId,
+    approvedAt: a.approvedAt ? a.approvedAt.toISOString() : null,
+    supersededByRevision: a.supersededByRevision,
+    createdAt: a.createdAt.toISOString(),
+    effects: (effectsByApproval.get(a.id) ?? []).sort((x, y) => x.ordinal - y.ordinal),
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Recipe Library (W06 R1a): the Library, drafts, and contact-targeted admission
@@ -902,7 +1075,7 @@ aiOperatorTasksRoutes.post(
         plannedEffectTools: plannedEffectTools.filter((t) => !degraded.has(t)),
         degradedEffectTools: plannedEffectTools.filter((t) => degraded.has(t)),
         manualWork,
-      },
+      } satisfies AiOperatorIdentityTaskDraftDto,
     });
   },
 );

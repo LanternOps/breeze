@@ -315,3 +315,31 @@ describe('recordNudge', () => {
     await expect(recordNudge(C1, G1, new Date())).rejects.toBeInstanceOf(ConcernNotFoundError);
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('concern transition metrics', () => {
+  it('upsertConcern counts opened vs updated; resolveConcern counts resolved only on a real transition', async () => {
+    wm.incWispConcern.mockClear();
+    h.insertReturning.push([{ id: C1 }]);
+    await upsertConcern(baseInput);
+    expect(wm.incWispConcern).toHaveBeenLastCalledWith('opened');
+    h.insertReturning.push([]);
+    h.selectRows.push([{ id: 'existing' }]);
+    await upsertConcern(baseInput);
+    expect(wm.incWispConcern).toHaveBeenLastCalledWith('updated');
+
+    wm.incWispConcern.mockClear();
+    h.updateReturning.push([]);
+    await resolveConcern(C1, {}, 'nothing live');
+    expect(wm.incWispConcern).not.toHaveBeenCalled();
+    h.updateReturning.push([resolvedRow]);
+    await resolveConcern(C1, {}, 'done');
+    expect(wm.incWispConcern).toHaveBeenCalledExactlyOnceWith('resolved');
+  });
+});

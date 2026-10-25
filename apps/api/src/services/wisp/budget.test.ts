@@ -293,3 +293,22 @@ describe('plan defaults and bounds', () => {
     await expect(grantSettingsBounds(PARTNER)).rejects.toBe(err);
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('chargeableUnderGrant metrics', () => {
+  it('counts wisp_budget_exhausted_total only on a refusal', async () => {
+    wm.incWispBudgetExhausted.mockClear();
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 175 }]);
+    await chargeableUnderGrant(GRANT, 25);
+    expect(wm.incWispBudgetExhausted).not.toHaveBeenCalled();
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 176 }]);
+    await chargeableUnderGrant(GRANT, 25);
+    expect(wm.incWispBudgetExhausted).toHaveBeenCalledTimes(1);
+  });
+});

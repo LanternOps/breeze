@@ -134,5 +134,298 @@
     "confirmLabel": "Delegieren",
     "queued": "Aufgabe an den Operator delegiert.",
     "failed": "Delegierung an den Operator fehlgeschlagen."
+  },
+  "nav": {
+    "operator": "KI-Operator"
+  },
+  "effectTool": {
+    "googleSetVacation": "Gmail-Abwesenheitsnotiz einrichten",
+    "googleSetForwarding": "Gmail an die übernehmende Person weiterleiten",
+    "googleAddMailDelegate": "Der übernehmenden Person Zugriff auf das Gmail-Postfach geben",
+    "googleRemoveFromGroup": "Aus Google-Gruppen entfernen",
+    "googleRemoveLicense": "Lizenzen von Google Workspace entfernen",
+    "googleAccountWipeMobileDevice": "Das Arbeitskonto von registrierten Smartphones entfernen",
+    "googleSignout": "Google-Sitzungen beenden",
+    "googleSuspendUser": "Das Google-Konto sperren",
+    "m365SetAutoReply": "Outlook-Abwesenheitsnotiz einrichten",
+    "m365RemoveFromGroup": "Aus den Gruppen in Microsoft 365 entfernen",
+    "m365RemoveLicense": "Lizenzen von Microsoft 365 entfernen",
+    "m365RetireIntuneDevice": "Über Intune verwaltete Smartphones außer Betrieb nehmen",
+    "m365RevokeSessions": "Anmeldesitzungen bei Microsoft 365 widerrufen",
+    "m365DisableUser": "Anmeldung bei Microsoft 365 blockieren"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Bereiche des Operators",
+      "tasks": "Aufgaben",
+      "library": "Bibliothek"
+    },
+    "noOrg": "Wählen Sie eine Organisation aus, um zu sehen, welche Rezepte sie ausführen kann."
+  },
+  "taskList": {
+    "loading": "Aufgaben werden geladen...",
+    "loadFailed": "Aufgaben konnten nicht geladen werden.",
+    "empty": "Noch keine Operator-Aufgaben.",
+    "emptyHint": "Aufgaben, die Sie über die Bibliothek, ein Ticket, einen Kontakt oder eine Warnung starten, erscheinen hier.",
+    "loadMore": "Mehr laden",
+    "loadMoreFailed": "Weitere Aufgaben konnten nicht geladen werden."
+  },
+  "recipeLibrary": {
+    "loading": "Rezepte werden geladen...",
+    "loadFailed": "Die Rezeptbibliothek konnte nicht geladen werden.",
+    "empty": "Für diese Organisation sind noch keine Rezepte verfügbar.",
+    "readiness": {
+      "ready": "Bereit",
+      "setupRequired": "Einrichtung erforderlich",
+      "unavailable": "Nicht verfügbar"
+    },
+    "setupBlock": {
+      "title": "Einrichtung erforderlich",
+      "description": "Solange dies offen ist, werden die davon abhängigen Schritte manuell ausgeführt."
+    },
+    "manualSteps": {
+      "count_one": "1 Schritt wird manuell ausgeführt",
+      "count_other": "{{count}} Schritte werden manuell ausgeführt",
+      "expand": "Schritte anzeigen",
+      "collapse": "Diese Schritte ausblenden",
+      "explainer": "Breeze automatisiert diese Schritte noch nicht. Die Aufgabe fügt sie dem Ticket als Checklisten-Punkte hinzu."
+    },
+    "degraded": {
+      "title": "Was manuell erledigt wird",
+      "description": "Für diese Organisation werden diese Schritte zu Checklisten-Punkten im Ticket der Aufgabe, statt automatisch ausgeführt zu werden."
+    },
+    "action": {
+      "reconsentM365": "Erteilen Sie die aktualisierten Berechtigungen für Microsoft 365 in den Integrationseinstellungen dieser Organisation.",
+      "connectGoogle": "Verbinden Sie Google Workspace für diese Organisation über deren Integrationen.",
+      "connectM365": "Verbinden Sie Microsoft 365 für diese Organisation über deren Integrationen.",
+      "open": "Öffnen",
+      "allowTools_one": "{{count}} Tool für {{agent}} zulassen",
+      "allowTools_other": "{{count}} Tools für {{agent}} zulassen",
+      "allowToolsScope": "Dies ändert {{agent}} überall, wo er eingesetzt wird, nicht nur für dieses Rezept.",
+      "allowToolsScopeAllOrgs": "Dies ändert {{agent}} überall, wo er eingesetzt wird, in jeder Organisation, die er betreut, nicht nur für dieses Rezept.",
+      "allowToolsList": "Zuzulassende Tools:",
+      "agentFallback": "der Helpdesk-Agent",
+      "allowToolsSuccess": "Tools für {{agent}} zugelassen.",
+      "allowToolsFailed": "Die Tools konnten nicht zugelassen werden.",
+      "mfaRequired": "Zum Ändern der Tools eines Agents ist eine Sitzung mit Multi-Faktor-Authentifizierung nötig. Melden Sie sich ab, melden Sie sich erneut mit MFA an und versuchen Sie es noch einmal.",
+      "allowlistFull": "Die Tool-Liste dieses Agents ist voll ({{limit}} Tools). Entfernen Sie nicht mehr benötigte Tools unter Einstellungen → KI-Agenten und versuchen Sie es noch einmal.",
+      "allowToolsScopeUnknown": "Breeze konnte den Geltungsbereich dieses Agents nicht lesen. Gehen Sie davon aus, dass die Änderung in jeder Organisation gilt, die er betreut."
+    },
+    "start": {
+      "offboard": "Offboarding für eine Person",
+      "notEnabled": "Dieses Rezept ist für diese Bereitstellung nicht aktiviert.",
+      "fromDeviceOrAlert": "Starten Sie dieses Rezept über ein Gerät oder eine Warnung."
+    },
+    "recipe": {
+      "identityOffboardingName": "Offboarding für eine Person",
+      "identityOffboardingSummary": "Bestätigen Sie, wer ausscheidet, leiten Sie die E-Mails um und entfernen Sie den Zugriff in Microsoft 365 und Google Workspace in sicherer Reihenfolge mit einer einzigen Genehmigung. Manuelle Arbeit wird im Ticket nachverfolgt.",
+      "serviceRecoveryName": "Einen gestoppten Dienst wiederherstellen",
+      "serviceRecoverySummary": "Untersuchen Sie einen gestoppten Windows-Dienst, starten Sie ihn mit Genehmigung neu und prüfen Sie, dass er weiterläuft."
+    },
+    "refreshFailed": "Die Rezeptbibliothek konnte nicht aktualisiert werden; die Anzeige ist möglicherweise veraltet."
+  },
+  "startRecipe": {
+    "title": "Offboarding für eine Person",
+    "close": "Schließen",
+    "person": {
+      "label": "Ausscheidende Person",
+      "hintLabel": "Name oder E-Mail-Adresse",
+      "hintPlaceholder": "z. B. Dana Schmidt oder dana@example.com",
+      "contactChosen": "Kontakt: {{name}}",
+      "useHint": "Stattdessen einen Namen oder eine E-Mail-Adresse verwenden",
+      "readOnly": "Von diesem Kontakt aus gestartet."
+    },
+    "inheritor": {
+      "label": "Wer übernimmt die E-Mails",
+      "none": "Niemand",
+      "contact": "Ein Kontakt",
+      "address": "Eine E-Mail-Adresse",
+      "pickContact": "Kontakt auswählen",
+      "addressPlaceholder": "vorname.nachname@example.com",
+      "contactsFailed": "Kontakte konnten nicht geladen werden.",
+      "loadMore": "Weitere Kontakte laden"
+    },
+    "autoReply": {
+      "label": "Text der automatischen Antwort",
+      "defaultWithInheritor": "Vielen Dank für Ihre E-Mail. {{person}} gehört nicht mehr zum Unternehmen. Bitte wenden Sie sich an {{inheritor}}.",
+      "defaultNoInheritor": "Vielen Dank für Ihre E-Mail. {{person}} gehört nicht mehr zum Unternehmen, und dieses Postfach wird nicht mehr überwacht.",
+      "thePerson": "Diese Person"
+    },
+    "cutoff": {
+      "label": "Letzter Tag (Stichtag)",
+      "now": "Leer bedeutet sofortiger Start: Genehmigte Schritte laufen, sobald der Plan genehmigt ist.",
+      "scheduled": "Genehmigte Schritte warten bis zu diesem Zeitpunkt, bevor sie laufen."
+    },
+    "keepMailbox": {
+      "label": "Postfach behalten",
+      "help": "Breeze lässt die Lizenz für Microsoft 365 bestehen und fügt einen manuellen Schritt hinzu, der das Postfach in ein freigegebenes Postfach umwandelt. Würde die Lizenz zuerst entfernt, begänne die 30-tägige Löschfrist des Postfachs."
+    },
+    "effects": {
+      "label": "Was zu tun ist",
+      "autoReply": "Automatische Antwort einrichten",
+      "autoReplyHelp": "Beantwortet neue E-Mails mit der obigen Nachricht.",
+      "forwarding": "E-Mails weiterleiten",
+      "forwardingHelp": "Leitet neue E-Mails an die übernehmende Person weiter.",
+      "mailDelegate": "Der übernehmenden Person Postfachzugriff geben",
+      "mailDelegateHelp": "Erlaubt der übernehmenden Person, das gesamte Postfach zu lesen. Wählen Sie dies bewusst.",
+      "removeGroups": "Aus Gruppen entfernen",
+      "removeGroupsHelp": "Entfernt die Person aus Gruppen und Verteilerlisten.",
+      "removeLicenses": "Lizenzen entfernen",
+      "removeLicensesHelp": "Gibt kostenpflichtige Lizenzen frei, sobald die E-Mails versorgt sind.",
+      "revokeSessions": "Überall abmelden",
+      "revokeSessionsHelp": "Beendet die aktiven Anmeldesitzungen der Person.",
+      "wipeMobile": "Arbeitskonto von Smartphones entfernen",
+      "wipeMobileHelp": "Entfernt das Arbeitskonto von registrierten Smartphones. Das Gerät selbst wird nicht gelöscht.",
+      "disableAccount": "Anmeldung blockieren",
+      "disableAccountHelp": "Deaktiviert das Konto. Dieser Schritt kommt zuletzt, nachdem die E-Mails umgeleitet wurden."
+    },
+    "devices": {
+      "label": "Geräte zum Einsammeln oder Sperren",
+      "help": "Optional. Breeze greift in diesem Rezept nicht auf Geräte zu: Jedes ausgewählte Gerät wird zu einem Checklisten-Punkt für einen Techniker.",
+      "searchPlaceholder": "Geräte nach Namen suchen",
+      "selectedByYou": "Von Ihnen ausgewählt",
+      "limit": "Sie können bis zu {{max}} Geräte auswählen.",
+      "loading": "Geräte werden geladen...",
+      "loadFailed": "Geräte konnten nicht geladen werden.",
+      "empty": "Keine passenden Geräte.",
+      "selectedTitle": "Ausgewählt: {{count}} von {{max}}",
+      "remove": "Entfernen"
+    },
+    "preview": {
+      "button": "Vorschau",
+      "refresh": "Vorschau aktualisieren",
+      "stale": "Das Formular hat sich seit der Vorschau geändert. Aktualisieren Sie die Vorschau vor dem Start.",
+      "failed": "Die Vorschau konnte nicht erstellt werden.",
+      "title": "Vorschau",
+      "personResolved": "Offboarding für: {{name}}",
+      "personUnresolved": "Kein eindeutiger Kontakt gefunden. Wählen Sie unten einen aus oder ändern Sie den Namen.",
+      "personNone": "Kein Kontakt passt zu diesem Namen oder dieser E-Mail-Adresse.",
+      "candidatesLabel": "Mögliche Treffer (einen auswählen):",
+      "plannedTitle": "Schritte, die Breeze ausführt",
+      "orderNote": "Nach Dienst gruppiert, nicht in Reihenfolge. Die genaue Reihenfolge wird festgelegt, nachdem ein Techniker die Identität bestätigt hat, und vor der Ausführung zur Genehmigung angezeigt.",
+      "plannedEmpty": "Es werden keine Schritte automatisch ausgeführt.",
+      "degradedTitle": "Schritte, die manuell erledigt werden",
+      "manualTitle": "Checklisten-Punkte, die die Aufgabe hinzufügt",
+      "ticketNote": "Die Aufgabe eröffnet für diese Checklisten-Punkte ein eigenes Ticket.",
+      "ticketSourceNote": "Von einem Ticket aus gestartet: Die Aufgabe eröffnet ein eigenes Checklisten-Ticket und ändert dieses nicht."
+    },
+    "submit": "Offboarding starten",
+    "started": "Offboarding gestartet.",
+    "failed": "Das Offboarding konnte nicht gestartet werden.",
+    "duplicate": "Für diese Person läuft bereits ein Offboarding.",
+    "duplicateLink": "Laufende Aufgabe öffnen",
+    "replayed": "Dieses Offboarding wurde bereits gestartet; es wird geöffnet."
+  },
+  "taskPanels": {
+    "tabsLabel": "Aufgabenansichten",
+    "tabs": {
+      "steps": "Schritte",
+      "plan": "Ablaufplan",
+      "events": "Zeitleiste"
+    },
+    "steps": {
+      "empty": "Es wurde noch kein Schritt gestartet.",
+      "current": "Aktueller Schritt",
+      "started": "Gestartet {{time}}",
+      "settled": "Abgeschlossen {{time}}",
+      "waitingApproval": "Wartet auf die Genehmigung des Plans.",
+      "waitingMaintenanceWindow": "Wartet auf das Wartungsfenster, bevor die nächste Änderung läuft.",
+      "waitingExecution": "Läuft: wartet auf den Abschluss der aktuellen Änderung.",
+      "waitingOther": "Wartet: {{reason}}.",
+      "waitingHumanWork": "Wartet darauf, dass ein Techniker den Checklisten-Punkt im Ticket abhakt.",
+      "openTicket": "Checklisten-Ticket öffnen",
+      "stepKey": {
+        "intake": "Die Anfrage verstehen",
+        "confirmIdentity": "Bestätigen, wer ausscheidet",
+        "discover": "Die Konten ermitteln",
+        "review": "Das Gefundene prüfen",
+        "effects": "Genehmigen und die Änderungen durchführen",
+        "manualWork": "Arbeit aus der Checkliste",
+        "verifyOutcome": "Das Ergebnis überprüfen",
+        "document": "Den Nachweis verfassen"
+      },
+      "kind": {
+        "reason": "Analyse",
+        "effect": "Änderungen",
+        "probe": "Prüfung",
+        "wait": "Warten",
+        "humanWork": "Manuelle Arbeit",
+        "document": "Nachweis"
+      },
+      "state": {
+        "pending": "Nicht gestartet",
+        "running": "Läuft",
+        "waiting": "Wartet",
+        "succeeded": "Erledigt",
+        "failed": "Fehlgeschlagen",
+        "skipped": "Übersprungen"
+      }
+    },
+    "plan": {
+      "unavailable": "Dieser Server hat den Plan für diese Aufgabe nicht gesendet.",
+      "empty": "Es wurde noch kein Plan vorgeschlagen.",
+      "revision": "Version {{n}}",
+      "effectCount_one": "{{count}} Änderung",
+      "effectCount_other": "{{count}} Änderungen",
+      "approvedAt": "Genehmigt {{time}}",
+      "proposedAt": "Vorgeschlagen {{time}}",
+      "supersededBy": "Durch Version {{n}} ersetzt. Hier als Nachweis aufbewahrt, was genehmigt und dann ersetzt wurde.",
+      "orderNote": "Änderungen laufen einzeln in der nummerierten Reihenfolge, dienstübergreifend.",
+      "target": "Für: {{label}}",
+      "principal": "Konto: {{label}}",
+      "noop": "Bereits vorhanden: Es wurde nichts gesendet.",
+      "state": {
+        "pending": "Wartet auf Genehmigung",
+        "approved": "Genehmigt",
+        "rejected": "Abgelehnt",
+        "expired": "Abgelaufen",
+        "superseded": "Ersetzt"
+      },
+      "idempotency": {
+        "idempotent": "Gefahrlos wiederholbar",
+        "idempotentByProbe": "Wird vor der Wiederholung geprüft",
+        "nonIdempotent": "Wird nie automatisch wiederholt"
+      },
+      "operation": {
+        "none": "Nicht gestartet / unbekannt",
+        "pending": "In Bearbeitung",
+        "succeeded": "Erfolgreich",
+        "failed": "Fehlgeschlagen",
+        "unknown": "Ergebnis unbekannt",
+        "superseded": "Ersetzt"
+      }
+    },
+    "events": {
+      "empty": "Noch keine Ereignisse aufgezeichnet.",
+      "showAll": "Alle {{count}} Ereignisse anzeigen",
+      "showRecent": "Nur die letzten {{count}} anzeigen",
+      "hiddenOlder_one": "{{count}} älteres Ereignis ist ausgeblendet.",
+      "hiddenOlder_other": "{{count}} ältere Ereignisse sind ausgeblendet.",
+      "capped": "Es werden die letzten {{count}} Ereignisse angezeigt. Ältere Ereignisse werden hier nicht angezeigt.",
+      "actor": {
+        "coordinator": "Koordinator",
+        "reconciler": "Abgleicher",
+        "user": "Benutzer",
+        "agent": "KI-Agent",
+        "system": "Systemprozess"
+      },
+      "type": {
+        "taskAdmitted": "Aufgabe angenommen",
+        "leaseClaimed": "Arbeit übernommen",
+        "stepOpened": "Schritt gestartet",
+        "stepSettled": "Schritt abgeschlossen",
+        "waitEntered": "Wartet",
+        "waitResolved": "Wartezeit beendet",
+        "targetAttached": "Ziel zugeordnet",
+        "targetDetached": "Ziel getrennt",
+        "targetAccountFrozen": "Konto erfasst",
+        "operationReserved": "Änderung reserviert",
+        "operationSettled": "Änderung abgeschlossen",
+        "verificationRecorded": "Überprüfung erfasst",
+        "planRevisionBumped": "Planversion geändert",
+        "humanWorkUnticked": "Checklisten-Punkt abgewählt",
+        "taskSettled": "Aufgabe abgeschlossen"
+      }
+    }
   }
 }

@@ -136,6 +136,8 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',
   'services/reportSeries/targets.ts': 'report: multi-org series target orgs (org-level report definitions, not devices; hidden org types excluded)',
+  'services/securityScanSweepHits.ts': 'read model: top detection-rule hits of one IOC sweep for the AI ioc_hunt sweep_status read (#6268); joins devices only to apply the caller site ceiling (sweepScanVisibility). Selects no targets',
+  'services/securityScanSweeps.ts': 'read model: IOC sweep progress (#6263 W05); joins devices only to apply the caller site ceiling to the aggregates. Sweep targets come from services/securityScanSweepTargets.ts, a FANOUT_MODULES entry',
   'services/scriptLastRun.ts': 'read model: Script Library LAST RUN column (#9563); a max(created_at) over existing script_executions, joining devices only to apply the caller site restriction; selects no targets and dispatches nothing',
   'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
@@ -195,8 +197,12 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/securityScanStart.ts': 'single-device Scan now (#6263 W05-11, lifted from routes/security/scans.ts): reads the ONE device id the caller named under its own RLS; selects no targets. queueCommand refuses a parked device',
+  'jobs/securityScanClaim.ts': 'IOC scan claim (#6263 W05-3): re-reads ONE already-queued scan and its device under the partner lock; selects no targets. The command goes through dispatchDeviceCommand, which refuses a parked device (device_pending_assignment); sweep targets come from services/securityScanSweepTargets.ts and the pump, both FANOUT_MODULES entries',
   'services/wisp/concernTools.ts': 'Wisp W05a raise_concern (#9911): one existence check (id, org_id) for a device the user named, AFTER assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs (notHiddenOrgType in grantAuthority), so a parked device never matches; selects no targets and runs nothing',
   'services/wisp/readiness.ts': 'Wisp readiness inventory (#9917): per-org "can Wisp watch X here" booleans for the orgs of a grant ceiling (hidden orgs already out); joins devices only to map a device-level patch-policy assignment to its org; selects no targets',
+  'services/wisp/specialistLaunchers.ts': 'Wisp W07 coordinator launchers (#9913): one existence check (id, org_id) for the device a remediation_research request names, AFTER the coordinator\'s assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs, so a parked device never matches; selects no targets',
+  'services/wisp/specialists/bulkTicketReply.ts': 'Wisp W07 bulk_ticket_reply (#9906, w00 A30): left-joins devices only to read the site of a pinned ticket\'s device for the ceiling site check, under the acting human\'s RLS context; selects no devices or targets — the ticket set is pinned by the approved digest',
   'services/wisp/grantAuthority.ts': 'Wisp delegation ceiling (#9908): computes which orgs a grant may reach and only NARROWS it (hidden orgs out of the live reach); selects no devices or targets',
   'services/backupRestoreIntegrity.ts': 'reinstall reattach (#8318 §5.4): reads the ONE device that took a snapshot, to date the snapshot against its install incarnation; selects no targets',
   'services/deviceInstallBoundary/index.ts': 'reinstall reattach (#8318 §5): locks the ONE device row a reattach confirm names (a reattach target is never parked); selects no targets',
@@ -351,7 +357,7 @@ const EXEMPT: Record<string, string> = {
   'services/timeSync/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/timeSync/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, device view, fleet rows already filtered by notParkedDeviceCondition); selects no work',
   'services/timeSync/configUpdate.ts': 'agent self-service: builds the heartbeat time_sync_settings payload for the calling agent\'s own device id',
-  'services/workloads/ingest.ts': 'agent self-service: ownership-checks device.id+orgId; mounted only under the agent\'s own workloads route',
+  'services/agentOwnDeviceRow.ts': 'stale callers (#8318 §6.4): reads (bound, locked) and updates, and after a 0-row read or update re-reads, the ONE device row the agent-authenticated caller owns (by id + agent_id); selects no targets. Its callers include the workloads ingest (services/workloads/ingest.ts), which reads its device row only through it',
   'services/workloads/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/workloads/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, the device view); selects no work',
   'services/timeSync/exports.ts':'derived: daily rows only for the device ids iterateFleetTimeRows already selected with notParkedDeviceCondition',

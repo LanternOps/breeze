@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Entegrasyon ekle",
       "syncNow": "Şimdi senkronize et",
-      "deleteIntegration": "Entegrasyonu sil"
+      "deleteIntegration": "Entegrasyonu sil",
+      "editRetention": "Saklama süresini değiştir"
     },
     "messages": {
       "loadHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
       "loadFailed": "Entegrasyonlar yüklenemedi",
       "syncFailed": "{{name}} için senkronizasyon tetiklenemedi",
       "syncQueued": "Senkronizasyon {{name}} için sıraya alındı",
-      "deleteConfirm": "{{name}} silinsin mi? Saklanan etkinlikler, saklama ilkesi uyarınca saklanır.",
+      "deleteConfirm": "{{name}} silinsin mi? İlkeleri, olayları ve istatistikleri arka planda kaldırılır.",
       "deleteFailed": "{{name}} silinemedi",
-      "deleteSuccess": "Silindi {{name}}"
+      "deleteSuccess": "{{name}} arka planda siliniyor"
     },
     "loading": "Entegrasyonlar yükleniyor…",
     "empty": {
@@ -1750,7 +1751,25 @@
       "actions": "Eylemler"
     },
     "lastSyncFailedSuffix": "— başarısız oldu",
-    "never": "Hiçbir zaman"
+    "lastSyncPartialSuffix": " — yetişiyor",
+    "never": "Hiçbir zaman",
+    "deletingInBackground": "Siliniyor…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Veri saklama",
+    "description": "Daha eski olaylar ve günlük istatistikler gece çalışan saklama temizliğiyle silinir.",
+    "fieldLabel": "DNS olaylarını ve istatistiklerini sakla (gün)",
+    "fieldHelp": "1–365 gün. Kurulumun varsayılanını kullanmak için boş bırakın (yöneticiniz değiştirmediyse 90 gün).",
+    "invalid": "1 ile 365 arasında tam sayı bir gün değeri girin veya boş bırakın.",
+    "actions": {
+      "dismiss": "İptal",
+      "submit": "Kaydet",
+      "saving": "Kaydediliyor…"
+    },
+    "messages": {
+      "saved": "{{name}} için saklama süresi güncellendi",
+      "saveFailed": "{{name}} için saklama süresi güncellenemedi"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Politikaları Engelle / İzin Ver",

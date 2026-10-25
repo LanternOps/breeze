@@ -36,6 +36,7 @@ describe('markCommandResultProcessingFailed (#3530)', () => {
       commandId: CMD,
       deviceId: DEV,
       targetRole: 'agent',
+      caller: { installIncarnation: 1 },
       storedResult: { status: 'completed', exitCode: 0, stdout: 'hello', error: undefined },
       failedAt: at,
     });
@@ -66,6 +67,7 @@ describe('markCommandResultProcessingFailed (#3530)', () => {
       commandId: CMD,
       deviceId: DEV,
       targetRole: 'agent',
+      caller: { installIncarnation: 1 },
       storedResult: { status: 'failed', exitCode: 3, error: 'disk full' },
     });
     const result = ((setMock.mock.calls[0] as unknown[])[0] as { result: Record<string, unknown> }).result;
@@ -80,6 +82,7 @@ describe('markCommandResultProcessingFailed (#3530)', () => {
       commandId: CMD,
       deviceId: DEV,
       targetRole: 'agent',
+      caller: { installIncarnation: 1 },
       storedResult: { status: 'completed' },
     });
     expect(parked).toBe(false);

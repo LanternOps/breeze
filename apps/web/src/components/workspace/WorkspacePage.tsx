@@ -4,14 +4,16 @@ import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useAiStore } from '@/stores/aiStore';
-import { abortHandoff, completeHandoff, continueInSidePanel, takeHandoff } from '@/stores/aiConversationHandoff';
+import { abortHandoff, completeHandoff, takeHandoff } from '@/stores/aiConversationHandoff';
 import AccessDenied from '../shared/AccessDenied';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import WorkspaceTabBar from './WorkspaceTabBar';
 import WorkspaceChatPanel from './WorkspaceChatPanel';
 import WorkspaceEmptyState from './WorkspaceEmptyState';
+import WorkspaceConversationPicker from './WorkspaceConversationPicker';
+import type { ConversationRow } from '../ai/useAiConversationSource';
 import { parseSessionHash, toastForOpenResult, writeSessionHash } from './sessionHash';
+import { useContinueInPanel } from './useContinueInPanel';
 
 /**
  * #9427 W3 (spec §3.6, D6): `#session=<uuid>` opens or focuses that
@@ -86,47 +88,56 @@ function WorkspaceSessionLink() {
 }
 
 /**
- * #9427 W3: "Continue in side panel" from the tab menu, the header and the
- * error banner. One move at a time; replacing a busy side-panel conversation
- * asks first (continueInSidePanel decides when).
+ * #9840 W4 (spec §3.7, D3): "Open a past conversation". A pick closes the
+ * picker at once; one pick at a time (openSession on an id that already has a
+ * tab appends the draft, so a second pick would carry it twice). The row the
+ * side panel holds MOVES: the tab opens first with the panel's draft, and the
+ * panel is released only once openSession resolved 'opened' or 'focused'
+ * (resolved on the tab's attach being ready). Any other result leaves the
+ * panel as it was. Never a DELETE: release is local.
  */
-function useContinueInPanel() {
+function useOpenPastConversation() {
   const { t } = useTranslation('ai');
-  const [pendingConfirm, setPendingConfirm] = useState<((ok: boolean) => void) | null>(null);
-  const moving = useRef(false);
+  const openSession = useWorkspaceStore((s) => s.openSession);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const picking = useRef(false);
 
-  const continueInPanel = useCallback((tabId: string) => {
-    if (moving.current) return;
-    moving.current = true;
-    continueInSidePanel(tabId, {
-      confirm: () => new Promise<boolean>((resolve) => setPendingConfirm(() => resolve)),
-    })
+  const pickPast = useCallback((row: ConversationRow) => {
+    setPickerOpen(false);
+    if (picking.current) return;
+    picking.current = true;
+    const id = row.id;
+    const fromPanel = row.openIn === 'panel';
+    const opening = fromPanel
+      ? openSession(id, { draft: useAiStore.getState().composerDraft })
+      : openSession(id);
+    void opening
+      .catch((err): 'error' => {
+        console.error('[Workspace] Opening a past conversation failed:', err);
+        return 'error';
+      })
+      .then((result) => {
+        if (fromPanel && (result === 'opened' || result === 'focused')) {
+          useAiStore.getState().releaseSession(id);
+        }
+        const toast = toastForOpenResult(result, {
+          t,
+          onOpenInPanel: () => { void useAiStore.getState().adoptSession(id); },
+        });
+        if (toast) showToast(toast);
+      })
       .catch((err) => {
-        console.error('[Workspace] Continue in side panel failed:', err);
+        console.error('[Workspace] Finishing a past-conversation pick failed:', err);
         showToast({ type: 'error', message: t('aiConversationMove.notAvailable') });
       })
-      .finally(() => { moving.current = false; });
-  }, [t]);
+      .finally(() => { picking.current = false; });
+  }, [openSession, t]);
 
-  const settle = (ok: boolean) => {
-    pendingConfirm?.(ok);
-    setPendingConfirm(null);
-  };
+  const openPicker = useCallback(() => setPickerOpen(true), []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
-  const replaceDialog = (
-    <ConfirmDialog
-      open={pendingConfirm !== null}
-      onClose={() => settle(false)}
-      onConfirm={() => settle(true)}
-      title={t('aiConversationMove.continueInPanel')}
-      message={t('aiConversationMove.replaceConfirm')}
-      confirmLabel={t('aiConversationMove.continueInPanel')}
-      variant="warning"
-      confirmTestId="workspace-replace-panel-confirm"
-    />
-  );
-
-  return { continueInPanel, replaceDialog };
+  const picker = <WorkspaceConversationPicker open={pickerOpen} onClose={closePicker} onPick={pickPast} />;
+  return { openPicker, picker };
 }
 
 export default function WorkspacePage() {
@@ -154,6 +165,7 @@ export default function WorkspacePage() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const { continueInPanel, replaceDialog } = useContinueInPanel();
+  const { openPicker, picker } = useOpenPastConversation();
 
   // Restore messages on mount
   useEffect(() => {
@@ -216,17 +228,19 @@ export default function WorkspacePage() {
             onCloseTab={closeTab}
             onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
+            onOpenPast={openPicker}
             onContinueInPanel={continueInPanel}
           />
           {activeTab ? (
             <WorkspaceChatPanel tab={activeTab} onContinueInPanel={() => continueInPanel(activeTab.id)} />
           ) : (
-            <WorkspaceEmptyState onCreateTab={() => createTab()} />
+            <WorkspaceEmptyState onCreateTab={() => createTab()} onOpenPast={openPicker} />
           )}
         </>
       ) : (
-        <WorkspaceEmptyState onCreateTab={() => createTab()} />
+        <WorkspaceEmptyState onCreateTab={() => createTab()} onOpenPast={openPicker} />
       )}
+      {picker}
       {replaceDialog}
     </div>
   );

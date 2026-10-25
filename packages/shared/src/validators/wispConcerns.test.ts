@@ -15,7 +15,9 @@ import {
   snoozeBodySchema,
   snoozeConcernToolSchema,
   updateConcernSchema,
+  validateRequestSpecialist,
 } from './wispConcerns';
+import { WISP_SPECIALIST_KINDS } from './wispSpecialists';
 
 const id = '6f1c2b1e-4a7d-4c55-9a35-2d8f5f0e1a01';
 const id2 = '0b3d7e55-8f2a-4b9e-b1c4-7d6e5a4f3c21';
@@ -81,6 +83,19 @@ describe('outcome-tool schemas', () => {
   it('request_specialist needs a 10–500 char reason', () => {
     expect(requestSpecialistSchema.safeParse({ kind: 'sweep', params: {}, reason: 'too short' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'sweep', params: {}, reason: 'look at all backups' }).success).toBe(true);
+  });
+  it('request_specialist accepts only the W07 specialist kinds', () => {
+    for (const kind of WISP_SPECIALIST_KINDS) {
+      expect(requestSpecialistSchema.safeParse({ kind, params: {}, reason: 'look at all backups' }).success).toBe(true);
+    }
+    expect(requestSpecialistSchema.safeParse({ kind: 'run_script', params: {}, reason: 'look at all backups' }).success).toBe(false);
+    expect(requestSpecialistSchema.safeParse({ kind: 'backup', params: {}, reason: 'look at all backups' }).success).toBe(false);
+  });
+  it('validateRequestSpecialist returns the parsed request and throws on an invalid one', () => {
+    expect(validateRequestSpecialist({ kind: 'patch_plan', params: { a: 1 }, reason: 'Patch backlog is growing' }))
+      .toEqual({ kind: 'patch_plan', params: { a: 1 }, reason: 'Patch backlog is growing' });
+    expect(() => validateRequestSpecialist({ kind: 'run_script', params: {}, reason: 'Patch backlog is growing' })).toThrow();
+    expect(() => validateRequestSpecialist({ kind: 'sweep', params: {}, reason: 'short' })).toThrow();
   });
 });
 

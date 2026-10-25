@@ -3188,6 +3188,7 @@ export default function DeviceList({
                   checked={allSelected}
                   disabled={filterBlocked}
                   aria-label={t("deviceList.selectAllDevicesOnThisPage")}
+                  data-testid="device-list-select-all"
                   ref={(el) => {
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
@@ -3335,6 +3336,7 @@ export default function DeviceList({
                           disabled={filterBlocked}
                           checked={selectedIds.has(device.id)}
                           aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
+                          data-testid={`device-${device.id}-select`}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) =>
                             handleSelectOne(device.id, e.target.checked)

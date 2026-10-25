@@ -2,6 +2,7 @@
   "expo": {
     "name": "Breeze RMM",
     "slug": "breeze-rmm",
+    "scheme": "breeze",
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

@@ -66,7 +66,8 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
   network_discovery: { file: 'aiToolsNetwork.ts', disposition: 'self-managed', maxWaitMs: 120_000 },
   security_scan: {
     file: 'aiToolsSecurity.ts', disposition: 'self-managed', maxWaitMs: 60_000,
-    waitingActions: ['scan', 'status', 'quarantine', 'remove', 'restore'],
+    // `scan` queues through startDeviceScan and returns without waiting (#6268).
+    waitingActions: ['status', 'quarantine', 'remove', 'restore'],
   },
   trigger_agent_upgrade: { file: 'aiToolsAgentMgmt.ts', disposition: 'self-managed', maxWaitMs: 50 * 60_000 }, // 60 s × ≤50 devices
   trigger_agent_restart: { file: 'aiToolsAgentMgmt.ts', disposition: 'self-managed', maxWaitMs: 50 * 60_000 },

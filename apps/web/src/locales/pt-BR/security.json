@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Adicionar integração",
       "syncNow": "Sincronizar agora",
-      "deleteIntegration": "Excluir integração"
+      "deleteIntegration": "Excluir integração",
+      "editRetention": "Alterar período de retenção"
     },
     "messages": {
       "loadHttpError": "Falha ao carregar integrações (HTTP {{status}})",
       "loadFailed": "Falha ao carregar integrações",
       "syncFailed": "Falha ao acionar sincronização para {{name}}",
       "syncQueued": "Sincronização enfileirada para {{name}}",
-      "deleteConfirm": "Excluir {{name}}? Eventos armazenados são mantidos conforme a política de retenção.",
+      "deleteConfirm": "Excluir {{name}}? Suas políticas, eventos e estatísticas são removidos em segundo plano.",
       "deleteFailed": "Falha ao excluir {{name}}",
-      "deleteSuccess": "{{name}} excluída"
+      "deleteSuccess": "Excluindo {{name}} em segundo plano"
     },
     "loading": "Carregando integrações…",
     "empty": {
@@ -1750,7 +1751,25 @@
       "actions": "Ações"
     },
     "lastSyncFailedSuffix": " — falhou",
-    "never": "Nunca"
+    "lastSyncPartialSuffix": " — recuperando atraso",
+    "never": "Nunca",
+    "deletingInBackground": "Excluindo…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Retenção de dados",
+    "description": "Eventos e estatísticas diárias mais antigos são excluídos pela limpeza noturna de retenção.",
+    "fieldLabel": "Manter eventos e estatísticas de DNS por (dias)",
+    "fieldHelp": "De 1 a 365 dias. Deixe vazio para usar o padrão da instalação (90 dias, a menos que seu administrador tenha alterado).",
+    "invalid": "Informe um número inteiro de dias entre 1 e 365 ou deixe vazio.",
+    "actions": {
+      "dismiss": "Cancelar",
+      "submit": "Salvar",
+      "saving": "Salvando…"
+    },
+    "messages": {
+      "saved": "Retenção atualizada para {{name}}",
+      "saveFailed": "Falha ao atualizar a retenção de {{name}}"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Políticas de bloqueio / permissão",

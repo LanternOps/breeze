@@ -13,6 +13,12 @@ export class DashboardPage extends BasePage {
   recentActivityHeading = () => this.page.getByTestId('dashboard-recent-activity-heading');
   fleetStatusCard = () => this.page.getByTestId('dashboard-fleet-status');
 
+  patchCard = () => this.page.getByTestId('dashboard-patch-card');
+  /** Any dashboard element by its data-testid (tiles and links share one registry). */
+  link = (testId: string) => this.page.getByTestId(testId);
+  noncompliantLink = () => this.page.getByTestId('dashboard-patch-noncompliant-link');
+  vulnOpenLink = () => this.page.getByTestId('dashboard-vuln-open-link');
+
   async goto() {
     await this.page.goto(this.url);
     await this.heading().waitFor();

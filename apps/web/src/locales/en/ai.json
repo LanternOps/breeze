@@ -121,7 +121,8 @@
     "chooseModelInPanel": "Continue in side panel to choose a model",
     "tabMenu": "Tab options",
     "anotherOrg": "Another organization",
-    "device": "Device"
+    "device": "Device",
+    "newChat": "New chat"
   },
   "aiContextBadge": {
     "context": "Context",

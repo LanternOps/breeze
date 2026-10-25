@@ -292,6 +292,8 @@ describe('POST /scan/:deviceId — attaches the device\'s resolved policy settin
         autoQuarantine: false,
       }),
       expect.any(String),
+      // #6263 W05-11: the reserved command id the scan row also records.
+      expect.objectContaining({ commandId: expect.any(String) }),
     );
   });
 

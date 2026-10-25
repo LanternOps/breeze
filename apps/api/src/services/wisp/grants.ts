@@ -41,6 +41,7 @@ import { EntitlementResolutionError, getEntitlements } from '../entitlements';
 import { loadWispEntitlement } from './wispEntitlementLimits';
 // budget.ts imports only types from this module, so this is not a runtime cycle.
 import { WISP_BUDGET_DEFAULT_BY_PLAN } from './budget';
+import { incWispGrantPause } from '../wispMetrics';
 
 export type { WispGrantStatus } from '../../db/schema/wisp';
 
@@ -620,6 +621,7 @@ export async function pauseGrant(
     return null;
   });
   if (changed) {
+    incWispGrantPause(reason);
     await audit({ grant: toGrant(changed), action: 'wisp.grant.paused', actor: { type: 'system' }, details: { reason, revisionId: changed.currentRevisionId } });
   }
 }

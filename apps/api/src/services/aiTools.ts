@@ -64,6 +64,7 @@ import { registerSentinelOneTools } from './aiToolsSentinelOne';
 import { registerHuntressTools } from './aiToolsHuntress';
 import { registerEdrTools } from './aiToolsEdr';
 import { registerSecurityTools } from './aiToolsSecurity';
+import { registerIocHuntTools } from './aiToolsIocHunt';
 import { registerDnsTools } from './aiToolsDns';
 import { registerPeripheralTools } from './aiToolsPeripherals';
 import { registerBrowserTools } from './aiToolsBrowser';
@@ -109,6 +110,7 @@ import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
+import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -350,6 +352,7 @@ registerSentinelOneTools(aiTools);
 registerHuntressTools(aiTools);
 registerEdrTools(aiTools);
 registerSecurityTools(aiTools);
+registerIocHuntTools(aiTools);
 registerDnsTools(aiTools);
 registerPeripheralTools(aiTools);
 registerBrowserTools(aiTools);
@@ -400,6 +403,9 @@ registerTicketRoutingTools(aiTools);
 registerWispMemoryTools(aiTools);
 // Wisp W05a concern/watch tools: same posture — inert without auth.wispGrant.
 registerWispConcernTools(aiTools);
+// Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
+// the human-only approval carrier wisp_specialist_request.
+registerWispTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the

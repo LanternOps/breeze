@@ -9,6 +9,8 @@
  * never blocks.
  */
 
+import type { IdentityOffboardingInput } from '../validators/aiOperatorIdentity';
+
 export const AI_OPERATOR_RECIPE_READINESS_STATES = ['ready', 'setup_required', 'unavailable'] as const;
 export type AiOperatorRecipeReadinessState = (typeof AI_OPERATOR_RECIPE_READINESS_STATES)[number];
 
@@ -65,4 +67,44 @@ export interface AiOperatorWorkflowDto {
   degradedEffects: string[];
   agentId: string | null;
   agentKind: string | null;
+}
+
+/** One contact the draft resolved or offered — display fields only. */
+export interface AiOperatorDraftPersonDto {
+  id: string;
+  name: string | null;
+  email: string | null;
+}
+
+/** One human-work item the draft would generate (the ticket checklist preview). */
+export interface AiOperatorDraftManualWorkItemDto {
+  key: string;
+  label: string;
+  detail: string;
+  origin: 'always' | 'capability' | 'flag' | 'discovery';
+}
+
+/**
+ * `POST /api/v1/ai/operator/task-drafts` for `identity_offboarding` (shipped
+ * in W06 R1a, typed in R1b). The draft writes nothing and is NEVER a plan:
+ * `plannedEffectTools` is in toggle order, not dispatch order. The ordered
+ * plan is built at `discover`, from live provider reads, after a person
+ * confirms the identity, and is shown for approval then.
+ */
+export interface AiOperatorIdentityTaskDraftDto {
+  recipeKey: string;
+  recipeVersion: number;
+  input: IdentityOffboardingInput;
+  workflow: AiOperatorWorkflowDto;
+  person: {
+    /** Set only on a unique email or exact full-name match — the rule admission uses. */
+    resolved: AiOperatorDraftPersonDto | null;
+    /** Candidates for a human to pick from, never a resolution. Empty when `resolved` is set. */
+    candidates: AiOperatorDraftPersonDto[];
+  };
+  /** Effect tools the plan would use, minus the degraded ones. Toggle order. */
+  plannedEffectTools: string[];
+  /** Effect tools that will be done by hand for this org. */
+  degradedEffectTools: string[];
+  manualWork: AiOperatorDraftManualWorkItemDto[];
 }

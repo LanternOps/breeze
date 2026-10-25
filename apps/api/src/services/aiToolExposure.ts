@@ -18,6 +18,8 @@ export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, str
   // Wisp W03 (spec §8.3, §14 — Todd's sign-off for these two entries).
   ['confirm_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
   ['retract_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
+  // Wisp W07 (spec §7.5 — the sign-off for this entry).
+  ['wisp_specialist_request', 'Approval carrier minted only by the Wisp coordinator under an assessment run; releasing it admits one specialist under the approver\'s authority, so it is never declared to chat, Helper or agents (Wisp spec §7.5).'],
 ]);
 
 /**
@@ -55,6 +57,9 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // click (the §11 four-eyes bypass). The COORDINATOR raises it, under the
   // task's human requester.
   'operator_plan',
+  // #6263 W05 Gate B 10 (#6268): fleet IOC sweeps and IOC rule imports are
+  // started from a human chat or MCP session; no operator agent mints them.
+  'ioc_hunt',
   // Wisp W03 (spec §8.3): a person confirms or retracts memory; Wisp never does.
   // Also in HUMAN_ONLY_TOOLS; listed here so the ai_agent principal is denied
   // above any allowlist and assertWithinCeiling refuses them for every grant.
@@ -85,6 +90,25 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // `ai_agents:read` holder. See the LANDMINE note at their TOOL_PERMISSIONS
   // entries, and aiGuardrails.workspaceToolSurface.contract.test.ts.
   'workspace_launch_analysis',
+  // Wisp W07 (spec §7.5 — the sign-off for this entry): a human chat turn under
+  // a grant hands work to a specialist; an agent never does. Wisp's own
+  // assessment requests specialists through its `request_specialist` outcome
+  // tool, which the deterministic coordinator admits after the run — so a
+  // specialist can never launch a specialist (depth one).
+  'launch_specialist',
+]);
+
+/**
+ * Wisp W07 — approval CARRIERS the Wisp coordinator mints under an assessment
+ * run's own `ai_agent` principal (plan Task 4). `checkAgentGuardrails`
+ * accepts these from a device-less run without an allowlist entry — and ONLY
+ * these: a carrier executes nothing org-wide by itself; its release re-runs
+ * every coordinator gate under the APPROVER's rebuilt authority. Every entry
+ * MUST also be in HUMAN_ONLY_TOOLS (never declared to any model), so no model
+ * can raise one — pinned by aiToolsWisp.registration.test.ts.
+ */
+export const AGENT_COORDINATOR_CARRIER_TOOLS: ReadonlySet<string> = new Set<string>([
+  'wisp_specialist_request',
 ]);
 
 /**
