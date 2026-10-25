@@ -279,3 +279,24 @@ export interface RecipeDefinition<Input = unknown> {
 
 /** The registry's value type: a recipe whose Input is not statically known. */
 export type AnyRecipeDefinition = RecipeDefinition<never>;
+
+/**
+ * One unit of work a human performs for a recipe (spec §6.5), before it becomes
+ * a `ticket_checklist_items` row.
+ *
+ * Lives on the recipe contract rather than inside one recipe because every
+ * recipe with a `human_work` step produces these and `manualWork.ts` consumes
+ * them generically. R1 called it `IdentityManualWorkItem`; that name survives
+ * as an alias in `identityOffboarding.ts` so no R1 import changes.
+ */
+export interface RecipeManualWorkItem {
+  /** Stable, e.g. 'collect_hardware'. The dedupe key and the order key. */
+  key: string;
+  /** ≤ 500 chars — the checklist item's label. */
+  label: string;
+  /** Generated instructions. */
+  detail: string;
+  origin: 'always' | 'capability' | 'flag' | 'discovery';
+  /** The capability whose absence generated it, when origin === 'capability'. */
+  capabilityKey: string | null;
+}

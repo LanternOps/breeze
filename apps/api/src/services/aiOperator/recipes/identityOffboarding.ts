@@ -51,6 +51,7 @@ import {
   type IdentityOffboardingInput,
 } from '@breeze/shared';
 import { buildTaskOperationKey } from '../operationKey';
+import { capabilityForTool, HELPDESK_ALLOWLIST_CAPABILITY } from './capabilityMap';
 import type {
   CapabilityRequirement,
   DiscoveryFacts,
@@ -58,6 +59,7 @@ import type {
   PlannedEffect,
   RecipeBounds,
   RecipeDefinition,
+  RecipeManualWorkItem,
 } from './types';
 
 export const IDENTITY_OFFBOARDING_WORKFLOW_KEY = 'identity_offboarding' as const;
@@ -135,8 +137,6 @@ export const IDENTITY_OFFBOARDING_BOUNDS: RecipeBounds = Object.freeze({
   deadlineMs: 14 * 24 * 60 * 60 * 1000,
 });
 
-const HELPDESK_ALLOWLIST_CAPABILITY = 'agent.helpdesk.tool_allowlist';
-
 /**
  * Fifteen capabilities: provider connections, one per-effect gate per Google
  * tool family, one per M365 Graph role group, the three Exchange product gaps,
@@ -208,25 +208,11 @@ export const IDENTITY_OFFBOARDING_CAPABILITIES: readonly CapabilityRequirement[]
 ] satisfies CapabilityRequirement[]);
 
 /** Effect tool → the capability key that gates it. Derived, never hand-maintained. */
-export const CAPABILITY_FOR_TOOL: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(
-    IDENTITY_OFFBOARDING_CAPABILITIES
-      .filter((c) => c.key !== HELPDESK_ALLOWLIST_CAPABILITY)
-      .flatMap((c) => (c.toolNames ?? []).map((t) => [t, c.key] as const)),
-  ),
-);
+export const CAPABILITY_FOR_TOOL: Readonly<Record<string, string>> =
+  capabilityForTool({ requires: IDENTITY_OFFBOARDING_CAPABILITIES });
 
-export interface IdentityManualWorkItem {
-  /** Stable, e.g. 'collect_hardware'. The dedupe key and the order key. */
-  key: string;
-  /** ≤ 500 chars — the checklist item's label. */
-  label: string;
-  /** Generated instructions. */
-  detail: string;
-  origin: 'always' | 'capability' | 'flag' | 'discovery';
-  /** The capability whose absence generated it, when origin === 'capability'. */
-  capabilityKey: string | null;
-}
+/** R1's name for `RecipeManualWorkItem` (moved to `./types` in R2), kept so R1's imports are untouched. */
+export type IdentityManualWorkItem = RecipeManualWorkItem;
 
 /** `ticket_checklist_items.label` is varchar(500). */
 const MAX_LABEL_CHARS = 500;
