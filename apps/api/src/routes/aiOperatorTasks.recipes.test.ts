@@ -175,6 +175,22 @@ describe('POST /task-drafts', () => {
     expect(h.admitTask).not.toHaveBeenCalled();
   });
 
+  it('4b. names a selected device by its hostname in the draft checklist, not its id', async () => {
+    h.selectQueue = [
+      [{ id: CONTACT, name: 'Dana Ruiz', email: 'dana@customer.example' }],
+      [{ id: DEVICE, hostname: 'LAPTOP-DANA', siteId: null }],
+    ];
+    const res = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT, deviceIds: [DEVICE] } });
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: { manualWork: Array<{ key: string; label: string; detail: string }> } };
+    const item = data.manualWork.find((m) => m.key === `device_signout_${DEVICE}`);
+    expect(item).toBeDefined();
+    expect(item!.label).toContain('LAPTOP-DANA');
+    expect(item!.label).not.toContain(DEVICE);
+    expect(item!.detail).not.toContain(DEVICE);
+    expect(h.inserts).toBe(0);
+  });
+
   it('5. an unresolvable person returns the CANDIDATES, not an error', async () => {
     h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: null }, { id: 'x', name: 'Dana Smith', email: null }]];
     const res = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { personHint: 'Dana' } });
