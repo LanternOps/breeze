@@ -7,6 +7,7 @@ const orgState: { currentOrgId: string | null } = { currentOrgId: null };
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: orgState.currentOrgId }) }));
 
 import AiUsagePage from './AiUsagePage';
+import { useFeaturesStore } from '../../stores/featuresStore';
 
 // Every test below scopes its queries to its OWN render's container via
 // `within(container)` instead of the shared `screen` (which binds to
@@ -390,4 +391,45 @@ describe('AiUsagePage fired-alert badge vs the current effective budget (sweep E
     const badge = await findByTestId('ai-budget-fired-rungs');
     expect(badge.textContent).toContain('80% monthly alert sent');
   });
+});
+
+// #9450: Buy credits next to the balance, hosted billing only.
+describe('AiUsagePage Buy credits link (#9450)', () => {
+  const setHosted = (billing: boolean) =>
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+  function mockCredits() {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') {
+        return Promise.resolve(jsonRes({ ...usageBody(), credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' } }));
+      }
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('links to the billing credits page when hosted billing is configured', async () => {
+    setHosted(true);
+    mockCredits();
+    const { getByText, getByRole } = renderPage();
+    await waitFor(() => expect(getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(getByRole('link', { name: 'Buy credits' })).toHaveAttribute('href', '/billing/credits');
+  });
+
+  it('shows no link when billing is not configured (self-hosted)', async () => {
+    setHosted(false);
+    mockCredits();
+    const { getByText, queryByRole } = renderPage();
+    await waitFor(() => expect(getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(queryByRole('link', { name: 'Buy credits' })).toBeNull();
+  });
+
+  it('renders the four stat-card labels from translation keys', async () => {
+    mockUsage();
+    const r = renderPage();
+    await waitFor(() => expect(r.getByText('Today\'s cost')).toBeTruthy());
+    expect(r.getByText('Monthly cost')).toBeTruthy();
+    expect(r.getByText('Messages today')).toBeTruthy();
+    expect(r.getByText('Tokens this month')).toBeTruthy();
+  });
+
 });

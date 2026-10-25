@@ -239,6 +239,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'BREEZE_AI_SCRIPT_AUTHORING_ENABLED', secret: false },
       { name: 'AI_OPERATOR_TASKS_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', secret: false },
+      { name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', secret: false },
     ],
     status: {
       kind: 'flags',
@@ -267,6 +268,19 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     },
   }),
   defineEntry({
+    id: 'wisp',
+    group: 'ai',
+    label: 'Wisp (hosted)',
+    vars: [
+      { name: 'BREEZE_WISP_ENABLED', secret: false },
+    ],
+    status: {
+      kind: 'flags',
+      flags: ['BREEZE_WISP_ENABLED'],
+      requiredWhenOn: [],
+    },
+  }),
+  defineEntry({
     id: 'workspace-extension',
     group: 'ai',
     label: 'Workspace extension (pgvector)',
@@ -286,6 +300,17 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     status: {
       kind: 'flags',
       flags: ['TOOL_SOURCES_ENABLED'],
+      requiredWhenOn: [],
+    },
+  }),
+  defineEntry({
+    id: 'flows',
+    group: 'ai',
+    label: 'Flows (AI-drafted automation flows)',
+    vars: [{ name: 'FLOWS_ENABLED', secret: false }],
+    status: {
+      kind: 'flags',
+      flags: ['FLOWS_ENABLED'],
       requiredWhenOn: [],
     },
   }),
@@ -774,6 +799,8 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'OAUTH_DCR_ENABLED', secret: false },
       { name: 'OAUTH_DCR_ALLOW_ANONYMOUS', secret: false },
       { name: 'OAUTH_DCR_REQUIRE_IAT', secret: false },
+      { name: 'OAUTH_CIMD_ENABLED', secret: false },
+      { name: 'OAUTH_CIMD_ALLOWED_HOSTS', secret: false },
     ],
     status: {
       kind: 'flags',

@@ -1,6 +1,7 @@
 import TopologyEntry from '../topology/TopologyEntry';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
+import { eventLogFilterFromHash, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { usePermissions } from "@/lib/permissions";
 import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
 import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
@@ -292,7 +293,8 @@ const EXT_TAB_RE = /^ext:[a-z][a-z0-9-]{1,31}:[a-z0-9._:-]+$/;
 // direct unit-testing of the hash round-trip without mounting the (heavy)
 // full component.
 export function tabFromHash(hash: string): Tab | undefined {
-  const seg = hash.split("/")[0] ?? "";
+  // `&k=v` filters may follow the tab segment (`#eventlog&from=…`); strip them.
+  const seg = hash.split("/")[0]?.split("&")[0] ?? "";
   if (VALID_TABS.includes(seg as CoreTab)) return seg as CoreTab;
   if (EXT_TAB_RE.test(seg)) return seg as ExtTab;
   return undefined;
@@ -321,14 +323,18 @@ type LinkedNetworkAsset = { id: string; label: string };
 // Task 4). Renders nothing while loading or when there are zero matches —
 // most devices were never seen by network discovery, and a permanent empty
 // row would just be noise.
-function NetworkAssetRow({ deviceId }: { deviceId: string }) {
+function NetworkAssetRow({ deviceId, orgId }: { deviceId: string; orgId?: string }) {
   const { t } = useTranslation("devices");
   const [assets, setAssets] = useState<LinkedNetworkAsset[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setAssets(null);
-    fetchWithAuth(`/discovery/assets?linkedDeviceId=${deviceId}`)
+    // The endpoint 400s ("orgId is required") for partner/all-orgs sessions
+    // unless told which org owns the device.
+    const params = new URLSearchParams({ linkedDeviceId: deviceId });
+    if (orgId) params.set("orgId", orgId);
+    fetchWithAuth(`/discovery/assets?${params.toString()}`)
       .then(async (res) => {
         if (!res.ok) return [];
         const data = await res.json();
@@ -345,7 +351,7 @@ function NetworkAssetRow({ deviceId }: { deviceId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [deviceId]);
+  }, [deviceId, orgId]);
 
   if (!assets || assets.length === 0) return null;
 
@@ -430,6 +436,11 @@ export default function DeviceDetails({
   const [highlightedExecutionId, setHighlightedExecutionId] = useHashState<
     string | undefined
   >(undefined, scriptExecutionIdFromHash);
+  // Wave F (#9791): `#eventlog[/<source>]&from=&to=` hands the reliability
+  // scoring window (and, where one exists, the exact source) to the Event log tab.
+  const [eventLogFilter, setEventLogFilter] = useHashState<
+    EventLogFilter | undefined
+  >(undefined, eventLogFilterFromHash);
   // Whether the Overview Activity rail is collapsed to its thin vertical bar.
   // Starts collapsed so the page paints at full width during the async load and
   // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
@@ -463,6 +474,7 @@ export default function DeviceDetails({
     setActiveTab(tab);
     setFocusedAnomalyId(undefined);
     setHighlightedExecutionId(undefined);
+    setEventLogFilter(undefined);
   };
 
   // Use provided timezone or browser default
@@ -1016,6 +1028,7 @@ export default function DeviceDetails({
         tabs={overflowTabs}
         activeTab={activeTab}
         onTabChange={(id) => switchTab(id as Tab)}
+        testIdPrefix="device-tab-"
         mobileMode="scroll"
       />
 
@@ -1131,7 +1144,7 @@ export default function DeviceDetails({
 
             <DeviceBillingCard deviceId={device.id} />
 
-            <NetworkAssetRow deviceId={device.id} />
+            <NetworkAssetRow deviceId={device.id} orgId={device.orgId || undefined} />
           </div>
 
           {/* #9030: the rail collapses instantly — animating `width` reflowed
@@ -1273,6 +1286,7 @@ export default function DeviceDetails({
           orgId={device.orgId}
           timezone={effectiveTimezone}
           highlightExecutionId={highlightedExecutionId}
+          deviceStatus={device.status}
         />
       )}
 
@@ -1298,10 +1312,11 @@ export default function DeviceDetails({
           deviceId={device.id}
           timezone={effectiveTimezone}
           osType={device.os}
+          linkedFilter={eventLogFilter}
         />
       )}
 
-      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} />}
+      {activeTab === "topology" && <TopologyEntry siteId={device.siteId} deviceId={device.id} orgId={device.orgId} />}
 
       {activeTab === "monitoring" && (
         <DeviceMonitoringTab

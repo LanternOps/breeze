@@ -14,6 +14,8 @@ import {
   resolveAssignmentDevices,
   type AssignmentToExpand,
 } from '../services/configPolicyAssignmentDevices';
+import { resolvePatchPolicyWinnersForDevices, type PatchPolicyWinner } from '../services/featureConfigResolver';
+import { captureException } from '../services/sentry';
 
 /**
  * One config-policy assignment as this module needs it: the assignment's own
@@ -48,14 +50,23 @@ export interface RingAssignment extends AssignmentToExpand {
  *     fields) are EXCLUDED and reported as warnings, rather than resolved
  *     the way the protective scheduler resolves them.
  *
+ * Closest level wins (#9632), as in the scheduler: a device stays in this
+ * ring only when its winning patch policy links to this ring, or when no
+ * policy wins it (see keepDevicesThisPolicyWins in the scheduler). A pilot
+ * device that a device-group override moves to another ring is no longer
+ * counted under the broad ring as well.
+ *
  * Each assignment is resolved with its own query. Batching by level is not
  * possible once each assignment can carry a different filter, and a ring has a
  * handful of assignments.
  */
 async function resolveRingAssignedDeviceIds(
+  ringId: string,
   assignments: RingAssignment[],
   /** The ring's own partner. Every resolved device must sit under it. */
-  ringPartnerId: string
+  ringPartnerId: string,
+  /** Winning patch policy per device, shared across the rings of one request. */
+  winners: Map<string, PatchPolicyWinner | null> = new Map(),
 ): Promise<{ deviceIds: Set<string>; refusedGroups: RefusedExecutionGroup[] }> {
   const deviceIds = new Set<string>();
   const refusedGroups = new Map<string, RefusedExecutionGroup>();
@@ -73,6 +84,20 @@ async function resolveRingAssignedDeviceIds(
     );
     for (const id of expanded.deviceIds) deviceIds.add(id);
     for (const group of expanded.refusedGroups) refusedGroups.set(group.id, group);
+  }
+
+  const missing = [...deviceIds].filter((id) => !winners.has(id));
+  if (missing.length > 0) {
+    const resolved = await resolvePatchPolicyWinnersForDevices(missing);
+    for (const id of missing) winners.set(id, resolved.get(id) ?? null);
+  }
+  if (deviceIds.size > 0) {
+    for (const id of [...deviceIds]) {
+      const winner = winners.get(id) ?? null;
+      // A winner with no ring (featurePolicyId null) patches the device
+      // outside every ring, so it leaves this ring's count too.
+      if (winner && winner.featurePolicyId !== ringId) deviceIds.delete(id);
+    }
   }
 
   return { deviceIds, refusedGroups: [...refusedGroups.values()] };
@@ -113,7 +138,7 @@ export async function resolveRingDeviceIdsWithWarnings(
   const ringPartnerId = linkedAssignments[0]?.ringPartnerId;
   if (!ringPartnerId) return { deviceIds: [], warnings: [] };
 
-  const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(linkedAssignments, ringPartnerId);
+  const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, linkedAssignments, ringPartnerId);
   return { deviceIds: Array.from(deviceIds), warnings: warningsForRefusedExecutionGroups(refusedGroups) };
 }
 
@@ -167,12 +192,17 @@ export async function resolveRingDeviceCountsWithWarnings(
   }
 
   // Resolve each ring's device count (isolated per ring — one failure doesn't block others)
+  const winners = new Map<string, PatchPolicyWinner | null>();
   for (const [ringId, { partnerId, assignments }] of ringAssignments) {
     try {
-      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(assignments, partnerId);
+      const { deviceIds, refusedGroups } = await resolveRingAssignedDeviceIds(ringId, assignments, partnerId, winners);
       deviceCountMap.set(ringId, { count: deviceIds.size, warnings: warningsForRefusedExecutionGroups(refusedGroups) });
     } catch (err) {
+      // A 0 here reads as an empty ring, so the failure has to be visible.
       console.error(`Failed to resolve device count for ring ${ringId}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(`Failed to resolve device count for ring ${ringId}`), undefined, {
+        update_ring_stage: 'device_count_failed',
+      }, { fingerprint: ['update-ring', 'device-count-failed'] });
       deviceCountMap.set(ringId, { count: 0, warnings: [] });
     }
   }

@@ -443,9 +443,23 @@ export const securityScanQueueJobDataSchema = z.union([
     configPolicyId: z.string().uuid(),
     occurrenceIso: z.string().min(1),
   }).strict(),
+  // #6263 W05 — a sweep scan admitted by the pump. The claim re-reads the
+  // sweep row (state, expiry, org) under the partner lock before dispatching.
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().uuid(),
+    origin: z.literal('sweep'),
+    sweepId: z.string().uuid(),
+  }).strict(),
   z.object({
     type: z.literal('schedule-policies'),
     scanAt: z.string().min(1),
+  }).strict(),
+  // #6263 W05 — the single-flight sweep pump (repeatable + one coalescing
+  // immediate job after a create).
+  z.object({
+    type: z.literal('pump-sweeps'),
+    tickAt: z.string().min(1),
   }).strict(),
 ]);
 

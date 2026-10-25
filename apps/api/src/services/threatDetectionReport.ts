@@ -70,6 +70,7 @@ import {
   type ReportResult,
 } from './reportGenerationService';
 import type { OrgReportGenerationAuthority } from './siteScope';
+import { reportDateRangePresetDays } from './reportDateRange';
 
 /** A sync older than this makes the source `stale`: the artifact still prints
  *  what it holds, but says plainly that anything after the last sync is not in
@@ -114,8 +115,9 @@ function startOfDay(isoDate: string): Date {
  * The window to report on. `EvidenceRunContext` wins whenever it is present —
  * the occurrence's period is the contract, and deriving one from `now()` would
  * make a re-run of a late occurrence quietly report a different month. An
- * ad-hoc staff run falls back to the config's date range, and failing that to
- * the trailing 30 days, and says which in `coverage`.
+ * ad-hoc staff run falls back to the config's explicit date range, then to its
+ * rolling preset (#9562), and failing both to the trailing 30 days, and says
+ * which in `coverage`.
  */
 function resolveWindow(
   evidence: EvidenceRunContext | undefined,
@@ -134,7 +136,10 @@ function resolveWindow(
   const end = range.end ? endOfDay(range.end) : new Date(generatedAt);
   const start = range.start
     ? startOfDay(range.start)
-    : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    // #9562: a rolling preset (last_7/30/90_days, what every template saves)
+    // sets the trailing length; only a config with neither bounds nor a
+    // preset gets the 30-day default.
+    : new Date(end.getTime() - (reportDateRangePresetDays(rawConfig?.dateRange) ?? 30) * 24 * 60 * 60 * 1000);
   return {
     start,
     end,

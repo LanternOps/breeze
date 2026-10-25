@@ -160,3 +160,38 @@ describe('getSecurityPostureTrend — site ceiling', () => {
     ]);
   });
 });
+
+describe('getSecurityPostureTrend — device weighting (#9643)', () => {
+  const row = (overall: number, devicesAudited: number) => ({
+    capturedAt: new Date('2026-09-20T10:00:00Z'),
+    devicesAudited,
+    overallScore: overall,
+    patchComplianceScore: overall,
+    encryptionScore: overall,
+    avHealthScore: overall,
+    firewallScore: overall,
+    openPortsScore: overall,
+    passwordPolicyScore: overall,
+    osCurrencyScore: overall,
+    adminExposureScore: overall,
+  });
+
+  it('selects the device count and weights org snapshots by it', async () => {
+    state.rows = [row(100, 90), row(0, 10)];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
+
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(selection).toHaveProperty('devicesAudited', securityPostureOrgSnapshots.devicesAudited);
+    expect(points.map((p) => p.overall)).toEqual([90]);
+  });
+
+  it('selects count(*) per run on the site-scoped path and weights by it', async () => {
+    state.rows = [row(100, 90), row(0, 10)];
+    const points = await getSecurityPostureTrend({ orgIds: [ORG], siteIds: [SITE], days: 7 });
+
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    const compiled = dialect.sqlToQuery(selection.devicesAudited as never);
+    expect(compiled.sql).toContain('count(*)');
+    expect(points.map((p) => p.overall)).toEqual([90]);
+  });
+});

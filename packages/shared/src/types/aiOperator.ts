@@ -18,6 +18,8 @@
  * reaches `JSON.stringify(response)` for a task/operation DTO — same
  * "impossible by construction" contract as `AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS`.
  */
+
+import type { WispProvenanceDto } from './wispProvenance';
 export const AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS = [
   'checkpoint', 'criteria', 'args', 'toolInput', 'toolOutput', 'result',
 ] as const;
@@ -65,7 +67,7 @@ export const AI_OPERATOR_TASK_OUTCOMES = [
 export type AiOperatorTaskOutcome = (typeof AI_OPERATOR_TASK_OUTCOMES)[number];
 
 export const AI_OPERATOR_TARGET_DETACH_REASONS = [
-  'device_moved', 'device_deleted', 'org_merged', 'scope_invalidated',
+  'device_moved', 'device_deleted', 'org_merged', 'scope_invalidated', 'device_reinstalled',
 ] as const;
 export type AiOperatorTargetDetachReason = (typeof AI_OPERATOR_TARGET_DETACH_REASONS)[number];
 
@@ -190,6 +192,8 @@ export interface AiOperatorTaskRunLinkDto {
 export interface AiOperatorTaskListItemDto {
   schemaVersion: typeof AI_OPERATOR_TASK_DTO_SCHEMA_VERSION;
   id: string;
+  /** W07 "Wisp for <user>" provenance; null for a task not admitted under a grant. */
+  wisp: WispProvenanceDto | null;
   orgId: string;
   // Non-null: unlike `ai_agent_runs.agent_id` (a live FK resolved via LEFT
   // JOIN, with the dual-ownership partner-wide visibility gap that route's
@@ -238,6 +242,13 @@ export interface AiOperatorTaskDto extends AiOperatorTaskListItemDto {
   targets: AiOperatorTaskTargetRowDto[];
   steps: AiOperatorTaskStepDto[];
   events: AiOperatorTaskEventDto[];
+  /**
+   * W06 R1b: every plan revision proposed for this task, `superseded` ones
+   * included, ordered by `planRevision`, each with its frozen effects in
+   * ordinal order. OPTIONAL so callers built before it keep compiling; the
+   * detail route always sends it (`[]` when nothing was proposed).
+   */
+  plan?: AiOperatorPlanApprovalDto[];
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +468,8 @@ export interface AiOperatorPlanApprovalDto {
   planRevision: number;
   effectSetDigest: string;
   effectCount: number;
-  intentId: string;
+  /** Null only while a `pending` approval is not yet linked to its intent (the column's own rule). */
+  intentId: string | null;
   state: AiOperatorPlanApprovalState;
   approvedByUserId: string | null;
   approvedAt: string | null;

@@ -32,6 +32,11 @@ export default defineConfig({
       // Real-PostgreSQL exact request-pool role checks have a dedicated runner.
       'src/db/requestDatabaseRole.integration.test.ts',
       'src/db/auditRetentionDefault.integration.test.ts',
+      // #9344: real-DB contract-renewal tests, run by vitest.integration.config.ts.
+      // In the unit runner they ran whenever DATABASE_URL was set, which (with the
+      // root .env loaded) meant against the developer's own database.
+      'src/services/contractRenewal.integration.test.ts',
+      'src/jobs/contractWorker.renewal.integration.test.ts',
       // Real-driver integration test for the inbound email pipeline. It needs the
       // integration setup (real postgres pool + autoMigrate seed) and is run by
       // vitest.integration.config.ts — not the unit runner, which has no DB.
@@ -228,6 +233,8 @@ export default defineConfig({
       // Real-DB suites owned by vitest.integration.config.ts (#3778).
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      'src/services/customerDocument.integration.test.ts',
+      'src/services/customerDocument.quote.integration.test.ts',
       // #5861 Customer Portal Network Visibility: real-Postgres proof of org
       // isolation and partner-wide monitor result scoping. Imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and

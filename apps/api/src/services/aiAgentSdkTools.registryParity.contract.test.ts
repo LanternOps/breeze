@@ -246,7 +246,12 @@ const ALL_FLAGS_ON = {
   M365_ENABLED: 'true',
   GOOGLE_WORKSPACE_ENABLED: 'true',
   BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true',
+  FLOWS_ENABLED: 'true',
   DELEGANT_BASE_URL: 'https://delegant.example.com',
+  // Wisp W03 memory tools are declared only when wispEnabled() (all three).
+  IS_HOSTED: 'true',
+  BREEZE_AI_AGENTS_ENABLED: 'true',
+  BREEZE_WISP_ENABLED: 'true',
 };
 
 function declaredOnMainServer(): Set<string> {
@@ -292,6 +297,7 @@ describe('SDK declarations carry registry search metadata (A-W02)', () => {
     vi.stubEnv('M365_ENABLED', 'true');
     vi.stubEnv('GOOGLE_WORKSPACE_ENABLED', 'true');
     vi.stubEnv('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', 'true');
+    vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       return buildBreezeSdkTools(fakeAuth as never);
     } finally {

@@ -12,6 +12,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const m = vi.hoisted(() => ({ queryMock: vi.fn(), settle: vi.fn() }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: m.queryMock }));
+// Wisp W04 Task 4: getOrCreate resolves the session's delegation grant itself
+// (lookupWispGrant); every session in this suite is an ordinary one.
+vi.mock('./wisp/chatCeiling', () => ({
+  lookupWispGrant: vi.fn(async () => null),
+  unreachableWispAuth: (auth: unknown) => auth,
+  WispSessionUnavailableError: class WispSessionUnavailableError extends Error {},
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })) })),
@@ -57,6 +65,7 @@ vi.mock('./aiToolOutput', () => ({
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
 
+import { db } from '../db';
 import { StreamingSessionManager } from './streamingSessionManager';
 import { __resetGatewayFailureNotesForTests, noteGatewayFailure } from './aiModels/gateway/failureNotes';
 import { providerFailureMessage } from './aiModels/providerFailureMessage';
@@ -77,12 +86,17 @@ afterEach(() => {
 
 type Ev = Record<string, unknown> & { type: string };
 
-async function runTurn(sessionId: string, messages: unknown[], beforeRun?: () => void): Promise<Ev[]> {
+async function runTurn(
+  sessionId: string,
+  messages: unknown[],
+  beforeRun?: () => void,
+  resolved = makeResolvedModel(),
+): Promise<Ev[]> {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   m.queryMock.mockImplementation(() => scriptedQuery(messages, gate));
   const session = await manager.getOrCreate(
-    sessionId, baseDbSession, baseAuth, undefined, 'PROMPT', undefined, makeResolvedModel(),
+    sessionId, baseDbSession, baseAuth, undefined, 'PROMPT', undefined, resolved,
   );
   beforeRun?.();
   release();
@@ -110,7 +124,8 @@ describe('#7785: a pre-output provider failure publishes an error', () => {
     ['low-credit 400', [synthetic('billing_error', 'Credit balance is too low'), isErrorResult(400)], 'quota_exhausted'],
   ] as const)('%s: error event names the cause, then turn_model, then done', async (_name, frames, cause) => {
     const events = await runTurn(`s-${cause}`, [...frames]);
-    const expected = providerFailureMessage(cause, false);
+    // The default fixture binding is the platform connection (#9534).
+    const expected = providerFailureMessage(cause, false, { platformKey: true });
     expect(errorsOf(events)).toEqual([expected]);
     const types = events.map((e) => e.type);
     expect(types.indexOf('error')).toBeLessThan(types.indexOf('done'));
@@ -183,5 +198,64 @@ describe('#7785: a pre-output provider failure publishes an error', () => {
     expect(m.settle).toHaveBeenCalledTimes(1);
     const done = events.find((e) => e.type === 'done') as { usage?: { inputTokens: number; outputTokens: number; costCents: number } };
     expect(done.usage).toEqual({ inputTokens: 0, outputTokens: 0, costCents: 0 });
+  });
+});
+
+// #9534: the CLI's synthetic text for a 401 is "Invalid API key · Fix external
+// API key" — a Claude Code CTA that sends a hosted partner user to a BYO-key
+// page that cannot fix a platform credential. It was persisted as the
+// assistant turn, so it rendered on every reload of the conversation.
+describe('#9534: a rejected key names who can fix it, and the CLI text is never persisted', () => {
+  const CLI_TEXT = 'Invalid API key · Fix external API key';
+  const authFrames = () => [retry('authentication_failed', 401, 1), synthetic('authentication_failed', CLI_TEXT), isErrorResult(401)];
+  const persistedAssistantRows = () => vi.mocked(db.insert).mock.results
+    .flatMap((r) => (r.value as { values: { mock: { calls: unknown[][] } } }).values.mock.calls)
+    .map((call) => call[0] as { role?: string; content?: string | null; contentBlocks?: unknown })
+    .filter((row) => row.role === 'assistant');
+
+  it('platform key: the error tells the user to contact their administrator', async () => {
+    const events = await runTurn('s-platform-401', authFrames());
+    expect(errorsOf(events)).toEqual([providerFailureMessage('auth_failed', false, { platformKey: true })]);
+    expect(errorsOf(events)[0]).toMatch(/contact your administrator/i);
+  });
+
+  it('partner BYO key: the error points at the key configured for this model', async () => {
+    const events = await runTurn('s-byok-401', authFrames(), undefined, makeResolvedModel('anthropic_byok'));
+    expect(errorsOf(events)).toEqual([providerFailureMessage('auth_failed', false, { platformKey: false })]);
+    expect(errorsOf(events)[0]).not.toMatch(/server's/);
+  });
+
+  it('persists the client-safe message as the assistant turn, never the CLI text', async () => {
+    await runTurn('s-persist-401', authFrames());
+    const rows = persistedAssistantRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.content).toBe(providerFailureMessage('auth_failed', false, { platformKey: true }));
+    expect(JSON.stringify(rows[0])).not.toContain('Invalid API key');
+    expect(JSON.stringify(rows[0])).not.toContain('Fix external API key');
+  });
+
+  it('BYO key: the persisted turn carries the partner-key text, not the administrator one', async () => {
+    await runTurn('s-persist-byok-401', authFrames(), undefined, makeResolvedModel('anthropic_byok'));
+    const rows = persistedAssistantRows();
+    const expected = providerFailureMessage('auth_failed', false, { platformKey: false });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.content).toBe(expected);
+    expect(rows[0]?.contentBlocks).toEqual([{ type: 'text', text: expected }]);
+  });
+
+  it('an error-tagged message the MODEL wrote (not <synthetic>) keeps its own text', async () => {
+    await runTurn('s-persist-model-error', [
+      { type: 'assistant', error: 'max_output_tokens', message: { model: 'claude-x', content: [{ type: 'text', text: 'Partial answer' }], usage: { input_tokens: 1, output_tokens: 1 } } },
+      sdkResult(),
+    ]);
+    expect(persistedAssistantRows().map((r) => r.content)).toEqual(['Partial answer']);
+  });
+
+  it('a real (non-synthetic) assistant message is still persisted verbatim', async () => {
+    await runTurn('s-persist-ok', [
+      { type: 'assistant', message: { model: 'claude-x', content: [{ type: 'text', text: 'All 4 devices are online.' }], usage: { input_tokens: 1, output_tokens: 1 } } },
+      sdkResult(),
+    ]);
+    expect(persistedAssistantRows().map((r) => r.content)).toEqual(['All 4 devices are online.']);
   });
 });

@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "User devices",
     "aiAgentsImpact": "AI Impact",
     "aiAgentsFixMemory": "Fix memory",
+    "flows": "Flows",
+    "flowDetail": "Flow",
     "aiAgentsRunsDetail": "Run Detail",
     "aiAgentsRuns": "Agent Runs",
     "aiForOffice": "AI for Office",
@@ -73,7 +75,7 @@
     "fleet": "Fleet Orchestration",
     "forgotPassword": "Forgot Password",
     "incidentsDetail": "Incident Detail",
-    "incidents": "Incidents",
+    "incidents": "Security Incidents",
     "dashboard": "Dashboard",
     "integrations": "Integrations",
     "integrationsPsa": "PSA Integrations",
@@ -139,6 +141,7 @@
     "settingsBilling": "Billing Settings",
     "settingsCatalog": "Product Catalog",
     "settingsConnectedApps": "Connected apps",
+    "settingsDeliverableTemplates": "Deliverable Templates",
     "settingsCustomFields": "Custom Fields",
     "settingsEnrollmentKeys": "Enrollment Keys",
     "settingsFilters": "Saved Filters",
@@ -152,6 +155,7 @@
     "settingsProfile": "Profile Settings",
     "settingsRoles": "Roles",
     "settingsSitesDetail": "Site Settings",
+    "settingsSites": "Sites",
     "settingsSso": "Single Sign-On",
     "settingsUsers": "Users",
     "settingsVariables": "Variables",
@@ -176,7 +180,11 @@
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
     "billingAutopay": "Automatic payments",
-    "endpointMessages": "Endpoint Messages"
+    "endpointMessages": "Endpoint Messages",
+    "securityDetectionRules": "Detection Rules",
+    "settingsPlan": "Plan & features",
+    "settingsWispMemory": "Wisp memory",
+    "wispThread": "Wisp thread"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
@@ -259,6 +267,14 @@
       },
       "alertTemplates": {
         "title": "Alert templates"
+      },
+      "plan": {
+        "title": "Plan & features",
+        "description": "Your plan, which features it includes, and where each one comes from."
+      },
+      "wispMemory": {
+        "title": "Wisp memory",
+        "description": "Review, confirm, and retract what Wisp remembers."
       }
     },
     "groups": {

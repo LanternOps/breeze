@@ -8,6 +8,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -99,6 +100,9 @@ export const AI_OPERATOR_TARGET_DETACH_REASONS = [
   'device_deleted',
   'org_merged',
   'scope_invalidated',
+  // #8318 §5.6: the install incarnation boundary detaches live work when a
+  // new agent install takes over the device row.
+  'device_reinstalled',
 ] as const;
 export type AiOperatorTargetDetachReason = (typeof AI_OPERATOR_TARGET_DETACH_REASONS)[number];
 
@@ -148,6 +152,17 @@ export const aiOperatorTasks = pgTable(
       .$type<'manual' | 'alert' | 'ticket' | 'schedule' | 'anomaly' | 'sweep' | 'chat'>()
       .notNull(),
     requesterUserId: uuid('requester_user_id').references(() => users.id, { onDelete: 'set null' }),
+    // Wisp W02 (Wisp design §4.3): the delegation grant + pinned revision a
+    // Wisp-launched task runs under; both NULL otherwise (both-or-none CHECK).
+    // FKs to wisp_grant_revisions / wisp_grants are SQL-only
+    // (migrations/2027-01-04-100100-wisp-grants.sql), like ai_agent_runs.task_id.
+    grantId: uuid('grant_id'),
+    grantRevisionId: uuid('grant_revision_id'),
+    // Wisp W07 (w00 A11): specialist lineage — see ai_agent_runs. SQL-only FKs
+    // (migrations/2027-01-05-100400-wisp-specialist-lineage.sql).
+    requestedByRunId: uuid('requested_by_run_id'),
+    parentGrantRevisionId: uuid('parent_grant_revision_id'),
+    depth: smallint('depth').notNull().default(0),
 
     // Bounded exportable text. Spec §11: every jsonb column is `excludedOpen`
     // in the export policy without exception, so anything a customer must be

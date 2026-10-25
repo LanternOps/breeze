@@ -1,21 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ASSUMED_MCP_PROTOCOL_VERSION, LATEST_MCP_PROTOCOL_VERSION, SUPPORTED_MCP_PROTOCOL_VERSIONS,
-  computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize,
+  ASSUMED_MCP_PROTOCOL_VERSION, LATEST_LEGACY_MCP_PROTOCOL_VERSION, LEGACY_MCP_PROTOCOL_VERSIONS,
+  MODERN_MCP_PROTOCOL_VERSIONS, SUPPORTED_MCP_PROTOCOL_VERSIONS,
+  isLegacyMcpProtocolVersion, isModernMcpProtocolVersion, supportedMcpProtocolVersions,
+  computeToolsListCatalogFingerprint, decodeToolsListCursor, mcpStatelessEnabled, encodeToolsListCursor, mcpToolsListPageSize,
   negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader,
 } from './mcpProtocol';
 
 describe('mcpProtocol', () => {
-  it('supports the four revisions newest-first and still speaks 2024-11-05', () => {
-    expect([...SUPPORTED_MCP_PROTOCOL_VERSIONS]).toEqual(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
-    expect(LATEST_MCP_PROTOCOL_VERSION).toBe('2025-11-25');
+  it('lists 2026-07-28 first, then the four legacy revisions', () => {
+    expect([...SUPPORTED_MCP_PROTOCOL_VERSIONS]).toEqual(['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
+    expect([...MODERN_MCP_PROTOCOL_VERSIONS]).toEqual(['2026-07-28']);
+    expect([...LEGACY_MCP_PROTOCOL_VERSIONS]).toEqual(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
+    expect(LATEST_LEGACY_MCP_PROTOCOL_VERSION).toBe('2025-11-25');
     expect(ASSUMED_MCP_PROTOCOL_VERSION).toBe('2025-03-26');
+  });
+  it('classifies versions by era', () => {
+    expect(isModernMcpProtocolVersion('2026-07-28')).toBe(true);
+    expect(isModernMcpProtocolVersion('2025-11-25')).toBe(false);
+    expect(isLegacyMcpProtocolVersion('2024-11-05')).toBe(true);
+    expect(isLegacyMcpProtocolVersion('2026-07-28')).toBe(false);
+    expect(isLegacyMcpProtocolVersion(undefined)).toBe(false);
+  });
+  it('initialize never negotiates a modern version', () => {
+    expect(negotiateMcpProtocolVersion('2026-07-28')).toBe('2025-11-25'); // B-W01 pin, still true
+  });
+  it('advertises the modern version only when stateless is enabled', () => {
+    expect(supportedMcpProtocolVersions(false)).toEqual(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
+    expect(supportedMcpProtocolVersions(true)).toEqual(['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
+  });
+  it('the legacy header parser rejects the modern version', () => {
+    expect(parseMcpProtocolVersionHeader('2026-07-28')).toEqual({ ok: false, value: '2026-07-28' });
   });
   it('echoes a supported requested version and answers latest for anything else', () => {
     expect(negotiateMcpProtocolVersion('2024-11-05')).toBe('2024-11-05');
     expect(negotiateMcpProtocolVersion('2025-06-18')).toBe('2025-06-18');
-    expect(negotiateMcpProtocolVersion('2026-07-28')).toBe('2025-11-25');   // B-W03 territory, not yet
-    expect(negotiateMcpProtocolVersion(undefined)).toBe('2025-11-25');
+        expect(negotiateMcpProtocolVersion(undefined)).toBe('2025-11-25');
     expect(negotiateMcpProtocolVersion(42)).toBe('2025-11-25');
   });
   it('parses the header: absent = assumed 2025-03-26, supported = ok, anything else = reject', () => {
@@ -52,5 +72,10 @@ describe('mcpProtocol', () => {
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: '50' })).toBe(50);
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: 'x' })).toBe(0);
     expect(mcpToolsListPageSize({ MCP_TOOLS_LIST_PAGE_SIZE: '-3' })).toBe(0);
+  });
+  it('reads MCP_STATELESS_ENABLED per call with the envFlag vocabulary, default off', () => {
+    expect(mcpStatelessEnabled({})).toBe(false);
+    for (const v of ['1', 'true', 'TRUE', ' yes ', 'on']) expect(mcpStatelessEnabled({ MCP_STATELESS_ENABLED: v })).toBe(true);
+    for (const v of ['0', 'false', 'off', 'no', '', 'enabled']) expect(mcpStatelessEnabled({ MCP_STATELESS_ENABLED: v })).toBe(false);
   });
 });

@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "Dispositivi dell'utente",
     "aiAgentsImpact": "Impatto IA",
     "aiAgentsFixMemory": "Memoria delle correzioni",
+    "flows": "Flussi",
+    "flowDetail": "Flusso",
     "aiAgentsRunsDetail": "Dettaglio esecuzione",
     "aiAgentsRuns": "Esecuzioni degli agenti",
     "aiForOffice": "AI per Office",
@@ -73,7 +75,7 @@
     "fleet": "Orchestrazione della flotta",
     "forgotPassword": "Password dimenticata",
     "incidentsDetail": "Dettaglio incidente",
-    "incidents": "Incidenti",
+    "incidents": "Incidenti di sicurezza",
     "dashboard": "Dashboard",
     "integrations": "Integrazioni",
     "integrationsPsa": "Integrazioni PSA",
@@ -139,6 +141,7 @@
     "settingsBilling": "Impostazioni di fatturazione",
     "settingsCatalog": "Catalogo prodotti",
     "settingsConnectedApps": "App connesse",
+    "settingsDeliverableTemplates": "Modelli di deliverable",
     "settingsCustomFields": "Campi personalizzati",
     "settingsEnrollmentKeys": "Chiavi di registrazione",
     "settingsFilters": "Filtri salvati",
@@ -152,6 +155,7 @@
     "settingsProfile": "Impostazioni profilo",
     "settingsRoles": "Ruoli",
     "settingsSitesDetail": "Impostazioni sede",
+    "settingsSites": "Siti",
     "settingsSso": "Single Sign-On (SSO)",
     "settingsUsers": "Utenti",
     "settingsVariables": "Variabili",
@@ -175,8 +179,12 @@
     "securityScans": "Scansioni IOC",
     "devicesTime": "Sincronizzazione dell’ora",
     "adminAiModels": "Modelli di IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Messaggi agli endpoint"
+    "billingAutopay": "Pagamenti automatici",
+    "endpointMessages": "Messaggi agli endpoint",
+    "securityDetectionRules": "Regole di rilevamento",
+    "settingsPlan": "Piano e funzionalità",
+    "settingsWispMemory": "Memoria di Wisp",
+    "wispThread": "Thread di Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",
@@ -259,6 +267,14 @@
       },
       "alertTemplates": {
         "title": "Modelli di avviso"
+      },
+      "plan": {
+        "title": "Piano e funzionalità",
+        "description": "Il tuo piano, quali funzionalità include e da dove proviene ciascuna."
+      },
+      "wispMemory": {
+        "title": "Memoria di Wisp",
+        "description": "Controlla, conferma e ritira ciò che Wisp ricorda."
       }
     },
     "groups": {

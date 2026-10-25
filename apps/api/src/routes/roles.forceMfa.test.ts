@@ -354,5 +354,35 @@ describe('role routes — force_mfa (#5317)', () => {
       expect(values).toHaveBeenCalledWith(expect.objectContaining({ forceMfa: value, isSystem: false }));
       expect((await res.json()).forceMfa).toBe(value);
     });
+
+    // #9603: the server must not write English "Cloned from …" text (or carry
+    // the source's description over); the dialog supplies a localized one.
+    it.each([[undefined, null], ['My text', 'My text']])('stores the supplied description (%s -> %s), never English "Cloned from" text', async (sent, stored) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectLimit([
+          { id: 'role-1', name: 'Scripter', description: 'Can execute scripts', scope: 'partner', isSystem: true, forceMfa: false, partnerId: null, orgId: null }
+        ]))
+        .mockReturnValueOnce(selectJoin([]))
+        .mockReturnValueOnce(selectJoin([]));
+      const values = vi.fn((row: any) => ({
+        returning: vi.fn().mockResolvedValue([
+          { id: 'role-clone', name: row.name, description: row.description, scope: 'partner', isSystem: false, forceMfa: false, createdAt: new Date(), updatedAt: new Date() }
+        ])
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ insert: vi.fn(() => ({ values })) }));
+
+      const res = await app.request('/roles/role-1/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Copy', description: sent })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(1);
+      const row = values.mock.calls[0]![0] as { description: string | null };
+      expect(row.description ?? '').not.toMatch(/Cloned from/);
+      expect(row.description ?? '').not.toMatch(/execute scripts/);
+      expect(row.description).toBe(stored);
+    });
   });
 });

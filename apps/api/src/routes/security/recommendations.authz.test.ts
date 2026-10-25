@@ -61,7 +61,7 @@ function buildApp(): Hono {
   return app;
 }
 
-describe.each(['complete', 'dismiss'] as const)('POST /recommendations/:id/%s authorization', (action) => {
+describe.each(['complete', 'dismiss', 'reopen'] as const)('POST /recommendations/:id/%s authorization', (action) => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -121,7 +121,7 @@ function buildPartnerApp(): Hono {
 
 // #8086: a multi-org partner user has auth.orgId === null, so the action
 // endpoints must honour the ?orgId the UI sends (same as the GET list).
-describe.each(['complete', 'dismiss'] as const)('POST /recommendations/:id/%s with ?orgId (multi-org partner)', (action) => {
+describe.each(['complete', 'dismiss', 'reopen'] as const)('POST /recommendations/:id/%s with ?orgId (multi-org partner)', (action) => {
   let insertValues: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {

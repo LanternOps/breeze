@@ -16,13 +16,13 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { getTestDb } from './setup';
 import { authMiddleware } from '../../middleware/auth';
 import { patchRoutes } from '../../routes/patches';
-import { devices, patches, devicePatches, organizationUsers } from '../../db/schema';
+import { devices, patches, devicePatches, organizationUsers, users } from '../../db/schema';
 import {
   createIntegrationTestClient,
   createOrganization,
@@ -315,5 +315,100 @@ describe('#8728 — GET /patches/:id/devices', () => {
     const otherOrg = await createOrganization({ partnerId: client.env.partner.id });
     const res = await client.get(`/patches/${patchId}/devices?orgId=${otherOrg.id}`);
     expect(res.status).toBe(403);
+  });
+});
+
+describe('#8728 follow-up — a parked device is excluded from the count and the list', () => {
+  // A SYSTEM caller: org and partner callers cannot see a holding org at all,
+  // so for them tenant scope alone would hide the parked device and the test
+  // would pass even without the parked-device predicate. Only a caller that
+  // can see the holding org proves the exclusion itself.
+  let client: IntegrationTestClient;
+
+  beforeEach(async () => {
+    client = await createIntegrationTestClient(buildApp(), { scope: 'system' });
+    // System scope is granted by the live platform-admin flag, as in production
+    // (services/permissions.ts resolveSystemScopePermissions).
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, client.env.user.id));
+  });
+
+  async function seedParkedDevice(): Promise<{ deviceId: string; holdingOrgId: string }> {
+    const holding = await createOrganization({ partnerId: client.env.partner.id, type: 'unassigned_pool' });
+    const holdingSite = await createSite({ orgId: holding.id });
+    // Only enrollment admission may create a device in a holding org.
+    const deviceId = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
+      const [row] = await tx
+        .insert(devices)
+        .values({
+          orgId: holding.id,
+          siteId: holdingSite.id,
+          agentId: `agent-8728-parked-${randomUUID()}`,
+          hostname: 'parked-only-laptop',
+          osType: 'windows',
+          osVersion: '11',
+          architecture: 'x86_64',
+          agentVersion: '0.0.0-test',
+          status: 'online',
+          enrolledAt: new Date(),
+        })
+        .returning({ id: devices.id });
+      return row!.id;
+    });
+    return { deviceId, holdingOrgId: holding.id };
+  }
+
+  it('answers a patch present only on a parked device like a patch that does not exist (404)', async () => {
+    const patchId = await seedPatch();
+    const { deviceId, holdingOrgId } = await seedParkedDevice();
+    await seedDevicePatch(holdingOrgId, deviceId, patchId, 'pending');
+
+    const res = await client.get(`/patches/${patchId}/devices`);
+    const noSuch = await client.get(`/patches/${randomUUID()}/devices`);
+    expect(res.status).toBe(404);
+    expect(noSuch.status).toBe(404);
+    expect(await res.json()).toEqual(await noSuch.json());
+  });
+
+  it('counts and names only the managed device, not the one parked in the holding org', async () => {
+    const patchId = await seedPatch();
+    const orgId = client.env.organization.id;
+    const managed = await seedDevice(orgId, client.env.site.id, 'managed-laptop');
+    await seedDevicePatch(orgId, managed, patchId, 'pending');
+
+    const holding = await createOrganization({ partnerId: client.env.partner.id, type: 'unassigned_pool' });
+    const holdingSite = await createSite({ orgId: holding.id });
+    // Only enrollment admission may create a device in a holding org.
+    const parked = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.parked_device_admission', 'enrollment', true)`);
+      const [row] = await tx
+        .insert(devices)
+        .values({
+          orgId: holding.id,
+          siteId: holdingSite.id,
+          agentId: `agent-8728-parked-${randomUUID()}`,
+          hostname: 'parked-laptop',
+          osType: 'windows',
+          osVersion: '11',
+          architecture: 'x86_64',
+          agentVersion: '0.0.0-test',
+          status: 'online',
+          enrolledAt: new Date(),
+        })
+        .returning({ id: devices.id });
+      return row!.id;
+    });
+    await seedDevicePatch(holding.id, parked, patchId, 'pending');
+
+    const list = await client.get('/patches?limit=200');
+    expect(list.status).toBe(200);
+    const row = (await list.json()).data.find((p: ListRow) => p.id === patchId);
+    expect(row?.outstandingDeviceCount).toBe(1);
+
+    const res = await client.get(`/patches/${patchId}/devices`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((d: DeviceRow) => d.hostname)).toEqual(['managed-laptop']);
+    expect(body.pagination.total).toBe(1);
   });
 });

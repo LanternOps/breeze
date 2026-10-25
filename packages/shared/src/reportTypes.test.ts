@@ -11,6 +11,7 @@ describe('REPORT_TYPES', () => {
       'vulnerability_management', 'identity_access_review',
       'ticket_sla_attainment', 'technician_time_billability', 'ar_aging',
       'backup_status', 'ai_usage_by_client',
+      'mrr_renewals', 'quote_win_rate', 'client_profitability',
     ]);
   });
 
@@ -18,9 +19,10 @@ describe('REPORT_TYPES', () => {
     expect(new Set(REPORT_TYPES).size).toBe(REPORT_TYPES.length);
   });
 
-  it('BUSINESS_REPORT_TYPES is exactly the #3198 trio plus ai_usage_by_client (#7608), all in REPORT_TYPES', () => {
+  it('BUSINESS_REPORT_TYPES is the #3198 trio, ai_usage_by_client (#7608) and the phase-2 types, all in REPORT_TYPES', () => {
     expect([...BUSINESS_REPORT_TYPES]).toEqual([
       'ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client',
+      'mrr_renewals', 'quote_win_rate', 'client_profitability',
     ]);
     for (const t of BUSINESS_REPORT_TYPES) expect(REPORT_TYPES).toContain(t);
   });
@@ -46,6 +48,9 @@ describe('BUSINESS_REPORT_REQUIRED_PERMISSIONS (#3198)', () => {
         { resource: 'invoices', action: 'read' },
         { resource: 'ai_sessions', action: 'read_all' },
       ],
+      mrr_renewals: [{ resource: 'contracts', action: 'read' }],
+      quote_win_rate: [{ resource: 'quotes', action: 'read' }],
+      client_profitability: [{ resource: 'invoices', action: 'read' }, { resource: 'time_entries', action: 'read' }],
     });
     expect(Object.keys(BUSINESS_REPORT_REQUIRED_PERMISSIONS).sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
   });

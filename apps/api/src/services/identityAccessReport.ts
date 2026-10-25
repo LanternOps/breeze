@@ -74,6 +74,7 @@ import {
   organizations,
 } from '../db/schema';
 import { identityAccessConfigSchema } from './reportConfigSchemas';
+import { reportDateRangePresetDays } from './reportDateRange';
 import { loadDomainFreshness } from './m365Sync/summary';
 import {
   assertReportExecutionPreflight,
@@ -110,8 +111,8 @@ function endOfDay(isoDate: string): Date {
  * The window to report on. `EvidenceRunContext` wins whenever it is present —
  * the occurrence's period is the contract, and deriving one from `now()` would
  * make a re-run of a late occurrence quietly report a different month (OD-11).
- * An ad-hoc staff run falls back to the config's date range, then to the
- * trailing 30 days.
+ * An ad-hoc staff run falls back to the config's explicit date range, then to
+ * its rolling preset (#9562), then to the trailing 30 days.
  */
 function resolveWindow(
   evidence: EvidenceRunContext | undefined,
@@ -130,7 +131,10 @@ function resolveWindow(
   const end = range.end ? endOfDay(range.end) : new Date(generatedAt);
   const start = range.start
     ? startOfDay(range.start)
-    : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    // #9562: a rolling preset (last_7/30/90_days, what every template saves)
+    // sets the trailing length; only a config with neither bounds nor a
+    // preset gets the 30-day default.
+    : new Date(end.getTime() - (reportDateRangePresetDays(rawConfig?.dateRange) ?? 30) * 24 * 60 * 60 * 1000);
   return {
     start,
     end,

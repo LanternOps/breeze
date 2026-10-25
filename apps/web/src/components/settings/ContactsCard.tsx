@@ -8,6 +8,7 @@ import BulkContactImport from '../organizations/BulkContactImport';
 import { useHashState } from '@/lib/useHashState';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
 import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
+import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
 import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
@@ -657,6 +658,8 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
                           {t('callerVerificationTech:drawer.title')}
                         </button>
                       )}
+                      {/* An action, not a setting; renders nothing unless the Operator flag is on and the org can run offboarding. */}
+                      <OffboardPersonLauncher orgId={orgId} source="contact" contactId={c.id} label={c.name ?? c.email ?? c.id} testId={`offboard-launcher-contact-${c.id}`} />
                       <button
                         type="button"
                         data-testid={`org-contacts-edit-${c.id}`}

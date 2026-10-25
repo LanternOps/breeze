@@ -240,6 +240,7 @@ publishes its state and every refusal.
 | `breeze_admission_level` | Gauge | `0` normal, `1` inventory-type uploads refused, `2` status uploads refused too, `3` critical |
 | `breeze_admission_decisions_total{class,route,outcome,reason}` | Counter | Requests refused (`outcome="shed"`), or that would have been in `observe` mode (`would_shed`). `reason` is `level`, `bulk_in_flight`, `ws_bucket` or `ws_setups` |
 | `breeze_admission_transitions_total{from,to,trigger}` | Counter | Level changes. `trigger` is `lag`, `db`, `db_timeout` or `emergency` for escalations; recovery steps carry the last escalation's trigger, and `none` once back at level 0. A fail-open reset after repeated tick failures reports `tick_failure` |
+| `breeze_admission_rise_suppressed_total{to,trigger}` | Counter | Short spikes that did not raise the level: rise streaks that ended before `BREEZE_ADMISSION_RISE_TICKS` consecutive ticks. `to` is the level they would have entered, `trigger` is `lag`, `db` or `db_timeout` |
 | `breeze_admission_signal_lag_seconds` | Gauge | Median event-loop lag the controller used (`-1` when the lag monitor is off) |
 | `breeze_admission_signal_db_wait_seconds` | Gauge | How long requests wait for a database connection (the pool's own series are `breeze_db_pool_admission_*`) |
 | `breeze_admission_db_saturation_responses_total{error}` | Counter | Requests answered `503` because the database pool (`pool_acquire_timeout`) or the RLS prologue (`prologue_timeout`) timed out |

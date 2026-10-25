@@ -37,6 +37,27 @@ vi.mock('./scriptSecretDelivery', () => ({
     failClaimedSecretCommandsMock(...(args as [any])),
 }));
 
+// #6958: the software_install refresher reads the device's agent version for
+// a script/zip install. Only `db.select` is replaced; the context helpers stay real.
+const { deviceAgentRowsMock, deviceWhereArgs } = vi.hoisted(() => ({
+  deviceAgentRowsMock: vi.fn(),
+  deviceWhereArgs: [] as unknown[],
+}));
+vi.mock('../db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db')>()),
+  db: {
+    select: () => ({
+      from: () => ({
+        where: (arg: unknown) => {
+          deviceWhereArgs.push(arg);
+          return { limit: () => deviceAgentRowsMock() };
+        },
+      }),
+    }),
+  },
+}));
+
+import { MIN_AGENT_VERSION_INSTALL_SCRIPTS } from './softwareInstallAgentSupport';
 import {
   DELIVERY_PREPARATION_FAILED_MESSAGE,
   deliveryRefreshers,
@@ -654,5 +675,102 @@ describe('storage-destination delivery refreshers', () => {
     expect(expireRefusedClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-push', claimedAt, 'index still being prepared');
     expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+});
+
+// #6958 Review Focus 1: a command queued for a new agent must not be delivered
+// if the device reports an older agent by the time it is claimed (a downgrade
+// between enqueue and delivery). The gate lives in the SHIPPED software_install
+// refresher, so the heartbeat batch AND the enqueue-time push both run it.
+describe('software_install claim-time agent gate (#6958)', () => {
+  const OLD = '0.124.0';
+  const scriptPayload = {
+    deploymentId: 'dep-1',
+    retryCount: 0,
+    downloadUrl: 'https://dl/pkg.zip',
+    fileType: 'zip',
+    postInstallScript: { language: 'powershell', content: 'x', parameters: {}, timeoutSeconds: 600 },
+  };
+  const claim = (payload: unknown) => ({
+    id: 'cmd-sw',
+    type: 'software_install',
+    deviceId: CLAIM_DEVICE,
+    payload,
+    executedAt: claimedAt,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
+    isS3ConfiguredMock.mockReturnValue(false);
+    deviceAgentRowsMock.mockReset();
+    deviceWhereArgs.length = 0;
+  });
+
+  it('reads the agent version of the claimed command\'s OWN device', async () => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: MIN_AGENT_VERSION_INSTALL_SCRIPTS }]);
+    const otherDevice = '88888888-8888-4888-8888-888888888888';
+    await prepareClaimedCommandsForDelivery([{ ...claim(scriptPayload), deviceId: otherDevice }]);
+    expect(deviceWhereArgs).toHaveLength(1);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const query = new PgDialect().sqlToQuery(deviceWhereArgs[0] as never);
+    expect(query.sql).toContain('"devices"."id"');
+    expect(query.params).toEqual([otherDevice]);
+  });
+
+  it('(m) a queued script/zip install claimed while the device reports an old agent is refused, expired, never delivered', async () => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: OLD }]);
+
+    const out = await prepareClaimedCommandsForDelivery([claim(scriptPayload)]);
+
+    expect(out).toEqual([]);
+    expect(expireRefusedClaimedCommandDeliveryMock).toHaveBeenCalledWith(
+      'cmd-sw',
+      claimedAt,
+      `agent_update_required (minimum agent ${MIN_AGENT_VERSION_INSTALL_SCRIPTS})`,
+    );
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('(m) the enqueue-time push refuses the same command the same way', async () => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: 'dev' }]);
+
+    const outcome = await refreshClaimedPayloadForPush('software_install', { ...scriptPayload }, {
+      commandId: 'cmd-push', deviceId: CLAIM_DEVICE, type: 'software_install', claimedAt,
+    });
+
+    expect(outcome).toEqual({ ok: false, refusal: expect.stringMatching(/^agent_update_required/) });
+    expect(expireRefusedClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-push', claimedAt, expect.stringMatching(/^agent_update_required/));
+  });
+
+  it.each([
+    ['a pre-install script', { preInstallScript: { content: 'x' } }],
+    ['a post-install script', { postInstallScript: { content: 'x' } }],
+    ['fileType zip', { fileType: 'zip' }],
+  ])('gates %s', async (_label, extra) => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: OLD }]);
+    const out = await prepareClaimedCommandsForDelivery([claim({ deploymentId: 'd', fileType: 'exe', ...extra })]);
+    expect(out).toEqual([]);
+  });
+
+  it('delivers to an agent at the minimum version', async () => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: MIN_AGENT_VERSION_INSTALL_SCRIPTS }]);
+    const out = await prepareClaimedCommandsForDelivery([claim(scriptPayload)]);
+    expect(out.map((c) => c.id)).toEqual(['cmd-sw']);
+    expect(expireRefusedClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('a plain install reads no device row and is delivered to any agent', async () => {
+    const out = await prepareClaimedCommandsForDelivery([claim({ deploymentId: 'd', fileType: 'msi', downloadUrl: 'https://dl/a.msi' })]);
+    expect(out.map((c) => c.id)).toEqual(['cmd-sw']);
+    expect(deviceAgentRowsMock).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable device row is NOT treated as an old agent: released (reversible), not expired', async () => {
+    deviceAgentRowsMock.mockResolvedValue([]);
+    const out = await prepareClaimedCommandsForDelivery([claim(scriptPayload)]);
+    expect(out).toEqual([]);
+    expect(expireRefusedClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-sw', claimedAt, DELIVERY_PREPARATION_FAILED_MESSAGE);
   });
 });

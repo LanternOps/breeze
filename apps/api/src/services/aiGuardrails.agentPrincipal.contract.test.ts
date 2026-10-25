@@ -223,6 +223,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
+  'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -285,11 +286,14 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_ai_agent_runs', // A-W06 Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
+  'list_business_calendars', // #8973 W4 Tier-1 read
+  'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
   // W01 (#6755)
@@ -308,6 +312,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_script_templates',
   'list_scripts',
   'list_sites', // A-W06 Tier-1 read
+  'list_ticket_routing_rules', // #8883 W5 Tier-1 read
   'list_time_entries', // A-W06 Tier-1 read
   'list_time_sync_issues',
   'lookup_distributor_product',
@@ -363,12 +368,15 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_vaults',
   'query_webhooks',
   'read_artifact', // A-W05 (D13a): Tier 1 read, own-run/session scoped
+  'recall', // Wisp W03: Tier 1 memory read; refuses without auth.wispGrant, ceiling-filtered by the broker
   'search_agent_logs',
   'search_catalog',
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
   // W01 (#6755)
   'search_script_library',
+  'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)
+  'validate_flow', // Tool Catalog W03 (#5218) Tier-1 read
 ];
 
 describe('checkAgentGuardrails — fail closed for every registered tool', () => {

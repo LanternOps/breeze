@@ -95,7 +95,9 @@
     "high": "High",
     "medium": "Medium",
     "low": "Low",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "unscored": "Unscored",
+    "unscoredTitle": "No NVD severity score has been published for this CVE yet."
   },
   "softwareGroupDrawer": {
     "titleFallback": "Software group",
@@ -190,7 +192,8 @@
       "patch": "Patch"
     },
     "help": {
-      "riskAria": "About the risk score"
+      "riskAria": "About the risk score",
+      "patchAria": "About the Patch column"
     },
     "actions": {
       "openDetailsAria": "Open {{name}} vulnerability details"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Patch ready",
-        "detail": "{{count}} open findings with a patch available",
-        "detail_one": "{{count}} open finding with a patch available",
-        "detail_other": "{{count}} open findings with a patch available"
+        "detail": "{{count}} open findings with an approved patch ready to install",
+        "detail_one": "{{count}} open finding with an approved patch ready to install",
+        "detail_other": "{{count}} open findings with an approved patch ready to install"
       },
       "acceptedExpiring": {
         "label": "Accepted, expiring soon",
@@ -350,13 +353,15 @@
       "cvssAria": "About the CVSS score",
       "riskAria": "About the risk score",
       "epssAria": "About the EPSS score",
-      "kevAria": "About the KEV flag"
+      "kevAria": "About the KEV flag",
+      "patchAria": "About the Patch column"
     },
     "actions": {
       "openDetailsAria": "Open {{cveId}} details"
     },
     "patch": {
-      "ready": "Ready"
+      "ready": "Ready",
+      "update": "Update to latest"
     },
     "hasMore": "Showing the top 500 CVEs by risk — narrow the filters to see the rest."
   }

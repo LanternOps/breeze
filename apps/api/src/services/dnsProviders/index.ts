@@ -30,6 +30,30 @@ export interface DnsEventSlice {
   until: Date;
 }
 
+/** Hints a sliced walk can use from the previous run (#10018). */
+export interface DnsEventSliceOptions {
+  /**
+   * The slice width the previous run ended on ({@link DnsEventSliceWalkEnd.sliceWidthMs}).
+   * The walk starts at this width instead of the whole window, so a backlog
+   * does not pay its splitting cost again every run. Out-of-range values are
+   * ignored.
+   */
+  initialSliceMs?: number;
+}
+
+/** What a sliced walk reports when it ends: the generator's return value. */
+export interface DnsEventSliceWalkEnd {
+  /**
+   * Set when the walk stopped before `until` because it ran out of its
+   * per-run request budget. `from` is the last checkpoint (the last yielded
+   * slice's `until`, or `since` if none was yielded) and `to` the requested
+   * `until`: that stretch was not fetched and is resumed on the next run.
+   */
+  stoppedShort?: { from: Date; to: Date };
+  /** Width to start the next run at; passed back as {@link DnsEventSliceOptions.initialSliceMs}. */
+  sliceWidthMs?: number;
+}
+
 export interface DnsProvider {
   syncEvents(since: Date, until: Date): Promise<DnsEvent[]>;
   /**
@@ -38,11 +62,17 @@ export interface DnsProvider {
    * offset cap, #7207). Slices are yielded in chronological order and are
    * contiguous from `since`; once a slice is yielded, its `until` is a safe
    * resume point. It may end before `until` (a per-run request budget) — the
-   * caller then resumes from the last slice's `until` on the next run. When
-   * present, the sync job uses this instead of `syncEvents` and persists each
-   * slice as it arrives, so a late failure no longer discards earlier pages.
+   * caller then resumes from the last slice's `until` on the next run, and the
+   * walk's return value says so ({@link DnsEventSliceWalkEnd.stoppedShort}),
+   * so the run can be recorded as partial rather than as a success (#10018).
+   * When present, the sync job uses this instead of `syncEvents` and persists
+   * each slice as it arrives, so a late failure no longer discards earlier pages.
    */
-  syncEventSlices?(since: Date, until: Date): AsyncIterable<DnsEventSlice>;
+  syncEventSlices?(
+    since: Date,
+    until: Date,
+    options?: DnsEventSliceOptions
+  ): AsyncGenerator<DnsEventSlice, DnsEventSliceWalkEnd | void, undefined>;
   addBlocklistDomain(domain: string, reason?: string): Promise<void>;
   removeBlocklistDomain(domain: string): Promise<void>;
   addAllowlistDomain(domain: string): Promise<void>;

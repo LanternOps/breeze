@@ -24,6 +24,7 @@
     "reject": "Reject",
     "approveVerify": "Verify & Approve",
     "verifying": "Waiting for verification…",
+    "approving": "Approving…",
     "deny": "Deny",
     "verificationFailed": "Verification failed. Try again.",
     "alreadyDecided": "This request was already decided.",
@@ -104,6 +105,24 @@
     "m365Customer": "M365 customer",
     "noM365Customer": "No M365 customer",
     "dismiss": "Dismiss"
+  },
+  "aiConversationMove": {
+    "openInAssistant": "Open in AI Assistant",
+    "continueInPanel": "Continue in side panel",
+    "openPastConversation": "Open a past conversation",
+    "closeTabInAssistant": "Close a tab in the AI Assistant to open this conversation",
+    "closeTabToOpen": "Close a tab to open this conversation",
+    "notAvailable": "This conversation isn't available",
+    "wasClosed": "This conversation was closed",
+    "topologyFromMap": "Investigations open from the topology map",
+    "openInPanel": "Open in side panel",
+    "replaceConfirm": "Replace the conversation in the side panel? It stays in your history.",
+    "joinedMidResponse": "Joined mid-response. The full reply appears when it finishes.",
+    "chooseModelInPanel": "Continue in side panel to choose a model",
+    "tabMenu": "Tab options",
+    "anotherOrg": "Another organization",
+    "device": "Device",
+    "newChat": "New chat"
   },
   "aiContextBadge": {
     "context": "Context",
@@ -551,5 +570,183 @@
     "created": "New chat on {{model}} started from a summary.",
     "failed": "Couldn't start the new chat. Try again.",
     "openFailed": "The new chat was created but couldn't be opened. Find it in your chat history; your message was not sent."
+  },
+  "buyCredits": {
+    "link": "Buy credits"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Turn on Wisp",
+      "turningOn": "Turning on Wisp…"
+    },
+    "locked": {
+      "why": "Wisp is available on Pro and higher plans."
+    },
+    "modal": {
+      "title": "Turn on Wisp",
+      "refreshTitle": "Refresh Wisp grant",
+      "scopeLabel": "Wisp can work on",
+      "scopeOrg": "This organization",
+      "scopePartner": "All organizations",
+      "explain": "Wisp works within what you are allowed to do. Confirm it is you to continue.",
+      "code": "Authenticator code",
+      "passkey": "You will confirm with your passkey.",
+      "noFactor": "Wisp needs a passkey or an authenticator app. Set one up in your profile first.",
+      "noOrg": "Select an organization in the header first.",
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "stepUpUnavailable": "Could not verify your factor. Try again.",
+      "reverify": "Your access changed while you were confirming. Enter a new code to continue.",
+      "invalidCode": "That code was not accepted. Try again."
+    },
+    "header": {
+      "scopeAll": "All organizations",
+      "status": {
+        "active": "Active",
+        "paused": "Paused",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
+      "refresh": "Refresh grant",
+      "revoke": "Turn off Wisp",
+      "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
+      "widening": "You can do more than this grant allows — refresh it to let Wisp keep up."
+    },
+    "settings": {
+      "title": "Budget and check-in",
+      "budget": "Daily budget (¢)",
+      "tick": "Check-in every (minutes)",
+      "save": "Save"
+    },
+    "focus": {
+      "label": "Working on",
+      "none": "No customer focus",
+      "pick": "Focus on a customer…",
+      "clear": "Clear focus"
+    },
+    "attachments": {
+      "title": "Attached to this thread",
+      "drop": "Drop an email thread, .eml or CSV here, or paste text",
+      "paste": "Paste text",
+      "label": "Label",
+      "add": "Attach",
+      "empty": "Nothing attached yet",
+      "expires": "Expires {{date}}",
+      "limits": "Up to 20 files, 5 MB each, text only",
+      "focusRequired": "Pick a customer focus before attaching",
+      "loadFailed": "Could not load attachments"
+    },
+    "toast": {
+      "on": "Wisp is on",
+      "onFailed": "Could not turn on Wisp",
+      "off": "Wisp is off",
+      "offFailed": "Could not turn off Wisp",
+      "refreshed": "Grant refreshed",
+      "refreshFailed": "Could not refresh the grant",
+      "settingsSaved": "Wisp settings saved",
+      "settingsFailed": "Could not save Wisp settings",
+      "focusSet": "Wisp is now working on {{org}}",
+      "focusCleared": "Customer focus cleared",
+      "focusFailed": "Could not change focus",
+      "attached": "Attached to the thread",
+      "attachFailed": "Could not attach",
+      "attachTooLarge": "That file is over 5 MB",
+      "attachUnsupported": "Only text files can be attached",
+      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it.",
+      "paused": "Wisp paused",
+      "resumed": "Wisp resumed",
+      "pauseFailed": "Could not pause Wisp",
+      "resumeFailed": "Could not resume Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ of {{budget}}¢ today",
+      "resets": "resets in {{hours}} h",
+      "raise": "Raise today's budget",
+      "label": "Wisp spend today"
+    },
+    "pause": "Pause Wisp",
+    "resume": "Resume",
+    "paused": {
+      "byYou": "You paused Wisp. It won't check in or nudge you until you resume."
+    },
+    "live": {
+      "checking": "Checking {{org}}…",
+      "checkingUnnamed": "Checking a customer…"
+    },
+    "thread": {
+      "title": "Wisp thread",
+      "openChat": "Open in chat",
+      "openChatInactive": "Wisp must be active to chat on this thread.",
+      "notFound": "This Wisp thread doesn't exist or isn't yours.",
+      "loadFailed": "Couldn't load this Wisp thread.",
+      "retry": "Try again",
+      "stale": "Couldn't refresh this thread. What you see may be out of date."
+    },
+    "activity": {
+      "title": "Activity",
+      "empty": "Nothing yet. Wisp's work shows up here.",
+      "loadFailed": "Couldn't load activity",
+      "loadMore": "Load more",
+      "cost": "{{cents}}¢",
+      "kind": {
+        "assessment": "Check",
+        "concern": "Concern",
+        "specialist": "Specialist",
+        "approval": "Approval",
+        "memory": "Memory",
+        "nudge": "Nudge",
+        "brief": "Brief"
+      }
+    }
+  },
+  "wispConcerns": {
+    "title": "Concerns",
+    "empty": "Nothing on Wisp's radar right now.",
+    "snooze": "Snooze",
+    "snoozeOneHour": "1 hour",
+    "snoozeTomorrow": "Until tomorrow 9:00",
+    "snoozeWeek": "7 days",
+    "dismiss": "Dismiss",
+    "resolve": "Resolve",
+    "resolveOutcomePlaceholder": "What happened?",
+    "resolveSubmit": "Mark resolved",
+    "snoozed": "Snoozed",
+    "dismissed": "Dismissed",
+    "resolved": "Resolved",
+    "quietUntil": "quiet until {{when}}",
+    "digestOnly": "digest only",
+    "showAll": "Show all",
+    "showLive": "Show open",
+    "loadFailed": "Couldn't load concerns",
+    "actionFailed": "That didn't work. Try again.",
+    "severity": {
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Info"
+    },
+    "subject": {
+      "ticket": "Ticket",
+      "device": "Device",
+      "alert": "Alert",
+      "org": "Customer",
+      "integration": "Integration",
+      "run": "Run",
+      "task": "Task",
+      "incident": "Incident",
+      "quote": "Quote",
+      "invoice": "Invoice",
+      "contract": "Contract",
+      "site": "Site"
+    },
+    "reviewApproval": "Review approval",
+    "useful": "Useful",
+    "notUseful": "Not useful",
+    "feedbackNotePlaceholder": "What would have been better? (optional)",
+    "feedbackSend": "Send",
+    "feedbackGivenUseful": "You marked this useful",
+    "feedbackGivenNotUseful": "You marked this not useful",
+    "feedbackSaved": "Thanks. Wisp will remember that."
   }
 }

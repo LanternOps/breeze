@@ -440,6 +440,27 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
     expect(chooseSessionModel).not.toHaveBeenCalled();
   });
 
+  // Wisp W04 (w00 A10; Review Focus 3): the new chat would be inserted without
+  // the grant columns and so would run outside the delegation ceiling.
+  it('refuses continuation of a Wisp session with continuation_unsupported', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: {
+        ...DB_SESSION,
+        wispGrantId: '22222222-2222-4222-8222-222222222222',
+        wispGrantRevisionId: '33333333-3333-4333-8333-333333333333',
+      },
+      messages: [{ role: 'user', content: 'hi', toolName: null }],
+    } as never);
+    const res = await post(app, { model: { offeringId: OFF } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'This chat cannot be continued in a new chat.',
+      code: 'continuation_unsupported',
+    });
+    expect(chooseSessionModel).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+  });
+
   it('a chat with a reply still running → 409 turn_in_progress', async () => {
     vi.mocked(streamingSessionManager.get).mockReturnValueOnce({ state: 'processing' } as never);
     const res = await post(app, { model: { offeringId: OFF } });
@@ -457,9 +478,22 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
   });
 
   it('a budget denial before reserving → 402, nothing reserved', async () => {
-    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'Out of credits' } as never);
-    expect((await post(app, { model: { offeringId: OFF } })).status).toBe(402);
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'Out of credits', reason: 'credits_exhausted', permanent: false } as never);
+    const res = await post(app, { model: { offeringId: OFF } });
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'Out of credits', code: 'credits_exhausted' });
     expect(reserveAiBudget).not.toHaveBeenCalled();
+  });
+
+  it('the plan gate → 402 plan_not_eligible; a spend cap → 402 with no code (#9450)', async () => {
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'needs plan', reason: 'plan_gate', permanent: true } as never);
+    const plan = await post(app, { model: { offeringId: OFF } });
+    expect(plan.status).toBe(402);
+    expect(await plan.json()).toEqual({ error: 'needs plan', code: 'plan_not_eligible' });
+    vi.mocked(checkBudgetDetailed).mockResolvedValueOnce({ message: 'cap', reason: 'daily_budget', permanent: false } as never);
+    const cap = await post(app, { model: { offeringId: OFF } });
+    expect(cap.status).toBe(402);
+    expect(await cap.json()).toEqual({ error: 'cap' });
   });
 
   it('a denied reservation → 429, nothing sent', async () => {
@@ -579,7 +613,7 @@ describe('first turn of a continuation (W05)', () => {
     vi.mocked(reserveAiBudget).mockResolvedValue({
       kind: 'unlimited', reservationId: RESERVATION_ID, dailyPeriodKey: 'd', monthlyPeriodKey: 'm', status: 'active',
     } as never);
-    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any);
   });
 
   afterEach(() => {

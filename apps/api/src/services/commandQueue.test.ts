@@ -15,6 +15,7 @@ import {
   queueCommandForExecution,
   rearmIdempotentCommandForDelivery,
   resolveCommandCreatedBy,
+  enqueueWatchdogCommand,
 } from './commandQueue';
 import { db } from '../db';
 import { createAuditLogAsync } from './auditService';
@@ -95,6 +96,7 @@ vi.mock('./commandDispatch', () => ({
 
 vi.mock('./sentry', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('./backupMetrics', () => ({
@@ -372,6 +374,45 @@ describe('command queue service', () => {
       commandId, deviceId, type: 'desktop_stream_stop', payload,
     })).resolves.toEqual({ delivered: false, reason: 'command_cancelled' });
     expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('re-arms and pushes to the agent id read in the claim, not the one read before it (#8318 §6.4)', async () => {
+    const commandId = '11111111-1111-4111-8111-111111111111';
+    const deviceId = '22222222-2222-4222-8222-222222222222';
+    const payload = { sessionId: '33333333-3333-4333-8333-333333333333', finalizationId: commandId };
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: commandId, deviceId, type: 'desktop_stream_stop', targetRole: 'agent', payload,
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          // Read before the claim.
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }),
+        }),
+      } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    // A reattach / re-enroll committed between that read and the claim.
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+      status: 'claimed', id: commandId, executedAt: new Date(), agentId: 'agent-after-reattach',
+    });
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+
+    await expect(rearmIdempotentCommandForDelivery({
+      commandId, deviceId, type: 'desktop_stream_stop', payload,
+    })).resolves.toEqual({ delivered: true });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-after-reattach', {
+      id: commandId, type: 'desktop_stream_stop', payload,
+    });
   });
 
   it('should queue a command for a device', async () => {
@@ -1107,6 +1148,7 @@ describe('command queue service', () => {
         status: 'claimed',
         id: 'cmd-x',
         executedAt: new Date(),
+        agentId: 'agent-1',
       });
       vi.mocked(releaseClaimedCommandDelivery).mockResolvedValue(undefined);
     }
@@ -1201,6 +1243,25 @@ describe('command queue service', () => {
       // the "device unreachable" UI message rather than burning the timeout.
       expect(result.status).toBe('failed');
       expect(result.error).toBe(DEVICE_UNREACHABLE_ERROR);
+    });
+
+    it('pushes every attempt to the agent id read in the claim, not the device row read before it (#8318 §6.4)', async () => {
+      vi.useFakeTimers();
+      setupOnlineDeviceMocks(); // the device row read before the claim says agent-1
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      // A reattach / re-enroll committed between that read and the claim.
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+        status: 'claimed', id: 'cmd-x', executedAt: new Date(), agentId: 'agent-after-reattach',
+      });
+      vi.mocked(sendCommandToAgent).mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+      const promise = executeCommand('dev-online', CommandTypes.FILE_LIST, { path: '/' });
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(sendCommandToAgent).mock.calls) expect(call[0]).toBe('agent-after-reattach');
+      expect(result.status).toBe('completed');
     });
 
     it('skips dispatch entirely when the push claim reports not_claimable', async () => {
@@ -2560,5 +2621,141 @@ describe('ai.command.executed — the executeCommand path (#5022 W01)', () => {
 
     const actions = vi.mocked(createAuditLogAsync).mock.calls.map((c) => c[0]!.action);
     expect(actions).not.toContain('ai.command.executed');
+  });
+});
+
+// #9234 step 1 — the device-page "Restart agent" button. Same precheck and the
+// same row as executeCommand(..., { targetRole: 'watchdog' }), but it returns as
+// soon as the row exists: the watchdog polls every ~30s, so a request that
+// waited (and, on timeout, marked the row failed) would cancel restarts the
+// watchdog had not yet had a chance to claim.
+describe('enqueueWatchdogCommand', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    parkedDeviceIds.clear();
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockResolvedValue(undefined);
+  });
+
+  function mockDevice(device: Record<string, unknown>) {
+    const limit = vi.fn().mockResolvedValue([device]);
+    vi.mocked(db.select).mockImplementation(() => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit }),
+      }),
+    }) as any);
+    return limit;
+  }
+
+  const silentDevice = {
+    id: 'dev-silent',
+    status: 'offline',
+    agentId: 'agent-silent',
+    orgId: 'org-1',
+    hostname: 'host-silent',
+    watchdogLastSeen: new Date(),
+  };
+
+  it('writes a watchdog-targeted row and returns without waiting for a result', async () => {
+    const deviceLookup = mockDevice(silentDevice);
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-w', type: 'restart_agent', status: 'pending' }]),
+      execute: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', {
+      userId: 'user-1',
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result).toEqual({ status: 'queued', commandId: 'cmd-w' });
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId: 'dev-silent',
+        type: 'restart_agent',
+        payload: {},
+        status: 'pending',
+        targetRole: 'watchdog',
+      }),
+    );
+    // Same delivery clock as executeCommand's reject rows (no deliver_by).
+    expect(insertValues.mock.calls[0]![0]).toMatchObject({ deliverBy: null });
+    // No WS push, and no poll. Had it polled, every read returns the device
+    // row (no terminal status), so the call would spin until its 30s timeout
+    // (past this test's) and then write the timeout marker below.
+    expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(deviceLookup).toHaveBeenCalled();
+    // Never marks the row failed on a timeout it did not wait for.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses before inserting when the watchdog is not reporting', async () => {
+    mockDevice({ ...silentDevice, watchdogLastSeen: new Date(Date.now() - 60 * 60 * 1000) });
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'start_agent', { userId: 'user-1' });
+
+    expect(result).toMatchObject({ status: 'failed', reason: 'refused' });
+    expect(result.status === 'failed' && result.error).toMatch(/watchdog is not reporting/i);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('refuses a device parked in a holding org', async () => {
+    mockDevice(silentDevice);
+    parkedDeviceIds.add('dev-silent');
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', { userId: 'user-1' });
+
+    expect(result).toMatchObject({ status: 'failed', reason: 'refused' });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('reports insert_failed when the INSERT returns no row', async () => {
+    mockDevice(silentDevice);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+    } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', { userId: 'user-1' });
+
+    expect(result).toEqual({ status: 'failed', reason: 'insert_failed', error: 'Failed to create command' });
+  });
+
+  it('refuses a device that left the deciding organization', async () => {
+    mockDevice({ ...silentDevice, orgId: 'org-other' });
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'restart_agent', {
+      userId: 'user-1',
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result).toEqual({ status: 'failed', reason: 'not_found', error: 'Device not found' });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it('carries a partner-trust denial back to the caller', async () => {
+    mockDevice(silentDevice);
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockRejectedValue(
+      new TrustDeniedError('TRUST_PROBATION', 'probation_default_deny', 'dev-silent', 'start_agent'),
+    );
+    const insertValues = vi.fn();
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await enqueueWatchdogCommand('dev-silent', 'start_agent', { userId: 'user-1' });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      reason: 'trust_denied',
+      error: 'TRUST_PROBATION',
+      trust: { capability: 'device_execute' },
+    });
+    expect(insertValues).not.toHaveBeenCalled();
   });
 });

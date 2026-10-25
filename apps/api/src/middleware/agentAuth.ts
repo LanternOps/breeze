@@ -2,7 +2,6 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { ERROR_CODES } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
@@ -22,6 +21,9 @@ import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { CORE_AGENT_ACTION_INDEX, isCoreAgentPath } from './agentCorePath';
 import { isParkedAllowedAgentPath, PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import { agentAuthNegativeCache, type AgentAuthTerminalRejection } from './agentAuthNegativeCache';
+import { staleAgentCredentialRejection, terminalAgentAuthRejection } from './agentAuthRejection';
+
+export { staleAgentCredentialRejection };
 import { bufferAgentRequestBody } from './agentRequestBody';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
@@ -29,12 +31,23 @@ import {
   isReservedIngestPath,
   resolveOrgRateLimit,
 } from '../services/agentOrgRateLimit';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow, type OwnDeviceRowIdentity } from '../services/agentOwnDeviceRow';
+import { recordAgentCredentialUse } from '../services/agentCredentialUse';
 
 export interface AgentAuthContext {
   deviceId: string;
   agentId: string;
   orgId: string;
   siteId: string;
+  /**
+   * #8318 §6.4 — `devices.install_incarnation` as read by the row this
+   * request authenticated against. Every command claim and result acceptance
+   * on this request takes a row only when its stamp equals this value AND the
+   * device's current incarnation, so a request the previous install
+   * authenticated just before a reattach confirm never claims or completes
+   * the new install's work.
+   */
+  installIncarnation: number;
   /**
    * #4673 W02 — the partner (MSP) that OWNS this device's organization,
    * resolved by the device auth select's join to `organizations`.
@@ -127,12 +140,12 @@ declare module 'hono' {
 
 // 120 requests per 60-second window per agent
 const AGENT_RATE_LIMIT = 120;
-const AGENT_RATE_WINDOW_SECONDS = 60;
+export const AGENT_RATE_WINDOW_SECONDS = 60;
 // Task 19: per-(agent, source-IP) bucket. A stolen token used from a second
 // IP can no longer eat the legit agent's 120/min budget — it has its own
 // smaller 30/min ceiling, and the legit agent keeps its own.
 const AGENT_PER_IP_RATE_LIMIT = 30;
-const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
+export const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
 // Dedup TTL for `agent.source.ip.changed` audits: log a given (device, IP)
 // pair at most once per day so noisy mobile/roaming agents don't drown ops
 // in events.
@@ -287,33 +300,56 @@ export function isAgentTokenRotationDue(tokenIssuedAt: Date | null | undefined, 
 }
 
 /**
+ * What `suspendAgentToken` did:
+ * - `suspended`: this call stamped the suspension;
+ * - `unchanged`: nothing to write — already suspended (the write is
+ *   idempotent), or the row is no longer visible;
+ * - `stale_caller`: the row now carries another `agent_id` than the socket
+ *   authenticated as (#8318 §6.4: a reattach confirm or an in-place re-enroll
+ *   after the socket opened). Nothing was suspended, and the row belongs to a
+ *   different install;
+ * - `failed`: the write threw (logged here).
+ */
+export type AgentTokenSuspendOutcome = 'suspended' | 'unchanged' | 'stale_caller' | 'failed';
+
+/**
  * Task 18: Persistently suspend an agent token. Called when the WS layer
  * detects a cross-tenant probe pattern (token spraying foreign session IDs).
- * Idempotent — only writes on the first call per device.
+ * Idempotent — only writes on the first call per device. Never rejects.
  *
  * Unsuspending requires manual operator action (clear the columns directly
  * or via a future admin endpoint); the agent will retry forever and produce
  * a loud reconnect-loop signal that surfaces the suspension to ops.
  */
-export async function suspendAgentToken(deviceId: string, reason: AgentTokenSuspendReason): Promise<void> {
+export async function suspendAgentToken(
+  agent: OwnDeviceRowIdentity,
+  reason: AgentTokenSuspendReason,
+): Promise<AgentTokenSuspendOutcome> {
   try {
-    await withSystemDbAccessContext(async () => {
-      await db
-        .update(devices)
-        .set({
+    return await withSystemDbAccessContext(async (): Promise<AgentTokenSuspendOutcome> => {
+      // #8318 §6.4: bound to the identity the socket authenticated as, so a
+      // probe from a superseded install cannot suspend the row's new owner.
+      const suspended = await updateOwnDeviceRow(
+        db,
+        agent,
+        {
           agentTokenSuspendedAt: new Date(),
           agentTokenSuspendedReason: reason.slice(0, 100),
-        })
-        .where(and(eq(devices.id, deviceId), isNull(devices.agentTokenSuspendedAt)));
+        },
+        { where: isNull(devices.agentTokenSuspendedAt) },
+      );
+      if (suspended.length > 0) return 'suspended';
+      return (await ownDeviceRowChangedHands(db, agent)) ? 'stale_caller' : 'unchanged';
     });
   } catch (err) {
     // Best-effort: the auth gate is the source of truth. A failed suspension
     // write just means the next probe will try again.
     console.error('[agentAuth] suspendAgentToken failed', {
-      deviceId,
+      deviceId: agent.deviceId,
       reason,
       err: err instanceof Error ? err.message : String(err),
     });
+    return 'failed';
   }
 }
 
@@ -398,6 +434,11 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
  */
 const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
   ['pam', 'reconciliation-bindings'],
+  // #9517: the elevation-unable report runs its per-device rate limit (a Redis
+  // round-trip) before opening its own org-scoped context, and expires the
+  // request's mobile approval rows in system scope after that context exits —
+  // the same #1105 shape as reconciliation-bindings.
+  ['pam', 'elevation-unable'],
   // M2 #5998 D14: parses a 4 MiB adjacency body and resolves topology flags
   // (a partner-axis read) BEFORE its own short org-scoped admission
   // transaction; a request-long wrap would hold a pooled connection across
@@ -551,38 +592,6 @@ function isDrainAllowedAgentPath(
 }
 
 /**
- * #8050 — the single source of each TERMINAL rejection's agent-visible
- * response. Used both when the rejection is first decided and when the
- * negative cache replays it, so a replay is byte-for-byte the original: same
- * status, same message, same structured body. Build a fresh exception per call
- * (a Response body can only be read once).
- */
-function terminalAgentAuthRejection(kind: AgentAuthTerminalRejection): HTTPException {
-  switch (kind) {
-    case 're_enrollment_required':
-      // A device row exists but neither token hash is populated — the
-      // pre-hashed-token migration state. A distinct error so the agent can
-      // prompt for re-enrollment instead of silently retrying forever.
-      return new HTTPException(401, {
-        message: 'Re-enrollment required: device predates token-hash migration',
-        res: new Response(
-          JSON.stringify({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }),
-          { status: 401, headers: { 'content-type': 'application/json' } },
-        ),
-      });
-    case 'decommissioned':
-      return new HTTPException(403, { message: 'Device has been decommissioned' });
-    case 'device_not_found':
-    case 'token_suspended':
-    case 'token_mismatch':
-    case 'tenant_denied':
-      // Deliberately indistinguishable: a suspended token, a suspended tenant
-      // and a stale token all read as the same opaque 401.
-      return new HTTPException(401, { message: 'Invalid agent credentials' });
-  }
-}
-
-/**
  * Middleware to authenticate agent requests via Bearer token.
  * Hashes the token and compares against the stored agentTokenHash.
  * Enforces per-agent rate limiting via Redis.
@@ -644,6 +653,9 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
         hostname: devices.hostname,
         lastSeenIp: devices.lastSeenIp,
+        // #8318 §6.4: the incarnation this request authenticates under, read
+        // with the row it authenticates against.
+        installIncarnation: devices.installIncarnation,
         // #4673 W02 — the owning MSP, for `currentPartnerId`. An INNER join is
         // correct rather than a LEFT one: `devices.org_id` and
         // `organizations.partner_id` are both NOT NULL with an FK between them,
@@ -861,12 +873,13 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // a machine collecting its own uninstall. It is NOT a liveness signal —
     // `last_seen_at` is, and that one is guarded on terminal status in the
     // heartbeat handler, so the device still reads as Removed in the UI.
+    //
+    // #8318 §6.4: bound to the identity that authenticated (id + agent_id), so
+    // a request the previous install authenticated just before a reattach
+    // confirm matches 0 rows instead of stamping the new install's row.
     if (device.lastSeenIp !== sourceIp) {
       void withSystemDbAccessContext(async () => {
-        await db
-          .update(devices)
-          .set({ lastSeenIp: sourceIp })
-          .where(eq(devices.id, device.id));
+        await updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, { lastSeenIp: sourceIp });
       }).catch((err) => {
         console.error('[agentAuth] last_seen_ip update failed:', err);
       });
@@ -1057,11 +1070,17 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // agent holds a durable copy of the new token and promotes pending->current.
   c.set('agentPendingTokenPresented', match.pendingTokenPresented);
 
+  // #8318 §6.5: the liveness marker the reattach confirm reads. Every gate
+  // above passed, so this credential was genuinely used. Throttled and
+  // fire-and-forget inside; never throws into the request.
+  recordAgentCredentialUse(device.id);
+
   c.set('agent', {
     deviceId: device.id,
     agentId: device.agentId,
     orgId: device.orgId,
     siteId: device.siteId,
+    installIncarnation: device.installIncarnation,
     // #4673 W02 — surfaced here (not just baked into the wrap below) because
     // the three SELF_MANAGED_DB_CONTEXT_ACTIONS routes skip that wrap and
     // hand-build their own org context; they read this to populate

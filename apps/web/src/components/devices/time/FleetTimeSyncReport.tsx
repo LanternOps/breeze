@@ -20,6 +20,7 @@ import {
 import type { FleetTimeResult } from './fleetTypes';
 import DomainGroupView, { TimeRows } from './DomainGroupView';
 import TimeSyncActions from './TimeSyncActions';
+import { localDateInputValue } from '../../../lib/localDate';
 export default function FleetTimeSyncReport() {
   const { t } = useTranslation('devices');
   const currentOrgId = useOrgStore((s) => s.currentOrgId),
@@ -61,8 +62,8 @@ export default function FleetTimeSyncReport() {
   }, [currentOrgId, state, setState]);
   useEffect(() => {
     const end = new Date();
-    setTo(end.toISOString().slice(0, 10));
-    setFrom(new Date(+end - 6 * 86_400_000).toISOString().slice(0, 10));
+    setTo(localDateInputValue(end));
+    setFrom(localDateInputValue(new Date(+end - 6 * 86_400_000)));
   }, []);
   useEffect(() => {
     const controller = new AbortController();

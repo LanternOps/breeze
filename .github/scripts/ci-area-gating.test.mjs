@@ -365,9 +365,24 @@ test('ci-success needs test-shared and asserts it in both the app and non-app br
   assert.match(summary, /\[\[ "\$\{TEST_SHARED_RESULT\}" != "success" \]\]/u);
   assert.match(summary, /\[\[ "\$\{TEST_SHARED_RESULT\}" != "skipped" \]\]/u);
 });
+// #9414 W1a: @breeze/document-ui is consumed by web and portal; its own suite and
+// typecheck run in an app-gated job (any packages/** diff sets code+app), not
+// area-gated, like test-shared.
+test('test-document-ui runs the package suite and typecheck, gated on code AND app (#9414)', () => {
+  assert.match(job('test-document-ui'), new RegExp(`^    if: ${escape(APP_IF)}$`, 'mu'));
+  assert.match(job('test-document-ui'), /^        run: pnpm --filter @breeze\/document-ui exec vitest run$/mu);
+  assert.match(job('test-document-ui'), /^        run: pnpm --filter=@breeze\/document-ui typecheck$/mu);
+  assert.doesNotMatch(job('test-document-ui'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);
+});
+test('ci-success needs test-document-ui and asserts it in both branches (#9414)', () => {
+  assert.match(workflow, /^  ci-success:\n(?:.*\n)*?    needs: \[[^\]]*\btest-document-ui\b[^\]]*\]/mu);
+  assert.match(summary, /^          TEST_DOCUMENT_UI_RESULT: \$\{\{ needs\.test-document-ui\.result \}\}$/mu);
+  assert.match(summary, /\[\[ "\$\{TEST_DOCUMENT_UI_RESULT\}" != "success" \]\]/u);
+  assert.match(summary, /\[\[ "\$\{TEST_DOCUMENT_UI_RESULT\}" != "skipped" \]\]/u);
+});
 test('jobs that must never be area-gated are not', () => {
   for (const name of ['changes', 'lint', 'typecheck', 'security-audit', 'workspace-runtime', 'docs-check', 'ci-success',
-    'auth-browser-transition-browser-contract', 'test-viewer', 'test-mobile', 'test-agent', 'build-agent']) {
+    'auth-browser-transition-browser-contract', 'test-document-ui', 'test-viewer', 'test-mobile', 'test-agent', 'build-agent']) {
     assert.doesNotMatch(job(name), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu, name);
   }
 });

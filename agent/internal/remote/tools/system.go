@@ -72,6 +72,33 @@ func Reboot(payload map[string]any) CommandResult {
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
+// ForceRebootArgv is the exact argv ForceReboot runs on goos: an immediate
+// reboot (delay 0) with force. The API shows and audits the same argv.
+func ForceRebootArgv(goos string) (string, []string, error) {
+	return shutdownArgv(goos, true, true, 0)
+}
+
+// ForceReboot reboots immediately, force-closing running apps (#8729). It takes
+// no delay: "Force reboot now" is immediate by definition, and a delayed
+// Windows reboot already implies /f. The payload is ignored.
+func ForceReboot(_ map[string]any) CommandResult {
+	startTime := time.Now()
+	name, args, err := ForceRebootArgv(runtime.GOOS)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+
+	if err := exec.Command(name, args...).Run(); err != nil {
+		return NewErrorResult(fmt.Errorf("failed to force reboot: %w", err), time.Since(startTime).Milliseconds())
+	}
+
+	return NewSuccessResult(map[string]any{
+		"command": CmdForceReboot,
+		"force":   true,
+		"argv":    append([]string{name}, args...),
+	}, time.Since(startTime).Milliseconds())
+}
+
 // Shutdown schedules a system shutdown after the requested delay.
 // The `delay` payload is in MINUTES on every platform; maximum 1440 (24 hours).
 func Shutdown(payload map[string]any) CommandResult {
@@ -140,6 +167,15 @@ func Lock(payload map[string]any) CommandResult {
 // goos is a parameter rather than a direct runtime.GOOS read so the mapping is
 // table-testable from any host platform.
 func shutdownArgs(goos string, isReboot bool, delayMinutes int) (string, []string, error) {
+	return shutdownArgv(goos, isReboot, false, delayMinutes)
+}
+
+// shutdownArgv is shutdownArgs with the force flag (#8729). On Windows, force
+// adds `/f`: Microsoft documents it as implied only when `/t` > 0, so an
+// immediate reboot without it can stall on "this app is preventing shutdown".
+// On linux/darwin `shutdown -r` does not wait on applications, so force
+// changes nothing there.
+func shutdownArgv(goos string, isReboot, force bool, delayMinutes int) (string, []string, error) {
 	delayMinutes = clampShutdownDelayMinutes(delayMinutes)
 
 	switch goos {
@@ -148,7 +184,11 @@ func shutdownArgs(goos string, isReboot bool, delayMinutes int) (string, []strin
 		if isReboot {
 			action = "/r"
 		}
-		return "shutdown", []string{action, "/t", strconv.Itoa(delayMinutes * 60)}, nil
+		args := []string{action}
+		if force {
+			args = append(args, "/f")
+		}
+		return "shutdown", append(args, "/t", strconv.Itoa(delayMinutes*60)), nil
 	case "linux", "darwin":
 		action := "-h"
 		if isReboot {

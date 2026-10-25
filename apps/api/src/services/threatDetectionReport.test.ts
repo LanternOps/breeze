@@ -137,6 +137,22 @@ describe('generateThreatDetectionReport', () => {
     expect(res0Generated(s)).toBe('2026-09-30T05:18:00.000Z');
   });
 
+  it.each([
+    ['last_7_days', '2026-10-14'],
+    ['last_90_days', '2026-07-23'],
+  ])('honours a %s dateRange preset on an ad-hoc run (#9562)', async (preset, expectedStart) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-21T12:00:00.000Z'));
+    try {
+      queueSelects(ORG_ROW, [], [{ ...ACTIVE_INTEGRATION[0]!, createdAt: new Date('2026-01-01T00:00:00.000Z') }], [], [], [], [], [], []);
+      const s = summaryOf(await generateThreatDetectionReport(ORG_ID, { dateRange: { preset } }, authority()));
+      expect(s.coverage?.periodStart).toBe(expectedStart);
+      expect(s.coverage?.periodEnd).toBe('2026-10-21');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('states the actual coverage window when the integration synced mid-period', async () => {
     queueSelects(
       ORG_ROW,

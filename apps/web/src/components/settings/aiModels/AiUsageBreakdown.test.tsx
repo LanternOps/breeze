@@ -50,6 +50,19 @@ describe('AiUsageBreakdown', () => {
     expect(window.location.hash).toBe('#usage-by-surface');
   });
 
+  it('titles the card by the active grouping', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('model')));
+    render(<AiUsageBreakdown orgId={null} />);
+    expect(await screen.findByRole('heading', { name: 'AI usage by model' })).toBeTruthy();
+    fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('org')));
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-org'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by organization' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-user'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by technician' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ai-usage-groupby-surface'));
+    expect(await screen.findByRole('heading', { name: 'AI usage by feature' })).toBeTruthy();
+  });
+
   it('reads the grouping from the hash on mount', async () => {
     window.location.hash = '#usage-by-org';
     fetchWithAuth.mockResolvedValue(jsonRes(emptyBreakdown('org')));

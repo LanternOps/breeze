@@ -3333,13 +3333,13 @@
     {
       "pattern": "apps/api/src/routes/alertTemplates/**",
       "docs": [
-        "features/alert-templates.mdx"
+        "features/monitors.mdx"
       ]
     },
     {
       "pattern": "apps/web/src/components/alerts/AlertTemplate*.tsx",
       "docs": [
-        "features/alert-templates.mdx"
+        "features/monitors.mdx"
       ]
     },
     {
@@ -3733,13 +3733,13 @@
     {
       "pattern": "apps/web/src/components/devices/DeviceMonitoringTab.tsx",
       "docs": [
-        "features/service-monitoring.mdx"
+        "features/monitors.mdx"
       ]
     },
     {
       "pattern": "apps/web/src/components/configurationPolicies/featureTabs/MonitoringTab.tsx",
       "docs": [
-        "features/service-monitoring.mdx"
+        "features/monitors.mdx"
       ]
     },
     {
@@ -4555,6 +4555,484 @@
       "pattern": "agent/internal/workloads/**",
       "docs": [
         "features/workload-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/trustPage/**",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/trustPage/attestation*.ts",
+      "docs": [
+        "security/trust-center-attestation.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPageAttestation.ts",
+      "docs": [
+        "security/trust-center-attestation.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPageAccess.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPageContent.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPageDeclarations.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPageTemplate.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustAccessPublic.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/trustPageSnapshotWorker.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsTrustPage.ts",
+      "docs": [
+        "security/trust-center.mdx",
+        "features/ai-tools.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/trustCenter/**",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/trustCenter/TrustExportMenu.tsx",
+      "docs": [
+        "security/trust-center-questionnaire.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/trustCenter/TrustEmbedSection.tsx",
+      "docs": [
+        "security/trust-center-embed.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/portal/src/pages/trust/embed/**",
+      "docs": [
+        "security/trust-center-embed.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/portal/src/pages/security/trust-page.astro",
+      "docs": [
+        "security/trust-center-portal-editing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/connectionHealth/**",
+      "docs": [
+        "features/notifications.mdx",
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/connectionHealth*.ts",
+      "docs": [
+        "features/notifications.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/connectionHealthSettings.ts",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/integrations/ConnectionHealth*.tsx",
+      "docs": [
+        "features/notifications.mdx",
+        "features/integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/admin/system/ConnectionHealthJobsCard.tsx",
+      "docs": [
+        "deploy/upgrades.mdx",
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/admin/system/ConnectionsTab.tsx",
+      "docs": [
+        "deploy/upgrades.mdx",
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/emailOptouts.ts",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/emailUnsubscribe.ts",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/EmailNotificationSettings.tsx",
+      "docs": [
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiDataPolicy.ts",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerAiDataPolicy.ts",
+      "docs": [
+        "features/ai.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ai/dataPolicy.ts",
+      "docs": [
+        "features/ai.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/*AiDataPolicyCard.tsx",
+      "docs": [
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiToolOutputRetention.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiTranscriptSweeper.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/ai.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/normalizeClaudeConfigDir.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/callerVerification/**",
+      "docs": [
+        "security/caller-verification.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/callerVerif*.ts",
+      "docs": [
+        "security/caller-verification.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/callerVerificationPublisher.ts",
+      "docs": [
+        "security/caller-verification.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/securityAgents/**",
+      "docs": [
+        "features/configuration-policies.mdx",
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/securityAgentCoverageWorker.ts",
+      "docs": [
+        "features/configuration-policies.mdx",
+        "features/software-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/featureTabs/SecurityAgentsTab.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/security/SecurityAgentCoverageStateBadge.tsx",
+      "docs": [
+        "features/software-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/systemrestore/**",
+      "docs": [
+        "features/configuration-policies.mdx",
+        "features/devices.mdx",
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/restorePoint*.ts",
+      "docs": [
+        "features/devices.mdx",
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/restorePointAttemptRetention.ts",
+      "docs": [
+        "features/devices.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/toolSources/**",
+      "docs": [
+        "features/tool-sources.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/toolSources.ts",
+      "docs": [
+        "features/tool-sources.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketChecklist*.ts",
+      "docs": [
+        "features/ticketing.mdx",
+        "features/mcp-server.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/ticketChecklistTemplates.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/TicketChecklistTemplatesPage.tsx",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/yara*.ts",
+      "docs": [
+        "features/security.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/yarascan/**",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/systemScriptLibrary.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/agreementRequestService.ts",
+      "docs": [
+        "features/agreements.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/agreementContentHash.ts",
+      "docs": [
+        "features/agreements.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/agreementRecordedOnBehalfAudit.ts",
+      "docs": [
+        "features/agreements.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/agreements/**",
+      "docs": [
+        "features/agreements.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/.well-known/**",
+      "docs": [
+        "security/hardening.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/lib/securityContact.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/pages/endpoint-messages.astro",
+      "docs": [
+        "deploy/environment.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/endpointMessages/**",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/endpointMessaging/**",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/endpointMessageRetention.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/pamEvidenceRetention.ts",
+      "docs": [
+        "features/pam.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/pamDeviceMoveGuard.ts",
+      "docs": [
+        "features/pam.mdx",
+        "security/pam.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/services*.go",
+      "docs": [
+        "features/devices.mdx",
+        "features/monitors.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/command_limits.go",
+      "docs": [
+        "agents/commands.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/collectors/workloads/**",
+      "docs": [
+        "features/workload-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/userhelper/**",
+      "docs": [
+        "features/remote-access.mdx",
+        "agents/macos-permissions.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/security/**",
+      "docs": [
+        "features/security.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/websocket/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/desktopWs.ts",
+      "docs": [
+        "features/remote-access.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/remoteDesktopIceTrickle.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mcpDomains.ts",
+      "docs": [
+        "features/mcp-server.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mcpWhoami.ts",
+      "docs": [
+        "features/mcp-server.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mcpAuthChallenge.ts",
+      "docs": [
+        "features/mcp-server.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/preContextChecks.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "security/overview.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/userRateLimit.ts",
+      "docs": [
+        "security/hardening.mdx",
+        "security/overview.mdx"
       ]
     }
   ]

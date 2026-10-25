@@ -59,6 +59,7 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  MapPin,
   Cpu,
   TrendingUp,
   BookCheck,
@@ -66,6 +67,7 @@ import {
   ServerCog,
   Inbox,
   Sparkles,
+  Workflow,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -74,8 +76,9 @@ import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
@@ -211,7 +214,11 @@ type NavItem = {
   requiresAiForOffice?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
+  /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
+  requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
+  /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
+  requiresAiOperatorTasks?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -254,11 +261,12 @@ export const topLevelNav: NavItem[] = [
   { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
-  { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Security Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
   { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
+  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -297,6 +305,9 @@ export const navSections: NavSection[] = [
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Operator Recipe Library W06 R1b (#6171): the Operator tasks + recipe
+      // library workspace. Same server flag as "Delegate to Operator".
+      { name: 'Operator', labelKey: 'aiOperator:nav.operator', href: '/operator', icon: ListChecks, requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
@@ -319,6 +330,7 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sites', labelKey: 'nav.sites', href: '/settings/sites', icon: MapPin, testId: 'nav-sites', requiredPermission: { resource: 'sites', action: 'read' } },
       // Parked devices waiting for assignment — full partner admins only; the
       // pre-assignment routes also require devices:write and organizations:write.
       { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },
@@ -347,6 +359,8 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Overview', labelKey: 'nav.securityOverview', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'IOC Scans', labelKey: 'nav.securityScans', href: '/security/scans', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      // YARA rule sets used by IOC scans (#6267).
+      { name: 'Detection Rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: FileCode, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
         ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
@@ -694,11 +708,14 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  const [wispEnabled, setWispEnabled] = useState(false);
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
   const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
+  const { enabled: flowsEnabled } = useFlowsGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
+  const { enabled: aiOperatorTasksEnabled } = useAiOperatorTasksGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -737,7 +754,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (jwtScope !== 'partner') return;
 
     let cancelled = false;
-    fetchWithAuth('/orgs/partners/me')
+    // Shared with the other islands reading partners/me at load (#9172).
+    getPartnersMe()
       .then((r) => {
         if (!r.ok) {
           if (r.status !== 403 && r.status !== 404) {
@@ -745,18 +763,20 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{
+        return r.data as {
           name?: string;
           aiForOfficeEnabled?: boolean;
+          wispEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
-        }>;
+        };
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
         setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
+        setWispEnabled(data.wispEnabled === true);
         // Fail OPEN on anything unexpected: an older API that does not send the
         // field, or a value this build does not know, falls back to `native`
         // rather than withdrawing a module the partner is paying for. A failed
@@ -921,14 +941,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
   const isNavItemVisible = (item: NavItem): boolean =>
-    isNavGateVisible(item, {
+    (!item.requiresAiOperatorTasks || aiOperatorTasksEnabled) && isNavGateVisible(item, {
       isPlatformAdmin,
       permissions,
       getScope: () => jwtScope,
       autopayEnabled,
       toolSourcesEnabled,
+      flowsEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
+      wispEnabled,
       serviceManagementMode,
       canManagePartnerWide,
     });

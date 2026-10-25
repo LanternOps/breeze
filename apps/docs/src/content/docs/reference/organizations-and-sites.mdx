@@ -87,8 +87,6 @@ Partner-scoped users can update their own partner's settings via the `/partners/
 | `dateFormat` | `enum` | `MM/DD/YYYY`, `DD/MM/YYYY`, or `YYYY-MM-DD`. |
 | `timeFormat` | `enum` | `12h` or `24h`. |
 | `language` | `string` | Language code. Currently only `en` is supported. |
-| `businessHours.preset` | `enum` | `24/7`, `business`, `extended`, or `custom`. |
-| `businessHours.custom` | `object` | Per-day schedule when preset is `custom`. Each day has `start`, `end` (time strings), and optional `closed` boolean. |
 | `contact.name` | `string` | Primary contact name. |
 | `contact.email` | `string` | Primary contact email. |
 | `contact.phone` | `string` | Primary contact phone. |
@@ -247,10 +245,10 @@ land on it.
 
 | Tab | Contents |
 |---|---|
-| **Overview** | Summary tiles for the customer: fleet, open work, and billing position. |
+| **Overview** | Summary tiles for the customer, leading with fleet health, then open work and billing position; the billing address and the customer's sites sit alongside (v0.124.0+). |
 | **Contacts** | The organisation's [contacts](#contacts), managed in place. |
 | **Sites** | The organisation's [sites](#sites). |
-| **Devices** | The full device list, pinned to this customer. |
+| **Devices** | The full device list, pinned to this customer, with its own search and filters. |
 | **Tickets** | The ticket queue, pinned to this customer. |
 | **Billing** | Contracts, Invoices and Quotes, each pinned to this customer. |
 | **Activity** | The audit trail for this organisation. |
@@ -260,6 +258,13 @@ to the organisation you are looking at: filters and searches are scoped to it, t
 Organisation column drops out as redundant, and a **New** action pre-selects the
 customer. Pinning wins over whatever the global organisation switcher is set to,
 so opening a customer's record never depends on remembering to switch scope first.
+
+From v0.124.0 the organisation switcher in the header is a two-column
+**Customer › Page** picker: choose the customer, then the page to open, with live
+counts next to each customer -- devices online and offline, open tickets and
+critical alerts. A **Recent** list in the sidebar and on the dashboard takes you
+back to the records you opened last, and organisation, site, device and ticket
+names link to their record wherever they appear.
 
 Which tabs appear depends on the partner's
 [Service Management mode](/reference/partner-management/#service-management-mode):
@@ -324,6 +329,8 @@ Preview first. The preview reports how many rows would move and which would be d
 | `GET` | `/orgs/organizations/merge-runs/:jobId` | Poll a running merge. |
 
 Merging carries the same partner-scope, `organizations:write` and MFA requirements as archiving. In the dashboard you must also type the organisation's name to confirm.
+
+From v0.124.0 a merge also expires every live, not-yet-actuated PAM elevation request on the merged organisation's devices, each with an audit entry -- see [Moving a device or merging its organisation](/features/pam/#moving-a-device-or-merging-its-organisation). A nightly job later deletes PAM evidence older than 400 days from the retired shell the merge leaves behind, never from a live organisation.
 
 ---
 
@@ -634,10 +641,7 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
   -H "Content-Type: application/json" \
   -d '{
     "settings": {
-      "timezone": "America/Chicago",
-      "businessHours": {
-        "preset": "business"
-      }
+      "timezone": "America/Chicago"
     }
   }'
 ```

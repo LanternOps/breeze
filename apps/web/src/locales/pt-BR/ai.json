@@ -24,6 +24,7 @@
     "reject": "Rejeitar",
     "approveVerify": "Verificar e aprovar",
     "verifying": "Aguardando verificação…",
+    "approving": "Aprovando…",
     "deny": "Negar",
     "verificationFailed": "Falha na verificação. Tente novamente.",
     "alreadyDecided": "Esta solicitação já foi decidida.",
@@ -104,6 +105,24 @@
     "m365Customer": "Cliente M365",
     "noM365Customer": "Nenhum cliente M365",
     "dismiss": "Dispensar"
+  },
+  "aiConversationMove": {
+    "openInAssistant": "Abrir no Assistente de IA",
+    "continueInPanel": "Continuar no painel lateral",
+    "openPastConversation": "Abrir uma conversa anterior",
+    "closeTabInAssistant": "Feche uma aba no Assistente de IA para abrir esta conversa",
+    "closeTabToOpen": "Feche uma aba para abrir esta conversa",
+    "notAvailable": "Esta conversa não está disponível",
+    "wasClosed": "Esta conversa foi encerrada",
+    "topologyFromMap": "As investigações são abertas pelo mapa de topologia",
+    "openInPanel": "Abrir no painel lateral",
+    "replaceConfirm": "Substituir a conversa do painel lateral? Ela continua no seu histórico.",
+    "joinedMidResponse": "Você entrou no meio da resposta. A resposta completa aparece quando terminar.",
+    "chooseModelInPanel": "Continue no painel lateral para escolher um modelo",
+    "tabMenu": "Opções da aba",
+    "anotherOrg": "Outra organização",
+    "device": "Dispositivo",
+    "newChat": "Novo chat"
   },
   "aiContextBadge": {
     "context": "Contexto",
@@ -551,5 +570,183 @@
     "created": "Novo chat em {{model}} iniciado a partir de um resumo.",
     "failed": "Não foi possível iniciar o novo chat. Tente novamente.",
     "openFailed": "O novo chat foi criado, mas não foi possível abri-lo. Encontre-o no histórico de chats; sua mensagem não foi enviada."
+  },
+  "buyCredits": {
+    "link": "Comprar créditos"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Ativar o Wisp",
+      "turningOn": "Ativando o Wisp…"
+    },
+    "locked": {
+      "why": "O Wisp está disponível nos planos Pro e superiores."
+    },
+    "modal": {
+      "title": "Ativar o Wisp",
+      "refreshTitle": "Renovar permissão do Wisp",
+      "scopeLabel": "O Wisp pode atuar em",
+      "scopeOrg": "Esta organização",
+      "scopePartner": "Todas as organizações",
+      "explain": "O Wisp atua dentro do que você tem permissão para fazer. Confirme que é você para continuar.",
+      "code": "Código do autenticador",
+      "passkey": "Você confirmará com sua passkey.",
+      "noFactor": "O Wisp precisa de uma passkey ou de um app autenticador. Configure um primeiro no seu perfil.",
+      "noOrg": "Selecione primeiro uma organização no cabeçalho.",
+      "confirm": "Confirmar",
+      "cancel": "Cancelar",
+      "stepUpUnavailable": "Não foi possível verificar seu fator. Tente novamente.",
+      "reverify": "Seu acesso mudou durante a confirmação. Digite um novo código para continuar.",
+      "invalidCode": "Esse código não foi aceito. Tente novamente."
+    },
+    "header": {
+      "scopeAll": "Todas as organizações",
+      "status": {
+        "active": "Ativo",
+        "paused": "Pausado",
+        "revoked": "Revogado",
+        "expired": "Expirado"
+      },
+      "refresh": "Renovar permissão",
+      "revoke": "Desativar o Wisp",
+      "revokeConfirm": "Desativar o Wisp para este escopo? As conversas abertas continuam legíveis.",
+      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar."
+    },
+    "settings": {
+      "title": "Orçamento e verificação periódica",
+      "budget": "Orçamento diário (¢)",
+      "tick": "Verificar a cada (minutos)",
+      "save": "Salvar"
+    },
+    "focus": {
+      "label": "Atuando em",
+      "none": "Nenhum cliente em foco",
+      "pick": "Focar em um cliente…",
+      "clear": "Limpar foco"
+    },
+    "attachments": {
+      "title": "Anexado a esta conversa",
+      "drop": "Solte aqui uma conversa de e-mail, um arquivo .eml ou CSV, ou cole um texto",
+      "paste": "Colar texto",
+      "label": "Rótulo",
+      "add": "Anexar",
+      "empty": "Nada anexado ainda",
+      "expires": "Expira em {{date}}",
+      "limits": "Até 20 arquivos, 5 MB cada, somente texto",
+      "focusRequired": "Escolha um cliente em foco antes de anexar",
+      "loadFailed": "Não foi possível carregar os anexos"
+    },
+    "toast": {
+      "on": "O Wisp está ativado",
+      "onFailed": "Não foi possível ativar o Wisp",
+      "off": "O Wisp está desativado",
+      "offFailed": "Não foi possível desativar o Wisp",
+      "refreshed": "Permissão renovada",
+      "refreshFailed": "Não foi possível renovar a permissão",
+      "settingsSaved": "Configurações do Wisp salvas",
+      "settingsFailed": "Não foi possível salvar as configurações do Wisp",
+      "focusSet": "O Wisp agora está atuando em {{org}}",
+      "focusCleared": "Foco no cliente removido",
+      "focusFailed": "Não foi possível alterar o foco",
+      "attached": "Anexado à conversa",
+      "attachFailed": "Não foi possível anexar",
+      "attachTooLarge": "Esse arquivo tem mais de 5 MB",
+      "attachUnsupported": "Só é possível anexar arquivos de texto",
+      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la.",
+      "paused": "Wisp pausado",
+      "resumed": "Wisp retomado",
+      "pauseFailed": "Não foi possível pausar o Wisp",
+      "resumeFailed": "Não foi possível retomar o Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ de {{budget}}¢ hoje",
+      "resets": "reinicia em {{hours}} h",
+      "raise": "Aumentar o orçamento de hoje",
+      "label": "Gasto do Wisp hoje"
+    },
+    "pause": "Pausar o Wisp",
+    "resume": "Retomar",
+    "paused": {
+      "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar."
+    },
+    "live": {
+      "checking": "Verificando {{org}}…",
+      "checkingUnnamed": "Verificando um cliente…"
+    },
+    "thread": {
+      "title": "Conversa do Wisp",
+      "openChat": "Abrir no chat",
+      "openChatInactive": "O Wisp precisa estar ativo para conversar nesta conversa.",
+      "notFound": "Esta conversa do Wisp não existe ou não é sua.",
+      "loadFailed": "Não foi possível carregar esta conversa do Wisp.",
+      "retry": "Tentar novamente",
+      "stale": "Não foi possível atualizar esta conversa. O que você vê pode estar desatualizado."
+    },
+    "activity": {
+      "title": "Atividade",
+      "empty": "Nada ainda. O trabalho do Wisp aparecerá aqui.",
+      "loadFailed": "Não foi possível carregar a atividade",
+      "loadMore": "Carregar mais",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Verificação",
+        "concern": "Pendência",
+        "specialist": "Especialista",
+        "approval": "Aprovação",
+        "memory": "Memória",
+        "nudge": "Lembrete",
+        "brief": "Resumo"
+      }
+    }
+  },
+  "wispConcerns": {
+    "title": "Pendências",
+    "empty": "Nada no radar do Wisp no momento.",
+    "snooze": "Adiar",
+    "snoozeOneHour": "1 hora",
+    "snoozeTomorrow": "Até amanhã às 9:00",
+    "snoozeWeek": "7 dias",
+    "dismiss": "Dispensar",
+    "resolve": "Resolver",
+    "resolveOutcomePlaceholder": "O que aconteceu?",
+    "resolveSubmit": "Marcar como resolvida",
+    "snoozed": "Adiada",
+    "dismissed": "Dispensada",
+    "resolved": "Resolvida",
+    "quietUntil": "em silêncio até {{when}}",
+    "digestOnly": "somente no resumo",
+    "showAll": "Mostrar todas",
+    "showLive": "Mostrar abertas",
+    "loadFailed": "Não foi possível carregar as pendências",
+    "actionFailed": "Isso não funcionou. Tente novamente.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Chamado",
+      "device": "Dispositivo",
+      "alert": "Alerta",
+      "org": "Cliente",
+      "integration": "Integração",
+      "run": "Execução",
+      "task": "Tarefa",
+      "incident": "Incidente",
+      "quote": "Orçamento",
+      "invoice": "Fatura",
+      "contract": "Contrato",
+      "site": "Local"
+    },
+    "reviewApproval": "Revisar aprovação",
+    "useful": "Útil",
+    "notUseful": "Não útil",
+    "feedbackNotePlaceholder": "O que teria sido melhor? (opcional)",
+    "feedbackSend": "Enviar",
+    "feedbackGivenUseful": "Você marcou isto como útil",
+    "feedbackGivenNotUseful": "Você marcou isto como não útil",
+    "feedbackSaved": "Obrigado. O Wisp vai se lembrar disso."
   }
 }

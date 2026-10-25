@@ -30,6 +30,7 @@ import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from '
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
+import { planCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 import {
   aiActionPlans,
   peripheralDeviceClassEnum,
@@ -41,11 +42,11 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
-import { aiScriptAuthoringEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
-import { captureMessage } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -59,7 +60,7 @@ import {
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
   googleDisableForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
-  googleOffboardUserHandler, googleWipeMobileDeviceHandler,
+  googleOffboardUserHandler, googleWipeMobileDeviceHandler, googleAccountWipeMobileDeviceHandler,
   googleSecurityDriftHandler, googleEmailReportHandler,
   googleListUserGroupsHandler, googleAddToGroupHandler, googleRemoveFromGroupHandler,
   googleMoveOuHandler, googleRenameUserHandler,
@@ -86,6 +87,66 @@ import {
 const SECRET_ACTION_REFUSED_TEXT =
   'This action was not performed: no durable approval record was available to store the '
   + 'resulting credential securely. Retry once the approval workflow is available.';
+
+/**
+ * What a `PreToolUseCallback` decides for one call. ONE named type: both
+ * registry handlers (`makeToolHandler` and `makeSessionAwareHandler`) consume
+ * it as-is, so a field added here (e.g. Wisp's `toolAuth`) cannot be dropped
+ * by a drifted inline copy.
+ */
+export type PreToolUseResult =
+  /**
+   * `toolAuth`: Wisp W04 — the auth THIS call executes under, cut to the
+   * session's delegation ceiling for this call's org and permissions
+   * (services/wisp/chatCeiling.ts). Per call, never written to the shared
+   * session: the SDK runs calls concurrently and two calls need different
+   * reach. Set for every allowed call of a Wisp session; absent otherwise,
+   * and the handler then reads `getAuth()` as before. A Wisp session's call
+   * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   */
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
+  /**
+   * Not run by THIS session. Two different things wear this shape:
+   *
+   *  - a real denial/failure (`handoff` absent) — published as `isError: true`
+   *    with `{ error }`, as it always was; and
+   *  - an approval HANDOFF (`handoff` set) — the human approved and the action
+   *    is executing under the durable release worker, so this session declines
+   *    to run it. Published as `isError: false` with `{ status, message }`.
+   *
+   * `error` carries the model-facing text in both cases; when `handoff` is set
+   * it is a status message, not a failure, and it never reaches an `error`
+   * field on the wire. See services/aiToolHandoff.ts (#5107).
+   */
+  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+
+/**
+ * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
+ * never ungated. The user sees the same copy as aiAgentSdk.ts's
+ * WISP_GATE_UNAVAILABLE_MESSAGE (kept separate: ~50 suites replace this module
+ * with a factory mock, so aiAgentSdk.ts cannot read its copy from here).
+ */
+export const WISP_UNGATED_CALL_MESSAGE =
+  "Wisp couldn't verify your grant for this action, so it wasn't run. Try again in a moment.";
+
+/**
+ * Wisp defence in depth (W04a T2), run by BOTH registry handlers after the
+ * gate: a call of a Wisp session must execute under the per-call `toolAuth`
+ * the gate cut to the ceiling. One that arrives without it (no gate, or a gate
+ * exit that forgot to narrow) is a wiring bug — deny it rather than fall back
+ * to the session's shared `getAuth()`. Returns the denial, or null to proceed.
+ */
+function wispMissingToolAuthDenial(
+  toolName: string,
+  session: ActiveSession | undefined,
+  callToolAuth: AuthContext | undefined,
+): { allowed: false; error: string } | null {
+  if (!session?.wispGrant || callToolAuth) return null;
+  const err = new Error(`Wisp session ${session.breezeSessionId} reached '${toolName}' without a per-call toolAuth; denying`);
+  console.error(`[AI-SDK] ${err.message}`);
+  captureException(err);
+  return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -135,23 +196,7 @@ export type PreToolUseCallback = (
    * Absent only when the SDK sent none.
    */
   toolUseId?: string,
-) => Promise<
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-  /**
-   * Not run by THIS session. Two different things wear this shape:
-   *
-   *  - a real denial/failure (`handoff` absent) — published as `isError: true`
-   *    with `{ error }`, as it always was; and
-   *  - an approval HANDOFF (`handoff` set) — the human approved and the action
-   *    is executing under the durable release worker, so this session declines
-   *    to run it. Published as `isError: false` with `{ status, message }`.
-   *
-   * `error` carries the model-facing text in both cases; when `handoff` is set
-   * it is a status message, not a failure, and it never reaches an `error`
-   * field on the wire. See services/aiToolHandoff.ts (#5107).
-   */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload }
->;
+) => Promise<PreToolUseResult>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
@@ -248,6 +293,7 @@ export const TOOL_TIERS = {
   search_script_library: 1,
   manage_services: 3,
   security_scan: 3,
+  ioc_hunt: 1,               // Action-level escalation in guardrails (sweep/import_iocs Tier 3, cancel_sweep Tier 2)
   get_security_posture: 1,
   get_cis_compliance: 1,
   get_cis_device_report: 1,
@@ -311,6 +357,19 @@ export const TOOL_TIERS = {
   read_artifact: 1,
   // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
   get_trust_page_status: 1,
+  // Tool Catalog W03 (#5218, Decision 6): draft_flow writes a row, so Tier 2
+  // (ai:write over MCP, Tier-2 audit row); the reads are Tier 1. Declared to
+  // chat only when FLOWS_ENABLED (flowToolDefinitions).
+  draft_flow: 2,
+  validate_flow: 1,
+  get_flow: 1,
+  list_flows: 1,
+  // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
+  list_business_calendars: 1,
+  // #8883 W5: ticket routing rules. Reads Tier 1; the manage tool is Tier 3 (supervised).
+  list_ticket_routing_rules: 1,
+  test_ticket_routing_rule: 1,
+  manage_ticket_routing_rules: 3,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -424,6 +483,26 @@ export const TOOL_TIERS = {
   list_remediation_suggestions: 1,
   find_proven_fixes: 1,
   list_incidents: 1,
+  // Wisp W03 memory (services/wisp/memoryTools.ts). Declared to chat only
+  // when wispEnabled() (wispMemoryToolDefinitions). confirm_memory /
+  // retract_memory are HUMAN_ONLY_TOOLS and therefore never tiered here.
+  recall: 1,
+  remember: 2,
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts). Declared to
+  // chat only when wispEnabled() (wispConcernToolDefinitions). The W05b
+  // assessment outcome tools (record_concern, update_concern, nudge,
+  // propose_action, request_specialist) must never be tiered here:
+  // createBreezeMcpServer throws on an extra tool that collides with a key.
+  list_concerns: 1,
+  raise_concern: 2,
+  snooze_concern: 2,
+  resolve_concern: 2,
+  create_watch: 2,
+  // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
+  // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
+  // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
+  // HUMAN_ONLY_TOOLS and therefore never tiered here.
+  launch_specialist: 2,
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
   query_analytics: 1,
@@ -505,6 +584,7 @@ export const TOOL_TIERS = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_account_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
   google_list_user_groups: 1,
@@ -668,6 +748,7 @@ export const SESSION_TOOL_DESCRIPTIONS = {
   google_share_calendar: "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
   google_offboard_user: 'Offboard a Google Workspace user: optional out-of-office, forwarding (no copy kept), revoke OAuth tokens, remove all groups, selective mobile account wipe (corporate data only, never full device wipe), sign-out, suspend. Steps are independent and reported; best-effort. Requires approval.',
   google_wipe_mobile_device: 'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+  google_account_wipe_mobile_device: 'Offboarding: remove the work account and its data (mail, Drive) from every mobile device enrolled to a user. The device itself is NOT erased. Requires approval.',
   google_security_drift: 'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
   google_email_report: "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
   propose_action_plan: 'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
@@ -768,12 +849,12 @@ function makeToolHandler(
     // `undefined` for every caller that verified nothing, which is what keeps
     // the executeTool call three arguments wide.
     let verifiedContext: ToolExecutionContext | undefined;
+    // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
+    let callToolAuth: AuthContext | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
-      let check:
-        | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+      let check: PreToolUseResult;
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -796,6 +877,7 @@ function makeToolHandler(
         verifiedContext = check.intentId
           ? { ...check.context, actionIntentId: check.intentId }
           : check.context;
+        callToolAuth = check.toolAuth;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -806,8 +888,14 @@ function makeToolHandler(
         };
       }
     }
+    const missingWispAuth = wispMissingToolAuthDenial(toolName, getActiveSession?.(), callToolAuth);
+    if (missingWispAuth) {
+      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
+      return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
+    }
     try {
-      const auth = getAuth();
+      const auth = callToolAuth ?? getAuth();
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
       //
@@ -830,8 +918,15 @@ function makeToolHandler(
       // partner-scope login — and `session.breezeSessionId` IS the
       // ai_sessions.id the artifact row's session_id FK points at.
       const captureSession = getActiveSession?.();
+      // W04 T6b reach: a Wisp session's thread lets `read_artifact` open the
+      // thread's attachments. The key is added ONLY when set, so an ordinary
+      // session's capture scope is byte-identical (verifiedContext.test pins it).
       const capture: CaptureScope | undefined = captureSession
-        ? { orgId: captureSession.orgId, sessionId: captureSession.breezeSessionId }
+        ? {
+          orgId: captureSession.orgId,
+          sessionId: captureSession.breezeSessionId,
+          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+        }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH
       // ARGUMENT at all — both are behaviour changes for an ordinary chat tool
@@ -1001,10 +1096,10 @@ function makeSessionAwareHandler(
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
     let intentId: string | undefined;
+    // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
+    let callToolAuth: AuthContext | undefined;
     if (onPreToolUse) {
-      let check:
-        | { allowed: true; intentId?: string }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+      let check: PreToolUseResult;
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -1023,6 +1118,13 @@ function makeSessionAwareHandler(
         };
       }
       intentId = check.intentId;
+      callToolAuth = check.toolAuth;
+    }
+    const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
+    if (missingWispAuth) {
+      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
+      return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
 
     // Fail closed on confidentiality BEFORE the provider-side action executes,
@@ -1049,7 +1151,7 @@ function makeSessionAwareHandler(
     }
 
     try {
-      const auth = getAuth();
+      const auth = callToolAuth ?? getAuth();
       // Use the user's actual auth scope so RLS / DB-level tenant isolation is
       // enforced. Canonical builder — see the note on the sibling literal in
       // `makeHandler` above for why the hand-rolled object was a partner-axis
@@ -1223,6 +1325,107 @@ export function scriptProposalToolDefinitions(
       { proposalId: uuid },
       makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
     ),
+  ];
+}
+
+/**
+ * Wisp W03 memory tools — EXPOSURE gate for `wispEnabled()`, same shape as
+ * `flowToolDefinitions` below. Registration in aiTools and TOOL_TIERS stays
+ * unconditional (registry parity); with Wisp off the model is never told these
+ * exist, so the dark default changes no chat prompt or tool list. Breeze's MCP
+ * server applies the same gate via `isToolEnvGatedOff` (aiToolEnvGates.ts), and
+ * every handler still refuses without `auth.wispGrant`. confirm_memory /
+ * retract_memory are HUMAN_ONLY_TOOLS and are never declared here.
+ */
+export function wispMemoryToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  return [
+    tool('recall', registryDescription('recall'), recallShape, makeHandler('recall', getAuth, onPreToolUse, onPostToolUse)),
+    tool('remember', registryDescription('remember'), rememberShape, makeHandler('remember', getAuth, onPreToolUse, onPostToolUse)),
+  ];
+}
+
+/**
+ * Wisp W05a concern/watch tools — the same `wispEnabled()` EXPOSURE gate as
+ * `wispMemoryToolDefinitions` (kept separate so W03's declared set stays
+ * exactly recall/remember). Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and every
+ * handler still refuses without `auth.wispGrant`.
+ */
+export function wispConcernToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('list_concerns', registryDescription('list_concerns'), listConcernsShape, handler('list_concerns')),
+    tool('raise_concern', registryDescription('raise_concern'), raiseConcernShape, handler('raise_concern')),
+    tool('snooze_concern', registryDescription('snooze_concern'), snoozeConcernShape, handler('snooze_concern')),
+    tool('resolve_concern', registryDescription('resolve_concern'), resolveConcernShape, handler('resolve_concern')),
+    tool('create_watch', registryDescription('create_watch'), createWatchShape, handler('create_watch')),
+  ];
+}
+
+/**
+ * Wisp W07 specialist chat tool — the same `wispEnabled()` EXPOSURE gate as
+ * the W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and the
+ * handler refuses without `auth.wispGrant`. The approval carrier
+ * `wisp_specialist_request` is HUMAN_ONLY_TOOLS and is never declared.
+ */
+export function wispSpecialistToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  return [
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, makeToolHandler('launch_specialist', getAuth, getActiveSession, onPreToolUse, onPostToolUse)),
+  ];
+}
+
+/**
+ * Tool Catalog W03 (#5218) flow tools — EXPOSURE gate for FLOWS_ENABLED.
+ * Registration in aiTools and TOOL_TIERS stays unconditional (registry
+ * parity); with the flag off the model is never told these exist. Breeze's
+ * MCP server enumerates the registry directly, so it applies the same gate via
+ * `isToolEnvGatedOff` (aiToolEnvGates.ts), and every handler refuses with
+ * `flows_disabled` as the last line of defence.
+ */
+export function flowToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!flowsEnabled()) return [];
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  return [
+    tool('draft_flow', registryDescription('draft_flow'), inputShape('draft_flow'), makeHandler('draft_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows', getAuth, onPreToolUse, onPostToolUse)),
   ];
 }
 
@@ -1528,6 +1731,12 @@ export function googleToolDefinitions(
       SESSION_TOOL_DESCRIPTIONS.google_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_account_wipe_mobile_device',
+      SESSION_TOOL_DESCRIPTIONS.google_account_wipe_mobile_device,
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_account_wipe_mobile_device', getAuth, getActiveSession, googleAccountWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_security_drift',
@@ -2175,6 +2384,13 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'ioc_hunt',
+      registryDescription('ioc_hunt'),
+      iocHuntShape,
+      makeHandler('ioc_hunt', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -4196,15 +4412,22 @@ export function buildBreezeSdkTools(
         // Set active plan ID on session before emitting event
         session.activePlanId = planId;
 
-        // Emit plan_approval_required event
-        session.eventBus.publish({
+        // Emit plan_approval_required event. #9427: tracked as a pending card
+        // until the wait below ends — a rejection or timeout publishes nothing.
+        const planCard = planCardKey(planId);
+        publishPendingCard(session, planCard, {
           type: 'plan_approval_required',
           planId,
           steps: planSteps,
         });
 
         // Block until user approves or rejects (10-min timeout)
-        const approved = await waitForPlanApproval(planId, session);
+        let approved: boolean;
+        try {
+          approved = await waitForPlanApproval(planId, session);
+        } finally {
+          resolvePendingCard(session, planCard);
+        }
 
         if (!approved) {
           session.activePlanId = null;
@@ -4258,6 +4481,51 @@ export function buildBreezeSdkTools(
       makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // #8973 W4 (spec §5.7): read-only business-hours calendars; writes stay human-only.
+    tool(
+      'list_business_calendars',
+      registryDescription('list_business_calendars'),
+      {
+        orgId: uuid.optional().describe("Only this organization's calendars plus its partner-wide ones (UUID)"),
+        includeArchived: z.boolean().optional().describe('Include archived calendars (default false)'),
+        limit: z.number().int().min(1).max(100).optional().describe('Max calendars (default 50, max 100)'),
+      },
+      makeHandler('list_business_calendars', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #8883 W5: ticket routing rules. Writes are Tier 3 supervised and the
+    // partner-wide capability gate lives in the service.
+    tool(
+      'list_ticket_routing_rules',
+      registryDescription('list_ticket_routing_rules'),
+      {
+        orgId: uuid.optional().describe("Only this organization's rules plus the partner-wide ones that apply to it (UUID)"),
+        limit: z.number().int().min(0).max(200).optional().describe('Max rules (default 100, max 200)'),
+      },
+      makeHandler('list_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'test_ticket_routing_rule',
+      registryDescription('test_ticket_routing_rule'),
+      {
+        orgId: uuid.describe('Organization the sample ticket belongs to (UUID)'),
+        source: z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']).describe('Ticket source'),
+        subject: z.string().min(1).max(255).describe('Sample ticket subject (max 255)'),
+        requesterEmail: z.string().max(320).nullable().describe('Requester email, or null when unknown'),
+        categoryId: uuid.optional().describe('Category already on the ticket (UUID, optional)'),
+        priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Priority already on the ticket (optional)'),
+      },
+      makeHandler('test_ticket_routing_rule', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_routing_rules',
+      registryDescription('manage_ticket_routing_rules'),
+      ticketRoutingManageShape,
+      makeHandler('manage_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
     // to the active AI session). Only advertised when the Delegant integration
     // is configured — see m365ToolDefinitions. Routed through
@@ -4269,6 +4537,14 @@ export function buildBreezeSdkTools(
     // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
     // factory for why registration stays unconditional but exposure does not).
     ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Tool Catalog W03 (#5218) — behind FLOWS_ENABLED (see the factory).
+    ...flowToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W03 memory — behind wispEnabled() (see the factory).
+    ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
+    ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
+    ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

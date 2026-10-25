@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
       "summary": "{{filtered}} de {{total}} politiques",
       "inheritsBadge": "Hérite",
-      "statusFilterLabel": "État"
+      "statusFilterLabel": "État",
+      "partnerPolicy": "Partenaire",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Politique du partenaire — s’applique uniquement là où elle est affectée. Affectez-la à toutes les organisations pour qu’elle s’applique à l’échelle du partenaire."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",
@@ -198,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Postulé à toutes les organisations. Décochez « Toutes les organisations » pour choisir un sous-ensemble.",
       "polite": "poli",
       "loading": "Chargement...",
-      "loadMoreOrganizations": "Chargez plus d’organisations"
+      "loadMoreOrganizations": "Chargez plus d’organisations",
+      "appliedToAllOrgs": "La politique s’applique maintenant à toutes les organisations",
+      "removedFromAllOrgs": "La politique ne s’applique plus à toutes les organisations"
     },
     "featureTabs": {
       "automationTab": {
@@ -743,7 +747,7 @@
         "muteAlertNotificationsDuringWindow": "Pendant la fenêtre, aucune nouvelle alerte n’est créée.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suspendre l’application des correctifs",
-        "delayPatchInstallationsDuringWindow": "Retardez l’installation des correctifs pendant la fenêtre.",
+        "delayPatchInstallationsDuringWindow": "Les installations planifiées pendant la fenêtre sont ignorées et s’exécutent à la prochaine occurrence planifiée.",
         "suppressPatching2": "suppressPatching",
         "suppressAutomations": "Suspendre les automatisations",
         "pauseAutomationRunsDuringWindow": "L’automatisation de pause s’exécute pendant la fenêtre.",
@@ -752,15 +756,16 @@
         "pauseScriptExecutionDuringWindow": "Mettez en pause l’exécution du script pendant la fenêtre.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Redémarrer si un redémarrage est en attente",
-        "duringTheWindowRebootDevicesThatHave": "Pendant la fenêtre, redémarrez les appareils qui ont un redémarrage en attente. Windows avertit l’utilisateur connecté ~5 minutes avant le redémarrage ; Linux programme le redémarrage 15 minutes à l’avance avec un avertissement aux utilisateurs connectés. macOS n’est pas pris en charge.",
+        "duringTheWindowRebootDevicesThatHave": "Pendant la fenêtre, redémarrez les appareils ayant un redémarrage en attente. Le délai d’avertissement provient du délai de redémarrage de la politique de correctifs de l’appareil. macOS n’est pas pris en charge.",
         "rebootIfPending": "rebootIfPending",
-        "maintenanceRebootIfPendingToggle": "maintenance-reboot-if-pending-toggle",
         "notifyOnStart": "Prévenez dès le départ",
         "sendNotificationWhenWindowOpens": "Envoyez une notification lorsque la fenêtre s’ouvre.",
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Prévenez en fin de vie",
         "sendNotificationWhenWindowCloses": "Envoyez une notification lorsque la fenêtre se ferme.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Les fenêtres hebdomadaires s’ouvrent chaque dimanche à l’heure de début, dans le fuseau horaire sélectionné.",
+        "monthlyOpensOnTheFirst": "Les fenêtres mensuelles s’ouvrent le 1er de chaque mois à l’heure de début, dans le fuseau horaire sélectionné."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Collecte par l'agent",
@@ -850,21 +855,21 @@
         "offlineBehaviorSkip": "Ignorer les appareils hors ligne",
         "offlineBehaviorSkipDescription": "Les appareils hors ligne au moment de l'exécution de la tâche sont enregistrés comme ignorés.",
         "rebootPolicy": "Politique de redémarrage",
-        "rebootDelayMinutes": "Reboot delay (minutes)",
-        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
-        "rebootAllowDeferral": "Let users postpone the restart",
-        "rebootAllowDeferralDescription": "Show the signed-in user a prompt with a Postpone button. Requires the Breeze helper to be running in the user's session; Linux devices fall back to the terminal warning. The restart still happens at the deadline once the postponements run out.",
-        "rebootMaxDeferrals": "Maximum postponements",
-        "rebootMaxDeferralsDescription": "How many times one user may postpone a single restart before it proceeds.",
-        "rebootDeferralMinutes": "Postpone by (minutes)",
-        "rebootDeferralMinutesDescription": "How far each postponement pushes the restart out.",
-        "rebootPromptText": "Restart prompt text",
-        "rebootPromptTextDescription": "Optional. Replaces the wording of the restart warnings users see, for example to show them in your users' language. Leave a field blank to keep the built-in English text.",
-        "rebootPromptTitle": "Title",
-        "rebootPromptButton": "Restart button label",
+        "rebootDelayMinutes": "Délai avant le redémarrage (minutes)",
+        "rebootDelayMinutesDescription": "Temps pendant lequel la personne connectée reçoit un avertissement avant un redémarrage suivant l’installation des correctifs.",
+        "rebootAllowDeferral": "Permettre aux utilisateurs de reporter le redémarrage",
+        "rebootAllowDeferralDescription": "Affiche à la personne connectée une demande avec un bouton Reporter. L’assistant Breeze doit être actif dans sa session ; sous Linux, un avertissement s’affiche dans le terminal. Le redémarrage a lieu à l’échéance lorsque tous les reports ont été utilisés.",
+        "rebootMaxDeferrals": "Nombre maximal de reports",
+        "rebootMaxDeferralsDescription": "Nombre de fois qu’une personne peut reporter un même redémarrage avant qu’il ait lieu.",
+        "rebootDeferralMinutes": "Reporter de (minutes)",
+        "rebootDeferralMinutesDescription": "Durée ajoutée au délai de redémarrage à chaque report.",
+        "rebootPromptText": "Texte de la demande de redémarrage",
+        "rebootPromptTextDescription": "Facultatif. Remplace le texte des avertissements de redémarrage affichés aux utilisateurs, par exemple pour les présenter dans leur langue. Laissez le champ vide pour conserver le texte anglais intégré.",
+        "rebootPromptTitle": "Titre",
+        "rebootPromptButton": "Libellé du bouton Redémarrer",
         "rebootPromptBody": "Message",
-        "rebootPromptBodyDescription": "Plain text. {{placeholder}} is replaced with the time left until the restart. Windows shows fixed Yes/No buttons, so there the button label is named in the message instead.",
-        "rebootPromptInvalid": "Restart prompt text must be plain text (no < or >, no line breaks in the title or button label) and may use no placeholder other than {{placeholder}}.",
+        "rebootPromptBodyDescription": "Texte brut. {{placeholder}} est remplacé par le temps restant avant le redémarrage. Windows affiche des boutons fixes Oui/Non ; le libellé du bouton est donc indiqué dans le message.",
+        "rebootPromptInvalid": "Le texte de la demande de redémarrage doit être en texte brut (sans < ni >, sans saut de ligne dans le titre ou le libellé du bouton) et ne peut contenir aucun paramètre autre que {{placeholder}}.",
         "windowsUpdateSource": "Source Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gérer Windows Update exclusivement avec Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Désactive le canal Windows Update automatique natif du terminal afin que les mises à jour passent uniquement par les anneaux d’approbation Breeze. Cela évite les redémarrages inattendus et les correctifs hors calendrier. Windows uniquement ; le processus d’analyse, d’approbation et d’installation de Breeze n’est pas affecté. La configuration est restaurée proprement à la désactivation, sans modifier une stratégie de groupe administrateur préexistante.",
@@ -891,7 +896,10 @@
         "noRingManualApprovalHint": "Aucun anneau lié — les correctifs s'installent seulement après une approbation manuelle.",
         "unavailableRingOption": "Anneau non disponible",
         "ringInvalidTitle": "L'anneau de mise à jour lié n'est plus disponible.",
-        "ringInvalidBody": "Les correctifs de cette politique sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez."
+        "ringInvalidBody": "Les correctifs de cette politique sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
+        "ringDetailsNoHold": "Ordre de déploiement {{order}} · aucun délai avant l’approbation",
+        "ringDetailsWithHold_one": "Ordre de déploiement {{order}} · délai de {{count}} jour avant l’approbation",
+        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",
@@ -1018,7 +1026,25 @@
         "fullScan": "Balayage complet",
         "maxFileSizeMb": "Taille maximale de fichier (Mo)",
         "scanTimeoutMinutes": "Délai d'expiration du balayage (minutes)",
-        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'un horaire local."
+        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'un horaire local.",
+        "ruleSets": {
+          "title": "Ensembles de règles de détection",
+          "description": "Ensembles de règles qu’utilisent les balayages IOC de cette politique.",
+          "manageLink": "Gérer les règles de détection",
+          "loading": "Chargement des ensembles de règles…",
+          "loadError": "Impossible de charger les ensembles de règles. La politique conserve ses ensembles actuels; vous pouvez quand même enregistrer les autres paramètres.",
+          "none": "Aucun ensemble de règles n’est offert pour cette politique.",
+          "legacyNote": "Aucun ensemble de règles : les balayages utilisent seulement les anciennes signatures intégrées.",
+          "cap": "Une politique peut utiliser au plus {{max}} ensembles de règles.",
+          "unavailable": "Ensemble de règles non disponible",
+          "blocking": "Cette politique ne peut pas utiliser les ensembles de règles non disponibles (supprimés, déplacés ou appartenant à une autre organisation). Retirez-les avant d’enregistrer.",
+          "overrideDraft": "Les paramètres hérités comprennent des ensembles de règles que cette politique ne peut pas utiliser. Retirez les ensembles non disponibles, puis enregistrez.",
+          "errors": {
+            "tooMany": "Une politique peut utiliser au plus {{max}} ensembles de règles.",
+            "invalidIds": "La liste des ensembles de règles n’est pas valide. Rechargez la page et réessayez.",
+            "notAttachable": "Cette politique ne peut pas utiliser certains des ensembles de règles choisis. Ils sont mis en évidence ci-dessous."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Diplômes",
@@ -1233,7 +1259,7 @@
       "uploadFile": "Fichier d’envoi",
       "source2": "Source",
       "downloadUrl": "downloadUrl",
-      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "supportedOs",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "silentInstallArgs",
@@ -1289,7 +1315,19 @@
       "thisOrganizationOnly": "Cette organisation uniquement",
       "partnerWideUrlOnly": "Les paquets partenaire utilisent une URL de téléchargement — le téléversement de fichiers n'est pas encore disponible pour eux.",
       "selectedFileRemoved": "Le fichier sélectionné a été retiré — les paquets partenaire utilisent une URL de téléchargement.",
-      "scopeLockedAfterCreate": "Le paquet a déjà été créé avec cette portée — la propriété ne peut pas changer après la création."
+      "scopeLockedAfterCreate": "Le paquet a déjà été créé avec cette portée — la propriété ne peut pas changer après la création.",
+      "installScripts": "Scripts d’installation",
+      "installScriptsHelp": "Obligatoires pour les packages zip, facultatifs sinon. Les scripts s’exécutent en tant que SYSTEM sous Windows ou root sous macOS et Linux, expirent au bout de 10 minutes, nécessitent l’autorisation devices.execute et exactement un système d’exploitation cible.",
+      "availableTokens": "Jetons disponibles :",
+      "preInstallScript": "Script de pré-installation",
+      "postInstallScript": "Script de post-installation",
+      "preInstallScriptPlaceholder": "S’exécute avant l’installateur (PowerShell sous Windows, bash sous macOS et Linux)",
+      "postInstallScriptPlaceholder": "S’exécute après l’installateur ou après l’extraction du zip",
+      "silentArgsNotUsedForType": "Les arguments d’installation silencieuse ne sont pas utilisés pour les installateurs pkg, dmg, deb ou zip.",
+      "issueZipRequiresPostInstallScript": "Les packages zip nécessitent un script de post-installation : l’agent se contente d’extraire l’archive.",
+      "issueScriptsRequireSingleOs": "Les scripts d’installation nécessitent exactement un système d’exploitation cible.",
+      "issueScriptTooLarge": "Chaque script d’installation doit faire 64 KiB ou moins.",
+      "issueArgsUnsupportedForFileType": "Les arguments d’installation silencieuse ne sont pas pris en charge pour ce type d’installateur."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Intégré géré",
@@ -1335,9 +1373,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Aucune politique logicielle trouvée. Créez-en un pour commencer.",
       "recentViolations": "Violations récentes",
       "noCurrentSoftwareViolations": "Aucune violation logicielle actuelle.",
-      "violationS": "Violation",
-      "remediation": "Assainissement :",
-      "checked": "Vérifié :",
+      "remediation": "Assainissement : {{value}}",
+      "checked": "Vérifié : {{date}}",
       "deactivatePolicy": "Politique de désactivation",
       "areYouSureYouWantToDeactivate": "Êtes-vous sûr de vouloir désactiver ?",
       "thePolicyWillBeMarkedInactiveAnd": "? La politique sera marquée comme inactive et les données de conformité seront effacées.",
@@ -1373,7 +1410,18 @@
       "coverageVendor": "Fournisseur",
       "coverageReason": "Motif",
       "vendorOnlyAgent": "Agent connu du fournisseur seulement",
-      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}"
+      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations",
+      "violationTypes": {
+        "unauthorized": "Non autorisé",
+        "missing": "Manquant",
+        "outdated": "Obsolète",
+        "not_running": "Non démarré",
+        "service_unverified": "Service non vérifié",
+        "serviceTitle": "Service : {{name}}"
+      }
     },
     "deploymentList": {
       "running": "En cours",
@@ -1436,6 +1484,8 @@
       "error": "Erreur",
       "deploymentComplete": "Déploiement terminé",
       "inProgress": "En cours",
+      "completedWithErrors": "Terminé avec des erreurs",
+      "scheduledFor": "Planifié pour {{time}}",
       "autoRefreshing": "Actualisation automatique toutes les 5 secondes",
       "queuedOffline": "En file d’attente — appareil hors ligne",
       "cancelled": "Annulé",
@@ -1587,20 +1637,25 @@
       "registry": "Registre",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service en cours d’exécution",
+      "readOnlyHint": "Créée par l’API. Non modifiable ici; elle est conservée telle quelle à l’enregistrement.",
+      "serviceName": "Nom du service",
+      "serviceNamePlaceholder": "p. ex. ctrld",
+      "serviceNameHint": "Nom de service Windows, étiquette launchd macOS ou unité systemd Linux. Vérifié avant et après l’installation.",
+      "serviceNameInvalid": "Saisissez un nom de service sans caractères de contrôle ni « - » initial (256 octets maximum)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",
-      "devicesWith": "Dispositifs avec",
-      "by": "par",
+      "devicesWith": "Appareils avec {{name}}",
+      "by": "par {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Aucun appareil trouvé avec ce logiciel.",
       "hostname": "Nom d’hôte",
       "oS": "OS",
       "version": "Version",
       "lastSeen": "Dernière apparition",
-      "device": "Dispositif",
-      "total": "Total",
-      "s": "s"
+      "deviceTotal_one": "{{count}} appareil au total",
+      "deviceTotal_other": "{{count}} appareils au total"
     },
     "policyForm": {
       "dryRunUnassigned": "0 appareil — généralement parce que cette stratégie n’est encore affectée à aucun appareil, mais un parc entièrement conforme ou une liste de sites vide donne aussi 0",
@@ -1705,7 +1760,10 @@
       "catalogTab": "Catalogue",
       "summaryCompleted7d": "Terminés (7 j)",
       "summaryFailed7d": "Échoués (7 j)",
-      "categoryFilterLabel": "Catégorie"
+      "categoryFilterLabel": "Catégorie",
+      "requiredVariables": "Variables requises",
+      "uninstallCommand": "Commande de désinstallation",
+      "managedByBreezeHint": "Géré par Breeze. Ce package ne peut être ni modifié ni supprimé, et aucune nouvelle version ne peut lui être ajoutée ici."
     },
     "softwareInventory": {
       "allowed": "Autorisé",
@@ -1847,7 +1905,10 @@
       "uploadsRequireS3Storage": "Le téléversement de fichiers nécessite la configuration d'un stockage objet S3 sur le serveur.",
       "editingVersion": "Modification de la version",
       "failedToUpdateVersion": "Échec de la mise à jour de la version",
-      "replaceFileAddNewVersion": "Pour remplacer le fichier d'installation, ajoutez plutôt une nouvelle version."
+      "replaceFileAddNewVersion": "Pour remplacer le fichier d'installation, ajoutez plutôt une nouvelle version.",
+      "inactiveStoredScripts": "Les scripts d’installation enregistrés ne sont pas actifs ; recréez la version pour les activer.",
+      "addZipFromAddPackage": "Ajoutez les packages zip depuis Ajouter le package.",
+      "builtinVersionsReadOnly": "Géré par Breeze. Les versions des packages intégrés ne peuvent être ni ajoutées ni modifiées ici."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insérer une variable de temps de déploiement",
@@ -1881,6 +1942,30 @@
       "queuedNone": "Rien n'a été mis en file d'attente : les appareils de l'aperçu n'ont plus besoin d'assainissement ou en ont déjà un en attente.",
       "queuedPartial": "Assainissement mis en file d'attente pour {{queued}} appareil(s) sur {{requested}} de l'aperçu ; les autres n'en ont plus besoin ou en ont déjà un en attente.",
       "previewFailedWithReason": "Impossible de charger l'aperçu de l'assainissement : {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Packages intégrés",
+      "description": "Clients de filtrage DNS épinglés et vérifiés par Breeze. Ajoutez-en un à votre catalogue, définissez sa variable pour chaque organisation, puis déployez-le comme n’importe quel autre package.",
+      "colPackage": "Package",
+      "colPlatform": "Plateforme",
+      "colPinnedVersion": "Version épinglée",
+      "colRequiredVariables": "Variables requises",
+      "colUninstallCommand": "Commande de désinstallation",
+      "colStatus": "État",
+      "addToCatalog": "Ajouter au catalogue",
+      "adding": "Ajout en cours…",
+      "inCatalog": "Dans le catalogue",
+      "archived": "Archivé",
+      "restoreToCatalog": "Restaurer",
+      "addedToCatalog": "{{name}} a été ajouté au catalogue",
+      "couldNotAddToCatalog": "Impossible d’ajouter {{name}} au catalogue",
+      "couldNotLoadBuiltinPackages": "Impossible de charger les packages intégrés",
+      "loadingBuiltinPackages": "Chargement des packages intégrés…",
+      "setVariablesPerOrganization": "À définir par organisation dans Paramètres → Variables",
+      "copyUninstallCommand": "Copier la commande de désinstallation",
+      "uninstallCommandCopied": "Commande de désinstallation copiée",
+      "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
+      "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
     }
   }
 }

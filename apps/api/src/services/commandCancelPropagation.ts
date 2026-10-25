@@ -1,6 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runAfterDbContextExit } from '../db';
-import { deploymentResults, deviceFilesystemCleanupRuns } from '../db/schema';
+import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns, securityScans } from '../db/schema';
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
 import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
@@ -56,6 +57,117 @@ export async function propagateCancelledDeviceCommands(
       executor,
     });
   }
+}
+
+/**
+ * The ONE way a bulk path (tenant offboarding, abuse suspension, device
+ * uninstall drain, ...) flips device commands to `cancelled` (#9719): performs
+ * the UPDATE, then runs the per-command-type hook for every row it actually
+ * flipped. A bare `UPDATE ... SET status='cancelled'` strands the owning
+ * script execution / patch job / deployment result / incident action `pending`
+ * forever, because the reaper never revisits a terminal command.
+ *
+ * `where` must already scope to the rows to cancel, including a non-terminal
+ * status guard. The rows are read first (FOR UPDATE) and the UPDATE is bounded
+ * to that read set, so a row that appears in between is left for the next
+ * sweep rather than flipped without its payload; only rows the UPDATE returns
+ * get hooks (a row that lost a race to a concurrent claim is not ours).
+ *
+ * Failure semantics (`isolateFailures`):
+ *  - `false` (default inside a caller transaction): a hook failure propagates
+ *    and rolls the cancel back, atomic with the caller (single user cancel,
+ *    device restore).
+ *  - `true` (security-critical or bulk callers, and the default on a bare pool
+ *    with no executor and no DB access context): each hook runs in its own
+ *    savepoint / transaction, so a failing hook is rolled back alone, logged
+ *    with its command id and sent to Sentry, and neither the remaining hooks
+ *    nor the caller's other writes (e.g. an abuse suspension's user disable and
+ *    session revocation) are affected. The owner of a failed hook stays
+ *    unterminalised; that is surfaced via the log + Sentry, not swallowed.
+ */
+export async function cancelDeviceCommands(params: {
+  where: SQL;
+  result: Record<string, unknown>;
+  completedAt?: Date;
+  executor?: DbExecutor;
+  isolateFailures?: boolean;
+  /** Override the per-command hook (tests). */
+  propagate?: typeof propagateCancelledDeviceCommand;
+}): Promise<DeviceCommandCancelSubject[]> {
+  const executor: DbExecutor = params.executor ?? db;
+  const completedAt = params.completedAt ?? new Date();
+  const propagate = params.propagate ?? propagateCancelledDeviceCommand;
+  // `db` is an ALS proxy: with a DB access context active it IS the request /
+  // system transaction, so "bare pool" means no executor AND no context.
+  const isolateFailures =
+    params.isolateFailures ??
+    (params.executor === undefined && getCurrentDbAccessContext() === undefined);
+
+  // Read type + payload BEFORE the UPDATE: `terminalPayloadErasureSet()` nulls
+  // the payload, `returning()` reflects post-update values, and the hooks key on
+  // `payload.executionId` / `batchId` / `runId`.
+  const before = await executor
+    .select({ id: deviceCommands.id, type: deviceCommands.type, payload: deviceCommands.payload })
+    .from(deviceCommands)
+    .where(params.where)
+    .for('update');
+  if (before.length === 0) return [];
+  const beforeById = new Map(before.map((row) => [row.id, row]));
+
+  const flipped = await executor
+    .update(deviceCommands)
+    .set({
+      status: 'cancelled',
+      completedAt,
+      result: params.result,
+      ...terminalPayloadErasureSet(),
+    })
+    .where(and(params.where, inArray(deviceCommands.id, [...beforeById.keys()]))!)
+    .returning({ id: deviceCommands.id, type: deviceCommands.type });
+
+  const subjects: DeviceCommandCancelSubject[] = flipped.map((row) => {
+    const payload = beforeById.get(row.id)?.payload;
+    return {
+      id: row.id,
+      type: row.type,
+      payload:
+        payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>)
+          : null,
+    };
+  });
+
+  for (const subject of subjects) {
+    const run = (hookExecutor: DbExecutor) =>
+      propagate({
+        commandId: subject.id,
+        type: subject.type,
+        payload: subject.payload,
+        completedAt,
+        executor: hookExecutor,
+      });
+    if (!isolateFailures) {
+      await run(executor);
+      continue;
+    }
+    try {
+      // Own savepoint (nested) / transaction (pool): a failed statement inside
+      // the hook aborts only that unit, never the caller's transaction.
+      await executor.transaction(async (hookTx) => run(hookTx as unknown as DbExecutor));
+    } catch (err) {
+      console.error('[commandCancelPropagation] cancelDeviceCommands: hook failed for a cancelled command', {
+        commandId: subject.id,
+        type: subject.type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        source: 'cancelDeviceCommands',
+        commandType: subject.type,
+        commandId: subject.id,
+      });
+    }
+  }
+  return subjects;
 }
 
 export async function propagateCancelledDeviceCommand(params: {
@@ -182,6 +294,37 @@ export async function propagateCancelledDeviceCommand(params: {
         executor,
       });
     }
+  }
+
+  // #9662 — a cancelled execute_containment leaves its incident action
+  // `in_progress` forever otherwise. DYNAMIC import, like the branches above,
+  // to keep this module a leaf. Not try/caught, for the same reason: a
+  // failure rolls the caller's cancel back with it.
+  if (type === 'execute_containment') {
+    const { finalizeContainmentAction } = await import('./incidentContainmentResults');
+    await finalizeContainmentAction({
+      commandId,
+      payload,
+      outcome: { kind: 'cancelled', error: errorMessage },
+      completedAt,
+      executor,
+    });
+  }
+
+  // #6263 W05 — a cancelled security_scan leaves its scan row waiting
+  // forever otherwise: no result will ever arrive for a command the agent
+  // never received. Bound by `security_scans.command_id` (stamped at
+  // dispatch), never by the payload, which the cancel has just erased.
+  // `queued` covers a manual Scan now (it stays queued until its result);
+  // `running` covers a claimed scan. A scan a sweep cancel or expiry already
+  // terminalised keeps its own status. Rows dispatched before W05 carry no
+  // command_id and are untouched. In the caller's transaction, like every
+  // branch above.
+  if (type === 'security_scan') {
+    await executor
+      .update(securityScans)
+      .set({ status: 'cancelled', completedAt })
+      .where(and(eq(securityScans.commandId, commandId), inArray(securityScans.status, ['queued', 'running'])));
   }
 
   await executor

@@ -1,0 +1,129 @@
+<article class="doc-paper overflow-hidden rounded-xl border bg-card sm:px-[3.25rem]" data-doc-theme="classic" data-document-root="true" data-testid="document-root">
+  <div aria-hidden="true" class="doc-accent-bg h-1.5">
+  </div>
+  <div class="space-y-10 px-4 py-7 sm:py-9">
+    <div class="space-y-8">
+      <header class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+        <div class="space-y-3">
+          <img alt="Example MSP" class="h-11 w-auto max-w-[220px] object-contain" src="https://cdn.example-msp.test/logo.png">
+          </img>
+          <address class="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
+            <p class="font-medium text-foreground/80">
+              "Example MSP"
+            </p>
+            <p>
+              "100 Example Way"
+            </p>
+            <p>
+              "Springfield, IL, 62701"
+            </p>
+            <p>
+              "US"
+            </p>
+            <p>
+              "+1 555 0100"
+            </p>
+            <p>
+              "billing@example-msp.test"
+            </p>
+            <p>
+              "https://example-msp.test"
+            </p>
+          </address>
+        </div>
+        <div class="space-y-2 sm:text-right">
+          <p class="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">
+            "Invoice"
+          </p>
+          <h1 class="doc-font-display text-2xl font-semibold tracking-tight text-foreground">
+            "INV-0042"
+          </h1>
+          <span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-primary/10 text-primary-on-tint">
+            "Sent"
+          </span>
+          <dl class="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
+            <div class="flex gap-2">
+              <dt>
+                "Issued"
+              </dt>
+              <dd class="font-medium text-foreground/80">
+                <time datetime="2026-03-01">
+                  "Mar 01, 2026"
+                </time>
+              </dd>
+            </div>
+            <div class="flex gap-2">
+              <dt>
+                "Due"
+              </dt>
+              <dd class="font-medium text-foreground/80">
+                <time datetime="2026-03-31">
+                  "Mar 31, 2026"
+                </time>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </header>
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          "Bill to"
+        </p>
+        <p class="mt-1 text-base font-medium text-foreground">
+          "Acme Dental"
+        </p>
+      </div>
+    </div>
+    <div class="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
+      "No line items."
+    </div>
+    <section class="flex justify-end">
+      <div class="w-full max-w-xs space-y-2.5">
+        <div class="flex justify-between text-sm ">
+          <span class="text-muted-foreground">
+            "Subtotal"
+          </span>
+          <span class="tabular-nums text-foreground ">
+            <span>
+              "$0.00"
+            </span>
+          </span>
+        </div>
+        <div class="flex justify-between text-sm ">
+          <span class="text-muted-foreground">
+            "Tax"
+          </span>
+          <span class="tabular-nums text-foreground ">
+            <span>
+              "$0.00"
+            </span>
+          </span>
+        </div>
+        <div class="flex justify-between text-sm border-t pt-2.5">
+          <span class="font-medium text-foreground">
+            "Total"
+          </span>
+          <span class="tabular-nums text-foreground font-medium">
+            <span>
+              "$0.00"
+            </span>
+          </span>
+        </div>
+        <div class="doc-accent-border flex items-baseline justify-between gap-3 border-t pt-3" data-testid="document-totals-hero">
+          <span class="text-sm font-semibold text-foreground">
+            "Balance due"
+          </span>
+          <span class="doc-accent-text doc-font-display text-2xl font-semibold tabular-nums">
+            <span>
+              "$0.00"
+            </span>
+          </span>
+        </div>
+      </div>
+    </section>
+    <div class="empty:hidden" data-slot="after-totals">
+    </div>
+    <div class="empty:hidden" data-slot="signature">
+    </div>
+  </div>
+</article>

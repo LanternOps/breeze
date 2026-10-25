@@ -64,7 +64,9 @@ vi.mock('../../db/schema', () => ({
   patchApprovals: {
     partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
-    status: 'patchApprovals.status'
+    status: 'patchApprovals.status',
+    ringId: 'patchApprovals.ringId',
+    updatedAt: 'patchApprovals.updatedAt'
   },
   deviceCommands: {
     id: 'deviceCommands.id',
@@ -190,7 +192,7 @@ function arrange(ids: string[] = [PATCH_ID]) {
   vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID, osType: 'windows' } as any);
   vi.mocked(db.select)
     .mockReturnValueOnce(selectWhereResult(ids.map((id) => ({ ...PATCH_ROW, id }))) as any)
-    .mockReturnValueOnce(selectWhereResult(ids.map((patchId) => ({ patchId }))) as any);
+    .mockReturnValueOnce(selectWhereResult(ids.map((patchId) => ({ patchId, status: 'approved', ringId: null, updatedAt: null }))) as any);
 }
 
 let app: Hono;

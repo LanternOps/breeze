@@ -1,0 +1,70 @@
+{
+  "title": "Flussi",
+  "subtitle": "Automazioni in più passaggi che collegano più strumenti in sequenza.",
+  "previewNotice": "In questa versione i flussi sono di sola lettura. Redigili nella chat IA; attivazione ed esecuzioni arriveranno in una versione successiva.",
+  "empty": {
+    "title": "Nessun flusso per ora",
+    "body": "Chiedi all’assistente IA di redigere un flusso, poi rivedilo qui."
+  },
+  "list": {
+    "name": "Nome",
+    "owner": "Proprietario",
+    "allOrgs": "Tutte le organizzazioni",
+    "status": "Stato",
+    "tier": "Livello",
+    "trigger": "Trigger",
+    "updated": "Aggiornato"
+  },
+  "status": {
+    "draft": "Bozza",
+    "enabled": "Attivato",
+    "paused": "In pausa",
+    "disabled": "Disattivato"
+  },
+  "trigger": {
+    "schedule": "Pianificazione",
+    "event": "Evento",
+    "webhook": "Webhook",
+    "manual": "Manuale"
+  },
+  "detail": {
+    "back": "Torna ai flussi",
+    "trigger": "Trigger",
+    "inputs": "Input",
+    "steps": "Passaggi",
+    "version": "Versione {{version}}",
+    "createdInChat": "Creato nella chat IA"
+  },
+  "step": {
+    "tool": "Strumento",
+    "tier": "Livello {{tier}}",
+    "approval": "Approvazione",
+    "approvalDefault": "Approvazione standard",
+    "approvalPreApproved": "Preapprovato",
+    "when": "Si esegue quando",
+    "forEach": "Per ogni elemento",
+    "onFailure": "In caso di errore",
+    "timeout": "Timeout",
+    "input": "Input",
+    "source": {
+      "core": "Strumento di base",
+      "tenant": "Origine strumenti",
+      "builtin": "Integrato"
+    }
+  },
+  "issues": {
+    "title": "Convalida",
+    "none": "Nessun problema di convalida.",
+    "error": "Errore",
+    "warning": "Avviso"
+  },
+  "card": {
+    "title": "Bozza di flusso",
+    "review": "Rivedi",
+    "steps": "Passaggi: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Impossibile caricare i flussi.",
+    "notFound": "Flusso non trovato."
+  }
+}

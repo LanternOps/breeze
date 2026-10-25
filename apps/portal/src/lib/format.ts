@@ -3,8 +3,7 @@ import { portalLocale } from '@/lib/money';
 /**
  * Shared customer-facing formatters. These were duplicated verbatim in four
  * list/detail components; one definition keeps the register's figures in one
- * voice. (quoteBlocks.tsx keeps its own exported `money` for the paper world's
- * per-line rendering — it re-exports this one.)
+ * voice.
  */
 
 // Formatting itself is the multi-currency formatter in lib/money.ts (shared

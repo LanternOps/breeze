@@ -148,10 +148,44 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // guidance), not by raising the ceiling.
     // Trust Center W02i (`get_trust_page_status`) and #8584 (`list_device_restore_point_attempts`, Automations line)
     // are paid for by tightening the patching/scripts notes' wording (same guidance, same tools), not by raising the ceiling.
-    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
+    // Tool Catalog W3 (#5218): +49 B flag-on (6576 -> 6625), 0 B default —
+    // recorded in docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
+    // ("Tool Catalog W3 delta"). Both fit under the existing ceiling, so the
+    // 6.75 KB raise signed off for W3 was not taken; the flag-on prompt is
+    // gated too (below).
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
+
+  it('with FLOWS_ENABLED=true the index stays under the ceiling and lists the flow tools', () => {
+    vi.stubEnv('FLOWS_ENABLED', 'true');
+    try {
+      const flagOn = renderToolIndexByDomain(listChatSurfaceToolNames());
+      for (const name of ['draft_flow', 'get_flow', 'list_flows', 'validate_flow']) expect(flagOn).toContain(name);
+      expect(Buffer.byteLength(flagOn, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
+    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows)\b/);
+  });
 });
+
+// #8883 W5: +128 B (6656 -> 6784) for the three ticket routing tools on the
+// Tickets line (+112 B: list_ticket_routing_rules, test_ticket_routing_rule,
+// manage_ticket_routing_rules (create/update/reorder/delete)); measured 6714
+// default / 6763 flag-on. Every SDK tool must carry a searchHint, so a new
+// tool cannot stay out of the index, and paying 112 B by rewriting other
+// domains' notes would change unrelated guidance. Flagged for prompt-size
+// review in the PR.
+// #6263 W05 PR B (#6268): +128 B (6784 -> 6912) for `ioc_hunt
+// (list_rule_sets/preview_sweep/list_sweeps/sweep_status/sweep/cancel_sweep/import_iocs)`
+// on the Security line (+97 B); measured 6811 default / 6860 flag-on (6714 /
+// 6763 before). Pre-authorized by Todd 2026-10-24 (Gate B 5); action names and
+// other domains' notes left unchanged.
+const INDEX_BUDGET_BYTES = 6.75 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */
 function isActionToken(text: string, token: string): boolean {
@@ -200,10 +234,11 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
     assertNoDrift();
   });
 
-  it('flags ON (M365 + Google Workspace + AI script authoring): advertised set matches what buildBreezeSdkTools declares', () => {
+  it('flags ON (M365 + Google Workspace + AI script authoring + Flows): advertised set matches what buildBreezeSdkTools declares', () => {
     vi.stubEnv('M365_ENABLED', 'true');
     vi.stubEnv('GOOGLE_WORKSPACE_ENABLED', 'true');
     vi.stubEnv('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', 'true');
+    vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       assertNoDrift();
     } finally {

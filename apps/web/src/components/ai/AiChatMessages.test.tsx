@@ -12,13 +12,21 @@ vi.mock('remark-gfm', () => ({ default: () => {} }));
 // Records the props each AiToolCallCard instance receives (sweep E6): what
 // this file owns is the wiring from a message row to the card's `input`
 // prop, not the card's own rendering, which has its own test suite.
-const toolCallCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
-vi.mock('./AiToolCallCard', () => ({
-  default: (props: Record<string, unknown>) => {
-    toolCallCards.props.push(props);
-    return null;
-  },
-}));
+const toolCallCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>>, mounts: 0 }));
+vi.mock('./AiToolCallCard', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: (props: Record<string, unknown>) => {
+      toolCallCards.props.push(props);
+      // Counts MOUNTS (#9534): a completed card must replace its pending card
+      // in place, i.e. reuse the same instance rather than mount a second one.
+      useEffect(() => {
+        toolCallCards.mounts += 1;
+      }, []);
+      return null;
+    },
+  };
+});
 
 // Records the props AiChatMessages forwards to the approval card. The real
 // dialog is heavy (WebAuthn + i18n), and what this file owns is the wiring:
@@ -433,5 +441,147 @@ describe('script proposal link after a run (#7918)', () => {
       { id: 'r1', role: 'tool_result', content: '{}', toolName: 'run_script', toolUseId: 't1' },
     ] as never);
     expect(queryByTestId('ai-script-proposal-link')).toBeNull();
+  });
+});
+
+// Tool Catalog W3 (#5218): a saved draft_flow / get_flow result renders the
+// Flow card; anything else keeps the default tool card so errors stay visible.
+describe('flow card for draft_flow / get_flow results (#5218)', () => {
+  const FLOW_ID = '9f1c0f4e-0000-4000-8000-000000000001';
+  const flowPayload = (id = FLOW_ID) => ({
+    flow: {
+      id, slug: 'nightly', name: 'Nightly offline report', description: null, ownerScope: 'organization',
+      orgId: 'org-1', partnerId: null, status: 'draft', effectiveTier: 1, triggerType: 'manual',
+      definitionVersion: 1, updatedAt: '2026-10-20T02:00:00.000Z', createdAt: '2026-10-20T02:00:00.000Z',
+      createdByUserId: null, aiSessionId: null,
+      definition: {
+        version: 1, name: 'Nightly offline report', trigger: { type: 'manual' }, inputs: [],
+        steps: [
+          { id: 'a', tool: 'query_devices', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+          { id: 'b', tool: 'query_alerts', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+          { id: 'c', tool: 'send_email', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 },
+        ],
+      },
+    },
+    validation: {
+      valid: true, effectiveTier: 1, issues: [],
+      steps: ['a', 'b', 'c'].map((id) => ({ id, tool: 't', source: 'core', tier: 1, approval: 'default' })),
+    },
+  });
+  const result = (toolName: string, toolOutput: unknown) => [
+    { id: 'u1', role: 'tool_use', content: '', toolName, toolUseId: 't1', toolInput: {} },
+    { id: 'r1', role: 'tool_result', content: '', toolName, toolUseId: 't1', toolOutput },
+  ];
+
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+  });
+
+  it('renders the Flow card with 3 steps and a /flows/<uuid> link for a saved draft', () => {
+    const { getByTestId, getAllByTestId } = renderWithMessages(
+      result('draft_flow', { saved: true, ...flowPayload(), reviewPath: `/flows/${FLOW_ID}` }) as never,
+    );
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+    expect(getAllByTestId(/^flow-step-[abc]$/)).toHaveLength(3);
+    expect(getByTestId('flow-draft-review').getAttribute('href')).toBe(`/flows/${FLOW_ID}`);
+    // The Flow card takes the tool_use row's place (#9534); no default tool
+    // card renders beside it.
+    expect(toolCallCards.props.some((p) => p.output !== undefined)).toBe(false);
+  });
+
+  it('renders no review link when the id is not a UUID', () => {
+    const { getByTestId, queryByTestId } = renderWithMessages(
+      result('draft_flow', { saved: true, ...flowPayload('nope/../x') }) as never,
+    );
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+    expect(queryByTestId('flow-draft-review')).toBeNull();
+  });
+
+  it('renders the card for a get_flow result', () => {
+    const { getByTestId } = renderWithMessages(result('get_flow', flowPayload()) as never);
+    expect(getByTestId('flow-draft-card')).toBeTruthy();
+  });
+
+  it('falls through to the default tool card when saved is false', () => {
+    const { queryByTestId } = renderWithMessages(
+      result('draft_flow', { saved: false, error: 'invalid' }) as never,
+    );
+    expect(queryByTestId('flow-draft-card')).toBeNull();
+    expect(toolCallCards.props.at(-1)?.toolName).toBe('draft_flow');
+  });
+
+  it('falls through to the default tool card for malformed JSON output', () => {
+    const { queryByTestId } = renderWithMessages(result('draft_flow', '{not json') as never);
+    expect(queryByTestId('flow-draft-card')).toBeNull();
+    expect(toolCallCards.props.at(-1)?.toolName).toBe('draft_flow');
+  });
+});
+
+// #9534: a 4-tool run showed 8 rows — the pending card ("Searched devices",
+// wrench) stayed after the completed card arrived. One tool call is one card:
+// the completed card replaces the pending one in place, keyed by tool_use id.
+describe('one card per tool call (#9534)', () => {
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+    toolCallCards.mounts = 0;
+  });
+
+  const use = (id: string, toolUseId?: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_use', content: '', toolName, toolUseId, toolInput: { status: 'online' } }) as never;
+  const result = (id: string, toolUseId?: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_result', content: '[]', toolName, toolUseId, toolOutput: [] }) as never;
+
+  it('renders a completed tool call as ONE card, not a pending card plus a result card', () => {
+    renderWithMessages([use('tool-a', 'a'), result('result-a', 'a')]);
+    expect(toolCallCards.props).toHaveLength(1);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [], input: { status: 'online' } });
+    expect(toolCallCards.props[0].isExecuting).toBeFalsy();
+  });
+
+  it('replaces the pending card in place when the result arrives (same instance, no second mount)', () => {
+    const { rerender } = renderWithMessages([use('tool-a', 'a')]);
+    expect(toolCallCards.props.at(-1)?.isExecuting).toBe(true);
+    expect(toolCallCards.mounts).toBe(1);
+
+    rerender(<AiChatMessages {...baseProps} messages={[use('tool-a', 'a'), result('result-a', 'a')] as never} />);
+    expect(toolCallCards.mounts).toBe(1);
+    expect(toolCallCards.props.at(-1)).toMatchObject({ output: [] });
+  });
+
+  it('keeps each parallel call in its own place; only the finished one completes', () => {
+    renderWithMessages([use('tool-a', 'a'), use('tool-b', 'b'), result('result-a', 'a')]);
+    expect(toolCallCards.props).toHaveLength(2);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [] });
+    // b's neighbour is a's result: it must not borrow it and stop spinning.
+    expect(toolCallCards.props[1]).toMatchObject({ isExecuting: true });
+    expect(toolCallCards.props[1].output).toBeUndefined();
+  });
+
+  it('pairs replayed history rows that carry no tool_use id by adjacency', () => {
+    renderWithMessages([use('u1', undefined), result('r1', undefined)]);
+    expect(toolCallCards.props).toHaveLength(1);
+    expect(toolCallCards.props[0]).toMatchObject({ output: [] });
+  });
+
+  it('never pairs a synthetic id-less row (unattended_release) with the tool_use before it', () => {
+    const { getByTestId, rerender } = renderWithMessages([
+      use('u1', 'x', 'run_script'),
+      result('note', undefined, 'unattended_release'),
+    ]);
+    expect(getByTestId('ai-unattended-release-note')).toBeTruthy();
+    expect(toolCallCards.props.at(-1)).toMatchObject({ toolName: 'run_script', isExecuting: true });
+
+    rerender(<AiChatMessages {...baseProps} messages={[
+      use('u1', 'x', 'run_script'),
+      result('note', undefined, 'unattended_release'),
+      result('r1', 'x', 'run_script'),
+    ] as never} />);
+    expect(getByTestId('ai-unattended-release-note')).toBeTruthy();
+    expect(toolCallCards.props.at(-1)).toMatchObject({ toolName: 'run_script', output: [] });
+  });
+
+  it('still renders an orphan result (no tool_use row) as its own card', () => {
+    renderWithMessages([result('r1', 'gone')]);
+    expect(toolCallCards.props).toHaveLength(1);
   });
 });

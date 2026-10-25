@@ -9,6 +9,7 @@ const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -82,8 +83,17 @@ vi.mock('../jobs/dnsSyncJob', () => ({
   schedulePolicySync: vi.fn()
 }));
 
+vi.mock('../jobs/dnsSecurityRetention', () => ({
+  DNS_INTEGRATION_DELETING_STATUS: 'deleting',
+  enqueueDnsIntegrationDelete: vi.fn(async () => undefined)
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn()
 }));
 
 vi.mock('../services/secretCrypto', () => ({
@@ -101,8 +111,12 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { authMiddleware } from '../middleware/auth';
+import { enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
+import { scheduleDnsEventSync } from '../jobs/dnsSyncJob';
+import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import { dnsSecurityRoutes } from './dnsSecurity';
 
 describe('dns security routes', () => {
@@ -912,6 +926,167 @@ describe('dns security routes', () => {
 
       expect(res.status).toBe(404);
       expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+  // ──────────────── #10019 / #10020: background delete + retention edit ────────────────
+  describe('integration lifecycle (#10019, #10020)', () => {
+    const INTEGRATION_ID = '22222222-2222-2222-2222-222222222222';
+    const ORG_ID = '11111111-1111-1111-1111-111111111111';
+
+    function mockIntegrationLookup(row: Record<string, unknown> | undefined) {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(row ? [row] : [])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdate() {
+      const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+      return set;
+    }
+
+    const activeRow = {
+      id: INTEGRATION_ID, orgId: ORG_ID, name: 'Umbrella', isActive: true,
+      lastSyncStatus: 'success', config: { organizationId: '42' }
+    };
+    const deletingRow = { ...activeRow, isActive: false, lastSyncStatus: 'deleting' };
+
+    describe('DELETE /integrations/:id', () => {
+      it('deactivates and marks the row, queues the background delete after commit, and answers 202', async () => {
+        mockIntegrationLookup(activeRow);
+        const set = mockUpdate();
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        expect(await res.json()).toEqual({ success: true, id: INTEGRATION_ID, status: 'deleting' });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ isActive: false, lastSyncStatus: 'deleting' }));
+        expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
+        expect(enqueueDnsIntegrationDelete).toHaveBeenCalledWith(INTEGRATION_ID);
+        // Nothing is deleted inline any more: no 30M-row statement in the request.
+        expect(db.delete).not.toHaveBeenCalled();
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.delete', resourceId: INTEGRATION_ID
+        }));
+      });
+
+      it('still answers 202 when the after-commit enqueue fails, and reports it to Sentry', async () => {
+        mockIntegrationLookup(activeRow);
+        mockUpdate();
+        const boom = new Error('redis down');
+        vi.mocked(enqueueDnsIntegrationDelete).mockRejectedValueOnce(boom);
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(boom));
+      });
+
+      it('re-queues an integration that is already being deleted, without touching the row again', async () => {
+        mockIntegrationLookup(deletingRow);
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        expect(db.update).not.toHaveBeenCalled();
+        expect(enqueueDnsIntegrationDelete).toHaveBeenCalledWith(INTEGRATION_ID);
+      });
+
+      it('404s an unknown or foreign integration and queues nothing', async () => {
+        mockIntegrationLookup(undefined);
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+        expect(res.status).toBe(404);
+        expect(enqueueDnsIntegrationDelete).not.toHaveBeenCalled();
+      });
+
+      it('still requires MFA', async () => {
+        mfaGate.deny = true;
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('POST /integrations/:id/sync', () => {
+      it('refuses to sync an integration that is being deleted', async () => {
+        mockIntegrationLookup(deletingRow);
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}/sync`, { method: 'POST' });
+        expect(res.status).toBe(409);
+        expect(scheduleDnsEventSync).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PATCH /integrations/:id (retentionDays)', () => {
+      const patch = (body: unknown) => app.request(`/dns-security/integrations/${INTEGRATION_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      it('sets retentionDays while keeping the rest of the provider config', async () => {
+        mockIntegrationLookup(activeRow);
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ id: INTEGRATION_ID, retentionDays: 30 });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 30 }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.update',
+          details: expect.objectContaining({ retentionDays: { from: null, to: 30 } })
+        }));
+      });
+
+      it('null clears the override so the deployment default applies', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', retentionDays: 7 } });
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: null });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ config: { organizationId: '42' } }));
+      });
+
+      it.each([0, 366, 1.5, '30'])('rejects retentionDays=%s', async (value) => {
+        const res = await patch({ retentionDays: value });
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('rejects keys other than retentionDays', async () => {
+        const res = await patch({ retentionDays: 30, apiKey: 'x' });
+        expect(res.status).toBe(400);
+      });
+
+      it('409s an integration that is being deleted', async () => {
+        mockIntegrationLookup(deletingRow);
+        const res = await patch({ retentionDays: 30 });
+        expect(res.status).toBe(409);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('404s an unknown integration', async () => {
+        mockIntegrationLookup(undefined);
+        const res = await patch({ retentionDays: 30 });
+        expect(res.status).toBe(404);
+      });
+
+      it('requires organizations:write and MFA', async () => {
+        permissionGate.deniedPermission = 'organizations:write';
+        expect((await patch({ retentionDays: 30 })).status).toBe(403);
+        permissionGate.deniedPermission = null;
+        mfaGate.deny = true;
+        expect((await patch({ retentionDays: 30 })).status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+      });
     });
   });
 });

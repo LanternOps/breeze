@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, getTableColumns } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../../services/commandCasDiagnostics';
@@ -48,6 +48,7 @@ import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import { commandIncarnationIsCurrentCondition, commandStampMatchesCaller } from '../../services/commandIncarnation';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../../services/commandTypes';
 import { tryParseBackupResultPayload, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 import {
@@ -125,6 +126,9 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // #8743 W03: conversation / message state follows the chat command results.
   'chat_open',
   'chat_message',
+  // #9662: the incident action follows the execute_containment result.
+  // Registry-only, so both transports apply the same leaf handler.
+  'execute_containment',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
@@ -220,7 +224,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   const deliverableCommands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const commands = await claimPendingCommandsForDevice(
-        agent.deviceId,
+        { deviceId: agent.deviceId, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
         10,
         agent.role,
         // #2774 / #3986 — drain narrowing (tenant offboarding OR device
@@ -289,9 +293,16 @@ commandsRoutes.post(
     // device_commands ever gains an RLS policy, this read becomes a silent
     // 0-row no-op and MUST move into withSystemDbAccessContext — same caveat as
     // services/commandDispatch.ts.
+    //
+    // #8318: `incarnationCurrent` is read in the same statement — is the row
+    // stamped for the device's CURRENT install incarnation? (A SECURITY
+    // DEFINER resolver, so it answers on this contextless read.)
     const [command] = await runOutsideDbContext(() =>
       db
-        .select()
+        .select({
+          ...getTableColumns(deviceCommands),
+          incarnationCurrent: commandIncarnationIsCurrentCondition(),
+        })
         .from(deviceCommands)
         .where(
           and(
@@ -320,6 +331,28 @@ commandsRoutes.post(
     const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';
     if (commandTargetRole !== agent.role) {
       return c.json({ error: 'Command role mismatch' }, 403);
+    }
+
+    // #8318 §5.2: work queued for an EARLIER install incarnation of this
+    // device. Nothing about it is recorded — not the result, not a late
+    // caller-verification receipt, not cleanup evidence, not PAM evidence —
+    // and it is acknowledged like any other result the server no longer
+    // wants, so a replaying outbox stops. The terminal CAS below carries the
+    // same check in SQL (commandAcceptsAgentResultCondition); this answers
+    // before any of the branches that bypass it. Compared with `=== false`
+    // because the column is always a boolean from the database.
+    //
+    // §6.4, the caller half: a row stamped for a LATER incarnation than the
+    // one this request authenticated under (enqueued after a reattach confirm
+    // the request predates) is refused the same way.
+    if (
+      command.incarnationCurrent === false
+      || !commandStampMatchesCaller(command.deviceIncarnation, agent.installIncarnation)
+    ) {
+      if (PAM_COMMAND_TYPES.has(command.type)) {
+        return c.json<PamResultAcknowledgement>({ protocolVersion: 1, classification: 'stale' });
+      }
+      return c.json({ success: true });
     }
 
     // Supplemental PAM evidence for every terminal command state, including a
@@ -527,7 +560,7 @@ commandsRoutes.post(
                 eq(deviceCommands.id, commandId),
                 eq(deviceCommands.deviceId, deviceId),
                 eq(deviceCommands.targetRole, agent.role),
-                commandAcceptsAgentResultCondition()
+                commandAcceptsAgentResultCondition(agent)
               )) as any;
 
             updated = typeof query.returning === 'function'
@@ -714,6 +747,7 @@ commandsRoutes.post(
           commandId,
           deviceId,
           targetRole: agent.role,
+          caller: agent,
           storedResult: storedCommandResult,
         });
       } catch (markErr) {

@@ -35,6 +35,8 @@ func (l *blockingLifecycleShutdown) Mode() string { return "always-on" }
 
 func (l *blockingLifecycleShutdown) SetModeOverride(string) {}
 
+func (l *blockingLifecycleShutdown) SetPAMHelperHold(bool) {}
+
 // Lease/readiness methods exist only to satisfy helperLifecycleController —
 // this fake covers shutdown ordering, which never touches them.
 func (l *blockingLifecycleShutdown) AcquireLease(uint32, ipc.HelperRole, string, time.Duration) error {

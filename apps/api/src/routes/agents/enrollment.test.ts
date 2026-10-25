@@ -172,16 +172,30 @@ vi.mock('../../services/partnerTrust', () => ({
   })),
 }));
 
+// #9511 — device.enrolled is published after the enrollment commits.
+const publishEventMock = vi.hoisted(() => vi.fn().mockResolvedValue('evt-1'));
+vi.mock('../../services/eventBus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/eventBus')>()),
+  publishEvent: publishEventMock,
+}));
+
 // #4630 — dynamic device group re-evaluation ENQUEUE on enrollment.
 const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
 vi.mock('../../jobs/deviceGroupJobs', () => ({
   requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
 }));
 
+// #9617 — org default device group applied inside the enrollment transaction.
+const applyOrgDefaultDeviceGroupMock = vi.hoisted(() => vi.fn().mockResolvedValue('added'));
+vi.mock('../../services/enrollmentDefaultGroup', () => ({
+  applyOrgDefaultDeviceGroup: applyOrgDefaultDeviceGroupMock,
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
@@ -261,7 +275,11 @@ interface TxSpy {
  * tx.update()/tx.insert() and returns `insertedDevice` from the first
  * tx.insert(devices).values().returning().
  */
-function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x'): TxSpy {
+function mockTransaction(
+  insertedDevice: Record<string, unknown>,
+  keyId = 'key-x',
+  opts: { deviceUpdateRows?: Record<string, unknown>[] } = {},
+): TxSpy {
   const spy: TxSpy = {
     update: vi.fn(),
     insert: vi.fn(),
@@ -282,14 +300,16 @@ function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x
         spy.updatedTables.push(table);
         // The in-place re-enroll UPDATE(devices) returns the device row; the
         // enrollment-key consume returns the claimed key id.
-        const returned = table === devicesTable ? insertedDevice : { id: keyId };
+        const returned = table === devicesTable
+          ? (opts.deviceUpdateRows ?? [insertedDevice])
+          : [{ id: keyId }];
         return {
           set: vi.fn((values: Record<string, unknown>) => {
             if (table === devicesTable) spy.deviceUpdateValues.push(values);
             return {
               where: vi.fn(() => Object.assign(
                 Promise.resolve(undefined) as any,
-                { returning: vi.fn().mockResolvedValue([returned]) },
+                { returning: vi.fn().mockResolvedValue(returned) },
               )),
             };
           }),
@@ -401,6 +421,28 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   });
 });
 
+describe('POST /agents/enroll — org default device group (#9617)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    applyOrgDefaultDeviceGroupMock.mockResolvedValue('added');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('applies the default group to the freshly inserted device, inside the transaction', async () => {
+    await enrollOk();
+
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledTimes(1);
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledWith(
+      // the transaction handle, never the bare pool
+      expect.objectContaining({ insert: expect.any(Function), delete: expect.any(Function) }),
+      { orgId: 'org-backup-url', deviceId: 'device-backup-url', siteId: 'site-backup-url' },
+    );
+  });
+});
+
 describe('POST /agents/enroll — dynamic device group re-evaluation enqueue (#4630)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -432,6 +474,49 @@ describe('POST /agents/enroll — dynamic device group re-evaluation enqueue (#4
     await enrollOk();
 
     expect(requestDeviceGroupReevaluationMock).toHaveBeenCalled();
+  });
+});
+
+describe('POST /agents/enroll — device.enrolled event (#9511)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    publishEventMock.mockResolvedValue('evt-1');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('publishes device.enrolled for the committed device with org + site scope', async () => {
+    await enrollOk();
+
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled',
+      'org-backup-url',
+      { deviceId: 'device-backup-url', hostname: 'host-1', agentVersion: '0.62.24', reenrollment: false },
+      'agent-enrollment',
+      { siteId: 'site-backup-url' },
+    );
+  });
+
+  it('a rejected publish is logged + captured and never fails an otherwise successful enrollment', async () => {
+    publishEventMock.mockRejectedValue(new Error('redis down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await enrollOk();
+    await new Promise((r) => setImmediate(r));
+    expect(errSpy).toHaveBeenCalledWith('[Enrollment] Failed to publish device.enrolled:', 'redis down');
+    expect(captureException).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('does not publish when enrollment is refused', async () => {
+    mockKeyLookup(undefined);
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBeGreaterThanOrEqual(400);
+    expect(publishEventMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1322,6 +1407,13 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       backupIntegrityProtocolVersion: null,
       backupWriteProtocolVersion: null,
     });
+    // #8318 §6.4 / §5.7: the claims the previous install stamped are cleared
+    // in the same UPDATE (the once-per-install edition-migration claim, and
+    // its uninstall intent), as at a reattach confirm's boundary.
+    expect(tx.deviceUpdateValues[0]).toMatchObject({
+      editionMigrationDispatchedAt: null,
+      uninstallIntentAt: null,
+    });
     expect(disconnectAgentCredentialGenerationMock).toHaveBeenCalledWith(
       'agent-id-before-reenroll',
       [validHash],
@@ -1333,6 +1425,58 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+    // #9617: an in-place re-enrollment must not re-apply the org default group.
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
+    // #9511: same row re-enrolled in place -> reenrollment:true.
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled', 'org-inplace',
+      expect.objectContaining({ deviceId: 'device-inplace', reenrollment: true }),
+      'agent-enrollment', { siteId: expect.anything() },
+    );
+  });
+
+  it('#8318 §6.4: refuses 409 reenrollment_conflict (audited, counted, no fresh row) when the matched row changed hands before the UPDATE', async () => {
+    const validToken = 'valid-reenroll-token-conflict';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+    mockKeyLookup({
+      id: 'key-conflict', orgId: 'org-conflict', siteId: 'site-conflict', keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000), maxUsage: 10, usageCount: 0,
+    });
+    mockSelectRows([{ partnerId: 'partner-conflict' }]);
+    mockSelectRows([{
+      id: 'device-conflict', agentId: 'agent-id-matched', status: 'offline', agentTokenHash: validHash,
+      previousTokenHash: null, previousTokenExpiresAt: null, agentTokenSuspendedAt: null,
+    }]);
+    // The UPDATE carries `agent_id = <matched>`; a confirm or another
+    // re-enroll changed it in between, so it matches 0 rows.
+    const tx = mockTransaction({ id: 'device-conflict' }, 'key-conflict', { deviceUpdateRows: [] });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-agent-reenrollment-token': validToken },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(409);
+    expect(await resp.json()).toEqual({
+      error: 'The device row changed during re-enrollment; retry the enrollment',
+      code: 'reenrollment_conflict',
+    });
+    expect(tx.deviceUpdateValues).toHaveLength(1);
+    expect(tx.deviceInsertValues).toHaveLength(0);
+    // The enrollment key is not consumed: the transaction stops at the refusal.
+    expect(tx.updatedTables).not.toContain(enrollmentKeysTable);
+    expect(recordAgentEnrollment).toHaveBeenCalledWith('error', 'partner-conflict');
+    expect(recordAgentEnrollment).not.toHaveBeenCalledWith('success', expect.anything());
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'org-conflict',
+      action: 'agent.enroll',
+      resourceType: 'device',
+      resourceId: 'device-conflict',
+      result: 'denied',
+      details: expect.objectContaining({ reason: 'reenrollment_conflict', enrollmentKeyId: 'key-conflict' }),
+    }));
+    expect(publishAgentCredentialRevocationMock).not.toHaveBeenCalled();
   });
 
   it('idempotency: a token matching a LATER colliding row re-enrolls that row instead of stacking another fresh row', async () => {
@@ -1762,6 +1906,12 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     // #914: response carries the FRESH device.id, NOT the prior one.
     expect(body.deviceId).toBe('device-decom-fresh-id');
     expect(body.deviceId).not.toBe('device-decom-existing');
+    // #9511: decom-bypass mints a brand-new row -> a new device, not a re-enrollment.
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'device.enrolled', 'org-decom',
+      expect.objectContaining({ deviceId: 'device-decom-fresh-id', reenrollment: false }),
+      'agent-enrollment', expect.anything(),
+    );
     // Importantly: no 409 audit event was written for hostname_collision
     expect(writeAuditEvent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -3340,6 +3490,8 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
     expect(resp.status).toBe(201);
     // Ephemeral support devices never enter licensed-device admission.
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
+    // ...and never land in a customer's default device group (#9617).
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
     expect(spy.countWhere).toHaveLength(0);
     expect(spy.deviceInsertValues[0]).toEqual(
       expect.objectContaining({ isEphemeral: true }),

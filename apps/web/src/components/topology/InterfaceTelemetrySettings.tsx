@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GraphResponse, TopologyTelemetryArm } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { topologyWrite } from './topologyApi';
 import { handleActionError, runAction } from '../../lib/runAction';
 import {
   parseTelemetryArm, telemetrySamplesPerDay, topologyOperationsApi, topologySitePath, type TopologyCredentialProfile,
@@ -71,7 +71,7 @@ export default function InterfaceTelemetrySettings({ siteId, nodeId, graph, canC
       setBusy(true);
       try {
         await runAction({
-          request: () => fetchWithAuth(`${topologySitePath(siteId)}/telemetry-arms`, { method: 'POST', body: JSON.stringify({
+          request: () => topologyWrite(`${topologySitePath(siteId)}/telemetry-arms`, { method: 'POST', body: JSON.stringify({
             targetNodeId: nodeId, collectorDeviceId: collector, credentialProfileId: profile, interfaceIds: selected, intervalSeconds, ttlDays,
             ...(grantId ? { stepUpGrantId: grantId } : {}) }) }),
           errorFallback: t('operations.telemetry.enableFailed'), parseSuccess: parseTelemetryArm,
@@ -86,7 +86,7 @@ export default function InterfaceTelemetrySettings({ siteId, nodeId, graph, canC
     setBusy(true);
     try {
       await runAction({
-        request: () => fetchWithAuth(`${topologySitePath(siteId)}/telemetry-arms/${encodeURIComponent(item.id)}`, { method: 'DELETE' }),
+        request: () => topologyWrite(`${topologySitePath(siteId)}/telemetry-arms/${encodeURIComponent(item.id)}`, { method: 'DELETE' }),
         errorFallback: t('operations.telemetry.revokeFailed'), successMessage: t('operations.telemetry.revoked'), parseSuccess: parseTelemetryArm,
       });
       setReload((n) => n + 1);

@@ -52,19 +52,11 @@ const REVIEWED_ADJACENCIES = new Map<string, string>([
     'followed by a template literal that starts with its own space: ` (12%)`',
   ],
   [
-    'components/billing/InvoiceDocument.tsx: invoiceDocument.totals.tax',
-    'followed by a template literal that starts with its own space: ` (12%)`',
-  ],
-  [
     'components/billing/InvoiceEditor.tsx: invoiceEditor.summary.tax',
     'followed by a template literal that starts with its own space: ` (12.00%)`',
   ],
   [
     'components/billing/quotes/QuoteDetail.tsx: quotes.detail.totals.tax',
-    'followed by a template literal that starts with its own space: ` (12%)`',
-  ],
-  [
-    'components/billing/quotes/QuoteDocument.tsx: quotes.document.totals.tax',
     'followed by a template literal that starts with its own space: ` (12%)`',
   ],
   [

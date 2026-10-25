@@ -19,7 +19,8 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { invoiceLines, invoices, organizations, partners } from '../../db/schema';
-import { getCustomerInvoice, issueInvoice, updateInvoice, voidInvoice } from '../../services/invoiceService';
+import { getPortalInvoiceRowOr404, issueInvoice, updateInvoice, voidInvoice } from '../../services/invoiceService';
+import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 import { renderInvoicePdf } from '../../services/invoicePdf';
 import { acceptQuote } from '../../services/quoteAcceptService';
@@ -161,7 +162,8 @@ describe.runIf(RUN)('invoice line detail — frozen at issue (#8604)', () => {
     const f = await seedDraft({ invoiceLineShowDate: true, invoiceLineGrouping: 'day', invoiceLineShowNote: false, invoiceLineShowWorkedTime: false });
     await withSystemDbAccessContext(() => issueInvoice(f.invoiceId, ACTOR));
     await setPartner(f.partnerId, { invoiceLineShowDate: false, invoiceLineShowNote: true, invoiceLineShowWorkedTime: true });
-    const out = await withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, f.orgId));
+    const out = await withSystemDbAccessContext(async () =>
+      assembleCustomerInvoiceDocument(await getPortalInvoiceRowOr404(f.invoiceId, f.orgId), 'portal'));
     expect(out.invoice.lineGrouping).toBe('day');
     expect(out.lines).toHaveLength(1);
     expect(out.lines[0]).toMatchObject({ name: 'Labor', description: '', workedMinutes: null, workDate: '2026-09-16' });

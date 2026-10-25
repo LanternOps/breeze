@@ -46,6 +46,7 @@ import RelatedContractsNotice, { ActivateOverlapConfirm, overlappingSiblings } f
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { localDateInputValue } from '@/lib/localDate';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -237,7 +238,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   // reads as invalid → inline error, not a silent snap-back to 0).
   const [customMonths, setCustomMonths] = useState<string>(String(contract?.intervalMonths ?? 1));
   const [startDate, setStartDate] = useState(
-    contract?.startDate ?? new Date().toISOString().slice(0, 10),
+    contract?.startDate ?? localDateInputValue(),
   );
   const [endDate, setEndDate] = useState(contract?.endDate ?? '');
   const [autopayExcluded, setAutopayExcluded] = useState(contract?.autopayExcluded ?? false);

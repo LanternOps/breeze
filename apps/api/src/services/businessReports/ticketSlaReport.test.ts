@@ -152,6 +152,8 @@ describe('generateTicketSlaAttainmentReport', () => {
       expect(call.params).toEqual(expect.arrayContaining([ORG_A, ORG_B]));
       expect(call.sql).toContain("t.work_kind = 'support'");
       expect(call.sql).toContain('t.deleted_at IS NULL');
+      // #8972 spec §3.6: merged tombstones are excluded from attainment.
+      expect(call.sql).toContain('t.merged_into_ticket_id IS NULL');
       expect(call.sql).toMatch(/t\.created_at >= \$\d+ AND t\.created_at < \$\d+/);
       // [start, end) in the owner's zone (UTC here): the custom end date is inclusive.
       expect(call.params).toEqual(expect.arrayContaining(['2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z']));
@@ -171,12 +173,23 @@ describe('generateTicketSlaAttainmentReport', () => {
     }
   });
 
-  it('mirrors the SLA sweep deadline: created_at + (target + paused) minutes', async () => {
+  // #8973 W3 (spec §4.3 reader 3): met = completion <= the STORED deadline;
+  // missed = completion after it, or now() past it while unmet.
+  it('judges attainment against the stored deadlines, not created_at + target + paused', async () => {
     queueExecute([], EMPTY_OVERALL, []);
     await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority);
-    expect(calls[0]!.sql).toContain("s.created_at + (s.response_sla_minutes + s.paused) * interval '1 minute'");
-    expect(calls[0]!.sql).toContain("s.created_at + (s.resolution_sla_minutes + s.paused) * interval '1 minute'");
-    expect(calls[0]!.sql).toContain('COALESCE(t.sla_paused_minutes, 0) AS paused');
+    const cte = calls[0]!.sql;
+    expect(cte).toContain('COALESCE(t.response_due_at, t.created_at');
+    expect(cte).toContain('COALESCE(t.resolution_due_at, t.created_at');
+    expect(cte).toContain('s.first_response_at <= s.response_due_at');
+    expect(cte).toContain('s.resolved_at <= s.resolution_due_at');
+    expect(cte).toContain('now() > s.response_due_at');
+    expect(cte).toContain('now() > s.resolution_due_at');
+    expect(cte).not.toMatch(/s\.created_at \+/);
+    // A missing stored due is never silently dropped as no_target.
+    expect(cte).not.toContain('response_due_at IS NULL THEN');
+    // Detail rows still show the lifetime paused minutes.
+    expect(cte).toContain('COALESCE(t.sla_paused_minutes, 0) AS paused');
   });
 
   it('runs every statement inside ONE system context when there is no ambient context', async () => {
@@ -297,9 +310,12 @@ describe('generateTicketSlaAttainmentReport', () => {
     queueExecute([], EMPTY_OVERALL, []);
     const s = summaryOf(await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority));
     const text = s.notes.join(' ');
-    expect(text).toMatch(/sla_paused_minutes is a lifetime total/);
+    // #8973 §8.5: the lifetime-pause caveat is gone; the correction is disclosed.
+    expect(text).not.toMatch(/sla_paused_minutes is a lifetime total/);
+    expect(text).toMatch(/frozen at the first response/i);
     expect(text).toMatch(/recomputed from ticket timestamps/);
     expect(text).toMatch(/CURRENT assignee/);
+    expect(text).toMatch(/merged into another ticket are excluded/i);
     expect(text).toMatch(/no SLA target are excluded from the attainment denominators/);
     expect(text).toMatch(/Planned work/);
   });

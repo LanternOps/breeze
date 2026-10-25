@@ -208,6 +208,15 @@ export const JOB_SCHEDULES = {
   // this file's header). Hour 21 was entirely free; :03 keeps the daily = 3
   // (mod 5) lane.
   'sending-domains-daily': '3 21 * * *',
+  // Wisp W05 (#9917) — closed-concern retention (90 d), subject_gone
+  // reconciliation and concern_outcome memory retention (180 d). Hour 21 held
+  // only `sending-domains-daily` at :03 (and `warranty-batch-sync` at :42);
+  // :23 keeps the daily = 3 (mod 5) lane.
+  'wisp-concern-retention': '23 21 * * *',
+  // Wisp W06a (#9912) — 15-minute nudge digest + morning-brief sweep (w00 A28).
+  // Sub-hourly, so outside the coarse collision grid; :13/:28/:43/:58 avoid
+  // the unmanaged 0 (mod 5) ticks.
+  'wisp-nudge-digest': '13,28,43,58 * * * *',
   // Disk Cleanup v2 W03 (spec §5.2) — daily sweep of device_filesystem_cleanup_runs:
   // abandoned previews at 7 days, the pinned candidate blob at 90 days, and
   // file runs stuck in `running` at 24 hours. Hour 22 held only the sub-daily
@@ -223,6 +232,10 @@ export const JOB_SCHEDULES = {
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
   // (mod 5) lane in hour 22.
   'webhook-delivery-retention': '13 22 * * *',
+  // #10020 — daily prune of dns_security_events + dns_event_aggregations past
+  // each integration's retentionDays (default DNS_SECURITY_RETENTION_DAYS_DEFAULT,
+  // 90). :18 keeps the daily = 3 (mod 5) lane in hour 22.
+  'dns-security-retention': '18 22 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

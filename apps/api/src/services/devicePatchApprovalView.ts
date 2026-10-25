@@ -51,6 +51,7 @@ function ineligibleState(entry: PatchIneligibleEntry): DevicePatchApprovalState 
     case 'blocked_by_source':
     case 'blocked_by_category':
     case 'blocked_by_app_rule':
+    case 'explicitly_declined':
     // The policy links a ring that does not resolve: nothing installs until
     // the link is fixed (#8186).
     case 'ring_reference_invalid':

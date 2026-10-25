@@ -117,7 +117,7 @@ describe("BackupProvidersIntegration", () => {
   it("shows the dedicated-user help text on the add form", async () => {
     render(<BackupProvidersIntegration />);
     fireEvent.click(await screen.findByTestId("backup-providers-add"));
-    expect(screen.getByTestId("backup-add-help").textContent).toContain("read-only");
+    expect(screen.getByTestId("backup-add-help").textContent).toContain("API user");
   });
 
   it("opens the test-result modal when a card reports a result", async () => {

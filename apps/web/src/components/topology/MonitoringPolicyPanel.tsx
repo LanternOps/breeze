@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TopologyMonitoringStatus } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { topologyWrite } from './topologyApi';
 import { ActionError, runAction } from '../../lib/runAction';
 import { parsePolicyArmState, policyRunsPerDay, topologyOperationsApi, topologySitePath, type TopologyPolicyRow } from './topologyOperationsApi';
 import { useTopologyArmStepUp } from './TopologyArmStepUp';
@@ -46,7 +46,7 @@ export default function MonitoringPolicyPanel({ siteId, canConfigure, subject }:
       setBusy(policy.id);
       try {
         await runAction({
-          request: () => fetchWithAuth(`${topologySitePath(siteId)}/policies/${encodeURIComponent(policy.id)}/arm`, { method: 'POST',
+          request: () => topologyWrite(`${topologySitePath(siteId)}/policies/${encodeURIComponent(policy.id)}/arm`, { method: 'POST',
             body: JSON.stringify({ expectedRevision: policy.revision, ...(grantId ? { stepUpGrantId: grantId } : {}) }) }),
           errorFallback: t('operations.policy.enableFailed'), friendly, parseSuccess: parsePolicyArmState,
           successMessage: (state) => state.enabled ? t('operations.policy.enabled') : t('operations.policy.blocked', { reason: humanize(state.blockedReason ?? 'not_enabled') }),
@@ -62,7 +62,7 @@ export default function MonitoringPolicyPanel({ siteId, canConfigure, subject }:
     setBusy(policy.id);
     try {
       await runAction({
-        request: () => fetchWithAuth(`${topologySitePath(siteId)}/policies/${encodeURIComponent(policy.id)}/disarm`, { method: 'POST', body: JSON.stringify({ expectedRevision: policy.revision }) }),
+        request: () => topologyWrite(`${topologySitePath(siteId)}/policies/${encodeURIComponent(policy.id)}/disarm`, { method: 'POST', body: JSON.stringify({ expectedRevision: policy.revision }) }),
         errorFallback: t('operations.policy.disableFailed'), friendly, successMessage: t('operations.policy.disabled'), parseSuccess: parsePolicyArmState,
       });
       refresh();

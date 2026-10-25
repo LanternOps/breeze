@@ -110,7 +110,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_ADMISSION_DB_WAIT_MS: 'agent admission control tuning',
   BREEZE_ADMISSION_EMERGENCY_MS: 'agent admission control tuning',
   BREEZE_ADMISSION_LAG_MS: 'agent admission control tuning',
+  BREEZE_ADMISSION_LEVEL1_HOLD_MS: 'agent admission control tuning',
   BREEZE_ADMISSION_MODE: 'agent admission control mode / kill switch',
+  BREEZE_ADMISSION_RISE_TICKS: 'agent admission control tuning',
   BREEZE_ADMISSION_WS_BURST: 'agent admission control tuning',
   BREEZE_ADMISSION_WS_MAX_SETUPS: 'agent admission control tuning',
   BREEZE_ADMISSION_WS_RATE_PER_SEC: 'agent admission control tuning',
@@ -133,6 +135,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_YARAC_PATH: 'filesystem path (YARA pre-check binary; image default /usr/local/bin/breeze-yarac)',
   BREEZE_YARA_BUILTIN_PACK_DISABLED: 'operator kill switch: disable the built-in YARA rule set at boot and load no pack (#6263 W03b)',
   BREEZE_YARA_LINT_ONLY: 'dev/test-only escape hatch: publish YARA rules without the pre-check (ignored unless NODE_ENV is development/test)',
+  BREEZE_YARA_TEST_UNSANDBOXED: 'dev/test-only escape hatch: run the YARA rule test upload without the Landlock sandbox (ignored unless NODE_ENV is development/test)',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
   CALLER_VERIFICATION_WORKSTATION_ENABLED: 'feature flag (workstation tier, dark by default)',
@@ -268,6 +271,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   INTENT_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   INTENT_OUTBOX_RETENTION_DAYS: 'data retention window',
   INTENT_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // IOC_*
+  IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD: 'approval threshold knob (#6263 W05)',
   // IP_*
   IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforcement mode',
   IP_HISTORY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
@@ -305,6 +310,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 'rate limit knob',
   // MCP_*
   MCP_EXECUTE_TOOL_ALLOWLIST: 'MCP tool policy',
+  MCP_HEADER_MISMATCH_ALERT_THRESHOLD: 'alert threshold',
   MCP_INSUFFICIENT_SCOPE_HTTP_403: 'MCP step-up challenge flag',
   MCP_MAX_SSE_SESSIONS_PER_KEY: 'rate limit knob',
   MCP_MESSAGE_MAX_BODY_BYTES: 'request size limit',
@@ -312,7 +318,19 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_REQUIRE_EXECUTE_ADMIN: 'MCP tool policy',
   MCP_SESSION_TTL_SECONDS: 'timing knob',
   MCP_SSE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
+  MCP_STATELESS_ENABLED: 'MCP rollout flag',
   MCP_UNATTENDED_TIER3_PRINCIPALS: 'MCP tool policy',
+  MCP_TIER3_INTENTS_ENABLED: 'MCP rollout flag',
+  MCP_INTENT_MAX_LIVE_PER_PRINCIPAL: 'rate limit knob',
+  MCP_INTENT_CREATES_PER_HOUR: 'rate limit knob',
+  MCP_INTENT_CREATES_PER_USER_PER_HOUR: 'rate limit knob',
+  MCP_APPROVAL_WAIT_MS: 'timing knob',
+  MCP_APPROVAL_WAITS_PER_PRINCIPAL: 'rate limit knob',
+  MCP_APPS_ENABLED: 'MCP rollout flag',
+  MCP_TASKS_ENABLED: 'MCP rollout flag',
+  MCP_TASK_PENDING_POLL_INTERVAL_MS: 'timing knob',
+  MCP_TASK_POLL_INTERVAL_MS: 'timing knob',
+  MCP_TASK_TTL_GRACE_MS: 'timing knob',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*
@@ -458,6 +476,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
   WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_DAYS_DEFAULT: 'data retention window',
+  DNS_SECURITY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // S1_*
   S1_SYNC_MAX_PAGES: 'sync paging limit',
   // S3_*
@@ -471,7 +492,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
   // SECURITY_*
-  SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS: 'timing knob',
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',
@@ -480,6 +500,14 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SECURITY_SCAN_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_EVENT_LIMIT: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_PUBLISH_CONCURRENCY: 'worker throughput knob',
+  SECURITY_SWEEP_MAX_ACTIVE_PER_ORG: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MAX_DEVICES: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MFA_DEVICE_THRESHOLD: 'IOC sweep MFA threshold (#6263 W05)',
+  SECURITY_SWEEP_PARTNER_RUNNING_CAP: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_BATCH: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_INTERVAL_MS: 'timing knob',
+  SECURITY_SWEEP_RUNNING_GRACE_MINUTES: 'timing knob',
+  SECURITY_SWEEP_TTL_HOURS_DEFAULT: 'timing knob',
   // SENSITIVE_*
   SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SENSITIVE_DATA_ORG_CONCURRENCY_CAP: 'worker throughput knob',

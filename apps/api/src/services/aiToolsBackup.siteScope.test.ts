@@ -24,6 +24,9 @@ vi.mock('./aiDispatch', () => ({
 }));
 vi.mock('./backupJobCreation', () => ({ createManualBackupJobIfIdle: vi.fn() }));
 vi.mock('../jobs/backupEnqueue', () => ({ enqueueBackupDispatch: vi.fn() }));
+vi.mock('./backupStoredBytes', () => ({
+  sumStoredSnapshotBytes: vi.fn(async () => ({ totalBytes: 0, count: 0 })),
+}));
 
 import { db } from '../db';
 import { registerBackupTools } from './aiToolsBackup';

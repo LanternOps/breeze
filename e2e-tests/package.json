@@ -17,7 +17,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
-    "@playwright/test": "^1.64.0",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/pngjs": "^6.0.5",
@@ -28,7 +28,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
-    "werift": "^0.25.0"
+    "werift": "^0.25.1"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -53,6 +53,12 @@ export type RestoreIntegrity =
       snapshotId: string;
       sourceDeviceId: string;
       objects: IntegrityObject[];
+      /**
+       * #8318 §5.4: the snapshot was taken before its device's current install
+       * incarnation began, so an EARLIER install produced it. Server-side
+       * only (never in the wire block); see decideRestoreGate.
+       */
+      producedByEarlierIncarnation?: boolean;
     }
   | { mode: 'unattested'; snapshotId: string; reason: UnattestedRestoreReason };
 
@@ -65,6 +71,12 @@ export type IntegritySnapshotInput = {
   storageIdentity: string | null;
   keyLayout: string;
   integrityStatus: string;
+  /**
+   * #8318 §5.4: true when the snapshot was taken before its device's
+   * `incarnation_started_at` ({@link snapshotPredatesDeviceIncarnationSql}).
+   * Absent/false on a device never reattached.
+   */
+  producedBeforeDeviceIncarnation?: boolean | null;
 };
 
 /** The attestation row fields the decision reads. */
@@ -164,6 +176,8 @@ export function evaluateRestoreIntegrity(
         snapshotId: snapshot.snapshotId,
         sourceDeviceId: attestation.deviceId,
         objects: attestedObjects(attestation),
+        // Only present when true, so a never-reattached device's block is unchanged.
+        ...(snapshot.producedBeforeDeviceIncarnation === true ? { producedByEarlierIncarnation: true } : {}),
       };
     default:
       // 'mismatch', or a status this server does not know.
@@ -301,6 +315,41 @@ export function joinedAttestation(value: unknown): IntegrityAttestationInput | n
 }
 
 /**
+ * #8318 §5.4: the snapshot row was taken before its device's current install
+ * incarnation began. Read in the snapshot's own statement. False for a device
+ * that was never reattached (NULL `incarnation_started_at`).
+ *
+ * FAILS CLOSED under RLS (#8318 wave 1b, review note on #9385). The predicate
+ * runs in the caller's DB context, and `devices` is RLS-guarded: a caller that
+ * cannot see the device row would otherwise read `false` — the "snapshot is
+ * current" answer that grants the producer-only same-device free pass in
+ * decideRestoreGate. It is therefore phrased as "NOT (a visible device row
+ * says the snapshot is current)", so an invisible or missing device reads as
+ * "predates": the restore is not refused, it just needs a confirmed
+ * authorization like any other snapshot an earlier install produced. This was
+ * preferred over a SECURITY DEFINER resolver because it adds no function that
+ * reads `devices` past RLS, and a legitimate caller (an agent in its own org,
+ * a user with access to the device's org, the delivery path's system context)
+ * always sees the row.
+ *
+ * `deviceId` and `timestamp` default to the `backup_snapshots` columns; a
+ * caller may pass other expressions (the RLS test passes literals).
+ */
+export function snapshotPredatesDeviceIncarnationSql(
+  deviceId: SQL | typeof backupSnapshots.deviceId = backupSnapshots.deviceId,
+  timestamp: SQL | typeof backupSnapshots.timestamp = backupSnapshots.timestamp,
+): SQL<boolean> {
+  // backup_snapshots.timestamp is `timestamp` holding UTC wall-clock time;
+  // compare it with the timestamptz as UTC wall-clock too, so the session
+  // TimeZone never shifts the boundary.
+  return sql<boolean>`NOT EXISTS (
+    SELECT 1 FROM devices incarnation_device
+     WHERE incarnation_device.id = ${deviceId}
+       AND (incarnation_device.incarnation_started_at IS NULL
+            OR ${timestamp} >= (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC')))`;
+}
+
+/**
  * Resolves the integrity expectation for one snapshot row, in the caller's DB
  * context (RLS applies). Null when the snapshot is not visible there.
  */
@@ -313,6 +362,7 @@ export async function resolveRestoreIntegrity(snapshotDbId: string): Promise<Res
       storageIdentity: backupSnapshots.storageIdentity,
       keyLayout: backupSnapshots.keyLayout,
       integrityStatus: backupSnapshots.integrityStatus,
+      producedBeforeDeviceIncarnation: snapshotPredatesDeviceIncarnationSql(),
       attestation: attestationJoinColumns(),
     })
     .from(backupSnapshots)

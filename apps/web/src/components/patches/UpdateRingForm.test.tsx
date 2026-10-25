@@ -491,3 +491,36 @@ describe('UpdateRingForm — application rules (#8187)', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+// #9565: a new ring defaulted to rollout order 0 no matter which rings already
+// existed. It now defaults to one past the highest existing order; editing a
+// ring keeps its own stored order.
+describe('UpdateRingForm — default rollout order (#9565)', () => {
+  const orderInput = () => screen.getByLabelText(/rollout order/i) as HTMLInputElement;
+
+  it('defaults a new ring to max(existing order) + 1', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} existingRingOrders={[0, 3, 1]} />);
+    expect(orderInput().value).toBe('4');
+  });
+
+  it('defaults to 0 when there are no existing rings', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} existingRingOrders={[]} />);
+    expect(orderInput().value).toBe('0');
+  });
+
+  it('never defaults past the schema maximum of 100', () => {
+    render(<UpdateRingForm onSubmit={vi.fn()} existingRingOrders={[100]} />);
+    expect(orderInput().value).toBe('100');
+  });
+
+  it('keeps an edited ring at its stored order', () => {
+    render(
+      <UpdateRingForm
+        onSubmit={vi.fn()}
+        existingRingOrders={[0, 3, 1]}
+        defaultValues={{ name: 'Pilot', ringOrder: 1 }}
+      />,
+    );
+    expect(orderInput().value).toBe('1');
+  });
+});

@@ -21,7 +21,7 @@ import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { portalRoutes } from '../../routes/portal';
 import { portalResetTokens, portalSessions } from '../../routes/portal/helpers';
-import { portalUsers, devices, portalBranding } from '../../db/schema';
+import { portalUsers, devices, portalBranding, assetCheckouts } from '../../db/schema';
 import { hashPassword } from '../../services/password';
 import { createPartner, createOrganization, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -212,18 +212,26 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     expect(detailAfterBody.ticket.comments.map((c: any) => c.id)).toContain(commentBody.comment.id);
   });
 
-  it('asset list + checkout works under org scope', async () => {
+  it('asset list shows only what is checked out to the signed-in portal user, under org scope', async () => {
     const { orgId, deviceId } = await seedOrgWithDevice('portal-asset-host');
     const portalUser = await seedPortalUser(orgId);
+    const colleague = await seedPortalUser(orgId);
     const app = buildPortalApp();
     const token = await loginPortal(app, portalUser.email, orgId);
-    const authed = (path: string, init: RequestInit = {}) =>
-      app.request(path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+    const colleagueToken = await loginPortal(app, colleague.email, orgId);
+    const authedAs = (bearer: string) => (path: string, init: RequestInit = {}) =>
+      app.request(path, { ...init, headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+    const authed = authedAs(token);
+    const listIds = async (call: ReturnType<typeof authedAs>) => {
+      const res = await call('/portal/assets');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      return { ids: body.data.map((a: any) => a.id), total: body.pagination.total };
+    };
 
-    const listRes = await authed('/portal/assets');
-    expect(listRes.status).toBe(200);
-    const listBody = await listRes.json();
-    expect(listBody.data.map((a: any) => a.id)).toContain(deviceId);
+    // #9773: the Equipment page reads "Everything checked out to you" — a device
+    // nobody has checked out is not on it.
+    expect(await listIds(authed)).toEqual({ ids: [], total: 0 });
 
     const checkoutRes = await authed(`/portal/assets/${deviceId}/checkout`, {
       method: 'POST',
@@ -231,10 +239,53 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     });
     expect(checkoutRes.status).toBe(201);
 
-    // Once checked out, the device drops off the available list.
-    const listAfter = await authed('/portal/assets');
-    const listAfterBody = await listAfter.json();
-    expect(listAfterBody.data.map((a: any) => a.id)).not.toContain(deviceId);
+    // Once checked out, it is on the borrower's list...
+    expect(await listIds(authed)).toEqual({ ids: [deviceId], total: 1 });
+    // ...and not on a colleague's in the same org.
+    expect(await listIds(authedAs(colleagueToken))).toEqual({ ids: [], total: 0 });
+
+    // Checked back in, it drops off again.
+    const checkinRes = await authed(`/portal/assets/${deviceId}/checkin`, {
+      method: 'POST',
+      body: JSON.stringify({ checkinNotes: 'Back on the shelf' }),
+    });
+    expect(checkinRes.status).toBe(200);
+    expect(await listIds(authed)).toEqual({ ids: [], total: 0 });
+  });
+
+  it('lists a device once even when it carries two open checkouts for the user', async () => {
+    // Nothing in the schema forbids two open checkouts of one device (the
+    // checkout route checks, then inserts), so the list must not repeat it.
+    const { orgId, deviceId } = await seedOrgWithDevice('portal-asset-dup-host');
+    const portalUser = await seedPortalUser(orgId);
+    const admin = getTestDb() as any;
+    for (let i = 0; i < 2; i++) {
+      await admin.insert(assetCheckouts).values({ orgId, deviceId, checkedOutTo: portalUser.id });
+    }
+    const app = buildPortalApp();
+    const token = await loginPortal(app, portalUser.email, orgId);
+
+    const res = await app.request('/portal/assets', { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((a: any) => a.id)).toEqual([deviceId]);
+    expect(Number(body.pagination.total)).toBe(1);
+  });
+
+  it('never lists an ephemeral Quick Support device, even with an open checkout', async () => {
+    const { orgId, deviceId } = await seedOrgWithDevice('portal-asset-ephemeral-host');
+    const portalUser = await seedPortalUser(orgId);
+    const admin = getTestDb() as any;
+    await admin.update(devices).set({ isEphemeral: true }).where(eq(devices.id, deviceId));
+    await admin.insert(assetCheckouts).values({ orgId, deviceId, checkedOutTo: portalUser.id });
+    const app = buildPortalApp();
+    const token = await loginPortal(app, portalUser.email, orgId);
+
+    const res = await app.request('/portal/assets', { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+    expect(Number(body.pagination.total)).toBe(0);
   });
 
   it('reset-password updates the portal user password under the unprivileged pool (system scope)', async () => {

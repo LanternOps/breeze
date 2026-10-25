@@ -26,10 +26,6 @@ const createOrganizationSchema = (t: (key: string) => string) => z
       .regex(/^[a-z0-9-]+$/, t('organizationForm.validation.slugFormat')),
     type: z.enum(['customer', 'internal']),
     status: z.enum(['active', 'trial', 'suspended', 'churned', 'offboarding']),
-    maxDevices: z.coerce
-      .number({ error: t('organizationForm.validation.maxDevicesRequired') })
-      .int(t('organizationForm.validation.maxDevicesInteger'))
-      .min(1, t('organizationForm.validation.maxDevicesMin')),
     contractStart: z.string().optional(),
     contractEnd: z.string().optional()
   })
@@ -102,7 +98,6 @@ export default function OrganizationForm({
       slug: '',
       type: 'customer',
       status: 'active',
-      maxDevices: 50,
       contractStart: '',
       contractEnd: '',
       ...defaultValues
@@ -225,22 +220,6 @@ export default function OrganizationForm({
             ))}
           </select>
           {errors.status && <p className="text-sm text-destructive">{errors.status.message}</p>}
-        </div>
-
-        <div className="space-y-2">
-          <label htmlFor="max-devices" className="text-sm font-medium">
-            {t('organizationForm.fields.maxDevices')}
-          </label>
-          <input
-            id="max-devices"
-            type="number"
-            min={1}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            {...register('maxDevices')}
-          />
-          {errors.maxDevices && (
-            <p className="text-sm text-destructive">{errors.maxDevices.message}</p>
-          )}
         </div>
 
         <div className="space-y-2">

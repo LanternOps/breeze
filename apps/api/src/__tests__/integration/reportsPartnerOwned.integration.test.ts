@@ -729,8 +729,19 @@ describe('partner-owned report definitions through the real routes (#3198 W01/W0
     const fixture = await seedFixture();
     const app = buildApp();
     const created = await createPartnerDefinition(app, fixture);
+    // #9562: a never-run definition is measured from its creation, so a
+    // definition saved just now is not due until its next occurrence.
+    // Backdate the save past one full monthly cycle.
+    expect(
+      (await withSystemDbAccessContext(() => findDueReports(new Date()))).map((d) => d.id),
+    ).not.toContain(created.id);
+    await getTestDb()
+      .update(reports)
+      .set({ createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) })
+      .where(eq(reports.id, created.id));
 
-    // Never generated → due now under the partner's timezone.
+    // Never generated and saved before its latest occurrence → due now under
+    // the partner's timezone.
     const due = await withSystemDbAccessContext(() => findDueReports(new Date()));
     const entry = due.find((d) => d.id === created.id);
     expect(entry).toBeDefined();

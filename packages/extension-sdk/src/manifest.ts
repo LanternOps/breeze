@@ -30,12 +30,12 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
   'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'approvals', 'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations', 'autopay',
-  'backup', 'billing', 'billing-profiles', 'browser-security', 'c2c', 'catalog', 'changes',
+  'backup', 'billing', 'billing-profiles', 'browser-security', 'business-calendars', 'c2c', 'catalog', 'changes',
   'circuits', 'cis',
   'client-ai', 'config', 'configuration-policies', 'connection-health', 'contracts',
   'custom-fields', 'deliverable-templates', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'edr', 'email', 'endpoint-messages', 'enrollment-keys',
-  'events', 'ext', 'extensions', 'filters', 'fix-memory', 'fleet', 'google', 'groups', 'helper',
+  'events', 'ext', 'extensions', 'filters', 'fix-memory', 'fleet', 'flows', 'google', 'groups', 'helper',
   'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
   'm365', 'maintenance', 'mcp', 'me', 'metrics', 'migration-windows', 'mobile', 'monitor-definitions',
@@ -51,9 +51,9 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'software-inventory', 'software-policies', 'sso', 'support',
   'system', 'system-tools', 'tags', 'tenant-variables', 'third-party-catalog',
   'ticket-approval-requests', 'ticket-categories', 'ticket-checklist-templates', 'ticket-config', 'ticket-forms',
-  'ticket-response-templates', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
+  'ticket-response-templates', 'ticket-routing-rules', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'verify', 'viewers',
-  'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
+  'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks', 'wisp',
 ]);
 
 export const SHARED_TABLE_ALLOWLIST: ReadonlySet<string> = new Set(['memory_blocks']);

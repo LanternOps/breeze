@@ -23,6 +23,30 @@ enable policy-based alert evaluation. An enabled network-check definition does
 provision an active probe before attachment. Definitions retain their organization or partner ownership; incompatible
 attachments are refused rather than widening access.
 
+## Built-in monitors
+
+Breeze ships a set of built-in monitors with sensible defaults. They appear in a
+policy's **Monitors** tab as recommendations until you attach them, and you can
+edit thresholds once attached. All of them resolve their own alert automatically
+when the condition clears. The current set (source of truth:
+`apps/api/src/services/monitors/builtInMonitors.ts`, `BUILT_IN_MONITOR_DEFAULTS`):
+
+| Monitor | Fires when | Severity |
+|---|---|---|
+| High CPU usage | CPU above 90% for 15 minutes | High |
+| High memory usage | Memory above 90% for 15 minutes | High |
+| Disk almost full | System disk 90% used or more for 30 minutes | Critical |
+| Low patch compliance | Patch compliance below 80% | Medium |
+| RAID array degraded or failed | Two critical array or controller hardware snapshots | Critical |
+| Physical disk failed or predicted to fail | Two critical or predictive-failure disk snapshots | High |
+| Controller cache battery problem | Three unhealthy controller cache battery snapshots | Medium |
+| Hardware monitoring tool failing | Three failed or backing-off hardware collector snapshots | Low |
+| Time source problem | Two accepted snapshots reporting a time source problem (for example no external source, local clock, unreachable NTP) | High |
+| Time sync stale or disabled | Two accepted snapshots reporting stale or disabled synchronization | Medium |
+| Timezone mismatch | Two accepted snapshots reporting a timezone mismatch | Low |
+| Time policy not applied | Two snapshots reporting failed time-policy enforcement | Low |
+| Container image out of date | A running container image has been behind its registry tag for 7 days | Low |
+
 ## Conditions
 
 The kind picker includes resource thresholds, offline state, event logs,

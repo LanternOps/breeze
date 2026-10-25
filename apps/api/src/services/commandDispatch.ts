@@ -10,6 +10,13 @@ import {
 import { isTransientLockError, pgErrorCode } from '../utils/pgErrors';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
+import {
+  commandIncarnationAcceptedForCallerCondition,
+  commandIncarnationIsCurrentCondition,
+  commandStampMatchesCaller,
+  commandStampMatchesCallerCondition,
+  type CommandCallerIncarnation,
+} from './commandIncarnation';
 // Side-effect import: registers the `network_diagnostic` delivery
 // revalidation. Both delivery legs live in this module, so this is the one
 // place that guarantees it is loaded. `REVALIDATION_REQUIRED_TYPES` still
@@ -31,7 +38,9 @@ const PARKED_REFUSED_CANCEL_BATCH = 100;
  * What the single-command (WebSocket push) claim did with the row.
  *
  * - `claimed`: flipped to `sent`; the caller now owns delivering it (or
- *   releasing the claim).
+ *   releasing the claim). `agentId` is the device's `agent_id` as read IN the
+ *   claim (#8318 §6.4): the push goes to that identity, never to one read
+ *   before the claim, so a reattach that committed in between is honoured.
  * - `cancelled`: claim-time eligibility TERMINALISED the row (and its owning
  *   record) exactly as the heartbeat claim would. Terminal: never deliver it,
  *   never wait for a result, and surface `reason` to the requester.
@@ -43,7 +52,7 @@ const PARKED_REFUSED_CANCEL_BATCH = 100;
  *   claim (which then owns its delivery).
  */
 export type PushClaimOutcome =
-  | { status: 'claimed'; id: string; executedAt: Date }
+  | { status: 'claimed'; id: string; executedAt: Date; agentId: string }
   | { status: 'cancelled'; id: string; reason: ClaimCancelReason }
   | { status: 'held'; id: string; reason: ClaimHoldReason | 'claim_lock_conflict' }
   | { status: 'not_claimable'; id: string };
@@ -111,8 +120,13 @@ async function claimInSavepoint(commandId: string, executedAt: Date): Promise<Pu
         submittedOrgId: deviceCommands.submittedOrgId,
         deliverBy: deviceCommands.deliverBy,
         targetRole: deviceCommands.targetRole,
+        deviceIncarnation: deviceCommands.deviceIncarnation,
         deviceOrgId: devices.orgId,
         deviceStatus: devices.status,
+        deviceInstallIncarnation: devices.installIncarnation,
+        // #8318 §6.4: the identity the push is addressed to, read with the
+        // incarnation it is compared against — never one read before the claim.
+        deviceAgentId: devices.agentId,
         orgType: organizations.type,
       })
       .from(deviceCommands)
@@ -154,11 +168,13 @@ async function claimInSavepoint(commandId: string, executedAt: Date): Promise<Pu
         orgId: candidate.deviceOrgId,
         status: candidate.deviceStatus,
         orgType: candidate.orgType,
+        installIncarnation: candidate.deviceInstallIncarnation,
       },
       [
         {
           id: candidate.id,
           type: candidate.type,
+          deviceIncarnation: candidate.deviceIncarnation,
           createdBy: candidate.createdBy,
           submittedOrgId: candidate.submittedOrgId,
           deliverBy: candidate.deliverBy,
@@ -184,11 +200,25 @@ async function claimInSavepoint(commandId: string, executedAt: Date): Promise<Pu
           // whose deadline has passed stays `pending` for the reaper to
           // terminalise with `reason: not_delivered_before_deadline`.
           or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, executedAt)),
+          // #8318: the incarnation, re-read in the flip itself, so a reattach
+          // that committed after the eligibility read above still wins. The
+          // server push has no caller incarnation of its own: it compares the
+          // stamp with the incarnation read in this claim, and the push below
+          // goes to the agent_id read with it.
+          commandIncarnationIsCurrentCondition(),
+          commandStampMatchesCallerCondition({ installIncarnation: candidate.deviceInstallIncarnation }),
+          // #8318 §6.4: the agent_id the push is addressed to, re-checked in
+          // the same statement. The candidate read locks the command row only,
+          // and an in-place F3 re-enroll (routes/agents/enrollment.ts) changes
+          // `agent_id` WITHOUT advancing `install_incarnation`, so the
+          // incarnation re-check above cannot see it. A row whose device
+          // changed hands since the read stays `pending` for the new install.
+          sql`EXISTS (SELECT 1 FROM ${devices} WHERE ${devices.id} = ${deviceCommands.deviceId} AND ${devices.agentId} = ${candidate.deviceAgentId})`,
         ),
       )
       .returning({ id: deviceCommands.id });
     return flipped.length > 0
-      ? { status: 'claimed', id: commandId, executedAt }
+      ? { status: 'claimed', id: commandId, executedAt, agentId: candidate.deviceAgentId }
       : { status: 'not_claimable', id: commandId };
   });
 }
@@ -296,8 +326,22 @@ export async function expireRefusedClaimedCommandDelivery(
   );
 }
 
+/**
+ * Who is claiming (#8318 §6.4): the device row the caller authenticated as,
+ * the `agent_id` it authenticated with and the `install_incarnation` read
+ * with it. An object, not a bare device id, so no claim site can forget the
+ * caller half — a stale caller (one that authenticated under `n` after the
+ * device moved to `n+1`) must never be handed a row stamped `n+1`, and one
+ * whose row an in-place F3 re-enroll gave a new `agent_id` (same incarnation)
+ * must never be handed the new install's rows.
+ */
+export interface CommandClaimCaller extends CommandCallerIncarnation {
+  deviceId: string;
+  agentId: string;
+}
+
 export async function claimPendingCommandsForDevice(
-  deviceId: string,
+  caller: CommandClaimCaller,
   limit: number = 10,
   targetRole: 'agent' | 'watchdog' = 'agent',
   // #2774 — when set (offboarding drain window), only commands of these types
@@ -315,6 +359,7 @@ export async function claimPendingCommandsForDevice(
   // WebSocket never embeds command batches in frames (#2407 removed the
   // connect-time/heartbeat_ack claims — no agent version ever consumed them),
   // so the per-frame payload budget that #2399 added here is gone with it.
+  const deviceId = caller.deviceId;
   return db.transaction(async (tx) => {
     const peripheralV2IsClaimable =
       typeAllowlist === undefined || typeAllowlist.includes('peripheral_policy_sync_v2');
@@ -380,6 +425,7 @@ export async function claimPendingCommandsForDevice(
           orgId: devices.orgId,
           status: devices.status,
           orgType: organizations.type,
+          installIncarnation: devices.installIncarnation,
         })
         .from(devices)
         .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -443,6 +489,7 @@ export async function claimPendingCommandsForDevice(
           orgId: devices.orgId,
           status: devices.status,
           orgType: organizations.type,
+          installIncarnation: devices.installIncarnation,
         })
         .from(devices)
         .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -462,11 +509,24 @@ export async function claimPendingCommandsForDevice(
         )
         .limit(1);
 
+      // Every pending row goes through eligibility, so a row stamped for an
+      // EARLIER incarnation is terminalised (superseded_by_reattach) by
+      // whichever install's beat finds it — a device fact, not a caller fact.
       const { claimable } = await partitionClaimable(tx, dev, pendingCommands, {
         inFlight: inFlightRow?.inFlight ?? 0,
       });
       const claimableIds = new Set(claimable.map((c) => c.id));
-      deliverable = pendingCommands.filter((c) => claimableIds.has(c.id));
+      // #8318 §6.4: delivery is a CALLER fact. A row stamped for an
+      // incarnation other than the one this caller authenticated under is
+      // not this caller's to take: a caller that authenticated under `n`
+      // after a confirm moved the device to `n+1` leaves the `n+1` rows
+      // pending for the install they were enqueued for. (After the step
+      // above, a surviving row's stamp is the device's current incarnation,
+      // so a mismatch here means the CALLER is stale.) The flip below
+      // re-checks both halves in SQL.
+      deliverable = pendingCommands.filter(
+        (c) => claimableIds.has(c.id) && commandStampMatchesCaller(c.deviceIncarnation, caller.installIncarnation),
+      );
       if (deliverable.length === 0) return [];
     }
 
@@ -482,6 +542,17 @@ export async function claimPendingCommandsForDevice(
             eq(deviceCommands.deviceId, deviceId),
             eq(deviceCommands.status, 'pending'),
             eq(deviceCommands.targetRole, targetRole),
+            // #8318: both halves re-read in the flip itself (see
+            // claimInSavepoint): the stamp equals the device's CURRENT
+            // incarnation AND the caller's authenticated one.
+            commandIncarnationAcceptedForCallerCondition(caller),
+            // #8318 §6.4: and the device still carries the agent_id the
+            // caller authenticated with, read in the same statement. An
+            // in-place F3 re-enroll changes `agent_id` WITHOUT advancing the
+            // incarnation, so the incarnation halves cannot see it; a row of
+            // a device that changed hands after auth stays `pending` for the
+            // install that now owns it (same check as the push flip).
+            sql`EXISTS (SELECT 1 FROM ${devices} WHERE ${devices.id} = ${deviceCommands.deviceId} AND ${devices.agentId} = ${caller.agentId})`,
           ),
         )
         .returning();

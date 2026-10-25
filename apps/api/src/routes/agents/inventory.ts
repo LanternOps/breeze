@@ -9,6 +9,8 @@ import {
   devices,
   deviceHardware,
 } from '../../db/schema';
+import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { syncDeviceDisks, syncDeviceNetwork, writeHardwareReport } from '../../services/inventoryChildSync';
 import {
   agentMemoryInventorySchema,
@@ -240,7 +242,7 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
       }))
     : null;
 
-  await db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     // Lock ordering: take the devices-row lock BEFORE touching device_network.
     // Every other writer that spans both tables (re-enrollment, site move,
     // moveOrg) locks devices first, then child tables — updating devices last
@@ -250,15 +252,33 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
     // Leave devices.activeVpns untouched when the agent didn't report VPN
     // state, so an old agent (or a transient collection failure) never
     // overwrites last-known-good.
+    //
+    // #8318 §6.4: bound to the authenticated agent_id (`:id`, which the row
+    // was read by) through updateOwnDeviceRow. A 0-row write persisted
+    // nothing, so the request is not answered as a success, and the adapter
+    // sync is skipped with it: a row that changed hands after the read above
+    // gets the stale-credential 401, a vanished row the 404 the read gives.
     if (vpnProvided) {
-      await tx
-        .update(devices)
-        .set({ activeVpns, updatedAt: now })
-        .where(eq(devices.id, device.id));
+      const identity = { deviceId: device.id, agentId };
+      const written = await updateOwnDeviceRow(tx, identity, { activeVpns, updatedAt: now });
+      if (written.length === 0) {
+        return (await ownDeviceRowChangedHands(tx, identity)) ? 'stale_caller' as const : 'device_missing' as const;
+      }
     }
 
     await syncDeviceNetwork(tx, device, data.adapters, now);
+    return 'written' as const;
   });
+  if (outcome === 'stale_caller') {
+    console.warn('[agents.network] stale network submit: the device row changed hands after auth; refusing it', {
+      deviceId: device.id,
+      agentId,
+    });
+    throw staleAgentCredentialRejection();
+  }
+  if (outcome === 'device_missing') {
+    return c.json({ error: 'Device not found' }, 404);
+  }
 
   return c.json({
     success: true,
@@ -305,6 +325,9 @@ inventoryRoutes.put(
       coverageStartDate: data.coverageStartDate ?? null,
       coverageType: data.coverageType ?? null,
       coverageKind: data.coverageKind ?? null,
+      // #5511 W01 (D10). This literal is an independent drop point from the zod
+      // schema: a field can validate and still never reach the service.
+      entitlements: data.entitlements ?? null,
     });
 
     return c.json({ success: true });

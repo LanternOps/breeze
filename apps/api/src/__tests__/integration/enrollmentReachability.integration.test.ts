@@ -227,7 +227,14 @@ describe('enrollment reachability — real PostgreSQL (RMM-QA-039)', () => {
     expect(afterWatchdog?.watchdogVersion).toBe('1.0.0-watchdog');
   });
 
-  runDb('a re-enrollment that owns the row first cannot overwrite the later committed main heartbeat', async () => {
+  // #8318 §6.4 changed the outcome of this race: the heartbeat was authenticated
+  // with the identity the re-enrollment replaces, so once the re-enrollment
+  // commits first the beat is a STALE caller and its own-row write matches 0
+  // rows (updateOwnDeviceRow). The row stays `pending` until the re-enrolled
+  // install's first beat; the stale beat stops at that write with the
+  // stale-credential 401 (the row now carries another agent_id) and leaves no
+  // phantom transition. Before 1b the later-committed beat overwrote the row.
+  runDb('a re-enrollment that owns the row first makes the later committed main heartbeat a stale caller (0 rows)', async () => {
     const fixture = await seedEnrollmentFixture('race');
     const firstResponse = await enroll(fixture);
     expect(firstResponse.status).toBe(201);
@@ -301,11 +308,12 @@ describe('enrollment reachability — real PostgreSQL (RMM-QA-039)', () => {
       expect(reenrollResult.status).toBe('fulfilled');
       expect(heartbeatResult.status).toBe('fulfilled');
       if (reenrollResult.status === 'fulfilled') expect(reenrollResult.value.status).toBe(201);
-      if (heartbeatResult.status === 'fulfilled') expect(heartbeatResult.value.status).toBe(200);
+      if (heartbeatResult.status === 'fulfilled') expect(heartbeatResult.value.status).toBe(401);
 
       const finalRow = await selectDevice(first.deviceId);
-      expect(finalRow?.status).toBe('online');
-      expect(finalRow?.lastSeenAt?.getTime()).toBeGreaterThan(historicalLastSeenAt.getTime());
+      expect(finalRow?.status).toBe('pending');
+      expect(finalRow?.lastSeenAt?.toISOString()).toBe(historicalLastSeenAt.toISOString());
+      expect(finalRow?.agentId).not.toBe(first.agentId);
     } finally {
       releaseHolder();
       if (holderPromise) await Promise.allSettled([holderPromise]);

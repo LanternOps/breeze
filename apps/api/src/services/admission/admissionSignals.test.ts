@@ -44,6 +44,18 @@ describe('createSignalSampler', () => {
     expect(h.sampler.sample().lagMs).toBe(500);      // no new samples: window unchanged, nothing re-read
   });
 
+  it('lagFresh is true only on a tick that consumed at least one new monitor sample (#9353)', () => {
+    const h = harness();
+    expect(h.prime().lagFresh).toBe(false);          // seeding tick reads no samples
+    h.push(1_000, 30);
+    expect(h.sampler.sample().lagFresh).toBe(true);
+    expect(h.sampler.sample()).toMatchObject({ lagMs: 30, lagFresh: false }); // window repeated, nothing new
+    h.push(2_000, 40); h.push(3_000, 50);
+    expect(h.sampler.sample().lagFresh).toBe(true);
+    h.setLatest(reading({ monitored: false }));
+    expect(h.sampler.sample()).toMatchObject({ lagMs: null, lagFresh: false });
+  });
+
   it('peak lag is the worst of the in-flight stall and the samples consumed this tick', () => {
     const h = harness();
     h.prime();

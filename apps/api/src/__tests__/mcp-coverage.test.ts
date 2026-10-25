@@ -126,6 +126,9 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
     const set = new Set(modules);
     expect(Object.keys(MCP_COVERAGE).filter((k) => !set.has(k)), 'entries for files that do not exist / register no routes').toEqual([]);
   });
+  it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
+    expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
+  });
   it('every tool named exists in the registry, and tool entries are non-empty', () => {
     const bad: string[] = [];
     for (const [k, e] of Object.entries(MCP_COVERAGE)) if ('tools' in e) {

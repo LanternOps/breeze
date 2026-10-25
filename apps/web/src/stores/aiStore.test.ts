@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./auth', () => ({
   fetchWithAuth: vi.fn()
 }));
+// createSession reads the header's selected org (#9529); none selected here.
+vi.mock('./orgStore', () => ({ useOrgStore: { getState: () => ({ currentOrgId: null }) } }));
 
 import { fetchWithAuth } from './auth';
 import { useAiStore } from './aiStore';
@@ -20,6 +22,12 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+/** #9427: the attach a hydrate or a turn_in_progress refusal opens; no turn running. */
+const idleAttach = (): Response => {
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'attach_state', turn: 'idle', turnId: null, lastSeq: 0, turnUserMessageId: null, partial: false, replay: [], pendingCards: [], activePlan: null, turnModel: null })}\n\n`);
+  return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+};
+
 describe('ai store', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -34,41 +42,8 @@ describe('ai store', () => {
       pendingApproval: null,
       sessions: [],
       showHistory: false,
-      searchResults: [],
-      isSearching: false,
       isInterrupting: false
     });
-  });
-
-  it('searchConversations short query clears results without request', async () => {
-    useAiStore.setState({ searchResults: [{ id: 's1', title: 'old', matchedContent: 'old', createdAt: 'x' }] });
-
-    await useAiStore.getState().searchConversations('a');
-
-    expect(fetchWithAuthMock).not.toHaveBeenCalled();
-    expect(useAiStore.getState().searchResults).toEqual([]);
-    expect(useAiStore.getState().isSearching).toBe(false);
-  });
-
-  it('searchConversations populates results on success', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeResponse({
-        data: [
-          {
-            id: 'session-1',
-            title: 'Patch rollout',
-            matchedContent: 'check deployment errors',
-            createdAt: '2026-02-07T12:00:00.000Z'
-          }
-        ]
-      })
-    );
-
-    await useAiStore.getState().searchConversations('patch');
-
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/search?q=patch&limit=20');
-    expect(useAiStore.getState().searchResults).toHaveLength(1);
-    expect(useAiStore.getState().isSearching).toBe(false);
   });
 
   it('switchSession loads messages and clears history panel', async () => {
@@ -76,6 +51,7 @@ describe('ai store', () => {
 
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse({
+        session: { id: 'session-1', status: 'active', type: 'general' },
         messages: [
           {
             id: 'm-1',
@@ -87,6 +63,8 @@ describe('ai store', () => {
       })
     );
 
+    // #9427: the switch then attaches to the session's turn (none running).
+    fetchWithAuthMock.mockResolvedValueOnce(idleAttach());
     await useAiStore.getState().switchSession('session-1');
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1');
@@ -106,7 +84,7 @@ describe('ai store', () => {
   });
 
   it('sendMessage rolls back optimistic message on 409 conflict', async () => {
-    useAiStore.setState({ sessionId: 'session-1' });
+    useAiStore.setState({ sessionId: 'session-1', composerDraft: '' });
 
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse(
@@ -115,6 +93,7 @@ describe('ai store', () => {
         409
       )
     );
+    fetchWithAuthMock.mockResolvedValueOnce(idleAttach());
 
     await useAiStore.getState().sendMessage('Hello');
 
@@ -124,7 +103,11 @@ describe('ai store', () => {
     });
     expect(useAiStore.getState().messages).toHaveLength(0);
     expect(useAiStore.getState().isStreaming).toBe(false);
-    expect(useAiStore.getState().error).toContain('already being processed');
+    // #9427 W2 (Gate B #7): an uncoded 409 means another turn is running — the
+    // panel attaches to it and puts the text back in the composer, no banner.
+    expect(useAiStore.getState().error).toBeNull();
+    expect(useAiStore.getState().composerDraft).toBe('Hello');
+    await vi.waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1/stream', expect.anything()));
   });
 
   it('startDeviceTask forwards initialMessage to sendMessage', async () => {

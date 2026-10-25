@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -56,7 +56,8 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
-import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { evaluateSoftwarePolicyArming, recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { MAX_DERIVED_SERVICE_WATCHES, serviceObservationKey } from '../../services/softwarePolicyServiceRules';
 import {
   resolvePatchConfigPolicyForDevice,
   patchExclusiveWindowsUpdateFromPolicySet,
@@ -95,15 +96,15 @@ import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kind
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
-  normalizeAgentUpdatePolicy,
-  type AgentUpdateSettings,
-} from './agentUpdatePolicy';
+  resolveAgentUpdateConfig,
+  type AgentUpdateConfig,
+  type AgentVersionPins,
+} from '../../services/agentUpdateConfig';
+import { type AgentUpdateSettings } from './agentUpdatePolicy';
 import {
   normalizeScanPath,
   osRootScanPath,
-  isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
-  resolveInheritedAgentVersionPins,
 } from '@breeze/shared';
 import {
   type SecurityProviderValue,
@@ -285,6 +286,9 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
+    case 'cylance':
+      return 'cylance';
     case 'unknown':
       return 'unknown';
     default:
@@ -698,6 +702,27 @@ function mergeRuleSetErrors(existing: unknown, reported: ScanRuleSetError[]): Sc
   return merged.length > 0 ? merged : null;
 }
 
+/** id (lower-case) -> version, from `security_scans.dispatched_rule_sets`. */
+function dispatchedRuleSetVersions(raw: unknown): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!Array.isArray(raw)) return out;
+  for (const entry of raw) {
+    if (!isObject(entry)) continue;
+    const id = asString(entry.id);
+    const version = entry.version;
+    if (id && typeof version === 'number' && Number.isInteger(version) && version > 0) out.set(id.toLowerCase(), version);
+  }
+  return out;
+}
+
+function withDispatchedRuleSetVersion(details: unknown, versions: Map<string, number>): unknown {
+  if (!isObject(details)) return details;
+  const { ruleSetVersion: _agentSupplied, ...rest } = details as Record<string, unknown>;
+  const ruleSetId = asString(rest.ruleSetId)?.toLowerCase();
+  const version = ruleSetId ? versions.get(ruleSetId) : undefined;
+  return version !== undefined ? { ...rest, ruleSetVersion: version } : rest;
+}
+
 export async function handleSecurityCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>
@@ -723,7 +748,12 @@ export async function handleSecurityCommandResult(
   if (command.type === securityCommandTypes.scan) {
     const payload = isObject(command.payload) ? command.payload : {};
     const scanType = asString(resultJson?.scanType) ?? asString(payload.scanType) ?? 'quick';
-    const scanRecordId = asString(resultJson?.scanRecordId) ?? asString(payload.scanRecordId);
+    // #6263 W05-9: the scan this COMMAND was dispatched for — bound by
+    // security_scans.command_id (stamped at dispatch), then by the command's
+    // own payload. The agent-reported id is only a fallback for a command with
+    // neither (dispatched before W05 and its payload erased), and the lookup
+    // stays scoped to this device's scans either way.
+    const scanRecordId = asString(payload.scanRecordId) ?? asString(resultJson?.scanRecordId);
     const threatsValue = Array.isArray(resultJson?.threats) ? resultJson.threats : [];
     const threatsFoundRaw = resultJson?.threatsFound;
     const threatsFound = typeof threatsFoundRaw === 'number'
@@ -748,14 +778,27 @@ export async function handleSecurityCommandResult(
     const agentEngine = parseScanEngine(resultJson?.engine);
     const agentRuleSetErrors = parseRuleSetErrors(resultJson?.ruleSetErrors);
 
-    let existingScan: { id: string; engine: string | null; ruleSetErrors: unknown } | undefined;
-    if (isUuid(scanRecordId)) {
-      [existingScan] = await db
-        .select({ id: securityScans.id, engine: securityScans.engine, ruleSetErrors: securityScans.ruleSetErrors })
-        .from(securityScans)
-        .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
-        .limit(1);
-    }
+    let existingScan:
+      | { id: string; engine: string | null; ruleSetErrors: unknown; dispatchedRuleSets: unknown }
+      | undefined;
+    [existingScan] = await db
+      .select({
+        id: securityScans.id,
+        engine: securityScans.engine,
+        ruleSetErrors: securityScans.ruleSetErrors,
+        dispatchedRuleSets: securityScans.dispatchedRuleSets,
+      })
+      .from(securityScans)
+      .where(
+        and(
+          eq(securityScans.deviceId, command.deviceId),
+          isUuid(scanRecordId)
+            ? or(eq(securityScans.commandId, command.id), eq(securityScans.id, scanRecordId))
+            : eq(securityScans.commandId, command.id),
+        ),
+      )
+      .orderBy(sql`(${securityScans.commandId} = ${command.id}) DESC NULLS LAST`)
+      .limit(1);
 
     // Dispatched as YARA but the agent did not confirm an engine (a malformed
     // value, or a build without the W02 result keys): never leave it looking
@@ -816,6 +859,11 @@ export async function handleSecurityCommandResult(
       // DECISION W02-d: every security_scan threat (YARA and legacy-signature
       // hits alike) is Breeze's own detection, not the device's AV product.
       const provider = 'breeze' as const;
+      // #6263 W05-9: the version a threat matched is the one the scan was
+      // DISPATCHED with — the agent verifies the bundle's id/version/sha and
+      // the fetch route serves only that version. Server-authoritative: any
+      // agent-supplied ruleSetVersion is dropped.
+      const dispatchedVersions = dispatchedRuleSetVersions(existingScan?.dispatchedRuleSets);
       const inserts: Array<typeof securityThreats.$inferInsert> = [];
 
       for (const threat of threatsValue) {
@@ -841,7 +889,7 @@ export async function handleSecurityCommandResult(
           // chokepoint). AV records routinely embed the offending command line
           // or script fragment, so redact every string in the blob. quarantinedTo
           // is a local path and belongs in the details blob too.
-          details: redactSecretsDeep(threat)
+          details: withDispatchedRuleSetVersion(redactSecretsDeep(threat), dispatchedVersions)
         });
       }
 
@@ -1605,9 +1653,22 @@ export async function handleCisCommandResult(
     return;
   }
 
-  const completed = resultData.status === 'completed';
   const payloadDetails = isObject(payload.details) ? payload.details : null;
   const resultPayload = parseResultJson(resultData.stdout);
+  // #9604: the remediation's own `success` flag decides too, not just the
+  // command status. Agents before the fix report a remediation they could not
+  // apply as a COMPLETED command whose stdout says `{ success: false, error }`;
+  // fixed agents send a failed command. Only an explicit `false` flips the
+  // outcome, so a stdout without the field keeps the command status.
+  const agentReportedNotApplied = resultPayload?.success === false;
+  const completed = resultData.status === 'completed' && !agentReportedNotApplied;
+  const failureError = completed
+    ? null
+    : readTrimmedString(resultData.error)
+      ?? readTrimmedString(resultPayload?.error)
+      ?? (agentReportedNotApplied
+        ? 'Agent reported the remediation was not applied'
+        : `Remediation command ${resultData.status}`);
   const resultDetails = resultPayload && isObject(resultPayload.details)
     ? resultPayload.details
     : null;
@@ -1638,7 +1699,10 @@ export async function handleCisCommandResult(
     commandId: command.id,
     commandStatus: resultData.status,
     exitCode: resultData.exitCode ?? null,
-    error: resultData.error ?? null,
+    error: completed ? (resultData.error ?? null) : failureError,
+    // Older agents send `completed` + `success:false`; this explains why the
+    // action reads failed while commandStatus reads completed.
+    ...(agentReportedNotApplied ? { agentReportedNotApplied: true } : {}),
     stderr: resultData.stderr ?? null,
     completedAt: new Date().toISOString(),
   };
@@ -2705,6 +2769,114 @@ async function resolveMonitorDerivedWatches(deviceId: string, opts?: DevicePolic
   return { kind: 'resolved', watches };
 }
 
+// ============================================
+// #6958 PR E: service watches derived from software-policy compliance
+// ============================================
+
+/** A compliance row older than this no longer contributes watches. */
+export const SOFTWARE_SERVICE_WATCH_STALE_MS = 30 * 60 * 1000;
+/** `check_interval_seconds` when derived software watches are the only watches. */
+export const SOFTWARE_SERVICE_ONLY_CHECK_INTERVAL_SECONDS = 300;
+
+/**
+ * Who can hold a software_compliance_status row for this device: the
+ * software_policy resolver's rule (resolveSoftwarePolicyForDevice:
+ * loadDeviceHierarchy drops the partner — ownership AND target — for an
+ * unassigned_pool org; SQL role/OS filter). The security_agents resolver uses
+ * the same rule over a SUBSET of the device's groups (execution-safe ones),
+ * so this rule admits a superset of both: the pre-filter below can only ever
+ * say "maybe" too often, never "no" wrongly.
+ */
+const SOFTWARE_SERVICE_WATCH_APPLICABILITY: ApplicabilityRule = {
+  ownership: 'orgOrPartnerUnlessUnassignedPool', partnerTarget: 'partnerUnlessUnassignedPool', roleOs: 'sql',
+};
+
+/**
+ * The service watches the software compliance worker derived for this device
+ * (`software_compliance_status.service_watches`, from `service_running`
+ * clauses of allowlist rules' catalog versions).
+ *
+ * - Read in the CALLER'S OWN context (agent: org-scoped with currentPartnerId,
+ *   so a partner-wide policy is legible through
+ *   `software_policies_partner_wide_select`; the compliance row through the
+ *   device-join policy). Never a system escape (#2417 / #1105).
+ * - Only rows refreshed within SOFTWARE_SERVICE_WATCH_STALE_MS, of ACTIVE
+ *   policies.
+ * - `auto_restart` is re-derived from the LIVE policy row on every resolution
+ *   (`evaluateSoftwarePolicyArming(…, 'install')`), never stored: disarming
+ *   or deactivating a policy revokes restart authority without waiting for
+ *   the row to age out. A name under several policies is armed if any is. The
+ *   result is cached for MONITORING_CACHE_TTL_SECONDS (120 s) by
+ *   buildMonitoringConfigUpdate, so a cached entry can carry `auto_restart:
+ *   true` for up to 120 s after a disarm — accepted (plan Review Focus 3).
+ * - #8142: on the heartbeat the beat's policy set is passed in; when no
+ *   applicable candidate carries a `software_policy` or `security_agents`
+ *   link, no compliance row can exist for the device, so the answer is []
+ *   with ZERO statements. Without a set (display path, set-load error) the
+ *   query runs.
+ * - Deduped case-insensitively (watchKey semantics), sorted, capped at
+ *   MAX_DERIVED_SERVICE_WATCHES.
+ */
+export async function resolveSoftwarePolicyServiceWatches(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+): Promise<MonitoringWatchConfig[]> {
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const linked = applicableCandidates(set, SOFTWARE_SERVICE_WATCH_APPLICABILITY)
+      .some((c) => c.links.software_policy !== undefined || c.links.security_agents !== undefined);
+    if (!linked) return [];
+  }
+
+  const rows = await db
+    .select({
+      serviceWatches: softwareComplianceStatus.serviceWatches,
+      mode: softwarePolicies.mode,
+      enforceMode: softwarePolicies.enforceMode,
+      remediationOptions: softwarePolicies.remediationOptions,
+    })
+    .from(softwareComplianceStatus)
+    .innerJoin(softwarePolicies, eq(softwarePolicies.id, softwareComplianceStatus.policyId))
+    .where(and(
+      eq(softwareComplianceStatus.deviceId, deviceId),
+      eq(softwarePolicies.isActive, true),
+      gt(softwareComplianceStatus.lastChecked, new Date(Date.now() - SOFTWARE_SERVICE_WATCH_STALE_MS)),
+      isNotNull(softwareComplianceStatus.serviceWatches),
+    ));
+
+  const byKey = new Map<string, { name: string; armed: boolean }>();
+  for (const row of rows) {
+    if (!Array.isArray(row.serviceWatches)) continue;
+    const armed = evaluateSoftwarePolicyArming(
+      { mode: row.mode, enforceMode: row.enforceMode, remediationOptions: row.remediationOptions },
+      'install',
+    ).armed;
+    for (const entry of row.serviceWatches as unknown[]) {
+      const name = entry && typeof entry === 'object' ? (entry as { name?: unknown }).name : undefined;
+      if (typeof name !== 'string' || name.length === 0) continue;
+      const key = serviceObservationKey(name);
+      const existing = byKey.get(key);
+      if (existing) existing.armed = existing.armed || armed;
+      else byKey.set(key, { name, armed });
+    }
+  }
+
+  return Array.from(byKey.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_DERIVED_SERVICE_WATCHES)
+    .map(([, { name, armed }]) => ({
+      watch_type: 'service' as const,
+      name,
+      // The agent alerts on derived watches through monitoring.check_failed;
+      // software-compliance alerting itself is #6960 W3.
+      alert_on_stop: false,
+      alert_after_consecutive_failures: MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      auto_restart: armed,
+      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    }));
+}
+
 /**
  * Outcome of resolving a device's monitoring config. Three states, because the
  * wire has three meanings (#2949):
@@ -2749,13 +2921,24 @@ async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePo
   const monitorWatches = monitorResult.watches;
   const policy = policyResult.kind === 'resolved' ? policyResult.settings : null;
 
+  // #6958 PR E: software-policy-derived service watches. A monitor watch of the
+  // same service (watchKey, case-insensitive) WINS: its alerting and restart
+  // settings are what the operator authored for that service.
+  const monitorServiceKeys = new Set(monitorWatches
+    .filter((w) => w.watch_type === 'service')
+    .map((w) => serviceObservationKey(w.name)));
+  const derivedWatches = (await resolveSoftwarePolicyServiceWatches(deviceId, opts))
+    .filter((w) => !monitorServiceKeys.has(serviceObservationKey(w.name)));
+
   // Nothing applies: no policy resolved AND no monitor contributes a watch.
   // This is an authoritative answer, so it is sent as an explicit empty watch
   // set — the agent's ApplyConfig stops the monitor and drops every watch
   // state on `watches: []` (agent/internal/monitoring/monitor.go), and has
   // since monitoring first shipped. Omitting the key instead reads as "no
   // change" on the agent and strands the last delivered watches (#2949).
-  if (!policy && monitorWatches.length === 0) {
+  // Derived watches count too: answering `watches: []` here would make the
+  // agent drop them.
+  if (!policy && monitorWatches.length === 0 && derivedWatches.length === 0) {
     return {
       kind: 'none_applies',
       settings: { check_interval_seconds: MONITOR_ONLY_CHECK_INTERVAL_SECONDS, watches: [] },
@@ -2765,8 +2948,9 @@ async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePo
   return {
     kind: 'resolved',
     settings: {
-      check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
-      watches: monitorWatches,
+      check_interval_seconds: policy?.check_interval_seconds
+        ?? (monitorWatches.length > 0 ? MONITOR_ONLY_CHECK_INTERVAL_SECONDS : SOFTWARE_SERVICE_ONLY_CHECK_INTERVAL_SECONDS),
+      watches: [...monitorWatches, ...derivedWatches],
     },
   };
 }
@@ -3016,25 +3200,10 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
   return isObject(root.defaults) ? root.defaults : {};
 }
 
-/**
- * Effective per-component update version pins (issue #2124). `null` means "no
- * pin" → track the globally promoted latest version (historical behaviour).
- */
-export interface AgentVersionPins {
-  agent: string | null;
-  watchdog: string | null;
-}
-
-/**
- * The full effective agent-update config for an org: the update-policy gate
- * inputs PLUS the version pins. Both are resolved from the SAME single org⋈
- * partner join (see getOrgAgentUpdateConfig) so the heartbeat hot path pays one
- * round trip for everything it needs.
- */
-export interface AgentUpdateConfig {
-  settings: AgentUpdateSettings;
-  pins: AgentVersionPins;
-}
+// The pure resolution (#9170) and its types live in services/agentUpdateConfig.ts
+// so the partner settings inheritance read model can call it without this
+// module's import graph. Re-exported for existing importers.
+export type { AgentVersionPins, AgentUpdateConfig };
 
 /**
  * Resolve the EFFECTIVE agent update config for an org (Org > General). The
@@ -3080,34 +3249,14 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  const orgDefaults = extractSettingsDefaults(row?.orgSettings);
-  const partnerDefaults = extractSettingsDefaults(row?.partnerSettings);
-
-  // Effective merge, per field (mirrors effectiveSettings.mergeCategory): a
-  // partner-set field wins and locks; the org value fills the gap only where the
-  // partner has not set that field. `in` (not truthiness) matches mergeCategory,
-  // which locks any key the partner has present.
-  const effectivePolicy =
-    'agentUpdatePolicy' in partnerDefaults
-      ? partnerDefaults.agentUpdatePolicy
-      : orgDefaults.agentUpdatePolicy;
-  const effectiveWindow =
-    'maintenanceWindow' in partnerDefaults
-      ? partnerDefaults.maintenanceWindow
-      : orgDefaults.maintenanceWindow;
-  // Version pins: inherit-with-override, per component (issue #2124). Resolved
-  // via the shared `resolveInheritedAgentVersionPins` (packages/shared) — the
-  // SAME function `getOrgAgentVersionPinsBatch`
-  // (services/orgAgentVersionPins.ts, issue #5285) calls, so the two resolvers
-  // can never silently drift apart. See that function's docstring for the
-  // full precedence contract.
-  const pins: AgentVersionPins = resolveInheritedAgentVersionPins(orgDefaults, partnerDefaults);
-
-  const policy = normalizeAgentUpdatePolicy(effectivePolicy);
-  const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
-  // The explicit "24/7"/empty always-state means "no restriction" → null, same
-  // as an absent window. Only a real window string is carried through to the gate.
-  const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
+  // Effective merge (partner-locks for the policy fields, inherit-with-override
+  // for the version pins via the shared `resolveInheritedAgentVersionPins`, the
+  // SAME function `getOrgAgentVersionPinsBatch` calls): see the pure core.
+  const config = resolveAgentUpdateConfig(
+    extractSettingsDefaults(row?.partnerSettings),
+    extractSettingsDefaults(row?.orgSettings),
+  );
+  const { maintenanceWindow } = config.settings;
   // New writes are validated at save time (issue #1963), but a legacy malformed
   // value still parses to null in the gate and fails open (lifts the time
   // restriction). Surface that so the silently-lifted restriction is observable
@@ -3125,7 +3274,7 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
       `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,
     );
   }
-  return { settings: { policy, maintenanceWindow }, pins };
+  return config;
 }
 
 /**

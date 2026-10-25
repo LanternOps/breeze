@@ -596,7 +596,8 @@ describe('findDueReports', () => {
         {
           id: REPORT_ID,
           schedule: 'daily',
-          lastGeneratedAt: null, // never ran → due
+          lastGeneratedAt: null, // never ran, saved before today's 09:00 → due
+          createdAt: new Date('2026-06-20T12:00:00Z'),
           config: { schedule: { time: '09:00' } },
           orgSettings: { timezone: 'America/Chicago' },
           partnerTimezone: 'UTC',

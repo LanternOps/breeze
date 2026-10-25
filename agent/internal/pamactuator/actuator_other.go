@@ -27,3 +27,12 @@ func (*noopActuator) Dismiss(_ context.Context) Result {
 		DetailMessage: "pamactuator: not implemented for this platform",
 	}
 }
+
+// DismissInstance is unsupported off Windows; it never touches anything.
+func (*noopActuator) DismissInstance(_ context.Context, _ ConsentInstance) Result {
+	return Result{
+		Success:       false,
+		Reason:        "unsupported_platform",
+		DetailMessage: "pamactuator: not implemented for this platform",
+	}
+}

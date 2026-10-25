@@ -1,0 +1,313 @@
+/**
+ * AI `ioc_hunt` tool (#6263 W05, PR B). Handler behaviour over mocked PR A
+ * services; tiering, scope and digest pins are pinned in the guardrail and
+ * effect-digest suites.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AuthContext } from '../middleware/auth';
+import type { AiTool } from './aiTools';
+
+vi.mock('./securityScanSweeps', () => ({
+  previewSweep: vi.fn(),
+  createSweep: vi.fn(),
+  cancelSweep: vi.fn(),
+  listSweeps: vi.fn(),
+  getSweep: vi.fn(),
+}));
+vi.mock('./securityScanSweepHits', () => ({ topSweepRuleHits: vi.fn() }));
+vi.mock('./yaraRuleSetAccess', () => ({ listVisibleRuleSets: vi.fn() }));
+vi.mock('./yaraIocImportService', () => ({ importIocsIntoSet: vi.fn() }));
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })) }));
+vi.mock('./aiDispatch', () => ({
+  requireAiOrigin: (a: { aiOrigin?: unknown }, tool: string) => {
+    if (!a.aiOrigin) throw new Error(`no aiOrigin for ${tool}`);
+    return a.aiOrigin;
+  },
+}));
+vi.mock('./aiToolDbContext', () => ({ inToolDbPhase: vi.fn((_auth: unknown, fn: () => Promise<unknown>) => fn()) }));
+
+import * as sweeps from './securityScanSweeps';
+import * as hits from './securityScanSweepHits';
+import * as ruleSets from './yaraRuleSetAccess';
+import * as importer from './yaraIocImportService';
+import * as audit from './auditEvents';
+import { IOC_HUNT_ACTIONS, registerIocHuntTools } from './aiToolsIocHunt';
+
+const ORG = '11111111-1111-4111-8111-111111111111';
+const OTHER_ORG = '99999999-9999-4999-8999-999999999999';
+const SET_A = '22222222-2222-4222-8222-222222222222';
+const SWEEP = '33333333-3333-4333-8333-333333333333';
+const DIGEST = 'd'.repeat(64);
+
+const auth = {
+  scope: 'organization', orgId: ORG, partnerId: 'p-1', accessibleOrgIds: [ORG],
+  user: { id: 'u-1', email: 'u@example.test' },
+  canAccessOrg: (id: string) => id === ORG,
+  orgCondition: () => undefined,
+  aiOrigin: { kind: 'ai_assistant', sessionId: 's-1' },
+} as unknown as AuthContext;
+
+function tool(): AiTool {
+  const m = new Map<string, AiTool>();
+  registerIocHuntTools(m);
+  return m.get('ioc_hunt')!;
+}
+const call = (input: Record<string, unknown>, context?: Parameters<AiTool['handler']>[2]) =>
+  tool().handler(input, auth, context).then((s) => JSON.parse(s));
+
+const summary = {
+  id: SWEEP, groupId: 'g-1', orgId: ORG, orgName: 'Acme', ruleSets: [{ id: SET_A, name: 'Advisory 7', version: 3 }],
+  scanType: 'quick', state: 'active', targeted: 4, skipped: {},
+  progress: { queued: 1, running: 1, completed: 2, timedOut: 0, failed: 0, cancelled: 0, expired: 0, degraded: 1, threatsFound: 5 },
+  origin: 'ai_chat', createdBy: { id: 'u-1', name: 'U' }, createdAt: '2026-10-24T00:00:00.000Z',
+  expiresAt: '2026-10-25T00:00:00.000Z', completedAt: null,
+};
+
+describe('ioc_hunt registration', () => {
+  it('is a base-Tier-1 security tool whose description names all seven actions', () => {
+    const t = tool();
+    expect(t.tier).toBe(1);
+    expect(t.domain).toBe('security');
+    expect(t.deviceArgs).toBeUndefined();
+    expect(t.selfManagedDbContext).toEqual(['sweep', 'cancel_sweep']);
+    const desc = t.definition.description!;
+    expect(desc.length).toBeLessThanOrEqual(300);
+    for (const a of IOC_HUNT_ACTIONS) expect(desc).toContain(a);
+    expect(desc).not.toMatch(/\b(EDR|antivirus|real-time protection|prevention)\b/i);
+    const schema = t.definition.input_schema as { properties: Record<string, { enum?: string[] }>; required: string[] };
+    expect(schema.properties.action!.enum).toEqual([...IOC_HUNT_ACTIONS]);
+    expect(schema.required).toEqual(['action']);
+  });
+});
+
+describe('ioc_hunt reads', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('list_rule_sets returns visible sets with owner kind, paged', async () => {
+    vi.mocked(ruleSets.listVisibleRuleSets).mockResolvedValue({
+      data: [
+        { id: SET_A, name: 'Advisory 7', ownerKind: 'org', orgId: ORG, enabled: true, autoQuarantine: false, publishedVersion: 3, stale: false, ruleCount: 12 },
+        { id: 'b', name: 'Breeze pack', ownerKind: 'builtin', orgId: null, enabled: true, autoQuarantine: false, publishedVersion: 9, stale: false, ruleCount: 400 },
+      ],
+      total: 2, page: 1, limit: 25,
+    });
+    const out = await call({ action: 'list_rule_sets', orgId: ORG });
+    expect(out.ruleSets.map((r: { ownerKind: string }) => r.ownerKind)).toEqual(['org', 'builtin']);
+    expect(out).toMatchObject({ total: 2, page: 1, limit: 25 });
+    expect(ruleSets.listVisibleRuleSets).toHaveBeenCalledWith(auth, { orgId: ORG, page: 1, limit: 25 });
+  });
+
+  it('preview_sweep is single-org, writes nothing and returns the previewDigest', async () => {
+    vi.mocked(sweeps.previewSweep).mockResolvedValue({
+      ok: true,
+      preview: {
+        targeted: 12, byOrg: [{ orgId: ORG, orgName: 'Acme', targeted: 12 }],
+        skipped: { agent_too_old: 1, busy_same_sweep: 0, rule_set_not_eligible: 0 },
+        ruleSets: [{ id: SET_A, name: 'Advisory 7', version: 3 }], previewDigest: DIGEST,
+      },
+    });
+    const input = { action: 'preview_sweep', orgId: ORG, ruleSetIds: [SET_A], scope: { kind: 'sites', siteIds: [SET_A] }, scanType: 'quick' };
+    const out = await call(input);
+    expect(out).toMatchObject({ orgId: ORG, orgName: 'Acme', targeted: 12, expectedDeviceCount: 12, previewDigest: DIGEST });
+    expect(sweeps.previewSweep).toHaveBeenCalledWith(
+      auth,
+      { ruleSetIds: [SET_A], scope: { kind: 'sites', siteIds: [SET_A] }, scanType: 'quick' },
+      { onlyOrgId: ORG },
+    );
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+
+  it('preview_sweep refuses a foreign or multi-org scope, and a missing orgId', async () => {
+    const base = { action: 'preview_sweep', ruleSetIds: [SET_A], scanType: 'quick' };
+    expect(await call({ ...base, orgId: ORG, scope: { kind: 'orgs', orgIds: [OTHER_ORG] } })).toMatchObject({ error: 'single_org_only' });
+    expect(await call({ ...base, orgId: ORG, scope: { kind: 'orgs', orgIds: [ORG, OTHER_ORG] } })).toMatchObject({ error: 'single_org_only' });
+    expect(await call({ ...base, scope: { kind: 'all' } })).toMatchObject({ error: 'invalid_input' });
+    expect(sweeps.previewSweep).not.toHaveBeenCalled();
+    // The one org named exactly is allowed.
+    vi.mocked(sweeps.previewSweep).mockResolvedValue({ ok: false, status: 403, code: 'ORG_ACCESS_DENIED' } as never);
+    expect(await call({ ...base, orgId: ORG, scope: { kind: 'orgs', orgIds: [ORG] } })).toMatchObject({ error: 'ORG_ACCESS_DENIED', code: 'ORG_ACCESS_DENIED', status: 403 });
+  });
+
+  it('list_sweeps passes paging and the org through and returns ceiling-filtered summaries', async () => {
+    vi.mocked(sweeps.listSweeps).mockResolvedValue({ data: [summary], total: 1, page: 2, limit: 10 } as never);
+    const out = await call({ action: 'list_sweeps', orgId: ORG, page: 2, limit: 10 });
+    expect(out).toEqual({ sweeps: [summary], total: 1, page: 2, limit: 10 });
+    expect(sweeps.listSweeps).toHaveBeenCalledWith(auth, { orgId: ORG, page: 2, limit: 10 });
+  });
+
+  it('sweep_status returns progress, degraded, threats found and the top rule hits; 404 → not_found', async () => {
+    vi.mocked(sweeps.getSweep).mockResolvedValueOnce(summary as never);
+    vi.mocked(hits.topSweepRuleHits).mockResolvedValue([{ ruleName: 'ioc_md5_advisory', ruleSetId: SET_A, hits: 3 }]);
+    const out = await call({ action: 'sweep_status', sweepId: SWEEP });
+    expect(out.sweep).toEqual(summary);
+    expect(out.degraded).toBe(1);
+    expect(out.threatsFound).toBe(5);
+    expect(out.topRules).toEqual([{ ruleName: 'ioc_md5_advisory', ruleSetId: SET_A, hits: 3 }]);
+    expect(hits.topSweepRuleHits).toHaveBeenCalledWith(auth, summary, 10);
+
+    vi.mocked(sweeps.getSweep).mockResolvedValueOnce(null);
+    expect(await call({ action: 'sweep_status', sweepId: SWEEP })).toEqual({ error: 'not_found' });
+    expect(await call({ action: 'sweep_status', sweepId: 'nope' })).toMatchObject({ error: 'invalid_input' });
+  });
+});
+
+describe('ioc_hunt exposure and limits', () => {
+  it('is in no agent preset: human-only and unreachable for the ai_agent principal (Gate B 10)', { timeout: 180_000 }, async () => {
+    const { AGENT_HUMAN_ONLY_TOOLS } = await import('./aiToolExposure');
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('ioc_hunt')).toBe(true);
+    const { listAgentReachableTools } = await import('./aiAgents/agentToolCatalog');
+    expect(listAgentReachableTools()).not.toContain('ioc_hunt');
+  });
+
+  it('rate limit is 30 per 600 s', { timeout: 180_000 }, async () => {
+    const { TOOL_RATE_LIMITS } = await import('./aiToolRateLimits');
+    expect(TOOL_RATE_LIMITS.ioc_hunt).toEqual({ limit: 30, windowSeconds: 600 });
+  });
+});
+
+describe('ioc_hunt sweep (released Tier-3 action)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const sweepInput = (extra: Record<string, unknown> = {}) => ({
+    action: 'sweep', orgId: ORG, ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'quick',
+    expectedDeviceCount: 12, previewDigest: DIGEST, ...extra,
+  });
+  const released = (extra: Record<string, unknown> = {}) => ({ actionIntentId: 'intent-1', intentSource: 'chat' as const, ...extra });
+
+  it('creates through createSweep with origin ai_chat, aiOrigin, intentId, the org and the expected count', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: true, groupId: 'g-1', sweeps: [summary] } as never);
+    const out = await call(sweepInput(), released());
+    expect(out).toEqual({ groupId: 'g-1', sweeps: [summary] });
+    expect(sweeps.createSweep).toHaveBeenCalledWith(
+      auth,
+      { ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'quick', previewDigest: DIGEST },
+      { origin: 'ai_chat', aiOrigin: auth.aiOrigin, intentId: 'intent-1', mfaSatisfied: false, onlyOrgId: ORG, expectedDeviceCount: 12 },
+    );
+  });
+
+  it('an MCP-filed intent stamps origin mcp', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: true, groupId: 'g-1', sweeps: [] } as never);
+    await call(sweepInput({ scanType: 'custom', paths: ['C:\\Temp'], ttlHours: 6 }), released({ intentSource: 'mcp_api' }));
+    expect(sweeps.createSweep).toHaveBeenCalledWith(
+      auth,
+      { ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'custom', paths: ['C:\\Temp'], ttlHours: 6, previewDigest: DIGEST },
+      expect.objectContaining({ origin: 'mcp', intentId: 'intent-1' }),
+    );
+  });
+
+  it('surfaces SWEEP_SCOPE_CHANGED from createSweep and writes nothing else', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: false, status: 409, code: 'SWEEP_SCOPE_CHANGED', detail: { targeted: 14 } });
+    expect(await call(sweepInput(), released())).toEqual({ error: 'SWEEP_SCOPE_CHANGED', code: 'SWEEP_SCOPE_CHANGED', status: 409, detail: { targeted: 14 } });
+    expect(sweeps.createSweep).toHaveBeenCalledTimes(1);
+    expect(sweeps.cancelSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses an approver-release mismatch before any write', async () => {
+    expect(await call(sweepInput(), released({ approverRelease: { approverUserId: 'someone-else' } }))).toEqual({ error: 'approver_auth_mismatch' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses outside an approved release (no actionIntentId), with no source, or with an agent source', async () => {
+    expect(await call(sweepInput())).toEqual({ error: 'intent_required' });
+    expect(await call(sweepInput(), { intentSource: 'chat' })).toEqual({ error: 'intent_required' });
+    // Never defaulted to chat: an unattributed release is refused.
+    expect(await call(sweepInput(), { actionIntentId: 'intent-1' })).toEqual({ error: 'intent_required' });
+    expect(await call(sweepInput(), released({ intentSource: 'ai_agent' }))).toEqual({ error: 'intent_required' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses a cross-org scope and incomplete input before createSweep', async () => {
+    expect(await call(sweepInput({ scope: { kind: 'orgs', orgIds: [OTHER_ORG] } }), released())).toMatchObject({ error: 'single_org_only' });
+    expect(await call(sweepInput({ previewDigest: undefined }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(sweepInput({ expectedDeviceCount: undefined }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(sweepInput({ expectedDeviceCount: -1 }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+});
+
+describe('ioc_hunt cancel_sweep', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('cancels through cancelSweep and returns the counts', async () => {
+    vi.mocked(sweeps.cancelSweep).mockResolvedValue({ ok: true, sweeps: [summary], cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 } as never);
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ sweeps: [summary], cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 });
+    expect(sweeps.cancelSweep).toHaveBeenCalledWith(auth, SWEEP);
+  });
+
+  it('surfaces 403 for a restricted caller on another user\'s sweep, and 404', async () => {
+    vi.mocked(sweeps.cancelSweep).mockResolvedValueOnce({ ok: false, status: 403 });
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ error: 'forbidden', status: 403 });
+    vi.mocked(sweeps.cancelSweep).mockResolvedValueOnce({ ok: false, status: 404 });
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ error: 'not_found', status: 404 });
+    expect(await call({ action: 'cancel_sweep' })).toMatchObject({ error: 'invalid_input' });
+  });
+});
+
+describe('ioc_hunt import_iocs (released Tier-3 action)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const MD5 = 'f'.repeat(32);
+  const importInput = (extra: Record<string, unknown> = {}) => ({
+    action: 'import_iocs', ruleSetId: SET_A, label: 'Advisory 7', severity: 'high',
+    iocs: [{ kind: 'md5', value: MD5 }, { kind: 'domain', value: 'bad.example' }], ...extra,
+  });
+  const released = (extra: Record<string, unknown> = {}) => ({ actionIntentId: 'intent-1', intentSource: 'chat' as const, ...extra });
+  const publish = { published: true, version: 4, currentVersion: 4, stale: false, errors: [] };
+  const okOutcome = {
+    ok: true, status: 201,
+    body: { data: { rules: [{ id: 'r-1', name: 'ioc_md5_advisory_7', kind: 'md5', iocCount: 1 }] }, publish },
+    audit: { orgId: ORG, partnerId: null, action: 'security.yara_rule.ioc_import', resourceType: 'yara_rule_set', resourceId: SET_A, resourceName: 'Advisories', details: { iocCount: 2 } },
+  };
+
+  it('imports through the extracted W04 service with the auto-quarantine refusal on, and returns the publish body', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    const out = await call(importInput(), released());
+    expect(out).toEqual({ ruleSetId: SET_A, rules: okOutcome.body.data.rules, publish });
+    expect(importer.importIocsIntoSet).toHaveBeenCalledWith(
+      auth, SET_A,
+      { label: 'Advisory 7', severity: 'high', iocs: [{ kind: 'md5', value: MD5 }, { kind: 'domain', value: 'bad.example' }] },
+      { autoQuarantine: 'refuse' },
+    );
+    expect(audit.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'security.yara_rule.ioc_import', actorId: 'u-1', initiatedBy: 'ai', details: expect.objectContaining({ tool_name: 'ioc_hunt' }),
+    }));
+  });
+
+  it('surfaces the service refusals (auto-quarantine set, 403) with their code and writes no audit', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValueOnce({ ok: false, status: 409, body: { error: 'quarantines', code: 'AI_IMPORT_AUTO_QUARANTINE_SET' } });
+    expect(await call(importInput(), released())).toMatchObject({ error: 'AI_IMPORT_AUTO_QUARANTINE_SET', code: 'AI_IMPORT_AUTO_QUARANTINE_SET', status: 409 });
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValueOnce({ ok: false, status: 403, body: { error: 'The built-in rule set is read-only' } });
+    expect(await call(importInput(), released())).toMatchObject({ error: 'forbidden', status: 403, detail: 'The built-in rule set is read-only' });
+    expect(audit.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('refuses outside a release, on an approver mismatch, and on malformed input before the service', async () => {
+    expect(await call(importInput())).toEqual({ error: 'intent_required' });
+    expect(await call(importInput(), released({ approverRelease: { approverUserId: 'other' } }))).toEqual({ error: 'approver_auth_mismatch' });
+    expect(await call(importInput({ iocs: [] }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(importInput({ ruleSetId: 'nope' }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(importInput({ iocs: [{ kind: 'md5', value: MD5, extra: 1 }] }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(importer.importIocsIntoSet).not.toHaveBeenCalled();
+  });
+
+  it('says plainly when the rules were saved but the set did not publish', async () => {
+    const notPublished = { ...okOutcome, body: { ...okOutcome.body, publish: { ...publish, published: false, stale: true } } };
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(notPublished as never);
+    const out = await call(importInput(), released());
+    expect(out.publish.published).toBe(false);
+    expect(out.warning).toMatch(/not published/);
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    expect((await call(importInput(), released())).warning).toBeUndefined();
+  });
+
+  it('refuses an import released with no source', async () => {
+    expect(await call(importInput(), { actionIntentId: 'intent-1' })).toEqual({ error: 'intent_required' });
+    expect(importer.importIocsIntoSet).not.toHaveBeenCalled();
+  });
+
+  it('an MCP release is attributed as an integration', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    await call(importInput(), released({ intentSource: 'mcp_api' }));
+    expect(audit.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ initiatedBy: 'integration' }));
+  });
+});

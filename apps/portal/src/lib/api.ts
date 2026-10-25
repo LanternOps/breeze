@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DeviceStatus, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
 import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
@@ -422,6 +422,20 @@ export interface TicketDetails extends TicketSummary {
   comments: TicketComment[];
 }
 
+/**
+ * A request of the viewer's that staff merged into another ticket (#8972, spec
+ * §6.1). `mergedInto` is set only while the viewer may read that ticket;
+ * `survivorDeleted` means it was deleted since, and nothing else of it is sent.
+ */
+export interface PortalMergedTicket {
+  merged: true;
+  mergedInto: { id: string; internalNumber: string | null } | null;
+  mergedAt: string | null;
+  survivorDeleted: boolean;
+}
+
+export type PortalTicketDetailResult = TicketDetails | PortalMergedTicket;
+
 // Slim portal-visible intake form (Phase 2). Mirrors the `GET /portal/tickets/forms`
 // payload — no titleTemplate (the server composes the subject) and no showInPortal
 // (the route already filtered to portal-visible forms).
@@ -438,12 +452,12 @@ export interface PortalTicketForm {
 // payload. On the form path the subject/description are composed server-side, so
 // no `subject` key is sent (an optional free-text `description` may still ride along).
 export type CreateTicketInput =
-  | { subject: string; description: string; priority: TicketPriority }
+  | { subject: string; description: string; priority?: TicketPriority }
   | {
       formId: string;
       formResponses: Record<string, unknown>;
       description?: string;
-      priority: TicketPriority;
+      priority?: TicketPriority;
     };
 
 export interface Asset {
@@ -451,13 +465,24 @@ export interface Asset {
   hostname: string;
   displayName: string | null;
   osType: string | null;
-  status: 'online' | 'offline' | 'warning';
+  /** `devices.status` — the `device_status` enum; there is no 'warning'. */
+  status: DeviceStatus;
   lastSeenAt: string | null;
 }
 
 // Re-export the shared InvoiceStatus (imported at the top of this file) so portal
 // components keep importing it from '@/lib/api' unchanged.
 export type { InvoiceStatus, PublicQuoteHeader };
+
+/** Branding on a customer document payload (mirrors `CustomerDocumentBrandingDto`). */
+export interface CustomerDocumentBranding {
+  partnerName: string | null;
+  contactEmail?: string | null;
+  logoUrl: string | null;
+  primaryColor: string | null;
+  theme: DocumentThemeId;
+  pageSize: DocumentPageSize;
+}
 
 export interface InvoiceSummary {
   id: string;
@@ -497,6 +522,8 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  /** The invoice_lines id: an opaque row key (the document's `document-line-*-<id>` test ids). */
+  id: string;
   ticketNumber: string | null;
   ticketCategory?: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
@@ -561,12 +588,20 @@ export interface InvoiceDetail {
     termsAndConditions?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** The status pill the customer sees (never 'draft'); #9414. */
+    displayStatus: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    /** The short document terms line (invoices.terms). */
+    terms?: string | null;
   };
   lines: InvoiceLine[];
-  /** Partner branding for the document shell, matching QuoteDetail. Optional:
-   *  older API responses and fixtures predate it, in which case the view falls
-   *  back to GET /portal/branding. */
-  branding?: QuoteBranding;
+  /** `invoice.documentLocale ?? partner locale ?? 'en'` — the language the document prints in. */
+  documentLocale: string;
+  /** Partner branding for the document (theme and page size are the invoice's frozen
+   *  presentation, D14). Optional only for API responses that predate it, in which
+   *  case the view falls back to GET /portal/branding. */
+  branding?: CustomerDocumentBranding;
   /** #7509: whether the partner can take online payment. `false` hides the Pay
    *  CTA; absent (older API / fixtures) is treated as available — the pay route
    *  still 409s as the backstop. */
@@ -734,8 +769,10 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */
   branding?: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
 }
 
@@ -744,8 +781,10 @@ export interface PublicQuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;
+  /** The document's resolved language (spec §3.7); absent on API responses that predate it. */
+  documentLocale?: string;
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
-   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+   *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
   /** #8231: signing goes straight on to card checkout (the partner takes online
    *  payment; automatic-payment clients included). The page still
@@ -784,8 +823,15 @@ export interface PublicInvoiceDetail {
     paidAt?: string | null;
     /** #8604: resolved line grouping; 'day' only when dates are on. */
     lineGrouping?: 'entry' | 'day';
+    /** Absent on the void payload (identity fields only). */
+    displayStatus?: Exclude<InvoiceStatus, 'draft'> | null;
+    billToAddress?: SellerSnapshot['address'];
+    billToTaxId?: string | null;
+    terms?: string | null;
   };
   lines: InvoiceLine[];
+  /** Absent on the void payload. */
+  documentLocale?: string;
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
   /** #7824: an autopay collection is in flight (server reservation).
@@ -854,6 +900,8 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Environment visibility W1 (#8775): MSP turned sensitive physical placement (rack and room) on for this org. */
+  enablePhysicalPlacement?: boolean;
   /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
    *  turned trust-page editing on AND this portal user is an org-scoped admin
    *  contact. The API re-checks it on every trust-page request. */
@@ -1071,8 +1119,13 @@ export const portalApi = {
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketDetails>> => {
-    const response = await apiGet<{ ticket: TicketDetails }>(`/portal/tickets/${id}`, config);
+  ): Promise<ApiResponse<PortalTicketDetailResult>> => {
+    // A merged tombstone answers top-level `{ merged: true, mergedInto, mergedAt,
+    // survivorDeleted? }` with no `ticket` key (#8972).
+    type Body =
+      | { ticket: TicketDetails; merged?: undefined }
+      | { merged: true; mergedInto?: PortalMergedTicket['mergedInto']; mergedAt?: string | null; survivorDeleted?: boolean };
+    const response = await apiGet<Body>(`/portal/tickets/${id}`, config);
     if (!response.data) {
       return {
         error: response.error,
@@ -1082,8 +1135,22 @@ export const portalApi = {
       };
     }
 
+    const body = response.data;
+    if (body.merged === true) {
+      return {
+        data: {
+          merged: true,
+          mergedInto: body.mergedInto ?? null,
+          mergedAt: body.mergedAt ?? null,
+          survivorDeleted: body.survivorDeleted === true,
+        },
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
     return {
-      data: response.data.ticket,
+      data: body.ticket,
       statusCode: response.statusCode,
       headers: response.headers
     };

@@ -25,6 +25,33 @@ export class DevicesPage extends BasePage {
   deleteButton = (id: string) => this.page.getByTestId(`device-${id}-delete-manual`);
   confirmDeviceAction = () => this.page.getByTestId('confirm-device-action');
 
+  agentSegment = () => this.page.getByTestId('device-class-segment-agent');
+  statusChip = () => this.page.getByTestId('filter-chip-status');
+  countLine = () => this.page.getByTestId('device-list-count');
+  noMatches = () => this.page.getByTestId('device-list-no-matches');
+  rowCell = (id: string) => this.page.locator(`[data-testid^="device-${id}-"]`).first();
+  rowSelect = (id: string) => this.page.getByTestId(`device-${id}-select`);
+  bulkActionsTrigger = () => this.page.getByTestId('bulk-actions-trigger');
+  bulkActionsMenu = () => this.page.getByTestId('bulk-actions-menu');
+  bulkMoveSite = () => this.page.getByTestId('devices-bulk-move-site');
+  bulkMoveSiteDisabledReason = () => this.page.getByTestId('devices-bulk-move-site-disabled-reason');
+  moveSiteCurrent = () => this.page.getByTestId('change-site-bulk-current');
+  moveSiteSelect = () => this.page.getByTestId('change-site-bulk-select');
+  moveSiteSubmit = () => this.page.getByTestId('change-site-submit');
+
+  /** `{shown, total}` parsed from "{shown} of {total} device(s)". */
+  async countParts(): Promise<{ shown: number; total: number }> {
+    const text = (await this.countLine().textContent()) ?? '';
+    const m = /(\d[\d,]*) of (\d[\d,]*) devices?/.exec(text);
+    if (!m) throw new Error(`device-list-count text not parseable: "${text}"`);
+    return { shown: parseInt(m[1]!.replace(/,/g, ''), 10), total: parseInt(m[2]!.replace(/,/g, ''), 10) };
+  }
+
+  async gotoAgents() {
+    await this.page.goto('/devices#deviceClass=agent');
+    await waitForAppReady(this.page, 'devices-heading');
+  }
+
   async goto() {
     await this.page.goto(this.url);
     await waitForAppReady(this.page, 'devices-heading');

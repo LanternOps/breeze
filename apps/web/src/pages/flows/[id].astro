@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import FlowDetailPage from '../../components/flows/FlowDetailPage';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.flowDetail">
+  <FlowDetailPage flowId={id as string} client:load />
+</DashboardLayout>

@@ -6,6 +6,11 @@ export const DETECTION_CLASSES = [
   { value: 'financial', label: 'Financial' },
 ] as const;
 
+/** Display label for a finding data-type key ("pci" → "PCI"). Unknown keys pass through. */
+export function dataTypeLabel(key: string): string {
+  return DETECTION_CLASSES.find((c) => c.value === key)?.label ?? key;
+}
+
 export const RISK_LEVELS = ['critical', 'high', 'medium', 'low'] as const;
 
 export const FINDING_STATUSES = ['open', 'remediated', 'accepted', 'false_positive'] as const;

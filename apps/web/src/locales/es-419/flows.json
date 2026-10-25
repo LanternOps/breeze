@@ -1,0 +1,70 @@
+{
+  "title": "Flujos",
+  "subtitle": "Automatizaciones de varios pasos que encadenan herramientas.",
+  "previewNotice": "Los flujos son de solo lectura en esta versión. Redáctalos en el chat de IA; la activación y las ejecuciones llegarán en una versión posterior.",
+  "empty": {
+    "title": "Aún no hay flujos",
+    "body": "Pídele al asistente de IA que redacte un flujo y luego revísalo aquí."
+  },
+  "list": {
+    "name": "Nombre",
+    "owner": "Propietario",
+    "allOrgs": "Todas las organizaciones",
+    "status": "Estado",
+    "tier": "Nivel",
+    "trigger": "Disparador",
+    "updated": "Actualizado"
+  },
+  "status": {
+    "draft": "Borrador",
+    "enabled": "Habilitado",
+    "paused": "En pausa",
+    "disabled": "Deshabilitado"
+  },
+  "trigger": {
+    "schedule": "Programación",
+    "event": "Evento",
+    "webhook": "Webhook",
+    "manual": "Manual"
+  },
+  "detail": {
+    "back": "Volver a los flujos",
+    "trigger": "Disparador",
+    "inputs": "Entradas",
+    "steps": "Pasos",
+    "version": "Versión {{version}}",
+    "createdInChat": "Creado en el chat de IA"
+  },
+  "step": {
+    "tool": "Herramienta",
+    "tier": "Nivel {{tier}}",
+    "approval": "Aprobación",
+    "approvalDefault": "Aprobación estándar",
+    "approvalPreApproved": "Preaprobado",
+    "when": "Se ejecuta cuando",
+    "forEach": "Para cada elemento",
+    "onFailure": "Si falla",
+    "timeout": "Tiempo límite",
+    "input": "Entrada",
+    "source": {
+      "core": "Herramienta base",
+      "tenant": "Fuente de herramientas",
+      "builtin": "Integrada"
+    }
+  },
+  "issues": {
+    "title": "Validación",
+    "none": "Sin problemas de validación.",
+    "error": "Error",
+    "warning": "Advertencia"
+  },
+  "card": {
+    "title": "Borrador de flujo",
+    "review": "Revisar",
+    "steps": "Pasos: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "No se pudieron cargar los flujos.",
+    "notFound": "Flujo no encontrado."
+  }
+}

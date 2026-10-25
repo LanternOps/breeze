@@ -1,4 +1,5 @@
 import { isIP } from 'net';
+import { parseCimdAllowedHosts } from '../oauth/cimdHosts';
 import { MAX_BOOTSTRAP_TOKEN_TTL_MINUTES } from '@breeze/shared';
 import { parseUnattendedPrincipals } from '../services/mcpUnattendedPrincipals';
 import { z } from 'zod';
@@ -669,8 +670,10 @@ const envObjectSchema = z
       .string()
       .optional()
       .refine(
-        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
-        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer below 1,000,000,000',
+        (v) => !v?.trim() || (/^[1-9]\d{0,8}$/.test(v.trim()) && Number(v.trim()) <= 230),
+        // The window is the /enroll 429 Retry-After; W09 agents cap Retry-After
+        // at 300 s after x1.3 jitter (230 = AGENT_RETRY_AFTER_MAX_SECONDS, #9457).
+        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer of at most 230',
       ),
 
     // Controlled agent-fleet rollout (decouple registration from promotion).
@@ -688,6 +691,35 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above — a typo must fail boot, not silently read as
     // "off" for an operator who believed they enabled auto-remediation.
     AGENT_EDITION_AUTO_MIGRATE_ENABLED: z.string().optional(),
+
+    // Stateless MCP 2026-07-28 era kill switch (B-W03 #6157). Default false;
+    // read per request by mcpStatelessEnabled() (services/mcpProtocol.ts).
+    // Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above.
+    MCP_STATELESS_ENABLED: z.string().optional(),
+
+    // Tier-3 over MCP via action intents (B-W04 #6158). Kill switch is boolean
+    // (services/mcpIntentConfig.ts mcpTier3IntentsEnabled()); the knobs are read per call through
+    // positiveIntEnv in config/env.ts. Validated here for format only.
+    MCP_TIER3_INTENTS_ENABLED: z.string().optional(),
+    MCP_INTENT_MAX_LIVE_PER_PRINCIPAL: z.string().optional(),
+    MCP_INTENT_CREATES_PER_HOUR: z.string().optional(),
+    MCP_INTENT_CREATES_PER_USER_PER_HOUR: z.string().optional(),
+    MCP_APPROVAL_WAIT_MS: z.string().optional(),
+    MCP_APPROVAL_WAITS_PER_PRINCIPAL: z.string().optional(),
+
+    // MCP Apps pilot (B-W05 #6159). Boolean kill switch, read per call by
+    // services/mcpAppsConfig.ts mcpAppsEnabled(). Validated here for format only.
+    MCP_APPS_ENABLED: z.string().optional(),
+
+    // MCP Tasks extension (B-W06 #6160). Boolean flag read per call by
+    // services/mcpIntentConfig.ts mcpTasksEnabled() (effective only with
+    // MCP_STATELESS_ENABLED); the three knobs are read per call there too.
+    // Validated here for format only.
+    MCP_TASKS_ENABLED: z.string().optional(),
+    MCP_TASK_PENDING_POLL_INTERVAL_MS: z.string().optional(),
+    MCP_TASK_POLL_INTERVAL_MS: z.string().optional(),
+    MCP_TASK_TTL_GRACE_MS: z.string().optional(),
 
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
@@ -711,10 +743,19 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // Recipe Library W06. Gates the identity_offboarding recipe, read at
+    // runtime by aiOperatorIdentityOffboardingEnabled() in env.ts. Validated
+    // here for boolean format only. Default off; nothing enables it.
+    AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: z.string().optional(),
+
     // Task A7 (tool-catalog W1). Platform kill switch for tool sources, read
     // at runtime by toolSourcesEnabled() in env.ts. Validated here for
     // boolean format only, same class as AGENT_AUTO_PROMOTE above.
     TOOL_SOURCES_ENABLED: z.string().optional(),
+
+    // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
+    // by flowsEnabled() in env.ts. Boolean-format validation only.
+    FLOWS_ENABLED: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -727,6 +768,10 @@ const envObjectSchema = z
     // format only — the production coupling rule is in the superRefine below.
     BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
     BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: z.string().optional(),
+    // Wisp (Wisp design §10). Hosted-only sub-flag of BREEZE_AI_AGENTS_ENABLED,
+    // read at runtime by wispEnabled() in env.ts. Boolean format + the
+    // production IS_HOSTED coupling are checked in the superRefines below.
+    BREEZE_WISP_ENABLED: z.string().optional(),
     // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
     // (services/workspace/sandboxBackend.ts), which refuses an unset value in
     // production; the superRefine below additionally refuses 'fake' there.
@@ -841,6 +886,10 @@ const envObjectSchema = z
     OAUTH_DCR_ENABLED: z.string().optional(),
     OAUTH_DCR_REQUIRE_IAT: z.string().optional(),
     OAUTH_DCR_ALLOW_ANONYMOUS: z.string().optional(),
+    // CIMD (B-W03 #6157): boolean flag + optional host allowlist, both checked
+    // in the superRefine below.
+    OAUTH_CIMD_ENABLED: z.string().optional(),
+    OAUTH_CIMD_ALLOWED_HOSTS: z.string().optional(),
 
     // Wave 3 live-authorization rollout controls. Shape is validated in EVERY
     // environment (a garbage value is a bug anywhere); presence is required in
@@ -1571,6 +1620,31 @@ const envSchema = envObjectSchema
           }
         }
       }
+      // Wisp is hosted-only (Wisp design §10): wispEnabled() already reads
+      // false off-hosted, so a self-hosted deploy setting the flag is a
+      // misconfiguration that would silently do nothing — refuse it at boot.
+      const wispFlag = (data.BREEZE_WISP_ENABLED ?? '').trim().toLowerCase();
+      if (wispFlag === 'true' || wispFlag === '1' || wispFlag === 'yes' || wispFlag === 'on') {
+        if ((data.IS_HOSTED ?? '').trim().toLowerCase() !== 'true') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['IS_HOSTED'],
+            message: 'BREEZE_WISP_ENABLED=true requires IS_HOSTED=true — Wisp is hosted-only (Wisp design §10).',
+          });
+        }
+        // A Wisp grant borrows a human's authority on a fresh step-up proof
+        // (Wisp design §4.2). With ENABLE_2FA off no step-up can be minted and
+        // the grant path degrades to "session only", so refuse it in production.
+        // Same falsy rule as envFlag('ENABLE_2FA', true).
+        const enable2fa = (data.ENABLE_2FA ?? '').trim().toLowerCase();
+        if (enable2fa !== '' && !['1', 'true', 'yes', 'on'].includes(enable2fa)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['ENABLE_2FA'],
+            message: 'BREEZE_WISP_ENABLED=true requires ENABLE_2FA to stay on — Wisp grants are created and refreshed on a step-up proof (Wisp design §4.2).',
+          });
+        }
+      }
 
       // The multiplier is the only knob between vendor list price and what an
       // org is charged. computePriceMultiplier() falls back to 1 for anything
@@ -2054,6 +2128,90 @@ const envSchema = envObjectSchema
       });
     }
 
+    // OAUTH_CIMD_ENABLED / OAUTH_CIMD_ALLOWED_HOSTS (B-W03 #6157). A typo in
+    // the allowlist would otherwise fail closed at runtime with no boot error.
+    const cimdEnabledRaw = (data.OAUTH_CIMD_ENABLED ?? '').trim().toLowerCase();
+    if (cimdEnabledRaw && !boolValues.has(cimdEnabledRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ENABLED'],
+        message: 'OAUTH_CIMD_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    const cimdHosts = parseCimdAllowedHosts(data.OAUTH_CIMD_ALLOWED_HOSTS);
+    if (!cimdHosts.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OAUTH_CIMD_ALLOWED_HOSTS'],
+        message: `OAUTH_CIMD_ALLOWED_HOSTS must be a comma-separated list of hostnames or .suffix entries (no scheme, path, port or wildcard): ${cimdHosts.reason}.`,
+      });
+    }
+
+    // MCP_STATELESS_ENABLED (B-W03 #6157). Same treatment as AGENT_AUTO_PROMOTE.
+    const mcpStatelessRaw = (data.MCP_STATELESS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpStatelessRaw && !boolValues.has(mcpStatelessRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_STATELESS_ENABLED'],
+        message:
+          'MCP_STATELESS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (the MCP server answers only the initialize-based protocol versions).',
+      });
+    }
+
+    // MCP_TIER3_INTENTS_ENABLED (B-W04 #6158): boolean typo guard.
+    const mcpIntentsRaw = (data.MCP_TIER3_INTENTS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpIntentsRaw && !boolValues.has(mcpIntentsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_TIER3_INTENTS_ENABLED'],
+        message:
+          'MCP_TIER3_INTENTS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (Tier-3 over MCP keeps the MCP_APPROVAL_REQUIRED refusal).',
+      });
+    }
+    // MCP_APPS_ENABLED (B-W05 #6159): boolean typo guard.
+    const mcpAppsRaw = (data.MCP_APPS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpAppsRaw && !boolValues.has(mcpAppsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_APPS_ENABLED'],
+        message:
+          'MCP_APPS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (no MCP Apps view is advertised or served).',
+      });
+    }
+    // MCP_TASKS_ENABLED (B-W06 #6160): boolean typo guard.
+    const mcpTasksRaw = (data.MCP_TASKS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpTasksRaw && !boolValues.has(mcpTasksRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_TASKS_ENABLED'],
+        message:
+          'MCP_TASKS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (Tier-3 calls keep the pending_approval result; no Tasks extension is advertised).',
+      });
+    }
+    for (const knob of [
+      'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+      'MCP_INTENT_CREATES_PER_HOUR',
+      'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+      'MCP_APPROVAL_WAIT_MS',
+      'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+      'MCP_TASK_PENDING_POLL_INTERVAL_MS',
+      'MCP_TASK_POLL_INTERVAL_MS',
+      'MCP_TASK_TTL_GRACE_MS',
+    ] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
+    }
+
     // ABUSE_SIGNALS_ENABLED (signup-abuse detection). Same treatment and same
     // reasoning as AGENT_AUTO_PROMOTE above: independent of NODE_ENV, because
     // the value silently governs whether the subsystem runs at all. A typo
@@ -2180,6 +2338,18 @@ const envSchema = envObjectSchema
       });
     }
 
+    // FLOWS_ENABLED (Tool Catalog W3, #5218). Same treatment as
+    // TOOL_SOURCES_ENABLED: a typo must fail boot rather than read as off.
+    const flowsRaw = (data.FLOWS_ENABLED ?? '').trim().toLowerCase();
+    if (flowsRaw && !boolValues.has(flowsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['FLOWS_ENABLED'],
+        message:
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
+      });
+    }
+
     // TOOL_SOURCES_ALLOW_PRIVATE_EGRESS (Task A7). Same boolean-format check,
     // plus a hosted refusal: a tool source that can reach a private/
     // loopback/link-local address from the shared hosted egress path is an
@@ -2219,6 +2389,14 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_AI_WORKSPACE_ENABLED'],
         message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
+      });
+    }
+    const wispRaw = (data.BREEZE_WISP_ENABLED ?? '').trim().toLowerCase();
+    if (wispRaw && !boolValues.has(wispRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_WISP_ENABLED'],
+        message: 'BREEZE_WISP_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (Wisp is dark).',
       });
     }
     const blobBackendRaw = (data.ARTIFACT_BLOB_BACKEND ?? '').trim().toLowerCase();
@@ -2594,6 +2772,18 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       warnings.push({
         key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
         message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id>, oauth_client_user:<client_id>/<user id> or partner_sp:<partner service principal id>.`,
+      });
+    }
+  }
+
+  // B-W06 (#6160, D-B55): Tasks exist only in the stateless era, so the flag
+  // without MCP_STATELESS_ENABLED is a silent no-op — say so at boot.
+  {
+    const truthy = (v: string | undefined) => ['1', 'true', 'yes', 'on'].includes((v ?? '').trim().toLowerCase());
+    if (truthy(env.MCP_TASKS_ENABLED) && !truthy(env.MCP_STATELESS_ENABLED)) {
+      warnings.push({
+        key: 'MCP_TASKS_ENABLED',
+        message: 'is on but MCP_STATELESS_ENABLED is off, so the MCP Tasks extension stays inactive (no task handles, nothing advertised). Turn MCP_STATELESS_ENABLED on with it.',
       });
     }
   }

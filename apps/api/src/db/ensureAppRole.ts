@@ -413,6 +413,20 @@ export async function ensureAppRole(): Promise<boolean> {
           REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM breeze_app;
           REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM PUBLIC;
         END IF;
+        -- ai_credit_debits (#9451, 2027-01-03-100000): the durable debit
+        -- outbox. TRUNCATE would wipe owed debits with no per-row trace; the
+        -- blanket GRANT in step 4 does not grant it, but re-revoke it on every
+        -- boot like the other append-only tables (#4371).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_credit_debits') THEN
+          REVOKE TRUNCATE ON TABLE ai_credit_debits FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE ai_credit_debits FROM PUBLIC;
+        END IF;
+        -- security_scan_sweeps (#6263 W05, 2027-01-04-140000): IOC sweep
+        -- execution records; the migration revokes TRUNCATE like the other
+        -- tenant tables of its shape, so re-revoke it on every boot (#4371).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='security_scan_sweeps') THEN
+          REVOKE TRUNCATE ON TABLE security_scan_sweeps FROM breeze_app;
+        END IF;
       END $$;
     `);
 

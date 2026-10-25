@@ -28,6 +28,7 @@ import {
   recordAdmissionFailOpen,
   recordAdmissionTickFailure,
   recordAdmissionDecision,
+  recordAdmissionRiseSuppressed,
   recordAdmissionTransition,
   type ShedReason,
 } from './admissionMetrics';
@@ -140,6 +141,7 @@ export class AdmissionRuntime implements AdmissionGate {
       recordAdmissionTransition(step.previous, step.level, step.trigger);
       this.log(this.describeTransition(step, signals));
     }
+    if (step.suppressed) recordAdmissionRiseSuppressed(step.suppressed.level, step.suppressed.trigger);
     publishAdmissionTick({
       mode: this.mode,
       level: step.level,
@@ -252,7 +254,8 @@ export function startAdmissionControl(env: NodeJS.ProcessEnv = process.env): Adm
   runtime.start();
   console.log(
     `[admission] mode=${config.mode} lag=${config.lagMs.join('/')}ms dbWait=${config.dbWaitMs.join('/')}ms `
-      + `emergency=${config.emergencyMs}ms bulkMaxInFlight=${config.bulkMaxInFlight} `
+      + `emergency=${config.emergencyMs}ms riseTicks=${config.riseTicks} level1Hold=${config.level1HoldMs}ms `
+      + `bulkMaxInFlight=${config.bulkMaxInFlight} `
       + `ws=${config.wsRatePerSec}/s burst=${config.wsBurst} maxSetups=${config.wsMaxSetups}`,
   );
   return runtime;

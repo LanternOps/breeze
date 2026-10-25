@@ -37,6 +37,7 @@ function isPolledProvider(p: string): p is PolledMailboxProvider {
 import { stripTicketTokens, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
+import { TicketMergedError } from '../ticketMerge/errors';
 
 // Synthetic actor for the inbound pipeline. Its userId is only ever written to
 // audit_logs.actor_id (NOT NULL, but no FK to users — same pattern as
@@ -500,7 +501,7 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId, closedOriginal.id);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -623,6 +624,11 @@ export async function processInboundEmail(
     // (8) 'quarantine' (default) -> review queue for manual handling.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
+    // #8972: the matched ticket was merged between the (unlocked) match and the
+    // comment's ticket lock. Not a failure of this message: rethrow so the outer
+    // transaction rolls back and BullMQ retries — the re-run matches through
+    // merged_into_ticket_id and lands the reply on the survivor.
+    if (err instanceof TicketMergedError) throw err;
     // (9) Any guard/error after partner resolution -> failed, logged under the
     // RESOLVED partner. Never a cross-tenant write.
     //
@@ -841,7 +847,10 @@ async function createFromEmail(
   priorNumber: string | null,
   requester: EmailTicketRequester,
   autoresponse: boolean,
-  defaultAssigneeUserId: string | null
+  defaultAssigneeUserId: string | null,
+  // #8883 W5 (Gate B14): the closed ticket this one continues; passed only on
+  // the closed-continuation path, so createTicket skips routing for it.
+  continuationOfTicketId: string | null = null
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -862,7 +871,8 @@ async function createFromEmail(
       submitterEmail: n.from,
       submitterName: n.fromName,
       submittedBy: requester?.kind === 'portal' ? requester.portalUserId : undefined,
-      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined
+      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined,
+      ...(continuationOfTicketId ? { continuationOfTicketId } : {})
     },
     SYSTEM_ACTOR
   );

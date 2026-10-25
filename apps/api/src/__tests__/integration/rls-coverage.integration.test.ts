@@ -87,6 +87,8 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // NOTE: device_commands is the canonical prior example (agent WS path, system-
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
+  'billing_device_snapshots', // Billing-owned daily capacity evidence. Forced owner-only RLS; no core tenant role can read/write, even with a forged partner context.
+  'billing_capacity_changes', // Billing-owned notice/payment operation ledger. Forced owner-only RLS, revoked from breeze_app; only authenticated billing service exposes the owning partner's summary.
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'container_image_upstream_cache', // Workload image currency W05 (#8194, spec §9.3): global cache of what PUBLIC registries serve per registry/repository:tag — no tenant column by design (fleet-wide dedup, D13). Forced RLS, single system-only policy, NO permissive SELECT (keys are derived from what tenants run). Written only by the imageCurrencyWorker for anonymous lookups that succeeded; private/failed results land only on the tenant's own device_workloads rows. No org_id/device_id, so no cascade, merge or export registration applies.
   'pam_epoch_transfer_config', // PAM ownership epochs W6 (#8208): one-row deployment switch the device-move guard trusts over the forgeable breeze.* GUCs. No tenant column. Forced RLS, single system-only policy, AND no breeze_app privilege at all (migration + ensureAppRole.ts REVOKE ALL) — a breeze_app session can claim system scope, so the grant, not RLS, is the barrier. Read only through SECURITY DEFINER breeze_pam_epoch_transfer_enabled(); written only by the table owner. No org_id/device_id, so no cascade, merge or export registration.
@@ -198,6 +200,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
   // real assertion for this table's policy shape.
   'ticket_form_org_links',
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): same shape as
+  // ticket_form_org_links — its own org_id is the ALLOWLISTED org for a
+  // partner-wide ticket_routing_rules row, not the tenancy axis; its policies
+  // join through the parent rule (PARENT_FK_JOIN_POLICY_TABLES).
+  'ticket_routing_rule_org_links',
   // backup_provider_customers (#6008 W01): partner-axis (Shape 3) carrying a
   // denormalized NULLABLE org_id — the MAPPING TARGET, not the tenancy axis.
   // An unmapped customer has org_id NULL and must stay visible to the partner
@@ -222,6 +229,16 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // Cross-partner forge proof: gmailInboundToTicket.integration.test.ts (composite
   // FK rejects an org owned by a different partner).
   'ticket_mailbox_connections',
+  // Wisp W02 (#9908): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the grant's SCOPE (NULL = partner-wide), bound to the partner by the
+  // composite (org_id, partner_id) FK, not the tenancy axis. Functional forge
+  // proof: wispGrantsRls.integration.test.ts.
+  'wisp_grants',
+  // Wisp W04 (#9910): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the attached session's org, bound to the partner by the composite
+  // (org_id, partner_id) FK — not the tenancy axis. Forge proof:
+  // wispThreadsRls.integration.test.ts.
+  'wisp_thread_sessions',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -277,6 +294,20 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // same policy shape as time_entries. No org_id / device_id by design, so it
   // appears in no other registration list.
   ['time_suggestion_decisions', 'partner_id'],
+  // partner_entitlements (Partner Entitlements W1, Wisp W01 #9907): shape 3,
+  // no org_id — partner-axis only, so this is its ONLY registration list.
+  ['partner_entitlements', 'partner_id'],
+  // ai_memory_blocks (Wisp W03 #9909): partner-axis anchor (tenant_partner_id)
+  // with owner sub-axes — owner_kind user | org | partner, each owner bound to
+  // the anchor by a DEFERRABLE composite FK (users / organizations (id,
+  // partner_id), ON DELETE CASCADE). RLS branches on owner_kind; the partner
+  // branch is breeze_has_partner_access(tenant_partner_id). Private memory, not
+  // config, so no partner-wide SELECT branch. No `org_id` column (it is
+  // `owner_org_id`), so the org cascade/merge/export engines — which key on a
+  // literal `org_id` — cannot see it: org/user/partner erasure removes rows by
+  // FK cascade instead (w00 A9). This is its ONLY registration list.
+  // Functional proof: aiMemoryBlocksRls.integration.test.ts.
+  ['ai_memory_blocks', 'tenant_partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
   ['pax8_integrations', 'partner_id'],
@@ -493,6 +524,27 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // merge registration; cascadeDeletePartner's partner_id sweep erases it.
   // Functional forge proof: trustPageTemplatesPartnerRls.integration.test.ts.
   ['trust_page_templates', 'partner_id'],
+  // Wisp W02 (#9908): delegation grants + their append-only revisions. Shape 3
+  // plus ownership constraints (self-only INSERT, admin tighten/revoke-only
+  // trigger). Forge proof: wispGrantsRls.integration.test.ts.
+  ['wisp_grants', 'partner_id'],
+  ['wisp_grant_revisions', 'partner_id'],
+  // Wisp W04 (#9910): one durable thread per grant + its session links. Shape
+  // 3, one FOR ALL policy each (system OR breeze_has_partner_access(partner_id)).
+  // wisp_thread_sessions also carries a non-tenancy org_id and is in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). The sibling
+  // wisp_thread_attachments is shape 1 (auto-discovered, not listed here).
+  // Forge proof: wispThreadsRls.integration.test.ts.
+  ['wisp_threads', 'partner_id'],
+  ['wisp_thread_sessions', 'partner_id'],
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1):
+  // wisp_nudge_preferences is user-axis inside a partner — its FOR ALL policy is
+  // `system OR (user_id = breeze_current_user_id() AND breeze_has_partner_access(partner_id))`
+  // plus an additive SELECT-only partner read branch; also in USER_ID_SCOPED_TABLES.
+  // wisp_partner_nudge_settings is plain shape 3. No org_id on either → no
+  // cascade/merge/export registration. Forge proof: wispNudgePreferencesRls.integration.test.ts.
+  ['wisp_nudge_preferences', 'partner_id'],
+  ['wisp_partner_nudge_settings', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -605,6 +657,25 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // forge proof: toolSourcesPartnerRls.integration.test.ts.
   'tool_sources',
   'tool_source_tools',
+  // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
+  // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
+  // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  'flows',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config table plus three children that DENORMALISE the owner
+  // pair from their parent (owner-guard constraint triggers, like
+  // tool_source_tools), all four with the partner-wide SELECT branch in the
+  // creating migration. Functional forge proof:
+  // businessCalendarsPartnerRls.integration.test.ts.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000): org_id XOR partner_id
+  // config table with the partner-wide SELECT branch and the org-member SELECT
+  // branch in the creating migration. Functional forge proof:
+  // ticketRoutingRulesPartnerRls.integration.test.ts.
+  'ticket_routing_rules',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -615,6 +686,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // connection_health_incidents_org_partner_fk ties org_id to partner_id.
   // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
   'connection_health_incidents',
+  // Wisp W05a (#9911, w00 A30): wisp_concerns, wisp_concern_recipients and
+  // wisp_watches copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-level concern / partner-wide watch,
+  // NOT org XOR partner, so absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES and with
+  // no breeze_current_partner_id() read branch (an org token must never see a
+  // partner-level row). Composite FKs *_org_partner_fk tie org_id to
+  // partner_id. Functional forge proof: wispConcernsRls.integration.test.ts.
+  'wisp_concerns',
+  'wisp_concern_recipients',
+  'wisp_watches',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
@@ -948,6 +1029,19 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // needs a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'tool_sources',
   'tool_source_tools',
+  // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
+  // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
+  'flows',
+  // business_calendars_one_owner_chk and the three children's *_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
+  // All four partner-wide SELECT branches ship in the same file.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
+  // ticket_routing_rules_one_owner_chk, 2027-01-04-120000 (#8883 W5); its
+  // partner-wide SELECT branch ships in the same file.
+  'ticket_routing_rules',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',
@@ -1033,6 +1127,7 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
   'deployment_results',
   'patch_job_results',
   'patch_rollbacks',
+  'software_compliance_status',
 ]);
 
 // Tables that reach their tenant through a PARENT FK (no device_id, no
@@ -1147,6 +1242,11 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access(parent.org_id) join would be WRONG because the
   // parent's org_id is NULL for the partner-wide forms this table scopes.
   ['ticket_form_org_links', ['ticket_forms']],
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): org allowlist
+  // for partner-wide ticket_routing_rules, same parent-join shape as
+  // ticket_form_org_links, plus a SELECT-only branch admitting any link whose
+  // parent rule the caller can read (the create-path allowlist read).
+  ['ticket_routing_rule_org_links', ['ticket_routing_rules']],
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and
@@ -1245,6 +1345,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // connectionHealthDigest.integration.test.ts.
   'user_email_optouts',
   'connection_health_digest_deliveries',
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1): the
+  // user's own nudge preferences; also in PARTNER_TENANT_TABLES (the same FOR
+  // ALL policy ANDs breeze_has_partner_access). Behavioural proof:
+  // wispNudgePreferencesRls.integration.test.ts.
+  'wisp_nudge_preferences',
 ]);
 
 // Tables WITHOUT their own org_id whose permissive policies may admit rows by
@@ -1261,6 +1366,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 // see 'every child table without org_id checks its parent org wherever a policy
 // admits by user identity' below.
 const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
+  'ai_memory_blocks', // Wisp W03: the user branch admits only owner_kind='user' rows, whose owner_org_id is NULL by CHECK (no org parent) — the technician's own private memory; org facts are org-owned rows gated by breeze_has_org_access.
   'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
   'authenticator_devices', // the user's own approver device keys.
   'connection_health_digest_deliveries', // the user's own digest delivery receipts: date, status and bare incident ids (no FK, no org content).
@@ -1275,6 +1381,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.
+  'wisp_nudge_preferences', // Wisp W06a: the user's own nudge channel / quiet-hour / brief preferences (user_id PK, no org reference); the user branch also ANDs breeze_has_partner_access(partner_id).
 ]);
 
 // Platform bookkeeping tables that hold no tenant data and are not a tenancy
@@ -1300,7 +1407,6 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
   // column / catalog facts that a reviewer needs, nothing more.
   ['device_software', 'device_id-keyed inventory rows, no RLS; candidate shape 5 (device-join) or denormalised org_id.'],
   ['mobile_sessions', 'user_id / refresh-token session rows, no RLS; candidate shape 6 (breeze_current_user_id). Deferred in 2026-04-11-bucket-c-dead-cleanup-rls.sql.'],
-  ['software_compliance_status', 'device_id + policy_id rows, no RLS; candidate shape 5 (device-join).'],
   ['agent_versions', 'Global agent release reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
   ['cis_check_catalog', 'Global CIS benchmark check catalog; RLS OFF, so its 3 system-only write policies are inert; candidate INTENTIONAL_UNSCOPED after review.'],
   ['patches', 'Global patch reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
@@ -1321,11 +1427,10 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
 // classified into a real bucket (see the D5 failure message), not parked
 // here. Both constants are asserted by 'the unreviewed classification debt
 // bucket only shrinks' below.
-const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 11;
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 10;
 const UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'device_software',
   'mobile_sessions',
-  'software_compliance_status',
   'agent_versions',
   'cis_check_catalog',
   'patches',

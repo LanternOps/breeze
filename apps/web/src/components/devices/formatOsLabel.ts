@@ -13,6 +13,24 @@ function windowsBuildNumber(raw: string | null | undefined): string | null {
   return /^\d+$/.test(parts[0] ?? '') ? parts[0]! : null;
 }
 
+/**
+ * The build shown for a device (#9610): the reported `osBuild` when present,
+ * else the build carried by a bare Windows NT `osVersion` ("10.0.22631.4317").
+ * Shared by the header label and the Details tab so they cannot disagree.
+ * Returns null when no build is known.
+ */
+export function formatOsBuild(
+  osType: string | null | undefined,
+  osVersion: string | null | undefined,
+  osBuild: string | null | undefined,
+): string | null {
+  const reported = osBuild?.trim() ?? '';
+  if (reported) return reported;
+  if (osType?.toLowerCase() !== 'windows') return null;
+  const dotted = osVersion?.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  return dotted ? dotted[3]! : null;
+}
+
 function formatWindows(osVersion: string, osBuild: string | null | undefined): string {
   const named = osVersion.match(/^(?:microsoft\s+)?(windows\b.*)$/i);
   if (named) {

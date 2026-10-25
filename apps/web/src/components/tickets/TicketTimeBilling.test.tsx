@@ -777,4 +777,58 @@ describe('TicketTimeBilling customer approval', () => {
     expect((await screen.findByTestId('ticket-billing-approval-required')).textContent).toMatch(/Approvals panel/);
     expect(screen.queryByTestId('ticket-billing-start-non-billable')).toBeNull();
   });
+
+});
+
+// #9561: the 2-decimal-hours labour rule is by design; the rail makes every
+// labour figure explainable — rounded hours × rate = amount per entry, and
+// the rule itself under the ticket's time amount.
+describe('labour rule visibility (#9561)', () => {
+  const rated = (over: Record<string, unknown>) => ({ ...entries[0], hourlyRate: '135.00', currencyCode: 'USD', ...over });
+  const withEntries = (rows: unknown[]) => fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url.startsWith('/tickets/tk-1/time-entries')) return { ok: true, status: 200, json: async () => ({ data: rows, total: rows.length }) } as Response;
+    return route(url);
+  });
+
+  it('shows rounded hours × rate = amount for a rated billable entry (25 min at $135.00 → 0.42 h, $56.70)', async () => {
+    withEntries([rated({ id: 'e25', durationMinutes: 25 })]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-entry-labor-e25')).textContent).toBe('0.42 h × $135.00 = $56.70');
+  });
+
+  it('prices the billed quantity (billable_minutes), not the worked duration', async () => {
+    withEntries([rated({ id: 'emin', durationMinutes: 5, billableMinutes: 15, hourlyRate: '100.00' })]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-entry-labor-emin')).textContent).toBe('0.25 h × $100.00 = $25.00');
+  });
+
+  it('shows no breakdown for a non-billable, unrated or running entry', async () => {
+    withEntries([
+      rated({ id: 'nb', isBillable: false }),
+      rated({ id: 'nr', hourlyRate: null, currencyCode: null }),
+      rated({ id: 'run', endedAt: null, durationMinutes: null }),
+    ]);
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-entries');
+    expect(screen.queryByTestId('ticket-billing-entry-labor-nb')).toBeNull();
+    expect(screen.queryByTestId('ticket-billing-entry-labor-nr')).toBeNull();
+    expect(screen.queryByTestId('ticket-billing-entry-labor-run')).toBeNull();
+  });
+
+  it('states the rule under the time amount when there is one, and not otherwise', async () => {
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-labor-rule')).textContent).toMatch(/rounded to hours \(2 decimals\) × its rate/);
+  });
+
+  it('omits the rule when the ticket has no time amount', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: { ...summary, time: { ...summary.time, billableAmounts: [] } } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    await screen.findByTestId('ticket-billing-amount');
+    expect(screen.queryByTestId('ticket-billing-labor-rule')).toBeNull();
+  });
 });

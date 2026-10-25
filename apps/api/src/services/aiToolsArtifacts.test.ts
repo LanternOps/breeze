@@ -186,6 +186,20 @@ describe('read_artifact anchor threading through executeTool (A-W05 Q4)', () => 
     );
   });
 
+  it('Wisp W04: a chat caller attached to a thread carries wispThreadId onto the read anchor; without one the anchor has no such key', async () => {
+    await executeTool('read_artifact', { handle: HANDLE }, auth(), {
+      capture: { orgId: 'o1', sessionId: 'chat-session-9', wispThreadId: 'thread-7' },
+    });
+    expect(svc.findArtifactForCaller).toHaveBeenLastCalledWith(
+      HANDLE,
+      expect.objectContaining({ orgId: 'o1', runId: null, sessionId: 'chat-session-9', wispThreadId: 'thread-7' }),
+    );
+
+    await executeTool('read_artifact', { handle: HANDLE }, auth(), { capture: { orgId: 'o1', sessionId: 'chat-session-9' } });
+    const anchor = svc.findArtifactForCaller.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(Object.keys(anchor)).not.toContain('wispThreadId');
+  });
+
   it('a caller with no attributable org/run/session gets the typed refusal, never an unscoped lookup', async () => {
     const bareAuth = { scope: 'system', orgId: null, orgCondition: () => undefined } as unknown as AuthContext;
     const out = JSON.parse(await executeTool('read_artifact', { handle: HANDLE }, bareAuth));

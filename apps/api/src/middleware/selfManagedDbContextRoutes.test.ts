@@ -105,6 +105,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/bulk/restore'],
     ['POST', '/api/v1/devices/bulk/restore/'],
     ['post', '/api/v1/devices/bulk/restore'], // method is case-insensitive
+    // #9796 bulk site move — one short transaction per device via runBulkIsolated.
+    ['POST', '/api/v1/devices/bulk/site'],
+    ['POST', '/api/v1/devices/bulk/site/'],
     ['POST', '/api/v1/sso/providers'],
     ['POST', '/api/v1/sso/providers/'],
     ['PATCH', '/api/v1/sso/providers/abc-123'],
@@ -413,6 +416,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/11111111-1111-4111-8111-111111111111/restore', 'single restore keeps ambient tx'],
     ['POST', '/api/v1/devices/bulk/restore/extra', 'extra segment must not match'],
     ['GET', '/api/v1/devices/bulk/restore', 'bulk restore is POST-only'],
+    ['GET', '/api/v1/devices/bulk/site', 'bulk site move is POST-only'],
+    ['POST', '/api/v1/devices/bulk/site/extra', 'extra segment must not match'],
+    // The single-device site move (PATCH /devices/:id) runs in one request transaction and keeps it.
+    ['PATCH', '/api/v1/devices/11111111-1111-4111-8111-111111111111', 'single site move keeps ambient tx'],
     // Bulk permanent delete only validates and ENQUEUES — no slow work in the
     // handler, so it keeps the ambient transaction (same call as quotes/bulk-send).
     ['POST', '/api/v1/devices/bulk/permanent-delete', 'bulk purge only enqueues; the worker does the work'],
@@ -592,6 +599,32 @@ describe('#3127 chat message-send routes', () => {
   });
 });
 
+// #9427 — the AI chat attach stream holds a request open for a whole turn.
+// It reads the owner-bound session in one short withAuthDbAccessContext and
+// does no DB work inside the stream; under the ambient request transaction it
+// would pin a pooled connection for the length of the turn (#1105).
+describe('#9427 AI chat attach stream', () => {
+  const SID = '11111111-1111-4111-8111-111111111111';
+  it.each([
+    ['GET', `/api/v1/ai/sessions/${SID}/stream`],
+    ['GET', `/api/v1/ai/sessions/${SID}/stream/`],
+    ['get', `/api/v1/ai/sessions/${SID}/stream`],
+    ['GET', '/api/v1/ai/sessions/abc/stream'],
+  ])('opts out: %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['GET', `/api/v1/ai/sessions/${SID}`, 'session read keeps the ambient tx'],
+    ['POST', `/api/v1/ai/sessions/${SID}/stream`, 'only GET'],
+    ['GET', `/api/v1/ai/sessions/${SID}/stream/extra`, 'extra segment must not match'],
+    ['GET', '/api/v1/ai/sessions//stream', 'empty session id must not match'],
+    ['GET', `/api/v1/client-ai/sessions/${SID}/stream`, 'other chat surfaces are not covered'],
+  ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
+});
+
 it('#7347 self-manages the manual automation trigger and software deploy/retry POSTs, and no sibling route', () => {
   for (const [method, path] of <Array<[string, string]>>[
     ['POST', '/api/v1/automations/auto-1/trigger'],
@@ -689,4 +722,34 @@ it('#8167 PR-B self-manages the three push routes (vendor push-settings calls) a
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/other')).toBe(false);
   // The public webhook has no ambient auth transaction to opt out of.
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/webhooks/edr/abc-123')).toBe(false);
+});
+
+it('#6263 W04 self-manages only the YARA rule test upload (the scan runs outside any transaction)', () => {
+  const SET = '22222222-2222-4222-8222-222222222222';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/test`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/yara/rule-sets/${SET}/test`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/ioc-import`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/rules`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/yara/rule-sets/not-a-uuid/test')).toBe(false);
+});
+
+it('#8973 W4 self-manages only the portal ticket create (Gate B1), not the ticket reads or comment writes', () => {
+  const T = '44444444-4444-4444-8444-444444444444';
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/portal/tickets')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/portal/tickets/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/portal/tickets')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/portal/tickets/${T}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/portal/tickets/${T}/comments`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/portal/tickets/forms')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/tickets')).toBe(false);
+});
+
+it('#8973 W4 self-manages only the D12 apply-revision POST of the business-calendar routes', () => {
+  const C = '55555555-5555-4555-8555-555555555555';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/business-calendars/${C}/apply-revision`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/business-calendars/${C}/apply-revision/preview`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/business-calendars/${C}/holidays`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars/not-a-uuid/apply-revision')).toBe(false);
 });

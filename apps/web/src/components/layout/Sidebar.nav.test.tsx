@@ -115,6 +115,8 @@ describe('navSections structure (#1321, #1324)', () => {
     ]);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
+      // #9794 — Sites sits next to Device Groups (spec Decision 1).
+      '/settings/sites',
       // Parked devices awaiting assignment (full partner admins only).
       '/devices/unassigned',
       '/configuration-policies',
@@ -130,7 +132,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fix-memory', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/settings/tool-sources', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/operator', '/ai-agents/impact', '/ai-agents/fix-memory', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/settings/tool-sources', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);
@@ -239,6 +241,21 @@ describe('endpoint messages nav entry', () => {
     expect(hits[0]!.labelKey).toBe('nav.endpointMessages');
     expect(hits[0]!.requiredPermission).toEqual({ resource: 'endpoint_messages', action: 'read' });
     expect(section('fleet-management').items).toContain(hits[0]);
+  });
+});
+
+describe('sites nav entry (#9794)', () => {
+  it('sits in Fleet Management right after Device Groups, gated only on sites:read (Decisions 1-2)', () => {
+    const hits = [...topLevelNav, ...navSections.flatMap((s) => s.items)].filter((i) => i.href === '/settings/sites');
+    expect(hits).toHaveLength(1);
+    const item = hits[0]!;
+    expect(item.labelKey).toBe('nav.sites');
+    expect(item.testId).toBe('nav-sites');
+    expect(item.requiredPermission).toEqual({ resource: 'sites', action: 'read' });
+    // Shown to org-scoped users and single-site orgs alike: no scope gate.
+    expect(item.partnerScopeOnly).toBeFalsy();
+    const fleet = section('fleet-management').items;
+    expect(fleet.indexOf(item)).toBe(fleet.findIndex((i) => i.href === '/devices/groups') + 1);
   });
 });
 

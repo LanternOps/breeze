@@ -49,6 +49,12 @@ function route(handlers: Record<string, () => Response | Promise<Response>>) {
   });
 }
 
+/** #9427: the attach a hydrate or a turn_in_progress refusal opens; no turn running. */
+const idleAttach = (): Response => {
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'attach_state', turn: 'idle', turnId: null, lastSeq: 0, turnUserMessageId: null, partial: false, replay: [], pendingCards: [], activePlan: null, turnModel: null })}\n\n`);
+  return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+};
+
 const messagePosts = () => fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/messages'));
 
 beforeEach(reset);
@@ -60,7 +66,8 @@ describe('selection never leaks across chats', () => {
     let releaseChoices!: () => void;
     route({
       '/ai/sessions/B/messages': () => emptyStream(),
-      '/ai/sessions/B': () => json({ session: { id: 'B', status: 'active', orgId: 'o1' }, messages: [] }),
+      '/ai/sessions/B/stream': () => idleAttach(),
+      '/ai/sessions/B': () => json({ session: { id: 'B', status: 'active', orgId: 'o1', type: 'general' }, messages: [] }),
       '/ai/models/choices/chat': () => new Promise<Response>((r) => { releaseChoices = () => r(json({ data: CHOICES })); }),
     });
     await useAiStore.getState().loadSession('B');
@@ -104,13 +111,14 @@ describe('selection never leaks across chats', () => {
 describe('opening another chat from History (#7769)', () => {
   const choicesFor = (offeringId: string): AiModelChoicesDto => ({ ...CHOICES, current: { offeringId, options: {} } });
   const sessionBody = (id: string, lastTurnModel: unknown = null) =>
-    json({ session: { id, status: 'active', orgId: 'o1', lastTurnModel }, messages: [] });
+    json({ session: { id, status: 'active', orgId: 'o1', type: 'general', lastTurnModel }, messages: [] });
   const currentId = () => useAiModelPickerStore.getState().choices?.current?.offeringId;
 
   it('reloads the menu for the chosen chat, drops the previous pick, and sets the label model', async () => {
     useAiModelPickerStore.setState({ choices: choicesFor('haiku') });
     useAiModelPickerStore.getState().select('def');
     route({
+      '/ai/sessions/B/stream': () => idleAttach(),
       '/ai/sessions/B': () => sessionBody('B', { offeringId: 'def', displayName: 'Sonnet' }),
       '/ai/models/choices/chat?sessionId=B': () => json({ data: choicesFor('def') }),
     });
@@ -124,6 +132,7 @@ describe('opening another chat from History (#7769)', () => {
     let releaseA!: () => void;
     route({
       '/ai/models/choices/chat?sessionId=A': () => new Promise<Response>((r) => { releaseA = () => r(json({ data: choicesFor('haiku') })); }),
+      '/ai/sessions/B/stream': () => idleAttach(),
       '/ai/sessions/B': () => sessionBody('B'),
       '/ai/models/choices/chat?sessionId=B': () => json({ data: choicesFor('def') }),
     });
@@ -137,14 +146,29 @@ describe('opening another chat from History (#7769)', () => {
 
   it('dismisses a continuation parked for another chat', async () => {
     useAiModelPickerStore.getState().requireContinuation({} as never, 'hello', 'A');
-    route({ '/ai/sessions/B': () => sessionBody('B'), '/ai/models/choices/chat': () => json({ data: CHOICES }) });
+    route({ '/ai/sessions/B/stream': () => idleAttach(), '/ai/sessions/B': () => sessionBody('B'), '/ai/models/choices/chat': () => json({ data: CHOICES }) });
     await useAiStore.getState().switchSession('B');
     expect(useAiModelPickerStore.getState().continuation).toBeNull();
   });
 });
 
 describe('coded 409s remove the optimistic user bubble', () => {
-  it.each(['turn_in_progress', 'model_unavailable', 'topology_model_changed'])('%s', async (code) => {
+  // turn_in_progress is not an error any more: it attaches and restores the
+  // composer (#9427 W2, Gate B #7; aiStore.attach.test.ts). It still drops the bubble.
+  it('turn_in_progress drops the bubble without an error (attaches instead)', async () => {
+    route({
+      '/ai/sessions/A/messages': () => json({ error: 'nope', code: 'turn_in_progress' }, 409),
+      '/ai/sessions/A/stream': () => idleAttach(),
+    });
+    await useAiStore.getState().sendMessage('hello');
+    const s = useAiStore.getState();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+    expect(s.error).toBeNull();
+    expect(s.composerDraft).toBe('hello');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/A/stream', expect.anything()));
+  });
+
+  it.each(['model_unavailable', 'topology_model_changed'])('%s', async (code) => {
     useAiModelPickerStore.setState({ choices: CHOICES });
     route({
       '/ai/sessions/A/messages': () => json({ error: 'nope', code }, 409),
@@ -158,10 +182,20 @@ describe('coded 409s remove the optimistic user bubble', () => {
     expect(s.isStreaming).toBe(false);
   });
 
+  it.each(['credits_exhausted', 'plan_not_eligible'])('a coded 402 %s drops the bubble and keeps the code (#9450)', async (code) => {
+    route({ '/ai/sessions/A/messages': () => json({ error: 'Out of credits', code }, 402) });
+    await useAiStore.getState().sendMessage('hello');
+    const s = useAiStore.getState();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+    expect(s.errorCode).toBe(code);
+    expect(s.error).toBe('Out of credits');
+    expect(s.isStreaming).toBe(false);
+  });
+
   it('turn_in_progress keeps the picker selection for the retry', async () => {
     useAiModelPickerStore.setState({ choices: CHOICES });
     useAiModelPickerStore.getState().select('haiku');
-    route({ '/ai/sessions/A/messages': () => json({ error: 'busy', code: 'turn_in_progress' }, 409) });
+    route({ '/ai/sessions/A/messages': () => json({ error: 'busy', code: 'turn_in_progress' }, 409), '/ai/sessions/A/stream': () => idleAttach() });
     await useAiStore.getState().sendMessage('hello');
     expect(useAiModelPickerStore.getState().selection?.offeringId).toBe('haiku');
   });
