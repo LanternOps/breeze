@@ -52,6 +52,10 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // MFA gate: like an agent, a flow has no session MFA claim; its Tier-3
   // authorization is the upstream approval (released intent / pre-approval).
   'services/aiToolMfaGate.ts:if (isAutomationPrincipal(auth)) return false;': 'automation',
+  // Ticket W06 writes (#10160): a machine principal's user id is not a users
+  // row, so uploaded_by_user_id / author FKs have no human to attribute.
+  'services/aiToolsTicketAttachments.ts:if (isAutomationPrincipal(auth)) return agentRefusal(action);': 'automation',
+  'services/aiToolsTicketOpsShared.ts:return isAutomationPrincipal(auth);': 'automation',
   // Same upstream-approval-instead-of-MFA rule for delivery-rail writes.
   "services/aiToolsDelivery.ts:if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');": 'automation',
   "services/topology/monitoringAuthority.ts:if (!isInteractiveUserSession(ctx.auth) || isAutomationPrincipal(ctx.auth)) {": 'automation',

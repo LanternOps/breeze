@@ -24,7 +24,8 @@ import { z } from 'zod';
 import { db } from '../db';
 import { ticketComments } from '../db/schema';
 import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../db/schema/ticketAttachments';
-import { isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
+import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { TICKET_ATTACHMENT_ACTIONS } from './aiToolSchemasTicketOps';
 import { findTicketWithAccess } from './aiToolsTicketing';
@@ -190,7 +191,7 @@ export function registerTicketAttachmentTools(aiTools: Map<string, AiTool>): voi
 
         if (action === 'attach_from_artifact') {
           // uploaded_by_user_id is a users FK; a tier-2 agent intent has no approver to substitute (#6206).
-          if (isAiAgentPrincipal(auth)) return agentRefusal(action);
+          if (isAutomationPrincipal(auth)) return agentRefusal(action);
           const handle = guid.safeParse(input.artifactId);
           if (!handle.success) return jsonError('artifactId must be an artifact handle UUID', 'VALIDATION_ERROR');
           if (ticket.deletedAt) return jsonError('Cannot attach files to a deleted ticket', 'TICKET_DELETED');
