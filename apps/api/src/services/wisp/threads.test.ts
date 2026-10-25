@@ -79,6 +79,7 @@ vi.mock('../../db', async () => {
   }));
   return {
     db: { select, insert, update },
+    withDbTransaction: vi.fn((fn: () => unknown) => fn()),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(),
     getCurrentDbAccessContext: vi.fn(() => undefined),
@@ -353,6 +354,22 @@ describe('seedContextForSession', () => {
       const callerAuth = { user: { id: GRANTOR }, scope: 'organization', orgId: ORG_A } as never;
       await seedContextForSession(THREAD, ceiling, callerAuth);
       expect(h.listLinks).toHaveBeenCalledWith({ auth: callerAuth, ceiling }, THREAD);
+    });
+
+    it('lists links inside a savepoint so a Postgres error there cannot abort the seed transaction', async () => {
+      const { withDbTransaction } = await import('../../db');
+      h.threads = [threadRow];
+      let insideSavepoint = false;
+      vi.mocked(withDbTransaction).mockImplementationOnce(async (fn) => {
+        insideSavepoint = true;
+        try { return await fn(); } finally { insideSavepoint = false; }
+      });
+      h.listLinks.mockImplementationOnce(async () => {
+        expect(insideSavepoint).toBe(true);
+        return [];
+      });
+      await seedContextForSession(THREAD, ceiling);
+      expect(h.listLinks).toHaveBeenCalledTimes(1);
     });
 
     it('lists visible links by handle after the attachments, inside a wisp_thread_links fence, before memory; listLinks runs in seed mode (no auth) when there is no caller', async () => {

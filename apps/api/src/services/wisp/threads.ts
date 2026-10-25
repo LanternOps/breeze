@@ -13,7 +13,7 @@
  * this module never takes an id from the model.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
@@ -98,7 +98,9 @@ function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
  */
 async function linkSeedSection(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null, flags: string[]): Promise<string> {
   try {
-    return renderLinkSection(await listLinks({ auth, ceiling }, threadId), flags);
+    // A savepoint: the seed shares one system transaction, and a Postgres error
+    // in the link reads/prunes must not abort the memory reads after it.
+    return renderLinkSection(await withDbTransaction(() => listLinks({ auth, ceiling }, threadId)), flags);
   } catch (err) {
     console.error(`[wisp] seed: listing links of thread ${threadId} failed; omitting the section`, err);
     captureException(err, undefined, { threadId, grantId: ceiling.grantId, op: 'wisp.seed_links' });

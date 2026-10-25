@@ -12,12 +12,13 @@
  *     org is refreshed in place.
  * There is no other read path that returns a stored label.
  *
- * Rows are read and written through `readOwnPartnerAxisRows`: in place under
- * the caller's RLS when a request context can see the partner (so an
+ * Reads, prunes and removes go through `readOwnPartnerAxisRows`: in place
+ * under the caller's RLS when a request context can see the partner (so an
  * org-scoped context never even loads an `org_id IS NULL` row), in system
- * scope otherwise (the session seed, which has no caller). Every query is
- * pinned to `(partner_id, thread_id)`; thread ownership is the caller's job
- * (the routes' `loadOwnThread`, the chat tools' own grant thread).
+ * scope otherwise (the session seed, which has no caller). `addLink` writes in
+ * system scope once the resolver has decided, so its cap counts every row.
+ * Every query is pinned to `(partner_id, thread_id)`; thread ownership is the
+ * caller's job (the routes' `loadOwnThread`, the chat tools' own grant thread).
  */
 import { and, count, desc, eq } from 'drizzle-orm';
 import {
@@ -37,6 +38,7 @@ import {
   type EntityResolveContext,
   type ResolvedEntity,
 } from './entityRefs';
+import { inSystemContext } from './grantAuthority';
 
 export class ThreadLinkError extends Error {
   constructor(public readonly code: WispLinkRefusal) {
@@ -88,7 +90,12 @@ export async function addLink(
 
   const partnerId = ctx.ceiling.partnerId;
   const addedByUserId = ctx.auth?.user.id ?? ctx.ceiling.grantorUserId;
-  const row = await inPartner(partnerId, () => db.transaction(async (tx) => {
+  // The write runs in system scope, after the resolver decided the caller's
+  // authority: the 50-link cap must count EVERY row of the thread, including
+  // the org_id NULL rows an org-scoped caller's RLS would hide (precedent:
+  // concerns.ts writes on ids the caller already authorised). Every statement
+  // stays pinned to (partner_id, thread_id).
+  const row = await inSystemContext(() => db.transaction(async (tx) => {
     const [thread] = await tx.select({ id: wispThreads.id }).from(wispThreads)
       .where(and(eq(wispThreads.id, threadId), eq(wispThreads.partnerId, partnerId)))
       .for('update')
@@ -165,15 +172,19 @@ export async function listLinks(ctx: EntityResolveContext, threadId: string): Pr
   const out: WispThreadLink[] = [];
   const gone: string[] = [];
   const stale: Array<{ id: string; label: string; orgId: string | null }> = [];
-  for (const row of rows) {
-    const r = await resolve({ kind: row.entityKind, id: row.entityId });
-    if (isResolveFailure(r)) {
-      if (r.reason === 'not_found') gone.push(row.id);
-      continue;
+  // One system context for every resolve: from a request each loader would
+  // otherwise take (and give back) a second pooled connection per row.
+  await inSystemContext(async () => {
+    for (const row of rows) {
+      const r = await resolve({ kind: row.entityKind, id: row.entityId });
+      if (isResolveFailure(r)) {
+        if (r.reason === 'not_found') gone.push(row.id);
+        continue;
+      }
+      if (r.label !== row.label || r.orgId !== row.orgId) stale.push({ id: row.id, label: r.label, orgId: r.orgId });
+      out.push(toLink(row, r));
     }
-    if (r.label !== row.label || r.orgId !== row.orgId) stale.push({ id: row.id, label: r.label, orgId: r.orgId });
-    out.push(toLink(row, r));
-  }
+  });
 
   if (gone.length > 0 || stale.length > 0) {
     await inPartner(partnerId, async () => {

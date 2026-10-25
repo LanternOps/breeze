@@ -54,6 +54,8 @@ wispHomeRoutes.get('/', zValidator('query', wispHomeQuerySchema), async (c) => {
       : c.json({ error: 'No Wisp delegation yet', code: 'no_grant' }, 404);
   }
 
+  // Idempotent create-on-first-use of the grantor's own thread (W04), the same
+  // as GET /thread: the home of a fresh grant has a thread to show.
   const thread = await getOrCreateThread(grant.id);
   const outcome = await ceilingOf({ thread, grant });
   if (!outcome.ok && outcome.reason === 'corrupt') return ceilingRefusal(c, 'corrupt');

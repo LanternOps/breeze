@@ -198,6 +198,22 @@ describe('thread links service (real Postgres)', () => {
     expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }))))
       .toBe('link_limit');
   });
+
+  it('the cap counts partner-level rows an org-scoped caller cannot see', async () => {
+    const env = await seed();
+    await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 50 }, () => ({
+      threadId: env.thread.id, partnerId: env.partner.id, orgId: null, entityKind: 'user' as const,
+      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id,
+    }))));
+    const ceiling = await env.ceiling();
+    const orgToken = { ...env.auth, scope: 'organization', orgId: env.orgA.id } as AuthContext;
+    const orgCtx: DbAccessContext = {
+      scope: 'organization', orgId: env.orgA.id, accessibleOrgIds: [env.orgA.id], accessiblePartnerIds: [],
+      userId: env.grantor.id, currentPartnerId: env.partner.id,
+    };
+    expect(await refusal(withDbAccessContext(orgCtx, () => addLink({ auth: orgToken, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }))))
+      .toBe('link_limit');
+  });
 });
 
 describe('Task 13 — revocation drops a link everywhere (real Postgres)', () => {
