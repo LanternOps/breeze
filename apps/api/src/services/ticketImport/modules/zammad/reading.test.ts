@@ -1,0 +1,224 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { SourceAuthError, SourceUnavailableError } from '../../sourceFetch';
+import { clearZammadDirectoryCache, zammadPeople } from './directory';
+import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
+import { loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
+import { ZammadShapeError, type ZammadLoadedData } from './shapes';
+
+/**
+ * Reading a Zammad 7.2.2 source (spec 2026-10-19 §6.2, §6.8 "the client"),
+ * through the real source client against the fake's synthesized fixtures.
+ */
+
+afterEach(() => clearZammadDirectoryCache());
+
+function ticketRows(count: number, from = 1) {
+  const template = loadZammadFixtures('base').tickets[0]!;
+  return Array.from({ length: count }, (_, i) => ({ ...template, id: from + i, number: String(50000 + from + i) }));
+}
+
+describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
+  it('lists the fixture set in one short page, keyed by id with updated_at as version', async () => {
+    const fake = new FakeZammad();
+    const page = await scanZammad(zammadTestHandle(fake), null);
+    expect(page.next).toBeNull();
+    expect(page.rows.map((r) => r.key)).toEqual(['101', '102', '103', '104', '105', '106', '107', '108', '109', '110', '111', '112', '113', '114', '115', '116']);
+    expect(page.rows[0]).toMatchObject({ key: '101', version: '2026-03-03T16:40:12.345Z', orgKey: '2', number: '31001' });
+    expect(page.rows.find((r) => r.key === '110')!.orgKey).toBeNull();
+    expect(fake.requestedPaths()).toEqual(['/api/v1/tickets?page=1&per_page=100']);
+    // Token auth on every request (Z11).
+    expect(fake.requests.every((r) => r.authorization === 'Token token=zammad-fixture-token')).toBe(true);
+  });
+
+  it('pages until a page shorter than 100, carrying the page number and the last id', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(230);
+    const src = zammadTestHandle(fake);
+    const first = await scanZammad(src, null);
+    expect(first.rows).toHaveLength(100);
+    expect(first.next).toEqual({ page: 2, lastId: 100 });
+    const second = await scanZammad(src, first.next);
+    expect(second.next).toEqual({ page: 3, lastId: 200 });
+    const third = await scanZammad(src, second.next);
+    expect(third.rows.map((r) => r.key)).toEqual(Array.from({ length: 30 }, (_, i) => String(201 + i)));
+    expect(third.next).toBeNull();
+  });
+
+  it('a full last page is followed by an empty one that ends the scan', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(100);
+    const src = zammadTestHandle(fake);
+    const first = await scanZammad(src, null);
+    expect(first.next).toEqual({ page: 2, lastId: 100 });
+    expect(await scanZammad(src, first.next)).toEqual({ rows: [], next: null });
+  });
+
+  it('drops a row listed again after an earlier ticket reappeared (offset shift right)', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(150, 10);
+    const src = zammadTestHandle(fake);
+    const first = await scanZammad(src, null);
+    // A ticket on page 1 becomes visible again: every later row moves right by one.
+    fake.data.tickets = [...ticketRows(1, 5), ...ticketRows(150, 10)];
+    const second = await scanZammad(src, first.next);
+    expect(second.rows[0]!.key).toBe('110');
+    expect(second.rows.map((r) => r.key)).not.toContain('109');
+    expect(second.rows).toHaveLength(50);
+  });
+
+  it('ends a scan whose pages bring no new id (a server ignoring `page`)', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = ticketRows(100);
+    const src = zammadTestHandle(fake);
+    // A server that answers page 1 whatever is asked.
+    const original = fake.handle.bind(fake);
+    fake.handle = (method, url, auth) => {
+      url.searchParams.set('page', '1');
+      return original(method, url, auth);
+    };
+    let cursor = (await scanZammad(src, null)).next;
+    let calls = 1;
+    while (cursor && calls < 10) {
+      const next = await scanZammad(src, cursor);
+      expect(next.rows).toEqual([]);
+      cursor = next.next;
+      calls += 1;
+    }
+    expect(cursor).toBeNull();
+    expect(calls).toBe(4);
+  });
+
+  it('a malformed cursor starts at page 1; an answer that is not a ticket page is a shape error', async () => {
+    const fake = new FakeZammad();
+    const rows = await scanZammad(zammadTestHandle(fake), { page: -3, lastId: 'x' } as never);
+    expect(rows.rows).toHaveLength(16);
+    fake.data.tickets = [{ id: 1, nonsense: true }] as never;
+    await expect(scanZammad(zammadTestHandle(fake), null)).rejects.toBeInstanceOf(ZammadShapeError);
+  });
+
+  it('retries a 503, honours a long Retry-After as a deferral, and stops on a refused token', async () => {
+    const fake = new FakeZammad();
+    fake.failNext({ pathPrefix: '/api/v1/tickets', status: 503 });
+    expect((await scanZammad(zammadTestHandle(fake), null)).rows).toHaveLength(16);
+
+    fake.failNext({ pathPrefix: '/api/v1/tickets', status: 429, headers: { 'retry-after': '120' }, times: 5 });
+    const deferred = await scanZammad(zammadTestHandle(fake), null).catch((e: unknown) => e);
+    expect(deferred).toBeInstanceOf(SourceUnavailableError);
+    expect((deferred as SourceUnavailableError).retryAfterMs).toBe(120_000);
+
+    await expect(scanZammad(zammadTestHandle(new FakeZammad(), { token: 'wrong-token' }), null)).rejects.toBeInstanceOf(SourceAuthError);
+  });
+
+  it('never sends a request outside the base URL, and refuses a token that is not a header value', async () => {
+    const fake = new FakeZammad();
+    await scanZammad(zammadTestHandle(fake, { baseUrl: `${FAKE_ZAMMAD_BASE_URL}/zammad` }), null);
+    expect(fake.requests[0]!.path).toBe('/zammad/api/v1/tickets');
+    await expect(scanZammad(zammadTestHandle(fake, { token: 'bad\r\ntoken' }), null)).rejects.toBeInstanceOf(SourceAuthError);
+  });
+});
+
+async function load(fake: FakeZammad, ticketId: number) {
+  const src = zammadTestHandle(fake);
+  const row = zammadRow(fake.data.tickets.find((t) => t.id === ticketId) as never);
+  const loaded = await loadZammad(src, row);
+  return { src, loaded, data: loaded.data as ZammadLoadedData };
+}
+
+describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () => {
+  it('reads articles with by_ticket and tags, never all=true, and names what the conversion needs', async () => {
+    const fake = new FakeZammad();
+    const { data, loaded } = await load(fake, 101);
+    expect(data.articles.map((a) => a.id)).toEqual([1001, 1002, 1003]);
+    expect(data.tags).toEqual(['printer', 'network']);
+    expect(data.state).toEqual({ id: 2, name: 'open', type: 'open' });
+    expect(data.priorityName).toBe('2 normal');
+    expect(data.merge).toBeNull();
+    expect(Object.keys(data.people).sort()).toEqual(['10', '3']);
+    expect(loaded.needs).toEqual({ userEmails: ['alice.agent@msp.example.test'], contactEmails: ['dana@acme.example.test'] });
+    const paths = fake.requestedPaths();
+    expect(paths).toContain('/api/v1/ticket_articles/by_ticket/101');
+    expect(paths).toContain('/api/v1/tags?object=Ticket&o_id=101');
+    expect(paths.some((p) => p.includes('all=true') || p.startsWith('/api/v1/links'))).toBe(false);
+    // The header came from the list row: the ticket itself is not read again.
+    expect(paths).not.toContain('/api/v1/tickets/101');
+  });
+
+  it('reads the survivor of a merged ticket from its parent link, final along a chain (Z9)', async () => {
+    const fake = new FakeZammad();
+    expect((await load(fake, 105)).data.merge).toEqual({ survivorId: 106, survivorNumber: '31006', survivorCreatedAt: '2026-05-01T11:00:00.000Z' });
+    expect((await load(fake, 107)).data.merge).toMatchObject({ survivorId: 109, survivorNumber: '31009' });
+    expect(fake.requestedPaths()).toContain('/api/v1/links?link_object=Ticket&link_object_value=105');
+  });
+
+  it('reads the survivor itself when the link assets do not carry its number, and survives one it cannot see', async () => {
+    const fake = new FakeZammad();
+    fake.data.links.set(105, { links: [{ link_type: 'parent', link_object: 'Ticket', link_object_value: 106 }], assets: {} });
+    expect((await load(fake, 105)).data.merge).toEqual({ survivorId: 106, survivorNumber: '31006', survivorCreatedAt: '2026-05-01T11:00:00.000Z' });
+    fake.data.hidden.add(106);
+    expect((await load(fake, 105)).data.merge).toEqual({ survivorId: 106, survivorNumber: null, survivorCreatedAt: null });
+    fake.data.links.set(105, { links: [], assets: {} });
+    expect((await load(fake, 105)).data.merge).toEqual({ survivorId: null, survivorNumber: null, survivorCreatedAt: null });
+  });
+
+  it('reads a ticket over 500 articles one article at a time from article_ids (§11)', async () => {
+    const fake = new FakeZammad();
+    const { data } = await load(fake, 114);
+    expect(data.articles.map((a) => a.id)).toEqual([1027, 1028, 1029]);
+    const paths = fake.requestedPaths();
+    expect(paths).toContain('/api/v1/tickets/114?expand=true');
+    expect(paths.filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p)).sort()).toEqual([
+      '/api/v1/ticket_articles/1027', '/api/v1/ticket_articles/1028', '/api/v1/ticket_articles/1029',
+    ]);
+    expect(paths).not.toContain('/api/v1/ticket_articles/by_ticket/114');
+  });
+
+  it('falls back to one article at a time when by_ticket passes the JSON cap', async () => {
+    const fake = new FakeZammad();
+    // Two articles of 9 MiB each: together over the 16 MiB JSON cap, each under it.
+    const big = 'x'.repeat(9 * 1024 * 1024);
+    fake.data.byTicket.set(113, fake.data.byTicket.get(113)!.map((a) => ({ ...a, body: big })));
+    fake.data.ticketsExpand.set(113, { ...fake.data.tickets.find((t) => t.id === 113)!, article_ids: [1025, 1026] });
+    const { data } = await load(fake, 113);
+    expect(data.articles.map((a) => a.id)).toEqual([1025, 1026]);
+    expect(fake.requestedPaths()).toContain('/api/v1/tickets/113?expand=true');
+  });
+
+  it('remembers where each file lives, for the download right after the load', async () => {
+    const fake = new FakeZammad();
+    const { src } = await load(fake, 102);
+    expect(rememberedFileLocation(src, '102', 5004)).toEqual({ ticketId: 102, articleId: 1005 });
+    expect(rememberedFileLocation(src, '102', 9999)).toBeNull();
+    expect(rememberedFileLocation(zammadTestHandle(fake), '102', 5004)).toBeNull();
+  });
+
+  it('a row that is not the ticket it names is a shape error', async () => {
+    const fake = new FakeZammad();
+    const row = { ...zammadRow(fake.data.tickets[0] as never), key: '999' };
+    await expect(loadZammad(zammadTestHandle(fake), row)).rejects.toBeInstanceOf(ZammadShapeError);
+  });
+});
+
+describe('the directory (users cached 30 min per source; one read per missing user)', () => {
+  it('pages the users once, reads a user created since on its own, and caches one the source no longer has', async () => {
+    const fake = new FakeZammad();
+    const src = zammadTestHandle(fake, { sourceId: 'dir-1' });
+    fake.data.users = fake.data.users.filter((u) => u.id !== 13);
+    const first = await zammadPeople(src, [3, 10], 1_000);
+    expect(first.get(3)).toMatchObject({ firstname: 'Alice', email: 'alice.agent@msp.example.test', active: true });
+    // A user the index did not hold: GET /users/:id; the source answers 404 for 999.
+    fake.data.users.push({ ...loadZammadFixtures().users.find((u) => u.id === 13)! });
+    const second = await zammadPeople(src, [13, 999], 2_000);
+    expect(second.get(13)).toMatchObject({ firstname: 'Grace' });
+    expect(second.get(999)).toBeNull();
+    await zammadPeople(src, [999, 13, 3], 3_000);
+    expect(fake.requestedPaths().filter((p) => p.startsWith('/api/v1/users'))).toEqual([
+      '/api/v1/users?page=1&per_page=1000', '/api/v1/users/13', '/api/v1/users/999',
+    ]);
+    // After 30 minutes the index is read again.
+    await zammadPeople(src, [3], 1_000 + 30 * 60_000);
+    expect(fake.requestedPaths().filter((p) => p === '/api/v1/users?page=1&per_page=1000')).toHaveLength(2);
+    // Another source never shares the entry.
+    await zammadPeople(zammadTestHandle(fake, { sourceId: 'dir-2' }), [3], 1_000);
+    expect(fake.requestedPaths().filter((p) => p === '/api/v1/users?page=1&per_page=1000')).toHaveLength(3);
+  });
+});
