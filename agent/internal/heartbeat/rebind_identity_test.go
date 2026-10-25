@@ -73,8 +73,11 @@ func TestRebindChecksTheSignedTargetWhenPhase1SaidConfirmed(t *testing.T) {
 			r.drive(r.directive(rebindGoldenIntent))
 			r.fake.setState("confirmed", "")
 			r.drive(r.directive(rebindGoldenIntent))
-			if got := r.restarts.Load() > 0 || r.h.rebindOwnsIdentity(); got != tc.swapped {
+			if got := r.h.rebindOwnsIdentity(); got != tc.swapped {
 				t.Fatalf("swapped = %v, want %v", got, tc.swapped)
+			}
+			if tc.swapped {
+				r.waitRestarts(1) // its goroutine reads the seams the harness restores
 			}
 		})
 	}

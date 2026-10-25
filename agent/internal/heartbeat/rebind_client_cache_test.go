@@ -25,6 +25,7 @@ func TestRebindReusesOneClientPerStagedCertificate(t *testing.T) {
 		drives     int
 		wantBuilds int32
 		wantClosed int32 // at least
+		swapped    bool  // wait for the restart: its goroutine reads the seams
 	}{
 		{name: "confirm retries reuse it", drives: 3, wantBuilds: 1, setup: func(r *rebindHarness) {
 			r.fake.queue(&r.fake.confirmQueue, rebindInjection{status: 503}, rebindInjection{status: 503}, rebindInjection{status: 503})
@@ -37,7 +38,7 @@ func TestRebindReusesOneClientPerStagedCertificate(t *testing.T) {
 		{name: "the intent ending closes it", drives: 1, wantBuilds: 1, wantClosed: 1, setup: func(r *rebindHarness) {
 			r.fake.queue(&r.fake.confirmQueue, rebindInjection{status: 409, body: map[string]any{"code": "target_alive", "state": "cancelled", "cancelReason": "target_alive"}})
 		}},
-		{name: "the swap closes it", drives: 1, wantBuilds: 1, wantClosed: 1},
+		{name: "the swap closes it", drives: 1, wantBuilds: 1, wantClosed: 1, swapped: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,6 +58,9 @@ func TestRebindReusesOneClientPerStagedCertificate(t *testing.T) {
 			}
 			if got := builds.Load(); got != tc.wantBuilds {
 				t.Fatalf("staged-certificate clients built = %d, want %d", got, tc.wantBuilds)
+			}
+			if tc.swapped {
+				r.waitRestarts(1)
 			}
 			if got := closed.Load(); got < tc.wantClosed {
 				t.Fatalf("idle connections closed %d times, want at least %d", got, tc.wantClosed)
