@@ -1,7 +1,7 @@
 import manifest from '../manifest.json';
 import { describe, expect, it } from 'vitest';
 
-// Product decision (spec 17.2, contract A35): the extension is labelled "Wisp"
+// Product decision (spec 17.2, contract A35): the extension is labelled "Knowledge"
 // in user-visible copy only. Technical identity stays "workspace" because the
 // SDK requires <manifest.name>_ table prefixes and the migration ledger is keyed
 // by manifest name.
@@ -13,13 +13,13 @@ describe('manifest copy vs identity', () => {
     for (const nav of manifest.web.navigation) expect(nav.path).toMatch(/^\/extensions\/workspace\//);
   });
 
-  it('labels navigation entries as Wisp', () => {
+  it('labels navigation entries as Knowledge', () => {
     const labels = Object.fromEntries(manifest.web.navigation.map((n) => [n.id, n.label]));
-    expect(labels).toEqual({ sources: 'Wisp Sources', dashboard: 'Wisp Dashboard' });
+    expect(labels).toEqual({ sources: 'Knowledge sources', dashboard: 'Knowledge dashboard' });
   });
 
-  it('labels the device tab slot as Wisp', () => {
-    expect(manifest.web.slots.map((s) => s.label)).toEqual(['Wisp']);
+  it('labels the device tab slot as Knowledge', () => {
+    expect(manifest.web.slots.map((s) => s.label)).toEqual(['Knowledge']);
   });
 
   it('shows no "workspace" in any navigation or slot label', () => {
