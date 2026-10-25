@@ -518,10 +518,14 @@ async function googleModelAfterIdentity(
  * Describe each REQUESTED Google group, with the model-after person's role in
  * it. Fails closed: a group that cannot be read, or whose role for an
  * IDENTIFIED model-after person cannot be read, is not described and so is
- * never planned. With no identified model-after person the role is `null`.
+ * never planned. With NO model-after Google account the role is `null`.
+ * A model-after person whose LINKED Google account could not be identified
+ * (`'unreadable'`: a refused read or a mismatch) is not "no model-after": the
+ * role that decides each group's privilege is unknown, so no group is
+ * described and the recipe leaves them to a person.
  */
 async function googleRequestedGroups(
-  dir: DirectoryClient, groupEmails: readonly string[], ma: { id: string } | null, c: Collector,
+  dir: DirectoryClient, groupEmails: readonly string[], ma: { id: string } | null | 'unreadable', c: Collector,
 ): Promise<GoogleGroup[]> {
   const out: GoogleGroup[] = [];
   for (const raw of groupEmails) {
@@ -529,6 +533,11 @@ async function googleRequestedGroups(
     const email = canonicalizeUserEmail(raw);
     if (!email) {
       c.flag('google_group_address_invalid', raw, 'The group address is not a single plain address, so Breeze did not read it.');
+      continue;
+    }
+    if (ma === 'unreadable') {
+      c.flag('google_group_role_read_failed', email,
+        'The model-after person\'s Google Workspace account could not be identified, so their role in this group is unknown.');
       continue;
     }
     let name: string | null;
@@ -671,7 +680,8 @@ async function readGoogle(
     c.flag('model_after_no_google_account', maLabel,
       'The model-after person has no linked Google Workspace account, so their Google access and group roles were not read.');
   }
-  const groups = await googleRequestedGroups(dir, g.groupEmails, ma, c);
+  // Linked but not identified: the role is unknown, never "no model-after".
+  const groups = await googleRequestedGroups(dir, g.groupEmails, modelAfter?.googleId && !ma ? 'unreadable' : ma, c);
   const maAccess = ma ? await googleModelAfterAccess({ keyJson: ctx.keyJson, adminEmail: ctx.conn.adminEmail }, dir, ma, maLabel, c) : null;
   return { collision, groups, modelAfter: maAccess };
 }

@@ -669,6 +669,28 @@ describe('model-after (D-R2-9) — a tenant-scoped read, bounded', () => {
     expect(f.flags).toContainEqual(expect.objectContaining({ code: 'model_after_no_google_account' }));
   });
 
+  it('a model-after person WITH a Google link whose identity read is refused leaves every requested Google group undescribed (fail closed)', async () => {
+    h.dir.users.get.mockImplementation(async ({ userKey }: { userKey: string }) => {
+      if (userKey === MA_GOOGLE) throw httpError(403, 'Not Authorized to access this resource/api');
+      throw httpError(404, 'Resource Not Found: userKey');
+    });
+    const f = await discover();
+    expect(f.groups.google).toEqual([]);
+    expect(h.dir.members.get).not.toHaveBeenCalled();
+    expect(f.flags.map((x) => x.code)).toEqual(expect.arrayContaining(['google_read_failed', 'google_group_role_read_failed']));
+    expect(f.modelAfter?.google ?? null).toBeNull();
+  });
+
+  it('…and the same when the identity read names a different user (mismatch)', async () => {
+    h.dir.users.get.mockImplementation(async ({ userKey }: { userKey: string }) => {
+      if (userKey === MA_GOOGLE) return { data: { id: '900199', primaryEmail: 'someone@customer.example' } };
+      throw httpError(404, 'Resource Not Found: userKey');
+    });
+    const f = await discover();
+    expect(f.groups.google).toEqual([]);
+    expect(f.flags.map((x) => x.code)).toEqual(expect.arrayContaining(['google_account_mismatch', 'google_group_role_read_failed']));
+  });
+
   it('a model-after M365 read naming a different user is never used', async () => {
     m365Default({ 'm365.user.get': (a) => (a.userIdOrUpn === MA_M365
       ? { ok: true, kind: 'resource', resource: { id: HOLDER } }
