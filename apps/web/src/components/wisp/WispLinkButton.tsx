@@ -56,18 +56,35 @@ type View = { kind: 'hidden' } | { kind: 'ready'; threadId: string; linked: bool
  * ceiling, permission — and refuses with a toast; this only hides the button
  * where the answer is already known to be no.
  */
-export default function WispLinkButton({ kind, id, orgId }: { kind: WispEntityKind; id: string; orgId: string | null }) {
+const SIZE_CLASSES = {
+  /** Matches h-9 header buttons (quote, invoice, device, organization). */
+  md: 'h-9 gap-1.5 px-3 text-sm',
+  /** Matches compact header rows (ticket workbench, contract). */
+  sm: 'gap-1 px-2 py-1 text-xs',
+} as const;
+
+export default function WispLinkButton({
+  kind,
+  id,
+  orgId,
+  size = 'md',
+}: {
+  kind: WispEntityKind;
+  id: string;
+  orgId: string | null;
+  size?: keyof typeof SIZE_CLASSES;
+}) {
   const { t } = useTranslation('ai');
   const claims = useJwtClaims();
-  const serverOn = useWispEnabled();
+  const partnerToken = claims.status === 'resolved' && claims.claims.scope === 'partner';
+  // Only a partner token can hold a grant: nobody else asks the partner route.
+  const serverOn = useWispEnabled({ enabled: partnerToken });
   const entitlement = useEntitlement('wisp');
   const storeWisp = useAiStore((s) => s.wisp);
   const [view, setView] = useState<View>({ kind: 'hidden' });
   const [busy, setBusy] = useState(false);
 
-  const eligible = serverOn
-    && claims.status === 'resolved' && claims.claims.scope === 'partner'
-    && entitlement.state === 'enabled';
+  const eligible = serverOn && partnerToken && entitlement.state === 'enabled';
   const storeThreadId = storeWisp?.status === 'active' ? storeWisp.threadId : null;
 
   useEffect(() => {
@@ -119,9 +136,11 @@ export default function WispLinkButton({ kind, id, orgId }: { kind: WispEntityKi
       data-testid="wisp-link-button"
       disabled={busy || view.linked}
       onClick={() => void link()}
-      className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted disabled:cursor-default disabled:opacity-70"
+      className={`inline-flex items-center rounded-md border font-medium transition hover:bg-muted disabled:cursor-default disabled:opacity-70 ${SIZE_CLASSES[size]}`}
     >
-      {view.linked ? <Check className="h-4 w-4 text-success" aria-hidden="true" /> : <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />}
+      {view.linked
+        ? <Check className={size === 'sm' ? 'h-3.5 w-3.5 text-success' : 'h-4 w-4 text-success'} aria-hidden="true" />
+        : <Sparkles className={size === 'sm' ? 'h-3.5 w-3.5 text-primary' : 'h-4 w-4 text-primary'} aria-hidden="true" />}
       {view.linked ? t('wisp.linkButton.linked') : busy ? t('wisp.linkButton.linking') : t('wisp.linkButton.link')}
     </button>
   );

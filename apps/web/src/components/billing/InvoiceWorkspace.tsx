@@ -14,6 +14,7 @@ import InvoiceActions from './InvoiceActions';
 import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES } from './invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import WispLinkButton from '@/components/wisp/WispLinkButton';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -214,6 +215,7 @@ export default function InvoiceWorkspace({ id }: Props) {
           {isDraft && activeTab === 'editor' && (
             <MarginToggle show={showMargin} onToggle={toggleShowMargin} testId="invoice-editor-toggle-internal" size="md" />
           )}
+          <WispLinkButton kind="invoice" id={detail.invoice.id} orgId={detail.invoice.orgId} />
           <InvoiceActions
             detail={detail}
             onChanged={reload}

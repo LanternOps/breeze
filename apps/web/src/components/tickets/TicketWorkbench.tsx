@@ -60,6 +60,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import WispLinkButton from '@/components/wisp/WispLinkButton';
 import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
@@ -1520,6 +1521,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {t('common:actions.delete')}
             </button>
           )}
+          <WispLinkButton kind="ticket" id={ticket.id} orgId={ticket.orgId} size="sm" />
         </div>
         {!merged && (invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">

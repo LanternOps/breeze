@@ -24,6 +24,12 @@ vi.mock('../../stores/orgStore', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispLinkButton', () => ({
+  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
+    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+  ),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -98,6 +104,20 @@ describe('InvoiceWorkspace', () => {
     render(<InvoiceWorkspace id="inv-1" />);
     await waitFor(() => expect(screen.getByTestId('invoice-workspace-title')).toHaveTextContent('Draft invoice'));
     expect(screen.getByTestId('invoice-editor')).toBeInTheDocument();
+  });
+
+  it('mounts the Link-to-Wisp button in the header with the loaded invoice and its org (W08 Task 10)', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/catalog')) return json({ data: [] });
+      if (input === '/invoices/inv-1') return json({ data: invoice({}) });
+      return json({ data: {} });
+    });
+    render(<InvoiceWorkspace id="inv-1" />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    const button = await screen.findByTestId('wisp-link-button-mock');
+    expect(button).toHaveAttribute('data-kind', 'invoice');
+    expect(button).toHaveAttribute('data-id', 'inv-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('surfaces an error card when the invoice fails to load', async () => {

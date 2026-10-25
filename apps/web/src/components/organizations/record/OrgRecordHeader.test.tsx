@@ -12,6 +12,12 @@ vi.mock('@/lib/featureFlags', async (orig) => ({
 vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispLinkButton', () => ({
+  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
+    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+  ),
+}));
 import OrgRecordHeader from './OrgRecordHeader';
 import { installAstroClientRouterStandIn } from '../../../__tests__/astroClientRouterStandIn';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
@@ -51,6 +57,14 @@ describe('OrgRecordHeader', () => {
   it('always states the status, including "active" (unlike the exception-only list pill)', () => {
     renderHeader();
     expect(screen.getByTestId('org-record-status').textContent).toBe('Active');
+  });
+
+  it('mounts the Link-to-Wisp button with the organization as its own org (W08 Task 10)', () => {
+    renderHeader();
+    const button = screen.getByTestId('wisp-link-button-mock');
+    expect(button).toHaveAttribute('data-kind', 'organization');
+    expect(button).toHaveAttribute('data-id', 'org-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('renders a status the client does not know about rather than an empty pill', () => {

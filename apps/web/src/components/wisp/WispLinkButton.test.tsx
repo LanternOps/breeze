@@ -11,9 +11,10 @@ const h = vi.hoisted(() => ({
   addWispLink: vi.fn(),
   listWispLinks: vi.fn(),
   showToast: vi.fn(),
+  visibilityOpts: undefined as undefined | { enabled?: boolean },
 }));
 vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => h.claims }));
-vi.mock('@/lib/wispVisibility', () => ({ useWispEnabled: () => h.server }));
+vi.mock('@/lib/wispVisibility', () => ({ useWispEnabled: (opts?: { enabled?: boolean }) => { h.visibilityOpts = opts; return h.server; } }));
 vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => ({ state: h.entitlement }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: (sel: (s: unknown) => unknown) => sel({ wisp: h.storeWisp }) }));
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
@@ -106,5 +107,20 @@ describe('WispLinkButton (W08 Task 10)', () => {
     render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" />);
     fireEvent.click(await screen.findByTestId('wisp-link-button'));
     await waitFor(() => expect(h.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
+  it('asks the server whether Wisp is on only for a partner-scoped token', () => {
+    h.claims = { status: 'resolved', claims: { scope: 'system', partnerId: null, orgId: null } };
+    render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" />);
+    expect(h.visibilityOpts).toEqual({ enabled: false });
+    h.claims = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p-1', orgId: null } };
+    render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" />);
+    expect(h.visibilityOpts).toEqual({ enabled: true });
+  });
+
+  it('size="sm" matches compact header rows', async () => {
+    h.storeWisp = { threadId: 'th-store', grantId: 'g-1', status: 'active' };
+    render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" size="sm" />);
+    expect((await screen.findByTestId('wisp-link-button')).className).toContain('text-xs');
   });
 });

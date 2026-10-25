@@ -23,8 +23,10 @@ import { useAuthStore } from '@/stores/auth';
  */
 export default function WispPartnerSettingsCard() {
   const { t } = useTranslation('ai');
-  const serverOn = useWispEnabled();
   const claims = useJwtClaims();
+  const partnerToken = claims.status === 'resolved' && claims.claims.scope === 'partner';
+  // The setting is partner-level: no other token asks the partner route.
+  const serverOn = useWispEnabled({ enabled: partnerToken });
   const entitlement = useEntitlement('wisp');
   // The server is the authority (PUT is partner-admin only); this only avoids offering a control that can only 403.
   const canManage = useAuthStore((s) => s.user?.canManagePartnerWide === true);
@@ -33,7 +35,7 @@ export default function WispPartnerSettingsCard() {
   const [saving, setSaving] = useState(false);
   const labelId = useId();
 
-  const visible = serverOn && claims.status === 'resolved' && claims.claims.scope === 'partner' && entitlement.state === 'enabled';
+  const visible = serverOn && partnerToken && entitlement.state === 'enabled';
 
   useEffect(() => {
     if (!visible) return;

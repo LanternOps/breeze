@@ -30,7 +30,6 @@ import BuyCreditsLink from "./BuyCreditsLink";
 import WispToggle from "./WispToggle";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
-import { WispConcernsPanel } from "./WispConcernsPanel";
 import { useTranslation } from "react-i18next";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -310,7 +309,8 @@ export default function AiChatSidebar() {
               </div>
             )}
 
-            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure. */}
+            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure.
+                The brief, what needs you and the links live on the Wisp home (W08 #9921). */}
             {wisp && (
               <>
                 <WispThreadHeader
@@ -318,8 +318,7 @@ export default function AiChatSidebar() {
                   orgName={wispScopeOrgName}
                   wideningAvailable={wisp.wideningAvailable}
                 />
-                <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} />
-                <div className="border-b px-4 py-1.5">
+                <div className="flex items-center justify-between gap-2 border-b px-4 py-1.5">
                   <button
                     type="button"
                     data-testid="wisp-attachments-toggle"
@@ -329,12 +328,20 @@ export default function AiChatSidebar() {
                   >
                     {t("wisp.attachments.title")}
                   </button>
-                  {wispAttachmentsOpen && (
-                    <div className="pt-2">
-                      <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
-                    </div>
-                  )}
+                  <a
+                    href="/wisp"
+                    data-testid="wisp-sidebar-open-home"
+                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    {t("wisp.sidebar.openHome")}
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
                 </div>
+                {wispAttachmentsOpen && (
+                  <div className="border-b px-4 py-2">
+                    <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
+                  </div>
+                )}
               </>
             )}
 

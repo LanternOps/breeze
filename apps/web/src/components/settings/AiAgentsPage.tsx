@@ -17,6 +17,7 @@ import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import AgentCreateFlow from './aiAgents/AgentCreateFlow';
+import WispPartnerSettingsCard from './WispPartnerSettingsCard';
 import { replaceUrl } from '../../lib/replaceUrl';
 
 // Task 13 (#5051): create no longer opens this drawer at all — it opens the
@@ -531,6 +532,10 @@ export default function AiAgentsPage() {
       {/* Above everything the page says about individual agents: no per-row
           detail matters while nothing can run at all. */}
       {subsystemBanner()}
+
+      {/* W08 (#9921): the partner "Wisp enabled" switch. Settings rule 9 home;
+          renders nothing unless Wisp exists for this viewer. */}
+      <WispPartnerSettingsCard />
 
       {/* Task 13 (#5051): the guided create flow replaces the list ENTIRELY
           while open — full width, its own header/footer — rather than
