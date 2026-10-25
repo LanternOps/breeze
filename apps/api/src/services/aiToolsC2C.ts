@@ -296,7 +296,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
   // ============================================
 
   registerTool({
-    tier: 2,
+    // W03 (#6757): tier 3 supervised — a vendor (SaaS) pull by intent.
+    tier: 3,
     domain: 'integrations',
     searchHint: 'Breeze cloud-to-cloud backups: start an immediate sync for a backup configuration',
     definition: {

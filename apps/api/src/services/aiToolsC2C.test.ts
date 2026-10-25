@@ -52,7 +52,7 @@ const EXPECTED_TIERS: Record<(typeof EXPECTED_TOOLS)[number], number> = {
   query_c2c_connections: 1,
   query_c2c_jobs: 1,
   search_c2c_items: 1,
-  trigger_c2c_sync: 2,
+  trigger_c2c_sync: 3, // W03 (#6757): supervised
   restore_c2c_items: 3,
 };
 

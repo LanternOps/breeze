@@ -50,7 +50,7 @@ const EXPECTED_TOOLS = [
 const EXPECTED_TIERS: Record<(typeof EXPECTED_TOOLS)[number], number> = {
   query_vaults: 1,
   get_vault_status: 1,
-  trigger_vault_sync: 2,
+  trigger_vault_sync: 3, // W03 (#6757): supervised
   configure_vault: 2,
 };
 

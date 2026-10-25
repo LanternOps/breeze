@@ -539,7 +539,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
-  { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
   { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
@@ -550,13 +550,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_hyperv_checkpoints', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'trigger_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_mssql_database', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'verify_mssql_backup', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'verify_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
   { toolName: 'query_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'manage_service_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'get_service_monitoring_status', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'trigger_c2c_sync', tier: 2, permission: 'organizations.write', category: 'Integrations' },
+  { toolName: 'trigger_c2c_sync', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'restore_c2c_items', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   // Alerts & Notifications
   { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },

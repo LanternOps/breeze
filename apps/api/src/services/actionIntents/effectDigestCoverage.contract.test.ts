@@ -80,6 +80,8 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
     ['manage_tickets:update_status', 'manage_tickets:update_fields'],
     'SUPERVISED-ONLY input-aware arms (full-control W02, #6756): resolving / a custom statusName, and requester-key edits, escalate to tier 3 SUPERVISED, never four_eyes — they appear here only because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in conservatively. The requested change (status, resolutionNote, requester fields) travels in the intent input the approver reviews, and the only pinnable row is the ticket itself, whose `updated_at` churns with every comment and SLA touch — pinning it would fail closed on routine activity (same reason as manage_tickets:comment above and move_org\'s org+status pin).',
   ),
+  'manage_backup_profiles:create':
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W03, #6757): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new `backup_profiles` row; there is no pre-existing row to pin, and the name, description, ownership and full selection set travel in the intent input the approver reviews.',
   'manage_policy_feature_link:add':
     'NEW-OBJECT: inserts a `config_policy_feature_links` row (RMM-QA-176 D9). `configPolicyId` addresses the PARENT policy, which is not the thing being created — there is no pre-existing link row whose content the approver signed off on. The sibling `update`, which DOES address an existing link, is pinned by an EFFECT_DIGEST_RESOLVERS entry rather than exempted here.',
 

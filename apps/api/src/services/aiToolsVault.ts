@@ -276,7 +276,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
   // ============================================
 
   registerTool({
-    tier: 2,
+    // W03 (#6757): tier 3 supervised — queues VAULT_SYNC on the device.
+    tier: 3,
     domain: 'backup',
     searchHint: 'local backup vault synchronization for a vault or selected snapshot',
     definition: {
