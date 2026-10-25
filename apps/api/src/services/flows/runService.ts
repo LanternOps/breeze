@@ -86,7 +86,7 @@ export type StartManualRunResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'not_enabled' | 'not_manual' | 'org_required' | 'org_forbidden' | 'interactive_user_required'
-        | FlowRunAdmissionRefusal;
+        | 'delegation_scope_restricted' | FlowRunAdmissionRefusal;
     };
 
 export type CancelFlowRunResult =
@@ -317,10 +317,14 @@ function parsePins(raw: unknown): FlowStepPin[] | null {
  *     credential holds nothing, `clampToCallerCredential`) — pass rule 7
  *     for every step of the live publication;
  *  5. inputs coerce against the publication's declarations.
- * `preApprovalsHonored` = `ui` AND the triggerer is cleared (no site ceiling
- * on the membership or the token; all-orgs access for a partner-wide flow).
- * A site-limited triggerer still runs, with every Tier-3 step parked and its
- * device references held to their sites at step time (triggererAccess.ts).
+ * A site-limited triggerer (a site ceiling on the membership in the run org
+ * or on the token, `[]` included; for an API key, its creator's) is refused
+ * `delegation_scope_restricted` before any write: the flow principal is
+ * org-wide and W04 has no site model (orchestrator decision, a deviation from
+ * Decision 4's "may still run"; W05's per-publication site ceiling can reopen
+ * it). `preApprovalsHonored` = `ui` AND, for a partner-wide flow, all-orgs
+ * partner access on the membership and the token; a selected-access partner
+ * user still runs in an org it reaches, with every Tier-3 step parked.
  */
 export async function startManualRun(
   auth: AuthContext,
@@ -373,6 +377,11 @@ export async function startManualRun(
 
   const perms = await triggererPermissions(auth.user.id, orgPartnerId, orgId);
   if (!perms || !canAccessOrg(perms, orgId)) return { ok: false, error: 'org_forbidden' };
+  // A site ceiling on the membership or the token (`[]` included) ⇒ refused:
+  // the flow principal is org-wide and W04 has no site model (orchestrator
+  // decision, a deviation from Decision 4; W05's per-publication site ceiling
+  // can reopen site-limited runs). An API key carries its creator's ceiling.
+  if (perms.allowedSiteIds !== undefined || hasSiteCeiling(auth)) return { ok: false, error: 'delegation_scope_restricted' };
   // A key acts only within its scopes; an unclampable credential has none.
   const usable = (await clampToCallerCredential(auth, perms, orgId)) ?? { ...perms, permissions: [] };
   const missing = missingPermissionsFor(doc, pins, usable);
@@ -382,9 +391,7 @@ export async function startManualRun(
   if (!coerced.ok) return { ok: false, error: 'inputs_invalid', issues: coerced.issues };
 
   const partnerWide = !flow.orgId;
-  const triggererCleared = triggererPermsCleared(perms, partnerWide)
-    && !hasSiteCeiling(auth)
-    && (!partnerWide || auth.partnerOrgAccess === 'all');
+  const triggererCleared = triggererPermsCleared(perms, partnerWide) && (!partnerWide || auth.partnerOrgAccess === 'all');
 
   const created = await createFlowRun({
     triggerKind: 'manual',

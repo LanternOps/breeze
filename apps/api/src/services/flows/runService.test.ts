@@ -81,7 +81,6 @@ import {
   startManualRun,
   type CreateFlowRunInput,
 } from './runService';
-import { triggererSiteCeiling } from './triggererAccess';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '11111111-1111-4111-8111-222222222222';
@@ -358,13 +357,44 @@ describe('startManualRun', () => {
     expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toEqual({ ok: false, error: 'org_forbidden' });
   });
 
-  it('site-limited triggerer runs with pre-approvals not honoured', async () => {
+  // Orchestrator decision (deviation from Decision 4): W04 has no site model
+  // and the flow principal is org-wide, so a site-limited triggerer is refused
+  // at start rather than narrowed per step.
+  it.each([
+    ['allowedSiteIds [s1]', ['s1']],
+    ['allowedSiteIds []', [] as string[]],
+  ])('site-limited triggerer (%s) is delegation_scope_restricted and no run row is created', async (_label, sites) => {
+    queueStart();
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: sites }));
+    const r = await startManualRun(auth({ allowedSiteIds: sites } as Partial<AuthContext>), FLOW_ID, { inputs: {} }, 'ui');
+    expect(r).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(assertFlowRunAdmission).not.toHaveBeenCalled();
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+  });
+
+  it('a token site ceiling alone (membership unrestricted) is delegation_scope_restricted', async () => {
+    queueStart();
+    const r = await startManualRun(auth({ allowedSiteIds: ['s1'] } as Partial<AuthContext>), FLOW_ID, { inputs: {} }, 'ui');
+    expect(r).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('an API key whose creator is site-limited is delegation_scope_restricted', async () => {
+    queueStart();
+    queues.select.push([keyRow()]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: ['s1'] }));
+    const r = await startManualRun(apiKeyAuth(), FLOW_ID, { inputs: {} }, 'api');
+    expect(r).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('a cleared triggerer runs', async () => {
     queueStart();
     queueCreate();
-    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: ['site-1'] }));
-    const r = await startManualRun(auth({ allowedSiteIds: ['site-1'] } as Partial<AuthContext>), FLOW_ID, { inputs: {} }, 'ui');
-    expect(r).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: false });
-    expect(insertValues()).not.toContain(true);
+    const r = await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui');
+    expect(r).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: true });
+    expect(callsOf('execute')).toHaveLength(1);
   });
 
   it('a selected-access partner user on a partner-wide flow runs with pre-approvals not honoured', async () => {
@@ -582,29 +612,5 @@ describe('run reads', () => {
     expect(r.total).toBe(1);
     expect(r.runs[0]).toMatchObject({ id: RUN_ID, flowName: 'Disk Cleanup', status: 'completed' });
     expect(callsOf('select')[0]!.ops.find((o) => o.op === 'limit')!.args[0]).toBe(100);
-  });
-});
-
-describe('triggererSiteCeiling', () => {
-  const manual = { triggerKind: 'manual' as const, triggeredByUserId: USER, orgId: ORG };
-
-  it('is null for schedule and event runs and for an unrestricted triggerer', async () => {
-    expect(await triggererSiteCeiling({ ...manual, triggerKind: 'schedule' }, PARTNER)).toBeNull();
-    expect(await triggererSiteCeiling({ ...manual, triggerKind: 'event' }, PARTNER)).toBeNull();
-    expect(await triggererSiteCeiling(manual, PARTNER)).toBeNull();
-    expect(getUserPermissions).toHaveBeenCalledWith(USER, { partnerId: PARTNER, orgId: ORG });
-  });
-
-  it('is the live site allowlist of a site-limited triggerer', async () => {
-    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: ['site-1', 'site-2'] }));
-    expect([...(await triggererSiteCeiling(manual, PARTNER))!]).toEqual(['site-1', 'site-2']);
-  });
-
-  it('fails closed (empty) for a tombstoned triggerer or one who lost the org', async () => {
-    expect((await triggererSiteCeiling({ ...manual, triggeredByUserId: null }, PARTNER))!.size).toBe(0);
-    vi.mocked(getUserPermissions).mockResolvedValue(null);
-    expect((await triggererSiteCeiling(manual, PARTNER))!.size).toBe(0);
-    vi.mocked(getUserPermissions).mockResolvedValue(perms({ orgId: OTHER_ORG }));
-    expect((await triggererSiteCeiling(manual, PARTNER))!.size).toBe(0);
   });
 });

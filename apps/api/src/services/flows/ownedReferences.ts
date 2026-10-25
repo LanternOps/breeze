@@ -69,22 +69,3 @@ export async function findOwnedDeviceIds(orgId: string, ids: Iterable<string>): 
   );
   return new Set(rows.map((r) => r.id));
 }
-
-/**
- * Task A9 — the subset of `ids` that are devices of `orgId` in one of
- * `siteIds` (a site-limited manual-run triggerer's ceiling). A device with no
- * site never passes (canAccessSite denies a null site).
- */
-export async function findDeviceIdsInSites(orgId: string, ids: Iterable<string>, siteIds: readonly string[]): Promise<Set<string>> {
-  const wanted = uuidsOnly(ids);
-  const sites = uuidsOnly(siteIds);
-  if (wanted.length === 0 || sites.length === 0) return new Set();
-  const rows = await system(
-    async () => db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(inArray(devices.id, wanted), eq(devices.orgId, orgId), inArray(devices.siteId, sites))),
-    'flowValidator.devicesInSites',
-  );
-  return new Set(rows.map((r) => r.id));
-}

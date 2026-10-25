@@ -93,6 +93,7 @@ const RUN_STATUS: Record<string, Status> = {
   org_required: 422,
   org_forbidden: 403,
   interactive_user_required: 403,
+  delegation_scope_restricted: 403,
   inputs_invalid: 422,
   permission_missing: 422,
   flow_queue_full: 429,
