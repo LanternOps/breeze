@@ -150,17 +150,19 @@ export const zammadObjectAttributeSchema = z.looseObject({
 });
 
 /** The seeded state types (Z12), by `state_type_id`, when `state_type` is not named. */
-export const ZAMMAD_STATE_TYPE_BY_ID: Readonly<Record<number, string>> = {
-  1: 'new', 2: 'open', 3: 'pending reminder', 4: 'pending action', 5: 'closed', 6: 'merged', 7: 'removed',
-};
+export const ZAMMAD_STATE_TYPE_BY_ID: ReadonlyMap<number, string> = new Map([
+  [1, 'new'], [2, 'open'], [3, 'pending reminder'], [4, 'pending action'], [5, 'closed'], [6, 'merged'], [7, 'removed'],
+]);
 
 /** The seeded article types and senders (Z14), for an article that does not name them. */
-export const ZAMMAD_ARTICLE_TYPE_BY_ID: Readonly<Record<number, string>> = {
-  1: 'email', 2: 'sms', 3: 'chat', 4: 'fax', 5: 'phone', 6: 'twitter status', 7: 'twitter direct-message',
-  8: 'facebook feed post', 9: 'facebook feed comment', 10: 'note', 11: 'web', 12: 'telegram personal-message',
-  13: 'facebook direct-message', 14: 'whatsapp message',
-};
-export const ZAMMAD_SENDER_BY_ID: Readonly<Record<number, string>> = { 1: 'Agent', 2: 'Customer', 3: 'System' };
+export const ZAMMAD_ARTICLE_TYPE_BY_ID: ReadonlyMap<number, string> = new Map([
+  [1, 'email'], [2, 'sms'], [3, 'chat'], [4, 'fax'], [5, 'phone'], [6, 'twitter status'], [7, 'twitter direct-message'],
+  [8, 'facebook feed post'], [9, 'facebook feed comment'], [10, 'note'], [11, 'web'], [12, 'telegram personal-message'],
+  [13, 'facebook direct-message'], [14, 'whatsapp message'],
+]);
+export const ZAMMAD_SENDER_BY_ID: ReadonlyMap<number, 'Agent' | 'Customer' | 'System'> = new Map([
+  [1, 'Agent'], [2, 'Customer'], [3, 'System'],
+]);
 
 /**
  * A state with its type, as the conversion maps it (§6.3), and the type of

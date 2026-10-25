@@ -81,6 +81,18 @@ describe('states, by state type (§6.3, Z12)', () => {
 });
 
 describe('priorities (§6.3, Z13)', () => {
+  it('never answers from an inherited key: constructor, __proto__, toString (review 9)', () => {
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(mapPriority(9, name, { priorityMap: {} })).toBe('normal');
+      expect(mapTicketType(name)).toBeUndefined();
+    }
+    // A state map entry that is only inherited does not apply.
+    const inherited = Object.create({ 8: { status: 'closed' } }) as Record<string, { status: 'closed' }>;
+    expect(mapState({ id: 8, name: 'Paused', type: 'pending action', nextStateType: null }, ticket(117), inherited)!.finalStatus).toBe('on_hold');
+    const priorities = Object.create({ 4: 'urgent' }) as Record<string, 'urgent'>;
+    expect(mapPriority(4, '4 critical', { priorityMap: priorities })).toBe('normal');
+  });
+
   it('the wizard map wins, then the seeded names, then normal', () => {
     const none = { priorityMap: {} };
     expect(mapPriority(1, '1 low', none)).toBe('low');
@@ -107,6 +119,18 @@ describe('header fields (§6.3)', () => {
     expect(mapTicketType('Request for Change')).toBe('change');
     expect(mapTicketType('Question')).toBeUndefined();
     expect(mapTicketType(null)).toBeUndefined();
+  });
+
+  it('tags: each source tag lost is counted once; one that collapses into a kept tag is not (review 13)', () => {
+    const a100 = 'a'.repeat(100);
+    // Shortened, then a second that shortens into the same tag: one cut.
+    expect(mapTags([`${a100}x`, `${a100}yy`, 'printer', 'printer'])).toEqual({ tags: [a100, 'printer'], cut: 1 });
+    // 55 long tags: 50 kept but shortened (50), 5 dropped past the cap (5), never both for one tag.
+    const long = Array.from({ length: 55 }, (_, i) => `${String(i).padStart(3, '0')}${'z'.repeat(110)}`);
+    expect(mapTags(long).cut).toBe(55);
+    // A cut never leaves half of a surrogate pair.
+    const emoji = mapTags([`${'b'.repeat(99)}😀tail`]).tags[0]!;
+    expect(emoji).toBe('b'.repeat(99));
   });
 
   it('tags: trimmed to 100 characters, capped at 50, the cut counted (F2)', () => {

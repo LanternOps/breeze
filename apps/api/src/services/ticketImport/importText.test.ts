@@ -12,6 +12,7 @@ import {
   IMPORT_TEXT_MAX_CHARS,
   IMPORT_TRUNCATION_MARKER,
   plainTextForImport,
+  stripRefusedControlChars,
 } from './importText';
 
 const at = new Date('2026-01-01T00:00:00Z');
@@ -38,6 +39,16 @@ describe('the importedTicket oracle (self-check)', () => {
     expect(accepted('x'.repeat(IMPORT_TEXT_MAX_CHARS))).toBe(true);
     expect(accepted('x'.repeat(IMPORT_TEXT_MAX_CHARS + 1))).toBe(false);
     expect(accepted('a\u0003b')).toBe(false);
+  });
+});
+
+describe('stripRefusedControlChars (W5 review 15)', () => {
+  it('removes exactly the characters importedTicket refuses: one rule', () => {
+    for (let code = 0; code < 0x20; code += 1) {
+      const c = String.fromCharCode(code);
+      expect(stripRefusedControlChars(`a${c}b`) === 'ab').toBe(!accepted(`a${c}b`));
+    }
+    expect(stripRefusedControlChars('tab\tline\ncr\r')).toBe('tab\tline\ncr\r');
   });
 });
 
@@ -148,8 +159,9 @@ describe('the helpers are pure', () => {
   const imports = (file: string) => [...readFileSync(join(__dirname, file), 'utf8').matchAll(/^import[^'"]*['"]([^'"]+)['"]/gm)]
     .map((m) => m[1]);
 
-  it('importText.ts imports only the converter, and the converter only sanitize-html', () => {
-    expect(imports('importText.ts')).toEqual(['../inboundEmail/htmlToText']);
+  it('importText.ts imports only the converter and the refused-character leaf; the converter only sanitize-html', () => {
+    expect(imports('importText.ts')).toEqual(['../inboundEmail/htmlToText', './refusedControlChars']);
+    expect(imports('refusedControlChars.ts')).toEqual([]);
     expect(imports('../inboundEmail/htmlToText.ts')).toEqual(['sanitize-html']);
   });
 });

@@ -71,7 +71,7 @@ export function takeZammadInvalidRows(src: SourceHandle<unknown>): Record<string
 export function stateTypeName(stateTypeId: number, named: string | null | undefined): string {
   const name = named?.trim().toLowerCase();
   if (name) return name;
-  return ZAMMAD_STATE_TYPE_BY_ID[stateTypeId] ?? 'unknown';
+  return ZAMMAD_STATE_TYPE_BY_ID.get(stateTypeId) ?? 'unknown';
 }
 
 async function readStates(src: SourceHandle<unknown>, entry: Entry): Promise<Map<number, ZammadStateInfo>> {

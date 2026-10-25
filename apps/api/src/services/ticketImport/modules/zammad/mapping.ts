@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { TicketType } from '@breeze/shared';
 import type { ImportedTicket } from '../../importedTicket';
+import { stripRefusedControlChars } from '../../importText';
+import { normalizeRequesterEmail } from '../../../ticketRequesterEmail';
 import type { ConversionContext } from '../../moduleContract';
 import type { ZammadOptions } from './options';
 import { ZAMMAD_ARTICLE_TYPE_BY_ID, ZAMMAD_SENDER_BY_ID, type ZammadArticle, type ZammadPerson, type ZammadStateInfo, type ZammadTicket } from './shapes';
@@ -19,17 +21,25 @@ export const ZAMMAD_SYSTEM_USER_ID = 1;
 export const ZAMMAD_SYSTEM_NAME = 'Zammad (system)';
 
 const emailSchema = z.string().email().max(255);
-const REFUSED_CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
 
-/** Text with the control characters importedTicket refuses (F2) removed. */
+/** Text with the control characters importedTicket refuses (F2) removed: importText's one rule. */
 export function cleanText(value: string | null | undefined): string {
-  return (value ?? '').replace(REFUSED_CONTROL_CHARS, '');
+  return stripRefusedControlChars(value ?? '');
 }
 
-/** An address the writer accepts, lower-cased; null for an empty or malformed one (Z15: email may be empty). */
+/**
+ * An address the writer accepts, normalized as Breeze compares requester
+ * emails (`normalizeRequesterEmail`: trimmed, lower-cased); null for an empty
+ * or malformed one (Z15: email may be empty).
+ */
 export function usableEmail(raw: string | null | undefined): string | null {
-  const email = (raw ?? '').trim().toLowerCase();
+  const email = normalizeRequesterEmail(raw);
   return email && emailSchema.safeParse(email).success ? email : null;
+}
+
+/** A record's own entry only: never `constructor`, `__proto__` or anything inherited. */
+function own<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
 /** A person's display name: `firstname lastname`, else the login, else the email, else a placeholder. */
@@ -110,7 +120,7 @@ export function mapState(
   stateMap: ZammadOptions['stateMap'] = {},
 ): StateMapping | null {
   const base = byStateType(state, ticket);
-  const override = stateMap[String(state.id)]?.status;
+  const override = own(stateMap, String(state.id))?.status;
   if (!override || base?.merged) return base;
   return {
     finalStatus: override,
@@ -122,12 +132,12 @@ export function mapState(
 
 // ------------------------------------------------------------ priorities
 
-const SEEDED_PRIORITIES: Readonly<Record<string, Priority>> = { '1 low': 'low', '2 normal': 'normal', '3 high': 'high' };
+const SEEDED_PRIORITIES: ReadonlyMap<string, Priority> = new Map([['1 low', 'low'], ['2 normal', 'normal'], ['3 high', 'high']]);
 
 /** The wizard's map by priority id; else the seeded name; else normal (Z13). */
 export function mapPriority(priorityId: number, priorityName: string | null, options: Pick<ZammadOptions, 'priorityMap'>): Priority {
-  return options.priorityMap[String(priorityId)]
-    ?? SEEDED_PRIORITIES[(priorityName ?? '').trim().toLowerCase()]
+  return own(options.priorityMap, String(priorityId))
+    ?? SEEDED_PRIORITIES.get((priorityName ?? '').trim().toLowerCase())
     ?? 'normal';
 }
 
@@ -136,7 +146,7 @@ export function mapPriority(priorityId: number, priorityName: string | null, opt
 export function articleTypeName(article: Pick<ZammadArticle, 'type' | 'type_id'>): string {
   const named = article.type?.trim().toLowerCase();
   if (named) return named;
-  return (article.type_id ? ZAMMAD_ARTICLE_TYPE_BY_ID[article.type_id] : undefined) ?? 'note';
+  return (article.type_id ? ZAMMAD_ARTICLE_TYPE_BY_ID.get(article.type_id) : undefined) ?? 'note';
 }
 
 export function senderName(article: Pick<ZammadArticle, 'sender' | 'sender_id'>): 'Agent' | 'Customer' | 'System' {
@@ -144,8 +154,7 @@ export function senderName(article: Pick<ZammadArticle, 'sender' | 'sender_id'>)
   if (named === 'agent' || named === 'customer' || named === 'system') {
     return (named[0]!.toUpperCase() + named.slice(1)) as 'Agent' | 'Customer' | 'System';
   }
-  const seeded = article.sender_id ? ZAMMAD_SENDER_BY_ID[article.sender_id] : undefined;
-  return (seeded as 'Agent' | 'Customer' | 'System' | undefined) ?? 'Customer';
+  return (article.sender_id ? ZAMMAD_SENDER_BY_ID.get(article.sender_id) : undefined) ?? 'Customer';
 }
 
 /** `create_article_type` (Z19): email -> email, web -> portal, everything else -> manual. No new ticket_source (step-1 F15). */
@@ -160,32 +169,41 @@ export function createArticleTypeName(ticket: ZammadTicket, articles: readonly Z
   const typeId = ticket.create_article_type_id;
   if (!typeId) return null;
   const article = articles.find((a) => a.type_id === typeId && a.type);
-  return article ? articleTypeName(article) : ZAMMAD_ARTICLE_TYPE_BY_ID[typeId] ?? null;
+  return article ? articleTypeName(article) : ZAMMAD_ARTICLE_TYPE_BY_ID.get(typeId) ?? null;
 }
 
-const TICKET_TYPES: Readonly<Record<string, TicketType>> = { incident: 'incident', problem: 'problem', 'request for change': 'change' };
+const TICKET_TYPES: ReadonlyMap<string, TicketType> = new Map([['incident', 'incident'], ['problem', 'problem'], ['request for change', 'change']]);
 
 /** The seeded `type` attribute (Z17); anything else is omitted, so the live default applies. */
 export function mapTicketType(type: string | null | undefined): TicketType | undefined {
-  return TICKET_TYPES[(type ?? '').trim().toLowerCase()];
+  return TICKET_TYPES.get((type ?? '').trim().toLowerCase());
 }
 
-/** Trimmed to 100 characters and capped at 50 (F2); anything cut or dropped is counted. */
+/**
+ * Trimmed to 100 characters and capped at 50 (F2). `cut` counts each source
+ * tag that lost something, once: dropped past the cap, or shortened. A tag
+ * that becomes one already kept (a repeat, or a shortened tag that collapses
+ * into another) lost nothing and is not counted.
+ */
 export function mapTags(tags: readonly string[]): { tags: string[]; cut: number } {
   const out: string[] = [];
   const seen = new Set<string>();
   let cut = 0;
   for (const raw of tags) {
     const cleaned = cleanText(raw).trim();
-    const tag = cleaned.slice(0, 100).trim();
-    if (tag.length < cleaned.length) cut += 1;
-    if (!tag || seen.has(tag)) continue;
+    if (!cleaned) continue;
+    let tag = cleaned.slice(0, 100);
+    // Never end on half of a surrogate pair.
+    if (/[\uD800-\uDBFF]$/.test(tag)) tag = tag.slice(0, -1);
+    tag = tag.trim();
+    if (seen.has(tag)) continue;
     if (out.length >= 50) {
       cut += 1;
       continue;
     }
     seen.add(tag);
     out.push(tag);
+    if (tag.length < cleaned.length) cut += 1;
   }
   return { tags: out, cut };
 }
@@ -238,7 +256,7 @@ export type OwnerMapping =
 export function mapOwner(ticket: ZammadTicket, people: Readonly<Record<string, ZammadPerson | null>>, ctx: Pick<ConversionContext, 'userIdByEmail'>): OwnerMapping {
   const ownerId = ticket.owner_id ?? ZAMMAD_SYSTEM_USER_ID;
   if (ownerId === ZAMMAD_SYSTEM_USER_ID) return { assigneeUserId: null, unmatched: null };
-  const person = people[String(ownerId)] ?? null;
+  const person = own(people, String(ownerId)) ?? null;
   const email = usableEmail(person?.email);
   const userId = email ? ctx.userIdByEmail.get(email) : undefined;
   if (userId) return { assigneeUserId: userId, unmatched: null };
@@ -254,7 +272,7 @@ export function mapRequester(
   people: Readonly<Record<string, ZammadPerson | null>>,
   ctx: Pick<ConversionContext, 'contactIdByEmail'>,
 ): { requester: ImportedTicket['requester']; withoutContact: boolean } {
-  const person = people[String(ticket.customer_id)] ?? null;
+  const person = own(people, String(ticket.customer_id)) ?? null;
   const email = usableEmail(person?.email);
   const contactId = email ? ctx.contactIdByEmail.get(email) : undefined;
   if (contactId) return { requester: { contactId }, withoutContact: false };
@@ -269,7 +287,7 @@ export function articleAuthor(
   const sender = senderName(article);
   if (sender === 'System') return { kind: 'staff', name: ZAMMAD_SYSTEM_NAME };
   const userId = article.origin_by_id ?? article.created_by_id ?? ZAMMAD_SYSTEM_USER_ID;
-  const person = people[String(userId)] ?? null;
+  const person = own(people, String(userId)) ?? null;
   const email = userId === ZAMMAD_SYSTEM_USER_ID ? null : usableEmail(person?.email);
   return { kind: sender === 'Agent' ? 'staff' : 'requester', name: personName(person, userId), ...(email ? { email } : {}) };
 }

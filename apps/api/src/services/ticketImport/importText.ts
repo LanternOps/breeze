@@ -17,14 +17,20 @@
  * Both report what was cut, for the run's counters.
  */
 import { clampWithMarker, htmlToTextDetailed, type HtmlToTextResult } from '../inboundEmail/htmlToText';
+import { REFUSED_CONTROL_CHAR_CLASS } from './refusedControlChars';
 
 /** `ImportedComment.content` and `ImportedTicket.description` (importedTicket.ts). */
 export const IMPORT_TEXT_MAX_CHARS = 200_000;
 
 export const IMPORT_TRUNCATION_MARKER = '[Truncated during import; the full message is in the source ticket.]';
 
-/** What importedTicket's text rule refuses: C0 controls other than tab, LF and CR. */
-const REFUSED_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+/** What importedTicket's text rule refuses (its REFUSED_CONTROL_CHAR_CLASS): C0 controls other than tab, LF and CR. */
+const REFUSED_CONTROL_CHARS_RE = new RegExp(`[${REFUSED_CONTROL_CHAR_CLASS}]`, 'gu');
+
+/** Text without the control characters importedTicket refuses (F2): for subjects, names, tags, notes. */
+export function stripRefusedControlChars(text: string): string {
+  return text.replace(REFUSED_CONTROL_CHARS_RE, '');
+}
 
 /**
  * Resolves one `<img>` (raw `src`, `alt`) to its inline text, e.g.
@@ -56,6 +62,6 @@ export function plainTextForImport(text: string, opts: ImportTextOptions = {}): 
   if (!Number.isSafeInteger(maxOutputChars) || maxOutputChars < 1) {
     throw new RangeError(`maxOutputChars must be a positive integer, got ${maxOutputChars}`);
   }
-  const normalized = text.replace(/\r\n?/g, '\n').replace(REFUSED_CONTROL_CHARS_RE, '');
+  const normalized = stripRefusedControlChars(text.replace(/\r\n?/g, '\n'));
   return clampWithMarker(normalized, maxOutputChars, IMPORT_TRUNCATION_MARKER);
 }

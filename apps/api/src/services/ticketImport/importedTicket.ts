@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { externalTicketUrlSchema, ticketTypeSchema } from '@breeze/shared';
 import { MigrationWindowError } from '../migrationWindows';
+import { REFUSED_CONTROL_CHAR_CLASS } from './refusedControlChars';
 
 /**
  * One source ticket, already converted into Breeze's model (#8313; spec
@@ -18,7 +19,9 @@ import { MigrationWindowError } from '../migrationWindows';
  * so a module that reused per-ticket comment ids ("article 1") would see later
  * tickets' comments skipped as already imported.
  */
-const CONTROL_CHARS = /^[^\u0000-\u0008\u000B\u000C\u000E-\u001F]*$/u;
+// The refused C0 controls (refusedControlChars.ts, the one definition, which
+// importText.ts strips for the modules).
+const CONTROL_CHARS = new RegExp(`^[^${REFUSED_CONTROL_CHAR_CLASS}]*$`, 'u');
 const text = (max: number) => z.string().max(max).regex(CONTROL_CHARS, 'control characters are not allowed');
 const instant = z.date().refine((d) => Number.isFinite(d.getTime()), 'invalid date');
 
