@@ -178,6 +178,13 @@ describe('WispConcernsPanel', () => {
       expect(screen.queryByTestId('wisp-concern-useful-c')).toBeNull();
     });
 
+    it('a recorded choice stays visible after the server resets nudgeCount to 0 (QA sweep 2026-10-24)', async () => {
+      // recordFeedback zeroes nudge_count; the row must still show the answer, not drop to nothing.
+      await mountWith([concern('a', 'high', { recipient: { ...nudged('useful'), nudgeCount: 0 } })]);
+      expect(screen.getByTestId('wisp-concern-feedback-given-a')).toBeTruthy();
+      expect(screen.queryByTestId('wisp-concern-useful-a')).toBeNull();
+    });
+
     it('Useful posts at once and the row shows the choice from the server recipient', async () => {
       api.feedbackWispConcern.mockResolvedValue(nudged('useful'));
       await mountWith([concern('a', 'high', { recipient: nudged() })]);

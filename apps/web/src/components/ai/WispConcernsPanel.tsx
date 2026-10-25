@@ -150,7 +150,9 @@ export function WispConcernsPanel({
 
   const renderFeedback = (c: Concern) => {
     const r = c.recipient;
-    if (!r || r.nudgeCount <= 0) return null;
+    if (!r) return null;
+    // A recorded answer outlives the nudge counter: recordFeedback resets
+    // nudgeCount to 0, so check feedback before the "was it nudged" gate.
     if (r.feedback) {
       return (
         <p className="mt-1 pl-3.5 text-[11px] text-muted-foreground" data-testid={`wisp-concern-feedback-given-${c.id}`}>
@@ -158,6 +160,7 @@ export function WispConcernsPanel({
         </p>
       );
     }
+    if (r.nudgeCount <= 0) return null;
     const noting = feedbackNoteId === c.id;
     return (
       <div className="mt-1.5 space-y-1 pl-3.5">
