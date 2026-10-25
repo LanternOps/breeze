@@ -22,12 +22,12 @@
  *   3. POST-PROBE IS THE VERIFICATION. A successful write call never implies a
  *      successful effect (Operator spec §13).
  *   4. REPLAY IS A NO-OP BY OBSERVATION. Dispatching the same effect twice
- *      performs the write once; the second pass is property 1. EXCEPT the four
+ *      performs the write once; the second pass is property 1. EXCEPT the five
  *      tools in REPLAY_REQUESTS_SAME_OPERATION, whose done world cannot be
  *      certified before a write: their replay re-requests the SAME operation
  *      key, and at-most-once is the permanent (org, task, operation_key) index
  *      (real rows: aiOperatorEffectDispatchReplay.integration.test.ts). This
- *      file proves only the key identity for those four.
+ *      file proves only the key identity for those five.
  *   5. Each tool declares an idempotency class, and a `non_idempotent` one is
  *      never auto-retried.
  *
@@ -42,13 +42,17 @@
  *      UPN exists", which cannot tell "we did this already" from "somebody else
  *      holds this name", and only one of those is safe (the fixture's
  *      `preSatisfied` is a COLLISION, and its `_meaning` says so).
- *   7. THE CREATE IS NEVER RETRIED. Driven twice, the second time under a FRESH
- *      operation key (a later plan revision, so the permanent
- *      (org_id, task_id, operation_key) index cannot be what stops it), and
- *      asserted against the operation rows this module writes plus the mints it
- *      makes: exactly one mint, ever, and no operation row on the second pass.
- *      The real-row form (one `ai_operator_operations` row, one executor call)
- *      is aiOperatorIdentityOnboardingGate.integration.test.ts.
+ *   7. THE CREATE IS NOT RE-ISSUED once the provider shows the account. Driven
+ *      twice, the second time under a FRESH operation key (a later plan
+ *      revision, so the permanent (org_id, task_id, operation_key) index
+ *      cannot be what stops it): exactly one mint, and no operation row on the
+ *      second pass. Under a fresh key, the PRE-PROBE is the only guard in this
+ *      module, so a LAGGING read would mint again; that is pinned below, and
+ *      the layers around it (no production path re-plans create_accounts at
+ *      another revision, a fresh human approval, the provider's UPN
+ *      uniqueness) are proven on real rows in
+ *      aiOperatorIdentityOnboardingGate.integration.test.ts, with the
+ *      same-key re-entry and re-release.
  *
  * WHAT IS REAL AND WHAT IS MOCKED. A fixture is only evidence if it is read by
  * the production code that reads the provider, so:
@@ -551,7 +555,7 @@ const GOOGLE_REFUSAL_CODE: Readonly<Record<string, string>> = {
 /**
  * Tools whose replay, observing the already-done world, re-requests the same
  * operation rather than settling noop. Stated here, not derived from the
- * fixture: three have no pre-write `satisfied` at all, and a retired Intune
+ * fixture: four have no pre-write `satisfied` at all, and a retired Intune
  * device whose record Intune has since DELETED (`graph_not_found`) is post-write
  * evidence only — before a write a 404 can also mean a wrong id.
  */
@@ -786,9 +790,14 @@ for (const { recipeKey, tools } of CATALOGS) for (const toolName of tools) {
       use(f, 'writeRefusal');
       if (effect.provider === 'google') {
         const result = await runWrite(effect);
-        drainCalls();
+        const calls = drainCalls();
         // The recorded refusal, not some other error (a fixture gap would also be `{ error }`).
         expectClean();
+        // When the fixture records the refusal ON the write call, that write was really
+        // issued: a generic code such as google_error could otherwise come from anywhere.
+        if ((f.writeRefusal[WRITE_CALL[toolName]!] as { error?: unknown } | undefined)?.error !== undefined) {
+          expect(calls.some((c) => c.key === WRITE_CALL[toolName]), `${toolName}: the refusal came from ${WRITE_CALL[toolName]}`).toBe(true);
+        }
         expect(parsedError(result), `${toolName} refusal returned: ${result}`).toBe(GOOGLE_REFUSAL_CODE[toolName]);
         return;
       }
@@ -967,6 +976,8 @@ describe('the non_idempotent pre-probe rule, over every non_idempotent tool in e
       h.state.tool = toolName;
       h.captureException.mockImplementation(() => undefined);
       const onUnknown = await dispatch(effect);
+      // The `unknown` came from a real provider read the probe attempted.
+      expect(h.state.gaps.length, `${toolName}: the probe really read the provider`).toBeGreaterThan(0);
       h.state.calls.length = 0;
       h.state.gaps.length = 0;
       expect(onUnknown.kind).toBe('handoff');
@@ -998,7 +1009,7 @@ describe('the non_idempotent pre-probe rule, over every non_idempotent tool in e
 // Property 7: the create is never retried, asserted on operation rows
 // ---------------------------------------------------------------------------
 
-describe('m365_create_user is issued at most once, ever — even under a fresh operation key', () => {
+describe('m365_create_user is not re-issued once the provider shows the account — even under a fresh operation key', () => {
   it('a second dispatch at a LATER plan revision (a new operation key) observes the created account and mints nothing', async () => {
     const f = loadFixture('m365_create_user');
     const effect = effectFor('m365_create_user');
@@ -1031,6 +1042,20 @@ describe('m365_create_user is issued at most once, ever — even under a fresh o
     const mintedKeys = h.createActionIntent.mock.calls.map((c) => (c[1] as { task: { operationKey: string } }).task.operationKey);
     expect(mintedKeys).toEqual([keyAtR]);
     expect(h.inserted).toEqual([]);
+  });
+
+  it('AS BUILT, under a fresh key the pre-probe is the only guard here: a LAGGING read (no user yet) would mint again (pinned; see the header)', async () => {
+    const f = loadFixture('m365_create_user');
+    const effect = effectFor('m365_create_user');
+    use(f, 'preUnsatisfied');
+    expect((await dispatch(effect)).kind).toBe('dispatching');
+    drainCalls();
+    use(f, 'preUnsatisfied'); // the provider read has not caught up with the create
+    const later = { ...APPROVAL, id: 'p2', planRevision: APPROVAL.planRevision + 1 };
+    expect((await dispatch(effect, later)).kind).toBe('dispatching');
+    drainCalls();
+    expectClean();
+    expect(h.createActionIntent).toHaveBeenCalledTimes(2);
   });
 
   it('a create whose post-probe does not see the account is unverified and NOT retryable', async () => {

@@ -82,7 +82,7 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (orig)
 import { computeEffectSetDigest } from '@breeze/shared/canonicalize/effectSet';
 import { db, runOutsideDbContext } from '../../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiOperatorPlanApprovalEffects, aiOperatorPlanApprovals, aiSessions, aiToolExecutions,
+  actionIntents, aiAgentRuns, aiAgents, aiOperatorPlanApprovalEffects, aiOperatorPlanApprovals, aiSessions, aiToolExecutions, approvalRequests,
 } from '../../db/schema';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildTaskActorAuthContext } from '../../services/actionIntents/actorContext';
@@ -92,7 +92,7 @@ import { canonicalizeArguments, computeArgumentDigest } from '../../services/act
 import { isSecretBearingTool } from '../../services/actionIntents/secretBearingTools';
 import { decideApprovalRequest } from '../../services/approvals/decideApprovalRequest';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
-import { checkPlanEffectMembershipSystem, planEffectOperationKey, rowsToDigestProjection } from '../../services/aiOperator/planApproval';
+import { bumpPlanRevision, checkPlanEffectMembershipSystem, planEffectOperationKey, rowsToDigestProjection } from '../../services/aiOperator/planApproval';
 import { IDENTITY_ONBOARDING_PROVISION_TOOLS } from '../../services/aiOperator/recipes/identityOnboarding';
 import { approvalRequestsFor, approveRealWay, asUser, userAuth } from './planApprovalFixtures';
 import {
@@ -100,7 +100,7 @@ import {
   accessTokenFor, approvalFor, approvals, approve, asPlanTenant, bindFakeProviders, childIntents,
   completeManualCreateGoogle, driveToCreateProposed, driveToProvisionProposed, effectsFor, getTaskDetail, operations,
   planIntents, planKeys, plaintextLeaks, policySnapshot, readTask, releaseInFlight, resetFakes, revealSecret, seedTenant,
-  system, targetAccounts, wake, walk, world,
+  system, targetAccounts, taskTicketId, wake, walk, world,
   type Admitted, type PlanKey,
 } from './identityOnboardingHarness';
 
@@ -183,6 +183,22 @@ async function provisionChildMinted() {
   return { t, a, child, approval };
 }
 
+/**
+ * Give the REQUESTER an approval-request row of their own on `intentId` (a
+ * clone of the approver's, as a policy change or a sole-approver fan-out
+ * would), then decide it as the requester through the real decide path:
+ * four_eyes refuses `not_sole_approver` while anyone else is eligible.
+ */
+async function expectSelfApprovalRefused(t: { requesterId: string; approverId: string; orgId: string; partnerId: string }, intentId: string) {
+  const [theirs] = await owner().select().from(approvalRequests).where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.userId, t.approverId)));
+  expect(theirs, 'the approver holds a request row').toBeTruthy();
+  const [mine] = await owner().insert(approvalRequests).values({ ...theirs!, id: crypto.randomUUID(), userId: t.requesterId } as never).returning();
+  const requesterAuth = await userAuth(asPlanTenant(t as never), t.requesterId);
+  const res = await asUser(requesterAuth, () => decideApprovalRequest({ auth: requesterAuth, id: mine!.id, status: 'approved' }));
+  expect(res).toMatchObject({ httpStatus: 403, body: { error: 'not_sole_approver' } });
+  expect(await readIntent(intentId)).toMatchObject({ status: 'pending_approval' });
+}
+
 const stageOps = async (a: Admitted, stepKey: string) => (await operations(a)).filter((o) => o.taskStepKey === stepKey);
 
 // ---------------------------------------------------------------------------
@@ -210,6 +226,62 @@ describe('(a) on real rows: m365_create_user is issued at most once', () => {
     expect((await childIntents(a)).filter((i) => i.actionName === 'm365_create_user')).toHaveLength(1);
     expect(await stageOps(a, CREATE_STEP), 'one create operation row, ever').toHaveLength(1);
     expect(world().m365.users.filter((u) => u.upn === UPN)).toHaveLength(1);
+  }, 180_000);
+
+  runDb('the create step RE-ENTERED at the same revision (a crash between settle and advance) finds its own operation and re-mints nothing', async () => {
+    const t = await seedTenant({ google: false });
+    const a = await driveToCreateProposed(t);
+    await approve(a, CREATE_STEP);
+    await walk(a, CREATE_STEP);
+    expect((await readTask(a)).currentStepKey).toBe('resolve_accounts');
+    const r = (await readTask(a)).revision;
+    // Rewind the task row to create_accounts, as if the advance had not committed.
+    await system(() => db.execute(sql`UPDATE ai_operator_tasks SET current_step_key = 'create_accounts', next_wake_at = now() WHERE id = ${a.taskId}`));
+    for (let i = 0; i < 3; i += 1) {
+      await wake(a);
+      await releaseInFlight(a);
+    }
+    // The re-entered step finds its settled operation and leaves again, so the
+    // task goes on to resolve_accounts (and its one bump) exactly as before.
+    expect((await readTask(a)).revision).toBeLessThanOrEqual(r + 1);
+    expect(await stageOps(a, CREATE_STEP), 'still one create operation row').toHaveLength(1);
+    expect((await childIntents(a)).filter((i) => i.actionName === 'm365_create_user')).toHaveLength(1);
+    expect(world().m365.createCalls, 'the executor saw exactly one create').toBe(1);
+    expect((await approvals(a)).filter((x) => x.stepKey === CREATE_STEP), 'no second creation approval').toHaveLength(1);
+  }, 180_000);
+
+  // DEFENCE IN DEPTH, not a reachable path: no production code bumps a task's
+  // revision while it is at create_accounts (resolve_accounts is the only
+  // bump caller, B7). Forced here to show what would stand between a FRESH
+  // operation key and a second account: a fresh human approval, then the
+  // pre-probe, then the provider's own UPN uniqueness.
+  runDb('a create re-planned under a FRESH operation key needs a fresh human approval, and a lagging read then meets the provider\'s UPN uniqueness: one account, ever', async () => {
+    const t = await seedTenant({ google: false });
+    const a = await driveToCreateProposed(t);
+    await approve(a, CREATE_STEP);
+    await walk(a, CREATE_STEP);
+    expect(world().m365.createCalls).toBe(1);
+    const before = await readTask(a);
+    await system(() => db.execute(sql`UPDATE ai_operator_tasks SET current_step_key = 'create_accounts', next_wake_at = now() WHERE id = ${a.taskId}`));
+    const moved = await readTask(a);
+    const bumped = await bumpPlanRevision({ orgId: t.orgId, taskId: a.taskId, fromRevision: before.revision, leaseEpoch: moved.leaseEpoch, detail: 'R2c: forced re-plan of create_accounts' });
+    expect(bumped.bumped).toBe(true);
+
+    await wake(a); // re-plans the create at r+1: proposes, mints NOTHING
+    expect(await approvalFor(a, CREATE_STEP)).toMatchObject({ state: 'pending', planRevision: before.revision + 1 });
+    expect((await childIntents(a)).filter((i) => i.actionName === 'm365_create_user'), 'no mint without a fresh approval').toHaveLength(1);
+
+    // A human approves again, and the read LAGS (the stub's pre is unsatisfied).
+    // The provider refuses a second account with the same UPN, as Entra does.
+    world().m365.writeOutcome['m365.user.create'] = 'user_already_exists';
+    await approve(a, CREATE_STEP);
+    await wake(a); // mints under the fresh key
+    expect(await releaseInFlight(a)).toBe(1);
+    const creates = (await stageOps(a, CREATE_STEP)).filter((o) => o.planRevision === before.revision + 1);
+    expect(creates.map((o) => o.resultState)).toEqual(['failed']);
+    expect(world().m365.users.filter((u) => u.upn === UPN), 'still exactly one account').toHaveLength(1);
+    await wake(a);
+    expect((await readTask(a)).state).toBe('handed_off');
   }, 180_000);
 });
 
@@ -309,10 +381,12 @@ describe('(b) staging: no provisioning before the account exists and is frozen',
   // its next child. Cases 3 and 4 therefore cannot be exercised until #9979
   // is fixed. Case 4's unblocked twin follows.
   skipDb('3. cancelled at each k (both stages): the hand-off names the remaining ordinals, no operation settles after the cancel, and no create is re-minted [BLOCKED #9979]', async () => {
-    // Intentionally empty: see the BUG note above.
+    // Unskipping this without writing the case must fail, never pass empty.
+    expect.fail('BLOCKED on #9979: write this case when a task-cancel path exists');
   });
   skipDb('4. cancelled between the stages (after create_accounts settles, before resolve_accounts): a usable account and a hand-off naming what remains [BLOCKED #9979]', async () => {
-    // Intentionally empty: see the BUG note above.
+    // Unskipping this without writing the case must fail, never pass empty.
+    expect.fail('BLOCKED on #9979: write this case when a task-cancel path exists');
   });
 
   runDb('4-twin. a forced no_account_resolved hand-off BETWEEN the stages leaves a usable account: no bump, nothing provisioned, the hand-off names the account and what remains, and the approver can still reveal its credential', async () => {
@@ -357,15 +431,58 @@ describe('(b) staging: no provisioning before the account exists and is frozen',
       .where(eq(aiToolExecutions.intentId, createChild!.id)));
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.session).toMatchObject({ type: 'ai_operator', userId: t.approverId });
-    // AS BUILT (reported for Todd): the task page's accounts panel lists FROZEN
-    // accounts only, so it is empty here; the reveal path is the AI activity feed.
+    // AS BUILT (a known gap, listed in the R2c PR): the task page's accounts
+    // panel lists FROZEN accounts only, so it is empty here; the reveal path
+    // is the AI activity feed (/ai-risk).
     const detail = await getTaskDetail(a.taskId, await accessTokenFor(t, t.requesterId));
     expect(detail.status).toBe(200);
     expect(detail.body.data.accounts).toEqual([]);
     const revealed = await revealSecret(createChild!.id, await accessTokenFor(t, t.approverId));
     expect(revealed.status, JSON.stringify(revealed.body)).toBe(200);
     expect(revealed.body.data).toMatchObject({ temporaryPassword: FAKE_PASSWORD, userId: CREATED_M365_ID });
+    // plaintextLeaks skips the ticket scan when no ticket resolves; this task has one.
+    expect(await taskTicketId(a)).toBeTruthy();
     expect(await plaintextLeaks(a, FAKE_PASSWORD)).toEqual([]);
+  }, 180_000);
+
+  runDb('the stage transition never runs while the create is IN FLIGHT: no bump, the dispatched create child is not cancelled, its operation untouched (B7)', async () => {
+    const { a, child } = await createChildMinted();
+    const r = (await readTask(a)).revision;
+    const [opBefore] = await stageOps(a, CREATE_STEP);
+    expect(opBefore).toMatchObject({ resultState: 'pending' });
+    // Force the task to resolve_accounts while the create is minted but not released.
+    await system(() => db.execute(sql`UPDATE ai_operator_tasks SET current_step_key = 'resolve_accounts', next_wake_at = now() WHERE id = ${a.taskId}`));
+    await wake(a);
+    const task = await readTask(a);
+    expect(task.revision, 'no bump with a create in flight').toBe(r);
+    expect(task.state).toBe('handed_off');
+    expect((await approvalFor(a, CREATE_STEP))!.state, 'the creation approval is not superseded').toBe('approved');
+    expect(await readIntent(child.id), 'the dispatched create child is NOT cancelled').toMatchObject({ status: 'approved' });
+    const [opAfter] = await stageOps(a, CREATE_STEP);
+    expect({ dispatchState: opAfter!.dispatchState, resultState: opAfter!.resultState })
+      .toEqual({ dispatchState: opBefore!.dispatchState, resultState: opBefore!.resultState });
+    expect(await targetAccounts(a)).toHaveLength(0);
+    expect(task.handoffSummary ?? '', 'the hand-off says the account may exist').toMatch(/Microsoft 365/);
+  }, 180_000);
+
+  runDb('a role-assignable group discovery could not see is refused by the executor at dispatch (unsupported_group_type): the walk hands off naming what remains, no membership is written', async () => {
+    const t = await seedTenant({ google: false });
+    const a = await driveToProvisionProposed(t);
+    expect((await effectsFor(a, PROVISION_STEP)).map((e) => e.toolName)).toEqual(['m365_assign_license', 'm365_add_to_group']);
+    await approve(a, PROVISION_STEP);
+    world().m365.writeOutcome['m365.group.membership.add'] = 'unsupported_group_type';
+    await walk(a, PROVISION_STEP);
+    const task = await readTask(a);
+    expect(task).toMatchObject({ state: 'handed_off', outcome: 'unresolved' });
+    expect(task.outcomeDetail).toMatch(/m365_add_to_group \(ordinal 1\) result failed/);
+    expect(task.handoffSummary).toContain('m365_add_to_group');
+    const ops = await stageOps(a, PROVISION_STEP);
+    const children = await childIntents(a);
+    const byTool = Object.fromEntries(ops.map((o) => [children.find((c) => c.id === o.intentId)!.actionName, o.resultState]));
+    expect(byTool).toEqual({ m365_assign_license: 'succeeded', m365_add_to_group: 'failed' });
+    expect(world().m365.groups.every((g) => g.members.length === 0), 'no membership written').toBe(true);
+    expect(world().m365.users.find((u) => u.id === CREATED_M365_ID)!.licenses, 'the licence before it stands').toHaveLength(1);
+    expect(world().m365.createCalls).toBe(1);
   }, 180_000);
 });
 
@@ -553,7 +670,8 @@ describe('(c) plan-approval membership for identity_onboarding, both stages', ()
     const atRelease = await revalidate(child.id);
     expect(atRelease.ok).toBe(false);
     if (!atRelease.ok) expect(atRelease.errorCode).toBe('tool_not_in_agent_allowlist');
-    await releaseInFlight(a);
+    expect(await releaseInFlight(a), 'the release really ran').toBe(1);
+    expect(await readIntent(child.id)).toMatchObject({ status: 'failed', errorCode: 'tool_not_in_agent_allowlist' });
     expect(world().m365.createCalls, 'the narrowed policy stopped the create at release').toBe(0);
 
     // MINT: the frozen ceiling is the EARLIEST task-linked run's snapshot. An
@@ -621,6 +739,10 @@ describe('(c) plan-approval membership for identity_onboarding, both stages', ()
     expect(await approvalFor(a, PROVISION_STEP)).toMatchObject({ state: 'pending', approvedByUserId: null });
     await wake(a);
     expect(await stageOps(a, PROVISION_STEP)).toHaveLength(0);
+    // The production self-approval guard itself: even holding a request row
+    // of their own, the requester is refused while another approver is eligible.
+    await expectSelfApprovalRefused(t, planIntent.id);
+    expect(await approvalFor(a, PROVISION_STEP)).toMatchObject({ state: 'pending', approvedByUserId: null });
 
     // Stage 1 on a fresh task, pending: the same refusal. The second org is a
     // different provider tenant: the one shared fake must not show it the
@@ -630,6 +752,10 @@ describe('(c) plan-approval membership for identity_onboarding, both stages', ()
     const t2 = await seedTenant({ google: false });
     const b = await driveToCreateProposed(t2);
     await expect(approve({ ...b, t: { ...t2, approverId: t2.requesterId } }, CREATE_STEP)).rejects.toThrow(/no approval request for approver/);
+    expect(await approvalFor(b, CREATE_STEP)).toMatchObject({ state: 'pending', approvedByUserId: null });
+    const createPlanIntent = await readIntent((await approvalFor(b, CREATE_STEP))!.intentId!);
+    expect(createPlanIntent.requestedByUserId).toBe(t2.requesterId);
+    await expectSelfApprovalRefused(t2, createPlanIntent.id);
     expect(await approvalFor(b, CREATE_STEP)).toMatchObject({ state: 'pending', approvedByUserId: null });
     await wake(b);
     expect(await childIntents(b)).toHaveLength(0);
@@ -659,7 +785,8 @@ describe('(c) plan-approval membership for identity_onboarding, both stages', ()
     const res = await revalidate(child.id);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.details?.refusal).toBe('mixed_secret_bearing');
-    await releaseInFlight(a);
+    expect(await releaseInFlight(a), 'the release really ran').toBe(1);
+    expect(await readIntent(child.id)).toMatchObject({ status: 'failed', errorCode: 'plan_approval_revoked' });
     expect(world().m365.createCalls).toBe(0);
   }, 180_000);
 
@@ -691,7 +818,8 @@ describe('(c) plan-approval membership for identity_onboarding, both stages', ()
       expect(res.errorCode).toBe('plan_approval_revoked');
       expect(res.details?.refusal).toBe('effect_set_digest_mismatch');
     }
-    await releaseInFlight(a);
+    expect(await releaseInFlight(a), 'the release really ran').toBe(1);
+    expect(await readIntent(child.id)).toMatchObject({ status: 'failed', errorCode: 'plan_approval_revoked' });
     expect(world().m365.createCalls).toBe(0);
     // And no reset child exists anywhere on the task.
     expect((await childIntents(a)).map((i) => i.actionName)).toEqual(['m365_create_user']);

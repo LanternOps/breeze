@@ -22,6 +22,7 @@
  */
 import './setup';
 
+import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -100,7 +101,12 @@ beforeEach(() => {
   vi.stubEnv('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', 'true');
   resetFakes();
 });
-afterEach(() => { vi.unstubAllEnvs(); });
+/** The happy path's console spies; restored here too, so a failed case never leaves console spied. */
+const logSpies: Array<{ mockRestore: () => void }> = [];
+function restoreLogSpies(): void {
+  for (const sp of logSpies.splice(0)) sp.mockRestore();
+}
+afterEach(() => { restoreLogSpies(); vi.unstubAllEnvs(); });
 
 async function readIntent(id: string) {
   const [row] = await system(() => db.select().from(actionIntents).where(eq(actionIntents.id, id)));
@@ -127,14 +133,16 @@ describe('identity_onboarding end to end (R2a)', () => {
   runDb('happy path: admit → confirm → discover → review → create (four-eyes, sealed) → manual Google → resolve (r→r+1) → provision → manual work → verify → document', async () => {
     // Every console line the run emits (the API's logger is console), so the
     // secret assertion below covers LOGS as well as rows. Passed through.
+    // util.inspect, not JSON.stringify: an Error's message, stack and cause
+    // are kept (JSON.stringify(err) is "{}"). Restored in afterEach on failure.
     const logged: string[] = [];
-    const logSpies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => {
+    for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) {
       const real = console[m].bind(console);
-      return vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
-        logged.push(args.map((x) => (typeof x === 'string' ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(' '));
+      logSpies.push(vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+        logged.push(args.map((x) => (typeof x === 'string' ? x : inspect(x, { depth: 6, breakLength: Infinity }))).join(' '));
         real(...args);
-      });
-    });
+      }));
+    }
     const t = await seedTenant();
     const a = await admit(t, { google: true });
 
@@ -376,7 +384,7 @@ describe('identity_onboarding end to end (R2a)', () => {
     const audit = await system(() => db.select().from(auditLogs).where(eq(auditLogs.orgId, t.orgId)));
     expect(JSON.stringify(audit)).not.toContain(FAKE_PASSWORD);
     // And the run's logs. Control: the logs were captured at all.
-    for (const s of logSpies) s.mockRestore();
+    restoreLogSpies();
     expect(logged.length, 'control: the run logged something').toBeGreaterThan(0);
     expect(logged.filter((line) => line.includes(FAKE_PASSWORD)), 'the sealed value in a log line').toEqual([]);
   }, 180_000);

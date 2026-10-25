@@ -6,7 +6,7 @@ An eval here is a JSON corpus plus an ordinary Vitest grader. The normal test co
 evals/
   README.md                      # this file
   identityIntake.cases.json             # identity_offboarding intake: 25 cases (spec §9(d) needs at least 20)
-  identityOnboardingIntake.cases.json   # identity_onboarding intake: 24 cases
+  identityOnboardingIntake.cases.json   # identity_onboarding intake: 25 cases
   identityIntake.eval.test.ts           # the ONE grader, for both corpora
 ```
 
@@ -46,7 +46,7 @@ The onboarding case shape (`onboardingCaseSchema` in the grader) has `objective`
 ```sh
 cd apps/api
 npx vitest run src/services/aiOperator/evals/identityIntake.eval.test.ts
-# expect: 1 file, 69 passed, 2 skipped (one gate-mode tripwire per corpus)
+# expect: 1 file, 70 passed, 2 skipped (one gate-mode tripwire per corpus)
 ```
 
 **Check the counts in the output.** If the corpus fails to load, the run is not a quiet green 1-test run. The file's first assertion is `cases.length >= 20`, and it fails.
@@ -73,14 +73,14 @@ Each corpus records the `promptVersion` it was recorded against, and the grader 
 |---|---|
 | `authored` | Written by hand without a live run: what a careful answer looks like. **Every non-adversarial case in both corpora is `authored` today.** |
 | `live-YYYY-MM-DD` | A real model answer from live mode, on that date. The case also records the `model`. |
-| `adversarial` | A deliberately wrong answer. Live mode never rewrites it, because it exists to prove that a wrong-person answer is still a flagged PASS (`two-danas-wrong-pick`; onboarding: `wrong-manager-pick`). |
+| `adversarial` | A deliberately wrong answer. Live mode never rewrites it, because it exists to prove that a wrong-person answer is still a flagged PASS (`two-danas-wrong-pick`; onboarding: `wrong-manager-pick`, `wrong-model-after-pick`). |
 
 Do not edit `_source` to turn the tripwire green.
 
 ## Adding a case
 
-1. Append an object to `cases` in `identityIntake.cases.json`. The schema is in the grader (`caseSchema`). It is `.strict()`, so an unknown field is an error.
-2. Use synthetic contact ids of the form `00000000-0000-4000-8000-0000000cNNNN`, and use only `*.example` addresses. The grader checks both.
+1. Append an object to `cases` in the recipe's corpus (`identityIntake.cases.json` or `identityOnboardingIntake.cases.json`). The schemas are in the grader (`caseSchema`, `onboardingCaseSchema`). It is `.strict()`, so an unknown field is an error.
+2. Use synthetic contact ids of the form `00000000-0000-4000-8000-0000000cNNNN` (onboarding: `…0000000dNNNN`), and use only `*.example` addresses. The grader checks the contact ids, and every address anywhere in the file.
 3. Set `covers` to a short phrase naming the situation, `expect.mustIncludeContactIds` to the person who is meant (or `[]`), and `expect.ambiguous` to `true`, `false` or `null` (either answer is reasonable).
 4. Add a `recorded` block with `_source: "authored"`, then re-run live mode before sign-off.
 

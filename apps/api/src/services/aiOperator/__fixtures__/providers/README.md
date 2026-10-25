@@ -53,7 +53,7 @@ These files feed `../../effectContracts.test.ts`, the per-effect contract suite 
   "preUnsatisfied": { ... },         // also what a post-probe sees when a 200 write did not take
   "writeOk":        { ... },         // the write call(s) the executor makes, and any reads it does first
   "postSatisfied":  { ... },
-  "writeRefusal":   { ... }          // optional: a typed refusal or a provider error
+  "writeRefusal":   { ... }          // REQUIRED: a typed refusal or a provider error (the negative half of the write property)
 }
 ```
 
@@ -65,7 +65,7 @@ Each phase is a map from a **call key** to the response that call returns in tha
 | M365 | `read:<read action id>` (`read:m365.user.get`, `read:m365.group.member.get`, `read:m365.intune.device.get`) | an `executeM365ReadActionByOrg` result: `{ ok: true, kind: "resource", resource }`, `{ ok: true, kind: "collection", items, truncated }` or `{ ok: false, code, message }` |
 | M365 | `write:<write action id>` (including the probe arm `write:m365.user.mailbox.auto_reply.state`) | an `executeM365WriteActionByOrg` result: `{ ok: true, result }` (validated against `writeActionResultSchema`) or `{ ok: false, code, message }` |
 
-The suite builds the effects (and so every argument a probe or executor sees) from the real `buildIdentityOffboardingPlan`, and runs the real probes and the real headless executors over these shapes. A fixture cannot make a property pass by asserting itself.
+The suite builds the effects (and so every argument a probe or executor sees) from the real `buildIdentityOffboardingPlan`, `buildIdentityOnboardingCreatePlan` and `buildIdentityOnboardingProvisionPlan`, and runs the real probes and the real headless executors over these shapes. A fixture cannot make a property pass by asserting itself.
 
 ## Two fixtures a reader will misread
 
@@ -105,7 +105,7 @@ There is no automatic recorder. The contract suite runs against mocked clients, 
    - **M365:** the **result of `executeM365ReadActionByOrg` / `executeM365WriteActionByOrg`** (`{ ok, kind, resource }` / `{ ok, result }`), taken from the rig's API log. Do not use raw Graph output from Graph Explorer. The control plane projects Graph responses, and a hand-wrapped Graph body would skip that projection.
 3. Replace every identifier with the synthetic value in the tables above, and replace the create's `temporaryPassword` with `REDACTED-FIXTURE-VALUE`. Keep field names, types and the provider's own enum values exactly as returned.
 4. Set `_source` and `_recordedFrom` to `lab-run-YYYY-MM-DD`, re-run the suite, and confirm that it is green and that the gate-mode tripwire is green.
-5. List the replaced files in the lab-run doc's §9.
+5. List the replaced files in the lab-run doc (offboarding §9, onboarding §10).
 
 `BREEZE_RECORD_PROVIDER_FIXTURES`, `BREEZE_GATE_SIGNOFF` and `BREEZE_EVAL_LIVE` are read **only** in `*.test.ts` files. The suite asserts this, and `envInventory.test.ts` would flag a non-test read.
 

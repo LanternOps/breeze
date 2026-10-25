@@ -2240,6 +2240,96 @@
           "rationale": "Morgan Lee is a team lead."
         }
       }
+    },
+    {
+      "id": "wrong-model-after-pick",
+      "kind": "onboarding_intake",
+      "covers": "ADVERSARIAL: the model names the wrong bookkeeper as the person to model access on",
+      "objective": "Set Riley Novak up with the same access as Jordan Diaz.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0018"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0017"
+        ],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "adversarial",
+        "_note": "Deliberately wrong (Alex Chen, not Jordan Diaz). Live mode never rewrites it: the model-after list is a proposal the technician confirms, and grants never come from it.",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017"
+          ],
+          "ambiguous": false,
+          "rationale": "Alex Chen is a bookkeeper."
+        }
+      }
     }
   ]
 }

@@ -358,6 +358,11 @@ for (const corpusSpec of CORPORA) {
           if (x.email) expect(x.email, c.id).toMatch(/@[a-z0-9.-]+\.example$/);
         }
       }
+      // Every address ANYWHERE in the file (requests, objectives, facts), not only the contacts.
+      const raw = readFileSync(fileURLToPath(new URL(`./${corpusSpec.file}`, import.meta.url)), 'utf8');
+      const domains = [...raw.matchAll(/@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g)].map((m) => m[1]!.toLowerCase());
+      expect(domains.length).toBeGreaterThan(0);
+      expect(domains.filter((d) => !d.endsWith('.example')), 'a non-.example address').toEqual([]);
     });
   });
 }
@@ -432,6 +437,7 @@ describe('the report', () => {
       ...flags.map((f) => `  - ${f}`),
     ].join('\n'));
     // Every adversarial recording exists to be wrong; the grader must have noticed.
+    expect(corpus.cases.some((c) => c.recorded._source === 'adversarial'), 'the flag path is exercised').toBe(true);
     for (const c of corpus.cases.filter((x) => x.recorded._source === 'adversarial')) {
       expect(flags.some((f) => f.startsWith(`${c.id}: recall miss`)), `${c.id} was not flagged as a recall miss`).toBe(true);
     }
@@ -828,7 +834,7 @@ describe('every recording is a live model answer, not an authored guess', () => 
 });
 
 if (LIVE) {
-  // Registered only in live mode, so CI reports exactly one skipped case (the tripwire).
+  // Registered only in live mode, so CI reports only the skipped tripwires (one per corpus).
   describe('LIVE (BREEZE_EVAL_LIVE=1): prompt-level re-recording', () => {
     it('asks the model for every non-adversarial case and rewrites the recordings', async () => {
       const apiKey = process.env.ANTHROPIC_API_KEY;

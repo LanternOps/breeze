@@ -16,10 +16,10 @@ Counts from the R2c gate run (2026-10-25), CI mode unless stated.
 
 | Clause | Evidence | Status |
 |---|---|---|
-| (a) per-effect contracts | `apps/api/src/services/aiOperator/effectContracts.test.ts` (159 passed, 2 skipped; both catalogs, 20 tools) + `__fixtures__/providers/`; real-row "create issued once" case in `aiOperatorIdentityOnboardingGate.integration.test.ts` | PASS on reference fixtures. With `BREEZE_GATE_SIGNOFF=1` the per-recipe `_source` tripwires are RED by design until §10 re-records them |
-| (b) staging | `recipes/identityOnboarding.staging.test.ts`, `__tests__/integration/aiOperatorIdentityOnboardingE2E.integration.test.ts` (10 passed), `__tests__/integration/aiOperatorIdentityOnboardingGate.integration.test.ts` (22 passed, 2 skipped on #9979) | PASS, except the two cancel cases, which are BLOCKED on #9979 |
+| (a) per-effect contracts | `apps/api/src/services/aiOperator/effectContracts.test.ts` (160 passed, 2 skipped; both catalogs, 20 tools) + `__fixtures__/providers/`; real-row "create issued once" cases (same-key re-release and re-entry; a forced fresh-key re-plan) in `aiOperatorIdentityOnboardingGate.integration.test.ts` | PASS on reference fixtures. With `BREEZE_GATE_SIGNOFF=1` the per-recipe `_source` tripwires are RED by design until §10 re-records them |
+| (b) staging | `recipes/identityOnboarding.staging.test.ts`, `__tests__/integration/aiOperatorIdentityOnboardingE2E.integration.test.ts` (10 passed), `__tests__/integration/aiOperatorIdentityOnboardingGate.integration.test.ts` (26 passed, 2 skipped on #9979) | PASS, except the two cancel cases, which are BLOCKED on #9979 |
 | (c) two-stage plan-approval membership | `aiOperatorIdentityOnboardingGate.integration.test.ts`, `aiOperatorTwoStagePlanApproval.integration.test.ts` (9 passed) | PASS |
-| (d) ≥ 20 evaluated cases | `evals/identityOnboardingIntake.cases.json` (24 cases: 23 authored, 1 adversarial) + `evals/identityIntake.eval.test.ts` (69 passed, 2 skipped, both corpora) | PASS on authored recordings: 24/24 cases pass, 0 wrong-person resolutions accepted without `confirm_details`, 0 known-privileged grants planned; 2 flags, both on the adversarial case. With `BREEZE_GATE_SIGNOFF=1` the authored-recording tripwire is RED by design until a live run |
+| (d) ≥ 20 evaluated cases | `evals/identityOnboardingIntake.cases.json` (25 cases: 23 authored, 2 adversarial) + `evals/identityIntake.eval.test.ts` (70 passed, 2 skipped, both corpora) | PASS on authored recordings: 25/25 cases pass, 0 wrong-person resolutions accepted without `confirm_details`, 0 known-privileged grants planned; 4 flags, all on the two adversarial cases. With `BREEZE_GATE_SIGNOFF=1` the authored-recording tripwire is RED by design until a live run |
 | (e) lab run | this document | BLOCKED — lab run not yet performed |
 | (f) own flag | `AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED`, shipped in R2a; commented out in both `.env.example` files, `${…:-false}` in both compose files | PASS (off) |
 
@@ -66,7 +66,7 @@ Setup actions in Breeze:
 One row per tool. A row is PASS only if all of these hold:
 
 - the post-probe is `satisfied`;
-- the replay observed a no-op;
+- the replay observed a no-op (except row 1, whose replay must be a **hand-off**, and row 3, whose replay re-requests the **same operation key**; each row says so);
 - the provider's own audit log shows **exactly one** write.
 
 | # | Tool | Dispatched? | Pre-probe | Write result | Post-probe | Replay → no-op? | Provider audit-log line id | Status |
