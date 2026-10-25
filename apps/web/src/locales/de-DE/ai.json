@@ -698,6 +698,84 @@
         "nudge": "Hinweis",
         "brief": "Briefing"
       }
+    },
+    "home": {
+      "briefTitle": "Brief von heute Morgen",
+      "briefEmpty": "Noch kein Brief. Wisp schickt jeden Morgen einen, sobald es sich umgesehen hat.",
+      "briefSentAt": "Gesendet {{time}}",
+      "briefStale": "Von einem früheren Tag",
+      "needsYouTitle": "Braucht Ihre Aufmerksamkeit",
+      "needsYouCount_one": "{{count}} Eintrag",
+      "needsYouCount_other": "{{count}} Einträge",
+      "needsYouApprovals_one": "{{count}} wartet auf Ihre Genehmigung",
+      "needsYouApprovals_other": "{{count}} warten auf Ihre Genehmigung",
+      "threadTitle": "Mit Wisp sprechen",
+      "threadPaused": "Wisp ist pausiert. Setzen Sie es oben in der Kopfzeile fort, um weiterzusprechen.",
+      "threadEnded": "Diese Berechtigung ist beendet. Starten Sie eine neue, um mit Wisp zu sprechen.",
+      "threadOpening": "Unterhaltung wird geöffnet…",
+      "threadOpenFailed": "Die Unterhaltung konnte nicht geöffnet werden.",
+      "threadDismissError": "Schließen",
+      "openChats": "Alle Chats",
+      "memory": "Gedächtnis",
+      "startTitle": "Wisp an die Arbeit schicken",
+      "startBody": "Wisp behält Ihre Geräteflotte, Supportanfragen und Abrechnung im Rahmen einer von Ihnen kontrollierten Berechtigung im Blick und bringt Ihnen, was eine Entscheidung braucht.",
+      "startAction": "Wisp starten",
+      "disabledTitle": "Wisp ist ausgeschaltet",
+      "disabledBody": "Ein Partner-Administrator hat Wisp unter Einstellungen → KI-Agenten ausgeschaltet. Ihre Chats funktionieren weiterhin.",
+      "disabledSettings": "KI-Agenten-Einstellungen öffnen",
+      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden."
+    },
+    "links": {
+      "title": "Verknüpfte Einträge",
+      "empty": "Noch nichts verknüpft. Verknüpfen Sie eine Supportanfrage, ein Gerät oder eine Rechnung, damit Wisp sie im Blick behält.",
+      "add": "Eintrag verknüpfen",
+      "remove": "{{label}} entfernen",
+      "removed": "Verknüpfung entfernt",
+      "removeFailed": "Die Verknüpfung konnte nicht entfernt werden.",
+      "addedByWisp": "Von Wisp hinzugefügt",
+      "added": "Mit Wisp verknüpft",
+      "addFailed": "Dieser Eintrag konnte nicht verknüpft werden.",
+      "count": "{{count}} von {{max}} verknüpft"
+    },
+    "picker": {
+      "title": "Eintrag mit Wisp verknüpfen",
+      "searchPlaceholder": "Nach Name oder Nummer suchen",
+      "kindsLabel": "Eintragstyp",
+      "kinds": {
+        "ticket": "Supportanfragen",
+        "quote": "Angebote",
+        "invoice": "Rechnungen",
+        "contract": "Verträge",
+        "device": "Geräte",
+        "organization": "Organisationen",
+        "site": "Standorte",
+        "alert": "Warnungen",
+        "run": "Agent-Ausführungen",
+        "task": "Operator-Aufgaben",
+        "user": "Benutzer"
+      },
+      "loading": "Suche läuft…",
+      "empty": "Keine Treffer.",
+      "loadFailed": "Diese Liste konnte nicht geladen werden.",
+      "alreadyLinked": "Bereits verknüpft",
+      "close": "Schließen"
+    },
+    "linkButton": {
+      "link": "Mit Wisp verknüpfen",
+      "linked": "In Wisp verknüpft",
+      "linking": "Wird verknüpft…"
+    },
+    "sidebar": {
+      "openHome": "In Wisp öffnen"
+    },
+    "partnerSwitch": {
+      "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",
+      "label": "Wisp aktiviert",
+      "savedOn": "Wisp eingeschaltet",
+      "savedOff": "Wisp ausgeschaltet",
+      "saveFailed": "Die Wisp-Einstellung konnte nicht geändert werden.",
+      "adminOnly": "Nur Partner-Administratoren können das ändern.",
+      "loadFailed": "Die Wisp-Einstellung konnte nicht geladen werden."
     }
   },
   "wispConcerns": {

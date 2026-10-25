@@ -698,6 +698,84 @@
         "nudge": "Rappel",
         "brief": "Synthèse"
       }
+    },
+    "home": {
+      "briefTitle": "Le résumé de ce matin",
+      "briefEmpty": "Pas encore de résumé. Wisp en envoie un chaque matin, une fois qu’il a fait le tour.",
+      "briefSentAt": "Envoyé {{time}}",
+      "briefStale": "D’un jour précédent",
+      "needsYouTitle": "Requiert votre attention",
+      "needsYouCount_one": "{{count}} élément",
+      "needsYouCount_other": "{{count}} éléments",
+      "needsYouApprovals_one": "{{count}} en attente de votre approbation",
+      "needsYouApprovals_other": "{{count}} en attente de votre approbation",
+      "threadTitle": "Parler à Wisp",
+      "threadPaused": "Wisp est en pause. Reprenez-le depuis l’en-tête pour continuer à discuter.",
+      "threadEnded": "Cette autorisation est terminée. Démarrez-en une nouvelle pour parler à Wisp.",
+      "threadOpening": "Ouverture de la conversation…",
+      "threadOpenFailed": "Impossible d’ouvrir la conversation.",
+      "threadDismissError": "Ignorer",
+      "openChats": "Toutes les conversations",
+      "memory": "Mémoire",
+      "startTitle": "Mettez Wisp au travail",
+      "startBody": "Wisp garde un œil sur votre parc, vos billets et votre facturation, dans le cadre d’une autorisation que vous contrôlez, et vous apporte ce qui demande une décision.",
+      "startAction": "Démarrer Wisp",
+      "disabledTitle": "Wisp est désactivé",
+      "disabledBody": "Un administrateur partenaire a désactivé Wisp sous Paramètres → Agents IA. Vos conversations fonctionnent toujours.",
+      "disabledSettings": "Ouvrir les paramètres des agents IA",
+      "loadFailed": "Impossible de charger l’accueil de Wisp."
+    },
+    "links": {
+      "title": "Éléments liés",
+      "empty": "Rien n’est encore lié. Liez un billet, un appareil ou une facture pour que Wisp la garde en tête.",
+      "add": "Lier un élément",
+      "remove": "Retirer {{label}}",
+      "removed": "Lien retiré",
+      "removeFailed": "Impossible de retirer le lien.",
+      "addedByWisp": "Ajouté par Wisp",
+      "added": "Lié à Wisp",
+      "addFailed": "Impossible de lier cet élément.",
+      "count": "{{count}} sur {{max}} liés"
+    },
+    "picker": {
+      "title": "Lier un élément à Wisp",
+      "searchPlaceholder": "Rechercher par nom ou numéro",
+      "kindsLabel": "Type d’élément",
+      "kinds": {
+        "ticket": "Billets",
+        "quote": "Devis",
+        "invoice": "Factures",
+        "contract": "Contrats",
+        "device": "Appareils",
+        "organization": "Organisations",
+        "site": "Emplacements",
+        "alert": "Alertes",
+        "run": "Exécutions d’agents",
+        "task": "Tâches d’opérateur",
+        "user": "Utilisateurs"
+      },
+      "loading": "Recherche en cours…",
+      "empty": "Aucun résultat.",
+      "loadFailed": "Impossible de charger cette liste.",
+      "alreadyLinked": "Déjà lié",
+      "close": "Fermer"
+    },
+    "linkButton": {
+      "link": "Lier à Wisp",
+      "linked": "Lié dans Wisp",
+      "linking": "Liaison en cours…"
+    },
+    "sidebar": {
+      "openHome": "Ouvrir dans Wisp"
+    },
+    "partnerSwitch": {
+      "description": "Permettre aux techniciens de déléguer du travail à Wisp. La désactivation met en pause chaque autorisation en cours à sa prochaine vérification et bloque les nouvelles ; rien n’est supprimé, et la réactivation reprend ce qui avait été mis en pause.",
+      "label": "Wisp activé",
+      "savedOn": "Wisp activé",
+      "savedOff": "Wisp désactivé",
+      "saveFailed": "Impossible de modifier le paramètre Wisp.",
+      "adminOnly": "Seuls les administrateurs partenaires peuvent modifier ceci.",
+      "loadFailed": "Impossible de charger le paramètre Wisp."
     }
   },
   "wispConcerns": {

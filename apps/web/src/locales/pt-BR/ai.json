@@ -698,6 +698,84 @@
         "nudge": "Lembrete",
         "brief": "Resumo"
       }
+    },
+    "home": {
+      "briefTitle": "Resumo desta manhã",
+      "briefEmpty": "Ainda sem resumo. O Wisp envia um toda manhã, depois de dar uma olhada em tudo.",
+      "briefSentAt": "Enviado {{time}}",
+      "briefStale": "De um dia anterior",
+      "needsYouTitle": "Precisa da sua atenção",
+      "needsYouCount_one": "{{count}} item",
+      "needsYouCount_other": "{{count}} itens",
+      "needsYouApprovals_one": "{{count}} aguardando sua aprovação",
+      "needsYouApprovals_other": "{{count}} aguardando sua aprovação",
+      "threadTitle": "Fale com o Wisp",
+      "threadPaused": "O Wisp está pausado. Retome-o pelo cabeçalho para continuar a conversa.",
+      "threadEnded": "Esta permissão terminou. Inicie uma nova para falar com o Wisp.",
+      "threadOpening": "Abrindo a conversa…",
+      "threadOpenFailed": "Não foi possível abrir a conversa.",
+      "threadDismissError": "Dispensar",
+      "openChats": "Todos os chats",
+      "memory": "Memória",
+      "startTitle": "Ponha o Wisp para trabalhar",
+      "startBody": "O Wisp acompanha sua frota, seus chamados e o faturamento com uma permissão que você controla, e traz o que precisa de uma decisão.",
+      "startAction": "Iniciar o Wisp",
+      "disabledTitle": "O Wisp está desativado",
+      "disabledBody": "Um administrador do parceiro desativou o Wisp em Configurações → Agentes de IA. Seus chats continuam funcionando.",
+      "disabledSettings": "Abrir as configurações de Agentes de IA",
+      "loadFailed": "Não foi possível carregar a página inicial do Wisp."
+    },
+    "links": {
+      "title": "Itens vinculados",
+      "empty": "Nada vinculado ainda. Vincule um chamado, dispositivo ou fatura para o Wisp manter em mente.",
+      "add": "Vincular um item",
+      "remove": "Remover {{label}}",
+      "removed": "Vínculo removido",
+      "removeFailed": "Não foi possível remover o vínculo.",
+      "addedByWisp": "Adicionado pelo Wisp",
+      "added": "Vinculado ao Wisp",
+      "addFailed": "Não foi possível vincular esse item.",
+      "count": "{{count}} de {{max}} vinculados"
+    },
+    "picker": {
+      "title": "Vincular um item ao Wisp",
+      "searchPlaceholder": "Buscar por nome ou número",
+      "kindsLabel": "Tipo de item",
+      "kinds": {
+        "ticket": "Chamados",
+        "quote": "Orçamentos",
+        "invoice": "Faturas",
+        "contract": "Contratos",
+        "device": "Dispositivos",
+        "organization": "Organizações",
+        "site": "Locais",
+        "alert": "Alertas",
+        "run": "Execuções de agentes",
+        "task": "Tarefas do operador",
+        "user": "Usuários"
+      },
+      "loading": "Buscando…",
+      "empty": "Nenhum resultado.",
+      "loadFailed": "Não foi possível carregar esta lista.",
+      "alreadyLinked": "Já vinculado",
+      "close": "Fechar"
+    },
+    "linkButton": {
+      "link": "Vincular ao Wisp",
+      "linked": "Vinculado no Wisp",
+      "linking": "Vinculando…"
+    },
+    "sidebar": {
+      "openHome": "Abrir no Wisp"
+    },
+    "partnerSwitch": {
+      "description": "Permita que os técnicos deleguem trabalho ao Wisp. Ao desativar, cada permissão em andamento é pausada na próxima verificação e novas são bloqueadas; nada é excluído, e ao reativar o que foi pausado é retomado.",
+      "label": "Wisp ativado",
+      "savedOn": "Wisp ativado",
+      "savedOff": "Wisp desativado",
+      "saveFailed": "Não foi possível alterar a configuração do Wisp.",
+      "adminOnly": "Somente administradores do parceiro podem alterar isto.",
+      "loadFailed": "Não foi possível carregar a configuração do Wisp."
     }
   },
   "wispConcerns": {

@@ -698,6 +698,84 @@
         "nudge": "Hatırlatma",
         "brief": "Özet"
       }
+    },
+    "home": {
+      "briefTitle": "Bu sabahki özet",
+      "briefEmpty": "Henüz özet yok. Wisp, etrafa bir göz attıktan sonra her sabah bir tane gönderir.",
+      "briefSentAt": "Gönderildi: {{time}}",
+      "briefStale": "Önceki bir günden",
+      "needsYouTitle": "Dikkatinizi bekleyenler",
+      "needsYouCount_one": "{{count}} öğe",
+      "needsYouCount_other": "{{count}} öğe",
+      "needsYouApprovals_one": "{{count}} öğe onayınızı bekliyor",
+      "needsYouApprovals_other": "{{count}} öğe onayınızı bekliyor",
+      "threadTitle": "Wisp ile konuş",
+      "threadPaused": "Wisp duraklatıldı. Konuşmaya devam etmek için üst bölümden sürdürün.",
+      "threadEnded": "Bu yetki sona erdi. Wisp ile konuşmak için yeni bir yetki başlatın.",
+      "threadOpening": "Konuşma açılıyor…",
+      "threadOpenFailed": "Konuşma açılamadı.",
+      "threadDismissError": "Kapat",
+      "openChats": "Tüm sohbetler",
+      "memory": "Bellek",
+      "startTitle": "Wisp’i işe koyun",
+      "startBody": "Wisp, sizin kontrol ettiğiniz bir yetki kapsamında cihaz filonuzu, taleplerinizi ve faturalandırmayı izler; karar gerektirenleri size getirir.",
+      "startAction": "Wisp’i başlat",
+      "disabledTitle": "Wisp kapalı",
+      "disabledBody": "Bir iş ortağı yöneticisi Wisp’i Ayarlar → Yapay Zeka Aracıları bölümünden kapattı. Sohbetleriniz çalışmaya devam eder.",
+      "disabledSettings": "Yapay Zeka Aracıları ayarlarını aç",
+      "loadFailed": "Wisp ana sayfası yüklenemedi."
+    },
+    "links": {
+      "title": "Bağlantılı öğeler",
+      "empty": "Henüz bağlantılı bir şey yok. Wisp aklında tutsun diye bir talebi, cihazı veya faturayı bağlayın.",
+      "add": "Öğe bağla",
+      "remove": "{{label}} bağlantısını kaldır",
+      "removed": "Bağlantı kaldırıldı",
+      "removeFailed": "Bağlantı kaldırılamadı.",
+      "addedByWisp": "Wisp tarafından eklendi",
+      "added": "Wisp’e bağlandı",
+      "addFailed": "Bu öğe bağlanamadı.",
+      "count": "{{count}} / {{max}} bağlı"
+    },
+    "picker": {
+      "title": "Wisp’e öğe bağla",
+      "searchPlaceholder": "Ad veya numaraya göre ara",
+      "kindsLabel": "Öğe türü",
+      "kinds": {
+        "ticket": "Talepler",
+        "quote": "Teklifler",
+        "invoice": "Faturalar",
+        "contract": "Sözleşmeler",
+        "device": "Cihazlar",
+        "organization": "Kuruluşlar",
+        "site": "Konumlar",
+        "alert": "Uyarılar",
+        "run": "Aracı çalıştırmaları",
+        "task": "Operatör görevleri",
+        "user": "Kullanıcılar"
+      },
+      "loading": "Aranıyor…",
+      "empty": "Eşleşme yok.",
+      "loadFailed": "Bu liste yüklenemedi.",
+      "alreadyLinked": "Zaten bağlı",
+      "close": "Kapat"
+    },
+    "linkButton": {
+      "link": "Wisp’e bağla",
+      "linked": "Wisp’te bağlı",
+      "linking": "Bağlanıyor…"
+    },
+    "sidebar": {
+      "openHome": "Wisp’te aç"
+    },
+    "partnerSwitch": {
+      "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",
+      "label": "Wisp etkin",
+      "savedOn": "Wisp açıldı",
+      "savedOff": "Wisp kapatıldı",
+      "saveFailed": "Wisp ayarı değiştirilemedi.",
+      "adminOnly": "Bunu yalnızca iş ortağı yöneticileri değiştirebilir.",
+      "loadFailed": "Wisp ayarı yüklenemedi."
     }
   },
   "wispConcerns": {

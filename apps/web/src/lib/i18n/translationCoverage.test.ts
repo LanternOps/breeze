@@ -21,7 +21,7 @@ const namespaceDuplicateBaselines = {
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 27, // +2 Wisp admin page: product name "Wisp" + cognate
-    'ai.json': 2, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
+    'ai.json': 3, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun; +1 W08 #9921: wisp.home.needsYouCount_one "{{count}} item" is the pt-BR singular too ("itens" in _other)
     // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
     // identical cognates in pt-BR.
     'aiOperator.json': 2,
