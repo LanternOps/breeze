@@ -584,7 +584,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgPortalSettings.ts': { gap: '#6789' },
   'orgPortalUsers.ts': { gap: '#6789' },
   'orgSummary.ts': { gap: '#6789' },
-  'orgTicketSettings.ts': { gap: '#6776' },
+  'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
   'packageSearch.ts': { gap: '#6782' },
@@ -726,21 +726,21 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'terminalWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'thirdPartyCatalog/list.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'thirdPartyCatalog/operations.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
-  'ticketCategories.ts': { gap: '#6776' },
-  // Reads are on manage_ticket_checklist (#6930); template/item authoring is still the #6776 gap.
-  'ticketChecklistTemplates.ts': { gap: '#6776' },
-  'ticketConfig.ts': { gap: '#6776' },
+  'ticketCategories.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): list/create/update/delete/reorder_categories
+  // Reads, apply, save-as and duplicate are on manage_ticket_checklist (#6930); template and item authoring is manage_ticket_checklist_templates (W06, #6776).
+  'ticketChecklistTemplates.ts': { tools: ['manage_ticket_checklist', 'manage_ticket_checklist_templates'] },
+  'ticketConfig.ts': { tools: ['manage_ticket_config', 'manage_ticket_inbox'] }, // W06 (#6776): statuses, priorities, sender domains; email-inbound queue
   'tickets/aiDrafts.ts': { tools: ['manage_tickets'] },
   'tickets/approvals.ts': { exempt: 'human_only_approval', note: 'Customer work approval staff actions (#4617 spec §6.5): recording a customer decision on their behalf, writing off held time, and raising/cancelling/re-asking a request commit or withhold the customer\'s money and are human-only. The one read, GET /tickets/:id/approval-summary, is exposed read-only as get_ticket_approval_status; nothing else here is reachable by an AI tool.' },
   'tickets/approvalSettings.ts': { exempt: 'human_only_approval', note: 'Customer work approval POLICY (partner default + org override, #4617 spec §6.5): AI may read request status, but may not set the policy that decides when a customer must consent to billable work.' },
-  'tickets/attachments.ts': { gap: '#6776' },
-  'tickets/bulk.ts': { gap: '#6776' },
+  'tickets/attachments.ts': { tools: ['manage_ticket_attachments'] }, // W06 (#6776): list, read_content (text only), attach_from_artifact, delete; multipart upload stays human
+  'tickets/bulk.ts': { tools: ['manage_tickets'] }, // W06 (#6776): bulk_update (assign/status/priority); bulk delete deliberately not exposed
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
   'tickets/links.ts': { tools: ['manage_tickets'] },
   'tickets/merge.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
-  'tickets/forms.ts': { gap: '#6776' },
+  'tickets/forms.ts': { tools: ['manage_ticket_forms'] }, // W06 (#6776)
   'tickets/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'tickets/mailboxConnect.ts': { exempt: 'vendor_console_admin' },
   'tickets/moveOrg.ts': { tools: ['manage_tickets'] },
@@ -748,11 +748,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
-  'tickets/ticketResponseTemplates.ts': { gap: '#6776' },
+  'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'timeEntries/locationSites.ts': { exempt: 'mobile_surface', note: 'Feed for the mobile arrival prompt (#4186): the partner flag plus candidate sites the phone matches its own position against. An agent has no position to match; site reads are covered by list_sites/get_site.' },
-  'timeEntries/suggestions.ts': { gap: '#6776' },
+  'timeEntries/suggestions.ts': { tools: ['manage_time_suggestions'] }, // W06 (#6776)
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
   'timeStatus.ts': { tools: ['list_time_sync_issues'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },

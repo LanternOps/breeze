@@ -78,6 +78,7 @@ import {
   type ChecklistTemplateActor,
 } from './ticketChecklistTemplateService';
 import { PartnerWideWriteDeniedError, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
+import { bulkUpdateTickets } from './aiToolsTicketBulk';
 import { listWorkTypes } from './workTypeService';
 import { lockTicketForWrite } from './ticketRowLock';
 import { assertTicketNotMerged, MergeRefusedError, TicketMergedError } from './ticketMerge/errors';
@@ -209,7 +210,7 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
-async function timeEntryActorFrom(auth: AuthContext) {
+export async function timeEntryActorFrom(auth: AuthContext) {
   const userBacked = auth.principal?.kind === 'user_session' || auth.principal?.kind === 'oauth_grant';
   const permissions = userBacked && !auth.user.isPlatformAdmin ? await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId ?? undefined,
@@ -280,7 +281,7 @@ function entryCurrency(entry: { currencyCode?: string | null }): string | null {
  * `includeDeleted` is for the one caller that must reach a soft-deleted
  * ticket: the counterpart of a link being removed (#8679). Scope still applies.
  */
-async function findTicketWithAccess(ticketId: string, auth: AuthContext, opts: { includeDeleted?: boolean } = {}) {
+export async function findTicketWithAccess(ticketId: string, auth: AuthContext, opts: { includeDeleted?: boolean } = {}) {
   const conditions: SQL[] = [eq(tickets.id, ticketId)];
   if (!opts.includeDeleted) conditions.push(isNull(tickets.deletedAt));
   const orgCond = auth.orgCondition(tickets.orgId);
@@ -683,7 +684,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       name: 'manage_tickets',
       description:
         // Budget: 300 chars and every action named (aiTools.descriptionBudget.contract.test.ts).
-        "Actions: list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge",
+        "list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge,bulk_update",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -714,7 +715,8 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'link_ticket',
               'unlink_ticket',
               'merge_preview',
-              'merge'
+              'merge',
+              'bulk_update'
             ],
             description: 'The action to perform'
           },
@@ -829,8 +831,13 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             description: 'Comment visibility — true = customer-visible reply, requires explicit opt-in and approval (default false = internal note)'
           },
           assigneeId: {
-            type: 'string',
-            description: 'User UUID to assign; omit to unassign'
+            type: ['string', 'null'],
+            description: 'User UUID to assign; omit to unassign (bulk_update: null unassigns)'
+          },
+          ticketIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'bulk_update: 1-50 ticket UUIDs of ONE organization, with exactly one of assigneeId, status (not resolved) or priority'
           },
           ...pageParamSchema(18, 100),
           pendingReason: {
@@ -1024,6 +1031,19 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           actor
         );
         return JSON.stringify({ comment: result.comment });
+      }
+
+      // ── bulk_update (W06, #6776) ─────────────────────────────────────────
+      // assign / status / priority over up to 50 tickets of ONE organization. Never
+      // a delete. Refuses an ai_agent principal for the same users-FK reason as
+      // assign and update_status above. Logic: aiToolsTicketBulk.ts.
+      if (action === 'bulk_update') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
+        return bulkUpdateTickets(input, {
+          actor,
+          auth: { scope: auth.scope, partnerId: auth.partnerId ?? null },
+          findTicket: (id) => findTicketWithAccess(id, auth),
+        });
       }
 
       // ── assign ────────────────────────────────────────────────────────────

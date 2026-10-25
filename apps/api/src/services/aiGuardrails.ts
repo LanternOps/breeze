@@ -125,11 +125,26 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     // (device-less) agent run — ticketShadowGuardrail.contract.test.ts
     // derives its mutation set from this list.
     'link_ticket',
-    'unlink_ticket'
+    'unlink_ticket',
+    // Full-control W06 (#6776, W06-D4): assign / status (not resolved) / priority over up to
+    // 50 tickets of ONE organization (the handler refuses a mixed-org batch). Never a delete.
+    'bulk_update'
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
   manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template', 'save_as_template', 'duplicate_template'],
+  // Full-control W06 (#6776) tier-2 rows (plan "Final per-action classes"):
+  //  - an ORG-owned checklist template create (a partner-wide one escalates through
+  //    isInputAwareTier3);
+  //  - the inbox list: attacker-authored mail, plain tier 2 so an agent needs an
+  //    allowlist entry (a read-only resolution would skip it, quorum QW1);
+  //  - attachment content read and attach-from-artifact (a pending, invisible row);
+  //  - your own time suggestions: confirm logs a time entry (bookkeeping, like
+  //    log_time_entry), dismiss/undo are an inverse pair.
+  manage_ticket_checklist_templates: ['create'],
+  manage_ticket_inbox: ['list'],
+  manage_ticket_attachments: ['read_content', 'attach_from_artifact'],
+  manage_time_suggestions: ['confirm', 'dismiss', 'undo'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -334,6 +349,15 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_automations: ['list', 'get', 'history'],
   manage_backup_configs: ['list', 'get'],
   manage_backup_profiles: ['list', 'get'],
+  // Full-control W06 (#6776): PSA configuration + ticket-ops reads. Each is a read of
+  // staff-written config or of the caller's own rows; the inbox list and attachment
+  // content are deliberately NOT here (plain tier 2, quorum QW1).
+  manage_ticket_config: ['get_config', 'get_org_settings', 'list_categories', 'list_domains'],
+  manage_ticket_checklist_templates: ['list', 'get'],
+  manage_ticket_attachments: ['list'],
+  manage_ticket_forms: ['list', 'available'],
+  manage_ticket_response_templates: ['list'],
+  manage_time_suggestions: ['list'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -489,6 +513,20 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_tickets: ['move_org', 'merge', 'edit_comment', 'delete_comment'],
   // #8883 W5: ticket routing rule writes (partner-wide gate enforced in the service).
   manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
+  // Full-control W06 (#6776). Partner-wide ticket configuration, MFA-route mutations and
+  // terminal/irreversible acts are tier 3 (plan "Per-tool class review"); the five hard
+  // deletes are four-eyes (irreversible AND partner-wide, spec Class rule). Splits by
+  // scope are in TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS below.
+  manage_ticket_config: [
+    'update_org_settings', 'create_category', 'update_category', 'delete_category', 'reorder_categories',
+    'create_status', 'update_status', 'reorder_statuses', 'set_priorities',
+    'create_domain', 'update_domain', 'delete_domain',
+  ],
+  manage_ticket_checklist_templates: ['update', 'delete', 'add_item', 'update_item', 'remove_item', 'reorder_items'],
+  manage_ticket_inbox: ['convert', 'dismiss'],
+  manage_ticket_attachments: ['delete'],
+  manage_ticket_forms: ['create', 'update', 'delete'],
+  manage_ticket_response_templates: ['create', 'update', 'delete'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -598,6 +636,12 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // #8972: `merge` is Tier 3 (one approver, spec §5.7), not four-eyes: it is
   // same-org, unlike move_org's re-tenanting.
   manage_tickets: ['move_org'],
+  // Full-control W06 (#6776, W06-D10): hard deletes of config that is partner-wide, or whose
+  // ownership is DB state (guardrails are DB-free): irreversible AND partner-wide.
+  manage_ticket_config: ['delete_domain'],
+  manage_ticket_checklist_templates: ['delete'],
+  manage_ticket_forms: ['delete'],
+  manage_ticket_response_templates: ['delete'],
   // W02 QV3 (#6756): deleting a PARTNER-WIDE channel is irreversible (its
   // destination and secret config are gone) and silences alerting for every
   // org. Guardrails are DB-free and cannot tell a partner-wide channel from an
@@ -779,6 +823,18 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   configure_vault: ['create', 'update'],
   // W02 (#6756) — see the TIER3_ACTIONS notes for each.
   manage_tickets: ['edit_comment', 'delete_comment', 'merge'],
+  // Full-control W06 (#6776): reversible partner-wide config, MFA-route mutations,
+  // customer-visible forms, terminal inbox acts and the permanent attachment delete.
+  manage_ticket_config: [
+    'update_org_settings', 'create_category', 'update_category', 'delete_category', 'reorder_categories',
+    'create_status', 'update_status', 'reorder_statuses', 'set_priorities',
+    'create_domain', 'update_domain',
+  ],
+  manage_ticket_checklist_templates: ['update', 'add_item', 'update_item', 'remove_item', 'reorder_items'],
+  manage_ticket_inbox: ['convert', 'dismiss'],
+  manage_ticket_attachments: ['delete'],
+  manage_ticket_forms: ['create', 'update'],
+  manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
   manage_notification_channels: ['create', 'update'],
@@ -903,6 +959,9 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // an org-owned one stays at the base Tier 2. Only the create INPUT says
   // which — on update/delete ownership is DB state (static supervised).
   'manage_backup_profiles:create',
+  // W06 (#6776): a partner-wide checklist template is supervised; an org-owned one stays at
+  // the base tier 2. Only the create INPUT (`data.ownerScope`) says which.
+  'manage_ticket_checklist_templates:create',
 ]);
 
 /**
@@ -978,6 +1037,15 @@ export function isInputAwareTier3(
     const types = input.evidenceTypes;
     return !Array.isArray(types) || types.includes('screenshot');
   }
+  if (toolName === 'manage_ticket_checklist_templates') {
+    // Mirrors the handler: createChecklistTemplateSchema defaults ownerScope to 'organization', so only the
+    // literal 'partner' makes a partner-wide row. A `data` that is not an object is rejected by the handler's
+    // schema before any write, so it needs no escalation (same posture as manage_backup_profiles).
+    if (action !== 'create') return false;
+    const data = input.data;
+    return typeof data === 'object' && data !== null && !Array.isArray(data)
+      && (data as Record<string, unknown>).ownerScope === 'partner';
+  }
   if (toolName === 'manage_backup_profiles') {
     // Mirrors the handler (aiToolsPolicyPrereqs.ts create branch): only the
     // literal 'partner' creates a partner-wide row; anything else is an
@@ -1040,6 +1108,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   collect_evidence: ['evidenceTypes'],
   // isInputAwareTier3: create with ownerScope === 'partner' is supervised (W03, #6757).
   manage_backup_profiles: ['ownerScope'],
+  // isInputAwareTier3: create with data.ownerScope === 'partner' is supervised (W06, #6776).
+  manage_ticket_checklist_templates: ['data'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -1264,6 +1334,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     list_links: { resource: 'tickets', action: 'read' },
     link_ticket: { resource: 'tickets', action: 'write' },
     unlink_ticket: { resource: 'tickets', action: 'write' },
+    // W06 (#6776): routes/tickets/bulk.ts POST /bulk gates on tickets:write.
+    bulk_update: { resource: 'tickets', action: 'write' },
   },
   // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
   // and the templates route (reads are TICKETS_READ).
@@ -1278,6 +1350,69 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     apply_template: { resource: 'tickets', action: 'write' },
     save_as_template: { resource: 'tickets', action: 'write' },
     duplicate_template: { resource: 'tickets', action: 'write' },
+  },
+  // Full-control W06 (#6776) — per-action grants copied from each route (route-binding rows pin them).
+  // routes/orgTicketSettings.ts: ORGS_READ / ORGS_WRITE (+ requireMfa); ticketCategories.ts and
+  // ticketConfig.ts: TICKETS_READ / TICKETS_WRITE (+ the admin predicate, applied in the handler).
+  manage_ticket_config: {
+    get_config: { resource: 'tickets', action: 'read' },
+    get_org_settings: { resource: 'organizations', action: 'read' },
+    list_categories: { resource: 'tickets', action: 'read' },
+    list_domains: { resource: 'tickets', action: 'read' },
+    update_org_settings: { resource: 'organizations', action: 'write' },
+    create_category: { resource: 'tickets', action: 'write' },
+    update_category: { resource: 'tickets', action: 'write' },
+    delete_category: { resource: 'tickets', action: 'write' },
+    reorder_categories: { resource: 'tickets', action: 'write' },
+    create_status: { resource: 'tickets', action: 'write' },
+    update_status: { resource: 'tickets', action: 'write' },
+    reorder_statuses: { resource: 'tickets', action: 'write' },
+    set_priorities: { resource: 'tickets', action: 'write' },
+    create_domain: { resource: 'tickets', action: 'write' },
+    update_domain: { resource: 'tickets', action: 'write' },
+    delete_domain: { resource: 'tickets', action: 'write' },
+  },
+  manage_ticket_checklist_templates: {
+    list: { resource: 'tickets', action: 'read' },
+    get: { resource: 'tickets', action: 'read' },
+    create: { resource: 'tickets', action: 'write' },
+    update: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+    add_item: { resource: 'tickets', action: 'write' },
+    update_item: { resource: 'tickets', action: 'write' },
+    remove_item: { resource: 'tickets', action: 'write' },
+    reorder_items: { resource: 'tickets', action: 'write' },
+  },
+  // routes/ticketConfig.ts gates the email-inbound LIST on tickets:write (writePerm), like its mutations.
+  manage_ticket_inbox: {
+    list: { resource: 'tickets', action: 'write' },
+    convert: { resource: 'tickets', action: 'write' },
+    dismiss: { resource: 'tickets', action: 'write' },
+  },
+  manage_ticket_attachments: {
+    list: { resource: 'tickets', action: 'read' },
+    read_content: { resource: 'tickets', action: 'read' },
+    attach_from_artifact: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+  },
+  manage_ticket_forms: {
+    list: { resource: 'tickets', action: 'read' },
+    available: { resource: 'tickets', action: 'read' },
+    create: { resource: 'tickets', action: 'write' },
+    update: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+  },
+  manage_ticket_response_templates: {
+    list: { resource: 'tickets', action: 'read' },
+    create: { resource: 'tickets', action: 'write' },
+    update: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+  },
+  manage_time_suggestions: {
+    list: { resource: 'time_entries', action: 'read' },
+    confirm: { resource: 'time_entries', action: 'write' },
+    dismiss: { resource: 'time_entries', action: 'write' },
+    undo: { resource: 'time_entries', action: 'write' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },

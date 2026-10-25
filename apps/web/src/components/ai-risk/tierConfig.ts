@@ -216,6 +216,13 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_ticket_routing_rules', description: 'List ticket routing rules applied to new tickets', category: 'Ticketing' },
       { name: 'test_ticket_routing_rule', description: 'Dry-run which routing rule would match a sample ticket', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration and ticket-ops reads.
+      { name: 'manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)', description: 'View ticket statuses, priorities, SLA overrides, categories and customer email domains', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (list/get)', description: 'View checklist templates and their steps', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (list)', description: 'List the files attached to a ticket', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (list/available)', description: 'View ticket intake forms and the ones an organization can use', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (list)', description: 'View the partner\'s canned ticket replies', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (list)', description: 'See your time-entry suggestions for a day', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
@@ -314,6 +321,13 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
+      // Full-control W06 (#6776): ticket operations that stay at Tier 2. Creating a checklist
+      // template is Tier 2 for an organization template; a partner-wide one needs approval (input-aware).
+      { name: 'manage_tickets (bulk_update)', description: 'Assign, change the status of (not resolve) or set the priority of up to 50 tickets in one organization', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (create)', description: 'Create an organization checklist template (a partner-wide template needs approval)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (list)', description: 'Review inbound email the router could not place (sender text is untrusted)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (read_content/attach_from_artifact)', description: 'Read a text attachment, or stage a run artifact on a ticket (a person posts it)', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (confirm/dismiss/undo)', description: 'Log, dismiss or restore your own time-entry suggestions', category: 'Ticketing' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -429,6 +443,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
+      // terminal inbox actions and the permanent attachment delete need approval; the five hard deletes
+      // (email domain mapping, checklist template, ticket form, canned reply) need a second approver.
+      { name: 'manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain/delete_domain)', description: 'Change ticket categories, statuses, priorities, SLA overrides or customer email domain routing (removing a domain mapping needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (update/delete/add_item/update_item/remove_item/reorder_items)', description: 'Edit or delete a checklist template and its steps (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (convert/dismiss)', description: 'Turn an inbound email into a ticket in an organization, or dismiss it (neither can be undone)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (delete)', description: 'Permanently delete a ticket attachment', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (create/update/delete)', description: 'Create, change or delete a customer-visible ticket intake form (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (create/update/delete)', description: 'Create, change or delete a partner-wide canned reply (deleting needs a second approver)', category: 'Ticketing' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -610,6 +633,14 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
   { toolName: 'send_endpoint_message', tier: 3, permission: 'endpoint_messages.send', category: 'Ticketing' },
+  // Full-control W06 (#6776): `tier` is the registry tier (1); the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_ticket_config', tier: 1, permission: 'tickets.read / tickets.write / organizations.write (org settings)', category: 'Ticketing' },
+  { toolName: 'manage_ticket_checklist_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_inbox', tier: 1, permission: 'tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_attachments', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_forms', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_response_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_time_suggestions', tier: 1, permission: 'time_entries.read / time_entries.write', category: 'Ticketing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────

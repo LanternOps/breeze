@@ -889,6 +889,8 @@ const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
     edit_comment: 'supervised', delete_comment: 'supervised',
     move_org: 'four_eyes',
     merge: 'supervised',
+    // W06 (#6776, W06-D4): assign/status/priority over <= 50 tickets of one org; never a delete.
+    bulk_update: 't2',
   },
   manage_quotes: {
     create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',
@@ -1111,3 +1113,85 @@ describe('W03 class rows (#6757)', () => {
   });
 });
 
+
+// ── W06 class rows (#6776, spec checklist item 3) ──────────────────────────
+// Copied from the W06 plan's "Final per-action classes" table, NOT derived from
+// the guardrail tables. Every action-enum member of the seven tools has a row,
+// so a new action reds here until someone classifies it. The input-aware
+// manage_ticket_checklist_templates:create is pinned on EMPTY input (its
+// org/partner arms are below).
+// manage_tickets:bulk_update is pinned in W02_EXPECTED (it is a manage_tickets action).
+const W06_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ticket_config: {
+    get_config: 't1', get_org_settings: 't1', list_categories: 't1', list_domains: 't1',
+    update_org_settings: 'supervised',
+    create_category: 'supervised', update_category: 'supervised', delete_category: 'supervised', reorder_categories: 'supervised',
+    create_status: 'supervised', update_status: 'supervised', reorder_statuses: 'supervised',
+    set_priorities: 'supervised',
+    create_domain: 'supervised', update_domain: 'supervised', delete_domain: 'four_eyes',
+  },
+  manage_ticket_checklist_templates: {
+    list: 't1', get: 't1',
+    create: 't2', // empty input = org-owned (the partner-wide arm is pinned below)
+    update: 'supervised', add_item: 'supervised', update_item: 'supervised', remove_item: 'supervised', reorder_items: 'supervised',
+    delete: 'four_eyes',
+  },
+  manage_ticket_inbox: { list: 't2', convert: 'supervised', dismiss: 'supervised' },
+  manage_ticket_attachments: { list: 't1', read_content: 't2', attach_from_artifact: 't2', delete: 'supervised' },
+  manage_ticket_forms: { list: 't1', available: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_ticket_response_templates: { list: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_time_suggestions: { list: 't1', confirm: 't2', dismiss: 't2', undo: 't2' },
+};
+
+describe('W06 class rows (#6776)', () => {
+  it('covers all seven W06 tools exactly once', () => {
+    expect(Object.keys(W06_EXPECTED).sort()).toEqual([
+      'manage_ticket_attachments', 'manage_ticket_checklist_templates', 'manage_ticket_config', 'manage_ticket_forms',
+      'manage_ticket_inbox', 'manage_ticket_response_templates', 'manage_time_suggestions',
+    ]);
+  });
+
+  it.each(Object.keys(W06_EXPECTED))('%s: W06_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W06_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('the registry tier of every W06 tool is 1 (the per-action maps carry the class)', () => {
+    for (const tool of Object.keys(W06_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  // manage_ticket_checklist_templates:create — W06-D2, precedent manage_backup_profiles:create.
+  it.each([
+    ['org-owned (ownerScope omitted)', { name: 'Onboarding', orgId: '11111111-1111-4111-8111-111111111111' }, 't2'],
+    ['org-owned (explicit organization)', { name: 'Onboarding', ownerScope: 'organization' }, 't2'],
+    ['partner-wide', { name: 'Onboarding', ownerScope: 'partner' }, 'supervised'],
+  ] as const)('checklist template create, %s → %s', (_label, data, cls) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe(cls);
+  });
+
+  // A non-object `data` is rejected by the handler's schema before any write, so it stays at the base tier.
+  it.each([[undefined], ['partner'], [['partner']], [null]])('checklist template create with unreadable data %j stays at the base tier 2', (data) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe('t2');
+  });
+
+  it('only create is input-aware; a partner ownerScope on another action does not change its class', () => {
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'create', { data: { ownerScope: 'partner' } })).toBe(true);
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'list', { data: { ownerScope: 'partner' } })).toBe(false);
+    expect(classOf('manage_ticket_checklist_templates', { action: 'list', data: { ownerScope: 'partner' } })).toBe('t1');
+  });
+
+  it('every W06 four-eyes row is an irreversible delete (spec Class rule: irreversible AND partner-wide)', () => {
+    const fourEyes = Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).filter(([, c]) => c === 'four_eyes').map(([a]) => `${tool}:${a}`));
+    expect(fourEyes.sort()).toEqual([
+      'manage_ticket_checklist_templates:delete', 'manage_ticket_config:delete_domain',
+      'manage_ticket_forms:delete', 'manage_ticket_response_templates:delete',
+    ]);
+  });
+});

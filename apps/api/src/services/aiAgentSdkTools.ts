@@ -627,6 +627,17 @@ export const TOOL_TIERS = {
   assign_security_training: 2,
   configure_network_baseline: 3,
   acknowledge_network_device: 2,
+  // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket ops. Registry tier 1 for all seven
+  // multiplexers (like manage_backup_profiles); the real per-action classes live in aiGuardrails
+  // (partner-wide config and customer-visible forms supervised, hard deletes four-eyes, inbox
+  // convert/dismiss supervised, org checklist-template create and the ticket-ops writes tier 2).
+  manage_ticket_config: 1,
+  manage_ticket_checklist_templates: 1,
+  manage_ticket_inbox: 1,
+  manage_ticket_attachments: 1,
+  manage_ticket_forms: 1,
+  manage_ticket_response_templates: 1,
+  manage_time_suggestions: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3453,6 +3464,59 @@ export function buildBreezeSdkTools(
       registryDescription('get_user_risk_detail'),
       inputShape('get_user_risk_detail'),
       makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket operations. Classes live in
+    // aiGuardrails (W06 class review): partner-wide config and customer-visible forms supervised,
+    // hard deletes four-eyes. The shapes are the toolInputSchemas entries (inputShape).
+
+    tool(
+      'manage_ticket_config',
+      registryDescription('manage_ticket_config'),
+      inputShape('manage_ticket_config'),
+      makeHandler('manage_ticket_config', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_checklist_templates',
+      registryDescription('manage_ticket_checklist_templates'),
+      inputShape('manage_ticket_checklist_templates'),
+      makeHandler('manage_ticket_checklist_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_inbox',
+      registryDescription('manage_ticket_inbox'),
+      inputShape('manage_ticket_inbox'),
+      makeHandler('manage_ticket_inbox', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_attachments',
+      registryDescription('manage_ticket_attachments'),
+      inputShape('manage_ticket_attachments'),
+      makeHandler('manage_ticket_attachments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_forms',
+      registryDescription('manage_ticket_forms'),
+      inputShape('manage_ticket_forms'),
+      makeHandler('manage_ticket_forms', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_response_templates',
+      registryDescription('manage_ticket_response_templates'),
+      inputShape('manage_ticket_response_templates'),
+      makeHandler('manage_ticket_response_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_time_suggestions',
+      registryDescription('manage_time_suggestions'),
+      inputShape('manage_time_suggestions'),
+      makeHandler('manage_time_suggestions', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
