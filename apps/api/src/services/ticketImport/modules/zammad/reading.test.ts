@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
-import { clearZammadDirectoryCache, takeZammadInvalidRows, zammadPeople } from './directory';
+import { clearZammadDirectoryCache, hasZammadDirectory, takeZammadInvalidRows, ZAMMAD_DIRECTORY_TTL_MS, zammadPeople } from './directory';
+import { zammadTicketImportModule } from './index';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
 import { __zammadReadingTestHooks, boundedInOrder, forgetFileLocations, loadZammad, rememberedFileLocation, scanZammad, zammadCursorAfterRow, zammadRow, type ZammadCursor } from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
@@ -292,6 +293,26 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
 });
 
 describe('the directory (users cached 30 min per source; one read per missing user)', () => {
+  it('every access sweeps the expired entries of any source; dispose drops a source at once (review 11)', async () => {
+    const fake = new FakeZammad();
+    const a = zammadTestHandle(fake, { sourceId: 'sweep-a' });
+    const b = zammadTestHandle(fake, { sourceId: 'sweep-b' });
+    await zammadPeople(a, [3], 1_000);
+    await zammadPeople(b, [3], 2_000);
+    expect(hasZammadDirectory('sweep-a')).toBe(true);
+    // B's access 30 minutes after A's read sweeps A, whose people go with it.
+    await zammadPeople(b, [3], 1_000 + ZAMMAD_DIRECTORY_TTL_MS);
+    expect(hasZammadDirectory('sweep-a')).toBe(false);
+    expect(hasZammadDirectory('sweep-b')).toBe(true);
+    // A run of B ends here: its directory and its file locations go too.
+    const row = zammadRow(fake.data.tickets.find((t) => t.id === 102) as never);
+    await loadZammad(b, row);
+    expect(rememberedFileLocation(b, '102', 5004)).not.toBeNull();
+    zammadTicketImportModule.dispose!('sweep-b');
+    expect(hasZammadDirectory('sweep-b')).toBe(false);
+    expect(rememberedFileLocation(b, '102', 5004)).toBeNull();
+  });
+
   it('skips and counts an unreadable user row, never failing the load (review 2)', async () => {
     const fake = new FakeZammad();
     fake.data.users = [...fake.data.users, { id: 'x', login: 7 }, { id: 40, email: 12 }] as never;

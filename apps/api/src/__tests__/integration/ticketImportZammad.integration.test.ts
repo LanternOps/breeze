@@ -53,7 +53,7 @@ import { createSourceClient } from '../../services/ticketImport/sourceFetch';
 import { ticketImportLimits } from '../../services/ticketImport/importLimits';
 import type { SafeFetchInit } from '../../services/urlSafety';
 import { normalizeCounters } from '../../services/ticketImport/runReport';
-import { clearZammadDirectoryCache } from '../../services/ticketImport/modules/zammad/directory';
+import { clearZammadDirectoryCache, hasZammadDirectory } from '../../services/ticketImport/modules/zammad/directory';
 import { __zammadReadingTestHooks } from '../../services/ticketImport/modules/zammad/reading';
 import {
   FAKE_ZAMMAD_BASE_URL,
@@ -214,6 +214,7 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(await getTestDb().select().from(ticketImportItems).where(eq(ticketImportItems.sourceId, fx.sourceId))).toEqual([]);
     expect(await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.partnerId, fx.partner.id))).toEqual(windowsBefore);
     expect(s3.objects.size).toBe(0);
+    expect(hasZammadDirectory(fx.sourceId)).toBe(false);
   }, CASE_TIMEOUT);
 
   runDb('an answer the module cannot read fails only its ticket and is no outage; an unreadable list page stops the run (review 2, 6)', async () => {
@@ -366,14 +367,16 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(files.filter((f) => f.commentId === filesComment.id).map((f) => f.sourceId).sort()).toEqual(['attachment:5001', 'attachment:5003']);
     expect(await issuesOf(bulk.id)).toEqual(expect.arrayContaining(['attachments_skipped:111:empty', 'attachments_skipped:111:too_large', 'owner_unmatched:103:5']));
 
+    // The run ended: the module kept nothing of the source's people (review 11).
+    expect(hasZammadDirectory(fx.sourceId)).toBe(false);
     const ledgerAfterBulk = await ledger(fx.sourceId);
     expect([...ledgerAfterBulk.values()].every((i) => i.state === 'imported' && i.importedVersion === i.seenVersion)).toBe(true);
 
     // ----------------------------------------------------------- delta
     fake.use('delta');
     fake.requests.length = 0;
-    // The source's people as of the delta (Carol, 103's owner with no user, was renamed).
-    clearZammadDirectoryCache();
+    // The bulk run's end dropped the source's directory here (review 11): the
+    // delta reads the people as they are now (Carol, 103's owner, was renamed).
     const delta = await startImportRun(fx, 'import', window.id);
     await drive(fx, delta.id, { deps });
     const deltaRow = await runRow(delta.id);

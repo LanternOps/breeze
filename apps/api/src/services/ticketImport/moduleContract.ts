@@ -216,6 +216,14 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
    * none of those was deleted.
    */
   isSourceArticleId(commentSourceId: string, loaded?: LoadedTicket): boolean;
+  /**
+   * Optional: drops what the module keeps in memory for this source (a
+   * directory of its people, file locations). The runner calls it when a run
+   * of the source ends in this process (completed, stopped, failed, or found
+   * cancelled by its slice); a module's own expiry covers other processes and
+   * a run cancelled between two slices.
+   */
+  dispose?(sourceId: string): void;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

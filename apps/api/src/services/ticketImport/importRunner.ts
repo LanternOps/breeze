@@ -131,7 +131,12 @@ export async function runSlice(input: SliceInput, deps: SliceDeps = {}): Promise
   try {
     return await runner.execute();
   } catch (error) {
-    if (error instanceof SliceSupersededError) return { kind: 'superseded', sliceSeq: null, active: false };
+    if (error instanceof SliceSupersededError) {
+      // Cancelled (or ended) under this slice: the module drops what it cached for the source.
+      const after = await withDbAccessContext(ctx, () => loadRun(input.partnerId, input.runId));
+      if (!after || (after.state !== 'queued' && after.state !== 'running')) runner.disposeModule();
+      return { kind: 'superseded', sliceSeq: null, active: false };
+    }
     throw error;
   }
 }
@@ -299,9 +304,19 @@ class SliceRunner {
     }
   }
 
+  /** The run ended: the module drops what it keeps in memory for the source (people, file locations). */
+  disposeModule(): void {
+    try {
+      this.module?.dispose?.(this.run.sourceId);
+    } catch (error) {
+      this.reportTicketFault(error, this.run.sourceId, 'dispose');
+    }
+  }
+
   private async finish(state: 'completed' | 'stopped' | 'failed', stopReason: string | null): Promise<SliceOutcome> {
     if (state === 'completed') this.phase = 'done';
     await this.commit({ finish: { state, stopReason } });
+    this.disposeModule();
     void createAuditLogAsync({
       partnerId: this.input.partnerId,
       actorType: 'system',

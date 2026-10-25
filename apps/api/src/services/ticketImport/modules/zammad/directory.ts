@@ -11,7 +11,9 @@ import { personOf, ZAMMAD_STATE_TYPE_BY_ID, ZammadShapeError, type ZammadPerson,
  * own and cached too, and one the source no longer has is cached as null.
  *
  * Keyed by source id and base URL, so two sources never share an entry;
- * bounded to a few sources. Only the fields a conversion names are kept
+ * bounded to a few sources. Every access sweeps the entries past their 30
+ * minutes, and a source's entry is dropped when its run ends here
+ * (`dispose`): its people are not kept longer. Only the fields a conversion names are kept
  * (shapes.ts `ZammadPerson`).
  */
 
@@ -39,11 +41,22 @@ export function clearZammadDirectoryCache(): void {
   CACHE.clear();
 }
 
+/** Drops a source's directory (`dispose`, when its run ends): its people do not outlive the run here. */
+export function disposeZammadDirectory(sourceId: string): void {
+  for (const key of [...CACHE.keys()]) if (key.startsWith(`${sourceId}\n`)) CACHE.delete(key);
+}
+
+/** Tests: whether a source has a directory in this process. */
+export function hasZammadDirectory(sourceId: string): boolean {
+  return [...CACHE.keys()].some((key) => key.startsWith(`${sourceId}\n`));
+}
+
 function entryOf(src: SourceHandle<unknown>, now: number): Entry {
+  // Every access sweeps what expired, any source's: people are not kept past the TTL.
+  for (const [key, entry] of CACHE) if (now - entry.loadedAt >= ZAMMAD_DIRECTORY_TTL_MS) CACHE.delete(key);
   const key = keyOf(src);
   const existing = CACHE.get(key);
-  if (existing && now - existing.loadedAt < ZAMMAD_DIRECTORY_TTL_MS) return existing;
-  CACHE.delete(key);
+  if (existing) return existing;
   while (CACHE.size >= MAX_SOURCES) CACHE.delete(CACHE.keys().next().value!);
   const entry: Entry = { loadedAt: now, states: null, priorities: null, users: null, invalidPending: {} };
   CACHE.set(key, entry);
