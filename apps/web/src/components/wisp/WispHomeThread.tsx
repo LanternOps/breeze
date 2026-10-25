@@ -87,8 +87,7 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
         if (token === attempt.current) setBinding('failed');
       });
     // The grant id and thread id identify the session; other Wisp fields (spend, summary) changing must not rebind.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, wisp.grantId, wisp.threadId]);
+  },[active, wisp.grantId, wisp.threadId]);
 
   // The panel (or another tab of the store) moved the chat to another conversation: say so rather than show it here.
   const showingThisThread = storeThreadId === wisp.threadId;
