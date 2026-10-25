@@ -14,7 +14,7 @@ func TestFinishConfirmedRebindAtStartup(t *testing.T) {
 	origFinish, origReload := finishConfirmedRebindFn, reloadConfigAfterRebindFn
 	t.Cleanup(func() { finishConfirmedRebindFn, reloadConfigAfterRebindFn = origFinish, origReload })
 
-	start := &config.Config{AgentID: "source", IsService: true, IsHeadless: true, IsInstalledAgent: true}
+	start := &config.Config{AgentID: "source"}
 	reloaded := &config.Config{AgentID: "target", DeviceID: "00000000-0000-4000-8000-000000000004"}
 
 	cases := []struct {
@@ -35,6 +35,7 @@ func TestFinishConfirmedRebindAtStartup(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reloads := 0
+			var returned *config.Config
 			finishConfirmedRebindFn = func(string) (bool, error) { return tc.changed, tc.finishErr }
 			reloadConfigAfterRebindFn = func(string) (*config.Config, error) {
 				reloads++
@@ -42,6 +43,7 @@ func TestFinishConfirmedRebindAtStartup(t *testing.T) {
 					return nil, tc.reloadErr
 				}
 				c := *reloaded
+				returned = &c
 				return &c, nil
 			}
 			got, err := finishConfirmedRebindAtStartup(start)
@@ -57,8 +59,10 @@ func TestFinishConfirmedRebindAtStartup(t *testing.T) {
 			if got.AgentID != tc.wantAgent {
 				t.Fatalf("agent = %s, want %s", got.AgentID, tc.wantAgent)
 			}
-			if !got.IsService || !got.IsHeadless || !got.IsInstalledAgent {
-				t.Fatal("runtime flags were lost on reload")
+			// Review fix 15: the reloaded config is returned as loaded;
+			// startAgent computes the runtime-only flags on it afterwards.
+			if tc.wantReload && (got != returned || got.IsService || got.IsHeadless || got.IsInstalledAgent) {
+				t.Fatal("the reloaded config was not returned untouched")
 			}
 		})
 	}

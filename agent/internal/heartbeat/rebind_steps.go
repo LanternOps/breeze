@@ -164,6 +164,7 @@ func (h *Heartbeat) endRebind(s *config.RebindStagedSet, ans rebindAnswer) {
 	now := rebindNow()
 	h.rebind.ended.Store(s.IntentID, struct{}{})
 	h.rebindProgressed()
+	h.closeRebindClient()
 	next := *s
 	next.Phase = config.RebindPhaseEnded
 	next.EndedState = ans.refusal.State
@@ -330,6 +331,7 @@ func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 	}
 	h.pendingRotationOnDisk.Store(false)
 	h.pendingMTLSCertOnDisk.Store(false)
+	h.closeRebindClient()
 	rebindPushWatchdogToken(h, id.WatchdogAuthToken)
 	log.Info("this install is now the reattached device; restarting to load the new identity",
 		"deviceId", id.DeviceID, "orgId", id.OrgID, "siteId", id.SiteID, "agentId", id.AgentID)

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,10 @@ type rebindState struct {
 	ended sync.Map
 	// The last reason logged by logRebindOnce.
 	logged atomic.Pointer[string]
+	// The client presenting the staged certificate (rebindTargetClient).
+	clientMu  sync.Mutex
+	client    *http.Client
+	clientKey string
 }
 
 // Seams for tests. rebindWriteStaged and rebindApplyIdentity are the kill
@@ -117,19 +122,7 @@ func (h *Heartbeat) securityCapabilitiesForBeat() SecurityCapabilities {
 // logRebindOnce logs once per distinct reason, so a server that keeps
 // sending something this agent will not act on does not log every beat.
 func (h *Heartbeat) logRebindOnce(level, msg, reason string) {
-	key := level + "|" + msg + "|" + reason
-	if prev := h.rebind.logged.Load(); prev != nil && *prev == key {
-		return
-	}
-	h.rebind.logged.Store(&key)
-	switch level {
-	case "error":
-		log.Error(msg, "reason", reason)
-	case "info":
-		log.Info(msg, "reason", reason)
-	default:
-		log.Warn(msg, "reason", reason)
-	}
+	logOncePerReason(&h.rebind.logged, level, msg, reason)
 }
 
 func (h *Heartbeat) rebindDue(now time.Time) bool {
@@ -140,12 +133,7 @@ func (h *Heartbeat) rebindDue(now time.Time) bool {
 // rebindRetryLater schedules the next attempt: the backoff step, or the
 // server's Retry-After when longer.
 func (h *Heartbeat) rebindRetryLater(now time.Time, retryAfter time.Duration) {
-	n := h.rebind.failures.Add(1)
-	delay := rebindRetryMin
-	for i := int32(1); i < n && delay < rebindRetryMax; i++ {
-		delay *= 2
-	}
-	delay = min(delay, rebindRetryMax)
+	delay := doublingBackoff(int(h.rebind.failures.Add(1)), rebindRetryMin, rebindRetryMax)
 	if retryAfter > delay {
 		delay = retryAfter
 	}
@@ -296,6 +284,7 @@ func (h *Heartbeat) removeAppliedRebindSet(s *config.RebindStagedSet) {
 	}
 	h.rebind.pendingOnDisk.Store(false)
 	h.rebindProgressed()
+	h.closeRebindClient()
 	log.Info("the reattached identity authenticated; removed the staged reattach set", "intentId", s.IntentID)
 }
 
@@ -390,6 +379,7 @@ func (h *Heartbeat) discardRebindStaged(s *config.RebindStagedSet, reason string
 	h.rebind.ended.Store(s.IntentID, struct{}{})
 	h.rebind.pendingOnDisk.Store(false)
 	h.rebindProgressed()
+	h.closeRebindClient()
 	log.Info("discarded the staged reattach set", "intentId", s.IntentID, "phase", s.Phase, "reason", reason)
 	return true
 }

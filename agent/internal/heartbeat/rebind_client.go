@@ -118,15 +118,40 @@ var newRebindHTTPClient = func(tlsCfg *tls.Config) *http.Client {
 // staged certificate: confirm (valid before and after the commit, §5) and the
 // probe as the target. Without a staged certificate it is the source's own
 // client (the server had no mTLS provider at phase 1).
+//
+// One client per staged certificate, kept across confirm and probe retries
+// (so their connections are reused) and rebuilt when phase 1 hands a fresh
+// certificate; closeRebindClient drops it when the flow ends.
 func (h *Heartbeat) rebindTargetClient(s *config.RebindStagedSet) (*http.Client, error) {
 	if s.Certificate == nil {
 		return h.httpClient(), nil
+	}
+	key := rebindHash(s.Certificate.Certificate + "\n" + s.Certificate.PrivateKey)
+	h.rebind.clientMu.Lock()
+	defer h.rebind.clientMu.Unlock()
+	if h.rebind.client != nil && h.rebind.clientKey == key {
+		return h.rebind.client, nil
 	}
 	tlsCfg, err := mtls.BuildTLSConfig(s.Certificate.Certificate, s.Certificate.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("staged certificate: %w", err)
 	}
-	return newRebindHTTPClient(tlsCfg), nil
+	if h.rebind.client != nil {
+		h.rebind.client.CloseIdleConnections()
+	}
+	h.rebind.client, h.rebind.clientKey = newRebindHTTPClient(tlsCfg), key
+	return h.rebind.client, nil
+}
+
+// closeRebindClient closes the staged certificate's idle connections and
+// drops its client: the flow has ended (swapped, over, or discarded).
+func (h *Heartbeat) closeRebindClient() {
+	h.rebind.clientMu.Lock()
+	defer h.rebind.clientMu.Unlock()
+	if h.rebind.client != nil {
+		h.rebind.client.CloseIdleConnections()
+	}
+	h.rebind.client, h.rebind.clientKey = nil, ""
 }
 
 // rebindRequest makes one call. body nil: no request body (a GET).

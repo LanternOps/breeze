@@ -29,14 +29,12 @@ func finishConfirmedRebindAtStartup(cfg *config.Config) (*config.Config, error) 
 	if !changed {
 		return cfg, nil
 	}
+	// startAgent computes the runtime-only flags (IsService, IsHeadless,
+	// IsInstalledAgent) after this call, on the config returned here.
 	reloaded, err := reloadConfigAfterRebindFn(cfgFile)
 	if err != nil {
 		return nil, fmt.Errorf("reloading the reattached identity: %w", err)
 	}
-	// Runtime-only flags the caller may already have set.
-	reloaded.IsService = cfg.IsService
-	reloaded.IsHeadless = cfg.IsHeadless
-	reloaded.IsInstalledAgent = cfg.IsInstalledAgent
 	log.Info("finished a confirmed reattach: this install is now the reattached device",
 		"deviceId", reloaded.DeviceID, "agentId", reloaded.AgentID, "orgId", reloaded.OrgID, "siteId", reloaded.SiteID)
 	return reloaded, nil

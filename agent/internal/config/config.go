@@ -1273,11 +1273,15 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	// Best-effort directory fsync — durable on POSIX, no-ops or errors on
-	// Windows. Log failures so a FS that's lost the ability to fsync metadata
-	// (e.g. went read-only, ENOSPC on the inode table) doesn't silently
-	// degrade durability across every SaveTo.
-	dir := filepath.Dir(path)
+	syncConfigDir(filepath.Dir(path))
+	return nil
+}
+
+// syncConfigDir is a best-effort directory fsync after a rename or a removal
+// in it — durable on POSIX, no-ops or errors on Windows. Failures are logged
+// so a FS that's lost the ability to fsync metadata (e.g. went read-only,
+// ENOSPC on the inode table) doesn't silently degrade durability.
+func syncConfigDir(dir string) {
 	if d, err := os.Open(dir); err == nil {
 		if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
 			log.Warn("config dir fsync failed", "dir", dir, "error", err.Error())
@@ -1286,7 +1290,6 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	} else if runtime.GOOS != "windows" {
 		log.Warn("config dir open for fsync failed", "dir", dir, "error", err.Error())
 	}
-	return nil
 }
 
 // isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.

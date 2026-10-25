@@ -361,16 +361,25 @@ func (h *Heartbeat) reportIdentityForBeat() *ReportedIdentity {
 // logIdentitySyncFailure logs once per distinct reason, so a server that
 // keeps sending something this agent cannot use does not log on every beat.
 func (h *Heartbeat) logIdentitySyncFailure(level string, msg, reason string) {
-	key := msg + ": " + reason
-	if prev := h.identitySync.failureLogged.Load(); prev != nil && *prev == key {
+	logOncePerReason(&h.identitySync.failureLogged, level, msg, reason)
+}
+
+// logOncePerReason logs msg at level ("error", "info", else warn) unless the
+// last line logged through slot was the same: the server-driven identity
+// flows (#8320 sync, #8318 reattach) repeat what they act on every beat.
+func logOncePerReason(slot *atomic.Pointer[string], level, msg, reason string) {
+	key := level + "|" + msg + "|" + reason
+	if prev := slot.Swap(&key); prev != nil && *prev == key {
 		return
 	}
-	h.identitySync.failureLogged.Store(&key)
-	if level == "error" {
+	switch level {
+	case "error":
 		log.Error(msg, "reason", reason)
-		return
+	case "info":
+		log.Info(msg, "reason", reason)
+	default:
+		log.Warn(msg, "reason", reason)
 	}
-	log.Warn(msg, "reason", reason)
 }
 
 // clearAppliedIdentityRestartMarker removes the restart marker once the
@@ -654,11 +663,17 @@ func (h *Heartbeat) noteIdentityWriteFailure(now time.Time, msg string, err erro
 // identityWriteRetryDelay is the wait after the given number of failed writes
 // in a row: identityWriteRetryMin, doubling, capped at identityWriteRetryMax.
 func identityWriteRetryDelay(failures int) time.Duration {
-	delay := identityWriteRetryMin
-	for i := 1; i < failures && delay < identityWriteRetryMax; i++ {
+	return doublingBackoff(failures, identityWriteRetryMin, identityWriteRetryMax)
+}
+
+// doublingBackoff is the wait after the given number of failures in a row:
+// lo, doubling, capped at hi.
+func doublingBackoff(failures int, lo, hi time.Duration) time.Duration {
+	delay := lo
+	for i := 1; i < failures && delay < hi; i++ {
 		delay *= 2
 	}
-	return min(delay, identityWriteRetryMax)
+	return min(delay, hi)
 }
 
 // releaseIdentityRestart reopens everything a pending identity restart holds

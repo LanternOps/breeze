@@ -357,15 +357,8 @@ func RemoveRebindStaged(cfgFile string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	syncDir(filepath.Dir(path))
+	syncConfigDir(filepath.Dir(path))
 	return nil
-}
-
-func syncDir(dir string) {
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
 }
 
 func (id RebindIdentity) validate() error {
