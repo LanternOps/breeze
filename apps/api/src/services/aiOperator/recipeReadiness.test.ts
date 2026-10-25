@@ -264,3 +264,22 @@ describe('readiness is recipe-agnostic (R2 pins)', () => {
     expect(degraded).not.toContain('google_suspend_user');
   });
 });
+
+describe('identity_onboarding is wired into readiness (R2a)', () => {
+  it('runs under the helpdesk agent (spec §6.8 / D3), like offboarding', async () => {
+    const { RECIPE_AGENT_KINDS } = await import('./recipeReadiness');
+    expect(RECIPE_AGENT_KINDS.identity_onboarding).toBe('helpdesk');
+  });
+
+  it('has library-card copy, never the raw key', async () => {
+    const { toWorkflowDto } = await import('./recipeReadiness');
+    const { identityOnboardingRecipe } = await import('./recipes/identityOnboarding');
+    const readiness = computeRecipeReadiness(identityOnboardingRecipe as unknown as AnyRecipeDefinition, {
+      orgId: '00000000-0000-4000-8000-0000000000a1', m365: null, google: null, agent: null,
+      callerVerificationBlocked: false, flagEnabled: false,
+    } as ReadinessInputs);
+    const dto = toWorkflowDto(readiness);
+    expect(dto.name).toBe('Onboard a person');
+    expect(dto.summary.length).toBeGreaterThan(0);
+  });
+});
