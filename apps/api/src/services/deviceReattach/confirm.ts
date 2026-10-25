@@ -102,6 +102,7 @@ import {
 import { decideTargetLiveness, readRedisLivenessSignals, type RedisLivenessSignals } from './liveness';
 import { REATTACH_SOURCE_CERT_GRACE_MS, type ReattachCancelReason } from './protocol';
 import { revalidateLockedIntent } from './revalidation';
+import { clearReattachSourceMarker } from './sourceMarker';
 
 export interface ConfirmedIdentity {
   deviceId: string;
@@ -515,6 +516,7 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
       .catch((err) => report('revocation broadcast', err));
   }
 
+  await clearReattachSourceMarker(intent.sourceDeviceId, intent.id);
   await revokeCertificatesAfterCommit(committed.revokeCertificateIds);
 
   await writeReattachAudit({
@@ -617,6 +619,7 @@ export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<Co
   }
   if (outcome.kind === 'refused') {
     if (outcome.ended && outcome.intent) {
+      await clearReattachSourceMarker(outcome.intent.sourceDeviceId, outcome.intent.id);
       await revokeCertificatesAfterCommit(outcome.ended.revokeCertificateIds);
       await writeReattachAudit({
         action: outcome.ended.state === 'expired' ? 'device.reinstall.expired' : 'device.reinstall.cancelled',

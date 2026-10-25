@@ -20,10 +20,17 @@ vi.mock('../manifestSigning', () => ({
   signBytesWithActiveKey: (...args: unknown[]) => signBytesWithActiveKeyMock(...args),
 }));
 
+// The intent lookup: a spy that throws by default (a failed lookup).
+const dbSelectMock = vi.hoisted(() => vi.fn(() => { throw new Error('lookup failed'); }));
+const withSystemDbAccessContextMock = vi.hoisted(() => vi.fn((fn: () => unknown) => fn()));
 vi.mock('../../db', () => ({
-  db: {},
+  db: { select: (...args: unknown[]) => dbSelectMock(...(args as [])) },
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => withSystemDbAccessContextMock(fn),
+}));
+const hasReattachSourceMarkerMock = vi.hoisted(() => vi.fn(async (_deviceId: string) => true));
+vi.mock('./sourceMarker', () => ({
+  hasReattachSourceMarker: (deviceId: string) => hasReattachSourceMarkerMock(deviceId),
 }));
 
 import {
@@ -179,11 +186,29 @@ describe('rebindDirectiveForBeat', () => {
     await expect(
       rebindDirectiveForBeat({ deviceId: 'd', agentId: 'a', rebindProtocolVersion: 0 }),
     ).resolves.toBeUndefined();
+    expect(hasReattachSourceMarkerMock).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
     expect(getActiveSigningKeyIdMock).not.toHaveBeenCalled();
   });
 
+  // Review finding 12: one Redis GET, and a DB transaction only with the marker.
+  it('without the source marker: one Redis read, no DB transaction, no directive', async () => {
+    hasReattachSourceMarkerMock.mockResolvedValueOnce(false);
+    await expect(
+      rebindDirectiveForBeat({ deviceId: 'device-1', agentId: 'a', rebindProtocolVersion: 1 }),
+    ).resolves.toBeUndefined();
+    expect(hasReattachSourceMarkerMock).toHaveBeenCalledWith('device-1');
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+    expect(dbSelectMock).not.toHaveBeenCalled();
+  });
+
+  it('with the marker: the intent is looked up', async () => {
+    await rebindDirectiveForBeat({ deviceId: 'device-1', agentId: 'a', rebindProtocolVersion: 1 });
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(dbSelectMock).toHaveBeenCalledTimes(1);
+  });
+
   it('never throws into the heartbeat: a failed lookup costs only this beat its directive', async () => {
-    // `db` is an empty object here, so the lookup itself throws.
     await expect(
       rebindDirectiveForBeat({ deviceId: 'd', agentId: 'a', rebindProtocolVersion: 1 }),
     ).resolves.toBeUndefined();

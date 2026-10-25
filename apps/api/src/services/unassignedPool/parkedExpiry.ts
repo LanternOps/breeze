@@ -35,6 +35,7 @@ import { isUnassignedPoolOrgType } from './orgType';
 import { lockPartnerHoldingArea } from './holdingAreaLock';
 import { lockDeviceForAssignment, type LockedParkedDevice } from './assignParkedDeviceSteps';
 import { writeReattachAudit } from '../deviceReattach/audit';
+import { clearReattachSourceMarker } from '../deviceReattach/sourceMarker';
 import {
   endIntentInTransaction,
   lockOpenReattachIntentsOfDevice,
@@ -166,6 +167,7 @@ export async function expireParkedDevice(
   const { device } = result;
   for (const { intent, ended } of result.cancelledIntents) {
     try {
+      await clearReattachSourceMarker(intent.sourceDeviceId, intent.id);
       await revokeCertificatesAfterCommit(ended.revokeCertificateIds);
       await writeReattachAudit({
         action: 'device.reinstall.cancelled',

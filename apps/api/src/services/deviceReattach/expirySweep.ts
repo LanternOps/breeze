@@ -25,6 +25,7 @@ import { captureException } from '../sentry';
 import { writeReattachAudit } from './audit';
 import { endIntentInTransaction, readIntentForUpdate, revokeCertificatesAfterCommit } from './intentStore';
 import { OPEN_REATTACH_INTENT_STATES, REATTACH_INTENT_RETENTION_MS, TERMINAL_REATTACH_INTENT_STATES } from './protocol';
+import { clearReattachSourceMarker } from './sourceMarker';
 
 const LOG_PREFIX = '[deviceReattachIntentSweep]';
 
@@ -51,6 +52,7 @@ async function expireOne(intentId: string, now: Date): Promise<'expired' | 'race
   })));
   if (!outcome) return 'raced';
 
+  await clearReattachSourceMarker(outcome.intent.sourceDeviceId, outcome.intent.id);
   await revokeCertificatesAfterCommit(outcome.ended.revokeCertificateIds);
   await writeReattachAudit({
     action: 'device.reinstall.expired',

@@ -61,6 +61,7 @@ import { requestDeviceReattach, cancelReattachIntent } from '../../services/devi
 import { ensureActiveSigningKey } from '../../services/manifestSigning';
 import { getRedis } from '../../services/redis';
 import { holdingAreaLockSql } from '../../services/unassignedPool/holdingAreaLock';
+import { reattachSourceMarkerKey } from '../../services/deviceReattach/sourceMarker';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 
@@ -794,6 +795,36 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     expect(await confirm(source.agentId, set.tokens.confirmationToken))
       .toMatchObject({ status: 409, body: { code: 'requester_revoked' } });
     expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'requester_revoked' });
+  });
+
+  // Review finding 12: the beat opens a DB transaction only with the marker.
+  it('the source marker gates the directive: set at request, re-armed at phase 1, cleared at confirm', async () => {
+    const { source, intent } = await arrange();
+    const key = reattachSourceMarkerKey(source.id);
+    const redis = getRedis()!;
+    expect(await redis.get(key)).toBe(intent.id);
+    expect(await redis.pttl(key)).toBeGreaterThan(55 * 60_000);
+
+    // Without the marker the beat carries no directive (and reads no intent).
+    await redis.del(key);
+    expect((await heartbeat(source, source.agentToken)).body).not.toHaveProperty('rebind');
+    await redis.set(key, intent.id, 'PX', 60_000);
+    expect((await heartbeat(source, source.agentToken)).body.rebind?.intentId).toBe(intent.id);
+
+    const set = stagedSet();
+    expect((await phase1(source, intent.id, set.hashes)).status).toBe(200);
+    const stagedTtl = await redis.pttl(key);
+    expect(stagedTtl).toBeGreaterThan(14 * 60_000);
+    expect(stagedTtl).toBeLessThanOrEqual(15 * 60_000);
+
+    expect((await confirm(source.agentId, set.tokens.confirmationToken)).status).toBe(200);
+    expect(await redis.exists(key)).toBe(0);
+  });
+
+  it('the source marker is cleared when the intent is cancelled', async () => {
+    const { source, intent } = await arrange();
+    await cancelReattachIntent(intent.id, 'admin');
+    expect(await getRedis()!.exists(reattachSourceMarkerKey(source.id))).toBe(0);
   });
 
   it('the directive stops once the intent has ended', async () => {

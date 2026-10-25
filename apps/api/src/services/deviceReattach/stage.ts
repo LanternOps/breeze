@@ -47,6 +47,7 @@ import {
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { REATTACH_STAGED_TTL_MS } from './protocol';
 import { revalidateLockedIntent } from './revalidation';
+import { clearReattachSourceMarker, extendReattachSourceMarker } from './sourceMarker';
 import {
   insertStagedCertificateRow,
   issueStagedCertificate,
@@ -312,6 +313,7 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
   if (committed.kind === 'refused') {
     if (issued) await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
     if (committed.ended && committed.intent) {
+      await clearReattachSourceMarker(committed.intent.sourceDeviceId, committed.intent.id);
       await revokeCertificatesAfterCommit(committed.ended.revokeCertificateIds);
       const copyWarning = committed.ended.cancelReason === 'restage_refused'
         ? 'A second, different staged set was sent for this reattach. The source device\'s credentials may have been copied; request the reattach again only after checking the source.'
@@ -344,6 +346,8 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
   }
   await revokeCertificatesAfterCommit(committed.revokeCertificateIds);
   if (committed.kind === 'staged') {
+    // The directive keeps coming while staged; the marker follows the new expiry.
+    await extendReattachSourceMarker(committed.intent.sourceDeviceId, committed.intent.id, committed.expiresAt);
     await writeReattachAudit({
       action: 'device.reinstall.staged',
       actorUserId: null,

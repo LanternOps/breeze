@@ -15,10 +15,12 @@
  * to another install never verifies there.
  *
  * Only a device that declared `rebind_protocol_version >= 1` on this beat is
- * looked up at all, so the hot path of every other device costs nothing. The
- * lookup is one indexed system-scope read (the partial unique index on open
- * intents by source); agent contexts have no partner access, so the
- * partner-axis policies would hide every intent from them.
+ * considered at all, and then only one that carries the Redis source marker
+ * (./sourceMarker.ts: set while it is the source of an open intent) costs a
+ * DB transaction: every other beat pays one Redis GET. The lookup is one
+ * indexed system-scope read (the partial unique index on open intents by
+ * source); agent contexts have no partner access, so the partner-axis
+ * policies would hide every intent from them.
  *
  * Nonce: a fresh 128-bit random value per response. The agent never sees it
  * twice; it ties the signature to one response, and the agent can log it.
@@ -31,6 +33,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceReattachIntents, devices } from '../../db/schema';
 import { getActiveSigningKeyId, signBytesWithActiveKey } from '../manifestSigning';
 import { OPEN_REATTACH_INTENT_STATES, REBIND_DIRECTIVE_MAX_LIFETIME_MS } from './protocol';
+import { hasReattachSourceMarker } from './sourceMarker';
 
 export const REBIND_DIRECTIVE_DOMAIN = 'breeze-agent-rebind-v1';
 
@@ -194,6 +197,11 @@ export async function rebindDirectiveForBeat(input: {
 }): Promise<RebindDirective | undefined> {
   if (input.rebindProtocolVersion < 1) return undefined;
   const now = input.now ?? new Date();
+  // One Redis GET first: only a device that is the source of an open intent
+  // has the marker (./sourceMarker.ts), so every other rebind-capable beat
+  // opens no DB transaction at all. No marker, or no Redis: no directive this
+  // beat; the next beat asks again.
+  if (!(await hasReattachSourceMarker(input.deviceId))) return undefined;
   try {
     const intent = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() => findOpenIntentForSource({ deviceId: input.deviceId, agentId: input.agentId }, now)),

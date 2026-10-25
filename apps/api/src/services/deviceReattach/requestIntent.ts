@@ -42,6 +42,7 @@ import {
 import { decideTargetLiveness, readRedisLivenessSignals } from './liveness';
 import { REATTACH_REQUESTED_TTL_MS, type ReattachCancelReason } from './protocol';
 import { isLiveOrg } from './revalidation';
+import { clearReattachSourceMarker, setReattachSourceMarker } from './sourceMarker';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
@@ -234,6 +235,13 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
   }
 
   const { intent, source, target } = created;
+  // The source's beats look for the directive only while this marker exists.
+  if (!(await setReattachSourceMarker(intent.sourceDeviceId, intent.id, intent.expiresAt))) {
+    console.error('[deviceReattach] the source marker could not be set; the source receives no rebind directive until it is', {
+      intentId: intent.id,
+      sourceDeviceId: intent.sourceDeviceId,
+    });
+  }
   await writeReattachAudit({
     action: 'device.reinstall.requested',
     actorUserId: input.actor.userId,
@@ -284,6 +292,7 @@ export async function cancelReattachIntent(
   })));
 
   if ('ended' in outcome && outcome.ended && outcome.intent) {
+    await clearReattachSourceMarker(outcome.intent.sourceDeviceId, outcome.intent.id);
     await revokeCertificatesAfterCommit(outcome.ended.revokeCertificateIds);
     await writeReattachAudit({
       action: 'device.reinstall.cancelled',
