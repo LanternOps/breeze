@@ -358,6 +358,23 @@ describe('vault routes', () => {
     expect(res.status).toBe(200);
   });
 
+  it('locks the current selected-site device before DELETE for a site-restricted caller (W03-D12)', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const vaultLookup = chainMock([{ deviceId: DEVICE_ID }]);
+    const deviceLock = chainMock([{ id: DEVICE_ID }]);
+    selectMock.mockReturnValueOnce(vaultLookup).mockReturnValueOnce(deviceLock);
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(deviceLock.for).toHaveBeenCalledWith('update');
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
   it('hides DELETE from a caller with an empty site ceiling before database or audit work', async () => {
     permissionsState = { allowedSiteIds: [] };
     updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));

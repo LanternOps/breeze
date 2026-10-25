@@ -3977,7 +3977,7 @@ export function buildApprovalDescription(
       break;
     }
     case 'execute_dr_plan':
-      parts.push(`Run a ${nonEmptyText(input.executionType) ?? 'DR'} of DR plan ${w03Id(input.planId)} (every group's restore runs on its devices)`);
+      parts.push(`Run a ${w03Cap(nonEmptyText(input.executionType) ?? 'DR')} of DR plan ${w03Id(input.planId)} (every group's restore runs on its devices)`);
       break;
     case 'manage_hyperv_vm': {
       const verb = HYPERV_VM_VERBS[action ?? ''];
@@ -3993,9 +3993,9 @@ export function buildApprovalDescription(
     case 'configure_vault': {
       const path = nonEmptyText(input.vaultPath);
       const details = [
-        typeof input.vaultType === 'string' ? `${input.vaultType} vault` : null,
+        typeof input.vaultType === 'string' ? `${w03Cap(input.vaultType)} vault` : null,
         path ? `at ${w03Cap(path)}` : (action === 'update' ? 'path unchanged' : null),
-        input.retentionCount !== undefined ? `keep ${String(input.retentionCount)} cop(ies)` : null,
+        input.retentionCount !== undefined ? `keep ${w03Cap(String(input.retentionCount))} cop(ies)` : null,
         typeof input.isActive === 'boolean' ? (input.isActive ? 'active' : 'inactive') : null,
       ].filter((x): x is string => x !== null);
       const subject = action === 'create' ? `on device ${w03Id(input.deviceId)}` : `vault ${w03Id(input.vaultId)}`;
