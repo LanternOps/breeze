@@ -22,20 +22,23 @@ import {
   type FlowStatus,
   type FlowSummaryDto,
   type FlowValidationResult,
+  type PreApprovalEligibility,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { flows, organizations, type FlowRow } from '../../db/schema';
+import { flows, flowVersions, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { captureException } from '../sentry';
-import { validateFlowDocument } from '../flowValidator';
+import { flowPreApprovalBindingSchema, stepPinsFor, validateFlowDocument, type FlowDocumentValidation } from '../flowValidator';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { resolveFlowOwnerForCaller } from './owner';
+import { assessPreApprovals } from './preApproval';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 
 const FLOW_SLUG_MAX = 48;
+const EDITABLE_STATUSES: readonly FlowStatus[] = ['draft', 'disabled', 'paused'];
 const MAX_SLUG_ATTEMPTS = 100;
 
 export interface SaveDraftFlowInput {
@@ -87,7 +90,16 @@ function toSummaryDto(row: SummaryRow, triggerType: string): FlowSummaryDto {
   };
 }
 
-function toDetailDto(row: FlowRow): FlowDetailDto {
+export interface FlowDetailExtras {
+  /** Rule-4 eligibility of every tier-3 step, computed live (`assessPreApprovals`). */
+  preApprovalEligibility: Record<string, PreApprovalEligibility>;
+  /** The step ids the LIVE publication binds (enabled or paused flows only). */
+  preApprovedStepIds: string[];
+}
+
+const NO_EXTRAS: FlowDetailExtras = { preApprovalEligibility: {}, preApprovedStepIds: [] };
+
+export function toDetailDto(row: FlowRow, extras: FlowDetailExtras = NO_EXTRAS): FlowDetailDto {
   return {
     ...toSummaryDto(row, triggerTypeOf(row.definition)),
     description: row.description,
@@ -99,10 +111,8 @@ function toDetailDto(row: FlowRow): FlowDetailDto {
     enabledAt: row.enabledAt ? iso(row.enabledAt) : null,
     enabledByUserId: row.enabledByUserId,
     pausedReason: row.pausedReason,
-    // Task A6 computes these in getFlow (rule-4 eligibility per step and the
-    // live publication's pre-approved step ids).
-    preApprovalEligibility: {},
-    preApprovedStepIds: [],
+    preApprovalEligibility: extras.preApprovalEligibility,
+    preApprovedStepIds: extras.preApprovedStepIds,
   };
 }
 
@@ -125,10 +135,16 @@ export async function lockFlowSlugsForPartner(partnerId: string): Promise<void> 
 /**
  * True when `slug` is free for `owner` under the shadow rule (see
  * `takenFlowSlugs`). W04's enable path and any future owner change must call
- * this under `lockFlowSlugsForPartner(owner.partnerId)`.
+ * this under `lockFlowSlugsForPartner(owner.partnerId)`; enable passes
+ * `excludeFlowId` so the flow's own row does not count as taking its slug.
  */
-export async function assertFlowSlugAvailable(owner: ToolOwnerRef, slug: string): Promise<boolean> {
-  return !(await takenFlowSlugs(owner, slug)).has(slug);
+export async function assertFlowSlugAvailable(
+  owner: ToolOwnerRef,
+  slug: string,
+  opts?: { excludeFlowId?: string },
+): Promise<boolean> {
+  const taken = opts ? await takenFlowSlugs(owner, slug, opts) : await takenFlowSlugs(owner, slug);
+  return !taken.has(slug);
 }
 
 async function pickFlowSlug(owner: ToolOwnerRef, base: string): Promise<string | null> {
@@ -234,7 +250,10 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
     if (auth.scope !== 'partner' && auth.scope !== 'system') return { saved: false, error: 'flow_not_found' };
     if (!canManagePartnerWidePolicies(auth)) return { saved: false, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
   }
-  if (existing.status !== 'draft') return { saved: false, error: 'flow_not_draft' };
+  // W04 (Decision 2): editable unless enabled. A disabled or paused flow keeps
+  // its status (and a paused flow its live publication) — re-enable publishes
+  // the edited definition as a new publication.
+  if (!EDITABLE_STATUSES.includes(existing.status)) return { saved: false, error: 'flow_not_draft' };
   if (input.expectedVersion !== undefined && input.expectedVersion !== existing.definitionVersion) {
     return { saved: false, error: 'version_conflict' };
   }
@@ -255,7 +274,7 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
       definitionVersion: sql`${flows.definitionVersion} + 1`,
       updatedAt: new Date(),
     })
-    .where(and(eq(flows.id, flowId), eq(flows.definitionVersion, existing.definitionVersion), eq(flows.status, 'draft')))
+    .where(and(eq(flows.id, flowId), eq(flows.definitionVersion, existing.definitionVersion), eq(flows.status, existing.status)))
     .returning();
   if (!row) return { saved: false, error: 'version_conflict' };
   auditDraftSave(auth, row, document.steps.length);
@@ -338,8 +357,53 @@ export async function getFlow(
   const [row] = await db.select().from(flows).where(eq(flows.id, flowId)).limit(1);
   if (!row) return null;
   const owner = await ownerForFlowRow(row);
-  const validation: FlowValidationResult = owner
-    ? stripDocument(await validateFlowDocument(row.definition, { owner }))
-    : { valid: false, effectiveTier: null, steps: [], issues: [{ code: 'tool_not_found', severity: 'error', message: 'The flow owner no longer exists.' }] };
-  return { flow: toDetailDto(row), validation };
+  if (!owner) {
+    const validation: FlowValidationResult = {
+      valid: false, effectiveTier: null, steps: [], issues: [{ code: 'tool_not_found', severity: 'error', message: 'The flow owner no longer exists.' }],
+    };
+    return { flow: toDetailDto(row, { preApprovalEligibility: {}, preApprovedStepIds: await livePreApprovedStepIds(row) }), validation };
+  }
+  const validated = await validateFlowDocument(row.definition, { owner });
+  const extras: FlowDetailExtras = {
+    preApprovalEligibility: await liveEligibility(validated, owner),
+    preApprovedStepIds: await livePreApprovedStepIds(row),
+  };
+  return { flow: toDetailDto(row, extras), validation: stripDocument(validated) };
+}
+
+/**
+ * Rule-4 eligibility of every tier-3 step, so the enable dialog never
+ * guesses. Only for a document that validates now — enable refuses any other
+ * — and empty if a step stopped resolving between the two catalog reads.
+ */
+async function liveEligibility(validated: FlowDocumentValidation, owner: ToolOwnerRef): Promise<Record<string, PreApprovalEligibility>> {
+  if (!validated.valid || !validated.document) return {};
+  let pins;
+  try {
+    pins = await stepPinsFor(validated.document, { owner });
+  } catch {
+    return {};
+  }
+  return (await assessPreApprovals(validated.document, pins, owner)).eligibility;
+}
+
+/**
+ * The step ids the live publication pre-approved. Read in the caller's
+ * context (flow_versions follows the flows RLS shape). A binding that does
+ * not parse is not reported — the runner treats it as drift.
+ */
+async function livePreApprovedStepIds(row: FlowRow): Promise<string[]> {
+  if (row.enabledPublicationSeq === null || row.enabledPublicationSeq === undefined) return [];
+  if (!(['enabled', 'paused'] as FlowStatus[]).includes(row.status)) return [];
+  const [pub] = await db
+    .select({ preApprovals: flowVersions.preApprovals })
+    .from(flowVersions)
+    .where(and(eq(flowVersions.flowId, row.id), eq(flowVersions.publicationSeq, row.enabledPublicationSeq)))
+    .limit(1);
+  const out: string[] = [];
+  for (const b of pub?.preApprovals ?? []) {
+    const parsed = flowPreApprovalBindingSchema.safeParse(b);
+    if (parsed.success) out.push(parsed.data.stepId);
+  }
+  return out;
 }
