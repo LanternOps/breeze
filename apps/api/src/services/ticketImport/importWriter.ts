@@ -808,13 +808,15 @@ export async function importTicket(
     if (stored.windowPrincipalId !== principalId) {
       throw inUse(t.sourceId, { reason: 'other_principal_ticket', ticketId: ref.ticketId });
     }
+    // The window's orgs before anything else about the ticket, so no answer
+    // (merged included) ever rests on the window's RLS alone (#10034 review).
+    if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     // Merged in Breeze (#8972): this import's ticket is a tombstone, and the
     // ref is still on it.
     if (stored.mergedIntoTicketId) {
       return { kind: 'merged' as const, ticketId: stored.id, mergedIntoTicketId: stored.mergedIntoTicketId };
     }
     if (stored.deletedAt) throw inUse(t.sourceId, { reason: 'deleted', ticketId: stored.id });
-    if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     // Present: on this ticket (the read the report also uses), or imported by
     // this principal onto another ticket, which is asked only for the rest.
     const storedComments = await importedCommentsOf(stored.id, principalId, t.comments.map((c) => c.sourceId));

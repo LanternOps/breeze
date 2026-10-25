@@ -400,6 +400,8 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     // The merge moved this import's ref onto another principal's import, which used to be resumed with this source's data.
     ["another principal's import", { windowPrincipalId: '45454545-4545-4545-8545-454545454545' }, 'other_principal_ticket'],
     ["another principal's tombstone", { windowPrincipalId: '45454545-4545-4545-8545-454545454545', mergedIntoTicketId: SURVIVOR }, 'other_principal_ticket'],
+    // The window's orgs are checked before the tombstone, so "merged" never rests on RLS alone (#10034 review).
+    ['a tombstone of this import in an org outside the window', { orgId: '99999999-9999-4999-8999-999999999999', mergedIntoTicketId: SURVIVOR }, 'org_outside_window'],
   ])('refuses, never resumes, a ref that resolves to %s', async (_label, row, reason) => {
     h.fallback.set('storedTicket', [storedRow(row)]);
     await expect(run(closedWithNotes)).rejects.toMatchObject({
