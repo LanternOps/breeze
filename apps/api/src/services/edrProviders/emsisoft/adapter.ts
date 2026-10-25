@@ -30,6 +30,11 @@ export const emsisoftAdapter: EdrProviderAdapter = {
     maxActionTargets: 1,
     firstSyncLookbackDays: 30,
     tenantFetchConcurrency: 1,
+    // Columns only the per-device detail call fills; the device list never overwrites them.
+    detailOwnedFields: ['fqdn', 'ipAddresses', 'osPlatform', 'osName', 'endpointType', 'online', 'health', 'agentVersion'],
+    // inventory: device pages (~2) + up to DETAIL_ENRICH_PER_RUN (50) details + re-read (<= 20)
+    // detection: incident pages (~1) + device-name pages for attribution (~2)
+    estimatedCalls: { perTenantDetection: 3, perTenantInventory: 72, perConnectionOverhead: 2 },
   },
   testConnection: async () => notImplemented(),
   listTenants: async () => notImplemented(),

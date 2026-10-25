@@ -5,6 +5,7 @@ import { validateVendorUrl } from './guardedFetch';
 import { getEdrProvider } from './registry';
 import { pgErrorCode } from '../../utils/pgErrors';
 import type {
+  EdrDetailOwnedField,
   EdrDetectionPage,
   EdrErrorScope,
   VendorEdrEndpoint,
@@ -295,33 +296,39 @@ export async function persistInventory(
       updatedAt: now,
     }));
 
+    // Opt-in (capabilities.detailOwnedFields): columns the list call cannot fill
+    // keep their stored value on conflict. A first insert still takes the list value.
+    const detailOwned = new Set<string>(getEdrProvider(conn.provider).capabilities?.detailOwnedFields ?? []);
+    const listSet: Record<EdrDetailOwnedField | string, ReturnType<typeof sql>> = {
+      hostname: sql`excluded.hostname`,
+      fqdn: sql`excluded.fqdn`,
+      serialNumber: sql`excluded.serial_number`,
+      macAddresses: sql`excluded.mac_addresses`,
+      ipAddresses: sql`excluded.ip_addresses`,
+      osPlatform: sql`excluded.os_platform`,
+      osName: sql`excluded.os_name`,
+      endpointType: sql`excluded.endpoint_type`,
+      agentVersion: sql`excluded.agent_version`,
+      health: sql`excluded.health`,
+      online: sql`excluded.online`,
+      isolationState: sql`excluded.isolation_state`,
+      tamperProtection: sql`excluded.tamper_protection`,
+      policyName: sql`excluded.policy_name`,
+      lastSeenAt: sql`excluded.last_seen_at`,
+      vendorRaw: sql`excluded.vendor_raw`,
+      updatedAt: sql`excluded.updated_at`,
+    };
+    for (const field of detailOwned) delete listSet[field];
+
     for (const batch of chunk(values, UPSERT_CHUNK)) {
       await tx
         .insert(edrEndpoints)
         .values(batch)
         .onConflictDoUpdate({
           target: [edrEndpoints.connectionId, edrEndpoints.vendorEndpointId],
-          set: {
-            hostname: sql`excluded.hostname`,
-            fqdn: sql`excluded.fqdn`,
-            serialNumber: sql`excluded.serial_number`,
-            macAddresses: sql`excluded.mac_addresses`,
-            ipAddresses: sql`excluded.ip_addresses`,
-            osPlatform: sql`excluded.os_platform`,
-            osName: sql`excluded.os_name`,
-            endpointType: sql`excluded.endpoint_type`,
-            agentVersion: sql`excluded.agent_version`,
-            health: sql`excluded.health`,
-            online: sql`excluded.online`,
-            isolationState: sql`excluded.isolation_state`,
-            tamperProtection: sql`excluded.tamper_protection`,
-            policyName: sql`excluded.policy_name`,
-            lastSeenAt: sql`excluded.last_seen_at`,
-            vendorRaw: sql`excluded.vendor_raw`,
-            updatedAt: sql`excluded.updated_at`,
-            // org_id / tenant_id are DELIBERATELY absent (a row never moves across
-            // orgs); breeze_device_id / device_match_source belong to Breeze matching.
-          },
+          // org_id / tenant_id are DELIBERATELY absent (a row never moves across
+          // orgs); breeze_device_id / device_match_source belong to Breeze matching.
+          set: listSet,
           setWhere: sql`${edrEndpoints.orgId} = excluded.org_id AND ${edrEndpoints.tenantId} = excluded.tenant_id`,
         });
     }
@@ -335,6 +342,10 @@ export async function persistInventory(
       if (detail.agentVersion !== undefined) set.agentVersion = clip(detail.agentVersion, 64);
       if (detail.osName !== undefined) set.osName = clip(detail.osName, 255);
       if (detail.serialNumber !== undefined) set.serialNumber = clip(detail.serialNumber, 128);
+      if (detail.fqdn !== undefined) set.fqdn = clip(detail.fqdn, 255);
+      if (detail.ipAddresses !== undefined) set.ipAddresses = detail.ipAddresses;
+      if (detail.osPlatform !== undefined) set.osPlatform = detail.osPlatform;
+      if (detail.endpointType !== undefined) set.endpointType = detail.endpointType;
       await tx
         .update(edrEndpoints)
         .set(set as never)

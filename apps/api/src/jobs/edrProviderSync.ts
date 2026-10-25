@@ -131,6 +131,9 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>, label: string): Pr
   return dbModule.withSystemDbAccessContext(fn, label);
 };
 
+/** Vendor calls assumed per tenant/connection when an adapter declares no `capabilities.estimatedCalls`. */
+export const DEFAULT_ESTIMATED_CALLS = { perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 } as const;
+
 const SYNC_ALL_INTERVAL_MINUTES = 5;
 const ADVISORY_LOCK_NAMESPACE = 'edr-provider-sync';
 const MAX_SYNC_ERROR_LENGTH = 2000;
@@ -759,7 +762,7 @@ export async function syncEdrInventory(
           detectionsMinutes: loaded.row.detectionIntervalMinutes,
           inventoryMinutes: loaded.row.inventoryIntervalMinutes,
         },
-        estimatedCalls: { perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 },
+        estimatedCalls: adapter.capabilities.estimatedCalls ?? DEFAULT_ESTIMATED_CALLS,
       });
 
       const failed = inv.failedTenants;

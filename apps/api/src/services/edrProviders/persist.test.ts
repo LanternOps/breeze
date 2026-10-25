@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { getTableName, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
+const caps = vi.hoisted(() => ({ detailOwnedFields: [] as readonly string[] }));
 vi.mock('./registry', () => ({
-  getEdrProvider: () => ({ hostAllowlist: ['.gravityzone.bitdefender.com'] }),
+  getEdrProvider: () => ({ hostAllowlist: ['.gravityzone.bitdefender.com'], capabilities: { detailOwnedFields: caps.detailOwnedFields } }),
 }));
 
 import {
@@ -233,6 +234,54 @@ describe('persistInventory', () => {
     const { tx, ops } = makeTx({ selects: [tenantRows, [{ id: 'row-1', vendorEndpointId: 'e1' }]] });
     await persistInventory(tx, CONN, [{ vendorTenantId: 'co1', ok: true, value: { endpoints: [], details: [] } }], NOW);
     expect(render(ops.filter((o) => o.kind === 'delete').at(-1)!.where)).toContain('row-1');
+  });
+});
+
+describe('persistInventory: detail-owned fields (A2)', () => {
+  const tenantRows = [{ id: T1, vendorTenantId: 'co1', orgId: ORG }, { id: T2, vendorTenantId: 'co2', orgId: null }];
+  const run = async (details: Array<Record<string, unknown>>, owned: readonly string[]) => {
+    caps.detailOwnedFields = owned;
+    const { tx, ops } = makeTx({ selects: [tenantRows, [{ id: 'row-1', vendorEndpointId: 'e1' }]] });
+    await persistInventory(tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: { endpoints: [endpoint('e1')], details: details as never } },
+    ], NOW);
+    caps.detailOwnedFields = [];
+    return ops;
+  };
+
+  it('detail-owned columns are omitted from the list upsert DO UPDATE (they survive across runs); the rest still overwrite', async () => {
+    const ops = await run([], ['osName', 'online', 'fqdn']);
+    const insert = ops.find((o) => o.kind === 'insert')!;
+    const keys = Object.keys(insert.conflict!.set!);
+    for (const owned of ['osName', 'online', 'fqdn']) expect(keys).not.toContain(owned);
+    expect(keys).toEqual(expect.arrayContaining(['hostname', 'policyName', 'health', 'agentVersion', 'updatedAt']));
+    // a first insert still takes the list values
+    const [row] = insert.values as Array<Record<string, unknown>>;
+    expect(row).toMatchObject({ osName: 'Windows 11', online: true, fqdn: 'ws-01.corp' });
+  });
+
+  it('no detailOwnedFields -> every column overwrites as before (GravityZone regression guard)', async () => {
+    const ops = await run([], []);
+    const keys = Object.keys(ops.find((o) => o.kind === 'insert')!.conflict!.set!);
+    expect(keys).toEqual(expect.arrayContaining([
+      'hostname', 'fqdn', 'serialNumber', 'macAddresses', 'ipAddresses', 'osPlatform', 'osName', 'endpointType',
+      'agentVersion', 'health', 'online', 'isolationState', 'tamperProtection', 'policyName', 'lastSeenAt', 'vendorRaw', 'updatedAt',
+    ]));
+  });
+
+  it('the detail update writes fqdn, ipAddresses, osPlatform and endpointType', async () => {
+    const ops = await run([{ vendorEndpointId: 'e1', fqdn: 'pc01.corp.example.test', ipAddresses: ['192.0.2.10'], osPlatform: 'windows', endpointType: 'server' }], []);
+    const detail = ops.find((o) => o.kind === 'update' && o.table === 'edr_endpoints')!;
+    expect(detail.set).toMatchObject({ fqdn: 'pc01.corp.example.test', ipAddresses: ['192.0.2.10'], osPlatform: 'windows', endpointType: 'server' });
+  });
+
+  it('"not fetched" (absent key) leaves the column; "fetched as null/empty" clears it', async () => {
+    const ops = await run([{ vendorEndpointId: 'e1', fqdn: null, ipAddresses: [] }], ['fqdn', 'osName']);
+    const set = ops.find((o) => o.kind === 'update' && o.table === 'edr_endpoints')!.set!;
+    expect(set).toHaveProperty('fqdn', null);
+    expect(set).toHaveProperty('ipAddresses', []);
+    expect(set).not.toHaveProperty('osName');
+    expect(set).not.toHaveProperty('endpointType');
   });
 });
 

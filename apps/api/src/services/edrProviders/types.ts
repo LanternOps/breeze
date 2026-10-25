@@ -28,6 +28,10 @@ export class EdrProviderRequestError extends Error {
 /** Operation classes with their own narrower vendor budget (`operationBudgets`). */
 export type EdrOperationClass = 'inventory' | 'companies' | 'incidents' | (string & {});
 
+/** Endpoint columns only the per-endpoint detail call knows (see `EdrCapabilities.detailOwnedFields`). */
+export type EdrDetailOwnedField = 'fqdn' | 'ipAddresses' | 'osPlatform' | 'osName' | 'endpointType'
+  | 'online' | 'health' | 'agentVersion' | 'lastSeenAt' | 'serialNumber';
+
 export interface EdrCapabilities {
   tenantModel: 'partner' | 'single';
   perTenantHost: boolean;
@@ -44,6 +48,15 @@ export interface EdrCapabilities {
   maxActionTargets: number;
   firstSyncLookbackDays: number;
   tenantFetchConcurrency: number;
+  /**
+   * Opt-in. Columns only the per-endpoint detail call knows: on conflict the list
+   * upsert keeps the stored value instead of overwriting it with the list's
+   * placeholder. A first insert still takes the list values. Default [] = every
+   * column overwrites (GravityZone).
+   */
+  detailOwnedFields?: readonly EdrDetailOwnedField[];
+  /** Opt-in. Vendor calls per tenant/connection, fed to `planCadence`; default `DEFAULT_ESTIMATED_CALLS`. */
+  estimatedCalls?: { perTenantDetection: number; perTenantInventory: number; perConnectionOverhead: number };
 }
 
 export interface VendorEdrTenant {
@@ -60,8 +73,13 @@ export interface VendorEdrEndpoint {
   tamperProtection: boolean | null; policyName: string | null; lastSeenAt: Date | null;
   raw: Record<string, unknown>;
 }
+/**
+ * Every field is optional: `undefined` = "not fetched" (the stored value stays),
+ * an explicit `null` / empty value = "fetched as empty" (clears the stored value).
+ */
 export type VendorEdrEndpointDetail = Partial<Pick<VendorEdrEndpoint,
-  'health' | 'online' | 'lastSeenAt' | 'agentVersion' | 'osName' | 'serialNumber'>> & { vendorEndpointId: string };
+  'health' | 'online' | 'lastSeenAt' | 'agentVersion' | 'osName' | 'serialNumber'
+  | 'fqdn' | 'ipAddresses' | 'osPlatform' | 'endpointType'>> & { vendorEndpointId: string };
 
 export interface VendorEdrDetection {
   vendorDetectionId: string; vendorKind: EdrVendorKind; vendorTenantId: string;

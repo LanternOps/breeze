@@ -103,6 +103,7 @@ const { FakeEdrError } = vi.hoisted(() => {
 });
 
 const m = vi.hoisted(() => ({
+  caps: {} as Record<string, unknown>,
   listTenants: vi.fn(),
   listEndpoints: vi.fn(),
   countEndpoints: vi.fn(),
@@ -134,6 +135,7 @@ vi.mock('../services/edrProviders/registry', () => ({
       tenantModel: 'partner', detectionDelivery: 'poll', installer: 'none', actions: [],
       requestBudget: { perSecond: 10 }, tenantFetchConcurrency: 2,
       defaultIntervals: { detectionsMinutes: 5, inventoryMinutes: 60 },
+      ...m.caps,
     },
     listTenants: m.listTenants,
     listEndpoints: m.listEndpoints,
@@ -184,7 +186,7 @@ vi.mock('../services/bullmqQueue', () => ({
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: m.enqueueOrReplaceStale }));
 
 import {
-  __testOnly, edrActionStatusJobId, edrSyncJobId, enqueueEdrActionStatus, enqueueEdrSync, isFinalSyncAttempt,
+  DEFAULT_ESTIMATED_CALLS, __testOnly, edrActionStatusJobId, edrSyncJobId, enqueueEdrActionStatus, enqueueEdrSync, isFinalSyncAttempt,
   selectDueStreams, syncEdrDetections, syncEdrInventory,
 } from './edrProviderSync';
 
@@ -214,6 +216,7 @@ const RUN_CACHE = new Map<string, Promise<unknown>>();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.caps = {};
   contextDepth = 0; tenantSelects = 0; executeRows = [];
   fetchDepths.length = 0; dbCallDepths.length = 0; updatePayloads.length = 0; events.length = 0;
   connectionRow = { ...BASE_ROW };
@@ -328,6 +331,24 @@ describe('syncEdrInventory', () => {
     await syncEdrInventory(CONNECTION_ID);
     expect(m.enrichEndpoints).toHaveBeenCalledTimes(1);
     expect(m.enrichEndpoints.mock.calls[0]![2]).toEqual(['new-1', 'old-stale', 'old-fresh']);
+  });
+
+  it('plans the cadence with the adapter\'s capabilities.estimatedCalls, else the DEFAULT_ESTIMATED_CALLS (A2)', async () => {
+    // Default estimates: 2 tenants fit the 10 req/s budget at the floor intervals.
+    await syncEdrInventory(CONNECTION_ID);
+    expect(lastConnectionUpdate()?.payload).toMatchObject({
+      effectiveInventoryIntervalMinutes: 60, effectiveDetectionIntervalMinutes: 5,
+    });
+    // A heavy declared estimate must lengthen the inventory interval: the declared value is the one planned with.
+    m.caps = { estimatedCalls: { perTenantDetection: 1, perTenantInventory: 100_000, perConnectionOverhead: 2 } };
+    updatePayloads.length = 0;
+    await syncEdrInventory(CONNECTION_ID);
+    const heavy = lastConnectionUpdate()!.payload as { effectiveInventoryIntervalMinutes: number };
+    expect(heavy.effectiveInventoryIntervalMinutes).toBeGreaterThan(60);
+  });
+
+  it('exports DEFAULT_ESTIMATED_CALLS unchanged from the pre-A2 literal', () => {
+    expect(DEFAULT_ESTIMATED_CALLS).toEqual({ perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 });
   });
 
   it('never writes capabilities_snapshot (only a connection test does)', async () => {
