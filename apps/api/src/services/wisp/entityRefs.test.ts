@@ -98,6 +98,15 @@ describe('resolveEntityRef', () => {
     expect(await resolveEntityRef({ auth: narrow, ceiling: ceiling() }, { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'forbidden' });
   });
 
+  it('forbidden for a device-pinned caller: other devices and every non-device kind', async () => {
+    const pinned = auth({ allowedDeviceIds: [ENTITY] } as Partial<AuthContext>);
+    loadEntityForPartner.mockResolvedValue(entity('device', ORG_A, { siteId: SITE }));
+    expect(await resolveEntityRef({ auth: pinned, ceiling: ceiling() }, { kind: 'device', id: ENTITY })).toMatchObject({ orgId: ORG_A });
+    expect(await resolveEntityRef({ auth: pinned, ceiling: ceiling() }, { kind: 'device', id: SITE })).toEqual({ reason: 'forbidden' });
+    loadEntityForPartner.mockResolvedValue(entity('ticket', ORG_A));
+    expect(await resolveEntityRef({ auth: pinned, ceiling: ceiling() }, { kind: 'ticket', id: ENTITY })).toEqual({ reason: 'forbidden' });
+  });
+
   it('forbidden for a site-restricted caller outside the entity site', async () => {
     loadEntityForPartner.mockResolvedValue(entity('device', ORG_A, { siteId: SITE }));
     const a = auth({ scope: 'organization', orgId: ORG_A, canAccessSite: (s: string | null | undefined) => s === 'other' });

@@ -110,6 +110,11 @@ export function createEntityResolver(ctx: EntityResolveContext) {
       const [resource, action] = permission.split(':') as [string, string];
       if (!userPerms || !hasPermission(userPerms, resource, action)) return { reason: 'forbidden' };
       if (orgId !== null && !auth.canAccessOrg(orgId)) return { reason: 'forbidden' };
+      // A device-pinned principal (a device-bound agent run) reaches only its
+      // allowlisted devices — and no other kind, which it cannot be shown to own.
+      if (auth.allowedDeviceIds !== undefined && (ref.kind !== 'device' || !auth.allowedDeviceIds.includes(ref.id))) {
+        return { reason: 'forbidden' };
+      }
       if (entity.siteId !== undefined && auth.canAccessSite && !auth.canAccessSite(entity.siteId)) {
         return { reason: 'forbidden' };
       }

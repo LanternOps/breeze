@@ -148,7 +148,7 @@ function attachmentDto(a: ThreadAttachment) {
 // Ownership + reads
 // ---------------------------------------------------------------------------
 
-type OwnThread = {
+export type OwnThread = {
   thread: WispThread;
   grant: {
     id: string;
@@ -163,7 +163,7 @@ type OwnThread = {
 };
 
 /** The caller's own thread (see OWNERSHIP above), or null for every other case. */
-async function loadOwnThread(c: Context): Promise<OwnThread | null> {
+export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
   const parsed = uuid.safeParse(c.req.param('id'));
   if (!parsed.success) return null;
   const auth = authOf(c);
@@ -246,7 +246,7 @@ type CeilingOutcome =
  * paused / revoked / expired / Wisp switched off; `corrupt` (→ 500
  * grant_corrupt, already logged and captured) when the pin itself is broken.
  */
-async function ceilingOf(own: OwnThread): Promise<CeilingOutcome> {
+export async function ceilingOf(own: OwnThread): Promise<CeilingOutcome> {
   if (!own.grant.currentRevisionId) return { ok: false, reason: 'inactive' };
   try {
     return { ok: true, ceiling: await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId) };
@@ -269,10 +269,10 @@ function reportCorruptGrant(err: GrantInactiveError, where: string): void {
 const grantInactive = (c: Context) => fail(c, 409, 'grant_inactive', 'This Wisp delegation is not active');
 const grantCorrupt = (c: Context) =>
   fail(c, 500, 'grant_corrupt', "This Wisp grant can't be used. Turn Wisp off and on again.");
-const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
+export const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
   reason === 'corrupt' ? grantCorrupt(c) : grantInactive(c);
 
-type GrantForPayload = {
+export type GrantForPayload = {
   id: string;
   status: WispGrantStatus;
   orgId: string | null;
@@ -284,7 +284,7 @@ type GrantForPayload = {
 };
 
 /** GET / and GET /:id return the same members. */
-async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
+export async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
   const [focusOrgName, widening, spend] = await Promise.all([
     focusOrgNameOf(partnerId, thread.focusOrgId),
     wideningAvailable(grant.id),

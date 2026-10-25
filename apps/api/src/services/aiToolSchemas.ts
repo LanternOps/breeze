@@ -26,7 +26,10 @@ import {
 import { IOC_HUNT_ACTIONS } from './iocHuntActions';
 import {
   createWatchInputSchema,
+  linkEntitySchema,
   listConcernsToolSchema,
+  listLinksToolSchema,
+  WISP_THREAD_LINK_LIMIT,
   raiseConcernChatSchema,
   resolveConcernToolSchema,
   snoozeConcernToolSchema,
@@ -377,6 +380,28 @@ export const createWatchShape = {
   cadenceMinutes: cw.cadenceMinutes.describe('How often to check, in minutes (15 to 10080)'),
 };
 
+/**
+ * Wisp W08 thread links (services/wisp/linkTools.ts). The shared validators
+ * (packages/shared/src/validators/wisp.ts) are the source of truth, as for the
+ * concern tools; linkTools.test.ts pins the key parity. `list_links` = the
+ * shared empty strict object (never `z.undefined()`) plus the tool-only output
+ * budget (A-W05: every Tier-1 list read takes a `limit`); max 50 = the
+ * per-thread link cap (WISP_THREAD_LINK_LIMIT).
+ */
+const le = linkEntitySchema.shape;
+export const linkEntityShape = {
+  kind: le.kind.describe('What kind of Breeze object to link'),
+  id: le.id.describe("The object's UUID (from the object's own list or get tool)"),
+  orgId: le.orgId.describe('Optional lookup hint: the organization you believe the object belongs to. The org is always read from the object; a wrong hint links nothing'),
+  label: le.label.describe('Ignored: the label always comes from the object itself'),
+};
+export const listLinksInputSchema = listLinksToolSchema.extend({
+  limit: z.number().int().min(1).max(WISP_THREAD_LINK_LIMIT).optional(),
+});
+export const listLinksShape = {
+  limit: listLinksInputSchema.shape.limit.describe(`Max links (default ${WISP_THREAD_LINK_LIMIT}, max ${WISP_THREAD_LINK_LIMIT})`),
+};
+
 // Wisp W07 specialists (services/aiToolsWisp.ts; plan Tasks 4 and 6). The kind
 // list is SPECIALIST_KINDS (leaf module), never a re-typed copy.
 const specialistKindSchema = z.enum(SPECIALIST_KINDS as unknown as [SpecialistKind, ...SpecialistKind[]]);
@@ -422,6 +447,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   snooze_concern: snoozeConcernToolSchema,
   resolve_concern: resolveConcernToolSchema,
   create_watch: createWatchInputSchema,
+  // Wisp W08 thread links (services/wisp/linkTools.ts).
+  link_entity: linkEntitySchema,
+  list_links: listLinksInputSchema,
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),

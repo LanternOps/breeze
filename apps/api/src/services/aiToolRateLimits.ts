@@ -93,6 +93,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // every create_watch is a recurring assessment that spends grant budget.
   raise_concern: { limit: 20, windowSeconds: 300 },
   create_watch: { limit: 10, windowSeconds: 3600 },
+  // Wisp W08: every link_entity is a durable row on the thread every later
+  // session is seeded with (cap 50 per thread).
+  link_entity: { limit: 20, windowSeconds: 300 },
   // Wisp W07: every launch_specialist admits a run or an Operator task (or a
   // client-facing bulk reply) that spends grant budget.
   launch_specialist: { limit: 10, windowSeconds: 3600 },

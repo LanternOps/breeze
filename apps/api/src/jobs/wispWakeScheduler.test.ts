@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
   chargeableUnderGrant: vi.fn(async (..._a: unknown[]): Promise<{ ok: true } | { ok: false; reason: 'budget_exhausted' }> => ({ ok: true })),
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
   captureException: vi.fn(),
+  reconcilePartnerDisabled: vi.fn(async (..._a: unknown[]) => ({ paused: 0, resumed: 0 })),
 }));
 
 vi.mock('../db', async () => {
@@ -89,6 +90,9 @@ vi.mock('../services/wisp/wake', async (importOriginal) => {
 });
 vi.mock('../services/wisp/grants', () => ({ pauseGrant: h.pauseGrant, resumeGrant: h.resumeGrant }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
+vi.mock('../services/wisp/partnerSettings', () => ({
+  reconcilePartnerDisabled: (...a: unknown[]) => { h.order.push('reconcilePartnerDisabled'); return h.reconcilePartnerDisabled(...a); },
+}));
 vi.mock('../services/entitlements', () => ({ hasEntitlement: h.hasEntitlement }));
 vi.mock('../services/wisp/watches', () => ({
   claimDueWatches: (...a: unknown[]) => { h.order.push('claimDueWatches'); return h.claimDueWatches(...a); },
@@ -140,6 +144,8 @@ type Fixtures = {
   watchGrants?: Array<{ id: string; partner_id: string; current_revision_id: string | null }>;
   orgs?: Array<{ id: string; name: string }>;
   lastAssessed?: Array<{ org_id: string; last_assessed_at: string | null }>;
+  /** Partners whose grants disagree with their Wisp switch (w00 A35). */
+  partnerSwitch?: Array<{ partner_id: string }>;
 };
 
 function useFixtures(f: Fixtures) {
@@ -153,6 +159,7 @@ function useFixtures(f: Fixtures) {
     if (/FROM wisp_grants\s+WHERE id IN/.test(text)) return f.watchGrants ?? [];
     if (/SELECT id, name\s+FROM organizations/.test(text)) return f.orgs ?? [];
     if (/max\(finished_at\)/.test(text)) return f.lastAssessed ?? [];
+    if (/wisp_partner_nudge_settings/.test(text)) return f.partnerSwitch ?? [];
     throw new Error(`unrouted statement: ${text}`);
   };
 }
@@ -183,6 +190,7 @@ beforeEach(() => {
   h.getRepeatableJobs.mockImplementation(async () => []);
   h.chargeableUnderGrant.mockImplementation(async () => ({ ok: true }));
   h.notifyBudgetExhaustedOnce.mockImplementation(async () => true);
+  h.reconcilePartnerDisabled.mockImplementation(async () => ({ paused: 0, resumed: 0 }));
 });
 
 describe('processWakeTick', () => {
@@ -606,6 +614,80 @@ const wm = vi.hoisted(() => ({
 }));
 vi.mock('../services/wispMetrics', () => wm);
 
+describe('processWakeTick — partner enable switch (w00 A35)', () => {
+  it('ONE query finds the partners whose grants disagree with their switch, then reconciles each', async () => {
+    useFixtures({ partnerSwitch: [{ partner_id: P1 }, { partner_id: P2 }] });
+    h.reconcilePartnerDisabled
+      .mockResolvedValueOnce({ paused: 2, resumed: 0 })
+      .mockResolvedValueOnce({ paused: 0, resumed: 1 });
+    const result = await processWakeTick(NOW);
+
+    const finds = statements(/wisp_partner_nudge_settings/);
+    expect(finds).toHaveLength(1);
+    const q = finds[0]!.text;
+    // A missing settings row means enabled.
+    expect(q).toMatch(/LEFT JOIN wisp_partner_nudge_settings/);
+    expect(q).toMatch(/COALESCE\(s\.enabled, true\) = false AND g\.status = 'active'/);
+    expect(q).toMatch(/COALESCE\(s\.enabled, true\) = true AND g\.status = 'paused' AND g\.paused_reason = 'partner_disabled'/);
+    expect(q).toMatch(/expires_at > \$\d+::timestamptz/);
+    expect(q).not.toMatch(/user_paused|entitlement_lost/);
+    expect(finds[0]!.params).toContain(NOW.toISOString());
+
+    expect(h.reconcilePartnerDisabled).toHaveBeenCalledTimes(2);
+    expect(h.reconcilePartnerDisabled).toHaveBeenNthCalledWith(1, P1, NOW);
+    expect(h.reconcilePartnerDisabled).toHaveBeenNthCalledWith(2, P2, NOW);
+    expect(result.grantsPaused).toBe(2);
+    expect(result.grantsResumed).toBe(1);
+  });
+
+  it('runs after the entitlement reconcile (an entitlement resume of a disabled partner is re-paused in the same tick) and before the floor ticks', async () => {
+    useFixtures({
+      partnerSwitch: [{ partner_id: P1 }],
+      due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
+      orgs: [{ id: O1, name: 'A' }],
+    });
+    await processWakeTick(NOW);
+    const ent = h.executes.findIndex((e) => /paused_reason = 'entitlement_lost'/.test(e.text));
+    const sw = h.executes.findIndex((e) => /wisp_partner_nudge_settings/.test(e.text));
+    const due = h.executes.findIndex((e) => /last_floor_tick_at <=/.test(e.text));
+    expect(ent).toBeGreaterThanOrEqual(0);
+    expect(sw).toBeGreaterThan(ent);
+    expect(due).toBeGreaterThan(sw);
+    expect(h.order.indexOf('reconcilePartnerDisabled')).toBeLessThan(h.order.indexOf('stopWatchesForInactiveGrants'));
+  });
+
+  it('no partner needs work ⇒ no reconcile call', async () => {
+    await processWakeTick(NOW);
+    expect(statements(/wisp_partner_nudge_settings/)).toHaveLength(1);
+    expect(h.reconcilePartnerDisabled).not.toHaveBeenCalled();
+  });
+
+  it('one partner failing is logged and reported; the next partner still reconciles', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    useFixtures({ partnerSwitch: [{ partner_id: P1 }, { partner_id: P2 }] });
+    const boom = new Error('reconcile failed');
+    h.reconcilePartnerDisabled.mockRejectedValueOnce(boom).mockResolvedValueOnce({ paused: 1, resumed: 0 });
+    const result = await processWakeTick(NOW);
+    expect(h.reconcilePartnerDisabled).toHaveBeenCalledWith(P2, NOW);
+    expect(result.grantsPaused).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'reconcile_partner_disabled' });
+    err.mockRestore();
+  });
+
+  it('a failing finder query is its own section: later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const base = h.route;
+    h.route = (text, params) => {
+      if (/wisp_partner_nudge_settings/.test(text)) throw new Error('finder boom');
+      return base(text, params);
+    };
+    await processWakeTick(NOW);
+    expect(err.mock.calls.some((c) => String(c[0]).includes('reconcilePartnerDisabled'))).toBe(true);
+    expect(h.stopWatchesForInactiveGrants).toHaveBeenCalled();
+    err.mockRestore();
+  });
+});
+
 describe('processWakeTick metrics', () => {
   it('sets wisp_grants_active to the active grants left after the reconcile (no extra query)', async () => {
     wm.setWispGrantsActive.mockClear();
@@ -619,6 +701,20 @@ describe('processWakeTick metrics', () => {
     h.hasEntitlement.mockImplementation(async (partnerId: unknown) => partnerId === P2);
     await processWakeTick(NOW);
     // G1 + G3 paused (P1 lost the entitlement), G2 resumed => 1 active.
+    expect(wm.setWispGrantsActive).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('the partner-switch reconcile adjusts the gauge by what it paused and resumed', async () => {
+    wm.setWispGrantsActive.mockClear();
+    useFixtures({
+      reconcile: [
+        { id: G1, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G3, partner_id: P2, status: 'active', paused_reason: null },
+      ],
+      partnerSwitch: [{ partner_id: P2 }],
+    });
+    h.reconcilePartnerDisabled.mockResolvedValueOnce({ paused: 1, resumed: 0 });
+    await processWakeTick(NOW);
     expect(wm.setWispGrantsActive).toHaveBeenCalledExactlyOnceWith(1);
   });
 });

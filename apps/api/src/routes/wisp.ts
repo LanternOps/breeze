@@ -13,6 +13,9 @@
  *
  *   /thread/*                       → W04 thread routes (routes/wispThreads.ts)
  *   /concerns/*, /watches/*         → W05 triage routes (routes/wispConcerns.ts, routes/wispWatches.ts)
+ *   /partner-settings               → W08 partner enable switch (routes/wispPartnerSettings.ts; w00 A35).
+ *                                     No gate below consults the switch: a disabled-but-entitled
+ *                                     partner still reaches it to turn Wisp back on.
  *
  * Gates, in order, on EVERY route including /thread/*, /concerns/*, /watches/*: authMiddleware → 404
  * while !wispEnabled() (read per request; the flag wins over the entitlement)
@@ -48,8 +51,10 @@ import {
 } from '../services/wisp/grants';
 import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
+import { wispThreadLinkRoutes } from './wispThreadLinks';
 import { wispWatchesRoutes } from './wispWatches';
 import { wispNudgePreferenceRoutes, wispNudgeSettingsRoutes } from './wispNudgePreferences';
+import { wispPartnerSettingsRoutes } from './wispPartnerSettings';
 
 /** Field-by-field wire shape: never `{...row}`, never the ceiling snapshot or factor proof. */
 export type WispGrantDto = {
@@ -131,6 +136,9 @@ function errorResponse(c: Context, err: unknown): Response {
     // middleware (W04) changes no client contract.
     case 'entitlement_required':
       return c.json({ code: 'entitlement_required', error: ENTITLEMENTS.wisp.label, featureKey: 'wisp' }, 403);
+    // W08 (w00 A35): governance switch, not the commercial entitlement.
+    case 'partner_disabled':
+      return c.json({ error: err.message, code: 'PARTNER_DISABLED' }, 403);
     case 'entitlement_check_failed':
       c.header('Retry-After', '30');
       return c.json({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable', featureKey: 'wisp' }, 503);
@@ -274,9 +282,13 @@ wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settin
 
 // W04: inherits every gate above (registered after the use('*') chain).
 wispRoutes.route('/thread', wispThreadRoutes);
+// W08 (w00 A35): GET/POST/DELETE /thread/:id/links — same gates, same ownership.
+wispRoutes.route('/thread', wispThreadLinkRoutes);
 // W05: same inheritance.
 wispRoutes.route('/concerns', wispConcernsRoutes);
 wispRoutes.route('/watches', wispWatchesRoutes);
 // W06: same inheritance.
 wispRoutes.route('/nudge-preferences', wispNudgePreferenceRoutes);
 wispRoutes.route('/nudge-settings', wispNudgeSettingsRoutes);
+// W08 (w00 A35): same inheritance.
+wispRoutes.route('/partner-settings', wispPartnerSettingsRoutes);

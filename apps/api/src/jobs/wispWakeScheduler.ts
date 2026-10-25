@@ -10,6 +10,13 @@
  *         lookup per distinct partner. W02's reconciler leaves this reason
  *         alone (W02 cannot import W01); no other paused_reason — above all
  *         `user_paused` (w00 A29) — is ever touched here.
+ *      1b. reconcilePartnerSwitches — w00 A35 (W08): a partner whose Wisp
+ *         switch is off has its active grants paused `partner_disabled`; one
+ *         switched back on has exactly those grants resumed. Runs AFTER (1)
+ *         so a grant (1) just resumed for a still-disabled partner is paused
+ *         again before the floor ticks. Every pause is onlyFromActive and
+ *         every resume a CAS on its own reason, so (1) and (1b) never move a
+ *         grant the other paused.
  *      2. stopWatchesForInactiveGrants (W05a; it sends the one orphan notice).
  *      3. floor ticks — every active grant whose last_floor_tick_at is NULL or
  *         older than floor_tick_minutes is claimed with a compare-and-set, and
@@ -45,6 +52,7 @@ import { enqueueAssessment } from '../services/wisp/assessment';
 import { assessableOrgIds } from '../services/wisp/assessableOrgs';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce } from '../services/wisp/budget';
 import { pauseGrant, resumeGrant } from '../services/wisp/grants';
+import { reconcilePartnerDisabled } from '../services/wisp/partnerSettings';
 import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
@@ -159,9 +167,38 @@ export async function reconcileEntitlements(now: Date): Promise<{ paused: number
   return { paused, resumed, active: active + resumed };
 }
 
-// A35 reconcilePartnerDisabled goes here (wisp_partner_settings.enabled = false
-// ⇒ pauseGrant(id, 'partner_disabled'); true again ⇒ resume; skips user_paused)
-// once W08's partner settings column exists.
+/**
+ * w00 A35 partner enable switch. ONE query finds the partners whose grants
+ * disagree with their switch — disabled (enabled = false) with an active
+ * grant, or enabled (or no settings row: enabled by default) with a grant
+ * paused `partner_disabled` — then reconcilePartnerDisabled per partner. A
+ * partner that fails is logged, reported and retried on the next tick.
+ */
+export async function reconcilePartnerSwitches(now: Date): Promise<{ paused: number; resumed: number }> {
+  const nowIso = now.toISOString();
+  const partners = await sys(() => rows<{ partner_id: string }>(sql`
+    SELECT DISTINCT g.partner_id
+      FROM wisp_grants g
+      LEFT JOIN wisp_partner_nudge_settings s ON s.partner_id = g.partner_id
+     WHERE g.expires_at > ${nowIso}::timestamptz
+       AND ((COALESCE(s.enabled, true) = false AND g.status = 'active')
+         OR (COALESCE(s.enabled, true) = true AND g.status = 'paused' AND g.paused_reason = 'partner_disabled'))
+     ORDER BY g.partner_id`), 'wisp-wake-reconcile-partner-switch');
+
+  let paused = 0;
+  let resumed = 0;
+  for (const { partner_id: partnerId } of partners) {
+    try {
+      const r = await reconcilePartnerDisabled(partnerId, now);
+      paused += r.paused;
+      resumed += r.resumed;
+    } catch (err) {
+      console.error('[wisp-wake] reconcilePartnerDisabled: partner failed; retried next tick', { partnerId, error: errMessage(err) });
+      report(err, { op: 'reconcile_partner_disabled' });
+    }
+  }
+  return { paused, resumed };
+}
 
 type DueGrantRow = { id: string; partner_id: string; current_revision_id: string | null; last_floor_tick_text: string | null };
 
@@ -311,6 +348,12 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     result.grantsPaused = r.paused;
     result.grantsResumed = r.resumed;
     activeGrants = r.active;
+  });
+  await section('reconcilePartnerDisabled', async () => {
+    const r = await reconcilePartnerSwitches(now);
+    result.grantsPaused += r.paused;
+    result.grantsResumed += r.resumed;
+    if (activeGrants !== null) activeGrants = activeGrants - r.paused + r.resumed;
   });
   await section('stopWatchesForInactiveGrants', async () => {
     result.watchesStopped = (await stopWatchesForInactiveGrants(now)).stopped;

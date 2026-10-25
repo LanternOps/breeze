@@ -18,10 +18,13 @@ import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadSessions, wispThreads, type WispThreadRow } from '../../db/schema/wispThreads';
+import { WISP_LINK_LABEL_MAX, type WispThreadLink } from '@breeze/shared';
 import { sanitizeUntrustedText, wrapUntrustedData } from '../aiInputSanitizer';
+import { captureException } from '../sentry';
 import { assertWithinCeiling, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { recallForGrant, renderMemoryForPrompt } from './memoryBroker';
 import { attachmentSeedLines, listThreadAttachments } from './threadAttachments';
+import { listLinks } from './threadLinks';
 import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
 
 export type WispThread = {
@@ -52,6 +55,55 @@ const SEED_RECALL_LIMIT = 40;
 const SEED_PARTNER_RECALL_LIMIT = 20;
 /** organizations.name is tenant-entered text; it never needs more. */
 const FOCUS_NAME_MAX_CHARS = 200;
+/** W08: linked objects in the seed — at most this many lines AND this many UTF-8 bytes of lines. */
+const SEED_LINK_MAX_LINES = 50;
+const SEED_LINK_MAX_BYTES = 4096;
+/** An entity status is a short enum-ish string; a longer one is not a status. */
+const SEED_LINK_STATUS_MAX_CHARS = 40;
+const SEED_LINKS_HEADER = "Linked objects (by handle; call the object's own read tool for detail):";
+
+/**
+ * W08 Task 5: the thread's VISIBLE links, one line each by handle — kind,
+ * label, status, id, org — never the record body or page link. The links are
+ * re-resolved by `listLinks` in seed mode (no caller: the ceiling decides).
+ * Lines are newest first and dropped whole past 50 lines / 4 KB; '' when
+ * nothing is visible. Labels are tenant text: sanitized here and fenced.
+ */
+function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
+  const lines: string[] = [];
+  let bytes = 0;
+  for (const link of links) {
+    if (lines.length >= SEED_LINK_MAX_LINES) break;
+    const label = sanitizeUntrustedText(link.label, WISP_LINK_LABEL_MAX, flags).replace(/\s+/g, ' ');
+    const status = link.status === null
+      ? ''
+      : ` (status ${sanitizeUntrustedText(link.status, SEED_LINK_STATUS_MAX_CHARS, flags).replace(/\s+/g, ' ')})`;
+    const line = `- ${link.ref.kind} "${label}"${status} id=${link.ref.id} org=${link.ref.orgId ?? 'partner'}`;
+    const cost = Buffer.byteLength(line, 'utf8') + (lines.length > 0 ? 1 : 0);
+    if (bytes + cost > SEED_LINK_MAX_BYTES) break;
+    lines.push(line);
+    bytes += cost;
+  }
+  if (lines.length === 0) return '';
+  const held = links.length - lines.length;
+  const more = held > 0 ? `\n(${held} more linked objects not shown; call list_links)` : '';
+  return `${SEED_LINKS_HEADER}\n${wrapUntrustedData('wisp_thread_links', lines.join('\n'), flags)}${more}`;
+}
+
+/**
+ * The seed's link section, or '' — a failure to list links (a resolver bug, an
+ * entity table read) is captured and leaves the rest of the seed intact; the
+ * thread still works without its links.
+ */
+async function linkSeedSection(threadId: string, ceiling: GrantCeiling, flags: string[]): Promise<string> {
+  try {
+    return renderLinkSection(await listLinks({ ceiling }, threadId), flags);
+  } catch (err) {
+    console.error(`[wisp] seed: listing links of thread ${threadId} failed; omitting the section`, err);
+    captureException(err, undefined, { threadId, grantId: ceiling.grantId, op: 'wisp.seed_links' });
+    return '';
+  }
+}
 
 function toThread(row: WispThreadRow): WispThread {
   return {
@@ -151,6 +203,7 @@ export async function updateThreadSummary(threadId: string, summary: string): Pr
  *   Focus: <org name>                              (focused threads only)
  *   <wisp_thread_summary fence>                    (non-empty summary only)
  *   <wisp_thread_attachments fence>                (live attachments only, by handle)
+ *   Linked objects …: <wisp_thread_links fence>    (visible links only, by handle; W08)
  *   <memory>                                       (focused: user+org for the focus, then partner;
  *                                                   unfocused: one call, grant org or none)
  *
@@ -193,6 +246,9 @@ export async function seedContextForSession(threadId: string, ceiling: GrantCeil
       // Labels are user text, hence the fence; the model reads bytes by handle (read_artifact).
       if (lines !== '') parts.push(wrapUntrustedData('wisp_thread_attachments', lines, flags));
     }
+
+    const links = await linkSeedSection(threadId, ceiling, flags);
+    if (links !== '') parts.push(links);
 
     if (thread.focusOrgId !== null) {
       // Org-private blocks belong to the focus, never to a partner-level answer (spec §8.3).
