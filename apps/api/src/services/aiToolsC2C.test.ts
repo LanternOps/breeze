@@ -234,6 +234,8 @@ function prepareHandlerMocks(toolName: string) {
   }
 }
 
+const CONNECTION_FOR_W03 = '77777777-7777-4777-8777-777777777777';
+
 describe('registerC2CTools', () => {
   let toolMap: Map<string, AiTool>;
 
@@ -354,6 +356,34 @@ describe('aiToolsC2C handlers', () => {
       configId: CONFIG_ID,
       auth,
     });
+  });
+
+  // W03-D11 (#6757, quorum QW4): the connection and the items are each
+  // org-scoped, so a multi-org caller could pair org A's items with org B's
+  // connection. The route binds both to one org; the tool must too.
+  it('refuses a target connection outside the items\' org (W03-D11)', async () => {
+    const OTHER_ORG = '99999999-9999-4999-8999-999999999999';
+    mockSelectSequence([
+      [{ id: CONNECTION_FOR_W03, orgId: OTHER_ORG }],
+      [{ id: ITEM_ID, orgId: ORG_ID, configId: CONFIG_ID }],
+    ]);
+    const result = JSON.parse(await toolMap.get('restore_c2c_items')!.handler(
+      { itemIds: [ITEM_ID], targetConnectionId: CONNECTION_FOR_W03 }, makeAuth(),
+    ));
+    expect(result.error).toBe('Target connection not found or access denied');
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('accepts a target connection in the items\' org (W03-D11)', async () => {
+    mockSelectSequence([
+      [{ id: CONNECTION_FOR_W03, orgId: ORG_ID }],
+      [{ id: ITEM_ID, orgId: ORG_ID, configId: CONFIG_ID }],
+    ]);
+    vi.mocked(db.insert).mockReturnValueOnce(createInsertChain([{ id: JOB_ID, status: 'pending' }]) as any);
+    const result = JSON.parse(await toolMap.get('restore_c2c_items')!.handler(
+      { itemIds: [ITEM_ID], targetConnectionId: CONNECTION_FOR_W03 }, makeAuth(),
+    ));
+    expect(result.error).toBeUndefined();
   });
 
   it('persists restore kind and the actual AI run subject before enqueue', async () => {

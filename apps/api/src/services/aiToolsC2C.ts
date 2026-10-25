@@ -384,16 +384,18 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
       const itemIds = Array.isArray(input.itemIds) ? input.itemIds.filter((value): value is string => typeof value === 'string') : [];
       if (itemIds.length === 0) return JSON.stringify({ error: 'itemIds is required' });
 
+      let targetConnectionOrgId: string | null = null;
       if (typeof input.targetConnectionId === 'string') {
         const connectionConditions: SQL[] = [eq(c2cConnections.id, input.targetConnectionId)];
         const cc = orgWhere(auth, c2cConnections.orgId);
         if (cc) connectionConditions.push(cc);
         const [connection] = await db
-          .select({ id: c2cConnections.id })
+          .select({ id: c2cConnections.id, orgId: c2cConnections.orgId })
           .from(c2cConnections)
           .where(and(...connectionConditions))
           .limit(1);
         if (!connection) return JSON.stringify({ error: 'Target connection not found or access denied' });
+        targetConnectionOrgId = connection.orgId;
       }
 
       const itemConditions: SQL[] = [inArray(c2cBackupItems.id, itemIds)];
@@ -414,6 +416,13 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
       const configIds = new Set(items.map((item) => item.configId));
       if (configIds.size > 1) {
         return JSON.stringify({ error: 'All items must belong to the same C2C backup configuration' });
+      }
+      // W03-D11 (#6757, quorum QW4): the destination must be in the items'
+      // org, as on POST /c2c/restore. Each lookup above is org-scoped on its
+      // own, so a multi-org caller could otherwise pair two orgs. Same message
+      // as a missing connection: never reveal that it exists elsewhere.
+      if (targetConnectionOrgId !== null && targetConnectionOrgId !== items[0]!.orgId) {
+        return JSON.stringify({ error: 'Target connection not found or access denied' });
       }
 
       const now = new Date();
