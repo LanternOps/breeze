@@ -82,7 +82,7 @@ import {
   CREATE_STEP, CREATED_GOOGLE_ID, CREATED_M365_ID, FAKE_PASSWORD, GOOGLE_EMAIL, HOLDER_M365_ID, PROVISION_STEP,
   SKU_PART, UPN,
   admit, approvalFor, approvals, approve, bindFakeProviders, childIntents, completeManualCreateGoogle, contactLinks,
-  contactTargets, driveToCreateProposed, driveToProvisionProposed, effectsFor, finishFromProvisionApproved,
+  contactTargets, driveToCreateProposed, driveToProvisionProposed, effectsFor, events, finishFromProvisionApproved,
   manualItems, mergeTaskOrgAway, operations, pgCode, planIntents, plaintextLeaks, planKeys, readSteps, readTask,
   releaseInFlight, resetFakes, seedTenant, system, targetAccounts, taskTicketId, tickAs, ticketCommentsFor, wake, walk, world,
   type Admitted,
@@ -512,6 +512,36 @@ describe('identity_onboarding end to end (R2a)', () => {
     expect(await childIntents(a)).toHaveLength(dispatched);
     const foreign = await system(() => db.select().from(actionIntents).where(eq(actionIntents.orgId, other.id)));
     expect(foreign).toHaveLength(0);
+  }, 180_000);
+
+  runDb('NEW. an M365 create that succeeded but cannot be read back hands off at resolve_accounts: no bump, nothing frozen', async () => {
+    const t = await seedTenant();
+    const a = await driveToCreateProposed(t, { google: true });
+    await approve(a, CREATE_STEP);
+    await walk(a, CREATE_STEP);
+    expect(world().m365.createCalls).toBe(1);
+    const r = (await readTask(a)).revision;
+    // From here on, Microsoft 365 refuses the read-back of the created user (a definitive refusal).
+    const realRead = fake.h.m365Read!;
+    fake.h.m365Read = async (orgId: string, action: { type: string }) => (action.type === 'm365.user.get'
+      ? { ok: false, code: 'graph_forbidden', message: 'insufficient privileges' }
+      : realRead(orgId, action));
+    try {
+      await completeManualCreateGoogle(a); // Google is created by hand and ticked
+      expect((await readTask(a)).currentStepKey).toBe('resolve_accounts');
+      await wake(a); // resolve_accounts
+    } finally {
+      fake.h.m365Read = realRead;
+    }
+    const task = await readTask(a);
+    expect(task).toMatchObject({ state: 'handed_off', currentStepKey: 'resolve_accounts', revision: r });
+    expect(task.outcomeDetail).toContain('m365');
+    expect(task.outcomeDetail).toContain('account_read_failed');
+    expect(await targetAccounts(a), 'nothing frozen').toHaveLength(0);
+    const [ct] = await contactTargets(a);
+    expect(await contactLinks(ct!.contactId!)).toHaveLength(0);
+    expect((await approvalFor(a, CREATE_STEP))!.state, 'the creation approval is not superseded').toBe('approved');
+    expect((await events(a)).map((e) => e.eventType)).not.toContain('plan_revision_bumped');
   }, 180_000);
 
   runDb('NEW. a UPN collision followed by ticked manual items never freezes the existing holder\'s account', async () => {

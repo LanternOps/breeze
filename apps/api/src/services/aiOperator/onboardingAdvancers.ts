@@ -115,6 +115,7 @@ async function ops() {
     resolveCreatedAccounts: accounts.resolveCreatedAccounts,
     commitOnboardingStageTransition: accounts.commitOnboardingStageTransition,
     OnboardingStageTransitionAbort: accounts.OnboardingStageTransitionAbort,
+    isExpectedAbsentReason: accounts.isExpectedAbsentReason,
     m365Read: discovery.m365Read,
     M365ReadFailed: discovery.M365ReadFailed,
     rethrowIfTransientM365: discovery.rethrowIfTransientM365,
@@ -806,6 +807,18 @@ export async function advanceResolveAccounts(a: StepAdvancerArgs): Promise<strin
     return handOff(o, a, `resolve_accounts: ${res.reason}: ${res.detail}`.slice(0, 1000),
       `Breeze could not confirm any account this onboarding created, so it did not go on to licences and groups. `
       + `What is left: ${left}. Finish the onboarding by hand, or start a new task once the accounts are sorted out.`.slice(0, 2000), cp);
+  }
+  // A provider whose create was expected but did not resolve may hold an
+  // account Breeze cannot confirm. Bumping would drop its provisioning and let
+  // verify_outcome call it "not created"; hand off instead, naming it.
+  const unconfirmed = res.unresolved.filter((u) => !o.isExpectedAbsentReason(u.reason));
+  if (unconfirmed.length > 0) {
+    const named = unconfirmed
+      .map((u) => `${u.provider === 'm365' ? 'Microsoft 365' : 'Google Workspace'} (${u.provider}: ${u.reason}: ${u.detail})`)
+      .join('; ');
+    return handOffAfterStageOne(o, a, clip(
+      `resolve_accounts could not confirm ${named}; its account may already exist and must be checked `
+      + 'before anything is created again', 1000), cp);
   }
   const next = successorOf(o, a.recipe, 'provision_effects', cp, loaded.facts);
   if (!next.ok) return fail(o, a, next.detail, cp);

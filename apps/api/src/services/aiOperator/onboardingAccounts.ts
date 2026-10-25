@@ -123,6 +123,31 @@ export type UnresolvedAccountReason =
   /** Google: no usable connection for this org. */
   | 'connection_unavailable';
 
+/**
+ * Whether an unresolved reason means this task never created an account at
+ * that provider (`true`: expected absent, the transition may go on without
+ * it) or that one MAY exist and could not be confirmed (`false`: the caller
+ * must hand off, never bump, so nothing re-creates it). Every value is
+ * classified here; a new reason does not compile until it is.
+ */
+export const UNRESOLVED_REASON_EXPECTED_ABSENT: Readonly<Record<UnresolvedAccountReason, boolean>> = {
+  upn_collision: true,
+  email_collision: true,
+  collision_unchecked: true,
+  create_not_planned: true,
+  create_operation_missing: false,
+  create_result_unproven: false,
+  account_not_found: false,
+  account_mismatch: false,
+  account_read_failed: false,
+  manual_item_not_ticked: false,
+  connection_unavailable: false,
+};
+
+export function isExpectedAbsentReason(reason: UnresolvedAccountReason): boolean {
+  return UNRESOLVED_REASON_EXPECTED_ABSENT[reason] === true;
+}
+
 export interface UnresolvedAccount {
   provider: OnboardingAccountProvider;
   reason: UnresolvedAccountReason;

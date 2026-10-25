@@ -610,6 +610,78 @@ describe('resolve_accounts (B2 order, B7)', () => {
     expect(taskWrites()[1]!.set.currentStepKey).toBe('provision_effects');
   });
 
+  it.each(['email_collision', 'collision_unchecked', 'create_not_planned'] as const)(
+    '(pin) an expected-absent unresolved provider (%s) still bumps: nothing was created there',
+    async (reason) => {
+      h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
+      h.resolveCreatedAccounts.mockResolvedValue({ ...RESOLVED, accounts: { m365: S2.accounts.m365, google: null }, unresolved: [{ provider: 'google', reason, detail: 't' }] });
+      h.commitOnboardingStageTransition.mockResolvedValue({ ...OUT, frozen: ['m365'] });
+      await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+      expect(h.commitOnboardingStageTransition).toHaveBeenCalledTimes(1);
+      expect(h.settle).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['account_read_failed', 'account_mismatch'] as const)(
+    'M365 create succeeded but its read-back is %s while Google resolves: hands off naming M365, NO bump, no leased write',
+    async (reason) => {
+      h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
+      h.resolveCreatedAccounts.mockResolvedValue({
+        ...RESOLVED, accounts: { m365: null, google: S2.accounts.google },
+        unresolved: [{ provider: 'm365', reason, detail: 'read-back refused' }],
+      });
+      h.q.ai_operator_operations = [[]];
+      const out = await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+      expect(out).toContain('handed off');
+      expect(h.commitOnboardingStageTransition).not.toHaveBeenCalled();
+      expect(taskWrites()).toEqual([]);
+      const s = settled()[0]!;
+      expect(s).toMatchObject({ event: 'hand_off', outcome: 'unresolved' });
+      expect(s.detail).toContain('m365');
+      expect(s.detail).toContain(reason);
+      expect(s.handoffSummary).toContain('Microsoft 365');
+      expect(s.handoffSummary).toMatch(/may (already )?exist/);
+      expect(s.handoffSummary).toMatch(/before (anything is|creating anything)/);
+    },
+  );
+
+  it('Google ticked but account_not_found while M365 resolves: hands off naming Google, NO bump', async () => {
+    h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
+    h.resolveCreatedAccounts.mockResolvedValue({
+      ...RESOLVED, accounts: { m365: S2.accounts.m365, google: null },
+      unresolved: [{ provider: 'google', reason: 'account_not_found', detail: 'no user' }],
+    });
+    await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+    expect(h.commitOnboardingStageTransition).not.toHaveBeenCalled();
+    expect(taskWrites()).toEqual([]);
+    const s = settled()[0]!;
+    expect(s).toMatchObject({ event: 'hand_off' });
+    expect(s.detail).toContain('account_not_found');
+    expect(s.handoffSummary).toContain('Google Workspace');
+  });
+
+  it('…an unexpected-absent provider with an UNSETTLED operation hands off unknown_effect', async () => {
+    h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
+    h.resolveCreatedAccounts.mockResolvedValue({
+      ...RESOLVED, accounts: { m365: null, google: S2.accounts.google },
+      unresolved: [{ provider: 'm365', reason: 'create_result_unproven', detail: 'pending' }],
+    });
+    h.q.ai_operator_operations = [[{ id: 'op-1' }]];
+    await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+    expect(h.commitOnboardingStageTransition).not.toHaveBeenCalled();
+    expect(settled()[0]).toMatchObject({ event: 'hand_off', outcome: 'unknown_effect' });
+  });
+
+  it('(pin of shipped behaviour) an operation_unsettled abort inside the transaction hands off with outcome unknown_effect', async () => {
+    h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
+    h.resolveCreatedAccounts.mockResolvedValue(RESOLVED);
+    h.commitOnboardingStageTransition.mockRejectedValue(new OnboardingStageTransitionAbort('operation_unsettled', 'op pending'));
+    const out = await advanceResolveAccounts(args('resolve_accounts', resolveCp()));
+    expect(out).toContain('handed off');
+    expect(h.settleStep).not.toHaveBeenCalled();
+    expect(settled()[0]).toMatchObject({ event: 'hand_off', outcome: 'unknown_effect', detail: expect.stringContaining('operation_unsettled') });
+  });
+
   it('a guard miss inside the transaction is the typed sentinel, caught OUTSIDE: nothing more is written, the task hands off', async () => {
     h.loadPlanningFacts.mockResolvedValue({ ok: true, facts: S1 });
     h.resolveCreatedAccounts.mockResolvedValue(RESOLVED);
