@@ -201,6 +201,13 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_ticket_forms: { limit: 40, windowSeconds: 300 },
   manage_ticket_response_templates: { limit: 40, windowSeconds: 300 },
   manage_time_suggestions: { limit: 40, windowSeconds: 300 },
+  // Full-control W07 (#6777): alert correlation + signal triage. Per tool, so reads share the budget.
+  // explain builds an evidence timeline from alerts and event logs (a few queries per call), so it
+  // is the one read worth a tighter shared cap; the writes cap a runaway ack/resolve/label loop.
+  get_alert_correlations: { limit: 60, windowSeconds: 300 },
+  manage_alert_correlations: { limit: 30, windowSeconds: 300 },
+  manage_device_anomalies: { limit: 40, windowSeconds: 300 },
+  reliability_feedback: { limit: 30, windowSeconds: 300 },
 };
 
 /**

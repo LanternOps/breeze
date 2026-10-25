@@ -145,6 +145,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_ticket_inbox: ['list'],
   manage_ticket_attachments: ['read_content', 'attach_from_artifact'],
   manage_time_suggestions: ['confirm', 'dismiss', 'undo'],
+  // Full-control W07 (#6777): alert correlation + signal triage. Group ack/resolve is the
+  // manage_alerts:acknowledge/resolve precedent over the members of ONE organization's group;
+  // feedback / rca_feedback are ML labels; anomaly dismiss/resolve set a status on one row.
+  // `promote` is NOT here: it raises a real alert (TIER3_SUPERVISED_ACTIONS).
+  manage_alert_correlations: ['acknowledge_group', 'resolve_group', 'acknowledge_related', 'feedback', 'rca_feedback'],
+  manage_device_anomalies: ['dismiss', 'resolve'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -358,6 +364,14 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_ticket_forms: ['list', 'available'],
   manage_ticket_response_templates: ['list'],
   manage_time_suggestions: ['list'],
+  // Full-control W07 (#6777): the anomaly list is a read of metric rows (get_alert_correlations and
+  // the extra get_fleet_health actions are whole-tool reads, so they need no entry).
+  manage_device_anomalies: ['list'],
+  // The two whole-tool reads below are multiplexers with an `action` enum, so the tier-1
+  // write-action contract wants their (all-read) vocabulary declared. `get_fleet_health`'s
+  // default (no action) is the fleet list.
+  get_alert_correlations: ['groups', 'get', 'by_alert', 'links', 'analyze', 'evaluation', 'explain'],
+  get_fleet_health: ['list', 'history', 'offenders', 'evaluation', 'org_summary'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -527,6 +541,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_ticket_attachments: ['delete'],
   manage_ticket_forms: ['create', 'update', 'delete'],
   manage_ticket_response_templates: ['create', 'update', 'delete'],
+  // Full-control W07 (#6777): promoting an anomaly raises a real alert and publishes alert.triggered,
+  // which reaches notification channels and ticket automation (spec Q2: reaches a person).
+  manage_device_anomalies: ['promote'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -834,6 +851,8 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_ticket_inbox: ['convert', 'dismiss'],
   manage_ticket_attachments: ['delete'],
   manage_ticket_forms: ['create', 'update'],
+  // Full-control W07 (#6777): see TIER3_ACTIONS.
+  manage_device_anomalies: ['promote'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -1414,6 +1433,26 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     dismiss: { resource: 'time_entries', action: 'write' },
     undo: { resource: 'time_entries', action: 'write' },
   },
+  // Full-control W07 (#6777) — per-action grants copied from each route (route-binding rows pin them).
+  // routes/alerts/correlations.ts + routes/alertTemplates/correlations.ts: every read is alerts:read.
+  get_alert_correlations: { resource: 'alerts', action: 'read' },
+  // acknowledge: requireAlertAcknowledge; resolve: requireAlertWrite; both feedback routes: requireAlertRead.
+  manage_alert_correlations: {
+    acknowledge_group: { resource: 'alerts', action: 'acknowledge' },
+    resolve_group: { resource: 'alerts', action: 'write' },
+    acknowledge_related: { resource: 'alerts', action: 'acknowledge' },
+    feedback: { resource: 'alerts', action: 'read' },
+    rca_feedback: { resource: 'alerts', action: 'read' },
+  },
+  // routes/devices/anomalies.ts: list is devices:read; the status PATCH (all three statuses) is alerts:write.
+  manage_device_anomalies: {
+    list: { resource: 'devices', action: 'read' },
+    dismiss: { resource: 'alerts', action: 'write' },
+    resolve: { resource: 'alerts', action: 'write' },
+    promote: { resource: 'alerts', action: 'write' },
+  },
+  // routes/reliability.ts POST /:deviceId/feedback is gated on devices:read (requireReliabilityRead).
+  reliability_feedback: { resource: 'devices', action: 'read' },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
   manage_invoices: {

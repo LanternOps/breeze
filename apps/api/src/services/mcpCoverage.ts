@@ -301,12 +301,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
   'aiOperatorTasks.ts': { gap: '#6780' },
-  'alertTemplates/correlations.ts': { gap: '#6777' },
+  'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
-  'alerts/correlations.ts': { gap: '#6777' },
+  'alerts/correlations.ts': { tools: ['get_alert_correlations', 'manage_alert_correlations'] }, // W07 (#6777)
   'alerts/delivery.ts': { tools: ['manage_delivery'] },
   'alerts/deliveryRails.ts': { tools: ['manage_delivery'] },
   'alerts/policies.ts': { tools: ['manage_delivery'] },
@@ -445,7 +445,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/agentRecovery.ts': { tools: ['trigger_agent_restart'] },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
-  'devices/anomalies.ts': { gap: '#6777' },
+  'devices/anomalies.ts': { tools: ['manage_device_anomalies'] }, // W07 (#6777): per-row anomalies; anomaly EPISODES (list/get/action) are not exposed yet
   'devices/billing.ts': { gap: '#6784' },
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
@@ -663,7 +663,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotes/lifecycle.ts': { tools: ['manage_quotes'] },
   'quotes/quotes.ts': { tools: ['list_quotes', 'get_quote', 'manage_quotes'] },
   'quotesPublic.ts': { exempt: 'portal' },
-  'reliability.ts': { gap: '#6777' },
+  'reliability.ts': { tools: ['get_fleet_health', 'reliability_feedback'] }, // W07 (#6777): list, history, offenders, evaluation, org summary, feedback; baseline create/clear stays human
   'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
   'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },

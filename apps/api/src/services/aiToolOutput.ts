@@ -1005,6 +1005,15 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_ticket_inbox: new Set(['subject', 'fromAddress', 'toAddress', 'error']),
   manage_ticket_attachments: new Set(['originalFilename', 'text']),
   manage_time_suggestions: new Set(['subject', 'hostname']),
+  // Full-control W07 (#6777). Alert title/message come from a rule match against endpoint-reported
+  // data; the RCA evidence timeline carries event-log text (`title`, `summary`, `message`) and
+  // metadata authored on the endpoint; a group's `rootCause`/`alerts` echo alert titles.
+  get_alert_correlations: new Set(['title', 'message', 'summary', 'label']),
+  // Reliability offender labels are service, hardware-source and process names reported by the
+  // device (`get_fleet_health` also returns them under `offenders`).
+  get_fleet_health: new Set(['label', 'detail']),
+  // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
+  manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

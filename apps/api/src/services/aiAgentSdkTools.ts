@@ -47,6 +47,7 @@ import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
+import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import {
@@ -642,6 +643,13 @@ export const TOOL_TIERS = {
   manage_ticket_forms: 1,
   manage_ticket_response_templates: 1,
   manage_time_suggestions: 1,
+  // Spec 2026-09-23 W07 (#6777): alert correlation + signal triage. Reads are tier 1; the correlation
+  // writes and the reliability label are tier 2 (a status or ML label on tenant-internal rows);
+  // manage_device_anomalies is a tier-1 multiplexer whose `promote` is supervised (aiGuardrails).
+  get_alert_correlations: 1,
+  manage_alert_correlations: 2,
+  manage_device_anomalies: 1,
+  reliability_feedback: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -2603,6 +2611,7 @@ export function buildBreezeSdkTools(
         trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
         issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
         includeTopIssues: z.boolean().optional(),
+        ...fleetHealthActionShape,
         ...pageZodShape(15, 100),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
@@ -3522,6 +3531,35 @@ export function buildBreezeSdkTools(
       registryDescription('manage_time_suggestions'),
       inputShape('manage_time_suggestions'),
       makeHandler('manage_time_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W07 (#6777): alert correlation + signal triage. Classes live in aiGuardrails.
+    tool(
+      'get_alert_correlations',
+      registryDescription('get_alert_correlations'),
+      inputShape('get_alert_correlations'),
+      makeHandler('get_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_alert_correlations',
+      registryDescription('manage_alert_correlations'),
+      inputShape('manage_alert_correlations'),
+      makeHandler('manage_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_anomalies',
+      registryDescription('manage_device_anomalies'),
+      inputShape('manage_device_anomalies'),
+      makeHandler('manage_device_anomalies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'reliability_feedback',
+      registryDescription('reliability_feedback'),
+      inputShape('reliability_feedback'),
+      makeHandler('reliability_feedback', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

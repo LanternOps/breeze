@@ -54,6 +54,7 @@ import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
+import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -580,6 +581,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...messagingToolSchemas,
   // Full-control W06 (#6776): PSA configuration + ticket operations.
   ...ticketOpsToolSchemas,
+  // Full-control W07 (#6777): alert correlation + signal triage.
+  ...alertTriageToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -1555,6 +1558,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
     issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
     includeTopIssues: z.boolean().optional(),
+    ...fleetHealthActionShape,
     ...pageZodShape(15, 100),
   }),
 
