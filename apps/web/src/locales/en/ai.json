@@ -647,6 +647,7 @@
       "offFailed": "Could not turn off Wisp",
       "refreshed": "Grant refreshed",
       "refreshFailed": "Could not refresh the grant",
+      "grantCheckFailed": "Couldn't check for your Wisp grant, so this conversation started as a Breeze AI chat.",
       "settingsSaved": "Wisp settings saved",
       "settingsFailed": "Could not save Wisp settings",
       "focusSet": "Wisp is now working on {{org}}",

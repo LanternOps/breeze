@@ -647,6 +647,7 @@
       "offFailed": "Wisp konnte nicht deaktiviert werden",
       "refreshed": "Berechtigung erneuert",
       "refreshFailed": "Die Berechtigung konnte nicht erneuert werden",
+      "grantCheckFailed": "Ihre Wisp-Berechtigung konnte nicht geprüft werden, daher wurde diese Unterhaltung als Breeze-AI-Chat gestartet.",
       "settingsSaved": "Wisp-Einstellungen gespeichert",
       "settingsFailed": "Wisp-Einstellungen konnten nicht gespeichert werden",
       "focusSet": "Wisp arbeitet jetzt für {{org}}",

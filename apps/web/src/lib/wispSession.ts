@@ -24,26 +24,58 @@ export function wispSessionOrgId(w: Pick<NonNullable<WispState>, 'focusOrgId' | 
   return w.focusOrgId ?? w.scopeOrgId ?? null;
 }
 
+/** A failed `GET /wisp/thread`, with the HTTP status when there was a response. */
+export class WispThreadError extends Error {
+  constructor(message: string, readonly status: number | null) {
+    super(message);
+    this.name = 'WispThreadError';
+  }
+}
+
+/**
+ * - `grant`: an active grant to start the session under.
+ * - `none`: the server answered that there is none for this caller — no
+ *   grant (404 no_active_grant), Wisp off (404), not entitled or no
+ *   permission (4xx), or a caller who cannot hold one (not partner scope).
+ * - `unknown`: no usable answer (5xx, 408/429, network, malformed body). The
+ *   caller must not treat this as "no grant": a session created plain is
+ *   plain for good.
+ */
+export type WispGrantLookup =
+  | { kind: 'grant'; grant: NonNullable<WispState> }
+  | { kind: 'none' }
+  | { kind: 'unknown' };
+
+/** A definitive server "no" for this caller, as opposed to no answer. */
+function isDefinitiveNo(err: unknown): boolean {
+  if (!(err instanceof WispThreadError) || err.status === null) return false;
+  return err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+}
+
 /**
  * The caller's active Wisp grant for the header org: the org's own grant
  * first, then a partner-wide one (the order the side panel restores a
- * session's grant in). Null when there is none, and whenever Wisp cannot
- * apply: an org-scoped (or tokenless) caller is not asked — grants are
- * partner-staff only — and a server that has Wisp off, an unentitled partner
- * or a failed read all answer "no grant", which leaves a plain chat.
+ * session's grant in). An org-scoped (or tokenless) caller is not asked —
+ * grants are partner-staff only.
  */
-export async function findActiveWispGrant(orgId: string | null): Promise<NonNullable<WispState> | null> {
+export async function findActiveWispGrant(orgId: string | null): Promise<WispGrantLookup> {
   try {
     const { getJwtClaims } = await import('./authScope');
-    if (getJwtClaims().scope !== 'partner') return null;
+    if (getJwtClaims().scope !== 'partner') return { kind: 'none' };
     const { fetchWispThread } = await import('./wispGrant');
     for (const scope of orgId ? [orgId, null] : [null]) {
-      const state = await fetchWispThread(scope).catch(() => null);
-      if (state?.status === 'active') return state;
+      try {
+        const state = await fetchWispThread(scope);
+        if (state.status === 'active') return { kind: 'grant', grant: state };
+      } catch (err) {
+        if (isDefinitiveNo(err)) continue;
+        console.warn('[wispSession] the Wisp grant lookup got no usable answer', { scope, err });
+        return { kind: 'unknown' };
+      }
     }
-    return null;
+    return { kind: 'none' };
   } catch (err) {
-    console.warn('[wispSession] could not look up the active Wisp grant; starting a plain chat', err);
-    return null;
+    console.warn('[wispSession] could not look up the active Wisp grant', err);
+    return { kind: 'unknown' };
   }
 }

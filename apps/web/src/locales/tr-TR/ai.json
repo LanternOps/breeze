@@ -647,6 +647,7 @@
       "offFailed": "Wisp kapatılamadı",
       "refreshed": "Yetki yenilendi",
       "refreshFailed": "Yetki yenilenemedi",
+      "grantCheckFailed": "Wisp yetkiniz kontrol edilemedi, bu yüzden bu konuşma bir Breeze AI sohbeti olarak başladı.",
       "settingsSaved": "Wisp ayarları kaydedildi",
       "settingsFailed": "Wisp ayarları kaydedilemedi",
       "focusSet": "Wisp artık {{org}} üzerinde çalışıyor",

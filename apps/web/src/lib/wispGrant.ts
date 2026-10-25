@@ -4,6 +4,7 @@
 import { fetchWithAuth } from '../stores/auth';
 import type { WispGrantStatus, WispState } from '../stores/aiStore';
 import { extractApiError } from './apiError';
+import { WispThreadError } from './wispSession';
 import { mintStepUpGrant, type StepUpReauth } from './mfaStepUp';
 import { pickReauthTier, type ReauthTier } from '../components/settings/StepUpPrompt';
 
@@ -103,10 +104,17 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
 
 /** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
-  const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread');
+  let res: Response;
+  try {
+    res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread');
+  } catch (err) {
+    throw new WispThreadError(err instanceof Error ? err.message : 'Could not open the Wisp thread.', null);
+  }
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(extractApiError(body, 'Could not open the Wisp thread.'));
+  // The status rides on the error so a caller can tell "no grant" (404) from no answer (5xx), #10142.
+  if (!res.ok) throw new WispThreadError(extractApiError(body, 'Could not open the Wisp thread.'), res.status);
   const state = wispStateFromThread(body);
-  if (!state) throw new Error('Could not open the Wisp thread.');
+  // A 2xx the panel cannot read is no answer, not "no grant".
+  if (!state) throw new WispThreadError('Could not open the Wisp thread.', null);
   return state;
 }

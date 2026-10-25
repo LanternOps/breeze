@@ -647,6 +647,7 @@
       "offFailed": "Impossible de désactiver Wisp",
       "refreshed": "Autorisation renouvelée",
       "refreshFailed": "Impossible de renouveler l’autorisation",
+      "grantCheckFailed": "Impossible de vérifier votre autorisation Wisp : cette conversation a donc démarré comme une conversation Breeze AI.",
       "settingsSaved": "Paramètres de Wisp enregistrés",
       "settingsFailed": "Impossible d’enregistrer les paramètres de Wisp",
       "focusSet": "Wisp travaille désormais sur {{org}}",
