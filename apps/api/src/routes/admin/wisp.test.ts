@@ -83,6 +83,16 @@ describe('admin Wisp overview routes', () => {
     expect(systemMock).not.toHaveBeenCalled();
   });
 
+  it.each([[null, 401], [false, 403]] as const)(
+    'with the flag off still answers auth=%s with %s — the gate runs first, so non-admins cannot probe the flag',
+    async (auth, status) => {
+      wispEnabledMock.mockReturnValue(false);
+      const res = await buildApp(auth).request('/admin/wisp/overview');
+      expect(res.status).toBe(status);
+      expect(await res.text()).not.toContain('wisp_disabled');
+    },
+  );
+
   it('404s with a distinguishable wisp_disabled body when wispEnabled() is false', async () => {
     wispEnabledMock.mockReturnValue(false);
     const app = buildApp(true);
