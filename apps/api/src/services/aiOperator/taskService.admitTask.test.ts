@@ -426,3 +426,30 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(h.calls).toEqual([]);
   });
 });
+
+describe('parseTaskCheckpointResult over the three-arm union (R2a Task 2)', () => {
+  const onboardingInput = {
+    displayName: 'Priya Raman',
+    m365: { userPrincipalName: 'priya@customer.example', mailNickname: 'priya', usageLocation: 'CA' },
+  };
+
+  it('parses a valid identity_onboarding row', () => {
+    const r = parseTaskCheckpointResult({ version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput });
+    expect(r.ok).toBe(true);
+  });
+
+  it('a row that CLAIMS identity_onboarding names the onboarding arm\'s failing path first', () => {
+    const r = parseTaskCheckpointResult({
+      version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput, onboardingWorkCursor: 99,
+    });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail.startsWith('onboardingWorkCursor: ')).toBe(true);
+  });
+
+  it('a row that does not claim identity_onboarding is not described by the onboarding arm', () => {
+    const r = parseTaskCheckpointResult({ version: 1, recipeInput: { foo: 1 } });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail).not.toContain('checkpointKind');
+    expect((r as { detail: string }).detail).not.toContain('displayName');
+  });
+});

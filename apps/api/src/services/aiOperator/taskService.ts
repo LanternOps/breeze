@@ -894,7 +894,14 @@ export function parseTaskCheckpointResult(
   // releases (4.6 picks the identity arm for a service-recovery row missing
   // its criterion, dropping the real problem). The arm with the fewest issues
   // leads (ties keep arm order), so the 400-char cap cuts the farther arms.
+  // An arm with a required `checkpointKind` literal (identity_onboarding, R2a)
+  // is described only for a row that claims that kind: any other row is not
+  // that arm's, and its complaints would crowd the real ones out of the cap.
+  const claimedKind = typeof value === 'object' && value !== null
+    ? (value as { checkpointKind?: unknown }).checkpointKind
+    : undefined;
   const perArm = taskCheckpointSchema.options
+    .filter((arm) => !('checkpointKind' in arm.shape) || arm.shape.checkpointKind.value === claimedKind)
     .map((arm) => arm.safeParse(value))
     .map((r) => (r.success ? [] : describeCheckpointIssues(r.error.issues, [])))
     .filter((lines) => lines.length > 0)

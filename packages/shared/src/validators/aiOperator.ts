@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AI_OPERATOR_TASK_STATES } from '../types/aiOperator';
 import { identityOffboardingInputSchema } from './aiOperatorIdentity';
+import { identityOnboardingInputSchema } from './aiOperatorOnboarding';
 
 /**
  * AI Operator task context carried into `createActionIntent` (#5205 W04,
@@ -296,15 +297,42 @@ export const identityOffboardingCheckpointSchema = taskCheckpointBaseSchema.exte
 export type IdentityOffboardingCheckpoint = z.infer<typeof identityOffboardingCheckpointSchema>;
 
 /**
+ * The `identity_onboarding` arm (Recipe Library W07 R2a, Amendment B3).
+ *
+ * A new arm, so `extend` and its key order are fine — no stored row predates
+ * it. No `criterion` (verified by its `verify_outcome` probe) and no
+ * `manualWorkCursor`: that key is the offboarding arm's discriminator, so this
+ * arm names its cursor apart and carries its own required `checkpointKind`.
+ */
+export const identityOnboardingCheckpointSchema = taskCheckpointBaseSchema.extend({
+  version: z.literal(TASK_CHECKPOINT_VERSION),
+  /** Required, no default: the arm's own discriminator (quorum Q5). New arm,
+   *  no stored row predates it; admission writes it. */
+  checkpointKind: z.literal('identity_onboarding'),
+  /** No `.transform()` in this schema (B.0 item 11), so the stored output re-parses. */
+  recipeInput: identityOnboardingInputSchema,
+  /** Next manual-work item index for the `manual_work` step. Named apart from
+   *  offboarding's `manualWorkCursor` ON PURPOSE: that key is the offboarding
+   *  arm's discriminator (`isIdentityOffboardingCheckpoint`). */
+  onboardingWorkCursor: z.number().int().min(0).max(64).default(0),
+  /** The revision `create_accounts` proposes at; written by `review`. */
+  createPlanRevision: z.number().int().min(0).nullable().default(null),
+}).strict();
+export type IdentityOnboardingCheckpoint = z.infer<typeof identityOnboardingCheckpointSchema>;
+
+/**
  * One arm per recipe shape. A stored row's arm is fixed by its shape: a
  * service-recovery row cannot lose its criterion, and an identity row cannot
- * grow one. Both arms and both `recipeInput` schemas are `.strict()`, so
- * neither arm can absorb the other's row. The service-recovery arm stays
- * FIRST: a stored SR row still resolves to it, byte-identically (1a-3).
+ * grow one. Every arm and every `recipeInput` schema is `.strict()`, so no
+ * arm can absorb another's row; the onboarding arm additionally requires its
+ * `checkpointKind` literal. The service-recovery arm stays FIRST: a stored SR
+ * row still resolves to it, byte-identically (1a-3). Onboarding is appended
+ * LAST (R2a).
  */
 export const taskCheckpointSchema = z.union([
   serviceRecoveryCheckpointSchema,
   identityOffboardingCheckpointSchema,
+  identityOnboardingCheckpointSchema,
 ]);
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
 
@@ -316,6 +344,12 @@ export function isServiceRecoveryCheckpoint(c: TaskCheckpoint): c is ServiceReco
 /** Narrow to the `identity_offboarding` arm. Never cast a checkpoint; narrow it. */
 export function isIdentityOffboardingCheckpoint(c: TaskCheckpoint): c is IdentityOffboardingCheckpoint {
   return !('criterion' in c) && 'manualWorkCursor' in c;
+}
+
+/** Narrow to the `identity_onboarding` arm. Never cast a checkpoint; narrow it. */
+export function isIdentityOnboardingCheckpoint(c: TaskCheckpoint): c is IdentityOnboardingCheckpoint {
+  return !('criterion' in c) && !('manualWorkCursor' in c)
+    && 'checkpointKind' in c && c.checkpointKind === 'identity_onboarding';
 }
 
 // ---- W08 (#5246): admission request ----
