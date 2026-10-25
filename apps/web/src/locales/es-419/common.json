@@ -1340,10 +1340,6 @@
             "description": "Se activa cuando se conecta un dispositivo.",
             "label": "Dispositivo en línea"
           },
-          "deviceReinstalled": {
-            "description": "Se activa cuando un equipo reinstalado se vuelve a vincular con su registro de dispositivo existente.",
-            "label": "Dispositivo reinstalado"
-          },
           "scriptCompleted": {
             "description": "Se activa cuando finaliza un script.",
             "label": "Script completado"

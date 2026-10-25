@@ -43,8 +43,6 @@ const EXPECTED: Record<string, Classification> = {
   'GET /:id/commands': 'allow',
   'POST /:id/commands/:commandId/result': 'allow',
   'POST /:id/uninstall-intent': 'allow',
-  // #8318 §6.3: phase 1 of a reattach. A parked device is the typical source.
-  'POST /:id/rebind': 'allow',
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
@@ -111,8 +109,6 @@ const EXPECTED: Record<string, Classification> = {
   'GET /quarantined': 'outside_agent_auth',
   'POST /:id/approve': 'outside_agent_auth',
   'POST /:id/deny': 'outside_agent_auth',
-  // #8318 §6.4: authenticates itself with the reattach confirm-only token.
-  'POST /:id/rebind-confirm': 'outside_agent_auth',
   'PATCH /org/:orgId/settings/mtls': 'outside_agent_auth',
   'GET /org/:orgId/settings/helper': 'outside_agent_auth',
   'PATCH /org/:orgId/settings/helper': 'outside_agent_auth',
@@ -189,12 +185,11 @@ describe('parked-device route classification', () => {
     expect(shouldSkipAgentAuth(path, idSegment)).toBe(true);
   });
 
-  it('exactly seven endpoints are open to a parked device', () => {
+  it('exactly six endpoints are open to a parked device', () => {
     expect(Object.entries(EXPECTED).filter(([, cls]) => cls === 'allow').map(([key]) => key).sort()).toEqual([
       'GET /:id/commands',
       'POST /:id/commands/:commandId/result',
       'POST /:id/heartbeat',
-      'POST /:id/rebind',
       'POST /:id/rotate-token',
       'POST /:id/rotate-token/confirm',
       'POST /:id/uninstall-intent',

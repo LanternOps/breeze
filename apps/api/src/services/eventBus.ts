@@ -15,7 +15,6 @@ export type EventType =
   | 'device.offline'
   | 'device.updated'
   | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
-  | 'device.reinstalled' // #8318: a reinstalled machine reattached to its existing record
   // Alert events
   | 'alert.triggered'
   | 'alert.acknowledged'
@@ -623,8 +622,6 @@ export const EVENT_TYPES = {
   DEVICE_UPDATED: 'device.updated' as const,
   // #800: server-detected asymmetry (watchdog OK, main agent silent past threshold)
   DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
-  // #8318: a reattach confirm handed an existing record to a new install
-  DEVICE_REINSTALLED: 'device.reinstalled' as const,
   // Alert
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,

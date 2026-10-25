@@ -34,19 +34,6 @@ import { disconnectAgent } from '../../routes/agentWs';
 import { isUnassignedPoolOrgType } from './orgType';
 import { lockPartnerHoldingArea } from './holdingAreaLock';
 import { lockDeviceForAssignment, type LockedParkedDevice } from './assignParkedDeviceSteps';
-import { writeReattachAudit } from '../deviceReattach/audit';
-import {
-  endIntentInTransaction,
-  lockOpenReattachIntentsOfDevice,
-  revokeCertificatesAfterCommit,
-  type EndedIntent,
-} from '../deviceReattach/intentStore';
-import type { DeviceReattachIntent } from '../../db/schema';
-
-interface CancelledReattachIntent {
-  intent: DeviceReattachIntent;
-  ended: EndedIntent;
-}
 
 const LOG_PREFIX = '[parkedExpiry]';
 
@@ -60,13 +47,7 @@ export type ParkedExpirySkip =
   /** Already removed. */
   | 'ALREADY_REMOVED'
   /** Parked more recently than the caller's cutoff (re-checked under the lock). */
-  | 'NOT_DUE'
-  /**
-   * The source (or target) of an open reattach intent (#8318 §6.5): the
-   * scheduled expiry skips it, and the intent's own 60/15-minute expiry
-   * bounds the delay. A deploy-key incident does not skip (see below).
-   */
-  | 'IN_REATTACH';
+  | 'NOT_DUE';
 
 export type ParkedExpiryOutcome =
   | { expired: true; deviceId: string; ledgerEventId: string; uninstallQueued: boolean }
@@ -102,7 +83,7 @@ export async function expireParkedDevice(
   const { partnerId, deviceId } = input;
   type Locked =
     | { skip: ParkedExpirySkip }
-    | { device: LockedParkedDevice; ledgerEventId: string; uninstallQueued: boolean; cancelledIntents: CancelledReattachIntent[] };
+    | { device: LockedParkedDevice; ledgerEventId: string; uninstallQueued: boolean };
   const result = await inSystemTransaction(async (tx): Promise<Locked> => {
     await lockPartnerHoldingArea(tx, partnerId);
     const device = await lockDeviceForAssignment(tx, deviceId);
@@ -111,20 +92,6 @@ export async function expireParkedDevice(
     if (device.status === 'decommissioned') return { skip: 'ALREADY_REMOVED' };
     if (input.cutoff && device.createdAt.getTime() >= input.cutoff.getTime()) return { skip: 'NOT_DUE' };
     await options.hooks?.afterDeviceLock?.(device.id);
-
-    // #8318 §6.5 — under the same holding-area lock every reattach takes, so
-    // the check is race-free. The scheduled expiry skips a device in an open
-    // intent; a deploy-key incident first cancels every open intent of the
-    // device (`key_revoked`), then expires it.
-    const cancelledIntents: CancelledReattachIntent[] = [];
-    const openIntents = await lockOpenReattachIntentsOfDevice(tx, device.id);
-    if (openIntents.length > 0) {
-      if (input.reason !== 'deploy_key_incident') return { skip: 'IN_REATTACH' };
-      for (const intent of openIntents) {
-        const ended = await endIntentInTransaction(tx, intent, { state: 'cancelled', reason: 'key_revoked' });
-        if (ended) cancelledIntents.push({ intent, ended });
-      }
-    }
 
     // The same decommission the device Remove route performs: status, the
     // cancellation of ordinary queued work and its owning records, and the
@@ -156,7 +123,6 @@ export async function expireParkedDevice(
       device,
       ledgerEventId: ledger.id,
       uninstallQueued: decommission.uninstallQueued,
-      cancelledIntents,
     };
   });
 
@@ -164,26 +130,6 @@ export async function expireParkedDevice(
 
   // Post-commit, each isolated: the device is already removed.
   const { device } = result;
-  for (const { intent, ended } of result.cancelledIntents) {
-    try {
-      await revokeCertificatesAfterCommit(ended.revokeCertificateIds);
-      await writeReattachAudit({
-        action: 'device.reinstall.cancelled',
-        actorUserId: input.actorUserId,
-        targetOrgId: intent.targetOrgId,
-        sourceOrgId: intent.sourceOrgId,
-        targetDeviceId: intent.targetDeviceId,
-        details: {
-          intentId: intent.id,
-          sourceDeviceId: intent.sourceDeviceId,
-          cancelReason: 'key_revoked',
-          ...(input.deployKeyId ? { deployKeyId: input.deployKeyId } : {}),
-        },
-      });
-    } catch (err) {
-      report('reattach intent cancellation follow-up', device.id, err);
-    }
-  }
   try {
     await createAuditLog({
       orgId: device.orgId,
@@ -225,9 +171,7 @@ export type ParkedPurgeSkip =
   /** A `device_remove` uninstall is still collectable; comes back on a later run. */
   | 'UNINSTALL_PENDING'
   /** Another purge refusal (for example a backup snapshot under hold). */
-  | 'REFUSED'
-  /** The source (or target) of an open reattach intent (#8318 §6.5). */
-  | 'IN_REATTACH';
+  | 'REFUSED';
 
 export type ParkedPurgeOutcome =
   | { purged: true; deviceId: string; hostname: string; holdingOrgId: string }
@@ -257,11 +201,6 @@ export async function purgeExpiredParkedDevice(input: {
         || removedAt.getTime() >= input.cutoff.getTime()
       ) {
         return { purged: false, deviceId, reason: 'NOT_DUE' };
-      }
-      // #8318 §6.5: never purge a device an open reattach still names (the
-      // purge would cascade-delete the intent under a confirm).
-      if ((await lockOpenReattachIntentsOfDevice(tx, device.id)).length > 0) {
-        return { purged: false, deviceId, reason: 'IN_REATTACH' };
       }
 
       await purgeRemovedDevice(tx, device.id);
