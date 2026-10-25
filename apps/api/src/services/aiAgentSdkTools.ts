@@ -118,8 +118,12 @@ export type PreToolUseResult =
    * `error` carries the model-facing text in both cases; when `handoff` is set
    * it is a status message, not a failure, and it never reaches an `error`
    * field on the wire. See services/aiToolHandoff.ts (#5107).
+   *
+   * `detail`: an optional model-actionable elaboration of a denial, published
+   * beside `error` as `{ error, detail }` — the same shape the tool's own
+   * handler returns (#10144, the launch_specialist pre-approval refusal).
    */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -704,12 +708,13 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
+        ...(check.detail ? { detail: check.detail } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),

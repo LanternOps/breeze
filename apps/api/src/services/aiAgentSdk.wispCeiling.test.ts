@@ -134,6 +134,14 @@ vi.mock('./aiGuardrails', () => ({
   checkToolPermission: vi.fn(),
   checkToolRateLimit: vi.fn(),
   checkPermissionRequirements: vi.fn(),
+  describeSpecialistRequest: vi.fn((_input: unknown, orgName?: string) => `Wisp wants to run a health sweep at ${orgName ?? 'this organization'}`),
+}));
+
+// #10144: the coordinator's cheap pre-approval gates (their behaviour is pinned
+// in wisp/coordinator.test.ts); mocked here as a collaborator of the chat gate.
+const mockPrecheckSpecialistRequest = vi.fn();
+vi.mock('./wisp/coordinator', () => ({
+  precheckSpecialistRequest: (...args: unknown[]) => mockPrecheckSpecialistRequest(...args),
 }));
 
 // Real guardrailCheckForTenantTool/tenantToolPermissionRequirement (pure,
@@ -163,6 +171,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     get_device_details: 1,
     // #4883: the handler behind script builder's `execute_script_on_device`.
     run_script: 3,
+    // Wisp W07 (#10144 block below).
+    launch_specialist: 2,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -659,6 +669,99 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
       expect(wisp.enforceWispCeiling).toHaveBeenCalledTimes(2);
       expect(result).toMatchObject({ allowed: true, intentId: 'intent-wisp', toolAuth: { narrowedFor: 'session-1' } });
     });
+  });
+});
+
+// #10144: a launch_specialist call the coordinator would refuse deterministically
+// never raises an approval card, and an admitted one raises exactly one.
+describe('createSessionPreToolUse — launch_specialist pre-approval gates (#10144)', () => {
+  const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
+  const SWEEP = { orgId: ORG_ID, kind: 'sweep', reason: 'disks are filling' };
+  const WISP_CEILING = { ...CEILING, partnerId: 'partner-1' };
+  const approvalCards = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as { type: string; description?: string })
+      .filter((e) => e.type === 'approval_required');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: WISP_CEILING, permissionKeys: ['ai_sessions:use'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    mockInsertReturning({ id: 'exec-1' });
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    mockPrecheckSpecialistRequest.mockResolvedValue({ ok: true, orgName: 'Default Organization' });
+    allowTier(2);
+  });
+
+  it('a session without a Wisp grant refuses wisp_grant_required before any guardrail or card', async () => {
+    const session = makeActiveSession();
+    const result = await createSessionPreToolUse(session)('launch_specialist', SWEEP);
+    expect(result).toEqual({ allowed: false, error: 'wisp_grant_required' });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(mockPrecheckSpecialistRequest).not.toHaveBeenCalled();
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ ok: false, refused: 'invalid_params', detail: 'Unrecognized key: "goal"' }, { allowed: false, error: 'invalid_params', detail: 'Unrecognized key: "goal"' }],
+    [{ ok: false, refused: 'no_sweep_schedule' }, { allowed: false, error: 'no_sweep_schedule' }],
+    [{ ok: false, refused: 'no_effective_agent' }, { allowed: false, error: 'no_effective_agent' }],
+  ])('a deterministic refusal (%j) is returned with the coordinator\'s code and no approval is minted', async (precheck, expected) => {
+    mockPrecheckSpecialistRequest.mockResolvedValue(precheck);
+    const session = wispSession();
+    const result = await createSessionPreToolUse(session)('launch_specialist', { ...SWEEP, params: { goal: 'x' } });
+    expect(result).toEqual(expected);
+    expect(mockPrecheckSpecialistRequest).toHaveBeenCalledWith({
+      orgId: ORG_ID, partnerId: 'partner-1', kind: 'sweep', params: { goal: 'x' },
+    });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('runs the precheck only for launch_specialist (every other tool is unchanged)', async () => {
+    allowTier(1);
+    await createSessionPreToolUse(wispSession())('get_device_details', { deviceId: 'd-1' });
+    expect(mockPrecheckSpecialistRequest).not.toHaveBeenCalled();
+  });
+
+  it('an admitted auto-admit call raises exactly ONE card (Tier 2, no intent), naming the org', async () => {
+    const session = wispSession();
+    const result = await createSessionPreToolUse(session)('launch_specialist', SWEEP);
+    expect(result).toMatchObject({ allowed: true });
+    const cards = approvalCards(session);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.description).toBe('Wisp wants to run a health sweep at Default Organization');
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('an admitted asks-first call raises exactly ONE card (the supervised Tier-3 intent), naming the org', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ls', actionName: 'launch_specialist' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = wispSession();
+    await createSessionPreToolUse(session)('launch_specialist', { ...SWEEP, kind: 'patch_plan' });
+    expect(approvalCards(session)).toHaveLength(1);
+    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({
+      reason: 'Wisp wants to run a health sweep at Default Organization',
+    });
+  });
+
+  it('a precheck that cannot run falls through to the normal approval (the coordinator still gates at launch)', async () => {
+    mockPrecheckSpecialistRequest.mockRejectedValue(new Error('connection refused'));
+    const session = wispSession();
+    const result = await createSessionPreToolUse(session)('launch_specialist', SWEEP);
+    expect(result).toMatchObject({ allowed: true });
+    expect(approvalCards(session)).toHaveLength(1);
+    expect(mockCaptureException).toHaveBeenCalled();
   });
 });
 

@@ -65,6 +65,7 @@ import { GrantDepthExceededError } from '../aiAgents/runService';
 import { SPECIALIST_KINDS } from './specialistPolicy';
 import {
   SPECIALIST_LAUNCHERS,
+  SPECIALIST_PREREQUISITES,
   launchAnalysis,
   launchBulkTicketReply,
   launchOperatorRecipe,
@@ -73,6 +74,7 @@ import {
   launchSweep,
   parseSpecialistParams,
   specialistDedupeKey,
+  specialistParamsError,
   type LaunchContext,
 } from './specialistLaunchers';
 
@@ -437,5 +439,81 @@ describe('SPECIALIST_LAUNCHERS', () => {
   it('has exactly the policy kinds', () => {
     expect(Object.keys(SPECIALIST_LAUNCHERS).sort()).toEqual([...SPECIALIST_KINDS].sort());
     expect(SPECIALIST_KINDS).toHaveLength(6);
+  });
+});
+
+// #10144: the cheap prerequisite each kind needs, run by the chat gate BEFORE
+// an approval card (coordinator.precheckSpecialistRequest) and again by the
+// launcher at launch. Read-only: nothing is enqueued, admitted or provisioned.
+describe('SPECIALIST_PREREQUISITES (#10144)', () => {
+  const pre = (kind: keyof typeof SPECIALIST_PREREQUISITES, params: Record<string, unknown> = {}) =>
+    SPECIALIST_PREREQUISITES[kind]({ orgId: ORG, partnerId: PARTNER, params });
+  const noSideEffects = () => {
+    expect(h.sweepAdd).not.toHaveBeenCalled();
+    expect(h.admitAnalysisRun).not.toHaveBeenCalled();
+    expect(h.admitTask).not.toHaveBeenCalled();
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(h.ensureResearchAgent).not.toHaveBeenCalled();
+    expect(h.executeBulkTicketReply).not.toHaveBeenCalled();
+  };
+
+  it('has exactly the policy kinds', () => {
+    expect(Object.keys(SPECIALIST_PREREQUISITES).sort()).toEqual([...SPECIALIST_KINDS].sort());
+  });
+
+  it('sweep: refuses no_sweep_schedule without a matching enabled baseline, passes with one', async () => {
+    h.resolveEffectiveSchedulesForPartner.mockResolvedValue([]);
+    expect(await pre('sweep')).toEqual({ refused: 'no_sweep_schedule' });
+    h.resolveEffectiveSchedulesForPartner.mockResolvedValue([entry({ sweepKinds: ['disk_pressure'] })]);
+    expect(await pre('sweep', { sweepKinds: ['stale_agents'] })).toEqual({ refused: 'no_sweep_schedule' });
+    expect(await pre('sweep', { sweepKinds: ['disk_pressure'] })).toBeNull();
+    expect(await pre('sweep')).toBeNull();
+    expect(h.resolveEffectiveSchedulesForPartner).toHaveBeenCalledWith(PARTNER);
+    noSideEffects();
+  });
+
+  it('patch_plan: refuses no_effective_agent without a Patching agent', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+    expect(await pre('patch_plan')).toEqual({ refused: 'no_effective_agent' });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true } });
+    expect(await pre('patch_plan')).toBeNull();
+    expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'patch');
+    noSideEffects();
+  });
+
+  it('operator_recipe: unknown recipe, unmapped kind and a missing/disabled agent refuse as the launcher does', async () => {
+    const params = { workflowKey: 'service_recovery', workflowVersion: 1, objective: 'Restart', recipeInput: {} };
+    h.getRecipe.mockReturnValue(undefined);
+    expect(await pre('operator_recipe', params)).toEqual({ refused: 'invalid_params', detail: 'unknown_recipe' });
+    h.getRecipe.mockReturnValue({ key: 'service_recovery', version: 1 });
+    expect(await pre('operator_recipe', params)).toEqual({ refused: 'no_effective_agent' });
+    h.recipeKinds.service_recovery = 'ops';
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false } });
+    expect(await pre('operator_recipe', params)).toEqual({ refused: 'no_effective_agent' });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true } });
+    expect(await pre('operator_recipe', params)).toBeNull();
+    noSideEffects();
+  });
+
+  it('remediation_research: refuses a device outside the org; never provisions the research agent', async () => {
+    h.tables.devices = [[], [{ id: DEVICE }]];
+    expect(await pre('remediation_research', { deviceId: DEVICE })).toEqual({ refused: 'device_not_in_org' });
+    expect(await pre('remediation_research', { deviceId: DEVICE })).toBeNull();
+    noSideEffects();
+  });
+
+  it('analysis and bulk_ticket_reply have no extra prerequisite', async () => {
+    expect(await pre('analysis', { goal: 'why' })).toBeNull();
+    expect(await pre('bulk_ticket_reply', { concernId: null, ticketIds: [TICKET], message: 'hi' })).toBeNull();
+    noSideEffects();
+  });
+});
+
+describe('specialistParamsError (#10144)', () => {
+  it('names what is wrong so the model can correct the call; null when the params parse', () => {
+    expect(specialistParamsError('sweep', { goal: 'check disks' })).toMatch(/goal/);
+    expect(specialistParamsError('analysis', {})).toMatch(/goal/);
+    expect(specialistParamsError('sweep', {})).toBeNull();
+    expect(specialistParamsError('patch_plan', undefined)).toBeNull();
   });
 });

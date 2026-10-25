@@ -415,7 +415,13 @@ const ls = launchSpecialistInputSchema.shape;
 export const launchSpecialistShape = {
   orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
   kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
-  params: ls.params.describe('Kind-specific: analysis {goal}; remediation_research {deviceId}; bulk_ticket_reply {concernId, ticketIds, message}; operator_recipe {workflowKey, ...}'),
+  // #10144: every kind's exact keys — the params schemas in
+  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+  // invalid_params. The two long kinds are listed in the tool description
+  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
+  params: ls.params.describe(
+    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+  ),
   reason: ls.reason.describe('Why, in one sentence a technician would accept'),
 };
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
