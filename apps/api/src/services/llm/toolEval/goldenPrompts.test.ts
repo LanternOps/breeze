@@ -22,13 +22,17 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 81 unique ids', () => {
+  it('has 84 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
     // g79-g81 (full-control W04, #6758): process kill, containment, agent restart.
-    expect(GOLDEN_CASES).toHaveLength(81);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(81);
+    // g82-g84 (full-control W06, #6776): ticket config, checklist templates, time suggestions.
+    expect(GOLDEN_CASES).toHaveLength(84);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(84);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g82')?.expect[0]).toEqual({ tool: 'manage_ticket_config', action: 'create_category' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g83')?.expect[0]).toEqual({ tool: 'manage_ticket_checklist_templates', action: 'create' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g84')?.expect[0]).toEqual({ tool: 'manage_time_suggestions', action: 'confirm' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g79')?.expect[0]).toEqual({ tool: 'manage_processes', action: 'kill' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g80')?.expect[0]).toEqual({ tool: 'execute_containment' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g81')?.expect[0]).toEqual({ tool: 'trigger_agent_restart' });
