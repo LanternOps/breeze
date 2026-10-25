@@ -25,11 +25,16 @@ const BASELINE_UNDECLARED_TOOLS = new Set([
 ]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 75 unique ids', () => {
+  it('has 78 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
-    expect(GOLDEN_CASES).toHaveLength(75);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(75);
+    // g79-g81 (full-control W04, #6758): security and device-operation writes
+    // (g76-g78 are W03's, #6757; this count becomes 81 once both have landed).
+    expect(GOLDEN_CASES).toHaveLength(78);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(78);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g79')?.expect[0]).toEqual({ tool: 'manage_processes', action: 'kill' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g80')?.expect[0]).toEqual({ tool: 'execute_containment' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g81')?.expect[0]).toEqual({ tool: 'trigger_agent_restart' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g69')?.expect[0]).toEqual({ tool: 'sync_edr_data' });
   });
   it('expects registered tools and declared actions, with only known chat-visibility gaps', () => {
