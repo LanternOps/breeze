@@ -244,6 +244,23 @@ Saving the tab with a vendor turned on needs permission to run commands on devic
 
 Turning a vendor off stops enforcement but never uninstalls the agent. With no vendor enabled, devices reached by the policy are opted out of every security agent. A policy assigned closer to a device (site, group or device, or an inheriting child policy) that has its own Security Agents settings replaces these settings entirely for those devices; a vendor left out there is not enforced. The tab can be set on a **partner-wide (all orgs)** policy.
 
+#### DNS filtering vendors (coming soon)
+
+**Control D** and **NextDNS** are DNS-filtering clients configured through the same tab. They show **Coming soon** and cannot be turned on yet: the integration is built end to end, but the switch stays disabled until the vendor lab validation is complete. Once it opens up, they can be turned on for **Windows** devices only, with these requirements:
+
+| Vendor | Built-in package | Tenant variable | Windows service |
+|---|---|---|---|
+| Control D | Control D (Windows) | `controld_provisioning_code` | `ctrld` |
+| NextDNS | NextDNS CLI (Windows) | `nextdns_profile_id` | `nextdns` |
+
+- **Catalog first.** Add the client to your partner's software catalog from **Software → Catalog → Built-in packages**. Turning the vendor on without it is refused with a message pointing there.
+- **One variable per organization.** Set the variable under **Settings → Variables** for each organization (for example `<provisioning-code>` or `<profile-id>` as the value). Create it as a normal variable, **not** a secret one: enrollment values are non-secret by design, and a secret variable is never placed in an install script. An organization without the variable is skipped and reads **Not applicable** with the reason **Deployment variable missing**; a variable marked secret reads **Deployment variable is marked secret**.
+- **Presence comes from the service.** These clients are zip installs with no Add/Remove Programs entry, so Breeze uses the Windows service check described under [Service compliance](/features/software-policies/#service-compliance). No service found means the client is missing and is installed automatically. A stopped service reads **not running** and is never reinstalled; an armed policy's service watch restarts it. A running service is compliant. With no recent service telemetry the device reads **service unverified**, and nothing is installed until the service is observed.
+- **Coverage is limited.** Breeze does not sync the Control D or NextDNS consoles, so the **Security agent coverage** panels show only whether each device can receive the client (**Pending** or **Not applicable**). Install and service state appear in the generated software policy's compliance.
+- **Platforms.** Control D on macOS is not offered yet, NextDNS is Windows only, and Linux is not supported.
+
+Turning a DNS vendor off never uninstalls the client. Uninstall manually from an elevated prompt or script: `C:\ControlD\ctrld.exe uninstall` for Control D, or `"C:\Program Files\nextdns\nextdns.exe" uninstall` for NextDNS.
+
 ### System Protection
 
 <Aside type="caution" title="Checkpoints need agent 0.124.0">
