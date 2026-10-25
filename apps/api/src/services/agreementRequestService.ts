@@ -46,13 +46,19 @@ export type AgreementRequestServiceErrorCode =
   | 'UNSUPPORTED_FILE_TYPE'
   | 'AGREEMENT_ALREADY_SIGNED'
   | 'INVALID_STATE'
-  | 'RENDER_DATA_MISMATCH';
+  | 'RENDER_DATA_MISMATCH'
+  | 'RECIPIENTS_REQUIRED'
+  | 'AGREEMENT_EXPIRED'
+  | 'EXPIRES_AT_IN_PAST'
+  | 'LINK_REVOKED'
+  | 'RESPONSE_CONSUMED'
+  | 'LINK_RACE';
 
 export class AgreementRequestServiceError extends Error {
   constructor(
     message: string,
     // Literal union so Hono's c.json(status) overloads accept it directly.
-    public status: 400 | 403 | 404 | 409 | 413 | 415 | 422 | 500,
+    public status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 415 | 422 | 500,
     public code: AgreementRequestServiceErrorCode,
   ) {
     super(message);
@@ -136,6 +142,35 @@ export function filterDeclaredManualValues(
   return Object.fromEntries(Object.entries(variableValues).filter(([name]) => manualNames.has(name)));
 }
 
+/** Render context, auto map, declared manual values and the unresolved set
+ *  for a request — the one derivation send (gate), preview (render) and the
+ *  freeze (hash) all use. Pure. */
+export function resolveRequestRender(
+  snapshot: RequestFreezeSnapshot,
+  renderData: Pick<TemplateVersionRenderData, 'declaredVariables'>,
+  variableValues: Record<string, string>,
+) {
+  // Request render context: no `quote` member, so the quote-only keys
+  // (totals.*, quote.*, dates.expiry) are ABSENT from the auto map.
+  const ctx = renderContextFromRequest(snapshot, { effectiveDate: snapshot.effectiveDate, currencyCode: 'USD' });
+  const auto = resolveAutoVariables(ctx);
+  const manualValues = filterDeclaredManualValues(renderData, variableValues);
+  const unresolved = findUnresolvedVariables(renderData, manualValues, auto);
+  return { ctx, auto, manualValues, unresolved };
+}
+
+/** Throws 422 AGREEMENT_VARIABLES_UNRESOLVED naming every unresolved variable
+ *  (sorted) — the message marker the web dialogs parse. */
+export function assertRequestVariablesResolved(unresolved: string[]): void {
+  if (unresolved.length > 0) {
+    throw new AgreementRequestServiceError(
+      `Agreement variables unresolved: ${[...unresolved].sort().join(', ')}`,
+      422,
+      'AGREEMENT_VARIABLES_UNRESOLVED',
+    );
+  }
+}
+
 /** Build ctx → filter manual values → variable gate → content hash. Pure.
  *  Throws 422 AGREEMENT_VARIABLES_UNRESOLVED (message marker parsed by the web
  *  dialogs: "Agreement variables unresolved: ") for a rendered agreement with
@@ -149,22 +184,8 @@ export function prepareRequestFreeze(args: {
   external: ExternalCopy | null;
 }): PreparedRequestFreeze {
   const { snapshot, renderData, external } = args;
-  // Request render context: no `quote` member, so the quote-only keys
-  // (totals.*, quote.*, dates.expiry) are ABSENT from the auto map.
-  const ctx = renderContextFromRequest(snapshot, { effectiveDate: snapshot.effectiveDate, currencyCode: 'USD' });
-  const auto = resolveAutoVariables(ctx);
-  const manualValues = filterDeclaredManualValues(renderData, args.variableValues);
-
-  if (!external) {
-    const unresolved = findUnresolvedVariables(renderData, manualValues, auto);
-    if (unresolved.length > 0) {
-      throw new AgreementRequestServiceError(
-        `Agreement variables unresolved: ${[...unresolved].sort().join(', ')}`,
-        422,
-        'AGREEMENT_VARIABLES_UNRESOLVED',
-      );
-    }
-  }
+  const { ctx, auto, manualValues, unresolved } = resolveRequestRender(snapshot, renderData, args.variableValues);
+  if (!external) assertRequestVariablesResolved(unresolved);
 
   // Content hash (version 1): the rendered branch binds the resolved variable
   // map; the external branch binds the uploaded bytes.
@@ -245,7 +266,7 @@ function checkExternalCopy(file: { buffer: Buffer }): ExternalCopy {
 /** Org + partner snapshot, read by id in the ambient (system) tx and compared
  *  EXPLICITLY — never an RLS-dependent visibility read. A missing org and an
  *  org outside the caller's partner are the same 404. */
-async function loadPartySnapshot(orgId: string, callerPartnerId: string | null) {
+export async function loadPartySnapshot(orgId: string, callerPartnerId: string | null) {
   const [org] = await db
     .select({
       id: organizations.id,
@@ -281,7 +302,7 @@ export async function loadOrgOwnerPartnerId(orgId: string): Promise<string> {
   return org.partnerId;
 }
 
-async function loadPartner(partnerId: string) {
+export async function loadPartner(partnerId: string) {
   const [partner] = await db
     .select({
       name: partners.name,
@@ -301,6 +322,22 @@ async function loadPartner(partnerId: string) {
     .where(eq(partners.id, partnerId))
     .limit(1);
   return partner ?? null;
+}
+
+/** The client/seller snapshot columns frozen onto a request (at record-signed,
+ *  or at send for a sent request) — what the render context and the content
+ *  hash read, so a later org rename or partner rebrand never changes them. */
+export function buildPartySnapshotColumns(
+  org: Awaited<ReturnType<typeof loadPartySnapshot>>,
+  partner: Awaited<ReturnType<typeof loadPartner>>,
+) {
+  return {
+    clientNameSnapshot: org.name,
+    clientAddressSnapshot: buildBillToAddress(org),
+    sellerSnapshot: buildSellerSnapshot(partner),
+    renderLocale: resolvePartnerDocumentLocale(partner),
+    documentLocale: null,
+  };
 }
 
 /** Record an agreement signed elsewhere. MUST be called inside
@@ -360,11 +397,7 @@ export async function recordSignedAgreement(params: RecordSignedAgreementParams)
   // (6) Snapshots + locale, frozen onto the request.
   const partner = await loadPartner(org.partnerId);
   const snapshot = {
-    clientNameSnapshot: org.name,
-    clientAddressSnapshot: buildBillToAddress(org),
-    sellerSnapshot: buildSellerSnapshot(partner),
-    renderLocale: resolvePartnerDocumentLocale(partner),
-    documentLocale: null,
+    ...buildPartySnapshotColumns(org, partner),
     // Sender-set effective date, else the signing date (UTC calendar day).
     // Stored resolved, so the row alone reproduces the hash input.
     effectiveDate: input.effectiveDate ?? input.signedAt.toISOString().slice(0, 10),
