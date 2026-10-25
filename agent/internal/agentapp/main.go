@@ -1467,6 +1467,17 @@ func gateEnrollResponseBackup(backup string) error {
 	return hostpolicy.AllowedURL(backup)
 }
 
+// enrollSecurityCapabilities is what an enrollment declares (#8318): the
+// rebind protocol, since a new install is exactly the device a reinstall
+// reattach makes the source. A Quick Support client declares nothing: a
+// disposable install must never become an existing device's identity.
+func enrollSecurityCapabilities(cfg *config.Config) *api.EnrollSecurityCapabilities {
+	if cfg.SupportMode {
+		return nil
+	}
+	return &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion}
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1830,9 +1841,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	enrollReq := &api.EnrollRequest{
-		// #8318 — a new install declares the rebind protocol at once: it is
-		// exactly the device a reinstall reattach makes the source.
-		SecurityCapabilities:   &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion},
+		SecurityCapabilities:   enrollSecurityCapabilities(cfg),
 		EnrollmentKey:          enrollmentKey,
 		EnrollmentSecret:       secret,
 		Hostname:               systemInfo.Hostname,

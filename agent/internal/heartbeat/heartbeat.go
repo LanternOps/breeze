@@ -5775,10 +5775,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// or a rollback is pending: the directive comes on every beat. While a
 	// reattach is in flight no NEW token rotation starts (see
 	// rebindInProgress); the server re-signals it later.
-	h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
-	// A directive in this response starts the flow on its own goroutine, so
-	// the staged set may not be on disk yet: hold rotation for this beat too.
-	rebindHold := h.rebindInProgress() || response.Rebind != nil
+	directiveAccepted := h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
+	// A verified directive starts the flow on its own goroutine, so the staged
+	// set may not be on disk yet: hold rotation for this beat too. One this
+	// agent will not act on (unverifiable, ended, support mode) holds nothing.
+	rebindHold := h.rebindInProgress() || directiveAccepted
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {

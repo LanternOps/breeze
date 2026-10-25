@@ -163,7 +163,10 @@ func (h *Heartbeat) rebindProgressed() {
 // the intent for one, but its local promote racing the swap could write the
 // retired source's tokens over the target's.
 func (h *Heartbeat) rebindInProgress() bool {
-	return h != nil && (h.rebind.pendingOnDisk.Load() || h.rebind.swapped.Load())
+	if h == nil || (h.config != nil && h.config.SupportMode) {
+		return false
+	}
+	return h.rebind.pendingOnDisk.Load() || h.rebind.swapped.Load()
 }
 
 // rebindOwnsIdentity reports whether the identity on disk is the reattached
@@ -225,19 +228,22 @@ func newRebindStagedSet(d *RebindDirective, sourceAgentID string, now time.Time)
 
 // handleRebindDirective verifies a directive from a heartbeat response and
 // starts (or resumes) the flow for it. hold: an identity restart or a
-// rollback is pending; the directive comes again on the next beat.
-func (h *Heartbeat) handleRebindDirective(d *RebindDirective, hold bool) {
+// rollback is pending; the directive comes again on the next beat. It
+// reports whether the flow was started for a verified directive, which holds
+// token rotation for this beat (the staged set may not be on disk yet).
+func (h *Heartbeat) handleRebindDirective(d *RebindDirective, hold bool) bool {
 	if d == nil || h == nil || h.config == nil || h.config.SupportMode || hold {
-		return
+		return false
 	}
 	if err := verifyRebindDirective(d, h.config.AgentID, h.pinnedManifestPubKeys(), rebindNow()); err != nil {
 		h.logRebindOnce("warn", "ignoring rebind directive", err.Error())
-		return
+		return false
 	}
 	if _, over := h.rebind.ended.Load(d.IntentID); over {
-		return
+		return false
 	}
 	go h.driveRebind(d)
+	return true
 }
 
 // noteCredentialsCurrent runs on every 2xx this process's credentials got.
