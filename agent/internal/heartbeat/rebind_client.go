@@ -129,18 +129,25 @@ func (h *Heartbeat) rebindTargetClient(s *config.RebindStagedSet) (*http.Client,
 	return newRebindHTTPClient(tlsCfg), nil
 }
 
-func rebindPost(client *http.Client, endpoint, bearer string, body any) rebindAnswer {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return rebindAnswer{err: fmt.Errorf("encoding request: %w", err)}
+// rebindRequest makes one call. body nil: no request body (a GET).
+func rebindRequest(client *http.Client, method, endpoint, bearer string, body any) rebindAnswer {
+	var payload io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return rebindAnswer{err: fmt.Errorf("encoding request: %w", err)}
+		}
+		payload = bytes.NewReader(raw)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), rebindCallTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
 	if err != nil {
 		return rebindAnswer{err: fmt.Errorf("building request: %w", err)}
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Authorization", bearer)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -172,7 +179,7 @@ func rebindRouteURL(base, agentID, action string) string {
 // postRebindStage sends phase 1 with the SOURCE's credentials and its active
 // client certificate (the heartbeat client).
 func (h *Heartbeat) postRebindStage(s *config.RebindStagedSet) rebindAnswer {
-	return rebindPost(h.httpClient(), rebindRouteURL(h.serverURL(), s.SourceAgentID, "rebind"), h.authHeader(), rebindStageBody(s))
+	return rebindRequest(h.httpClient(), http.MethodPost, rebindRouteURL(h.serverURL(), s.SourceAgentID, "rebind"), h.authHeader(), rebindStageBody(s))
 }
 
 // postRebindConfirm sends confirm with the confirm-only token.
@@ -181,23 +188,16 @@ func (h *Heartbeat) postRebindConfirm(s *config.RebindStagedSet) rebindAnswer {
 	if err != nil {
 		return rebindAnswer{err: err}
 	}
-	return rebindPost(client, rebindRouteURL(h.serverURL(), s.SourceAgentID, "rebind-confirm"),
+	return rebindRequest(client, http.MethodPost, rebindRouteURL(h.serverURL(), s.SourceAgentID, "rebind-confirm"),
 		"Bearer "+s.ConfirmationToken, struct{}{})
 }
 
-// rebindProbeBody is the probe's heartbeat: the required fields and this
-// build's capabilities. Everything else is absent ("no news"), so the one
-// beat sent as the target before the restart resets nothing the full beat
-// after it reports.
-type rebindProbeBody struct {
-	Status               string               `json:"status"`
-	AgentVersion         string               `json:"agentVersion"`
-	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
-}
-
-// postRebindProbe heartbeats as the TARGET with the staged set (§6.6): a 2xx
-// proves a confirm committed (the staged hashes are never a device's
-// credentials before it).
+// postRebindProbe authenticates as the TARGET with the staged set (§6.6): a
+// 2xx proves a confirm committed (the staged hashes are never a device's
+// credentials before it). It is `GET /agents/:stagedAgentId/config`, which
+// agent auth guards like every agent route (credentials, status, mTLS
+// binding) and whose handler only reads: unlike a heartbeat, it claims none
+// of the target's commands, and its answer is dropped before the restart.
 func (h *Heartbeat) postRebindProbe(s *config.RebindStagedSet) rebindAnswer {
 	if s.StagedAgentID == "" {
 		return rebindAnswer{err: errors.New("no staged agent id to probe")}
@@ -206,6 +206,5 @@ func (h *Heartbeat) postRebindProbe(s *config.RebindStagedSet) rebindAnswer {
 	if err != nil {
 		return rebindAnswer{err: err}
 	}
-	body := rebindProbeBody{Status: "ok", AgentVersion: h.agentVersion, SecurityCapabilities: h.securityCapabilitiesForBeat()}
-	return rebindPost(client, rebindRouteURL(h.serverURL(), s.StagedAgentID, "heartbeat"), "Bearer "+s.AuthToken, body)
+	return rebindRequest(client, http.MethodGet, rebindRouteURL(h.serverURL(), s.StagedAgentID, "config"), "Bearer "+s.AuthToken, nil)
 }

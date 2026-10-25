@@ -10,8 +10,8 @@ import (
 
 // #8318: this build declares securityCapabilities.rebindProtocolVersion = 1
 // on every main and parked heartbeat (the same payload; the server tells them
-// apart) and on the probe; exactly 1 is what the API counts. A Quick Support
-// client never declares it.
+// apart); exactly 1 is what the API counts. A Quick Support client never
+// declares it.
 func TestRebindCapabilityIsDeclaredOnEveryBeat(t *testing.T) {
 	if got := compiledSecurityCapabilities().RebindProtocolVersion; got != 1 {
 		t.Fatalf("compiled rebindProtocolVersion = %d, want 1", got)
@@ -26,13 +26,6 @@ func TestRebindCapabilityIsDeclaredOnEveryBeat(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"rebindProtocolVersion":1`) {
 		t.Fatalf("heartbeat payload does not declare the rebind protocol: %s", raw)
-	}
-	probe, err := json.Marshal(rebindProbeBody{Status: "ok", AgentVersion: "1.2.3", SecurityCapabilities: h.securityCapabilitiesForBeat()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(probe), `"rebindProtocolVersion":1`) {
-		t.Fatalf("probe does not declare the rebind protocol: %s", probe)
 	}
 
 	h.config.SupportMode = true

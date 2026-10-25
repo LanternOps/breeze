@@ -89,6 +89,7 @@ type rebindFake struct {
 	stageQueue     []rebindInjection
 	confirmQueue   []rebindInjection
 	heartbeatQueue []rebindInjection
+	configQueue    []rebindInjection
 
 	// directive rides on the source's heartbeat answer while set.
 	directive *RebindDirective
@@ -163,11 +164,21 @@ func pop(q *[]rebindInjection) *rebindInjection {
 
 func (f *rebindFake) serve(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/agents/"), "/")
-	if len(parts) != 2 || r.Method != http.MethodPost {
+	if len(parts) != 2 {
 		http.NotFound(w, r)
 		return
 	}
 	id, action := parts[0], parts[1]
+	if want := http.MethodPost; action == "config" {
+		want = http.MethodGet
+		if r.Method != want || r.ContentLength > 0 {
+			http.Error(w, "the probe is a bodiless GET", http.StatusMethodNotAllowed)
+			return
+		}
+	} else if r.Method != want {
+		http.NotFound(w, r)
+		return
+	}
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	call := rebindCall{path: r.URL.Path, auth: r.Header.Get("Authorization"), cert: r.Header.Get(rebindTestCertHeader), body: body}
@@ -191,6 +202,8 @@ func (f *rebindFake) serve(w http.ResponseWriter, r *http.Request) {
 		f.confirm(w, id, call)
 	case "heartbeat":
 		f.heartbeat(w, id, call)
+	case "config":
+		f.config(w, id, call)
 	default:
 		http.NotFound(w, r)
 	}
@@ -369,6 +382,25 @@ func (f *rebindFake) heartbeat(w http.ResponseWriter, id string, call rebindCall
 	case id == f.stagedAgentID && f.state == "confirmed" && f.staged != nil && rebindHash(token) == f.staged.StagedTokenHash &&
 		(f.certSerial == "" || call.cert == f.certSerial):
 		writeJSON(w, http.StatusOK, map[string]any{"commands": []any{}}, "")
+	default:
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Invalid agent credentials"}, "")
+	}
+}
+
+// config is GET /agents/:id/config: agent auth (the target's staged token
+// once confirmed, its certificate under the binding) and a read, nothing
+// claimed.
+func (f *rebindFake) config(w http.ResponseWriter, id string, call rebindCall) {
+	answered, _ := injected(w, pop(&f.configQueue))
+	if answered {
+		return
+	}
+	token := strings.TrimPrefix(call.auth, "Bearer ")
+	switch {
+	case id == rebindGoldenSource && token == rebindTestSourceToken && f.sourceAlive,
+		id == f.stagedAgentID && f.state == "confirmed" && f.staged != nil && rebindHash(token) == f.staged.StagedTokenHash &&
+			(f.certSerial == "" || call.cert == f.certSerial):
+		writeJSON(w, http.StatusOK, map[string]any{"heartbeatIntervalSeconds": 60}, "")
 	default:
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Invalid agent credentials"}, "")
 	}

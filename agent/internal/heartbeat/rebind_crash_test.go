@@ -194,7 +194,7 @@ func TestRebindCrashConfirmCommittedThenProbe(t *testing.T) {
 
 	r.restart()
 	r.h.resumeRebind() // confirm 502; no source rejection seen yet: no probe
-	if n := len(r.fake.callsTo("/heartbeat")); n != 0 {
+	if n := len(r.fake.callsTo("/config")); n != 0 {
 		t.Fatal("probed before the source credentials were rejected")
 	}
 	r.h.healthMon = health.NewMonitor()
@@ -207,8 +207,11 @@ func TestRebindCrashConfirmCommittedThenProbe(t *testing.T) {
 	}
 	r.advance(rebindRetryMax) // past the backoff: the next ticks
 	r.tickUntilRestart()
-	if n := len(r.fake.callsTo("/heartbeat")); n < 2 {
-		t.Fatalf("heartbeat calls = %d, want the source's 401 and the probe", n)
+	if n := len(r.fake.callsTo("/heartbeat")); n != 1 {
+		t.Fatalf("heartbeat calls = %d, want only the source's 401", n)
+	}
+	if n := len(r.fake.callsTo("/config")); n < 1 {
+		t.Fatal("no probe of /config as the target")
 	}
 	r.assertSwapped(set)
 }

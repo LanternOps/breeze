@@ -561,12 +561,14 @@ func TestRebindRunsFromTheHeartbeatResponse(t *testing.T) {
 }
 
 // When the source is refused and confirm cannot answer, the staged set probes
-// as the target; a 401 there is retried (the agent-auth negative cache).
+// as the target; a 401 there is retried (the agent-auth negative cache). The
+// probe is a bodiless GET of /config, never a heartbeat: it must not claim
+// the target's commands (#8318 review fix 5).
 func TestRebindProbesAsTheTargetWhenTheSourceIsRefused(t *testing.T) {
 	r := newRebindHarness(t)
 	r.fake.queue(&r.fake.confirmQueue, rebindInjection{commitThenDrop: true},
 		rebindInjection{status: 503}, rebindInjection{status: 503}, rebindInjection{status: 503})
-	r.fake.queue(&r.fake.heartbeatQueue, rebindInjection{status: 401, body: map[string]any{"error": "cached"}})
+	r.fake.queue(&r.fake.configQueue, rebindInjection{status: 401, body: map[string]any{"error": "cached"}})
 	r.drive(r.directive(rebindGoldenIntent))
 	set := r.staged()
 	if set == nil || set.Phase != config.RebindPhaseStaged {
@@ -575,7 +577,7 @@ func TestRebindProbesAsTheTargetWhenTheSourceIsRefused(t *testing.T) {
 
 	// Without a source rejection there is no probe.
 	r.drive(nil)
-	if n := len(r.fake.callsTo("/heartbeat")); n != 0 {
+	if n := len(r.fake.callsTo("/config")); n != 0 {
 		t.Fatalf("probed without a source rejection (%d calls)", n)
 	}
 	r.h.rebind.sourceRejected.Store(true)
@@ -586,16 +588,19 @@ func TestRebindProbesAsTheTargetWhenTheSourceIsRefused(t *testing.T) {
 	r.drive(nil) // confirm 503, probe 200
 	r.waitRestarts(1)
 
-	probes := r.fake.callsTo("/heartbeat")
+	probes := r.fake.callsTo("/config")
 	if len(probes) != 2 {
 		t.Fatalf("probe calls = %d, want 2", len(probes))
 	}
 	p := probes[1]
-	if !strings.HasSuffix(p.path, "/"+rebindTestStagedAgentID+"/heartbeat") || p.auth != "Bearer "+set.AuthToken || p.cert != set.Certificate.SerialNumber {
+	if !strings.HasSuffix(p.path, "/"+rebindTestStagedAgentID+"/config") || p.auth != "Bearer "+set.AuthToken || p.cert != set.Certificate.SerialNumber {
 		t.Fatalf("probe %s cert %q: want the staged agent id, staged token and staged certificate", p.path, p.cert)
 	}
-	if p.body["status"] != "ok" || p.body["agentVersion"] != "1.2.3" || p.body["securityCapabilities"] == nil || len(p.body) != 3 {
-		t.Fatalf("probe body = %v, want only status, agentVersion and securityCapabilities", p.body)
+	if p.body != nil {
+		t.Fatalf("probe body = %v, want none (a GET)", p.body)
+	}
+	if n := len(r.fake.callsTo("/heartbeat")); n != 0 {
+		t.Fatalf("heartbeat calls = %d: the probe must not heartbeat as the target", n)
 	}
 	r.assertSwapped(set)
 }
