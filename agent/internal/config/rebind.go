@@ -203,8 +203,10 @@ func (s *RebindStagedSet) Identity() (RebindIdentity, error) {
 // rebindStagedMu serializes the staged file's read-modify-write cycles.
 var rebindStagedMu sync.Mutex
 
-// Seams for tests: the staged-file write and the swap's two saves.
+// Seams for tests: the staged-file read and write (I/O faults) and the
+// swap's two saves.
 var (
+	rebindReadFileFn    = readConfigFileBytes
 	rebindAtomicWriteFn = atomicWriteFile
 	rebindSaveFn        = saveToLockedWithIdentity
 )
@@ -257,15 +259,26 @@ func WriteRebindStaged(cfgFile string, s *RebindStagedSet) error {
 	return nil
 }
 
-// ErrRebindStagedUnusable reports a staged-set file that exists but cannot be
-// used (unreadable, unparseable or invalid). It has been moved aside, so the
-// caller proceeds as if there were none.
-var ErrRebindStagedUnusable = errors.New("the staged reattach set on disk is unusable")
+// ErrRebindStagedUnusable reports a staged-set file that was read completely
+// and is provably corrupt: not JSON, or a version-1 set that fails validation
+// (this build validates every set before writing it). It has been moved aside
+// (kept, never deleted), so the caller proceeds as if there were none.
+var ErrRebindStagedUnusable = errors.New("the staged reattach set on disk is corrupt")
 
-// ReadRebindStaged returns the staged set, or nil when there is none. A file
-// that cannot be used is moved aside (rebind-staged.json.unusable-<time>) and
-// reported with ErrRebindStagedUnusable; if it cannot be moved, the error is
-// returned without ErrRebindStagedUnusable and nothing may overwrite it.
+// ErrRebindStagedUnreadable reports a staged-set file that exists but could
+// not be used now: an I/O, sharing-violation or permission error, an owner the
+// trust check could not verify, or a format version newer than this build's
+// (an agent rolled back). The file is left in place, since it may hold a
+// confirmed set, and the caller retries later.
+var ErrRebindStagedUnreadable = errors.New("the staged reattach set could not be read")
+
+// errRebindStagedCorrupt marks content that is provably corrupt.
+var errRebindStagedCorrupt = errors.New("corrupt staged set")
+
+// ReadRebindStaged returns the staged set, or nil when there is none. Only a
+// provably corrupt file is moved aside (rebind-staged.json.unusable-<time>,
+// ErrRebindStagedUnusable). Every other failure returns an error wrapping
+// ErrRebindStagedUnreadable and leaves the file where it is.
 func ReadRebindStaged(cfgFile string) (*RebindStagedSet, error) {
 	path := RebindStagedPath(cfgFile)
 	if err := checkConfigTarget(path); err != nil {
@@ -274,30 +287,45 @@ func ReadRebindStaged(cfgFile string) (*RebindStagedSet, error) {
 	rebindStagedMu.Lock()
 	defer rebindStagedMu.Unlock()
 	s, err := readRebindStagedLocked(path)
-	if err == nil {
-		return s, nil
+	if err == nil || !errors.Is(err, errRebindStagedCorrupt) {
+		return s, err
 	}
 	aside := fmt.Sprintf("%s.unusable-%s", path, time.Now().UTC().Format("20060102T150405Z"))
 	if renameErr := renameWithRetry(path, aside); renameErr != nil {
-		return nil, fmt.Errorf("staged set unusable (%v) and could not be moved aside: %w", err, renameErr)
+		return nil, fmt.Errorf("%w: corrupt (%v) and could not be moved aside: %v", ErrRebindStagedUnreadable, err, renameErr)
 	}
 	return nil, fmt.Errorf("%w (moved to %s): %v", ErrRebindStagedUnusable, filepath.Base(aside), err)
 }
 
 func readRebindStagedLocked(path string) (*RebindStagedSet, error) {
-	data, err := readConfigFileBytes(path)
+	data, err := rebindReadFileFn(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrRebindStagedUnreadable, err)
+	}
+	return parseRebindStaged(data)
+}
+
+// parseRebindStaged decodes a staged file read completely. The version is
+// read first, so a newer build's format is never mistaken for corruption.
+func parseRebindStaged(data []byte) (*RebindStagedSet, error) {
+	var head struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return nil, fmt.Errorf("%w: not valid JSON", errRebindStagedCorrupt)
+	}
+	if head.Version > RebindStagedVersion {
+		return nil, fmt.Errorf("%w: format version %d is newer than this build's %d", ErrRebindStagedUnreadable, head.Version, RebindStagedVersion)
 	}
 	var s RebindStagedSet
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, errors.New("the staged set is not valid JSON")
+		return nil, fmt.Errorf("%w: not a staged set", errRebindStagedCorrupt)
 	}
 	if err := s.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", errRebindStagedCorrupt, err)
 	}
 	return &s, nil
 }

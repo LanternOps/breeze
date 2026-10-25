@@ -94,6 +94,7 @@ var (
 	rebindRandRead      = rand.Read
 	rebindRestartFn     = updater.RestartSelf
 	rebindConfigFile    = config.ActiveConfigFile
+	rebindReadStaged    = config.ReadRebindStaged
 	rebindWriteStaged   = config.WriteRebindStaged
 	rebindApplyIdentity = config.ApplyRebindIdentity
 )
@@ -305,17 +306,21 @@ func rebindDiscardReason(s *config.RebindStagedSet, now time.Time) string {
 	return ""
 }
 
-// loadRebindStaged reads the staged set and keeps pendingOnDisk in step. An
-// unusable file has been moved aside and counts as none (the "staged set
-// lost" row of §6.6). Caller holds rebind.mu.
+// loadRebindStaged reads the staged set and keeps pendingOnDisk in step. A
+// provably corrupt file has been moved aside and counts as none (the "staged
+// set lost" row of §6.6). A file that could not be read now (I/O, a scan
+// holding it, an owner check that did not answer) keeps pendingOnDisk set: it
+// may hold a confirmed set, so the tick and the source-401 path keep reading
+// it, with backoff, until a read succeeds. Caller holds rebind.mu.
 func (h *Heartbeat) loadRebindStaged() (*config.RebindStagedSet, error) {
-	s, err := config.ReadRebindStaged(rebindConfigFile())
+	s, err := rebindReadStaged(rebindConfigFile())
 	if errors.Is(err, config.ErrRebindStagedUnusable) {
-		h.logRebindOnce("error", "moved an unusable staged reattach set aside", err.Error())
+		h.logRebindOnce("error", "moved a corrupt staged reattach set aside", err.Error())
 		h.rebind.pendingOnDisk.Store(false)
 		return nil, nil
 	}
 	if err != nil {
+		h.rebind.pendingOnDisk.Store(true)
 		return nil, err
 	}
 	h.rebind.pendingOnDisk.Store(s != nil)
@@ -366,7 +371,7 @@ func (h *Heartbeat) driveRebind(d *RebindDirective) {
 	}
 	s, err := h.loadRebindStaged()
 	if err != nil {
-		h.logRebindOnce("error", "cannot read the staged reattach set; not acting on it", err.Error())
+		h.logRebindOnce("error", "cannot read the staged reattach set now; keeping it and retrying", err.Error())
 		h.rebindRetryLater(now, 0)
 		return
 	}

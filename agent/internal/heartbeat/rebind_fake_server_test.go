@@ -480,10 +480,10 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	}
 
 	origNow, origRestart, origClient := rebindNow, rebindRestartFn, newRebindHTTPClient
-	origWrite, origApply, origFile := rebindWriteStaged, rebindApplyIdentity, rebindConfigFile
+	origWrite, origApply, origFile, origRead := rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged
 	t.Cleanup(func() {
 		rebindNow, rebindRestartFn, newRebindHTTPClient = origNow, origRestart, origClient
-		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile = origWrite, origApply, origFile
+		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged = origWrite, origApply, origFile, origRead
 		logging.Init("text", "info", nil)
 	})
 	r.clock.Store(rebindGoldenNow.UnixNano())
