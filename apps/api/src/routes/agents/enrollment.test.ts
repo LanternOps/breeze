@@ -1406,6 +1406,9 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       backupReadProtocolVersion: null,
       backupIntegrityProtocolVersion: null,
       backupWriteProtocolVersion: null,
+      // #8318 §6.2: a re-enroll is a new install; its rebind capability is
+      // rewritten from this enrollment (none declared here → 0).
+      rebindProtocolVersion: 0,
     });
     // #8318 §6.4 / §5.7: the claims the previous install stamped are cleared
     // in the same UPDATE (the once-per-install edition-migration claim, and
@@ -3116,6 +3119,24 @@ describe('POST /agents/enroll — virtualization attribute persistence (#1387)',
     const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(deviceValues.isVirtual).toBe(true);
     expect(deviceValues.virtualizationPlatform).toBe('hyperv');
+  });
+
+  it('#8318 §6.2: records the declared rebind capability (exactly 1; anything else is 0)', async () => {
+    for (const [declared, recorded] of [[1, 1], [2, 0], ['1', 0], [undefined, 0]] as const) {
+      vi.clearAllMocks();
+      const deviceInsertValues = arrangeFreshEnroll();
+      const body = declared === undefined
+        ? baseEnrollBody
+        : { ...baseEnrollBody, securityCapabilities: { rebindProtocolVersion: declared } };
+      const resp = await buildApp().request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(resp.status, String(declared)).toBe(201);
+      const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+      expect(deviceValues.rebindProtocolVersion, String(declared)).toBe(recorded);
+    }
   });
 
   it('persists a fresh enrollment as pending without fabricating a last-seen timestamp', async () => {
