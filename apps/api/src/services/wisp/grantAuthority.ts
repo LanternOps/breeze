@@ -190,11 +190,7 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
   if (check.toolName !== undefined) {
     // The two agent deny registries are checked directly too, so the
     // never-delegable floor does not depend on how the ceiling was built.
-    if (
-      ceiling.deniedTools.has(check.toolName)
-      || AGENT_HUMAN_ONLY_TOOLS.has(check.toolName)
-      || AGENT_DENIED_READ_TOOLS.has(check.toolName)
-    ) {
+    if (ceiling.deniedTools.has(check.toolName) || isNeverDelegableTool(check.toolName)) {
       throw new CeilingViolationError('tool', `tool ${check.toolName} is never delegable`);
     }
     if (ceiling.toolAllowlist !== null && !ceiling.toolAllowlist.has(check.toolName)) {
@@ -372,11 +368,17 @@ export function buildOrgTerms(
  */
 const WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS: ReadonlySet<string> = new Set(['launch_specialist']);
 
+/** In an agent deny registry and not one a human may call under a grant. */
+export function isNeverDelegableTool(toolName: string): boolean {
+  return (
+    (AGENT_HUMAN_ONLY_TOOLS.has(toolName) || AGENT_DENIED_READ_TOOLS.has(toolName))
+    && !WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS.has(toolName)
+  );
+}
+
 /** Both agent deny registries — the floor every ceiling carries. */
 export function agentDeniedToolNames(): string[] {
-  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()].filter(
-    (name) => !WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS.has(name),
-  );
+  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()].filter(isNeverDelegableTool);
 }
 
 // ---------------------------------------------------------------------------

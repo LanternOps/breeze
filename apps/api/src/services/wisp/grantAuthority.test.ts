@@ -298,6 +298,15 @@ describe('resolveGrantCeiling', () => {
   // never call it; folding that registry into the ceiling floor denied it to
   // the human's own Wisp turn too, so no path remained (live stack: "Wisp
   // can't use this tool under your current grant." for a *:* grantor).
+  it('assertWithinCeiling admits launch_specialist when the snapshot does not deny it, and still refuses the other agent denies', () => {
+    const c = ceiling({ deniedTools: new Set(), orgIds: new Set(['o1']), permissionKeys: new Set(['*:*']) });
+    expect(() => assertWithinCeiling(c, { toolName: 'launch_specialist' })).not.toThrow();
+    expect(() => assertWithinCeiling(c, { toolName: 'workspace_launch_analysis' })).toThrow(CeilingViolationError);
+    expect(() => assertWithinCeiling(c, { toolName: 'ioc_hunt' })).toThrow(CeilingViolationError);
+    // A revision whose snapshot still lists it (pre-fix) keeps denying until refreshed.
+    expect(() => assertWithinCeiling(ceiling({ deniedTools: new Set(['launch_specialist']) }), { toolName: 'launch_specialist' })).toThrow(CeilingViolationError);
+  });
+
   it('the ceiling floor keeps every agent deny except launch_specialist, which only a human under a grant may call', () => {
     const floor = new Set(agentDeniedToolNames());
     expect(floor.has('launch_specialist')).toBe(false);
