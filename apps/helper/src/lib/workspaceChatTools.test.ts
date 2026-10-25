@@ -192,7 +192,7 @@ describe('executor error handling (never throws)', () => {
     const out = (await executeWorkspaceChatTool('search_workspace_files', { q: 'x' })) as {
       error: string;
     };
-    expect(typeof out.error).toBe('string');
+    expect(out.error).toBe('Knowledge sources are not connected.');
     expect(helperRequestMock).not.toHaveBeenCalled();
   });
 });

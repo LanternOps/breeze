@@ -245,14 +245,22 @@ describe('SignedAgreementsPage', () => {
   });
 
   describe('Record signed agreement entry point (#8865 W1c)', () => {
-    it('renders the button only when the user holds agreements:write', async () => {
+    it('renders the button only when the user holds agreements:send', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findByTestId('signed-agreements-tab');
+      expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
+    });
+
+    // #9075 W2a (OD7 B): record-signed moved from agreements:write to agreements:send.
+    it('hides the button from a holder of agreements:write alone', async () => {
+      perms.granted = new Set(['agreements:read', 'agreements:write']);
       render(<SignedAgreementsPage />);
       await screen.findByTestId('signed-agreements-tab');
       expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
     });
 
     it('opens the dialog and reloads the list after a recording', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', '');
@@ -263,14 +271,14 @@ describe('SignedAgreementsPage', () => {
     });
 
     it('is available in the org embed with the org locked', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage lockedOrgId="org-1" />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', 'org-1');
     });
 
     it('is available in the contract embed with org-less contract lock', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage lockedContractId="ct-1" />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-contract', 'ct-1');

@@ -1513,7 +1513,7 @@ which is validated when set. Full descriptions are in
 | Offline work queue | Queueing is always enabled for queueable actions. The former opt-out has been removed; use action-specific offline policies where available. |
 | `DEVICE_COMMAND_QUEUE_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS`, `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | Shorten or lengthen how long queued work waits for an offline device (7 days / 24 hours / 24 hours). |
 | `MFA_FORCE_FOR_PARTNER_ADMIN` | **Now defaults to `false`.** Set `true` to enforce forced MFA for Partner Admins immediately. |
-| `AI_OPERATOR_TASKS_ENABLED`, `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | Turn on the opt-in [AI Operator](/features/ai-agents/#ai-operator-preview) preview. Both ship off. |
+| `AI_OPERATOR_TASKS_ENABLED`, `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | Turn on the opt-in [AI tasks](/features/ai-tasks/) preview. Both ship off. |
 | `READINESS_CACHE_TTL_MS`, `READINESS_PROBE_TIMEOUT_MS` | Tune the new readiness contract. Defaults suit every deployment we know of. |
 | `OFFLINE_DETECTOR_WORKER_CONCURRENCY` | Raise offline-sweep concurrency on a very large fleet. |
 | `PLAY_INTEGRITY_SERVICE_ACCOUNT` | Verify Android approver devices with Play Integrity as well as hardware Key Attestation. **A malformed value stops the boot** rather than silently reporting "not configured" forever. |
@@ -1543,7 +1543,7 @@ it at `/ready`.** See [Health Monitoring](/monitoring/health/).
 - **The unified device list is on by default.** `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` now defaults to `true`. It is a build-time variable baked into the web image, so the published image ships with the All / Agent / Network / Manual segments on and there is nothing to change in `.env` or Compose. Build the web image yourself and pass `false` to keep the agent-only list.
 - **Metric-anomaly detection looks back 15 minutes instead of 30**, with a statement timeout, so overlapping runs stop piling up on the rollup tables. The trade-off: **a skipped tick no longer self-heals** and a gap needs a manual backfill.
 - **Cross-organization device moves may now drop custom-field values** that are not visible in the target organization. Previously they were kept silently; now they are dropped and logged.
-- **Still off by default:** AI agents and the AI Operator preview, reboot deferral (per policy), and the removed-device purge retention policy.
+- **Still off by default:** AI agents and the AI tasks preview, reboot deferral (per policy), and the removed-device purge retention policy.
 
 <Aside type="note" title="Known wrinkle on Linux">
   `systemctl stop breeze-agent` runs its full 30-second stop timeout and ends in a

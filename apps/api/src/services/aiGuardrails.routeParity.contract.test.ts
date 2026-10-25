@@ -298,3 +298,44 @@ describe('test_webhook requires organizations:write, like POST /webhooks/:id/tes
     expect(allows(parseGrants(['organizations:write']), 'test_webhook')).toBe(true);
   });
 });
+
+// Full-control W04 (#6758): four permission corrections, each asserted in both
+// directions (the previous tool grant alone is refused; the route's grant works).
+describe('create_incident requires alerts:write, like POST /incidents (routes/incidents.ts requireIncidentWrite)', () => {
+  it('organizations:write without alerts:write loses AI incident creation', () => {
+    expect(allows(parseGrants(['organizations:write']), 'create_incident')).toBe(false);
+  });
+  it('alerts:write is allowed', () => {
+    expect(allows(parseGrants(['alerts:write']), 'create_incident')).toBe(true);
+  });
+});
+
+describe('trigger_agent_restart requires devices:recover_agent, like POST /devices/:id/agent-recovery', () => {
+  it('devices:execute without devices:recover_agent loses the AI agent restart', () => {
+    expect(allows(parseGrants(['devices:execute']), 'trigger_agent_restart')).toBe(false);
+  });
+  it('devices:recover_agent is allowed', () => {
+    expect(allows(parseGrants(['devices:recover_agent']), 'trigger_agent_restart')).toBe(true);
+  });
+});
+
+describe('remediate_sensitive_data accept_risk/false_positive/mark_remediated require devices:execute, like POST /sensitive-data/remediate', () => {
+  it.each(['accept_risk', 'false_positive', 'mark_remediated'])('%s: devices:write alone is refused', (action) => {
+    expect(allows(parseGrants(['devices:write']), 'remediate_sensitive_data', { action })).toBe(false);
+  });
+  it.each(['accept_risk', 'false_positive', 'mark_remediated'])('%s: devices:execute is allowed', (action) => {
+    expect(allows(parseGrants(['devices:execute']), 'remediate_sensitive_data', { action })).toBe(true);
+  });
+});
+
+describe('execute_containment requires devices:execute AND alerts:write (tool-only extra: it also mutates incident state)', () => {
+  it('devices:execute alone is refused', () => {
+    expect(allows(parseGrants(['devices:execute']), 'execute_containment')).toBe(false);
+  });
+  it('alerts:write alone is refused', () => {
+    expect(allows(parseGrants(['alerts:write']), 'execute_containment')).toBe(false);
+  });
+  it('both together are allowed', () => {
+    expect(allows(parseGrants(['devices:execute', 'alerts:write']), 'execute_containment')).toBe(true);
+  });
+});

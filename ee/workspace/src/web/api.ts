@@ -27,12 +27,12 @@ export type WorkspaceApiErrorKind =
   | 'aborted';
 
 const KIND_MESSAGES: Record<WorkspaceApiErrorKind, string> = {
-  protocol: 'The Wisp API returned an unexpected response.',
+  protocol: 'The Knowledge API returned an unexpected response.',
   'invalid-request': 'The request was rejected as invalid.',
-  unauthorized: 'You are not authorized for this Wisp resource.',
-  'not-found': 'The Wisp resource was not found.',
-  server: 'The Wisp API failed to process the request.',
-  network: 'The Wisp API could not be reached.',
+  unauthorized: 'You are not authorized for this Knowledge resource.',
+  'not-found': 'The Knowledge resource was not found.',
+  server: 'The Knowledge API failed to process the request.',
+  network: 'The Knowledge API could not be reached.',
   aborted: 'The request was aborted.',
 };
 

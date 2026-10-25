@@ -285,7 +285,7 @@
     "subtitle": "Connectez des fournisseurs, choisissez les modèles disponibles et définissez le modèle par défaut de chaque fonctionnalité d'IA.",
     "forbidden": "Vous n'avez pas l'autorisation de gérer les fournisseurs et modèles d'IA.",
     "loadFailed": "Impossible de charger les fournisseurs et modèles d'IA.",
-    "workspaceNote": "L'enrichissement de contenu Workspace utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
+    "workspaceNote": "L'indexation des connaissances utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
     "connections": {
       "title": "Connexions",
       "subtitle": "Où vos requêtes d'IA sont envoyées et qui les paie.",

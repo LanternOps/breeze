@@ -285,7 +285,7 @@
     "subtitle": "Collega i provider, scegli quali modelli sono disponibili e imposta il modello predefinito per ogni funzione IA.",
     "forbidden": "Non hai il permesso di gestire provider e modelli IA.",
     "loadFailed": "Impossibile caricare provider e modelli IA.",
-    "workspaceNote": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
+    "workspaceNote": "L'indicizzazione delle conoscenze utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
     "connections": {
       "title": "Connessioni",
       "subtitle": "Dove vengono inviate le richieste IA e chi le paga.",

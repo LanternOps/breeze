@@ -49,6 +49,13 @@ export function effectToolLabel(t: Translator, tool: string): string {
     case 'm365_retire_intune_device': return t('aiOperator:effectTool.m365RetireIntuneDevice');
     case 'm365_revoke_sessions': return t('aiOperator:effectTool.m365RevokeSessions');
     case 'm365_disable_user': return t('aiOperator:effectTool.m365DisableUser');
+    // identity_onboarding (W07 R2b)
+    case 'm365_create_user': return t('aiOperator:effectTool.m365CreateUser');
+    case 'm365_assign_license': return t('aiOperator:effectTool.m365AssignLicense');
+    case 'm365_add_to_group': return t('aiOperator:effectTool.m365AddToGroup');
+    case 'google_move_ou': return t('aiOperator:effectTool.googleMoveOu');
+    case 'google_assign_license': return t('aiOperator:effectTool.googleAssignLicense');
+    case 'google_add_to_group': return t('aiOperator:effectTool.googleAddToGroup');
     default: return tool;
   }
 }

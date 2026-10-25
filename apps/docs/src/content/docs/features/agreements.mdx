@@ -76,8 +76,11 @@ Not every agreement arrives through a quote. When a customer signed your MSA els
 |---|---|
 | View agreement templates and signed agreements | `agreements:read` |
 | Create, edit, publish and archive templates; link a signed agreement to a contract | `agreements:write` |
+| Send an agreement for signature, copy its link, void it, record one signed elsewhere | `agreements:send` |
 
 Managing partner-wide templates additionally requires full partner organization access.
+
+**Record signed agreement** needs `agreements:send` from the release after v0.124.0 (it used `agreements:write` before). On upgrade, every role that holds `agreements:write` -- built-in or custom -- is granted `agreements:send` automatically, so nobody loses access; remove it from a role afterwards if that role should edit templates but not send or record agreements.
 
 These are **separate** from contract permissions, deliberately: a technician who needs to pull up a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms. Assign them through **Settings → Users & Roles**.
 

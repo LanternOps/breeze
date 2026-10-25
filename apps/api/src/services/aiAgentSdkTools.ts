@@ -444,8 +444,8 @@ export const TOOL_TIERS = {
   manage_monitors: 1,           // Read-only; retired mutations return guidance
   get_service_monitoring_status: 1,
   // W01 (spec §4.4) — read-only reachability for a discovered network asset,
-  // with the source and age of the evidence. Wired here rather than added to
-  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // with the source and age of the evidence. Wired with a tier (the registry
+  // ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS contract): without one, createSessionPreToolUse rejects
   // it as "Unknown tool" and the chat tells the user the capability does not
   // exist.
   list_network_assets: 1,
@@ -469,10 +469,9 @@ export const TOOL_TIERS = {
   // M4 Task 4 (#6000): the one topology action — approval-gated (supervised,
   // fresh second factor, pinned effect digest); runs only as a release.
   diagnose_connectivity: 3,
-  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
-  // get_monitor remain in the frozen
-  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
-  // — these two are new and wired directly instead of widening that list.
+  // Monitor definition activity/escalation tools (#5290 W03), wired directly.
+  // (The frozen KNOWN_MISSING_TOOL_TIERS baseline they avoided widening was
+  // emptied and deleted in full-control W04, #6758.)
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // #6669: the only chat path to author a monitor (e.g. software_presence
@@ -605,6 +604,29 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+  // Per-action classes live in aiGuardrails (W04 class review: containment,
+  // agent maintenance and device writes supervised; remote sessions and PAM
+  // elevation requests four-eyes; collect_evidence screenshot input-aware).
+  execute_containment: 3,
+  create_incident: 2,
+  collect_evidence: 2,
+  request_elevation: 3,
+  revoke_elevation: 2,
+  create_remote_session: 3,
+  manage_processes: 1,
+  manage_scheduled_tasks: 1,
+  registry_operations: 2,
+  trigger_agent_restart: 3,
+  trigger_agent_upgrade: 3,
+  manage_software_policy: 3,
+  manage_browser_policy: 3,
+  manage_peripheral_policy: 3,
+  remediate_sensitive_data: 3,
+  remediate_software_violation: 3,
+  assign_security_training: 2,
+  configure_network_baseline: 3,
+  acknowledge_network_device: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3433,6 +3455,143 @@ export function buildBreezeSdkTools(
       makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+    // Classes live in aiGuardrails (W04 class review); every device write is
+    // supervised, remote sessions and elevation requests four-eyes.
+
+    tool(
+      'execute_containment',
+      registryDescription('execute_containment'),
+      inputShape('execute_containment'),
+      makeHandler('execute_containment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'create_incident',
+      registryDescription('create_incident'),
+      inputShape('create_incident'),
+      makeHandler('create_incident', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'collect_evidence',
+      registryDescription('collect_evidence'),
+      inputShape('collect_evidence'),
+      makeHandler('collect_evidence', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'request_elevation',
+      registryDescription('request_elevation'),
+      inputShape('request_elevation'),
+      makeHandler('request_elevation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'revoke_elevation',
+      registryDescription('revoke_elevation'),
+      inputShape('revoke_elevation'),
+      makeHandler('revoke_elevation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'create_remote_session',
+      registryDescription('create_remote_session'),
+      inputShape('create_remote_session'),
+      makeHandler('create_remote_session', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_processes',
+      registryDescription('manage_processes'),
+      inputShape('manage_processes'),
+      makeHandler('manage_processes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_scheduled_tasks',
+      registryDescription('manage_scheduled_tasks'),
+      inputShape('manage_scheduled_tasks'),
+      makeHandler('manage_scheduled_tasks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'registry_operations',
+      registryDescription('registry_operations'),
+      inputShape('registry_operations'),
+      makeHandler('registry_operations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_agent_restart',
+      registryDescription('trigger_agent_restart'),
+      inputShape('trigger_agent_restart'),
+      makeHandler('trigger_agent_restart', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_agent_upgrade',
+      registryDescription('trigger_agent_upgrade'),
+      inputShape('trigger_agent_upgrade'),
+      makeHandler('trigger_agent_upgrade', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_policy',
+      registryDescription('manage_software_policy'),
+      inputShape('manage_software_policy'),
+      makeHandler('manage_software_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_browser_policy',
+      registryDescription('manage_browser_policy'),
+      inputShape('manage_browser_policy'),
+      makeHandler('manage_browser_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_peripheral_policy',
+      registryDescription('manage_peripheral_policy'),
+      inputShape('manage_peripheral_policy'),
+      makeHandler('manage_peripheral_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_sensitive_data',
+      registryDescription('remediate_sensitive_data'),
+      inputShape('remediate_sensitive_data'),
+      makeHandler('remediate_sensitive_data', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_software_violation',
+      registryDescription('remediate_software_violation'),
+      inputShape('remediate_software_violation'),
+      makeHandler('remediate_software_violation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'assign_security_training',
+      registryDescription('assign_security_training'),
+      inputShape('assign_security_training'),
+      makeHandler('assign_security_training', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_network_baseline',
+      registryDescription('configure_network_baseline'),
+      inputShape('configure_network_baseline'),
+      makeHandler('configure_network_baseline', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'acknowledge_network_device',
+      registryDescription('acknowledge_network_device'),
+      inputShape('acknowledge_network_device'),
+      makeHandler('acknowledge_network_device', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_backup_configs',
       registryDescription('manage_backup_configs'),
@@ -3454,8 +3613,8 @@ export function buildBreezeSdkTools(
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only reads, previously registered but
-    // untiered (aiAgentSdkTools.registryParity.contract.test.ts's
-    // KNOWN_MISSING_TOOL_TIERS). Backup, Hyper-V, MSSQL, vault, SLA and
+    // untiered (the since-deleted KNOWN_MISSING_TOOL_TIERS list, #3300).
+    // Backup, Hyper-V, MSSQL, vault, SLA and
     // C2C reads. Shape derived from toolInputSchemas (W01-D7).
     tool(
       'get_backup_status',

@@ -285,7 +285,7 @@
     "subtitle": "Connect providers, choose which models are available, and set the default model for each AI feature.",
     "forbidden": "You don't have permission to manage AI providers and models.",
     "loadFailed": "Couldn't load AI providers and models.",
-    "workspaceNote": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "workspaceNote": "Knowledge indexing uses your configured AI provider and appears in your AI usage.",
     "connections": {
       "title": "Connections",
       "subtitle": "Where your AI requests are sent and who pays for them.",

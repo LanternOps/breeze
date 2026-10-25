@@ -285,7 +285,7 @@
     "subtitle": "Conecte provedores, escolha quais modelos estão disponíveis e defina o modelo padrão de cada recurso de IA.",
     "forbidden": "Você não tem permissão para gerenciar provedores e modelos de IA.",
     "loadFailed": "Não foi possível carregar os provedores e modelos de IA.",
-    "workspaceNote": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
+    "workspaceNote": "A indexação de conhecimento usa o provedor de IA configurado e aparece no seu uso de IA.",
     "connections": {
       "title": "Conexões",
       "subtitle": "Para onde suas solicitações de IA são enviadas e quem paga por elas.",

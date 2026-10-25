@@ -989,8 +989,12 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove (tags feed run scope directly and via dynamic groups), each with a real reason', () => {
-    expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual(['manage_tags:add', 'manage_tags:remove']);
+  it('is exactly manage_tags add/remove and manage_groups add_devices/remove_devices (both feed run scope), each with a real reason', () => {
+    expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
+      // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
+      'manage_groups:add_devices', 'manage_groups:remove_devices',
+      'manage_tags:add', 'manage_tags:remove',
+    ]);
     for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
   });
 
@@ -1026,6 +1030,24 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
 
   it('control: manage_tags:list still reaches an agent', () => {
     const check = checkAgentGuardrails('manage_tags', { action: 'list', deviceId: 'dev-1' }, tagPolicy);
+    expect(check.disposition).toBe('allow');
+  });
+
+  // W04-D8 (#6758): membership is a live read at run admission and before
+  // tool use (runResourceScope.ts), so an allowlisted add puts a device inside
+  // any agent whose triggers.deviceGroupIds names the group.
+  const groupPolicy = policyWith({
+    mode: 'act', toolAllowlist: ['manage_groups', 'manage_groups:add_devices', 'manage_groups:remove_devices'],
+  });
+
+  it.each(['add_devices', 'remove_devices'])('denies an allowlisted manage_groups:%s (group membership feeds run scope)', (action) => {
+    const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] }, groupPolicy);
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/never available to agents/);
+  });
+
+  it('control: manage_groups:list still reaches an agent', () => {
+    const check = checkAgentGuardrails('manage_groups', { action: 'list' }, groupPolicy);
     expect(check.disposition).toBe('allow');
   });
 });

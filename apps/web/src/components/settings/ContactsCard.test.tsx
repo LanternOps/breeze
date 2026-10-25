@@ -669,3 +669,78 @@ describe('ContactsCard — Offboard a person launcher', () => {
     expect(screen.queryByTestId('offboard-launcher-contact-c-ada')).not.toBeInTheDocument();
   });
 });
+
+// Operator Recipe Library W07 R2b (#6172, Task 18) — MOUNT proof for the org
+// contacts page's "Onboard a person" action. Page-level, not per row: there is
+// no row for a person who does not exist yet.
+describe('ContactsCard — Onboard a person launcher', () => {
+  const wf = (recipeKey: string, readiness: string) => ({
+    recipeKey, recipeVersion: 4, name: recipeKey, summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(opts: { flag: boolean; readiness?: string }) {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === '/config') return jsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) {
+        return jsonResponse({ data: [wf('identity_offboarding', 'ready'), wf('identity_onboarding', opts.readiness ?? 'ready')] });
+      }
+      if (url.startsWith('/devices')) return jsonResponse({ data: [] });
+      if (url.startsWith('/orgs/sites')) {
+        return jsonResponse({ data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } });
+      }
+      return jsonResponse({ data: CONTACTS, pagination: { page: 1, limit: 25, total: CONTACTS.length } });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders ONE page-level action that opens the onboarding form with every field empty', async () => {
+    mockWithOperator({ flag: true, readiness: 'setup_required' });
+    await renderCard();
+    expect(await screen.findAllByTestId('launch-onboard-person-org')).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('launch-onboard-person-org'));
+    expect(await screen.findByTestId('start-recipe-form')).toHaveAttribute('data-recipe-key', 'identity_onboarding');
+    expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
+    expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe('');
+    expect(screen.queryByTestId('start-recipe-manager-prefill-note')).toBeNull();
+    // The Library was read once for the org (shared with the per-row offboard launchers).
+    expect(fetchWithAuthMock.mock.calls.filter(([u]) => String(u).startsWith('/ai/operator/workflows'))).toHaveLength(1);
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['onboarding is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(opts);
+    await renderCard();
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('launch-onboard-person-org')).not.toBeInTheDocument();
+  });
+
+  it('the org page hosts this card on its contacts tab, and the org page is a client:load island', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const astro = readFileSync(join(__dirname, '../../pages/organizations/[id].astro'), 'utf8');
+    expect(astro).toMatch(/<OrganizationRecordPage[^>]*client:load/);
+    const record = readFileSync(join(__dirname, '../organizations/record/OrganizationRecordPage.tsx'), 'utf8');
+    expect(record).toMatch(/effectiveTab === 'contacts' && <ContactsCard/);
+  });
+});

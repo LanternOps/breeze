@@ -285,7 +285,7 @@
     "subtitle": "Sağlayıcıları bağlayın, hangi modellerin kullanılabilir olacağını seçin ve her yapay zeka özelliği için varsayılan modeli belirleyin.",
     "forbidden": "Yapay zeka sağlayıcılarını ve modellerini yönetme yetkiniz yok.",
     "loadFailed": "Yapay zeka sağlayıcıları ve modelleri yüklenemedi.",
-    "workspaceNote": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
+    "workspaceNote": "Bilgi dizinleme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
     "connections": {
       "title": "Bağlantılar",
       "subtitle": "Yapay zeka isteklerinizin nereye gönderildiği ve bedelini kimin ödediği.",

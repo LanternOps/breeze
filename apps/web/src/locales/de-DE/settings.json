@@ -285,7 +285,7 @@
     "subtitle": "Verbinden Sie Anbieter, legen Sie fest, welche Modelle verfügbar sind, und wählen Sie das Standardmodell für jede KI-Funktion.",
     "forbidden": "Sie haben keine Berechtigung, KI-Anbieter und Modelle zu verwalten.",
     "loadFailed": "KI-Anbieter und Modelle konnten nicht geladen werden.",
-    "workspaceNote": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "workspaceNote": "Die Wissensindizierung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
     "connections": {
       "title": "Verbindungen",
       "subtitle": "Wohin Ihre KI-Anfragen gesendet werden und wer sie bezahlt.",
