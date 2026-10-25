@@ -8,9 +8,10 @@
  *    and principal labels exactly as approved. The ordinal is shown, because
  *    an approved plan IS the dispatch order.
  *  - A `null` operation state is "not started / unknown" — never success.
- *  - W07 R2b: a task with MORE than one approval (onboarding approves its
- *    account creation, then its licences and groups) renders each approval as
- *    a labelled stage block, oldest first. A creation approval that ran and
+ *  - W07 R2b: an onboarding task with more than one approval (it approves
+ *    its account creation, then its licences and groups) renders each approval
+ *    as a labelled stage block, oldest first. A plan with no onboarding stage
+ *    (an offboarding re-plan) keeps R1's rendering. A creation approval that ran and
  *    was then followed by the next stage is `superseded` in the data; it stays
  *    visible and says it was followed, not replaced. A one-approval task
  *    renders exactly as R1 shipped it (snapshot-pinned).
@@ -76,7 +77,12 @@ function stageKind(rev: AiOperatorPlanApprovalDto): StageKind {
   return null;
 }
 
-function Revision({ rev, stage }: { rev: AiOperatorPlanApprovalDto; stage?: StageKind }) {
+function Revision({ rev, stage, followedByProvision = false }: {
+  rev: AiOperatorPlanApprovalDto;
+  stage?: StageKind;
+  /** The revision that superseded this one is the provisioning stage. */
+  followedByProvision?: boolean;
+}) {
   const { t } = useTranslation('aiOperator');
   const ordered = [...rev.effects].sort((a, b) => a.ordinal - b.ordinal);
   const providers: AiOperatorPlanEffectDto['provider'][] = [];
@@ -103,7 +109,7 @@ function Revision({ rev, stage }: { rev: AiOperatorPlanApprovalDto; stage?: Stag
       {superseded && rev.supersededByRevision !== null && (
         // A creation approval that was approved and then moved on to the next
         // stage was not replaced: what it approved ran.
-        stage === 'creation' && rev.approvedAt !== null
+        stage === 'creation' && rev.approvedAt !== null && followedByProvision
           ? <p className="text-xs text-muted-foreground">{t('taskPanels.plan.followedBy', { n: rev.supersededByRevision })}</p>
           : <p className="text-xs text-muted-foreground">{t('taskPanels.plan.supersededBy', { n: rev.supersededByRevision })}</p>
       )}
@@ -143,7 +149,8 @@ export default function OperatorTaskPlan({ plan }: { plan: AiOperatorPlanApprova
     return <p data-testid="task-plan-empty" className="text-sm text-muted-foreground">{t('taskPanels.plan.empty')}</p>;
   }
   const ordered = [...plan].sort((a, b) => a.planRevision - b.planRevision);
-  if (ordered.length === 1) {
+  const kinds = new Map(ordered.map((r) => [r.planRevision, stageKind(r)]));
+  if (ordered.length === 1 || ![...kinds.values()].some((k) => k !== null)) {
     return (
       <div data-testid="task-plan" className="space-y-4">
         {ordered.map((rev) => <Revision key={rev.id} rev={rev} />)}
@@ -153,7 +160,8 @@ export default function OperatorTaskPlan({ plan }: { plan: AiOperatorPlanApprova
   return (
     <div data-testid="task-plan" className="space-y-4">
       {ordered.map((rev, i) => {
-        const kind = stageKind(rev);
+        const kind = kinds.get(rev.planRevision) ?? null;
+        const next = rev.supersededByRevision === null ? null : kinds.get(rev.supersededByRevision) ?? null;
         return (
           <div key={rev.id} data-testid={`task-plan-stage-${rev.planRevision}`} className="space-y-2">
             <h4 className="text-sm font-semibold">
@@ -161,7 +169,7 @@ export default function OperatorTaskPlan({ plan }: { plan: AiOperatorPlanApprova
               {kind === 'creation' && <span className="font-normal text-muted-foreground"> · {t('taskPanels.plan.stageCreation')}</span>}
               {kind === 'provision' && <span className="font-normal text-muted-foreground"> · {t('taskPanels.plan.stageProvision')}</span>}
             </h4>
-            <Revision rev={rev} stage={kind} />
+            <Revision rev={rev} stage={kind} followedByProvision={next === 'provision'} />
           </div>
         );
       })}

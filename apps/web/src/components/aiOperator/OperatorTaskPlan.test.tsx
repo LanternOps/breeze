@@ -79,7 +79,7 @@ describe('OperatorTaskPlan — onboarding stages (W07 R2b)', () => {
       effect(1, 'm365_disable_user', { operationState: 'succeeded' }),
     ] })]} />);
     // formatDateTime renders in the runner's timezone: pin structure and copy, not the clock.
-    expect(container.innerHTML.replace(/\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2}\s?[AP]M/g, '<time>')).toMatchSnapshot();
+    expect(container.innerHTML.replace(/\d{1,2}[./]\d{1,2}[./]\d{4},? \d{1,2}:\d{2}(:\d{2})?(\s?[AP]M)?/gi, '<time>')).toMatchSnapshot();
   });
 });
 
@@ -116,5 +116,27 @@ describe('OperatorTaskPlan — two approval stages (W07 R2b)', () => {
     const s1 = screen.getByTestId('task-plan-stage-1');
     expect(s1).toHaveTextContent(/followed by approval 2/i);
     expect(s1).not.toHaveTextContent('Superseded by revision 2');
+  });
+});
+
+describe('OperatorTaskPlan — review fixes (PR #10128)', () => {
+  it('an offboarding re-plan (two revisions, no onboarding stage) renders as R1 did: no stage blocks', () => {
+    render(<OperatorTaskPlan plan={[
+      revision(1, { state: 'superseded', supersededByRevision: 2, approvedAt: null, approvedByUserId: null, effects: [effect(0, 'm365_disable_user')] }),
+      revision(2, { effects: [effect(0, 'm365_disable_user')] }),
+    ]} />);
+    expect(screen.queryAllByTestId(/^task-plan-stage-\d+$/)).toHaveLength(0);
+    expect(screen.queryByText(/^Approval \d/)).toBeNull();
+  });
+
+  it('a creation approval superseded by another CREATION (a re-plan) is "superseded", not "followed by the next stage"', () => {
+    const UPN = 'priya@customer.example';
+    render(<OperatorTaskPlan plan={[
+      revision(1, { state: 'superseded', supersededByRevision: 2, effects: [effect(0, 'm365_create_user', { principalLabel: UPN })] }),
+      revision(2, { id: 'a-2', effects: [effect(0, 'm365_create_user', { principalLabel: UPN })] }),
+    ]} />);
+    const s1 = screen.getByTestId('task-plan-stage-1');
+    expect(s1).toHaveTextContent('Superseded by revision 2');
+    expect(s1).not.toHaveTextContent(/followed by approval/i);
   });
 });

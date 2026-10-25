@@ -2,10 +2,12 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CreatedAccountView, CredentialState } from '@breeze/shared';
 
-const viewer = { id: 'user-approver' as string | null };
+const FEED = [{ resource: 'ai_sessions', action: 'read_all' }];
+const viewer = { id: 'user-approver' as string | null, permissions: FEED as Array<{ resource: string; action: string }> };
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: (sel: (s: { user: { id: string } | null }) => unknown) => sel({ user: viewer.id ? { id: viewer.id } : null }),
+  useAuthStore: (sel: (s: { user: { id: string; permissions: unknown } | null }) => unknown) =>
+    sel({ user: viewer.id ? { id: viewer.id, permissions: viewer.permissions } : null }),
 }));
 
 import { fetchWithAuth } from '../../stores/auth';
@@ -39,6 +41,7 @@ function account(state: CredentialState, overrides: Partial<CreatedAccountView> 
 
 beforeEach(() => {
   viewer.id = APPROVER;
+  viewer.permissions = FEED;
   fetchMock.mockReset();
 });
 afterEach(() => vi.clearAllMocks());
@@ -96,6 +99,29 @@ describe('OperatorTaskAccounts', () => {
     viewer.id = null;
     render(<OperatorTaskAccounts accounts={[account('available')]} />);
     expect(screen.queryByTestId('task-account-reveal-m365')).toBeNull();
+  });
+
+  it('2d. available but NO named revealer: nobody is offered a control or told to ask, and the copy says to reset', () => {
+    viewer.id = STARTER;
+    render(<OperatorTaskAccounts accounts={[account('available', { revealableByUserId: null, revealableByName: null })]} />);
+    const cell = screen.getByTestId('task-account-credential-m365');
+    expect(within(cell).queryByRole('link')).toBeNull();
+    expect(cell).not.toHaveTextContent(/^Ask /);
+    expect(cell).toHaveTextContent('Do not create a second account.');
+  });
+
+  it('2e. the approver without access to the AI activity feed is told so, not sent to a page that refuses them', () => {
+    viewer.permissions = [{ resource: 'organizations', action: 'write' }];
+    render(<OperatorTaskAccounts accounts={[account('available')]} />);
+    const cell = screen.getByTestId('task-account-credential-m365');
+    expect(within(cell).queryByRole('link')).toBeNull();
+    expect(within(cell).getByTestId('task-account-reveal-needs-access-m365')).toHaveTextContent('AI activity feed');
+  });
+
+  it('2f. a wildcard admin grant opens the feed', () => {
+    viewer.permissions = [{ resource: '*', action: '*' }];
+    render(<OperatorTaskAccounts accounts={[account('available')]} />);
+    expect(screen.getByTestId('task-account-reveal-m365')).toBeInTheDocument();
   });
 
   it('3. the reveal control is a link into the AI activity feed, and clicking it makes no request', () => {

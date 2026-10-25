@@ -14,6 +14,12 @@
  *    product changes who may reveal, only the API's field changes.
  *  - Everyone else is told whom to ask, in copy that is not an error: it is
  *    four-eyes working, not a fault.
+ *  - The feed itself needs `ai_sessions:read_all` (`GET /ai/admin/tool-
+ *    executions`). An approver without it is told so instead of being sent to
+ *    a page that will refuse them.
+ *  - `available` with NO named revealer means the API found nobody the
+ *    requester-only route will let through: the copy says to reset, never
+ *    "ask the approver".
  *  - Only the whitelisted view fields are rendered, so a field an API bug
  *    added (a password, a sealed blob) can never reach the page.
  */
@@ -21,19 +27,31 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { CreatedAccountView } from '@breeze/shared';
 import { useAuthStore } from '../../stores/auth';
+import { hasPermission } from '@/lib/permissions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { providerLabel } from './operatorTaskLabels';
 
 /** Where `TempPasswordSection` lives: the AI activity feed's approvals. */
 export const ACTIVITY_FEED_HREF = '/ai-risk';
 
-function Credential({ account, viewerId }: { account: CreatedAccountView; viewerId: string | null }) {
+interface Viewer { id: string | null; canOpenFeed: boolean }
+
+function Credential({ account, viewer }: { account: CreatedAccountView; viewer: Viewer }) {
   const { t } = useTranslation('aiOperator');
   const name = account.revealableByName ?? t('credential.theApprover');
   const testId = `task-account-credential-${account.provider}`;
   switch (account.credentialState) {
     case 'available': {
-      const mine = viewerId !== null && account.revealableByUserId !== null && account.revealableByUserId === viewerId;
+      if (account.revealableByUserId === null) {
+        // Nobody the requester-only route would let through: never "ask someone".
+        return (
+          <div data-testid={testId} data-state="available" className="space-y-1">
+            <p>{t('credential.noRevealer')}</p>
+            <p className="font-medium">{t('credential.expiredRecovery')}</p>
+          </div>
+        );
+      }
+      const mine = viewer.id !== null && account.revealableByUserId === viewer.id;
       return (
         <div data-testid={testId} data-state="available" className="space-y-1">
           <p>
@@ -41,7 +59,9 @@ function Credential({ account, viewerId }: { account: CreatedAccountView; viewer
               ? t('credential.availableTo', { name, date: formatDateTime(account.revealExpiresAt) })
               : t('credential.availableToNoDate', { name })}
           </p>
-          {mine ? (
+          {mine && !viewer.canOpenFeed ? (
+            <p data-testid={`task-account-reveal-needs-access-${account.provider}`}>{t('credential.revealNeedsFeedAccess')}</p>
+          ) : mine ? (
             <a
               data-testid={`task-account-reveal-${account.provider}`}
               data-intent-id={account.intentId ?? undefined}
@@ -83,6 +103,8 @@ function Credential({ account, viewerId }: { account: CreatedAccountView; viewer
 export default function OperatorTaskAccounts({ accounts }: { accounts: CreatedAccountView[] }) {
   const { t } = useTranslation('aiOperator');
   const viewerId = useAuthStore((s) => s.user?.id ?? null);
+  const permissions = useAuthStore((s) => s.user?.permissions);
+  const viewer: Viewer = { id: viewerId, canOpenFeed: hasPermission(permissions, 'ai_sessions', 'read_all') };
   // A task that created nothing grows no panel, header or empty state.
   if (accounts.length === 0) return null;
   return (
@@ -101,7 +123,7 @@ export default function OperatorTaskAccounts({ accounts }: { accounts: CreatedAc
               <span>{a.principalLabel}</span>
               <span className="font-mono text-xs text-muted-foreground">{a.externalId}</span>
             </div>
-            <Credential account={a} viewerId={viewerId} />
+            <Credential account={a} viewer={viewer} />
           </li>
         ))}
       </ul>
