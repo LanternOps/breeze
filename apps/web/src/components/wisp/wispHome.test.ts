@@ -85,6 +85,9 @@ describe('wispHome helpers (W08 Task 9)', () => {
     expect(await fetchWispHome()).toEqual({ kind: 'noGrant' });
     h.fetchWithAuth.mockResolvedValueOnce(res(403, { code: 'entitlement_required' }));
     expect(await fetchWispHome()).toEqual({ kind: 'locked' });
+    // Any other 403 (e.g. a Partner Viewer without ai_sessions:use) is a permission refusal, not a load error (#10145).
+    h.fetchWithAuth.mockResolvedValueOnce(res(403, { error: 'Permission denied' }));
+    expect(await fetchWispHome()).toEqual({ kind: 'forbidden' });
     h.fetchWithAuth.mockResolvedValueOnce(res(500, { error: 'boom' }));
     await expect(fetchWispHome()).rejects.toThrow();
     h.fetchWithAuth.mockResolvedValueOnce(res(200, { data: { thread: {} } }));

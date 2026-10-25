@@ -216,6 +216,8 @@ type NavItem = {
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
   requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
+  /** #10145: gated on `wispEnabled` from /orgs/partners/me (flag off = no entry). */
+  requiresWisp?: boolean;
   /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
   requiresAiOperatorTasks?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
@@ -299,7 +301,7 @@ export const navSections: NavSection[] = [
       // #6498: both drive the own-session /ai/* routes, every one of which
       // requires ai_sessions:use (#6396). Without this gate a role holding only
       // devices:read saw the full chat page and a bare "Permission denied" on send.
-      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, requiresWisp: true, partnerScopeOnly: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not

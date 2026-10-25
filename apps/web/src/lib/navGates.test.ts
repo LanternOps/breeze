@@ -29,3 +29,14 @@ it('flows navigation fails closed until the server flag is explicitly on', () =>
   expect(isNavGateVisible(gate, { ...ctx, flowsEnabled: true })).toBe(true);
   expect(isNavGateVisible(gate, { ...ctx, flowsEnabled: true, permissions: [] })).toBe(false);
 });
+
+it('the Wisp sidebar entry needs wispEnabled AND a partner-scoped token (#10145)', async () => {
+  const { navSections } = await import('../components/layout/Sidebar');
+  const entry = navSections.flatMap((s) => s.items).find((i) => i.href === '/wisp');
+  expect(entry).toBeDefined();
+  const ctx = { ...context, permissions: [{ resource: 'ai_sessions', action: 'use' }] };
+  expect(isNavGateVisible(entry!, ctx)).toBe(false); // flag unknown
+  expect(isNavGateVisible(entry!, { ...ctx, wispEnabled: false })).toBe(false);
+  expect(isNavGateVisible(entry!, { ...ctx, wispEnabled: true, getScope: () => 'organization' })).toBe(false);
+  expect(isNavGateVisible(entry!, { ...ctx, wispEnabled: true })).toBe(true);
+});

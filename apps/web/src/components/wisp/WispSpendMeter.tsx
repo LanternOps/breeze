@@ -6,8 +6,8 @@ export type WispSpendMeterProps = {
   budgetCents: number;
   /** ISO instant the UTC budget day resets (W05 `utcDayWindow(now).end`). */
   resetsAt: string;
-  /** Opens the budget control — where the exhausted-budget notice (W05) sends the user. */
-  onRaise: () => void;
+  /** Opens the budget control — where the exhausted-budget notice (W05) sends the user. Omitted when raising the budget cannot help (a partner-disabled grant). */
+  onRaise?: () => void;
 };
 
 const BAR: Record<SpendMeterState, string> = {
@@ -34,7 +34,7 @@ export default function WispSpendMeter({ spentCents, budgetCents, resetsAt, onRa
       <div className={`flex flex-wrap items-center gap-x-1 ${TEXT[state]}`}>
         <span>{t('wisp.spend.meter', { spent: spentCents, budget: budgetCents })}</span>
         {hours !== null && <span>· {t('wisp.spend.resets', { hours })}</span>}
-        {state === 'exhausted' && (
+        {state === 'exhausted' && onRaise && (
           <button
             type="button"
             data-testid="wisp-spend-raise"

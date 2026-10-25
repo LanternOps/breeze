@@ -606,7 +606,8 @@
         "active": "Etkin",
         "paused": "Duraklatıldı",
         "revoked": "İptal edildi",
-        "expired": "Süresi doldu"
+        "expired": "Süresi doldu",
+        "budgetReached": "Bütçeye ulaşıldı"
       },
       "refresh": "Yetkiyi yenile",
       "revoke": "Wisp'i kapat",
@@ -668,7 +669,8 @@
     "pause": "Wisp'i duraklat",
     "resume": "Devam et",
     "paused": {
-      "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez."
+      "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez.",
+      "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir."
     },
     "live": {
       "checking": "{{org}} kontrol ediliyor…",
@@ -723,7 +725,8 @@
       "disabledTitle": "Wisp kapalı",
       "disabledBody": "Bir iş ortağı yöneticisi Wisp’i Ayarlar → Yapay Zeka Aracıları bölümünden kapattı. Sohbetleriniz çalışmaya devam eder.",
       "disabledSettings": "Yapay Zeka Aracıları ayarlarını aç",
-      "loadFailed": "Wisp ana sayfası yüklenemedi."
+      "loadFailed": "Wisp ana sayfası yüklenemedi.",
+      "noAccess": "Wisp'e erişiminiz yok"
     },
     "links": {
       "title": "Bağlantılı öğeler",

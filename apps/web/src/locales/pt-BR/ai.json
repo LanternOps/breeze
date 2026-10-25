@@ -606,7 +606,8 @@
         "active": "Ativo",
         "paused": "Pausado",
         "revoked": "Revogado",
-        "expired": "Expirado"
+        "expired": "Expirado",
+        "budgetReached": "Orçamento atingido"
       },
       "refresh": "Renovar permissão",
       "revoke": "Desativar o Wisp",
@@ -668,7 +669,8 @@
     "pause": "Pausar o Wisp",
     "resume": "Retomar",
     "paused": {
-      "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar."
+      "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar.",
+      "partnerDisabled": "O Wisp está desativado para o seu parceiro. Um administrador pode reativá-lo."
     },
     "live": {
       "checking": "Verificando {{org}}…",
@@ -723,7 +725,8 @@
       "disabledTitle": "O Wisp está desativado",
       "disabledBody": "Um administrador do parceiro desativou o Wisp em Configurações → Agentes de IA. Seus chats continuam funcionando.",
       "disabledSettings": "Abrir as configurações de Agentes de IA",
-      "loadFailed": "Não foi possível carregar a página inicial do Wisp."
+      "loadFailed": "Não foi possível carregar a página inicial do Wisp.",
+      "noAccess": "Você não tem acesso ao Wisp"
     },
     "links": {
       "title": "Itens vinculados",
