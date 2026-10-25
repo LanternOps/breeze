@@ -301,6 +301,7 @@ export async function loadZammad(src: SourceHandle<unknown>, row: SourceRow): Pr
     merge,
     people: Object.fromEntries([...people].map(([id, person]) => [String(id), person])),
     invalidRows: takeZammadInvalidRows(src),
+    systemArticles: (src.options as { systemArticles?: unknown } | null)?.systemArticles === 'internal_note' ? 'internal_note' : 'skip',
   };
   const ownerEmail = ownerId === 1 ? null : usableEmail(people.get(ownerId)?.email);
   const customerEmail = usableEmail(people.get(ticket.customer_id)?.email);

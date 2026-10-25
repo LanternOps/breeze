@@ -128,6 +128,18 @@ describe('sourceChanges — what a resume reports and does not apply', () => {
     it('ignores input comments the ticket does not hold (new ones, or held elsewhere)', () => {
       expect(sourceChanges(stored(), [], ticket({ comments: [comment('new', 'x')] })).commentsChangedInSource).toEqual([]);
     });
+
+    it('with isSourceArticleId, compares source articles only: a composed note is module output (W5 review 10)', () => {
+      // The owner note's text follows the owner's name, which changed in the source.
+      const t = ticket({ comments: [comment('article-1', 'Edited in Zammad'), comment('note:41023:owner:5', 'Owner in Zammad: Carol Gone-Smith')] });
+      const rows = [storedComment('article-1', 'Original'), storedComment('note:41023:owner:5', 'Owner in Zammad: Carol Gone')];
+      const isArticle = (id: string) => id.startsWith('article-');
+      expect(sourceChanges(stored(), rows, t, isArticle).commentsChangedInSource).toEqual([
+        { sourceId: 'article-1', contentChanged: true, visibility: null },
+      ]);
+      // Without it every comment is compared, as before.
+      expect(sourceChanges(stored(), rows, t).commentsChangedInSource.map((c) => c.sourceId)).toEqual(['article-1', 'note:41023:owner:5']);
+    });
   });
 
   describe('commentsMissingInSource', () => {

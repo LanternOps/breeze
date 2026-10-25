@@ -5,7 +5,15 @@ import { stripRefusedControlChars } from '../../importText';
 import { normalizeRequesterEmail } from '../../../ticketRequesterEmail';
 import type { ConversionContext } from '../../moduleContract';
 import type { ZammadOptions } from './options';
-import { ZAMMAD_ARTICLE_TYPE_BY_ID, ZAMMAD_SENDER_BY_ID, type ZammadArticle, type ZammadPerson, type ZammadStateInfo, type ZammadTicket } from './shapes';
+import {
+  ZAMMAD_ARTICLE_TYPE_BY_ID,
+  ZAMMAD_SENDER_BY_ID,
+  type ZammadArticle,
+  type ZammadLoadedData,
+  type ZammadPerson,
+  type ZammadStateInfo,
+  type ZammadTicket,
+} from './shapes';
 
 /**
  * The Zammad mapping tables (#8313 W5; spec 2026-10-19 §6.3, §6.4, §9
@@ -155,6 +163,48 @@ export function senderName(article: Pick<ZammadArticle, 'sender' | 'sender_id'>)
     return (named[0]!.toUpperCase() + named.slice(1)) as 'Agent' | 'Customer' | 'System';
   }
   return (article.sender_id ? ZAMMAD_SENDER_BY_ID.get(article.sender_id) : undefined) ?? 'Customer';
+}
+
+/** The marker Zammad adds to a merged ticket: a public note from Agent, body `merged` (Z9). */
+export function isMergeMarker(article: ZammadArticle, data: Pick<ZammadLoadedData, 'state'>): boolean {
+  if (data.state.type !== 'merged') return false;
+  return senderName(article) === 'Agent' && article.internal !== true
+    && articleTypeName(article) === 'note'
+    && (article.body ?? '').replace(/<[^>]*>/g, '').trim() === 'merged';
+}
+
+/**
+ * The ticket's own first message: the first article that is public, not from
+ * System, not the merge marker, and not older than the ticket. An article
+ * older than its ticket can only have been moved in by a merge (Z9 keeps its
+ * `created_at`), so it never becomes the survivor's description: an older
+ * ticket merged into an imported newer one leaves the survivor's description
+ * as it was.
+ */
+export function descriptionArticle(data: Pick<ZammadLoadedData, 'articles' | 'ticket' | 'state'>): ZammadArticle | null {
+  const created = new Date(data.ticket.created_at).getTime();
+  return data.articles.find((a) => a.internal !== true
+    && senderName(a) !== 'System'
+    && !isMergeMarker(a, data)
+    && new Date(a.created_at).getTime() >= created) ?? null;
+}
+
+/**
+ * What one article of the loaded ticket becomes: the description, a comment
+ * (`article:<id>`), or nothing (the merge marker; a System article the
+ * options skip). The conversion and `isSourceArticleId` both ask this, so they
+ * cannot disagree on which source articles the ticket carries as comments.
+ */
+export function articleRole(
+  article: ZammadArticle,
+  data: Pick<ZammadLoadedData, 'state'>,
+  description: ZammadArticle | null,
+  systemArticles: 'skip' | 'internal_note',
+): 'description' | 'comment' | 'skipped_system' | 'merge_marker' {
+  if (isMergeMarker(article, data)) return 'merge_marker';
+  if (article === description) return 'description';
+  if (senderName(article) === 'System' && systemArticles === 'skip') return 'skipped_system';
+  return 'comment';
 }
 
 /** `create_article_type` (Z19): email -> email, web -> portal, everything else -> manual. No new ticket_source (step-1 F15). */

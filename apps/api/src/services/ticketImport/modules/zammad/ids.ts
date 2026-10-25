@@ -1,4 +1,5 @@
 import type { LoadedTicket } from '../../moduleContract';
+import { articleRole, descriptionArticle } from './mapping';
 import type { ZammadLoadedData } from './shapes';
 
 /**
@@ -52,16 +53,20 @@ function loadedData(loaded: LoadedTicket | undefined): ZammadLoadedData | null {
 }
 
 /**
- * A stored comment id this pass no longer sends: a source article deleted in
- * the source? (§5.3 item 3; the writer asks only about ids absent from the
- * input.) Only `article:<id>` can be. With the loaded ticket, two more cases
- * are not deletions:
+ * Is this comment id a source article of this ticket, as the writer compares
+ * and counts them (§5.3 item 3)? The writer asks it for the comments it
+ * compares (changed in the source) and for the stored ones the input no
+ * longer has (missing in the source); a `false` keeps an id out of both.
  *
- * - **a merged ticket**: Zammad moved every article to the survivor (Z9), so
- *   none of its stored articles was deleted (W0's note on moved articles);
- * - **an article the ticket still holds** but did not send as a comment: it is
- *   now the description, it is a System article the options skip, or it is
- *   the merge marker.
+ * - Only `article:<id>` can be: every note the module composes (owner,
+ *   pending, merge, time) and the description's files comment are module
+ *   output, never compared or counted.
+ * - With the loaded ticket: no article of a **merged** ticket (Zammad moved
+ *   them all to the survivor, Z9; W0's note). An article the ticket still
+ *   holds is one only when the conversion makes it a comment (`articleRole`):
+ *   not when it is now the description, a System article the options skip,
+ *   or the merge marker. An article the ticket no longer holds is one: it
+ *   was deleted in the source.
  */
 export function isZammadSourceArticleId(commentSourceId: string, loaded?: LoadedTicket): boolean {
   const articleId = articleIdOf(commentSourceId);
@@ -69,5 +74,7 @@ export function isZammadSourceArticleId(commentSourceId: string, loaded?: Loaded
   const data = loadedData(loaded);
   if (!data) return true;
   if (data.state.type === 'merged') return false;
-  return !data.articles.some((a) => a.id === articleId);
+  const article = data.articles.find((a) => a.id === articleId);
+  if (!article) return true;
+  return articleRole(article, data, descriptionArticle(data), data.systemArticles ?? 'skip') === 'comment';
 }

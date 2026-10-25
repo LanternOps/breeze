@@ -5,7 +5,8 @@ import { zammadIds } from './ids';
 import {
   articleAuthor,
   articleHeaderLines,
-  articleTypeName,
+  articleRole,
+  descriptionArticle,
   cleanText,
   createArticleTypeName,
   customAttributesWithValue,
@@ -163,29 +164,6 @@ export function zammadArticleText(article: ZammadArticle, baseUrl: string): Arti
   return { content, truncated, files, alternatives, renderError };
 }
 
-function isMergeMarker(article: ZammadArticle, data: ZammadLoadedData): boolean {
-  if (data.state.type !== 'merged') return false;
-  return senderName(article) === 'Agent' && article.internal !== true
-    && articleTypeName(article) === 'note'
-    && (article.body ?? '').replace(/<[^>]*>/g, '').trim() === 'merged';
-}
-
-/**
- * The ticket's own first message: the first article that is public, not from
- * System, not the merge marker, and not older than the ticket. An article
- * older than its ticket can only have been moved in by a merge (Z9 keeps its
- * `created_at`), so it never becomes the survivor's description: an older
- * ticket merged into an imported newer one leaves the survivor's description
- * as it was.
- */
-export function descriptionArticle(data: ZammadLoadedData): ZammadArticle | null {
-  const created = new Date(data.ticket.created_at).getTime();
-  return data.articles.find((a) => a.internal !== true
-    && senderName(a) !== 'System'
-    && !isMergeMarker(a, data)
-    && new Date(a.created_at).getTime() >= created) ?? null;
-}
-
 function later(a: string, b: string | null | undefined): string {
   if (!b) return a;
   return new Date(b).getTime() > new Date(a).getTime() ? b : a;
@@ -233,18 +211,19 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
   const comments: ImportedComment[] = [];
 
   for (const article of data.articles) {
-    if (isMergeMarker(article, data)) continue;
-    const system = senderName(article) === 'System';
-    if (system && options.systemArticles === 'skip') {
+    const role = articleRole(article, data, description, options.systemArticles);
+    if (role === 'merge_marker') continue;
+    if (role === 'skipped_system') {
       systemSkipped += 1;
       continue;
     }
+    const system = senderName(article) === 'System';
     const text = zammadArticleText(article, data.baseUrl);
     if (text.truncated) truncated += 1;
     if (text.renderError) renderErrors += 1;
     alternatives += text.alternatives;
     const author = articleAuthor(article, data.people);
-    if (article === description) {
+    if (role === 'description') {
       descriptionText = text.content;
       if (text.files.length > 0) {
         comments.push({

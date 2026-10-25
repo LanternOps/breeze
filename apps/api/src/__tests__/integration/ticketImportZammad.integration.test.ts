@@ -372,33 +372,42 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     // ----------------------------------------------------------- delta
     fake.use('delta');
     fake.requests.length = 0;
+    // The source's people as of the delta (Carol, 103's owner with no user, was renamed).
+    clearZammadDirectoryCache();
     const delta = await startImportRun(fx, 'import', window.id);
     await drive(fx, delta.id, { deps });
     const deltaRow = await runRow(delta.id);
     expect(deltaRow).toMatchObject({ state: 'completed', stopReason: null });
     const c2 = normalizeCounters(deltaRow.counters);
-    // 112 is deleted and 115 hidden: the list shows 17; seven of them changed.
-    expect(c2.tickets).toMatchObject({ seen: 17, unchanged: 10, resumed: 7, created: 0, failed: 0 });
+    // 112 is deleted and 115 hidden: the list shows 17; eight of them changed.
+    expect(c2.tickets).toMatchObject({ seen: 17, unchanged: 9, resumed: 8, created: 0, failed: 0 });
     expect(c2).toMatchObject({ deletedInSource: 1, hiddenInSource: 1, commentsMissingInSource: 0, commentsChangedInSource: 2 });
     expect(c2.linksAsNotes).toBe(2);
     // Only the changed tickets were loaded; the rest cost their list row.
     expect(requested('/api/v1/ticket_articles/by_ticket/').sort()).toEqual([
-      '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/104',
+      '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/103', '/api/v1/ticket_articles/by_ticket/104',
       '/api/v1/ticket_articles/by_ticket/106', '/api/v1/ticket_articles/by_ticket/113', '/api/v1/ticket_articles/by_ticket/118', '/api/v1/ticket_articles/by_ticket/119',
     ]);
     // The deletions probe: one GET each for the tickets the list no longer shows.
     expect(requested('/api/v1/tickets/').filter((p) => /^\/api\/v1\/tickets\/\d+$/.test(p)).sort()).toEqual(['/api/v1/tickets/112', '/api/v1/tickets/115']);
     // Every changed ticket's article count (System included) is read before its articles.
-    expect(requested('/api/v1/tickets/').filter((p) => p.endsWith('?expand=true'))).toHaveLength(7);
+    expect(requested('/api/v1/tickets/').filter((p) => p.endsWith('?expand=true'))).toHaveLength(8);
 
+    // No comments_changed for 103: its owner note moved with the rename, but it is module output (review 10).
     expect(await issuesOf(delta.id)).toEqual([
       'comments_changed:101:made_internal',
       'comments_changed:102:changed',
       'deleted_in_source:112:',
       'hidden_in_source:115:',
+      'owner_unmatched:103:5',
     ]);
 
     const t2 = await importedTickets(fx);
+    // 103 changed (a new SMS) and its owner, who has no user, was renamed in Zammad: the owner
+    // note is module output, kept as written and never reported as a change in the source.
+    const c103After = await commentsOf(t2.get('103')!.id);
+    expect(c103After.map((c) => c.sourceId)).toContain('article:1048');
+    expect(c103After.find((c) => c.sourceId === 'note:103:owner:5')!.content).toBe('Owner in Zammad: Carol Gone <carol.gone@former.example.test>');
     // A new article on 101; a status change on 104 (Zammad closed it).
     expect((await commentsOf(t2.get('101')!.id)).map((c) => c.sourceId)).toContain('article:1040');
     expect(t2.get('104')!.status).toBe('closed');

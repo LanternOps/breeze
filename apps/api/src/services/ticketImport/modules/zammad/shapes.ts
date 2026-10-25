@@ -211,6 +211,8 @@ export type ZammadLoadedData = {
   people: Record<string, ZammadPerson | null>;
   /** Directory rows skipped as unreadable since the last load reported them, by list (counted once). */
   invalidRows?: Record<string, number>;
+  /** The run's System-article option, as the load saw it: `isSourceArticleId` decides like the conversion. */
+  systemArticles?: 'skip' | 'internal_note';
 };
 
 /**
