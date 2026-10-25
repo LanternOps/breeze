@@ -61,7 +61,7 @@
  * every certificate-bound agent authentication).
  */
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import {
   deviceMtlsCertificates,
   devicePoolAssignmentEvents,
@@ -76,7 +76,7 @@ import {
   publishAgentCredentialRevocation,
   type AgentCredentialRevocationCloseCode,
 } from '../../routes/agentWs';
-import { collectAgentCredentialHashes, sha256Hex } from '../agentCredentialHashes';
+import { CLEARED_AGENT_CREDENTIALS, collectAgentCredentialHashes, sha256Hex } from '../agentCredentialHashes';
 import {
   enforceRebindConfirmCertificateBinding,
   type AgentCertificateAssertion,
@@ -207,22 +207,15 @@ type ConfirmOutcome =
   | { kind: 'replay'; identity: ConfirmedIdentity; intentId: string }
   | { kind: 'refused'; refusal: ReattachRefusal; ended?: EndedIntent; intent?: DeviceReattachIntent };
 
-/** Clears every credential hash of a row (agent, watchdog, helper × current, previous, pending). */
-const CLEARED_CREDENTIALS = {
-  agentTokenHash: null,
-  previousTokenHash: null,
-  previousTokenExpiresAt: null,
-  watchdogTokenHash: null,
-  previousWatchdogTokenHash: null,
-  previousWatchdogTokenExpiresAt: null,
-  helperTokenHash: null,
-  previousHelperTokenHash: null,
-  previousHelperTokenExpiresAt: null,
-  pendingTokenHash: null,
-  pendingWatchdogTokenHash: null,
-  pendingHelperTokenHash: null,
-  pendingTokenExpiresAt: null,
-} as const satisfies Partial<typeof devices.$inferInsert>;
+/**
+ * The ambient `db` as the confirm's transaction handle. Inside
+ * withDbTransaction the ambient `db` proxy routes every call to the current
+ * savepoint executor, the one the install boundary (which only knows the
+ * ambient `db`) writes through as well.
+ */
+function ambientTx(): ReattachTx {
+  return db as unknown as ReattachTx;
+}
 
 async function confirmUnderLocks(
   tx: ReattachTx,
@@ -366,7 +359,7 @@ async function confirmUnderLocks(
     // own-device-row-allowlisted: reattach-confirm-target-identity
     .update(devices)
     .set({
-      ...CLEARED_CREDENTIALS,
+      ...CLEARED_AGENT_CREDENTIALS,
       agentId: intent.stagedAgentId!,
       agentTokenHash: intent.stagedTokenHash!,
       watchdogTokenHash: intent.stagedWatchdogTokenHash!,
@@ -397,7 +390,7 @@ async function confirmUnderLocks(
   const sourceCleared = await tx
     // own-device-row-allowlisted: reattach-confirm-source-credentials
     .update(devices)
-    .set({ ...CLEARED_CREDENTIALS, updatedAt: now })
+    .set({ ...CLEARED_AGENT_CREDENTIALS, updatedAt: now })
     .where(and(eq(devices.id, source.id), eq(devices.agentId, intent.sourceAgentId)))
     .returning({ id: devices.id });
   if (sourceCleared.length !== 1) throw new Error(`reattach source ${source.id} credentials were not cleared`);
@@ -608,8 +601,14 @@ export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<Co
 
   let outcome: ConfirmOutcome;
   try {
+    // ONE executor for every statement of the confirm, the install boundary's
+    // included: the boundary writes through the ambient `db`, and
+    // withDbTransaction rebinds the ambient `db` to this savepoint, which the
+    // confirm then uses as its `tx` too. An error anywhere, a boundary
+    // handler's included, rolls the whole confirm back; nothing can leave the
+    // outer scope poisoned behind a reported success.
     outcome = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.transaction((tx) => confirmUnderLocks(tx, intent, input, redisLiveness))));
+      withDbTransaction(() => confirmUnderLocks(ambientTx(), intent, input, redisLiveness))));
   } catch (err) {
     if (err instanceof ReattachRefusedError) return err.refusal;
     throw err;

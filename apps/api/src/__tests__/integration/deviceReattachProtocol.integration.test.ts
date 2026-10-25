@@ -108,6 +108,22 @@ import {
 import { getTestDb } from './setup';
 
 // Redis down for one test: every getRedis() caller sees "not configured".
+// The install boundary's LAST handler fails for one test (review finding 15).
+const boundarySeam = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../services/deviceInstallBoundary/handlers/installState', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/deviceInstallBoundary/handlers/installState')>();
+  return {
+    ...actual,
+    installStateHandler: {
+      ...actual.installStateHandler,
+      run: async (ctx: Parameters<typeof actual.installStateHandler.run>[0]) => {
+        if (boundarySeam.fail) throw new Error('install boundary handler failed (test seam)');
+        return actual.installStateHandler.run(ctx);
+      },
+    },
+  };
+});
+
 const redisSeam = vi.hoisted(() => ({ down: false }));
 vi.mock('../../services/redis', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/redis')>();
@@ -729,6 +745,36 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     expect(await phase1(source, intent.id, stagedSet().hashes))
       .toMatchObject({ status: 409, body: { code: 'org_draining', state: 'cancelled' } });
     expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'org_draining' });
+  });
+
+  // Review finding 15: the boundary runs on the confirm's own executor.
+  it('a boundary handler that fails rolls the whole confirm back: nothing is reported, nothing is committed', async () => {
+    const { source, target, intent, set } = await arrangeStaged();
+    const [queued] = await getTestDb().insert(deviceCommands).values({
+      deviceId: target.id, type: 'script', payload: { scriptId: 'noop' }, status: 'pending', targetRole: 'agent',
+    }).returning({ id: deviceCommands.id });
+    const targetBefore = await identitySnapshot(target.id);
+    const sourceBefore = await identitySnapshot(source.id);
+    boundarySeam.fail = true;
+    try {
+      await expect(confirmRebindIntent({
+        sourceAgentId: source.agentId,
+        token: set.tokens.confirmationToken,
+        assertion: { assertionTrusted: false, assertedVerified: false, assertedSerial: null },
+      })).rejects.toThrow(/install boundary handler failed/);
+    } finally {
+      boundarySeam.fail = false;
+    }
+    // The handlers that ran before the failing one (the device row, the
+    // commands) are rolled back with it.
+    expect(await identitySnapshot(target.id)).toEqual(targetBefore);
+    expect(await identitySnapshot(source.id)).toEqual(sourceBefore);
+    const [cmd] = await getTestDb().select({ status: deviceCommands.status }).from(deviceCommands).where(eq(deviceCommands.id, queued!.id));
+    expect(cmd?.status).toBe('pending');
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'staged' });
+    expect(await getTestDb().select().from(deviceReattachments).where(eq(deviceReattachments.intentId, intent.id))).toEqual([]);
+    // And the next attempt confirms normally.
+    expect((await confirm(source.agentId, set.tokens.confirmationToken)).status).toBe(200);
   });
 
   it('fails closed without Redis: 409 liveness_unknown', async () => {

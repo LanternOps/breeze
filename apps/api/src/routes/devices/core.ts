@@ -6,6 +6,7 @@ import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext }
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
+import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
 import { reliabilityProvisionalSql } from '../../services/reliabilityBaselineQueries';
 import {
   devices,
@@ -2264,31 +2265,16 @@ coreRoutes.post(
     const [updated] = await db
       .update(devices)
       .set({
+        // Every credential column back to "none" (the one shared set): issue
+        // #2621, this incident-response path must also kill any staged
+        // (pending) rotation; and the watchdog/helper roles are nulled, not
+        // re-keyed: they have no admin-facing "new token" to hand back, and
+        // the agent's own periodic rotation (agentTokenPromotion.ts /
+        // routes/agents/token.ts) mints and stages fresh ones for both roles
+        // the next time the main agent authenticates with its new credential.
+        ...CLEARED_AGENT_CREDENTIALS,
         agentTokenHash: tokenHash,
         tokenIssuedAt: new Date(),
-        previousTokenHash: null,
-        previousTokenExpiresAt: null,
-        // Issue #2621 — this is the incident-response revocation path, so it must
-        // also kill any staged (pending) rotation. A staged credential minted
-        // before the revocation would otherwise keep authenticating for the rest
-        // of its window, and could be promoted over this admin-issued token.
-        pendingTokenHash: null,
-        pendingWatchdogTokenHash: null,
-        pendingHelperTokenHash: null,
-        pendingTokenExpiresAt: null,
-        // Null (not re-key) the watchdog/helper roles: they have no admin-
-        // facing "new token" to hand back, and the agent's own periodic
-        // rotation (agentTokenPromotion.ts / routes/agents/token.ts) mints and
-        // stages fresh ones for both roles the next time the main agent
-        // authenticates with its new credential.
-        watchdogTokenHash: null,
-        watchdogTokenIssuedAt: null,
-        previousWatchdogTokenHash: null,
-        previousWatchdogTokenExpiresAt: null,
-        helperTokenHash: null,
-        helperTokenIssuedAt: null,
-        previousHelperTokenHash: null,
-        previousHelperTokenExpiresAt: null,
         updatedAt: new Date()
       })
       .where(eq(devices.id, deviceId))

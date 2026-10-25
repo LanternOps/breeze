@@ -13,7 +13,7 @@ import {
   partners,
   supportSessions,
 } from '../../db/schema';
-import { collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
+import { CLEARED_AGENT_CREDENTIALS, collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
@@ -850,6 +850,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         [dev] = await tx
           .update(devices)
           .set({
+            // A full credential reset: every credential column starts from
+            // "none" (the one shared set, so a future credential column cannot
+            // survive), then the new install's current set is written. Issue
+            // #2621: that includes any staged rotation, which would otherwise
+            // keep authenticating and be promoted over the fresh credentials.
+            ...CLEARED_AGENT_CREDENTIALS,
             agentId: agentId,
             enrollmentIp,
             agentTokenHash: tokenHash,
@@ -862,20 +868,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             tokenIssuedAt,
             watchdogTokenIssuedAt: tokenIssuedAt,
             helperTokenIssuedAt: tokenIssuedAt,
-            previousTokenHash: null,
-            previousTokenExpiresAt: null,
-            previousWatchdogTokenHash: null,
-            previousWatchdogTokenExpiresAt: null,
-            previousHelperTokenHash: null,
-            previousHelperTokenExpiresAt: null,
-            // Issue #2621 — re-enrollment is a full credential reset, so it must
-            // also drop any staged rotation. Leaving it would let a staged set
-            // minted before the re-enrollment keep authenticating, and be
-            // promoted over the freshly issued credentials.
-            pendingTokenHash: null,
-            pendingWatchdogTokenHash: null,
-            pendingHelperTokenHash: null,
-            pendingTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,

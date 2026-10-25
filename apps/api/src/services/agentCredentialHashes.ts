@@ -1,4 +1,33 @@
 import { createHash } from 'node:crypto';
+import type { devices } from '../db/schema';
+
+/**
+ * Every credential column of a `devices` row set to "none": agent, watchdog
+ * and helper, current/previous/pending, with their issued/expiry stamps. The
+ * ONE set every path that replaces or retires a row's credentials spreads
+ * (F3 re-enroll, the admin token reset, the reattach confirm for the target
+ * and the source), so a credential column added later cannot survive any of
+ * them: agentCredentialHashes.test.ts fails until it joins this set.
+ * (Type-only import: this module stays a dependency-free leaf at runtime.)
+ */
+export const CLEARED_AGENT_CREDENTIALS = {
+  agentTokenHash: null,
+  tokenIssuedAt: null,
+  previousTokenHash: null,
+  previousTokenExpiresAt: null,
+  pendingTokenHash: null,
+  pendingTokenExpiresAt: null,
+  watchdogTokenHash: null,
+  watchdogTokenIssuedAt: null,
+  previousWatchdogTokenHash: null,
+  previousWatchdogTokenExpiresAt: null,
+  pendingWatchdogTokenHash: null,
+  helperTokenHash: null,
+  helperTokenIssuedAt: null,
+  previousHelperTokenHash: null,
+  previousHelperTokenExpiresAt: null,
+  pendingHelperTokenHash: null,
+} as const satisfies Partial<typeof devices.$inferInsert>;
 
 /** The stored form of every agent-side secret: lowercase hex SHA-256 of the whole token string. */
 export function sha256Hex(value: string): string {
