@@ -1,5 +1,12 @@
 import type { ConnectReport, SourceCatalog, SourceHandle } from '../../moduleContract';
-import { clockSkewFromDateHeader, SourceAuthError, SourceHttpError } from '../../sourceFetch';
+import {
+  clockSkewFromDateHeader,
+  SourceAuthError,
+  SourceHttpError,
+  SourceResponseTooLargeError,
+  SourceShapeError,
+  SourceUnavailableError,
+} from '../../sourceFetch';
 import {
   firstTicket,
   getMe,
@@ -32,7 +39,9 @@ import type { z } from 'zod';
  *   (Z1): every inactive group is flagged "tickets here will not be
  *   imported". When the token user's group access can be read (`/users/me`
  *   and its roles; `/users/me` is documented but unverified in the 7.2.2
- *   source, §11), an active group it has no `read` on is flagged too. Only
+ *   source, §11), an active group it has no `read` on is flagged too;
+ *   otherwise access is unknown, said once (`group_access_unknown`). Optional
+ *   lookups degrade to warnings; only a refused credential fails connect. Only
  *   active roles count, as in 7.2.2; 7.2.0 still honours an inactive role's
  *   group access (fixed in 7.2.1/7.2.2), so on 7.2.0 such a group can be
  *   flagged although readable.
@@ -53,22 +62,37 @@ type GroupAccess = Map<string, Set<string>>;
 
 const READ_ACCESS = new Set(['read', 'full']);
 
+/**
+ * An optional lookup (`/users/me`, `/roles`, `/version`, `/groups`, the
+ * attribute definitions): any failure of the source (a 403 or 404, an outage
+ * after the retries, an answer of an unexpected shape, an answer too large)
+ * becomes "unknown", reported as a warning. Only a refused credential (401)
+ * fails connect, and an error that is not the source's (a bug) is rethrown.
+ */
 function quiet<T>(promise: Promise<T>): Promise<T | null> {
   return promise.catch((error: unknown) => {
-    // A refused credential stops everything; a call this token may not make (403) or that 7.2.2 lacks (404) does not.
-    if (error instanceof SourceAuthError || !(error instanceof SourceHttpError) || ![403, 404].includes(error.status)) throw error;
+    if (error instanceof SourceAuthError) throw error;
+    const sourceFailure = error instanceof SourceHttpError || error instanceof SourceUnavailableError
+      || error instanceof SourceShapeError || error instanceof SourceResponseTooLargeError;
+    if (!sourceFailure) throw error;
     return null;
   });
 }
 
-/** The token user, the permissions of its active roles, and its group access (direct and by role). */
+/**
+ * The token user, the permissions of its active roles, and its group access
+ * (direct and by role). Access is null (unknown) unless both the user and
+ * its roles were read: grants through a role that cannot be read are
+ * unknown, so no group is ever flagged unreadable on a guess.
+ */
 async function tokenUser(src: SourceHandle<unknown>): Promise<{ me: Me | null; permissions: string[] | null; access: GroupAccess | null }> {
   const meResponse = await quiet(getMe(src));
   const me = meResponse?.body ?? null;
   if (!me) return { me: null, permissions: null, access: null };
   const roles = (await quiet(listRoles(src)))?.rows ?? null;
-  const mine = (roles ?? []).filter((r) => (me.role_ids ?? []).includes(r.id) && r.active !== false);
-  const permissions = roles ? [...new Set(mine.flatMap((r) => r.permissions ?? []))].sort() : null;
+  if (!roles) return { me, permissions: null, access: null };
+  const mine = roles.filter((r) => (me.role_ids ?? []).includes(r.id) && r.active !== false);
+  const permissions = [...new Set(mine.flatMap((r) => r.permissions ?? []))].sort();
   const access: GroupAccess = new Map();
   for (const grants of [me.group_ids ?? {}, ...mine.map((r) => r.group_ids ?? {})]) {
     for (const [groupId, levels] of Object.entries(grants)) {
@@ -100,8 +124,12 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   if (!me) warnings.push({ code: 'identity_unreadable' });
   if (me && permissions === null) warnings.push({ code: 'permissions_unreadable' });
   if (permissions && !permissions.includes('ticket.agent')) warnings.push({ code: 'token_user_not_agent' });
+  // Unknown group access: one warning, never a per-group guess.
+  if (!access) warnings.push({ code: 'group_access_unknown' });
 
-  for (const group of (await listGroups(src)).rows) {
+  const groups = await quiet(listGroups(src));
+  if (!groups) warnings.push({ code: 'groups_unreadable' });
+  for (const group of groups?.rows ?? []) {
     const label = `${cleanText(group.name)} (id ${group.id})`;
     if (group.active === false) warnings.push({ code: 'group_inactive', detail: label });
     else if (canRead(access, group.id) === false) warnings.push({ code: 'group_unreadable', detail: label });
@@ -135,8 +163,10 @@ export async function catalogZammad(src: SourceHandle<unknown>): Promise<SourceC
   return {
     orgs: organizations.rows.map((o) => ({ key: String(o.id), name: cleanText(o.name), active: o.active !== false })),
     groups: groups.rows.map((g) => {
-      const readable = g.active !== false && canRead(access, g.id) !== false;
-      return { key: String(g.id), name: cleanText(g.name), active: g.active !== false, readable };
+      const active = g.active !== false;
+      // An inactive group is invisible to every token (Z1); an active one is readable or not only when access is known.
+      const readable = active ? canRead(access, g.id) : false;
+      return { key: String(g.id), name: cleanText(g.name), active, ...(readable === undefined ? {} : { readable }) };
     }),
     priorities: priorities.rows.map((p) => ({ key: String(p.id), name: cleanText(p.name), active: p.active !== false })),
     states: states.rows.map((s) => ({ key: String(s.id), name: `${cleanText(s.name)} (${stateTypeName(s.state_type_id, s.state_type)})`, active: s.active !== false })),

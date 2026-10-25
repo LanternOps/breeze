@@ -72,12 +72,54 @@ describe('connect', () => {
     const report = await connectZammad(zammadTestHandle(noMe));
     expect(report.identity).toEqual({ key: null, name: null, email: null });
     expect(report.permissions).toEqual([]);
-    expect(report.warnings.map((w) => w.code)).toEqual(['identity_unreadable', 'group_inactive', 'token_not_read_only']);
+    expect(report.warnings.map((w) => w.code)).toEqual(['identity_unreadable', 'group_access_unknown', 'group_inactive', 'token_not_read_only']);
+  });
 
+  it('with roles unreadable, group access is unknown: one warning, no per-group guess, no readable:false in the catalog (review 3)', async () => {
     const noRoles = new FakeZammad();
     noRoles.failNext({ pathPrefix: '/api/v1/roles', status: 403 });
-    expect((await connectZammad(zammadTestHandle(noRoles))).warnings.map((w) => w.code))
-      .toEqual(['permissions_unreadable', 'group_inactive', 'group_unreadable', 'token_not_read_only']);
+    const report = await connectZammad(zammadTestHandle(noRoles));
+    expect(report.warnings.map((w) => w.code)).toEqual(['permissions_unreadable', 'group_access_unknown', 'group_inactive', 'token_not_read_only']);
+    expect(report.permissions).toEqual([]);
+
+    const catalogFake = new FakeZammad();
+    catalogFake.failNext({ pathPrefix: '/api/v1/roles', status: 403 });
+    const catalog = await catalogZammad(zammadTestHandle(catalogFake));
+    expect(catalog.groups).toEqual([
+      { key: '1', name: 'Users', active: true },
+      { key: '2', name: 'Support', active: true },
+      { key: '3', name: 'Support::Tier 2', active: true },
+      // Inactive: invisible to every token, known without the roles.
+      { key: '4', name: 'Archive', active: false, readable: false },
+      { key: '5', name: 'Finance', active: true },
+    ]);
+  });
+
+  it('optional lookups degrade to warnings, whatever their failure; only a refused credential fails connect (review 5)', async () => {
+    const answer = (fake: FakeZammad, path: string, status: number, body: string) => {
+      const original = fake.handle.bind(fake);
+      fake.handle = (method, url, auth) => (url.pathname === path
+        ? { status, headers: { 'content-type': 'application/json' }, body: Buffer.from(body) }
+        : original(method, url, auth));
+    };
+    // /users/me of an unexpected shape, /roles failing after the retries, /groups not a list.
+    const fake = new FakeZammad();
+    answer(fake, '/api/v1/users/me', 200, '{"id":"not a number"}');
+    answer(fake, '/api/v1/groups', 200, '{"groups":[]}');
+    const report = await connectZammad(zammadTestHandle(fake));
+    expect(report.warnings.map((w) => w.code)).toEqual(['identity_unreadable', 'group_access_unknown', 'groups_unreadable', 'token_not_read_only']);
+
+    const outage = new FakeZammad();
+    outage.failNext({ pathPrefix: '/api/v1/roles', status: 503, times: 3 });
+    outage.failNext({ pathPrefix: '/api/v1/version', status: 502, times: 3 });
+    const degraded = await connectZammad(zammadTestHandle(outage));
+    expect(degraded.sourceVersion).toBeNull();
+    expect(degraded.warnings.map((w) => w.code)).toEqual(['version_unreadable', 'permissions_unreadable', 'group_access_unknown', 'group_inactive', 'token_not_read_only']);
+
+    // A refused credential on an optional lookup still stops connect.
+    const refused = new FakeZammad();
+    refused.failNext({ pathPrefix: '/api/v1/users/me', status: 401 });
+    await expect(connectZammad(zammadTestHandle(refused))).rejects.toBeInstanceOf(SourceAuthError);
   });
 
   it('warns about a token user without ticket.agent and a token that sees no ticket', async () => {
