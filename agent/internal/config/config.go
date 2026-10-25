@@ -502,6 +502,8 @@ func loadLocked(cfgFile string) (*Config, error) {
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("BREEZE")
 
+	// The bytes of agent.yaml as read, for the reattached-identity pin below.
+	var fileBytes []byte
 	if trustedFile != "" {
 		data, err := readTrustedMachineConfigFileFn(trustedFile)
 		switch {
@@ -514,16 +516,22 @@ func loadLocked(cfgFile string) (*Config, error) {
 			if err := viper.ReadConfig(bytes.NewReader(data)); err != nil {
 				return nil, fmt.Errorf("reading %s: %w", trustedFile, err)
 			}
+			fileBytes = data
 		}
 	} else if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
+	} else if used := viper.ConfigFileUsed(); used != "" {
+		// The same file viper just parsed (this branch has no trust check).
+		fileBytes, _ = os.ReadFile(used)
 	}
 
 	if err := viper.Unmarshal(cfg); err != nil {
 		return nil, err
 	}
+	// #8318 — a reattached identity in agent.yaml wins over BREEZE_* values.
+	pinReattachedIdentity(cfg, fileBytes)
 
 	// Accept watchdog.max_heartbeat_staleness_sec (in seconds) as documented in
 	// issue #799 — coerce to the canonical Duration field. The alias mechanism
@@ -860,6 +868,8 @@ func SaveTo(cfg *Config, cfgFile string) error {
 func SaveEnrollment(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
+	// A new enrollment is no reattach: the environment may pin it again.
+	viper.Set(reattachIntentKey, "")
 	if err := saveToLocked(cfg, cfgFile, credentialsFromConfig); err != nil {
 		return err
 	}

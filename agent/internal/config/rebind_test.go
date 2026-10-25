@@ -163,6 +163,7 @@ func TestReadRebindStagedMovesAnUnusableFileAside(t *testing.T) {
 
 func rebindTestIdentity(withCert bool) RebindIdentity {
 	id := RebindIdentity{
+		IntentID:          rebindTestIntent,
 		AgentID:           rebindTestStagedAgentID,
 		DeviceID:          rebindTestDevice,
 		OrgID:             rebindTestOrg,

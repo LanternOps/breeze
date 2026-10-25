@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -177,6 +180,9 @@ func (s *RebindStagedSet) Validate() error {
 // RebindIdentity is the identity and credential set a confirmed reattach
 // swaps in.
 type RebindIdentity struct {
+	// IntentID is recorded in agent.yaml (reattach_intent_id): from then on
+	// the identity in the file wins over BREEZE_* environment values.
+	IntentID          string
 	AgentID           string
 	DeviceID          string
 	OrgID             string
@@ -197,6 +203,7 @@ func (s *RebindStagedSet) Identity() (RebindIdentity, error) {
 		return RebindIdentity{}, errors.New("staged set has no complete confirmed identity")
 	}
 	return RebindIdentity{
+		IntentID:          s.IntentID,
 		AgentID:           c.AgentID,
 		DeviceID:          c.DeviceID,
 		OrgID:             c.OrgID,
@@ -362,7 +369,7 @@ func syncDir(dir string) {
 }
 
 func (id RebindIdentity) validate() error {
-	if id.AgentID == "" || id.DeviceID == "" || id.OrgID == "" || id.SiteID == "" {
+	if id.IntentID == "" || id.AgentID == "" || id.DeviceID == "" || id.OrgID == "" || id.SiteID == "" {
 		return errors.New("reattached identity is incomplete")
 	}
 	if id.AuthToken == "" || id.WatchdogAuthToken == "" || id.HelperAuthToken == "" {
@@ -417,10 +424,52 @@ func rebindIdentityIntactLocked(cfgPath string, id RebindIdentity) (bool, error)
 }
 
 type agentIdentityOnDisk struct {
-	AgentID  string `yaml:"agent_id"`
-	DeviceID string `yaml:"device_id"`
-	OrgID    string `yaml:"org_id"`
-	SiteID   string `yaml:"site_id"`
+	AgentID          string `yaml:"agent_id"`
+	DeviceID         string `yaml:"device_id"`
+	OrgID            string `yaml:"org_id"`
+	SiteID           string `yaml:"site_id"`
+	ReattachIntentID string `yaml:"reattach_intent_id"`
+}
+
+// reattachIntentKey records, in agent.yaml, the reattach whose identity the
+// file holds (#8318). Cleared by enrollment.
+const reattachIntentKey = "reattach_intent_id"
+
+// reattachPinWarned is the last set of overridden fields warned about.
+var reattachPinWarned atomic.Pointer[string]
+
+// pinReattachedIdentity keeps, for a config whose agent.yaml holds a
+// reattached identity, the file's agent id, device id, org and site over
+// BREEZE_AGENT_ID / BREEZE_DEVICE_ID / BREEZE_ORG_ID / BREEZE_SITE_ID
+// (viper's AutomaticEnv). Such values were set for the install as it was
+// before the reattach; letting them win would pair the retired identity
+// with the reattached credentials. It warns once per set of overridden
+// fields, as identity_sync.go does for a pinned BREEZE_ORG_ID, and keeps
+// the persisted identity. Without a reattach the environment still wins.
+func pinReattachedIdentity(cfg *Config, agentYAML []byte) {
+	var onDisk agentIdentityOnDisk
+	if len(agentYAML) == 0 || yaml.Unmarshal(agentYAML, &onDisk) != nil || onDisk.ReattachIntentID == "" {
+		return
+	}
+	var overridden []string
+	keep := func(field *string, fromFile, env string) {
+		if fromFile != "" && *field != fromFile {
+			*field = fromFile
+			overridden = append(overridden, env)
+		}
+	}
+	keep(&cfg.AgentID, onDisk.AgentID, "BREEZE_AGENT_ID")
+	keep(&cfg.DeviceID, onDisk.DeviceID, "BREEZE_DEVICE_ID")
+	keep(&cfg.OrgID, onDisk.OrgID, "BREEZE_ORG_ID")
+	keep(&cfg.SiteID, onDisk.SiteID, "BREEZE_SITE_ID")
+	if len(overridden) == 0 {
+		return
+	}
+	key := strings.Join(overridden, ",")
+	if prev := reattachPinWarned.Swap(&key); prev == nil || *prev != key {
+		log.Warn("this install was reattached to an existing device; ignoring environment values for its identity and keeping the one in agent.yaml",
+			"ignored", key, "intentId", onDisk.ReattachIntentID)
+	}
 }
 
 func readAgentIdentityAt(cfgPath string) (agentIdentityOnDisk, error) {
@@ -439,7 +488,10 @@ func readAgentIdentityAt(cfgPath string) (agentIdentityOnDisk, error) {
 // (#8318 §6.4 "On 200"): agent id, device id, org, site, the three tokens and
 // the client certificate. Every other setting is kept from disk. Any staged
 // token rotation and pending certificate renewal belonged to the source and
-// are dropped; the ownership epoch restarts at 0, as on enrollment.
+// are dropped. The ownership epoch is left unset: neither the source's
+// (another device's) nor an invented one. 0 is Config's "none received",
+// which the heartbeat omits from its report, so the server's #8320 v2
+// identity assertion supplies the target's real epoch on the first beat.
 //
 // Two saves, each write-new-then-rename: the first writes the NEW
 // credentials (secrets.yaml, the helper token file) beside the OLD agent.yaml
@@ -479,12 +531,14 @@ func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 		return fmt.Errorf("writing the reattached credentials: %w", err)
 	}
 
-	// Save 2: the new identity. agent_id is the commit marker.
+	// Save 2: the new identity, recorded as a reattach so the loader keeps
+	// it over BREEZE_* environment values (reattachedIdentityPin).
+	viper.Set(reattachIntentKey, id.IntentID)
 	cfg.AgentID = id.AgentID
 	cfg.DeviceID = id.DeviceID
 	cfg.OrgID = id.OrgID
 	cfg.SiteID = id.SiteID
-	cfg.OwnershipEpoch = 0
+	cfg.OwnershipEpoch = 0 // unset: the server's v2 assertion sets it
 	if err := rebindSaveFn(cfg, cfgPath, credentialsFromConfig, identityFromConfig); err != nil {
 		return fmt.Errorf("writing the reattached identity: %w", err)
 	}
