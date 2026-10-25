@@ -17,19 +17,17 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 // Spec 2026-09-23 W01 (#6755) declared 11 of these (the L1 reads it wired);
 // removed here rather than left stale, per this test's own "now declared;
 // remove the exception" assertion below. W02 (#6756) declared manage_quotes,
-// manage_tags and manage_tickets.
-const BASELINE_UNDECLARED_TOOLS = new Set([
-  'restore_snapshot',
-  'trigger_backup',
-  'trigger_mssql_backup',
-]);
+// manage_tags and manage_tickets. W03 (#6757) declared restore_snapshot,
+// trigger_backup and trigger_mssql_backup, which empties the set.
+const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 75 unique ids', () => {
+  it('has 78 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
-    expect(GOLDEN_CASES).toHaveLength(75);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(75);
+    // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
+    expect(GOLDEN_CASES).toHaveLength(78);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(78);
     expect(GOLDEN_CASES.find((c) => c.id === 'g69')?.expect[0]).toEqual({ tool: 'sync_edr_data' });
   });
   it('expects registered tools and declared actions, with only known chat-visibility gaps', () => {
