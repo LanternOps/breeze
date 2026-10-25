@@ -24,7 +24,7 @@ vi.mock('../../services/agentCertificateBinding', () => ({
   readAgentCertificateAssertion: () => ({ assertionTrusted: false, assertedVerified: false, assertedSerial: null }),
 }));
 
-import { REBIND_CONFIRM_IP_RATE_LIMIT, REBIND_CONFIRM_RATE_LIMIT, REBIND_RATE_LIMIT, rebindRoutes } from './rebind';
+import { REBIND_CONFIRM_FAILURE_LIMIT, REBIND_CONFIRM_IP_RATE_LIMIT, REBIND_RATE_LIMIT, rebindRoutes } from './rebind';
 
 const AGENT_ID = 'a'.repeat(64);
 const INTENT_ID = '00000000-0000-4000-8000-0000000000a1';
@@ -131,35 +131,59 @@ describe('POST /:id/rebind-confirm (#8318 §6.4)', () => {
     expect(confirmRebindIntentMock).toHaveBeenCalledWith(expect.objectContaining({ sourceAgentId: AGENT_ID, token: CONFIRM_TOKEN }));
   });
 
-  it('rate-limits per client IP first, then per :id', async () => {
+  it('a correct token is limited per client IP only, never against the per-:id failure budget', async () => {
     confirmRebindIntentMock.mockResolvedValue({ ok: true, identity, replay: true, intentId: INTENT_ID });
     await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
     expect(rateLimiterMock.mock.calls.map((call) => call.slice(1))).toEqual([
       ['agent-rebind-confirm:ip:ip:203.0.113.7', REBIND_CONFIRM_IP_RATE_LIMIT.limit, REBIND_CONFIRM_IP_RATE_LIMIT.windowSeconds],
-      [`agent-rebind-confirm:${AGENT_ID}`, REBIND_CONFIRM_RATE_LIMIT.limit, REBIND_CONFIRM_RATE_LIMIT.windowSeconds],
     ]);
 
     rateLimiterMock.mockResolvedValueOnce(refused);
     const byIp = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
     expect(byIp.status).toBe(429);
     expect(byIp.headers.get('Retry-After')).toBeTruthy();
+  });
+
+  it('a failed verification is charged to the :id after the mismatch: 401, then 429 once the budget is spent', async () => {
+    confirmRebindIntentMock.mockResolvedValue({ ok: false, status: 401, code: 'invalid_confirmation', message: 'no' });
+    const first = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
+    expect(first.status).toBe(401);
+    expect(rateLimiterMock.mock.calls.map((call) => call[1])).toEqual([
+      'agent-rebind-confirm:ip:ip:203.0.113.7',
+      `agent-rebind-confirm:fail:${AGENT_ID}`,
+    ]);
+    expect(rateLimiterMock.mock.calls[1]!.slice(2)).toEqual([REBIND_CONFIRM_FAILURE_LIMIT.limit, REBIND_CONFIRM_FAILURE_LIMIT.windowSeconds]);
 
     rateLimiterMock.mockResolvedValueOnce(allowed).mockResolvedValueOnce(refused);
+    const spent = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
+    expect(spent.status).toBe(429);
+    expect(spent.headers.get('Retry-After')).toBeTruthy();
+  });
+
+  it('bogus confirms for an id do not block the correct token (the spent budget is never consulted for it)', async () => {
+    // Every failure-budget charge is refused: the id's budget is spent.
+    rateLimiterMock.mockImplementation(async (_redis: unknown, key: string) => (key.includes(':fail:') ? refused : allowed));
+    confirmRebindIntentMock.mockResolvedValueOnce({ ok: false, status: 401, code: 'invalid_confirmation', message: 'no' });
     expect((await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` })).status).toBe(429);
+    confirmRebindIntentMock.mockResolvedValueOnce({ ok: true, identity, replay: false, intentId: INTENT_ID });
+    const genuine = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
+    expect(genuine.status).toBe(200);
+    expect(await genuine.json()).toEqual(identity);
   });
 
   it.each([
     ['no bearer', {}],
     ['an agent token', { authorization: `Bearer brz_${'z'.repeat(60)}` }],
     ['a short confirm token', { authorization: 'Bearer brz_rbc_short' }],
-  ])('401 for %s, without reaching the service', async (_label, headers) => {
+  ])('401 for %s, without reaching the service (a failed verification)', async (_label, headers) => {
     const res = await post(app(), `/${AGENT_ID}/rebind-confirm`, {}, headers as Record<string, string>);
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ code: 'invalid_confirmation' });
     expect(confirmRebindIntentMock).not.toHaveBeenCalled();
+    expect(rateLimiterMock.mock.calls.map((call) => call[1])).toContain(`agent-rebind-confirm:fail:${AGENT_ID}`);
   });
 
-  it('401 for an :id that can never be an agent id, before the per-id limit', async () => {
+  it('401 for an :id that can never be an agent id (no budget is charged for it)', async () => {
     const res = await post(app(), `/${'x'.repeat(65)}/rebind-confirm`, {}, { authorization: `Bearer ${CONFIRM_TOKEN}` });
     expect(res.status).toBe(401);
     expect(rateLimiterMock).toHaveBeenCalledTimes(1);

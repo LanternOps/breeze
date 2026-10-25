@@ -476,6 +476,21 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     expect(await readIntent(intent.id)).toMatchObject({ state: 'staged' });
   });
 
+  // Review of wave 1b-2, finding 3: only FAILED verifications count per :id.
+  it('bogus confirms for an agent id do not block its correct token', async () => {
+    const { source, intent, set } = await arrangeStaged();
+    const codes: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      codes.push((await confirm(source.agentId, stagedSet().tokens.confirmationToken)).status);
+    }
+    // Ten failures fit the per-id budget; the rest are throttled.
+    expect(codes.slice(0, 10).every((code) => code === 401)).toBe(true);
+    expect(codes.slice(10).every((code) => code === 429)).toBe(true);
+    const genuine = await confirm(source.agentId, set.tokens.confirmationToken);
+    expect(genuine.status).toBe(200);
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'confirmed' });
+  });
+
   it('a confirm before phase 1 cannot match (no confirmation hash yet) → 401', async () => {
     const { source, intent } = await arrange();
     expect((await confirm(source.agentId, stagedSet().tokens.confirmationToken)).status).toBe(401);

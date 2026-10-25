@@ -11,7 +11,8 @@
  *    (AGENT_AUTH_SKIP_ACTIONS): it authenticates itself with the confirm-only
  *    bearer `brz_rbc_…`, compared in constant time with the hash stored on the
  *    intent (or the ledger once the intent is pruned). `:id` is the source
- *    agent id. Rate-limited per `:id` and per client IP before any read.
+ *    agent id. Every attempt is rate-limited per client IP before any read;
+ *    FAILED verifications are also counted per `:id` (never a correct one).
  *
  * Neither route creates an intent; that is the wave 2 human action (§8).
  */
@@ -32,9 +33,10 @@ export const rebindRoutes = new Hono();
 
 /** Phase 1: per source agent id. */
 export const REBIND_RATE_LIMIT = { limit: 10, windowSeconds: 300 } as const;
-/** Confirm: per source agent id (`:id`) and per client IP (IPv6 /64). */
-export const REBIND_CONFIRM_RATE_LIMIT = { limit: 10, windowSeconds: 300 } as const;
+/** Confirm: every attempt per client IP (IPv6 /64), checked first. */
 export const REBIND_CONFIRM_IP_RATE_LIMIT = { limit: 30, windowSeconds: 300 } as const;
+/** Confirm: FAILED token verifications per source agent id (`:id`), charged after the mismatch. */
+export const REBIND_CONFIRM_FAILURE_LIMIT = { limit: 10, windowSeconds: 300 } as const;
 
 const sha256Hex = z.string().regex(/^[0-9a-f]{64}$/, 'must be a lowercase SHA-256 hex digest');
 
@@ -114,21 +116,27 @@ rebindRoutes.post('/:id/rebind-confirm', async (c) => {
   if (!AGENT_ID_SHAPE.test(sourceAgentId)) {
     return c.json({ error: 'Invalid confirmation credentials', code: 'invalid_confirmation' }, 401);
   }
-  const idRate = await rateLimiter(
-    redis,
-    `agent-rebind-confirm:${sourceAgentId}`,
-    REBIND_CONFIRM_RATE_LIMIT.limit,
-    REBIND_CONFIRM_RATE_LIMIT.windowSeconds,
-  );
-  if (!idRate.allowed) {
-    c.header('Retry-After', retryAfterSeconds(idRate.resetAt));
-    return c.json({ error: 'Too many confirmation attempts; retry later', code: 'rate_limited' }, 429);
-  }
+
+  // The per-`:id` budget counts FAILED verifications only, charged after the
+  // mismatch: a stranger who knows an agent id can exhaust it, but that only
+  // turns their own further failures into 429s; a correct token is never
+  // consulted against it, so the genuine agent always gets through.
+  const failedVerification = async () => {
+    const failures = await rateLimiter(
+      redis,
+      `agent-rebind-confirm:fail:${sourceAgentId}`,
+      REBIND_CONFIRM_FAILURE_LIMIT.limit,
+      REBIND_CONFIRM_FAILURE_LIMIT.windowSeconds,
+    );
+    if (!failures.allowed) {
+      c.header('Retry-After', retryAfterSeconds(failures.resetAt));
+      return c.json({ error: 'Too many failed confirmation attempts; retry later', code: 'rate_limited' }, 429);
+    }
+    return c.json({ error: 'Invalid confirmation credentials', code: 'invalid_confirmation' }, 401);
+  };
 
   const token = parseConfirmationBearer(c.req.header('authorization'));
-  if (!token) {
-    return c.json({ error: 'Invalid confirmation credentials', code: 'invalid_confirmation' }, 401);
-  }
+  if (!token) return failedVerification();
 
   const result = await confirmRebindIntent({
     sourceAgentId,
@@ -136,6 +144,7 @@ rebindRoutes.post('/:id/rebind-confirm', async (c) => {
     assertion: readAgentCertificateAssertion(c),
   });
   if (!result.ok) {
+    if (result.code === 'invalid_confirmation') return failedVerification();
     return c.json(refusalBody(result), result.status);
   }
   return c.json(result.identity);
