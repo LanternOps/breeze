@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/updater"
 )
 
 // The bounded rebind, agent side (#8318 wave 1b, spec §6.1–§6.6).
@@ -93,13 +92,15 @@ type rebindState struct {
 // Seams for tests. rebindWriteStaged and rebindApplyIdentity are the kill
 // points of the crash-table tests: every persistence step goes through them.
 var (
-	rebindNow           = time.Now
-	rebindRandRead      = rand.Read
-	rebindRestartFn     = updater.RestartSelf
-	rebindConfigFile    = config.ActiveConfigFile
-	rebindReadStaged    = config.ReadRebindStaged
-	rebindWriteStaged   = config.WriteRebindStaged
-	rebindApplyIdentity = config.ApplyRebindIdentity
+	rebindNow            = time.Now
+	rebindRandRead       = rand.Read
+	rebindConfigFile     = config.ActiveConfigFile
+	rebindIdentityIntact = config.RebindIdentityIntact
+	// rebindPushWatchdogToken hands the watchdog its new token over IPC.
+	rebindPushWatchdogToken = func(h *Heartbeat, token string) { h.sendWatchdogTokenUpdate(token) }
+	rebindReadStaged        = config.ReadRebindStaged
+	rebindWriteStaged       = config.WriteRebindStaged
+	rebindApplyIdentity     = config.ApplyRebindIdentity
 )
 
 // securityCapabilitiesForBeat is this build's capability set for a beat. A
@@ -239,10 +240,13 @@ func (h *Heartbeat) handleRebindDirective(d *RebindDirective, hold bool) {
 	go h.driveRebind(d)
 }
 
-// noteSourceCredentialsCurrent runs on every 2xx a call authenticated with
-// this install's (source) credentials got: they are proven current, so no
-// confirm retired them, and a set the server ended can go.
-func (h *Heartbeat) noteSourceCredentialsCurrent() {
+// noteCredentialsCurrent runs on every 2xx this process's credentials got.
+//   - The reattached identity authenticated (this process runs the confirmed
+//     set's agent id): the staged set has done its job and is removed. Until
+//     then it stayed on disk so start-up could re-apply a reverted swap.
+//   - The source's credentials are proven current: no confirm retired them,
+//     so a set the server ended (or one older than any intent) can go.
+func (h *Heartbeat) noteCredentialsCurrent() {
 	if h == nil {
 		return
 	}
@@ -258,9 +262,35 @@ func (h *Heartbeat) noteSourceCredentialsCurrent() {
 	if err != nil || s == nil {
 		return
 	}
+	if rebindRunsConfirmedIdentity(s, h.config.AgentID) {
+		h.removeAppliedRebindSet(s)
+		return
+	}
+	if s.SourceAgentID != h.config.AgentID {
+		return
+	}
 	if reason := rebindDiscardReason(s, rebindNow()); reason != "" {
 		h.discardRebindStaged(s, reason)
 	}
+}
+
+// rebindRunsConfirmedIdentity reports whether a process with agentID runs
+// the identity a confirmed set swapped in.
+func rebindRunsConfirmedIdentity(s *config.RebindStagedSet, agentID string) bool {
+	return s.Phase == config.RebindPhaseConfirmed && s.Confirmed != nil && s.Confirmed.AgentID == agentID
+}
+
+// removeAppliedRebindSet removes a confirmed set once the reattached identity
+// has authenticated. A failed removal is retried on the next 2xx. Caller
+// holds rebind.mu.
+func (h *Heartbeat) removeAppliedRebindSet(s *config.RebindStagedSet) {
+	if err := config.RemoveRebindStaged(rebindConfigFile()); err != nil {
+		h.logRebindOnce("warn", "could not delete the applied staged reattach set; retrying", err.Error())
+		return
+	}
+	h.rebind.pendingOnDisk.Store(false)
+	h.rebindProgressed()
+	log.Info("the reattached identity authenticated; removed the staged reattach set", "intentId", s.IntentID)
 }
 
 // noteSourceCredentialsRejected runs on a 401 to the source's heartbeat. With
@@ -283,6 +313,20 @@ func (h *Heartbeat) tickRebind() {
 	}
 	if h.rebind.swapped.Load() || h.rebind.pendingOnDisk.Load() {
 		go h.driveRebind(nil)
+	}
+}
+
+// primeRebindState records, before the first beat, whether a staged set is
+// on disk: it holds token rotation, and the first 2xx as a reattached device
+// removes it (noteCredentialsCurrent only looks when pendingOnDisk is set).
+func (h *Heartbeat) primeRebindState() {
+	if h == nil || h.config == nil || h.config.SupportMode {
+		return
+	}
+	h.rebind.mu.Lock()
+	defer h.rebind.mu.Unlock()
+	if _, err := h.loadRebindStaged(); err != nil {
+		h.logRebindOnce("error", "cannot read the staged reattach set now; keeping it and retrying", err.Error())
 	}
 }
 
@@ -378,14 +422,27 @@ func (h *Heartbeat) driveRebind(d *RebindDirective) {
 		h.rebindRetryLater(now, 0)
 		return
 	}
-	if s != nil && s.Phase == config.RebindPhaseConfirmed && s.Confirmed != nil && s.Confirmed.AgentID == h.config.AgentID {
-		// This process already runs the reattached identity: the swap and its
-		// restart happened, only the file's removal did not. Never re-applied
-		// (that would restart again, forever); start-up removes it otherwise.
-		if err := config.RemoveRebindStaged(rebindConfigFile()); err != nil {
-			h.logRebindOnce("warn", "could not delete the applied staged reattach set; the next start removes it", err.Error())
+	if s != nil && rebindRunsConfirmedIdentity(s, h.config.AgentID) {
+		// This process runs the reattached identity; the set stays until it
+		// has authenticated once. If the identity on disk no longer is the
+		// swap's (start-up could not check it: the set was unreadable then),
+		// re-apply it and restart. Otherwise there is nothing to do: an
+		// intact swap is never written again, and never restarted for again.
+		id, err := s.Identity()
+		if err != nil {
+			h.logRebindOnce("error", "the confirmed reattach set is incomplete", err.Error())
+			return
 		}
-		h.rebind.pendingOnDisk.Store(false)
+		intact, err := rebindIdentityIntact(rebindConfigFile(), id)
+		if err != nil {
+			h.logRebindOnce("warn", "cannot check the reattached identity on disk now; retrying", err.Error())
+			h.rebindRetryLater(now, 0)
+			return
+		}
+		if !intact {
+			h.logRebindOnce("error", "the reattached identity on disk was reverted; applying it again", "intent "+s.IntentID)
+			h.rebindSwap(s)
+		}
 		return
 	}
 	if s != nil && s.Phase != config.RebindPhaseConfirmed && s.SourceAgentID != h.config.AgentID {

@@ -27,12 +27,15 @@ import (
 // drop it, and its life cycle (one set per intent, kept until the source
 // credentials are proven current) is unrelated to token rotation's.
 //
-// The swap (ApplyRebindIdentity) writes secrets.yaml BEFORE agent.yaml, so
-// agent_id in agent.yaml is the commit marker: once it names the confirmed
-// agent, the new credentials are already on disk. A crash anywhere in the
-// swap leaves the staged file in phase "confirmed", and the next start
-// finishes the swap (FinishConfirmedRebind) before anything reads the
-// identity.
+// The swap (ApplyRebindIdentity) writes secrets.yaml BEFORE agent.yaml, so a
+// crash between the two never leaves the new agent id with the old tokens.
+// The staged set stays on disk, in phase "confirmed", until the restarted
+// process has authenticated as the target once (the heartbeat removes it).
+// Until then every start compares the identity on disk with the swap
+// (RebindIdentityIntact) and re-applies it if anything is missing or was
+// reverted (FinishConfirmedRebind), before anything reads the identity. No
+// token rotation runs while the set exists, so a difference is never a
+// legitimate later change.
 
 const rebindStagedFileName = "rebind-staged.json"
 
@@ -371,16 +374,46 @@ func (id RebindIdentity) validate() error {
 	return nil
 }
 
-// RebindIdentityApplied reports whether agent.yaml already names id's agent:
-// the swap's commit marker (see ApplyRebindIdentity).
-func RebindIdentityApplied(cfgFile string, agentID string) (bool, error) {
+// RebindIdentityIntact reports whether the swap id describes is wholly on
+// disk: agent.yaml names its agent and device, secrets.yaml holds its three
+// tokens and no staged rotation, and the client certificate is its own (none
+// when it has none). Org and site are not compared: the #8320 identity sync
+// owns them once the target is online.
+func RebindIdentityIntact(cfgFile string, id RebindIdentity) (bool, error) {
 	persistMu.Lock()
 	defer persistMu.Unlock()
-	onDisk, err := readAgentIdentityAt(ResolveSavePath(cfgFile))
+	return rebindIdentityIntactLocked(ResolveSavePath(cfgFile), id)
+}
+
+func rebindIdentityIntactLocked(cfgPath string, id RebindIdentity) (bool, error) {
+	onDisk, err := readAgentIdentityAt(cfgPath)
 	if err != nil {
 		return false, err
 	}
-	return agentID != "" && onDisk.AgentID == agentID, nil
+	if onDisk.AgentID != id.AgentID || onDisk.DeviceID != id.DeviceID {
+		return false, nil
+	}
+	creds, err := readPersistedCredentialsAt(cfgPath)
+	if err != nil {
+		return false, err
+	}
+	if creds.AuthToken != id.AuthToken || creds.WatchdogAuthToken != id.WatchdogAuthToken ||
+		creds.HelperAuthToken != id.HelperAuthToken || creds.PendingAuthToken != "" {
+		return false, nil
+	}
+	sv, err := readSecretsFile(secretsFilePathFor(cfgPath))
+	if err != nil {
+		return false, err
+	}
+	certOnDisk := ""
+	if sv != nil {
+		certOnDisk = sv.GetString("mtls_cert_pem")
+	}
+	wantCert := ""
+	if id.Certificate != nil {
+		wantCert = id.Certificate.Certificate
+	}
+	return certOnDisk == wantCert, nil
 }
 
 type agentIdentityOnDisk struct {
@@ -410,11 +443,10 @@ func readAgentIdentityAt(cfgPath string) (agentIdentityOnDisk, error) {
 //
 // Two saves, each write-new-then-rename: the first writes the NEW
 // credentials (secrets.yaml, the helper token file) beside the OLD agent.yaml
-// identity, the second the new agent.yaml identity. agent_id in agent.yaml
-// therefore changes last, and its value is the commit marker
-// (RebindIdentityApplied): a crash before it leaves the old agent id, and the
-// staged set (still on disk) re-applies the swap. Verified by reading both
-// files back.
+// identity, the second the new agent.yaml identity, so agent_id changes last
+// and never names the target beside the source's tokens. A crash in between
+// leaves the staged set (still on disk) to re-apply the swap. Verified by
+// reading both files back.
 func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 	if err := id.validate(); err != nil {
 		return err
@@ -461,33 +493,32 @@ func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 }
 
 func verifyRebindIdentityLocked(cfgPath string, id RebindIdentity) error {
+	intact, err := rebindIdentityIntactLocked(cfgPath, id)
+	if err != nil {
+		return fmt.Errorf("verifying the reattached identity: %w", err)
+	}
+	if !intact {
+		return errors.New("the reattached identity failed readback verification")
+	}
 	onDisk, err := readAgentIdentityAt(cfgPath)
 	if err != nil {
 		return fmt.Errorf("verifying the reattached identity: %w", err)
 	}
-	if onDisk.AgentID != id.AgentID || onDisk.DeviceID != id.DeviceID || onDisk.OrgID != id.OrgID || onDisk.SiteID != id.SiteID {
-		return errors.New("the reattached identity failed readback verification")
-	}
-	creds, err := readPersistedCredentialsAt(cfgPath)
-	if err != nil {
-		return fmt.Errorf("verifying the reattached credentials: %w", err)
-	}
-	if creds.AuthToken != id.AuthToken || creds.WatchdogAuthToken != id.WatchdogAuthToken ||
-		creds.HelperAuthToken != id.HelperAuthToken || creds.PendingAuthToken != "" {
-		return errors.New("the reattached credentials failed readback verification")
+	if onDisk.OrgID != id.OrgID || onDisk.SiteID != id.SiteID {
+		return errors.New("the reattached org or site failed readback verification")
 	}
 	return nil
 }
 
-// FinishConfirmedRebind completes a swap a previous process confirmed but
-// did not finish (spec §6.6, "Crash during the local swap"). Call it at
-// start-up, before anything reads the identity. It reports whether the
+// FinishConfirmedRebind completes, at start-up and before anything reads the
+// identity, a swap a previous process confirmed (spec §6.6, "Crash during the
+// local swap"), and re-applies it when anything reverted it since (a write of
+// an older process that landed after the swap). It reports whether the
 // identity on disk changed, in which case the caller reloads its config.
 //
-// A staged set in any other phase is left for the heartbeat to resume. An
-// identity whose commit marker is already on disk is not written again (a
-// later token rotation must never be overwritten by the staged tokens); only
-// the staged file is removed.
+// The staged set is not removed here: it stays until this process has
+// authenticated as the target once (the heartbeat removes it then). A staged
+// set in any other phase is left for the heartbeat to resume.
 func FinishConfirmedRebind(cfgFile string) (bool, error) {
 	s, err := ReadRebindStaged(cfgFile)
 	if err != nil || s == nil || s.Phase != RebindPhaseConfirmed {
@@ -497,20 +528,12 @@ func FinishConfirmedRebind(cfgFile string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	applied, err := RebindIdentityApplied(cfgFile, id.AgentID)
-	if err != nil {
+	intact, err := RebindIdentityIntact(cfgFile, id)
+	if err != nil || intact {
 		return false, err
 	}
-	changed := false
-	if !applied {
-		if err := ApplyRebindIdentity(cfgFile, id); err != nil {
-			return false, err
-		}
-		changed = true
+	if err := ApplyRebindIdentity(cfgFile, id); err != nil {
+		return false, err
 	}
-	if err := RemoveRebindStaged(cfgFile); err != nil {
-		// The marker is on disk, so a later start only removes the file.
-		return changed, fmt.Errorf("removing the applied staged set: %w", err)
-	}
-	return changed, nil
+	return true, nil
 }

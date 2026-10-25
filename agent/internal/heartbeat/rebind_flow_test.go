@@ -27,7 +27,7 @@ func TestRebindStagesConfirmsSwapsAndRestarts(t *testing.T) {
 	r.drive(r.directive(rebindGoldenIntent))
 	r.waitRestarts(1)
 
-	wantOrder := []string{"persist:generated", "call:rebind", "persist:staged", "call:rebind-confirm", "persist:confirmed", "swap"}
+	wantOrder := []string{"persist:generated", "call:rebind", "persist:staged", "call:rebind-confirm", "persist:confirmed", "swap", "watchdog-token"}
 	if got := r.eventLog(); !reflect.DeepEqual(got, wantOrder) {
 		t.Fatalf("event order = %v, want %v", got, wantOrder)
 	}
@@ -71,7 +71,7 @@ func TestRebindStagesConfirmsSwapsAndRestarts(t *testing.T) {
 	if r.restarts.Load() != 1 {
 		t.Fatalf("restarts = %d, want 1", r.restarts.Load())
 	}
-	r.advance(rebindRestartRetry)
+	r.advance(identityRestartPendingMax) // the restart never came
 	r.drive(nil)
 	r.waitRestarts(2)
 }
@@ -218,8 +218,8 @@ func TestRebindPhase1Answers(t *testing.T) {
 			got := r.staged()
 			if tc.wantPhase == "" {
 				r.waitRestarts(1)
-				if got != nil {
-					t.Fatal("the staged set survived the swap")
+				if got == nil || got.Phase != config.RebindPhaseConfirmed {
+					t.Fatal("after the swap the set must stay (confirmed) until the target authenticates")
 				}
 			} else {
 				if got == nil || got.Phase != tc.wantPhase {
@@ -335,8 +335,8 @@ func TestRebindConfirmAnswers(t *testing.T) {
 			got := r.staged()
 			if tc.wantPhase == "" {
 				r.waitRestarts(1)
-				if got != nil {
-					t.Fatal("the staged set survived the swap")
+				if got == nil || got.Phase != config.RebindPhaseConfirmed {
+					t.Fatal("after the swap the set must stay (confirmed) until the target authenticates")
 				}
 			} else if got == nil || got.Phase != tc.wantPhase {
 				t.Fatalf("staged set = %+v, want phase %s", got, tc.wantPhase)
@@ -358,7 +358,7 @@ func TestRebindConfirmAnswers(t *testing.T) {
 			if tc.wantPhase == config.RebindPhaseStaged {
 				// Never discarded on a bare rejection, even with the source
 				// credentials proven current.
-				r.h.noteSourceCredentialsCurrent()
+				r.h.noteCredentialsCurrent()
 				if s := r.staged(); s == nil || s.Phase != config.RebindPhaseStaged {
 					t.Fatal("a staged set was discarded on a bare rejection")
 				}
@@ -400,12 +400,12 @@ func TestRebindStaleSetIsDiscardedOnlyWhenNotConfirmed(t *testing.T) {
 	r := newRebindHarness(t)
 	r.fake.queue(&r.fake.confirmQueue, rebindInjection{status: 401, body: map[string]any{"code": "invalid_confirmation"}})
 	r.drive(r.directive(rebindGoldenIntent))
-	r.h.noteSourceCredentialsCurrent()
+	r.h.noteCredentialsCurrent()
 	if r.staged() == nil {
 		t.Fatal("a fresh staged set was discarded")
 	}
 	r.advance(rebindStaleAfter + time.Minute)
-	r.h.noteSourceCredentialsCurrent()
+	r.h.noteCredentialsCurrent()
 	if r.staged() != nil {
 		t.Fatal("a staged set older than any intent was kept with the source proven current")
 	}
@@ -414,7 +414,7 @@ func TestRebindStaleSetIsDiscardedOnlyWhenNotConfirmed(t *testing.T) {
 	r2.killAfter = config.RebindPhaseConfirmed
 	r2.drive(r2.directive(rebindGoldenIntent))
 	r2.advance(48 * time.Hour)
-	r2.h.noteSourceCredentialsCurrent()
+	r2.h.noteCredentialsCurrent()
 	if s := r2.staged(); s == nil || s.Phase != config.RebindPhaseConfirmed {
 		t.Fatal("a confirmed set was discarded")
 	}

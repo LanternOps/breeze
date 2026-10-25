@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/health"
+	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/spf13/viper"
@@ -435,9 +437,10 @@ type rebindHarness struct {
 	logs     *syncBuffer
 	secrets  map[string]bool
 
-	eventsMu sync.Mutex
-	events   []string
-	written  []config.RebindStagedSet
+	eventsMu       sync.Mutex
+	events         []string
+	written        []config.RebindStagedSet
+	watchdogPushes []string
 	// killAfter: a write of a set in this phase lands, then the process
 	// "dies" (the write reports an error, so the flow stops right there).
 	killAfter string
@@ -486,16 +489,27 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		t.Fatalf("SaveTo: %v", err)
 	}
 
-	origNow, origRestart, origClient := rebindNow, rebindRestartFn, newRebindHTTPClient
+	origNow, origRestart, origClient := rebindNow, restartForIdentityFn, newRebindHTTPClient
 	origWrite, origApply, origFile, origRead := rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged
+	origPush, origPoll, origIdentityNow := rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow
 	t.Cleanup(func() {
-		rebindNow, rebindRestartFn, newRebindHTTPClient = origNow, origRestart, origClient
+		rebindNow, restartForIdentityFn, newRebindHTTPClient = origNow, origRestart, origClient
 		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile, rebindReadStaged = origWrite, origApply, origFile, origRead
+		rebindPushWatchdogToken, identityRestartPollInterval, identitySyncNow = origPush, origPoll, origIdentityNow
 		logging.Init("text", "info", nil)
 	})
 	r.clock.Store(rebindGoldenNow.UnixNano())
 	rebindNow = r.now
-	rebindRestartFn = func() error { r.restarts.Add(1); return nil }
+	identitySyncNow = r.now // the restart gate's clock too
+	// The one restart path (#8320's restartWhenIdle -> restartForIdentityFn).
+	restartForIdentityFn = func() error { r.restarts.Add(1); return nil }
+	identityRestartPollInterval = 5 * time.Millisecond
+	rebindPushWatchdogToken = func(_ *Heartbeat, token string) {
+		r.eventsMu.Lock()
+		r.watchdogPushes = append(r.watchdogPushes, token)
+		r.eventsMu.Unlock()
+		r.event("watchdog-token")
+	}
 	newRebindHTTPClient = stagedCertClient
 	rebindConfigFile = func() string { return r.cfgPath }
 	rebindWriteStaged = func(cfgFile string, s *config.RebindStagedSet) error {
@@ -551,9 +565,47 @@ func (r *rebindHarness) restart() {
 	r.h = &Heartbeat{
 		config:       cfg,
 		secureToken:  secmem.NewSecureString(token),
-		client:       &http.Client{Timeout: 5 * time.Second, Transport: certTagTransport{tag: "source"}},
+		client:       &http.Client{Timeout: 5 * time.Second, Transport: certTagTransport{tag: clientCertTag(cfg.MtlsCertPEM)}},
 		agentVersion: "1.2.3",
 	}
+}
+
+// clientCertTag is what the process's own client presents: the source's
+// (no certificate in these tests) or the staged one after the swap.
+func clientCertTag(certPEM string) string {
+	if certPEM == "" {
+		return "source"
+	}
+	if block, _ := pem.Decode([]byte(certPEM)); block != nil {
+		if leaf, err := x509.ParseCertificate(block.Bytes); err == nil {
+			return leaf.Subject.CommonName
+		}
+	}
+	return "unparseable"
+}
+
+// startProcess is a production start: agentapp finishes (or re-applies) a
+// confirmed swap before anything reads the identity, then the heartbeat
+// starts and primes its state before the first beat.
+func (r *rebindHarness) startProcess() (changed bool) {
+	r.t.Helper()
+	changed, err := config.FinishConfirmedRebind(r.cfgPath)
+	if err != nil {
+		r.t.Fatalf("FinishConfirmedRebind: %v", err)
+	}
+	r.restart()
+	r.h.primeRebindState()
+	return changed
+}
+
+// beatAsThisProcess sends one heartbeat with this process's credentials and
+// reports whether it was a 2xx.
+func (r *rebindHarness) beatAsThisProcess() bool {
+	r.t.Helper()
+	r.h.healthMon = health.NewMonitor()
+	r.h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+	_, ok := r.h.doHeartbeatPost(r.fake.srv.URL, &HeartbeatPayload{Status: "ok", AgentVersion: "1.2.3"})
+	return ok
 }
 
 // directive is a directive for intentID signed for this install's agent id,
@@ -672,7 +724,25 @@ func (r *rebindHarness) assertSwapped(set *config.RebindStagedSet) {
 	if want != nil && cfg.MtlsCertPEM != want.Certificate {
 		r.t.Fatal("the certificate on disk is not the newest staged one")
 	}
+	// Kept until the restarted process authenticates as the target.
+	if s, err := config.ReadRebindStaged(r.cfgPath); err != nil || s == nil || s.Phase != config.RebindPhaseConfirmed {
+		r.t.Fatalf("staged set after the swap = (%v, %v), want it kept (confirmed) until the target authenticates", s, err)
+	}
+}
+
+// becomeTarget starts the next process (as the service manager would after
+// the restart) and lets it authenticate as the target once: the staged set
+// is removed then.
+func (r *rebindHarness) becomeTarget() {
+	r.t.Helper()
+	r.startProcess()
+	if r.h.config.AgentID != rebindTestStagedAgentID {
+		r.t.Fatalf("the restarted process is %s, not the target", r.h.config.AgentID)
+	}
+	if !r.beatAsThisProcess() {
+		r.t.Fatal("the target's first heartbeat failed")
+	}
 	if _, err := os.Stat(config.RebindStagedPath(r.cfgPath)); !os.IsNotExist(err) {
-		r.t.Fatal("the staged set is still on disk after the swap")
+		r.t.Fatal("the staged set is still on disk after the target authenticated")
 	}
 }

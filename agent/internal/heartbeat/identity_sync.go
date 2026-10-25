@@ -595,7 +595,31 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 // previousMarker is the restart marker as it was before this attempt was
 // recorded (nil if there was none), put back if the restart yields.
 func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
-	if jitter := identityRestartJitter(); jitter > 0 {
+	h.restartWhenIdle(identityRestartJitter(),
+		// #8382 — a rollback can start during the wait (its command may have
+		// come in the response that carried the assertion). It owns the restart.
+		h.rollbackInProgress,
+		func() { h.yieldIdentityRestart(previousMarker) },
+		func(err error) {
+			// Release the gate: the upgrades, credential rotation and mTLS cert
+			// renewal it holds back must not wait for a restart that will not
+			// come (a lapsed cert takes the device offline), and beats and
+			// commands resume. The marker keeps the next try behind the cooldown.
+			h.releaseIdentityRestart()
+			log.Error("restart after identity change failed; resuming normal work, the new identity applies on the next start", "error", err.Error())
+		})
+}
+
+// restartWhenIdle is the one restart path for an identity the server changed
+// under this process: the org/site sync (#8317/#8320) and the reinstall
+// reattach (#8318). The caller has persisted the identity and taken the
+// restart gate (restartRequested, intakePausedUntil). It waits jitter, then
+// for the commands already running (at most identityRestartMaxWait); yields
+// when ownedElsewhere reports a restart another flow owns (a rollback; an
+// upgrade), which loads the identity on disk all the same; otherwise restarts
+// the service through restartForIdentityFn (updater.RestartSelf).
+func (h *Heartbeat) restartWhenIdle(jitter time.Duration, ownedElsewhere func() bool, onYield func(), onFailure func(error)) {
+	if jitter > 0 {
 		time.Sleep(jitter)
 	}
 	deadline := identitySyncNow().Add(identityRestartMaxWait)
@@ -606,19 +630,12 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 		}
 		time.Sleep(identityRestartPollInterval)
 	}
-	// #8382 — a rollback can start during the wait (its command may have
-	// come in the response that carried the assertion). It owns the restart.
-	if h.rollbackInProgress() {
-		h.yieldIdentityRestart(previousMarker)
+	if ownedElsewhere() {
+		onYield()
 		return
 	}
 	if err := restartForIdentityFn(); err != nil {
-		// Release the gate: the upgrades, credential rotation and mTLS cert
-		// renewal it holds back must not wait for a restart that will not
-		// come (a lapsed cert takes the device offline), and beats and
-		// commands resume. The marker keeps the next try behind the cooldown.
-		h.releaseIdentityRestart()
-		log.Error("restart after identity change failed; resuming normal work, the new identity applies on the next start", "error", err.Error())
+		onFailure(err)
 	}
 }
 

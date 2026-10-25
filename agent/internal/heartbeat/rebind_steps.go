@@ -286,19 +286,34 @@ func (h *Heartbeat) confirmRebind(s *config.RebindStagedSet, id config.RebindCon
 }
 
 // rebindSwap writes the confirmed identity (write-new-then-rename, see
-// config.ApplyRebindIdentity) and restarts through the updater path, as the
-// #8320 identity sync does: several components capture the ids at start.
+// config.ApplyRebindIdentity) and restarts through #8320's restart path
+// (restartWhenIdle): several components capture the ids at start.
+//
+// Before it: a rollback or an upgrade in progress owns the next restart, so
+// the swap waits for it (the set stays on disk); a token rotation in flight
+// settles first (the rotation latch), and from the swap on no token update
+// runs in this process. After it: the watchdog is handed the target's token
+// over IPC, so the last token it writes into secrets.yaml (its own
+// read-modify-write) is the reattached one. The staged set stays on disk
+// until the restarted process authenticates as the target, and start-up
+// re-applies the swap if anything reverted it meanwhile.
 func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 	id, err := s.Identity()
 	if err != nil {
 		h.logRebindOnce("error", "the confirmed reattach set is incomplete", err.Error())
 		return
 	}
-	// No token rotation may land after the swap: its local promote would
-	// write the retired source's tokens over the target's. Held for the life
-	// of this process once the swap succeeds.
+	now := rebindNow()
+	if h.rebindRestartOwnedElsewhere() {
+		h.logRebindOnce("warn", "a rollback or an upgrade is in progress; the reattached identity is swapped in after it", "intent "+s.IntentID)
+		h.rebindRetryLater(now, 0)
+		return
+	}
+	// No token rotation may land after the swap: its local promote, or the
+	// token update it sends the watchdog, would write the retired source's
+	// tokens over the target's. Held for the life of this process.
 	if !h.tokenRotating.CompareAndSwap(false, true) {
-		return // a rotation is running; the next tick swaps
+		return // a rotation is settling; the next tick swaps
 	}
 	cfgFile := rebindConfigFile()
 	h.mu.Lock()
@@ -310,41 +325,61 @@ func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 	if err != nil {
 		h.tokenRotating.Store(false)
 		h.logRebindOnce("error", "the reattach is confirmed but the new identity could not be written; retrying", err.Error())
-		h.rebindRetryLater(rebindNow(), 0)
+		h.rebindRetryLater(now, 0)
 		return
 	}
 	h.pendingRotationOnDisk.Store(false)
 	h.pendingMTLSCertOnDisk.Store(false)
-	if err := config.RemoveRebindStaged(cfgFile); err != nil {
-		// The identity is committed on disk (its marker), so the next start
-		// only removes the file.
-		log.Warn("could not delete the applied staged reattach set; the next start removes it", "error", err.Error())
-	}
-	h.rebind.pendingOnDisk.Store(false)
+	rebindPushWatchdogToken(h, id.WatchdogAuthToken)
 	log.Info("this install is now the reattached device; restarting to load the new identity",
 		"deviceId", id.DeviceID, "orgId", id.OrgID, "siteId", id.SiteID, "agentId", id.AgentID)
-	h.restartForRebind()
+	h.requestRebindRestart()
 }
 
-func (h *Heartbeat) restartForRebind() {
+// rebindRestartOwnedElsewhere reports a restart another flow owns: a rollback
+// (it restarts through its own helper) or a self-update in progress.
+func (h *Heartbeat) rebindRestartOwnedElsewhere() bool {
+	return h.rollbackInProgress() || h.upgradeInProgress.Load()
+}
+
+// requestRebindRestart takes the #8320 restart gate (no beat, no new
+// WebSocket work, no upgrade, rotation or renewal until the restart lands)
+// and restarts once the commands already running are done. A restart already
+// scheduled (an identity sync's) loads the reattached identity as well.
+func (h *Heartbeat) requestRebindRestart() {
 	h.rebind.restartAt.Store(rebindNow().UnixNano())
-	go h.runRebindRestart()
+	if !h.identitySync.restartRequested.CompareAndSwap(false, true) {
+		return
+	}
+	now := identitySyncNow()
+	h.identitySync.restartRequestedAt.Store(now.UnixNano())
+	pausedUntil := now.Add(identityIntakePauseMax)
+	h.identitySync.intakePausedUntil.Store(&pausedUntil)
+	go h.restartWhenIdle(0, h.rebindRestartOwnedElsewhere,
+		func() {
+			h.releaseIdentityRestart()
+			log.Warn("a rollback or an upgrade started before the restart into the reattached identity; it owns the restart, which loads that identity")
+		},
+		func(err error) {
+			h.releaseIdentityRestart()
+			h.logRebindOnce("error", "restart after the reattach failed; retrying (the new identity applies on the next start)", err.Error())
+		})
 }
 
 // retryRebindRestart tries the restart again when the last one did not
-// happen: this process holds retired credentials and can do nothing else.
+// happen: this process holds retired credentials and can do nothing else. A
+// restart that reported success keeps the gate (the process is about to be
+// replaced) until identityRestartPendingMax says it never came, as #8320's.
 func (h *Heartbeat) retryRebindRestart() {
-	last := h.rebind.restartAt.Load()
-	if rebindNow().Sub(time.Unix(0, last)) < rebindRestartRetry {
+	if h.identitySync.restartRequested.Load() {
+		requestedAt := time.Unix(0, h.identitySync.restartRequestedAt.Load())
+		if identitySyncNow().Sub(requestedAt) < identityRestartPendingMax {
+			return
+		}
+		h.releaseIdentityRestart()
+	}
+	if rebindNow().Sub(time.Unix(0, h.rebind.restartAt.Load())) < rebindRestartRetry {
 		return
 	}
-	if h.rebind.restartAt.CompareAndSwap(last, rebindNow().UnixNano()) {
-		go h.runRebindRestart()
-	}
-}
-
-func (h *Heartbeat) runRebindRestart() {
-	if err := rebindRestartFn(); err != nil {
-		h.logRebindOnce("error", "restart after the reattach failed; retrying (the new identity applies on the next start)", err.Error())
-	}
+	h.requestRebindRestart()
 }

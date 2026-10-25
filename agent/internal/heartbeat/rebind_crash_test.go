@@ -152,7 +152,7 @@ func TestRebindCrashAfterPhase1ThenTheIntentExpired(t *testing.T) {
 	if n := len(r.fake.callsTo("/rebind")); n != 1 {
 		t.Fatal("staging reopened for an expired intent")
 	}
-	r.h.noteSourceCredentialsCurrent()
+	r.h.noteCredentialsCurrent()
 	if r.staged() != nil {
 		t.Fatal("the ended set was kept after the source credentials were proven current")
 	}
@@ -230,11 +230,15 @@ func TestRebindCrashDuringTheLocalSwap(t *testing.T) {
 			t.Fatalf("FinishConfirmedRebind = (%v, %v)", changed, err)
 		}
 		r.assertSwapped(set)
-		r.restart()
+		r.startProcess()
 		r.h.resumeRebind()
-		if r.h.rebind.pendingOnDisk.Load() || r.restarts.Load() != 0 {
-			t.Fatal("the resumed process found work after start-up finished the swap")
+		if r.restarts.Load() != 0 || r.swapCount() != 0 {
+			t.Fatal("the resumed process re-applied or restarted after start-up finished the swap")
 		}
+		if !r.h.rebind.pendingOnDisk.Load() {
+			t.Fatal("the set must stay until the target authenticates")
+		}
+		r.becomeTarget()
 	})
 	t.Run("the write fails, then the heartbeat retries", func(t *testing.T) {
 		r := newRebindHarness(t)

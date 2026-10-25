@@ -2187,7 +2187,9 @@ func (h *Heartbeat) Start() {
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
 
-	// #8318 — resume a reattach a previous process left mid-flight (§6.6).
+	// #8318 — know before the first beat whether a staged reattach set is on
+	// disk, then resume a reattach a previous process left mid-flight (§6.6).
+	h.primeRebindState()
 	go h.resumeRebind()
 
 	// Proactively spawn helpers into user sessions so remote desktop works
@@ -5452,9 +5454,10 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if h.authMon != nil {
 		h.authMon.RecordSuccess()
 	}
-	// #8318 — this install's credentials are proven current: a staged
-	// reattach set the server ended can now be discarded.
-	h.noteSourceCredentialsCurrent()
+	// #8318 — this process's credentials are proven current: a staged
+	// reattach set the server ended can go, and a reattached identity that
+	// has now authenticated no longer needs its staged set.
+	h.noteCredentialsCurrent()
 
 	// Update state file with latest heartbeat timestamp so the watchdog
 	// can detect stale heartbeats.

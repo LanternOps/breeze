@@ -225,8 +225,8 @@ func TestApplyRebindIdentitySwapsIdentityCredentialsAndCertificate(t *testing.T)
 	if got.HeartbeatIntervalSeconds != 45 || got.ServerURL != "https://api.example.test" || len(got.PinnedManifestPubKeys) != 1 {
 		t.Fatal("the swap lost settings it must keep")
 	}
-	if applied, err := RebindIdentityApplied(cfgPath, id.AgentID); err != nil || !applied {
-		t.Fatalf("RebindIdentityApplied = (%v, %v), want true", applied, err)
+	if intact, err := RebindIdentityIntact(cfgPath, id); err != nil || !intact {
+		t.Fatalf("RebindIdentityIntact = (%v, %v), want true", intact, err)
 	}
 }
 
@@ -275,8 +275,8 @@ func TestFinishConfirmedRebindAfterACrashBetweenTheSaves(t *testing.T) {
 		t.Fatalf("torn state = agent %s with the new token %v; want the old agent id with the new credentials",
 			torn.AgentID, torn.AuthToken == id.AuthToken)
 	}
-	if applied, _ := RebindIdentityApplied(cfgPath, id.AgentID); applied {
-		t.Fatal("the commit marker is set although agent.yaml was never written")
+	if intact, _ := RebindIdentityIntact(cfgPath, id); intact {
+		t.Fatal("a half-written swap reads as intact")
 	}
 
 	rebindSaveFn = orig
@@ -288,39 +288,70 @@ func TestFinishConfirmedRebindAfterACrashBetweenTheSaves(t *testing.T) {
 	if got.AgentID != id.AgentID || got.DeviceID != id.DeviceID || got.AuthToken != id.AuthToken {
 		t.Fatal("start-up did not finish the swap")
 	}
-	if s, _ := ReadRebindStaged(cfgPath); s != nil {
-		t.Fatal("the applied staged set is still on disk")
+	if s, _ := ReadRebindStaged(cfgPath); s == nil {
+		t.Fatal("the staged set must stay until the target authenticates")
 	}
 }
 
-// A marker already on disk is never re-applied: a rotation since the swap
-// must not be overwritten by the staged tokens.
-func TestFinishConfirmedRebindNeverReappliesAnAppliedIdentity(t *testing.T) {
-	cfgPath := bindConfig(t)
-	set := rebindTestSet(RebindPhaseConfirmed)
-	id, _ := set.Identity()
-	if err := ApplyRebindIdentity(cfgPath, id); err != nil {
-		t.Fatal(err)
+// While the confirmed set is on disk (until the target authenticates), start
+// re-applies the swap whenever the disk is not exactly it, and leaves an
+// intact swap alone. No rotation runs meanwhile, so a difference is a revert.
+func TestFinishConfirmedRebindReappliesOnlyARevertedSwap(t *testing.T) {
+	cases := []struct {
+		name    string
+		revert  func(t *testing.T)
+		changed bool
+	}{
+		{name: "intact", changed: false},
+		{name: "tokens reverted", changed: true, revert: func(t *testing.T) {
+			if err := StagePendingCredentials("brz_current_agent", "brz_current_watchdog", "brz_current_helper"); err != nil {
+				t.Fatal(err)
+			}
+			if err := PromotePendingCredentials("brz_current_agent", "brz_current_watchdog", "brz_current_helper"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "watchdog token reverted", changed: true, revert: func(t *testing.T) {
+			if err := SetSecretAndPersist("watchdog_auth_token", "brz_current_watchdog"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "certificate reverted", changed: true, revert: func(t *testing.T) {
+			if err := SetSecretAndPersist("mtls_cert_pem", "SOURCE-CERT"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "a staged rotation appeared", changed: true, revert: func(t *testing.T) {
+			if err := StagePendingCredentials("brz_old_agent", "brz_old_watchdog", "brz_old_helper"); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	}
-	if err := WriteRebindStaged(cfgPath, set); err != nil {
-		t.Fatal(err)
-	}
-	if err := StagePendingCredentials("brz_rotated_agent", "brz_rotated_watchdog", "brz_rotated_helper"); err != nil {
-		t.Fatal(err)
-	}
-	if err := PromotePendingCredentials("brz_rotated_agent", "brz_rotated_watchdog", "brz_rotated_helper"); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := FinishConfirmedRebind(cfgPath)
-	if err != nil || changed {
-		t.Fatalf("FinishConfirmedRebind = (%v, %v), want (false, nil)", changed, err)
-	}
-	got, _ := Load(cfgPath)
-	if got.AuthToken != "brz_rotated_agent" {
-		t.Fatal("start-up re-applied the staged tokens over a later rotation")
-	}
-	if s, _ := ReadRebindStaged(cfgPath); s != nil {
-		t.Fatal("the stale staged set was not removed")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := bindConfig(t)
+			set := rebindTestSet(RebindPhaseConfirmed)
+			id, _ := set.Identity()
+			if err := ApplyRebindIdentity(cfgPath, id); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteRebindStaged(cfgPath, set); err != nil {
+				t.Fatal(err)
+			}
+			if tc.revert != nil {
+				tc.revert(t)
+			}
+			changed, err := FinishConfirmedRebind(cfgPath)
+			if err != nil || changed != tc.changed {
+				t.Fatalf("FinishConfirmedRebind = (%v, %v), want (%v, nil)", changed, err, tc.changed)
+			}
+			if intact, err := RebindIdentityIntact(cfgPath, id); err != nil || !intact {
+				t.Fatalf("not intact after start-up (%v)", err)
+			}
+			if s, _ := ReadRebindStaged(cfgPath); s == nil {
+				t.Fatal("start-up removed the staged set; the heartbeat removes it once the target authenticated")
+			}
+		})
 	}
 }
 
