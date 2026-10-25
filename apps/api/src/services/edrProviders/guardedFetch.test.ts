@@ -4,6 +4,7 @@ const { safeFetch } = vi.hoisted(() => ({ safeFetch: vi.fn() }));
 vi.mock('../urlSafety', () => ({ safeFetch }));
 
 import { createGuardedFetch, hostAllowed, validateVendorUrl } from './guardedFetch';
+import { EMSISOFT_HOST_ALLOWLIST } from './emsisoft/client';
 
 const GZ = ['.gravityzone.bitdefender.com'];
 
@@ -85,5 +86,16 @@ describe('createGuardedFetch', () => {
     safeFetch.mockRejectedValue(new Error('dns refused'));
     const f = createGuardedFetch(GZ);
     await expect(f('https://cloud.gravityzone.bitdefender.com/api/x', { method: 'POST', headers: {} })).rejects.toThrow('dns refused');
+  });
+});
+
+describe('Emsisoft host allowlist (exact host, no leading dot)', () => {
+  it.each([
+    ['api.emsisoft.com', true],
+    ['xapi.emsisoft.com', false],
+    ['api.emsisoft.com.evil.test', false],
+    ['emsisoft.com', false],
+  ])('hostAllowed(%s) -> %s', (host, ok) => {
+    expect(hostAllowed(host, EMSISOFT_HOST_ALLOWLIST)).toBe(ok);
   });
 });

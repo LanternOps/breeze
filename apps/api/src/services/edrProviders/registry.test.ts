@@ -20,7 +20,7 @@ describe('edr provider registry', () => {
   });
 
   it('registry keys are the pinned set and each adapter reports its own key', () => {
-    expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender']);
+    expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender', 'emsisoft']);
     for (const k of EDR_PROVIDER_KEYS) expect(getEdrProvider(k).key).toBe(k);
   });
 
@@ -30,5 +30,9 @@ describe('edr provider registry', () => {
 
   it('declares the incidents operation class budget', () => {
     expect(getEdrProvider('bitdefender').capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
+  });
+
+  it('emsisoft declares no connection-wide incidents budget (its incidents are per workspace; scheduler.ts:22-27 assumes one call per run)', () => {
+    expect(getEdrProvider('emsisoft').capabilities.operationBudgets?.incidents).toBeUndefined();
   });
 });
