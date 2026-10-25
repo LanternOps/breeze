@@ -133,6 +133,7 @@ vi.mock('../services/edrProviders/registry', () => ({
     hostAllowlist: ['.gravityzone.bitdefender.com'],
     capabilities: {
       tenantModel: 'partner', detectionDelivery: 'poll', installer: 'none', actions: [],
+      endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
       requestBudget: { perSecond: 10 }, tenantFetchConcurrency: 2,
       defaultIntervals: { detectionsMinutes: 5, inventoryMinutes: 60 },
       ...m.caps,
@@ -166,7 +167,10 @@ vi.mock('../services/edrProviders/alerts', () => ({
   evaluateEdrEndpointHealth: (...a: unknown[]) => { events.push(`health@${contextDepth}`); return m.evaluateEdrEndpointHealth(...a); },
   evaluateEdrStaleTenants: m.evaluateEdrStaleTenants,
 }));
-vi.mock('../services/edrProviders/deviceMatching', () => ({ matchEdrEndpoints: m.matchEdrEndpoints }));
+vi.mock('../services/edrProviders/deviceMatching', async (orig) => ({
+  ...(await orig<typeof import('../services/edrProviders/deviceMatching')>()),
+  matchEdrEndpoints: m.matchEdrEndpoints,
+}));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: vi.fn(() => null) }));
 const h = vi.hoisted(() => ({ readEdrHints: vi.fn(), ackEdrHints: vi.fn() }));
@@ -345,6 +349,14 @@ describe('syncEdrInventory', () => {
     await syncEdrInventory(CONNECTION_ID);
     const heavy = lastConnectionUpdate()!.payload as { effectiveInventoryIntervalMinutes: number };
     expect(heavy.effectiveInventoryIntervalMinutes).toBeGreaterThan(60);
+  });
+
+  it('passes strictUnique to the matcher only for adapters without mac/serial identifiers (A3)', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.matchEdrEndpoints.mock.calls[0]![2]).toEqual({ strictUnique: false });
+    m.caps = { endpointIdentifiers: ['hostname', 'fqdn'] };
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.matchEdrEndpoints.mock.calls[1]![2]).toEqual({ strictUnique: true });
   });
 
   it('exports DEFAULT_ESTIMATED_CALLS unchanged from the pre-A2 literal', () => {

@@ -30,7 +30,7 @@ import {
   type TenantFetch,
 } from '../services/edrProviders/persist';
 import { autoMapEdrTenants } from '../services/edrProviders/mapping';
-import { matchEdrEndpoints } from '../services/edrProviders/deviceMatching';
+import { matchEdrEndpoints, strictMatchingFor } from '../services/edrProviders/deviceMatching';
 import {
   evaluateEdrAlerts,
   evaluateEdrEndpointHealth,
@@ -745,7 +745,9 @@ export async function syncEdrInventory(
       const inv = await persistInventory(tx, conn, keep, now);
       await pruneMissingTenantEndpoints(tx, conn.id, now);
       await clearExpiredTenantDenials(tx, conn.id, now);
-      const match = await matchEdrEndpoints(tx, conn.id);
+      const match = await matchEdrEndpoints(tx, conn.id, {
+        strictUnique: strictMatchingFor(adapter.capabilities.endpointIdentifiers ?? []),
+      });
       await refreshDetectionDeviceLinks(tx, conn.id);
 
       const unmapped = Math.max(0, tenantCounts.unmapped - mapped.mapped);
