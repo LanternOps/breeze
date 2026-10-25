@@ -2,7 +2,6 @@ package heartbeat
 
 import (
 	"crypto/ecdsa"
-	"errors"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
@@ -10,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"

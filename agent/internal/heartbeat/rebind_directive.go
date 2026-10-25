@@ -23,6 +23,10 @@ const (
 	rebindDirectiveDomain = "breeze-agent-rebind-v1"
 )
 
+// RebindProtocolVersion is the rebind protocol this build speaks, declared at
+// enrollment and on every main and parked heartbeat.
+const RebindProtocolVersion = rebindProtocolVersion
+
 // RebindDirective is the heartbeat response's `rebind` object.
 type RebindDirective struct {
 	IntentID       string `json:"intentId"`

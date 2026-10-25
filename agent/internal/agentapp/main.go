@@ -1830,6 +1830,9 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	enrollReq := &api.EnrollRequest{
+		// #8318 — a new install declares the rebind protocol at once: it is
+		// exactly the device a reinstall reattach makes the source.
+		SecurityCapabilities:   &api.EnrollSecurityCapabilities{RebindProtocolVersion: heartbeat.RebindProtocolVersion},
 		EnrollmentKey:          enrollmentKey,
 		EnrollmentSecret:       secret,
 		Hostname:               systemInfo.Hostname,
