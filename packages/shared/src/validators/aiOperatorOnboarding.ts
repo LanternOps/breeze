@@ -40,7 +40,7 @@ const mailNicknameSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/);
  * form. Lowercasing an already-lowercase list is a no-op, so this stays
  * idempotent (a parsed value parses again to itself).
  */
-const uniqueLowercaseArray = <T extends z.ZodType<string>>(inner: T, max: number) =>
+const uniqueLowercaseArray = (inner: z.ZodString, max: number) =>
   z.array(inner).max(max).overwrite((xs) => [...new Set(xs.map((x) => x.toLowerCase()))]);
 
 /**
