@@ -413,6 +413,32 @@ describe('phase 1 (#8318 §6.3)', () => {
     expect(res).toMatchObject({ status: 409, body: { code: 'cancelled', state: 'cancelled', cancelReason: 'admin' } });
   });
 
+  // Review of wave 1b-2, finding 2: one confirmation token, one intent.
+  it('refuses a confirmation token already bound to another intent (409 confirmation_token_reused); a fresh set stages', async () => {
+    const first = await arrangeStaged();
+    const tenant = first.tenant;
+    const source = await parkedSource(tenant);
+    const intent = await requestIntent(tenant, source, await silentTarget(tenant.orgA));
+    const reused = { ...stagedSet().hashes, confirmationTokenHash: first.set.hashes.confirmationTokenHash };
+    expect(await phase1(source, intent.id, reused))
+      .toMatchObject({ status: 409, body: { code: 'confirmation_token_reused' } });
+    // Nothing staged, nothing cancelled: the agent generates a fresh set.
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'requested', confirmationTokenHash: null });
+    expect((await phase1(source, intent.id, stagedSet().hashes)).status).toBe(200);
+  });
+
+  it('refuses a confirmation token already on a ledger row (a confirmed, pruned intent)', async () => {
+    const first = await arrangeStaged();
+    expect((await confirm(first.source.agentId, first.set.tokens.confirmationToken)).status).toBe(200);
+    await getTestDb().delete(deviceReattachIntents).where(eq(deviceReattachIntents.id, first.intent.id));
+    const source = await parkedSource(first.tenant);
+    const intent = await requestIntent(first.tenant, source, await silentTarget(first.tenant.orgA));
+    const reused = { ...stagedSet().hashes, confirmationTokenHash: first.set.hashes.confirmationTokenHash };
+    expect(await phase1(source, intent.id, reused)).toMatchObject({ status: 409, body: { code: 'confirmation_token_reused' } });
+    // And the token still resolves to its own ledger row, deterministically.
+    expect((await confirm(first.source.agentId, first.set.tokens.confirmationToken)).body.deviceId).toBe(first.target.id);
+  });
+
   it('only the source\'s main agent credential may stage', async () => {
     const { tenant, source, intent } = await arrange();
     const set = stagedSet();

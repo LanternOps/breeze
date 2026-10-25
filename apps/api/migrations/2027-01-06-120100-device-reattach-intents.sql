@@ -144,6 +144,13 @@ CREATE INDEX IF NOT EXISTS device_reattach_intents_requested_by_idx
 -- source agent id), then compares the token hash in constant time (§6.4).
 CREATE INDEX IF NOT EXISTS device_reattach_intents_source_agent_idx
   ON public.device_reattach_intents (source_agent_id);
+-- A confirmation token identifies exactly ONE intent (§6.3: one staged set
+-- per intent). Phase 1 refuses a hash already on another intent or on a
+-- ledger row (409 confirmation_token_reused); this is the backstop, and what
+-- lets rebind-confirm resolve a token to a single intent.
+CREATE UNIQUE INDEX IF NOT EXISTS device_reattach_intents_confirmation_hash_uq
+  ON public.device_reattach_intents (confirmation_token_hash)
+  WHERE confirmation_token_hash IS NOT NULL;
 -- The expiry sweep (open intents past expires_at) and the 30-day prune.
 CREATE INDEX IF NOT EXISTS device_reattach_intents_open_expiry_idx
   ON public.device_reattach_intents (expires_at)

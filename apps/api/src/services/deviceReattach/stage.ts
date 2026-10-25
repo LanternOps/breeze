@@ -36,6 +36,7 @@ import { collectAgentCredentialHashes } from '../agentCredentialHashes';
 import { writeReattachAudit } from './audit';
 import { cancelledRefusal, intentStateRefusal, reattachRefusal, ReattachRefusedError, type ReattachRefusal } from './errors';
 import {
+  confirmationHashInUse,
   demoteStagedCertificate,
   endIntentInTransaction,
   lockReattachDevices,
@@ -43,6 +44,7 @@ import {
   revokeCertificatesAfterCommit,
   type EndedIntent,
 } from './intentStore';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { REATTACH_STAGED_TTL_MS, SHA256_HEX } from './protocol';
 import { revalidateLockedIntent } from './revalidation';
 import {
@@ -99,6 +101,11 @@ function belongsToCaller(intent: DeviceReattachIntent | null, caller: StageRebin
 }
 
 const INTENT_NOT_FOUND = (): ReattachRefusal => reattachRefusal(404, 'intent_not_found', 'No such reattach intent for this device');
+const CONFIRMATION_TOKEN_REUSED = (): ReattachRefusal => reattachRefusal(
+  409,
+  'confirmation_token_reused',
+  'This confirmation token is already bound to another reattach; generate a fresh staged set for this one',
+);
 
 type Committed =
   | { kind: 'refused'; refusal: ReattachRefusal; ended?: EndedIntent; intent?: DeviceReattachIntent }
@@ -202,6 +209,14 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
         );
       }
 
+      // A confirmation token identifies exactly one intent (§6.3, one staged
+      // set per intent): a hash already on another intent, or on a ledger
+      // row, is refused before anything is staged. The agent generates a
+      // fresh set. (The partial unique index is the backstop, caught below.)
+      if (intent.state === 'requested' && await confirmationHashInUse(tx, hashes.confirmationTokenHash, intent.id)) {
+        throw new ReattachRefusedError(CONFIRMATION_TOKEN_REUSED());
+      }
+
       const targetIdentity = { deviceId: target.id, orgId: target.orgId, siteId: target.siteId, hostname: target.hostname };
 
       if (intent.state === 'requested') {
@@ -275,6 +290,7 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
   } catch (err) {
     if (issued) await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
     if (err instanceof ReattachRefusedError) return err.refusal;
+    if (isPgUniqueViolation(err, 'device_reattach_intents_confirmation_hash_uq')) return CONFIRMATION_TOKEN_REUSED();
     throw err;
   }
 

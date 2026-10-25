@@ -52,7 +52,7 @@
  * the target's certificate is not implemented (it would add a ledger read to
  * every certificate-bound agent authentication).
  */
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   deviceMtlsCertificates,
@@ -129,30 +129,41 @@ type Located =
   | { kind: 'ledger'; ledger: DeviceReattachment };
 
 /** Find the caller's intent (or ledger row) whose confirmation hash matches, in constant time per row. */
+/**
+ * Resolve the token to ONE record, deterministically: the intent bearing its
+ * hash (a confirmation hash is unique across intents, enforced at phase 1 and
+ * by a partial unique index), else — once that intent is pruned — the ledger
+ * row bearing it (unique too). Both must name `:id` as the source agent. The
+ * equality lookup uses the indexes; the hash of a 256-bit secret leaks
+ * nothing through timing, and the constant-time compare stays as belt and
+ * braces on the row found.
+ */
 async function locateByToken(sourceAgentId: string, presentedHash: string): Promise<Located | null> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const intents = await db
+    const [intent] = await db
       .select()
       .from(deviceReattachIntents)
       .where(and(
+        eq(deviceReattachIntents.confirmationTokenHash, presentedHash),
         eq(deviceReattachIntents.sourceAgentId, sourceAgentId),
-        isNotNull(deviceReattachIntents.confirmationTokenHash),
-      ));
-    let match: DeviceReattachIntent | null = null;
-    for (const intent of intents) {
-      if (confirmationHashMatches(presentedHash, intent.confirmationTokenHash) && !match) match = intent;
+      ))
+      .limit(1);
+    if (intent && confirmationHashMatches(presentedHash, intent.confirmationTokenHash)) {
+      return { kind: 'intent', intent } as const;
     }
-    if (match) return { kind: 'intent', intent: match } as const;
 
-    const ledgerRows = await db
+    const [ledger] = await db
       .select()
       .from(deviceReattachments)
-      .where(eq(deviceReattachments.sourceAgentId, sourceAgentId));
-    let ledger: DeviceReattachment | null = null;
-    for (const row of ledgerRows) {
-      if (confirmationHashMatches(presentedHash, row.confirmationTokenHash) && !ledger) ledger = row;
+      .where(and(
+        eq(deviceReattachments.confirmationTokenHash, presentedHash),
+        eq(deviceReattachments.sourceAgentId, sourceAgentId),
+      ))
+      .limit(1);
+    if (ledger && confirmationHashMatches(presentedHash, ledger.confirmationTokenHash)) {
+      return { kind: 'ledger', ledger } as const;
     }
-    return ledger ? ({ kind: 'ledger', ledger } as const) : null;
+    return null;
   }));
 }
 

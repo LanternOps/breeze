@@ -59,6 +59,10 @@ export const deviceReattachIntents = pgTable('device_reattach_intents', {
   index('device_reattach_intents_partner_idx').on(table.partnerId),
   index('device_reattach_intents_requested_by_idx').on(table.requestedBy),
   index('device_reattach_intents_source_agent_idx').on(table.sourceAgentId),
+  // One intent per confirmation token (§6.3); phase 1 refuses a reused one.
+  uniqueIndex('device_reattach_intents_confirmation_hash_uq')
+    .on(table.confirmationTokenHash)
+    .where(sql`${table.confirmationTokenHash} IS NOT NULL`),
   index('device_reattach_intents_open_expiry_idx')
     .on(table.expiresAt)
     .where(sql`${table.state} IN ('requested', 'staged')`),

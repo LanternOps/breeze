@@ -13,7 +13,7 @@
  * Nothing that writes an intent takes a device lock after the intent's. The
  * expiry sweep and an admin cancel take the intent alone.
  */
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, ne, or } from 'drizzle-orm';
 import type { db } from '../../db';
 import {
   deviceMtlsCertificates,
@@ -154,6 +154,29 @@ export async function anyDeviceInOpenIntent(tx: ReattachTx, deviceIds: readonly 
     ))
     .limit(1);
   return Boolean(row);
+}
+
+/**
+ * Is this confirmation hash already bound to another intent, or to a ledger
+ * row? One token identifies exactly one intent (§6.3); both columns are
+ * indexed (unique).
+ */
+export async function confirmationHashInUse(tx: ReattachTx, confirmationTokenHash: string, intentId: string): Promise<boolean> {
+  const [onIntent] = await tx
+    .select({ id: deviceReattachIntents.id })
+    .from(deviceReattachIntents)
+    .where(and(
+      eq(deviceReattachIntents.confirmationTokenHash, confirmationTokenHash),
+      ne(deviceReattachIntents.id, intentId),
+    ))
+    .limit(1);
+  if (onIntent) return true;
+  const [onLedger] = await tx
+    .select({ id: deviceReattachments.id })
+    .from(deviceReattachments)
+    .where(eq(deviceReattachments.confirmationTokenHash, confirmationTokenHash))
+    .limit(1);
+  return Boolean(onLedger);
 }
 
 /** Was this device ever the SOURCE of a confirmed reattach (retired)? A ledger read. */
