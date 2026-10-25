@@ -164,6 +164,11 @@ export default function WorkspacePage() {
   const permissionsLoaded = permissions !== undefined;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  // #9840 W5: the side panel is `fixed right-0 w-[400px]` with no backdrop on
+  // lg+, so while it is open it covers the right end of the chat header
+  // ("Continue in side panel", "Create Ticket"). Reserve its width there; below
+  // lg it is an overlay with a backdrop and nothing shifts.
+  const panelOpen = useAiStore((s) => s.isOpen);
   const { continueInPanel, replaceDialog } = useContinueInPanel();
   const { openPicker, picker } = useOpenPastConversation();
 
@@ -217,7 +222,10 @@ export default function WorkspacePage() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-white dark:bg-gray-900">
+    <div
+      data-testid="workspace-page"
+      className={`flex h-full flex-col bg-white transition-[padding] duration-300 dark:bg-gray-900${panelOpen ? ' lg:pr-[400px]' : ''}`}
+    >
       <WorkspaceSessionLink />
       {tabs.length > 0 ? (
         <>

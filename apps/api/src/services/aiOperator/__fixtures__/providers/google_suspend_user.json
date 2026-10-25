@@ -1,0 +1,21 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API users.get / users.update (User resource, suspended)",
+  "toolName": "google_suspend_user",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": true, "suspensionReason": "ADMIN" } }
+  },
+  "preUnsatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": false } }
+  },
+  "writeOk": {
+    "directory.users.update": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": true } }
+  },
+  "postSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": true, "suspensionReason": "ADMIN" } }
+  },
+  "writeRefusal": {
+    "directory.users.update": { "error": { "code": 403, "message": "Not Authorized to access this resource/api" } }
+  }
+}
