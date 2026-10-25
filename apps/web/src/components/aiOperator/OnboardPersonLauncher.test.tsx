@@ -108,7 +108,7 @@ describe('OnboardPersonLauncher', () => {
     fireEvent.click(await screen.findByTestId('launch-onboard-person-ticket'));
     expect(await screen.findByTestId('start-recipe-form')).toHaveAttribute('data-recipe-key', 'identity_onboarding');
     expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
-    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('Morgan Manager');
+    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('its requester is set as the manager, not as the new person');
     await waitFor(() => expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe(REQUESTER));
   });
 

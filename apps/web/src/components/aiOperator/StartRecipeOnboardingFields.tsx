@@ -64,8 +64,8 @@ export interface StartRecipeOnboardingFieldsProps {
   /** The latest draft, for feedback beside the fields (badges, flags, availability). */
   draft: Draft | null;
   startAtError: string | null;
-  /** From a ticket: the requester's name, pre-filled as the MANAGER. */
-  managerPrefillLabel: string | null;
+  /** From a ticket: the requester's contact was pre-filled as the MANAGER. */
+  managerPrefilled: boolean;
   options?: OnboardingOptions;
   onCheckAvailability: () => void;
   busy: boolean;
@@ -132,23 +132,38 @@ function OrgContactSelect({ orgId, value, onChange, testId, placeholder }: {
 function SiteSelect({ orgId, value, onChange }: { orgId: string; value: string; onChange: (id: string) => void }) {
   const { t } = useTranslation('aiOperator');
   const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
+    setFailed(false);
     fetchWithAuth(`/orgs/sites?organizationId=${encodeURIComponent(orgId)}&limit=100`, { orgIdOverride: orgId })
       .then(async (res) => {
         if (!res.ok) throw new Error(`sites ${res.status}`);
         const body = (await res.json()) as { data?: Array<{ id: string; name?: string | null }> };
-        if (live && Array.isArray(body.data)) setSites(body.data.map((s) => ({ id: s.id, name: s.name ?? s.id })));
+        if (!Array.isArray(body.data)) throw new Error('sites malformed');
+        if (live) setSites(body.data.map((s) => ({ id: s.id, name: s.name ?? s.id })));
       })
-      // Optional field: a failed list leaves "no site", which the server accepts.
-      .catch((err: unknown) => console.warn('[StartRecipeOnboardingFields] sites failed', err));
+      // Optional field, but a failed list must say so: "No site" alone reads as "this org has none".
+      .catch((err: unknown) => {
+        console.warn('[StartRecipeOnboardingFields] sites failed', err);
+        if (live) setFailed(true);
+      });
     return () => { live = false; };
-  }, [orgId]);
+  }, [orgId, attempt]);
   return (
-    <select data-testid="start-recipe-site" className={fieldClass} value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">{t('startRecipe.onboarding.noSite')}</option>
-      {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-    </select>
+    <div className="space-y-1">
+      <select data-testid="start-recipe-site" className={fieldClass} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{t('startRecipe.onboarding.noSite')}</option>
+        {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+      {failed && (
+        <p role="alert" data-testid="start-recipe-site-error" className="text-xs text-destructive">
+          {t('startRecipe.onboarding.sitesFailed')}{' '}
+          <button type="button" className="underline" onClick={() => setAttempt((n) => n + 1)}>{t('common:actions.retry')}</button>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -212,6 +227,7 @@ function ListEditor({ testIdPrefix, label, help, items, onChange, validate, opti
             value={text}
             placeholder={placeholder}
             onChange={(e) => { setText(e.target.value); setInvalid(false); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
           />
         )}
         <button type="button" data-testid={`start-recipe-${testIdPrefix}-add`} className="rounded-md border px-2 text-sm" onClick={add}>
@@ -227,13 +243,60 @@ function ListEditor({ testIdPrefix, label, help, items, onChange, validate, opti
   );
 }
 
+type T = ReturnType<typeof useTranslation>['t'];
+
+/** What a draft flag checked, so two reads that failed with the same fixed text can be told apart. */
+export function flagLabel(t: T, code: string): string {
+  switch (code) {
+    case 'upn_collision': return t('startRecipe.onboarding.flagLabel.upnCollision');
+    case 'email_collision': return t('startRecipe.onboarding.flagLabel.emailCollision');
+    case 'm365_collision_check_failed': return t('startRecipe.onboarding.flagLabel.m365CollisionCheckFailed');
+    case 'm365_seats_read_failed': return t('startRecipe.onboarding.flagLabel.m365SeatsReadFailed');
+    case 'google_collision_check_failed': return t('startRecipe.onboarding.flagLabel.googleCollisionCheckFailed');
+    case 'google_connection_unavailable': return t('startRecipe.onboarding.flagLabel.googleConnectionUnavailable');
+    default: return t('startRecipe.onboarding.flagLabel.other');
+  }
+}
+
 function FlagList({ flags, testId }: { flags: Draft['flags']; testId: string }) {
+  const { t } = useTranslation('aiOperator');
   if (flags.length === 0) return null;
   return (
     <ul data-testid={testId} className="space-y-0.5 text-xs text-warning">
-      {flags.map((f, i) => <li key={`${f.code}-${i}`}>{f.detail}</li>)}
+      {flags.map((f, i) => <li key={`${f.code}-${i}`}><span className="font-medium">{flagLabel(t, f.code)}:</span> {f.detail}</li>)}
     </ul>
   );
+}
+
+/**
+ * A client-side schema problem, named by the field it is about (the shared
+ * schema's own messages are English and name regexes).
+ */
+export function onboardingIssueText(t: T, path: ReadonlyArray<PropertyKey>, value: OnboardingFormValue): string {
+  const key = path.map(String).filter((p) => !/^\d+$/.test(p)).join('.');
+  if (value.m365 === null && value.google === null && (key === 'm365' || key === '')) return t('startRecipe.onboarding.invalidNoProvider');
+  switch (key) {
+    case 'displayName': return t('startRecipe.onboarding.displayName');
+    case 'jobTitle': return t('startRecipe.onboarding.jobTitle');
+    case 'siteId': return t('startRecipe.onboarding.site');
+    case 'managerContactId': return t('startRecipe.onboarding.manager');
+    case 'modelAfterContactId': return t('startRecipe.onboarding.modelAfter');
+    case 'startAt': return t('startRecipe.onboarding.startAt');
+    case 'm365.userPrincipalName': return t('startRecipe.onboarding.upn');
+    case 'm365.mailNickname': return t('startRecipe.onboarding.mailNickname');
+    case 'm365.usageLocation': return t('startRecipe.onboarding.usageLocation');
+    case 'm365.skuIds': return t('startRecipe.onboarding.skus');
+    case 'm365.groupIds': return t('startRecipe.onboarding.groups');
+    case 'google.primaryEmail': return t('startRecipe.onboarding.googlePrimaryEmail');
+    case 'google.givenName': return t('startRecipe.onboarding.givenName');
+    case 'google.familyName': return t('startRecipe.onboarding.familyName');
+    case 'google.orgUnitPath': return t('startRecipe.onboarding.orgUnitPath');
+    case 'google.licenses.productId':
+    case 'google.licenses.skuId':
+    case 'google.licenses': return t('startRecipe.onboarding.googleLicenses');
+    case 'google.groupEmails': return t('startRecipe.onboarding.googleGroups');
+    default: return key || t('startRecipe.onboarding.invalidNoProvider');
+  }
 }
 
 function GoogleLicenseEditor({ licenses, onChange }: { licenses: GoogleFormBlock['licenses']; onChange: (next: GoogleFormBlock['licenses']) => void }) {
@@ -265,9 +328,11 @@ function GoogleLicenseEditor({ licenses, onChange }: { licenses: GoogleFormBlock
       )}
       <div className="flex gap-2">
         <input type="text" data-testid="start-recipe-google-license-product-input" className={fieldClass} value={productId}
-          placeholder={t('startRecipe.onboarding.googleProductId')} onChange={(e) => setProductId(e.target.value)} />
+          placeholder={t('startRecipe.onboarding.googleProductId')} onChange={(e) => setProductId(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
         <input type="text" data-testid="start-recipe-google-license-sku-input" className={fieldClass} value={skuId}
-          placeholder={t('startRecipe.onboarding.googleSkuId')} onChange={(e) => setSkuId(e.target.value)} />
+          placeholder={t('startRecipe.onboarding.googleSkuId')} onChange={(e) => setSkuId(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
         <button type="button" data-testid="start-recipe-google-license-add" className="rounded-md border px-2 text-sm" onClick={add}>
           {t('startRecipe.onboarding.add')}
         </button>
@@ -277,7 +342,7 @@ function GoogleLicenseEditor({ licenses, onChange }: { licenses: GoogleFormBlock
 }
 
 export default function StartRecipeOnboardingFields({
-  orgId, value, onChange, draft, startAtError, managerPrefillLabel, options, onCheckAvailability, busy,
+  orgId, value, onChange, draft, startAtError, managerPrefilled, options, onCheckAvailability, busy,
 }: StartRecipeOnboardingFieldsProps) {
   const { t } = useTranslation('aiOperator');
   const set = (patch: Partial<OnboardingFormValue>) => onChange({ ...value, ...patch });
@@ -360,7 +425,8 @@ export default function StartRecipeOnboardingFields({
                 <span data-testid="start-recipe-upn-status" data-state={upnState} className="text-xs">
                   {upnState === 'available' ? t('startRecipe.onboarding.upnAvailable')
                     : upnState === 'taken' ? t('startRecipe.onboarding.upnTaken')
-                      : t('startRecipe.onboarding.upnUnchecked')}
+                      : upnState === 'manual' ? t('startRecipe.onboarding.upnManual')
+                        : t('startRecipe.onboarding.upnUnchecked')}
                 </span>
               )}
             </div>
@@ -462,9 +528,9 @@ export default function StartRecipeOnboardingFields({
           <span className="font-medium">{t('startRecipe.onboarding.manager')}</span>
           <OrgContactSelect orgId={orgId} testId="start-recipe-manager" value={value.managerContactId}
             placeholder={t('startRecipe.onboarding.nobody')} onChange={(managerContactId) => set({ managerContactId })} />
-          {managerPrefillLabel && (
+          {managerPrefilled && (
             <span data-testid="start-recipe-manager-prefill-note" className="block text-xs text-muted-foreground">
-              {t('startRecipe.onboarding.managerPrefilled', { name: managerPrefillLabel })}
+              {t('startRecipe.onboarding.managerPrefilled')}
             </span>
           )}
           <span className="block text-xs text-muted-foreground">{t('startRecipe.onboarding.managerHelp')}</span>
@@ -472,11 +538,22 @@ export default function StartRecipeOnboardingFields({
         <label className="block space-y-1 text-sm">
           <span className="font-medium">{t('startRecipe.onboarding.startAt')}</span>
           <input type="datetime-local" data-testid="start-recipe-start-at" className={fieldClass}
-            value={value.startAt} onChange={(e) => set({ startAt: e.target.value })} />
+            value={value.startAt}
+            onChange={(e) => set({ startAt: e.target.value, startAtIncomplete: e.target.validity?.badInput === true })}
+            // A date typed into an empty field leaves the value '' and fires no change: check on blur too.
+            onBlur={(e) => {
+              const incomplete = e.target.validity?.badInput === true;
+              if (incomplete !== value.startAtIncomplete) set({ startAtIncomplete: incomplete });
+            }} />
           <span data-testid="start-recipe-start-at-help" className="block text-xs text-muted-foreground">
             {value.startAt ? t('startRecipe.onboarding.startScheduled') : t('startRecipe.onboarding.startNow')}
           </span>
-          {startAtError && (
+          {value.startAtIncomplete && (
+            <span role="alert" data-testid="start-recipe-start-at-error" className="block text-xs text-destructive">
+              {t('startRecipe.onboarding.startAtIncomplete')}
+            </span>
+          )}
+          {!value.startAtIncomplete && startAtError && (
             <span role="alert" data-testid="start-recipe-start-at-error" className="block text-xs text-destructive">{startAtError}</span>
           )}
         </label>

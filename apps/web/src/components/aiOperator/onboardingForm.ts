@@ -44,6 +44,12 @@ export interface OnboardingFormValue {
   modelAfterContactId: string;
   /** `<input type="datetime-local">` value (local wall time); '' = now. */
   startAt: string;
+  /**
+   * The browser reports a half-typed `datetime-local` as '' — which would
+   * otherwise read as "start now". Set from `validity.badInput`; blocks the
+   * preview until the date is completed or cleared.
+   */
+  startAtIncomplete: boolean;
   /** null = the provider is switched off. There is no hidden-but-kept block. */
   m365: M365FormBlock | null;
   google: GoogleFormBlock | null;
@@ -62,7 +68,7 @@ export function emptyGoogleBlock(): GoogleFormBlock {
 export function initialOnboardingValue(managerContactId: string | null): OnboardingFormValue {
   return {
     displayName: '', jobTitle: '', siteId: '', managerContactId: managerContactId ?? '', modelAfterContactId: '',
-    startAt: '', m365: null, google: null,
+    startAt: '', startAtIncomplete: false, m365: null, google: null,
   };
 }
 
@@ -141,7 +147,8 @@ export function flagsFor(draft: Draft, subject: string): Draft['flags'] {
   return want ? draft.flags.filter((f) => canon(f.subject) === want) : [];
 }
 
-export type NameAvailability = 'available' | 'taken' | 'unchecked';
+/** `manual`: the create tool is degraded for this org, so no create was planned or weighed. */
+export type NameAvailability = 'available' | 'taken' | 'unchecked' | 'manual';
 
 const TAKEN_CODES: Record<'m365' | 'google', string> = { m365: 'upn_collision', google: 'email_collision' };
 const CREATE_TOOL: Record<'m365' | 'google', string | null> = { m365: 'm365_create_user', google: null };
@@ -163,11 +170,15 @@ export function nameAvailability(draft: Draft, provider: 'm365' | 'google', name
   if (typeof sent === 'string' && canon(sent) !== want) return null; // the draft was for another name
   if (draft.flags.some((f) => f.code === TAKEN_CODES[provider] && canon(f.subject) === want)) return 'taken';
   const createTool = CREATE_TOOL[provider];
+  if (createTool && (draft.workflow?.degradedEffects ?? []).includes(createTool)) return 'manual';
   const planned = createTool
     ? draft.createPlanPreview.some((e) => e.toolName === createTool && canon(e.principalLabel) === want)
     : draft.provisionPlanPreview.some((e) => e.provider === 'google' && canon(e.principalLabel) === want);
   return planned ? 'available' : 'unchecked';
 }
+
+/** Flag codes that mean the M365 licence list was not read (failure, consent, permission). */
+const SEAT_READ_FAILURE = /^m365_(seats_read_failed|.*consent.*|.*permission.*)$/;
 
 /**
  * The M365 licences the draft would assign. `null` when the draft cannot say:
@@ -177,8 +188,10 @@ export function nameAvailability(draft: Draft, provider: 'm365' | 'google', name
 export function plannedSkuIds(draft: Draft): Set<string> | null {
   const creates = draft.createPlanPreview.some((e) => e.toolName === 'm365_create_user');
   if (!creates) return null;
-  // A failed licence read is its own flag, rendered verbatim; it is not "no seats".
-  if (draft.flags.some((f) => f.code === 'm365_seats_read_failed')) return null;
+  // A licence step done by hand for this org was never weighed against seats.
+  if ((draft.workflow?.degradedEffects ?? []).includes('m365_assign_license')) return null;
+  // A failed or unauthorized licence read is its own flag, rendered verbatim; it is not "no seats".
+  if (draft.flags.some((f) => SEAT_READ_FAILURE.test(f.code))) return null;
   const out = new Set<string>();
   for (const e of draft.provisionPlanPreview) {
     if (e.toolName !== 'm365_assign_license') continue;

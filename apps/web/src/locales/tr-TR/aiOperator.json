@@ -347,7 +347,7 @@
       "groupsHelp": "Dinamik gruplar ve yönetici rolü grupları hiçbir zaman otomatik eklenmez: görev bunları kontrol listesi öğelerine dönüştürür.",
       "add": "Ekle",
       "invalidEntry": "Gösterilen biçimde bir değer girin.",
-      "noSeats": "Boşta lisans hakkı yok",
+      "noSeats": "Boşta lisans hakkı doğrulanmadı: kontrol listesi öğesine dönüşür",
       "needsTechnician": "Bunu bir teknisyen elle ekleyecek",
       "googleManual": "Breeze henüz Google hesabı oluşturamıyor. Görev, hesabı elle oluşturmanız için tam ayrıntıları içeren bir kontrol listesi öğesi ekler, ardından lisanslar ve gruplarla devam eder.",
       "googlePrimaryEmail": "Birincil e-posta",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "Görev bu kişinin gruplarını ve lisanslarını okur ve ilk adımında bunları onaylamanızı ister. Yönetici ve dinamik gruplar hiçbir zaman kopyalanmaz: görev bunları kontrol listesi öğesi olarak ekler.",
       "manager": "Yönetici (isteğe bağlı)",
       "managerHelp": "Yeni kişi kaydında saklanır ve devirde anılır. Breeze yöneticinin hesaplarını hiçbir zaman değiştirmez.",
-      "managerPrefilled": "Talepten önceden dolduruldu: talebi {{name}} açtığı için o kişi yönetici olarak ayarlandı, yeni kişi olarak değil.",
+      "managerPrefilled": "Talepten önceden dolduruldu: talebi açan kişi yönetici olarak ayarlandı, yeni kişi olarak değil.",
       "nobody": "Hiç kimse",
       "startAt": "Başlangıç tarihi (isteğe bağlı)",
       "startNow": "Hesapları hemen oluşturup teslim etmek için boş bırakın",
@@ -382,7 +382,20 @@
       "failed": "İşe giriş işlemleri başlatılamadı.",
       "duplicate": "Bu kişi için zaten devam eden bir işe giriş işlemi var.",
       "replayed": "Bu işe giriş işlemleri zaten başlatılmıştı; açılıyor.",
-      "existingContactLink": "Kuruluşun kişilerini aç"
+      "existingContactLink": "Kuruluşun kişilerini aç",
+      "upnManual": "Bu kuruluş için Microsoft 365 hesapları elle oluşturulur, bu yüzden Breeze bunu ne denetledi ne de planladı.",
+      "sitesFailed": "Siteler yüklenemedi.",
+      "startAtIncomplete": "Başlangıç için tam bir tarih ve saat girin veya alanı temizleyin.",
+      "invalidNoProvider": "Oluşturulacak en az bir hesabı açın.",
+      "flagLabel": {
+        "upnCollision": "Oturum açma adı kullanımda",
+        "emailCollision": "Google adresi kullanımda",
+        "m365CollisionCheckFailed": "Oturum açma adı denetimi",
+        "m365SeatsReadFailed": "Lisans hakkı denetimi",
+        "googleCollisionCheckFailed": "Google adresi denetimi",
+        "googleConnectionUnavailable": "Google Workspace bağlantısı",
+        "other": "Denetim"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Şifre, işe giriş sırasında elle belirlendi",
     "unknown": "Geçici şifrenin durumu bilinmiyor",
     "theApprover": "hesap oluşturmayı onaylayan kişi",
-    "whoReveals": "Geçici şifreyi yalnızca hesap oluşturmayı onaylayan kişi, yalnızca bir kez gösterebilir — bu görevi başlatan teknisyen gösteremez. Şifreyi yüz yüze veya telefonla iletin."
+    "whoReveals": "Geçici şifreyi yalnızca hesap oluşturmayı onaylayan kişi, yalnızca bir kez gösterebilir — bu görevi başlatan teknisyen gösteremez. Şifreyi yüz yüze veya telefonla iletin.",
+    "noRevealer": "Breeze bu geçici şifreyi gösterebilecek kimseyi bulamadı.",
+    "revealNeedsFeedAccess": "Bunu yalnızca siz yapay zekâ etkinliğinde (Onaylar) gösterebilirsiniz, ancak rolünüz bu sayfayı açamıyor. Bir yöneticiden yapay zekâ oturumu denetimi erişimi isteyin."
   }
 }

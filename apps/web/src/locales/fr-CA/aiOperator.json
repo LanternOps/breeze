@@ -347,7 +347,7 @@
       "groupsHelp": "Les groupes dynamiques et les groupes de rôle d'administrateur ne sont jamais ajoutés automatiquement : la tâche les transforme en éléments de la liste de vérification.",
       "add": "Ajouter",
       "invalidEntry": "Saisissez une valeur au format indiqué.",
-      "noSeats": "Aucun siège de licence disponible",
+      "noSeats": "Aucun siège libre confirmé : devient un élément de la liste de vérification",
       "needsTechnician": "Un technicien l'ajoutera à la main",
       "googleManual": "Breeze ne sait pas encore créer de comptes Google. La tâche ajoutera un élément à la liste de vérification avec les informations exactes pour créer le compte à la main, puis poursuivra avec les licences et les groupes.",
       "googlePrimaryEmail": "Adresse courriel principale",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "La tâche lit les groupes et les licences de cette personne et vous demande de les confirmer à sa première étape. Les groupes d'administration et les groupes dynamiques ne sont jamais copiés : la tâche les ajoute comme éléments de la liste de vérification.",
       "manager": "Supérieur immédiat (facultatif)",
       "managerHelp": "Enregistré sur le nouveau contact et mentionné dans la remise. Breeze ne modifie jamais les comptes du supérieur.",
-      "managerPrefilled": "Prérempli à partir du billet : {{name}} l'a ouvert, cette personne est donc définie comme supérieur immédiat, et non comme la nouvelle personne.",
+      "managerPrefilled": "Prérempli à partir du billet : la personne qui l'a ouvert est définie comme supérieur immédiat, et non comme la nouvelle personne.",
       "nobody": "Personne",
       "startAt": "Date de début (facultatif)",
       "startNow": "Laissez vide pour créer les comptes et effectuer la remise maintenant",
@@ -382,7 +382,20 @@
       "failed": "L'intégration n'a pas pu être lancée.",
       "duplicate": "Une intégration est déjà en cours pour cette personne.",
       "replayed": "Cette intégration avait déjà été lancée; ouverture en cours.",
-      "existingContactLink": "Ouvrir les contacts de l'organisation"
+      "existingContactLink": "Ouvrir les contacts de l'organisation",
+      "upnManual": "Les comptes Microsoft 365 de cette organisation sont créés à la main, donc Breeze n'a ni vérifié ni planifié celui-ci.",
+      "sitesFailed": "Les sites n'ont pas pu être chargés.",
+      "startAtIncomplete": "Saisissez une date et une heure de début complètes, ou videz le champ.",
+      "invalidNoProvider": "Activez au moins un compte à créer.",
+      "flagLabel": {
+        "upnCollision": "Nom de connexion déjà pris",
+        "emailCollision": "Adresse Google déjà prise",
+        "m365CollisionCheckFailed": "Vérification du nom de connexion",
+        "m365SeatsReadFailed": "Vérification des sièges de licence",
+        "googleCollisionCheckFailed": "Vérification de l'adresse Google",
+        "googleConnectionUnavailable": "Connexion à Google Workspace",
+        "other": "Vérification"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Mot de passe défini à la main pendant l'intégration",
     "unknown": "État du mot de passe temporaire inconnu",
     "theApprover": "la personne qui a approuvé la création du compte",
-    "whoReveals": "Seule la personne qui a approuvé la création du compte peut révéler un mot de passe temporaire, et une seule fois, et non le technicien qui a lancé cette tâche. Transmettez-le en personne ou par téléphone."
+    "whoReveals": "Seule la personne qui a approuvé la création du compte peut révéler un mot de passe temporaire, et une seule fois, et non le technicien qui a lancé cette tâche. Transmettez-le en personne ou par téléphone.",
+    "noRevealer": "Breeze n'a trouvé personne pouvant révéler ce mot de passe temporaire.",
+    "revealNeedsFeedAccess": "Vous seul pouvez le révéler, dans l'activité de l'IA (Approbations), mais votre rôle ne peut pas ouvrir cette page. Demandez à un administrateur l'accès à l'audit des sessions de l'IA."
   }
 }

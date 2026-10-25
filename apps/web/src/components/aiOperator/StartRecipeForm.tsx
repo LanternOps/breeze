@@ -53,7 +53,7 @@ import {
   startOperatorTask,
 } from '@/lib/api/aiOperatorWorkflows';
 import { effectToolLabel, effectToolProvider, providerLabel, type EffectProviderKey } from './operatorTaskLabels';
-import StartRecipeOnboardingFields, { type OnboardingOptions } from './StartRecipeOnboardingFields';
+import StartRecipeOnboardingFields, { onboardingIssueText, type OnboardingOptions } from './StartRecipeOnboardingFields';
 import StartRecipeOnboardingPreview from './StartRecipeOnboardingPreview';
 import {
   initialOnboardingValue,
@@ -698,15 +698,16 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
  *  - the start-date limit is the SERVER's (`deadlineDays` on a 422
  *    `START_AT_BEYOND_DEADLINE`), held inline afterwards — never a constant;
  *  - a 409 `OPERATOR_CONTACT_ALREADY_EXISTS` points at the existing contact;
- *  - no source citation is sent (the route refuses one, R1b G3).
+ *  - no source citation is sent (the route refuses one, R1b G3);
+ *  - there is NO implicit submission: Enter in a field (the natural "add"
+ *    gesture in the list editors) never starts the task. Only the submit
+ *    button, by click, does.
  */
 function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardingOptions }: StartRecipeFormProps) {
   const { t } = useTranslation('aiOperator');
   // From a ticket the requester is usually the new hire's MANAGER: pre-fill
   // that, never the new hire's own name (the likeliest wrong-person error).
   const managerFromTicket = launch.kind === 'ticket' ? launch.contactId : null;
-  const managerPrefillLabel = launch.kind === 'ticket' && launch.contactId
-    ? (launch.label ?? launch.personHint ?? launch.contactId) : null;
   const [value, setValue] = useState<OnboardingFormValue>(() => initialOnboardingValue(managerFromTicket));
   const [draft, setDraft] = useState<AiOperatorIdentityOnboardingTaskDraftDto | null>(null);
   const [draftFor, setDraftFor] = useState<string | null>(null);
@@ -725,7 +726,7 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
   const startAtError = deadlineDays !== null && startAtBeyondDeadline(value.startAt, deadlineDays)
     ? t('startRecipe.onboarding.startBeyondDeadline', { count: deadlineDays })
     : null;
-  const canSubmit = previewCurrent && busy === null && startAtError === null;
+  const canSubmit = previewCurrent && busy === null && startAtError === null && !value.startAtIncomplete;
 
   const change = (next: OnboardingFormValue) => {
     setValue(next);
@@ -747,8 +748,13 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
     setError(null);
     setDuplicateTaskId(null);
     setExistingContact(null);
+    if (value.startAtIncomplete) {
+      setInvalid([t('startRecipe.onboarding.startAtIncomplete')]);
+      return;
+    }
     if (!parsed.success) {
-      setInvalid(parsed.error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)));
+      // Named by field; the shared schema's own messages are English and name regexes.
+      setInvalid([...new Set(parsed.error.issues.map((i) => onboardingIssueText(t, i.path, value)))]);
       return;
     }
     setBusy('preview');
@@ -764,6 +770,8 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
       setDraft(result);
       setDraftFor(sentKey);
     } catch (err) {
+      // Drop the old preview: kept beside the error it would read as "the form changed".
+      setDraft(null);
       setDraftFor(null);
       reportFailure(err, t('startRecipe.preview.failed'));
     } finally {
@@ -816,9 +824,10 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
       if (err instanceof ActionError && err.code === 'START_AT_BEYOND_DEADLINE') {
         const days = (err.body as { deadlineDays?: unknown } | undefined)?.deadlineDays;
         if (typeof days === 'number' && Number.isFinite(days)) {
-          // The field carries it from here; runAction already toasted the reason.
           setDeadlineDays(days);
-          return;
+          // The field carries it from here when this browser agrees the date is
+          // beyond it; if it does not (clock skew), the server's reason stays on the form.
+          if (startAtBeyondDeadline(value.startAt, days)) return;
         }
       }
       reportFailure(err, t('startRecipe.onboarding.failed'));
@@ -832,7 +841,8 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
       data-testid="start-recipe-form"
       data-recipe-key={workflow.recipeKey}
       className="space-y-5 rounded-lg border bg-card p-4 shadow-xs"
-      onSubmit={(e) => { e.preventDefault(); void submit(); }}
+      // No implicit submission: Enter in a field must never start the task.
+      onSubmit={(e) => e.preventDefault()}
     >
       <header className="flex items-start justify-between gap-2">
         <h3 className="text-base font-semibold">{t('startRecipe.onboarding.title')}</h3>
@@ -849,7 +859,7 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
         onChange={change}
         draft={draft}
         startAtError={startAtError}
-        managerPrefillLabel={managerPrefillLabel}
+        managerPrefilled={managerFromTicket !== null}
         options={onboardingOptions}
         onCheckAvailability={() => void runPreview()}
         busy={busy !== null}
@@ -873,9 +883,10 @@ function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardin
           {draft ? t('startRecipe.preview.refresh') : t('startRecipe.preview.button')}
         </button>
         <button
-          type="submit"
+          type="button"
           data-testid="start-recipe-submit"
           disabled={!canSubmit}
+          onClick={() => void submit()}
           className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t('startRecipe.onboarding.submit')}

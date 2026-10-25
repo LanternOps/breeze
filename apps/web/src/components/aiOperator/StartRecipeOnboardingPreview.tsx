@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { AiOperatorIdentityOnboardingTaskDraftDto, AiOperatorOnboardingDraftEffectDto } from '@breeze/shared';
 import { effectToolLabel, providerLabel } from './operatorTaskLabels';
+import { flagLabel } from './StartRecipeOnboardingFields';
 import { inPlanOrder } from './onboardingForm';
 
 type Draft = AiOperatorIdentityOnboardingTaskDraftDto;
@@ -68,7 +69,7 @@ export default function StartRecipeOnboardingPreview({ draft }: { draft: Draft }
           <h5 className="font-medium">{t('startRecipe.onboarding.flagsTitle')}</h5>
           <ul className="list-disc pl-5">
             {draft.flags.map((f, i) => (
-              <li key={`${f.code}-${i}`}><span className="font-mono text-xs">{f.subject}</span> — {f.detail}</li>
+              <li key={`${f.code}-${i}`}><span className="font-medium">{flagLabel(t, f.code)}</span> · <span className="font-mono text-xs">{f.subject}</span> — {f.detail}</li>
             ))}
           </ul>
         </div>

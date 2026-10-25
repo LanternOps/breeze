@@ -203,7 +203,7 @@ describe('StartRecipeForm — identity_onboarding variant', () => {
     addSku(SKU_B);
     await preview();
     // The draft planned SKU_A only; SKU_B had no free seat.
-    expect(screen.getByTestId(`start-recipe-sku-no-seats-${SKU_B}`)).toHaveTextContent('No licence seats available');
+    expect(screen.getByTestId(`start-recipe-sku-no-seats-${SKU_B}`)).toHaveTextContent('No free seat confirmed');
     expect(screen.queryByTestId(`start-recipe-sku-no-seats-${SKU_A}`)).toBeNull();
     expect(screen.getByTestId(`start-recipe-sku-${SKU_B}`)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('start-recipe-submit'));
@@ -420,7 +420,7 @@ describe('StartRecipeForm — identity_onboarding variant', () => {
   it('from a ticket: the requester pre-fills the MANAGER with a note, and the new hire\'s name stays empty', async () => {
     renderForm({ kind: 'ticket', contactId: MANAGER, personHint: 'morgan@customer.example', label: 'Morgan Manager' });
     expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
-    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('Morgan Manager');
+    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('its requester is set as the manager, not as the new person');
     await waitFor(() => expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe(MANAGER));
     fillM365();
     await preview();
@@ -444,5 +444,123 @@ describe('StartRecipeForm — identity_onboarding variant', () => {
     addSku('E5');
     expect(screen.getByTestId('start-recipe-sku-input-error')).toBeInTheDocument();
     expect(screen.queryByTestId('start-recipe-sku-E5')).toBeNull();
+  });
+});
+
+// Review round (PR #10128) — each case pins a finding.
+describe('StartRecipeForm — identity_onboarding review fixes', () => {
+  it('Enter in an add box adds the entry and never submits the form', async () => {
+    renderForm();
+    fillM365();
+    await preview();
+    expect(screen.getByTestId('start-recipe-submit')).not.toBeDisabled();
+    type('start-recipe-group-input', GROUP_B);
+    fireEvent.keyDown(screen.getByTestId('start-recipe-group-input'), { key: 'Enter', code: 'Enter' });
+    fireEvent.submit(screen.getByTestId('start-recipe-form'), { submitter: screen.getByTestId('start-recipe-group-input') });
+    expect(screen.getByTestId(`start-recipe-group-${GROUP_B}`)).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(posts('/ai/operator/tasks')).toHaveLength(0);
+  });
+
+  it('a failed re-preview of unchanged inputs drops the old preview instead of claiming the form changed', async () => {
+    renderForm();
+    fillM365();
+    await preview();
+    draftResponse = () => json({ error: 'boom' }, 500);
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    await screen.findByTestId('start-recipe-error');
+    expect(screen.queryByTestId('start-recipe-preview-stale')).toBeNull();
+    expect(screen.queryByTestId('start-recipe-preview')).toBeNull();
+    expect(screen.getByTestId('start-recipe-submit')).toBeDisabled();
+  });
+
+  it('a degraded M365 create reads "created by hand", not "could not be checked" and never "available"', async () => {
+    draftResponse = () => json({ data: draft({
+      createPlanPreview: [], provisionPlanPreview: [],
+      workflow: { ...WORKFLOW, readiness: 'setup_required', degradedEffects: ['m365_create_user'] },
+    }) });
+    renderForm();
+    fillM365();
+    fireEvent.click(screen.getByTestId('start-recipe-upn-availability'));
+    const status = await screen.findByTestId('start-recipe-upn-status');
+    expect(status).toHaveAttribute('data-state', 'manual');
+    expect(status).not.toHaveTextContent(/\bavailable\b/i);
+  });
+
+  it.each([
+    ['the licence tool is degraded', { workflow: { ...WORKFLOW, degradedEffects: ['m365_assign_license'] } }],
+    ['the licence read needed consent', { flags: [{ code: 'm365_consent_upgrade_required', subject: UPN, detail: 'Consent needed.' }] }],
+  ])('no "no seats" badge when %s (nobody weighed the seat)', async (_label, overrides) => {
+    draftResponse = () => json({ data: draft({ provisionPlanPreview: [], ...(overrides as Partial<Draft>) }) });
+    renderForm();
+    fillM365();
+    addSku(SKU_B);
+    await preview();
+    expect(screen.queryByTestId(`start-recipe-sku-no-seats-${SKU_B}`)).toBeNull();
+  });
+
+  it('a deadline refusal the client clock does not reproduce still reports the server reason', async () => {
+    startResponse = () => json({ error: 'The start date is after this task\'s 3-day deadline.', code: 'START_AT_BEYOND_DEADLINE', deadlineDays: 3 }, 422);
+    renderForm();
+    fillM365();
+    await previewAndSubmit();
+    // startAt is empty, so the client cannot reproduce "beyond 3 days": the reason must still show.
+    expect(await screen.findByTestId('start-recipe-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-recipe-start-at-error')).toBeNull();
+  });
+
+  it('a half-typed start date blocks the preview instead of becoming "start now"', async () => {
+    renderForm();
+    fillM365();
+    const input = screen.getByTestId('start-recipe-start-at') as HTMLInputElement;
+    Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true, valid: false }) });
+    // Typed into an empty field: the value stays '' (no change event), so blur is what catches it.
+    fireEvent.blur(input);
+    expect(screen.getByTestId('start-recipe-start-at-error')).toHaveTextContent('Enter a full start date and time');
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    expect(await screen.findByTestId('start-recipe-invalid')).toBeInTheDocument();
+    expect(posts('/ai/operator/task-drafts')).toHaveLength(0);
+  });
+
+  it('flags are labelled by what was checked, so two read failures with the same text can be told apart', async () => {
+    draftResponse = () => json({ data: draft({ flags: [
+      { code: 'm365_seats_read_failed', subject: UPN, detail: 'The provider read failed, so Breeze could not check.' },
+    ] }) });
+    renderForm();
+    fillM365();
+    await preview();
+    expect(screen.getByTestId('start-recipe-upn-flags')).toHaveTextContent('Licence seat check');
+    expect(screen.getByTestId('start-recipe-preview-flags')).toHaveTextContent('Licence seat check');
+  });
+
+  it('client-side problems are named by field, not as raw schema messages', async () => {
+    renderForm();
+    type('start-recipe-display-name', 'Priya Patel');
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    const invalid = await screen.findByTestId('start-recipe-invalid');
+    expect(invalid).toHaveTextContent('Turn on at least one account to create.');
+    expect(invalid).not.toHaveTextContent(/Invalid|pattern|Expected/);
+  });
+
+  it('from a ticket the requester never becomes the model-after person', async () => {
+    renderForm({ kind: 'ticket', contactId: MANAGER, personHint: null, label: 'Morgan Manager' });
+    expect((screen.getByTestId('start-recipe-model-after') as HTMLSelectElement).value).toBe('');
+    fillM365();
+    await preview();
+    expect(posts('/ai/operator/task-drafts')[0]!.inputs.modelAfterContactId).toBeNull();
+  });
+
+  it('a failed site list says so and offers a retry', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let sitesFail = true;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).startsWith('/orgs/sites')) return sitesFail ? json({ error: 'x' }, 500) : json({ data: [{ id: 'site-1', name: 'HQ' }] });
+      return base(input, init);
+    });
+    renderForm();
+    const err = await screen.findByTestId('start-recipe-site-error');
+    sitesFail = false;
+    fireEvent.click(within(err).getByRole('button'));
+    await waitFor(() => expect(within(screen.getByTestId('start-recipe-site')).getByText('HQ')).toBeInTheDocument());
   });
 });

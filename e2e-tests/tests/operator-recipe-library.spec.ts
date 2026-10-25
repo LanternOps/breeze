@@ -157,7 +157,9 @@ test.describe('Operator Recipe Library', () => {
  * fake connection healthy beyond the placeholder Google row the offboarding
  * legs already use.
  */
-const NEW_HIRE_UPN = 'e2e-new-hire@example.com';
+// Unique per run: admission CREATES a contact for this address, so a fixed
+// address would make every later run on the same stack a 409.
+const NEW_HIRE_UPN = `e2e-new-hire-${Date.now().toString(36)}@example.com`;
 const SKU_PLACEHOLDER = 'aaaaaaaa-0000-4000-8000-000000000001';
 const GROUP_PLACEHOLDER = 'bbbbbbbb-0000-4000-8000-000000000001';
 
@@ -205,33 +207,44 @@ test.describe('Operator Recipe Library — onboarding', () => {
     await form.previewButton().click();
 
     await expect(form.preview()).toBeVisible({ timeout: 30_000 });
+    // Both stages are always rendered; what proves the draft ran is the requested
+    // sign-in name in stage 1 (or the name-check flag when nothing could be created).
     await expect(form.previewStage(1)).toBeVisible();
     await expect(form.previewStage(2)).toBeVisible();
+    await expect(form.preview()).toContainText(NEW_HIRE_UPN);
     await expect(form.submit()).toBeEnabled();
 
+    // A refusal here is a FAILURE, not a skip: on a stack where the card is not
+    // `unavailable`, admission has everything it needs (it creates the contact
+    // and reads no provider). Observed passing on the R2b wt-stack 2026-10-25.
     await form.submit().click();
-    const landed = page.waitForURL(/\/operator\/tasks\/[0-9a-f-]{36}/, { timeout: 30_000 }).then(() => 'task' as const);
-    const refused = form.error().waitFor({ timeout: 30_000 }).then(() => 'error' as const);
-    const outcome = await Promise.race([landed, refused]);
-    if (outcome === 'error') {
-      const reason = (await form.error().textContent())?.trim() ?? '';
-      test.skip(true, `Observed: admission refused on this stack: "${reason}".`);
-    }
+    // Both waits are settled (the loser resolves to 'timeout'), so neither leaves a rejection behind.
+    const outcome = await Promise.race([
+      page.waitForURL(/\/operator\/tasks\/[0-9a-f-]{36}/, { timeout: 30_000 }).then(() => 'task' as const, () => 'timeout' as const),
+      form.error().waitFor({ timeout: 30_000 }).then(() => 'error' as const, () => 'timeout' as const),
+    ]);
+    if (outcome === 'error') throw new Error(`admission refused: "${(await form.error().textContent())?.trim() ?? ''}"`);
+    expect(outcome).toBe('task');
     startedTaskId = /\/operator\/tasks\/([0-9a-f-]{36})/.exec(page.url())?.[1] ?? null;
     expect(startedTaskId).not.toBeNull();
   });
 
-  test('the new task page renders its steps, and its plan and accounts panels through the real task read', async ({ authedPage: page }) => {
+  test('the new task page renders its steps and its (empty) plan through the real task read, with no accounts tab yet', async ({ authedPage: page }) => {
     test.skip(startedTaskId === null, 'No onboarding task was started on this stack (see the previous leg\'s skip reason).');
     const panels = new OperatorTaskPanelsPage(page);
     await panels.goto(startedTaskId!);
+    // Freshly admitted: the coordinator may not have opened a step yet, and no
+    // plan exists before `discover` — either state is the real read, not a stub.
     await expect(panels.steps().or(page.getByTestId('task-steps-empty'))).toBeVisible();
     await panels.tab('plan').click();
-    await expect(panels.plan().or(page.getByTestId('task-plan-empty'))).toBeVisible();
-    // `confirm_details` waiting, its checklist tick and the creation approval
-    // need the intake reason step to run, which needs a model key; the e2e
-    // stack's AI keys are blank by rule. The accounts tab appears only once an
-    // account exists, which this run never creates (see the header).
-    test.skip(true, 'Observed: past `intake` needs a model key (blank on e2e stacks by rule) and an approved creation (never done in e2e). confirm_details, the creation approval and #panel=accounts are covered by OperatorTaskSteps / OperatorTaskPlan / OperatorTaskDetail unit tests.');
+    await expect(page.getByTestId('task-plan-empty')).toBeVisible();
+    // No account exists yet, so the accounts tab is absent (it appears only with accounts).
+    await expect(panels.tab('accounts')).toHaveCount(0);
+    test.info().annotations.push({
+      type: 'not covered here',
+      description: 'Past `intake` needs a model key (blank on e2e stacks by rule) and an approved creation (never done in e2e): '
+        + 'confirm_details, the creation approval and #panel=accounts are covered by the OperatorTaskSteps / OperatorTaskPlan / '
+        + 'OperatorTaskDetail unit tests.',
+    });
   });
 });

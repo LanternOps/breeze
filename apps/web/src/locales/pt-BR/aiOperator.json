@@ -347,7 +347,7 @@
       "groupsHelp": "Grupos dinâmicos e de função de administrador nunca são adicionados automaticamente: a tarefa os transforma em itens do checklist.",
       "add": "Adicionar",
       "invalidEntry": "Informe um valor no formato indicado.",
-      "noSeats": "Nenhum assento de licença disponível",
+      "noSeats": "Nenhum assento livre confirmado: vira um item do checklist",
       "needsTechnician": "Um técnico adicionará este manualmente",
       "googleManual": "O Breeze ainda não consegue criar contas do Google. A tarefa adicionará um item do checklist com os detalhes exatos para criar a conta manualmente e, em seguida, continuará com as licenças e os grupos.",
       "googlePrimaryEmail": "E-mail principal",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "A tarefa lê os grupos e as licenças desta pessoa e pede que você os confirme na primeira etapa. Grupos de administrador e dinâmicos nunca são copiados: a tarefa os adiciona como itens do checklist.",
       "manager": "Gestor (opcional)",
       "managerHelp": "Registrado no novo contato e citado na entrega. O Breeze nunca altera as contas do gestor.",
-      "managerPrefilled": "Preenchido a partir do chamado: {{name}} o abriu, por isso essa pessoa foi definida como gestor, e não como a nova pessoa.",
+      "managerPrefilled": "Preenchido a partir do chamado: quem o abriu foi definido como gestor, e não como a nova pessoa.",
       "nobody": "Ninguém",
       "startAt": "Data de início (opcional)",
       "startNow": "Deixe vazio para provisionar e entregar agora",
@@ -382,7 +382,20 @@
       "failed": "Não foi possível iniciar a admissão.",
       "duplicate": "Já há uma admissão em andamento para esta pessoa.",
       "replayed": "Esta admissão já havia sido iniciada; abrindo-a.",
-      "existingContactLink": "Abrir os contatos da organização"
+      "existingContactLink": "Abrir os contatos da organização",
+      "upnManual": "As contas do Microsoft 365 desta organização são criadas manualmente, por isso o Breeze não verificou nem planejou esta.",
+      "sitesFailed": "Não foi possível carregar os locais.",
+      "startAtIncomplete": "Informe uma data e hora de início completas ou limpe o campo.",
+      "invalidNoProvider": "Ative pelo menos uma conta para criar.",
+      "flagLabel": {
+        "upnCollision": "Nome de login em uso",
+        "emailCollision": "Endereço do Google em uso",
+        "m365CollisionCheckFailed": "Verificação do nome de login",
+        "m365SeatsReadFailed": "Verificação de assentos de licença",
+        "googleCollisionCheckFailed": "Verificação do endereço do Google",
+        "googleConnectionUnavailable": "Conexão com o Google Workspace",
+        "other": "Verificação"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Senha definida manualmente durante a admissão",
     "unknown": "Estado da senha temporária desconhecido",
     "theApprover": "a pessoa que aprovou a criação da conta",
-    "whoReveals": "Somente a pessoa que aprovou a criação da conta pode revelar uma senha temporária, uma única vez — não o técnico que iniciou esta tarefa. Entregue-a pessoalmente ou por telefone."
+    "whoReveals": "Somente a pessoa que aprovou a criação da conta pode revelar uma senha temporária, uma única vez — não o técnico que iniciou esta tarefa. Entregue-a pessoalmente ou por telefone.",
+    "noRevealer": "O Breeze não encontrou ninguém que possa revelar esta senha temporária.",
+    "revealNeedsFeedAccess": "Somente você pode revelá-la, na atividade de IA (Aprovações), mas sua função não pode abrir essa página. Peça a um administrador acesso à auditoria de sessões de IA."
   }
 }

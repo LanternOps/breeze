@@ -347,7 +347,7 @@
       "groupsHelp": "Los grupos dinámicos y los de roles de administrador nunca se agregan automáticamente: la tarea los convierte en elementos de la lista de verificación.",
       "add": "Agregar",
       "invalidEntry": "Ingrese un valor con el formato indicado.",
-      "noSeats": "No hay puestos de licencia disponibles",
+      "noSeats": "No se confirmó ningún puesto libre: se convierte en un elemento de la lista de verificación",
       "needsTechnician": "Un técnico lo agregará a mano",
       "googleManual": "Breeze todavía no puede crear cuentas de Google. La tarea agregará un elemento a la lista de verificación con los datos exactos para crear la cuenta a mano y luego continuará con las licencias y los grupos.",
       "googlePrimaryEmail": "Correo principal",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "La tarea lee los grupos y las licencias de esta persona y le pide que los confirme en su primer paso. Los grupos de administración y los dinámicos nunca se copian: la tarea los agrega como elementos de la lista de verificación.",
       "manager": "Superior directo (opcional)",
       "managerHelp": "Se registra en el contacto nuevo y se nombra en la entrega. Breeze nunca modifica las cuentas del superior.",
-      "managerPrefilled": "Completado desde el ticket: {{name}} lo creó, por lo que queda como superior directo, no como la persona nueva.",
+      "managerPrefilled": "Completado desde el ticket: quien lo creó queda como superior directo, no como la persona nueva.",
       "nobody": "Nadie",
       "startAt": "Fecha de inicio (opcional)",
       "startNow": "Déjelo vacío para aprovisionar y entregar ahora",
@@ -382,7 +382,20 @@
       "failed": "No se pudo iniciar el alta.",
       "duplicate": "Ya hay un alta en curso para esta persona.",
       "replayed": "Esta alta ya se había iniciado; se abrirá.",
-      "existingContactLink": "Abrir los contactos de la organización"
+      "existingContactLink": "Abrir los contactos de la organización",
+      "upnManual": "Las cuentas de Microsoft 365 de esta organización se crean a mano, por lo que Breeze no comprobó ni planificó esta.",
+      "sitesFailed": "No se pudieron cargar los sitios.",
+      "startAtIncomplete": "Ingrese una fecha y hora de inicio completas, o borre el campo.",
+      "invalidNoProvider": "Active al menos una cuenta para crear.",
+      "flagLabel": {
+        "upnCollision": "Nombre de inicio de sesión en uso",
+        "emailCollision": "Dirección de Google en uso",
+        "m365CollisionCheckFailed": "Comprobación del nombre de inicio de sesión",
+        "m365SeatsReadFailed": "Comprobación de puestos de licencia",
+        "googleCollisionCheckFailed": "Comprobación de la dirección de Google",
+        "googleConnectionUnavailable": "Conexión con Google Workspace",
+        "other": "Comprobación"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Contraseña establecida a mano durante el alta",
     "unknown": "Se desconoce el estado de la contraseña temporal",
     "theApprover": "la persona que aprobó la creación de la cuenta",
-    "whoReveals": "Solo la persona que aprobó la creación de la cuenta puede revelar una contraseña temporal, y una sola vez; no el técnico que inició esta tarea. Entréguela en persona o por teléfono."
+    "whoReveals": "Solo la persona que aprobó la creación de la cuenta puede revelar una contraseña temporal, y una sola vez; no el técnico que inició esta tarea. Entréguela en persona o por teléfono.",
+    "noRevealer": "Breeze no encontró a nadie que pueda revelar esta contraseña temporal.",
+    "revealNeedsFeedAccess": "Solo usted puede revelarla, en la actividad de IA (Aprobaciones), pero su rol no puede abrir esa página. Pida a un administrador acceso a la auditoría de sesiones de IA."
   }
 }

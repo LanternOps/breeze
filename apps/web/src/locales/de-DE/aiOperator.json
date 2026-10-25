@@ -347,7 +347,7 @@
       "groupsHelp": "Dynamische Gruppen und Gruppen mit Administratorrolle werden nie automatisch hinzugefügt: Die Aufgabe macht daraus Checklisten-Punkte.",
       "add": "Hinzufügen",
       "invalidEntry": "Geben Sie einen Wert im angezeigten Format ein.",
-      "noSeats": "Keine Lizenzplätze verfügbar",
+      "noSeats": "Kein freier Lizenzplatz bestätigt: wird zum Checklisten-Punkt",
       "needsTechnician": "Ein Techniker ergänzt dies von Hand",
       "googleManual": "Breeze kann Google-Konten noch nicht erstellen. Die Aufgabe legt einen Checklisten-Punkt mit den genauen Angaben an, damit das Konto von Hand erstellt wird; danach geht es mit den Lizenzen und Gruppen weiter.",
       "googlePrimaryEmail": "Primäre E-Mail-Adresse",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "Die Aufgabe liest die Gruppen und Lizenzen dieser Person aus und bittet Sie, sie im ersten Schritt zu bestätigen. Admin-Gruppen und dynamische Gruppen werden nie kopiert: Die Aufgabe fügt sie als Checklisten-Punkte hinzu.",
       "manager": "Vorgesetzte Person (optional)",
       "managerHelp": "Wird beim neuen Kontakt gespeichert und in der Übergabe genannt. Breeze ändert nie die Konten der vorgesetzten Person.",
-      "managerPrefilled": "Aus dem Ticket vorausgefüllt: {{name}} hat es erstellt und ist deshalb als vorgesetzte Person eingetragen, nicht als neue Person.",
+      "managerPrefilled": "Aus dem Ticket vorausgefüllt: Die Person, die es erstellt hat, ist als vorgesetzte Person eingetragen, nicht als neue Person.",
       "nobody": "Niemand",
       "startAt": "Startdatum (optional)",
       "startNow": "Leer lassen, um die Konten jetzt einzurichten und zu übergeben",
@@ -382,7 +382,20 @@
       "failed": "Das Onboarding konnte nicht gestartet werden.",
       "duplicate": "Für diese Person läuft bereits ein Onboarding.",
       "replayed": "Dieses Onboarding wurde bereits gestartet; es wird geöffnet.",
-      "existingContactLink": "Kontakte der Organisation öffnen"
+      "existingContactLink": "Kontakte der Organisation öffnen",
+      "upnManual": "Microsoft 365-Konten werden für diese Organisation von Hand erstellt, deshalb hat Breeze dieses Konto weder geprüft noch eingeplant.",
+      "sitesFailed": "Die Standorte konnten nicht geladen werden.",
+      "startAtIncomplete": "Geben Sie ein vollständiges Startdatum mit Uhrzeit ein oder leeren Sie das Feld.",
+      "invalidNoProvider": "Aktivieren Sie mindestens ein Konto, das erstellt werden soll.",
+      "flagLabel": {
+        "upnCollision": "Anmeldename vergeben",
+        "emailCollision": "Google-Adresse vergeben",
+        "m365CollisionCheckFailed": "Prüfung des Anmeldenamens",
+        "m365SeatsReadFailed": "Prüfung der Lizenzplätze",
+        "googleCollisionCheckFailed": "Prüfung der Google-Adresse",
+        "googleConnectionUnavailable": "Google Workspace-Verbindung",
+        "other": "Prüfung"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Passwort beim Onboarding von Hand festgelegt",
     "unknown": "Status des temporären Passworts unbekannt",
     "theApprover": "die Person, die die Kontoerstellung genehmigt hat",
-    "whoReveals": "Nur die Person, die die Kontoerstellung genehmigt hat, kann ein temporäres Passwort anzeigen, und zwar einmalig – nicht der Techniker, der diese Aufgabe gestartet hat. Übergeben Sie es persönlich oder telefonisch."
+    "whoReveals": "Nur die Person, die die Kontoerstellung genehmigt hat, kann ein temporäres Passwort anzeigen, und zwar einmalig – nicht der Techniker, der diese Aufgabe gestartet hat. Übergeben Sie es persönlich oder telefonisch.",
+    "noRevealer": "Breeze hat niemanden gefunden, der dieses temporäre Passwort anzeigen kann.",
+    "revealNeedsFeedAccess": "Nur Sie können es in der KI-Aktivität (Genehmigungen) anzeigen, aber Ihre Rolle kann diese Seite nicht öffnen. Bitten Sie einen Administrator um Zugriff auf das KI-Sitzungsprotokoll."
   }
 }

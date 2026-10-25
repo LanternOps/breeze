@@ -109,6 +109,9 @@ export function parseOnboardingTaskDraft(data: unknown): AiOperatorIdentityOnboa
     || !Array.isArray(draft.provisionPlanPreview)
     || !Array.isArray(draft.flags)
     || !Array.isArray(draft.manualWork)
+    || !draft.input || typeof draft.input !== 'object'
+    // The form matches flags to fields by subject: a flag without one is a broken response.
+    || draft.flags.some((f) => !f || typeof f.code !== 'string' || typeof f.subject !== 'string' || typeof f.detail !== 'string')
   ) {
     throw new Error('Malformed onboarding task draft');
   }

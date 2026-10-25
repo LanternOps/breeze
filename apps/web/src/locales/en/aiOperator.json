@@ -347,7 +347,7 @@
       "groupsHelp": "Dynamic and admin-role groups are never added automatically: the task turns them into checklist items.",
       "add": "Add",
       "invalidEntry": "Enter a value in the format shown.",
-      "noSeats": "No licence seats available",
+      "noSeats": "No free seat confirmed: becomes a checklist item",
       "needsTechnician": "A technician will add this one by hand",
       "googleManual": "Breeze cannot create Google accounts yet. The task will add a checklist item with the exact details for you to create it by hand, then carry on with the licences and groups.",
       "googlePrimaryEmail": "Primary email",
@@ -363,7 +363,7 @@
       "modelAfterHelp": "The task reads this person's groups and licences and asks you to confirm them at its first step. Admin and dynamic groups are never copied: the task adds those as checklist items.",
       "manager": "Manager (optional)",
       "managerHelp": "Recorded on the new contact and named in the handover. Breeze never changes the manager's accounts.",
-      "managerPrefilled": "Pre-filled from the ticket: {{name}} raised it, so they are set as the manager, not as the new person.",
+      "managerPrefilled": "Pre-filled from the ticket: its requester is set as the manager, not as the new person.",
       "nobody": "Nobody",
       "startAt": "Start date (optional)",
       "startNow": "Leave empty to provision and hand over now",
@@ -382,7 +382,20 @@
       "failed": "The onboarding could not be started.",
       "duplicate": "An onboarding is already running for this person.",
       "replayed": "This onboarding had already been started; opening it.",
-      "existingContactLink": "Open the organization's contacts"
+      "existingContactLink": "Open the organization's contacts",
+      "upnManual": "Microsoft 365 accounts are created by hand for this organization, so Breeze did not check or plan this one.",
+      "sitesFailed": "Sites failed to load.",
+      "startAtIncomplete": "Enter a full start date and time, or clear the field.",
+      "invalidNoProvider": "Turn on at least one account to create.",
+      "flagLabel": {
+        "upnCollision": "Sign-in name taken",
+        "emailCollision": "Google address taken",
+        "m365CollisionCheckFailed": "Sign-in name check",
+        "m365SeatsReadFailed": "Licence seat check",
+        "googleCollisionCheckFailed": "Google address check",
+        "googleConnectionUnavailable": "Google Workspace connection",
+        "other": "Check"
+      }
     }
   },
   "taskPanels": {
@@ -522,6 +535,8 @@
     "setByHand": "Password set by hand during onboarding",
     "unknown": "Temporary password state unknown",
     "theApprover": "the person who approved the account creation",
-    "whoReveals": "Only the person who approved the account creation can reveal a temporary password, once — not the technician who started this task. Hand it over in person or by phone."
+    "whoReveals": "Only the person who approved the account creation can reveal a temporary password, once — not the technician who started this task. Hand it over in person or by phone.",
+    "noRevealer": "Breeze found nobody who can reveal this temporary password.",
+    "revealNeedsFeedAccess": "Only you can reveal it, in the AI activity feed (Approvals), but your role cannot open that page. Ask an administrator for AI session audit access."
   }
 }
