@@ -35,7 +35,6 @@
 import {
   evaluateExpr,
   FLOW_BUILTIN_STEPS,
-  FLOW_RUN_LIMITS,
   isFlowBuiltin,
   isTruthy,
   parseExpr,
@@ -56,6 +55,7 @@ import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
 import { withFlowExecutionContext } from './flowExecutionContext';
+import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
 
 /** Fields every non-skipped outcome may carry for the runner's step row. */
@@ -100,8 +100,8 @@ export interface StepExecutorDeps {
 
 /** Tier-1 retry backoff (plan A7): three retries after the first attempt. */
 export const FLOW_TIER1_RETRY_DELAYS_MS: readonly number[] = [1_000, 4_000, 16_000];
-/** What an oversized output keeps (`{ truncated: true, preview }`). */
-export const FLOW_OUTPUT_PREVIEW_BYTES = 8_192;
+/** What an oversized output keeps (`{ truncated: true, preview }`); defined in storedOutput.ts. */
+export { FLOW_OUTPUT_PREVIEW_BYTES };
 const MAX_MESSAGE_CHARS = 1_000;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -175,15 +175,8 @@ function messageOf(value: unknown): string {
   }
 }
 
-/** The step's output as stored: oversized ⇒ `{ truncated: true, preview: <first 8 KB of its JSON> }`. */
-function storedOutput(value: FlowValue): { output: FlowValue; truncated: boolean } {
-  const serialized = JSON.stringify(value) ?? 'null';
-  const bytes = Buffer.from(serialized, 'utf8');
-  if (bytes.length <= FLOW_RUN_LIMITS.maxStoredOutputBytes) return { output: value, truncated: false };
-  // Cut on bytes, then drop a trailing partial UTF-8 sequence's replacement char.
-  const preview = bytes.subarray(0, FLOW_OUTPUT_PREVIEW_BYTES).toString('utf8').replace(/�+$/, '');
-  return { output: { truncated: true, preview }, truncated: true };
-}
+/** The step's output as stored (storedOutput.ts; the runner's approval wake shares it). */
+const storedOutput = toStoredFlowOutput;
 
 /** A tool's string result as a FlowValue: JSON when it parses, else `{ text }`. */
 function parseToolText(text: string): FlowValue {

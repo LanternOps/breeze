@@ -349,6 +349,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
   // skipped), not whether the Worker itself constructs and attaches.
   consumers('toolSourceDiscoveryWorker'),
+  // Tool catalog W04 (#5219), Task A8 — each constructs and attaches one
+  // Worker unconditionally under its registry name (FLOWS_ENABLED gates
+  // what a slice does, not whether the Worker exists).
+  consumers('flowRunner'),
+  consumers('flowRunReconciler'),
+  consumers('flowRunRetention'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
   // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
   // every self-hosted install and on hosted until W05 — so a plain-required row

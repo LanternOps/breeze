@@ -26,6 +26,7 @@ const h = vi.hoisted(() => {
     assertDelegatorAuthority: vi.fn(),
     pauseFlow: vi.fn(async () => {}),
     publishIntentTerminalOutbox: vi.fn(async () => {}),
+    publishFlowRunTerminalEvent: vi.fn(async () => {}),
     checkGuardrails: vi.fn(),
     order: [] as string[],
   };
@@ -50,6 +51,12 @@ vi.mock('./versions', () => ({
   },
 }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: h.publishIntentTerminalOutbox }));
+vi.mock('./runEvents', () => ({
+  publishFlowRunTerminalEvent: (...args: unknown[]) => {
+    h.order.push('publish:flow.run');
+    return (h.publishFlowRunTerminalEvent as (...a: unknown[]) => Promise<void>)(...args);
+  },
+}));
 vi.mock('../aiGuardrails', () => ({ checkGuardrails: h.checkGuardrails }));
 vi.mock('../flowValidator', async () => {
   const { z } = await import('zod');
@@ -307,6 +314,42 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     arrange();
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason });
     expectIntentCancelledWithWake();
+  });
+
+  // Plan Task A8: a claim-refused run is already terminal when the wake
+  // reaches the runner (which then returns at its terminal check), so the
+  // claim itself publishes flow.run.failed — after commit, once per run it
+  // actually ended. Cancelled outcomes publish nothing (no flow.run.cancelled).
+  it.each([
+    ['publication_moved', () => h.store.loadPublicationBySeq.mockResolvedValue(null)],
+    ['delegator_inactive', () => h.assertDelegatorAuthority.mockResolvedValue(false)],
+    ['approval_scope_changed', () => h.checkGuardrails.mockReturnValue({ allowed: false, tier: 4 })],
+  ])('a refusal that fails the run (%s) publishes flow.run.failed after commit', async (_reason, arrange) => {
+    arrange();
+    await claimFlowLinkedIntentForDispatch(INTENT_ID);
+    expect(h.publishFlowRunTerminalEvent).toHaveBeenCalledTimes(1);
+    expect(h.publishFlowRunTerminalEvent).toHaveBeenCalledWith(
+      { id: RUN_ID, orgId: ORG_ID, flowId: FLOW_ID, chainDepth: 1 },
+      'failed',
+    );
+    expect(h.order.indexOf('publish:flow.run')).toBeGreaterThan(h.order.indexOf('tx:commit'));
+  });
+
+  it.each([
+    ['run_cancel_requested', () => h.store.lockRunForClaim.mockResolvedValue(run({ cancelRequestedAt: new Date() }))],
+    ['run_not_waiting', () => h.store.lockStepForIntent.mockResolvedValue(null)],
+    ['run_terminal', () => h.store.lockRunForClaim.mockResolvedValue(run({ status: 'failed' }))],
+  ])('a refusal that does not fail the run (%s) publishes no flow.run event', async (_reason, arrange) => {
+    arrange();
+    await claimFlowLinkedIntentForDispatch(INTENT_ID);
+    expect(h.publishFlowRunTerminalEvent).not.toHaveBeenCalled();
+  });
+
+  it('a refusal whose run write lost (already terminal) publishes nothing', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    h.store.terminalizeRunForRefusal.mockResolvedValue(false);
+    await claimFlowLinkedIntentForDispatch(INTENT_ID);
+    expect(h.publishFlowRunTerminalEvent).not.toHaveBeenCalled();
   });
 
   it('a lost cancel CAS (the intent moved under the lock — unreachable) writes no run state and publishes nothing', async () => {

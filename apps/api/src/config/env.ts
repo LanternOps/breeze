@@ -455,6 +455,25 @@ export function flowApprovalTtlHours(): number {
   return positiveIntEnv('FLOW_APPROVAL_TTL_HOURS', 24, 1, 168);
 }
 
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 8: how many runs of one
+ * flow owner (an org, or a partner for its partner-wide flows) may be
+ * `running` at once, across every API replica. Parked runs do not count.
+ * Default 20, clamped 1..500.
+ */
+export function flowMaxRunningPerOwner(): number {
+  return positiveIntEnv('FLOW_MAX_RUNNING_PER_OWNER', 20, 1, 500);
+}
+
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 9: days after a run
+ * finishes before its bodies (trigger payload, inputs, step inputs/outputs)
+ * are pruned. Rows are never deleted. Default 90, clamped 7..3650.
+ */
+export function flowRunRetentionDays(): number {
+  return positiveIntEnv('FLOW_RUN_RETENTION_DAYS', 90, 7, 3650);
+}
+
 /** Per-API-instance `sync-domain` concurrency (spec §5.3). */
 export function m365SyncConcurrency(): number {
   return positiveIntEnv('M365_SYNC_CONCURRENCY', 4, 1, 64);

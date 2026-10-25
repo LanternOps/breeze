@@ -4008,6 +4008,28 @@ describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
   });
 });
 
+describe.each([
+  ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, ['1', '20', '500', ' 64 ', ''], ['0', '501', '-1', '2.5', 'lots']],
+  ['FLOW_RUN_RETENTION_DAYS', 7, 3650, ['7', '90', '3650', ' 30 ', ''], ['6', '0', '3651', '-1', '1.5', 'forever']],
+] as const)('%s range guard (#5219 A8)', (key, min, max, accepted, refused) => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  it.each(accepted)('accepts %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(refused)('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).toThrow(new RegExp(`${key} must be an integer between ${min} and ${max}`));
+    });
+  });
+});
+
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');

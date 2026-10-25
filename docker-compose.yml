@@ -412,6 +412,9 @@ x-api-env: &api-env
   FLOWS_ENABLED: ${FLOWS_ENABLED:-false}
   # Hours a parked Tier-3 flow step waits for approval (1-168).
   FLOW_APPROVAL_TTL_HOURS: ${FLOW_APPROVAL_TTL_HOURS:-24}
+  # Flow runs per owner executing at once (1-500) and run-body retention days (7-3650).
+  FLOW_MAX_RUNNING_PER_OWNER: ${FLOW_MAX_RUNNING_PER_OWNER:-20}
+  FLOW_RUN_RETENTION_DAYS: ${FLOW_RUN_RETENTION_DAYS:-90}
   # Self-hosted only: let a tool source point at a private/loopback address.
   TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}

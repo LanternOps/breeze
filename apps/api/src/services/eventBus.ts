@@ -76,6 +76,13 @@ export type EventType =
   // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
   // went wrong, so alerting keyed on automation.failed must not fire.
   | 'automation.cancelled'
+  // Tool catalog W04 (#5219), plan Task A8: a flow run finished (spec §6.5
+  // step 7). Payload `{ flowId, runId, chainDepth, status }` — ids only;
+  // `failed` also covers `expired` (status says which). Published by the
+  // runner (and by a refused dispatch claim) after the terminal write commits,
+  // with metadata.flowRunId / flowChainDepth so an event flow inherits depth.
+  | 'flow.run.completed'
+  | 'flow.run.failed'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -678,6 +685,9 @@ export const EVENT_TYPES = {
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
   AUTOMATION_CANCELLED: 'automation.cancelled' as const,
+  // Flow runs (#5219 W04)
+  FLOW_RUN_COMPLETED: 'flow.run.completed' as const,
+  FLOW_RUN_FAILED: 'flow.run.failed' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,

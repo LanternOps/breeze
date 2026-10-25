@@ -60,6 +60,7 @@ import { captureException } from '../sentry';
 import { flowStepPinSchema, type FlowStepPin } from '../flowValidator';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import * as store from './intentClaimStore';
+import { publishFlowRunTerminalEvent, type FlowRunEventRef } from './runEvents';
 import { assertDelegatorAuthority, pauseFlow } from './versions';
 
 export type FlowClaimRefusalReason =
@@ -160,7 +161,13 @@ function coreStepStillPinned(intent: store.ClaimIntentRow, pin: FlowStepPin): bo
 
 type Decision =
   | { kind: 'result'; result: FlowClaimResult }
-  | { kind: 'refused'; result: FlowClaimResult; pause: { flowId: string; reason: FlowPausedReason } | null };
+  | {
+      kind: 'refused';
+      result: FlowClaimResult;
+      pause: { flowId: string; reason: FlowPausedReason } | null;
+      /** The run this refusal FAILED (not cancelled), when the terminal write actually landed. */
+      failedRun: FlowRunEventRef | null;
+    };
 
 export async function claimFlowLinkedIntentForDispatch(intentId: string): Promise<FlowClaimResult> {
   const decision = await runOutsideDbContext(() => withSystemDbAccessContext(async (): Promise<Decision> => {
@@ -191,11 +198,15 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
       // intent this transaction did not actually end.
       if (!cancelled) return lostRace;
       const outcome = reason === 'run_terminal' ? null : runOutcomeFor(reason, ctx.flowStatus);
+      let failedRun: FlowRunEventRef | null = null;
       if (outcome) {
         if (ctx.stepRowId) {
           await store.closeStepForRefusal(ctx.stepRowId, { status: outcome.status, errorCode: outcome.stepErrorCode, error: outcome.error });
         }
-        await store.terminalizeRunForRefusal(runId, { status: outcome.status, errorCode: outcome.runErrorCode, error: outcome.error });
+        const ended = await store.terminalizeRunForRefusal(runId, { status: outcome.status, errorCode: outcome.runErrorCode, error: outcome.error });
+        if (ended && outcome.status === 'failed' && run) {
+          failedRun = { id: run.id, orgId: run.orgId, flowId: run.flowId, chainDepth: run.chainDepth };
+        }
       }
       await publishIntentTerminalOutbox(
         db,
@@ -206,6 +217,7 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
         kind: 'refused',
         result: { claimed: false, reason },
         pause: outcome?.pause && ctx.flowId ? { flowId: ctx.flowId, reason: outcome.pause } : null,
+        failedRun,
       };
     };
 
@@ -256,6 +268,12 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
   // failure is reported, not thrown: the refusal already committed, a retried
   // release would only find `lost_race`, and the next slice of any run of
   // this flow re-checks the delegator and pauses it (Task A8 step 2).
+  // The run this claim failed is terminal before the wake reaches the runner,
+  // which then returns at its terminal check — so the claim, not the runner,
+  // publishes flow.run.failed (after commit; best effort, runEvents.ts).
+  if (decision.kind === 'refused' && decision.failedRun) {
+    await publishFlowRunTerminalEvent(decision.failedRun, 'failed');
+  }
   if (decision.kind === 'refused' && decision.pause) {
     try {
       await pauseFlow(decision.pause.flowId, decision.pause.reason);
