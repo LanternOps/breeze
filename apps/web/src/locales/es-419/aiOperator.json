@@ -152,7 +152,13 @@
     "m365RemoveLicense": "Quitar las licencias de Microsoft 365",
     "m365RetireIntuneDevice": "Retirar los teléfonos administrados por Intune",
     "m365RevokeSessions": "Revocar las sesiones de inicio de sesión de Microsoft 365",
-    "m365DisableUser": "Bloquear el inicio de sesión en Microsoft 365"
+    "m365DisableUser": "Bloquear el inicio de sesión en Microsoft 365",
+    "m365CreateUser": "Crear la cuenta de Microsoft 365",
+    "m365AssignLicense": "Asignar licencias de Microsoft 365",
+    "m365AddToGroup": "Agregar a un grupo de Microsoft 365",
+    "googleMoveOu": "Mover a la unidad organizativa",
+    "googleAssignLicense": "Asignar una licencia de Google Workspace",
+    "googleAddToGroup": "Agregar a un grupo de Google"
   },
   "workspace": {
     "tabs": {
@@ -214,13 +220,16 @@
     "start": {
       "offboard": "Dar de baja a una persona",
       "notEnabled": "Esta receta no está habilitada en esta implementación.",
-      "fromDeviceOrAlert": "Inicie esta receta desde un dispositivo o una alerta."
+      "fromDeviceOrAlert": "Inicie esta receta desde un dispositivo o una alerta.",
+      "onboard": "Dar de alta a una persona"
     },
     "recipe": {
       "identityOffboardingName": "Dar de baja a una persona",
       "identityOffboardingSummary": "Confirme quién se va, encamine su correo y quite sus accesos en Microsoft 365 y Google Workspace en un orden seguro y con una sola aprobación. El trabajo manual se registra en el ticket.",
       "serviceRecoveryName": "Restaurar un servicio detenido",
-      "serviceRecoverySummary": "Investigue un servicio de Windows detenido, reinícielo con aprobación y verifique que siga en ejecución."
+      "serviceRecoverySummary": "Investigue un servicio de Windows detenido, reinícielo con aprobación y verifique que siga en ejecución.",
+      "identityOnboardingName": "Dar de alta a una persona",
+      "identityOnboardingSummary": "Cree la cuenta de Microsoft 365 de una persona nueva con una aprobación y luego asigne las licencias y los grupos que elija con una segunda. Las cuentas de Google Workspace se crean a mano desde un elemento de la lista de verificación. La contraseña temporal la revela una sola vez quien aprueba."
     },
     "refreshFailed": "No se pudo actualizar la biblioteca de recetas; lo que se muestra puede estar desactualizado."
   },
@@ -314,14 +323,75 @@
     "failed": "No se pudo iniciar la baja.",
     "duplicate": "Ya hay una baja en curso para esta persona.",
     "duplicateLink": "Abrir la tarea en curso",
-    "replayed": "Esta baja ya se había iniciado; se abrirá."
+    "replayed": "Esta baja ya se había iniciado; se abrirá.",
+    "onboarding": {
+      "title": "Dar de alta a una persona",
+      "personLabel": "Persona nueva",
+      "displayName": "Nombre completo",
+      "personWillBeCreated": "Esta persona se creará como contacto cuando se inicie la tarea.",
+      "jobTitle": "Cargo (opcional)",
+      "site": "Sitio (opcional)",
+      "noSite": "Sin sitio",
+      "providersLabel": "Cuentas por crear",
+      "upn": "Nombre de inicio de sesión (UPN)",
+      "checkAvailability": "Comprobar disponibilidad",
+      "upnAvailable": "Disponible: ninguna cuenta de Microsoft 365 tiene este nombre de inicio de sesión.",
+      "upnTaken": "En uso: una cuenta de Microsoft 365 ya tiene este nombre de inicio de sesión.",
+      "upnUnchecked": "No se pudo comprobar este nombre de inicio de sesión. Breeze no creará una cuenta con un nombre que nadie verificó.",
+      "mailNickname": "Alias de correo",
+      "usageLocation": "Ubicación de uso (código de país de dos letras)",
+      "usageLocationHelp": "El país donde se usarán las licencias, por ejemplo MX o US. Es obligatorio antes de que Microsoft 365 asigne una licencia.",
+      "skus": "Licencias de Microsoft 365 (ID de SKU)",
+      "skusHelp": "Una licencia sin puestos libres se conserva: la tarea la convierte en un elemento de la lista de verificación.",
+      "groups": "Grupos de Microsoft 365 (ID de grupo)",
+      "groupsHelp": "Los grupos dinámicos y los de roles de administrador nunca se agregan automáticamente: la tarea los convierte en elementos de la lista de verificación.",
+      "add": "Agregar",
+      "invalidEntry": "Ingrese un valor con el formato indicado.",
+      "noSeats": "No hay puestos de licencia disponibles",
+      "needsTechnician": "Un técnico lo agregará a mano",
+      "googleManual": "Breeze todavía no puede crear cuentas de Google. La tarea agregará un elemento a la lista de verificación con los datos exactos para crear la cuenta a mano y luego continuará con las licencias y los grupos.",
+      "googlePrimaryEmail": "Correo principal",
+      "givenName": "Nombre",
+      "familyName": "Apellido",
+      "orgUnitPath": "Unidad organizativa (opcional)",
+      "orgUnitPathHelp": "Empieza con una barra diagonal, por ejemplo /Staff/Sales.",
+      "googleLicenses": "Licencias de Google Workspace",
+      "googleProductId": "ID de producto",
+      "googleSkuId": "ID de SKU",
+      "googleGroups": "Grupos de Google (direcciones)",
+      "modelAfter": "Tomar como modelo a (opcional)",
+      "modelAfterHelp": "La tarea lee los grupos y las licencias de esta persona y le pide que los confirme en su primer paso. Los grupos de administración y los dinámicos nunca se copian: la tarea los agrega como elementos de la lista de verificación.",
+      "manager": "Superior directo (opcional)",
+      "managerHelp": "Se registra en el contacto nuevo y se nombra en la entrega. Breeze nunca modifica las cuentas del superior.",
+      "managerPrefilled": "Completado desde el ticket: {{name}} lo creó, por lo que queda como superior directo, no como la persona nueva.",
+      "nobody": "Nadie",
+      "startAt": "Fecha de inicio (opcional)",
+      "startNow": "Déjelo vacío para aprovisionar y entregar ahora",
+      "startScheduled": "Las cuentas se crean ahora; la entrega espera hasta ese momento.",
+      "startBeyondDeadline_one": "Esta tarea debe terminar en un plazo de {{count}} día. Elija una fecha de inicio dentro de {{count}} día o inicie el alta más cerca del plazo.",
+      "startBeyondDeadline_other": "Esta tarea debe terminar en un plazo de {{count}} días. Elija una fecha de inicio dentro de {{count}} días o inicie el alta más cerca del plazo.",
+      "invalid": "Faltan algunos datos o no tienen el formato correcto:",
+      "previewStage1": "Paso 1: creación de cuentas (usted aprueba esto primero)",
+      "previewStage1Empty": "No se creará nada automáticamente.",
+      "previewStage2": "Paso 2: licencias, grupos y unidad organizativa (usted aprueba esto cuando la cuenta ya exista)",
+      "previewProvisional": "Provisional: Breeze lo confirma cuando la cuenta ya exista",
+      "flagsTitle": "Lo que encontraron las comprobaciones",
+      "previewNote": "La tarea abre su propio ticket para los elementos de la lista de verificación.",
+      "submit": "Iniciar el alta",
+      "started": "Alta iniciada.",
+      "failed": "No se pudo iniciar el alta.",
+      "duplicate": "Ya hay un alta en curso para esta persona.",
+      "replayed": "Esta alta ya se había iniciado; se abrirá.",
+      "existingContactLink": "Abrir los contactos de la organización"
+    }
   },
   "taskPanels": {
     "tabsLabel": "Vistas de la tarea",
     "tabs": {
       "steps": "Pasos",
       "plan": "Plan de cambios",
-      "events": "Cronología"
+      "events": "Cronología",
+      "accounts": "Cuentas"
     },
     "steps": {
       "empty": "Aún no se ha iniciado ningún paso.",
@@ -342,7 +412,14 @@
         "effects": "Aprobar y hacer los cambios",
         "manualWork": "Trabajo de la lista de verificación",
         "verifyOutcome": "Verificar el resultado",
-        "document": "Redactar el registro"
+        "document": "Redactar el registro",
+        "confirmDetails": "Confirmar los datos de la persona nueva",
+        "createAccounts": "Aprobar y crear las cuentas",
+        "manualCreateGoogle": "Crear la cuenta de Google a mano",
+        "resolveAccounts": "Encontrar las cuentas nuevas",
+        "provisionEffects": "Aprobar y asignar licencias y grupos",
+        "waitStart": "Esperar la fecha de inicio",
+        "handoverWork": "Lista de verificación de la entrega"
       },
       "kind": {
         "reason": "Razonamiento",
@@ -393,7 +470,10 @@
         "failed": "Con error",
         "unknown": "Resultado desconocido",
         "superseded": "Reemplazado"
-      }
+      },
+      "stageCreation": "Creación de cuentas",
+      "stageProvision": "Licencias, grupos y unidad organizativa",
+      "followedBy": "Aprobada y ejecutada; le sigue la aprobación {{n}} de la siguiente etapa. Se conserva aquí como registro de lo que se aprobó."
     },
     "events": {
       "empty": "Aún no se ha registrado ningún evento.",
@@ -426,6 +506,22 @@
         "humanWorkUnticked": "Elemento de la lista de verificación desmarcado",
         "taskSettled": "Tarea finalizada"
       }
-    }
+    },
+    "accounts": "Cuentas creadas",
+    "planStage": "Aprobación {{n}}"
+  },
+  "credential": {
+    "availableTo": "Contraseña temporal disponible para {{name}} hasta el {{date}}",
+    "availableToNoDate": "Contraseña temporal disponible para {{name}}",
+    "askTo": "Pida a {{name}} que comparta la contraseña temporal; solo esa persona puede revelarla",
+    "reveal": "Revélela en la actividad de IA (Aprobaciones)",
+    "revealed": "La contraseña temporal ya se reveló",
+    "expired": "La contraseña temporal venció sin haberse revelado",
+    "expiredRecovery": "Restablezca la contraseña. No cree una segunda cuenta.",
+    "unretrievable": "La contraseña temporal nunca se guardó, así que nadie puede revelarla.",
+    "setByHand": "Contraseña establecida a mano durante el alta",
+    "unknown": "Se desconoce el estado de la contraseña temporal",
+    "theApprover": "la persona que aprobó la creación de la cuenta",
+    "whoReveals": "Solo la persona que aprobó la creación de la cuenta puede revelar una contraseña temporal, y una sola vez; no el técnico que inició esta tarea. Entréguela en persona o por teléfono."
   }
 }

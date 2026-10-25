@@ -152,7 +152,13 @@
     "m365RemoveLicense": "Remover as licenças do Microsoft 365",
     "m365RetireIntuneDevice": "Desvincular os celulares gerenciados pelo Intune",
     "m365RevokeSessions": "Revogar as sessões de login do Microsoft 365",
-    "m365DisableUser": "Bloquear o login no Microsoft 365"
+    "m365DisableUser": "Bloquear o login no Microsoft 365",
+    "m365CreateUser": "Criar a conta do Microsoft 365",
+    "m365AssignLicense": "Atribuir licenças do Microsoft 365",
+    "m365AddToGroup": "Adicionar a um grupo do Microsoft 365",
+    "googleMoveOu": "Mover para a unidade organizacional",
+    "googleAssignLicense": "Atribuir uma licença do Google Workspace",
+    "googleAddToGroup": "Adicionar a um grupo do Google"
   },
   "workspace": {
     "tabs": {
@@ -214,13 +220,16 @@
     "start": {
       "offboard": "Desligar uma pessoa",
       "notEnabled": "Esta receita não está habilitada nesta implantação.",
-      "fromDeviceOrAlert": "Inicie esta receita a partir de um dispositivo ou de um alerta."
+      "fromDeviceOrAlert": "Inicie esta receita a partir de um dispositivo ou de um alerta.",
+      "onboard": "Admitir uma pessoa"
     },
     "recipe": {
       "identityOffboardingName": "Desligar uma pessoa",
       "identityOffboardingSummary": "Confirme quem está saindo, direcione os e-mails e remova os acessos no Microsoft 365 e no Google Workspace em uma ordem segura, com uma única aprovação. O trabalho manual é acompanhado no chamado.",
       "serviceRecoveryName": "Restaurar um serviço parado",
-      "serviceRecoverySummary": "Investigue um serviço do Windows parado, reinicie-o com aprovação e verifique se ele continua em execução."
+      "serviceRecoverySummary": "Investigue um serviço do Windows parado, reinicie-o com aprovação e verifique se ele continua em execução.",
+      "identityOnboardingName": "Admitir uma pessoa",
+      "identityOnboardingSummary": "Crie a conta do Microsoft 365 de uma nova pessoa com uma aprovação e, depois, atribua as licenças e os grupos escolhidos com uma segunda. As contas do Google Workspace são criadas manualmente a partir de um item do checklist. A senha temporária é revelada uma única vez, por quem aprova."
     },
     "refreshFailed": "Não foi possível atualizar a biblioteca de receitas; o que aparece pode estar desatualizado."
   },
@@ -314,14 +323,75 @@
     "failed": "Não foi possível iniciar o desligamento.",
     "duplicate": "Já existe um desligamento em andamento para esta pessoa.",
     "duplicateLink": "Abrir a tarefa em andamento",
-    "replayed": "Este desligamento já tinha sido iniciado; abrindo-o."
+    "replayed": "Este desligamento já tinha sido iniciado; abrindo-o.",
+    "onboarding": {
+      "title": "Admitir uma pessoa",
+      "personLabel": "Nova pessoa",
+      "displayName": "Nome completo",
+      "personWillBeCreated": "Esta pessoa será criada como contato quando a tarefa for iniciada.",
+      "jobTitle": "Cargo (opcional)",
+      "site": "Local (opcional)",
+      "noSite": "Nenhum local",
+      "providersLabel": "Contas a criar",
+      "upn": "Nome de login (UPN)",
+      "checkAvailability": "Verificar disponibilidade",
+      "upnAvailable": "Disponível: nenhuma conta do Microsoft 365 usa este nome de login.",
+      "upnTaken": "Em uso: uma conta do Microsoft 365 já usa este nome de login.",
+      "upnUnchecked": "Não foi possível verificar este nome de login. O Breeze não criará uma conta com um nome que ninguém verificou.",
+      "mailNickname": "Apelido de e-mail",
+      "usageLocation": "Local de uso (código de país de duas letras)",
+      "usageLocationHelp": "O país onde as licenças serão usadas, por exemplo BR ou US. Obrigatório antes de o Microsoft 365 atribuir uma licença.",
+      "skus": "Licenças do Microsoft 365 (IDs de SKU)",
+      "skusHelp": "Uma licença sem assento livre é mantida: a tarefa a transforma em um item do checklist.",
+      "groups": "Grupos do Microsoft 365 (IDs de grupo)",
+      "groupsHelp": "Grupos dinâmicos e de função de administrador nunca são adicionados automaticamente: a tarefa os transforma em itens do checklist.",
+      "add": "Adicionar",
+      "invalidEntry": "Informe um valor no formato indicado.",
+      "noSeats": "Nenhum assento de licença disponível",
+      "needsTechnician": "Um técnico adicionará este manualmente",
+      "googleManual": "O Breeze ainda não consegue criar contas do Google. A tarefa adicionará um item do checklist com os detalhes exatos para criar a conta manualmente e, em seguida, continuará com as licenças e os grupos.",
+      "googlePrimaryEmail": "E-mail principal",
+      "givenName": "Nome",
+      "familyName": "Sobrenome",
+      "orgUnitPath": "Unidade organizacional (opcional)",
+      "orgUnitPathHelp": "Começa com uma barra, por exemplo /Staff/Sales.",
+      "googleLicenses": "Licenças do Google Workspace",
+      "googleProductId": "ID do produto",
+      "googleSkuId": "ID de SKU",
+      "googleGroups": "Grupos do Google (endereços)",
+      "modelAfter": "Seguir o modelo de (opcional)",
+      "modelAfterHelp": "A tarefa lê os grupos e as licenças desta pessoa e pede que você os confirme na primeira etapa. Grupos de administrador e dinâmicos nunca são copiados: a tarefa os adiciona como itens do checklist.",
+      "manager": "Gestor (opcional)",
+      "managerHelp": "Registrado no novo contato e citado na entrega. O Breeze nunca altera as contas do gestor.",
+      "managerPrefilled": "Preenchido a partir do chamado: {{name}} o abriu, por isso essa pessoa foi definida como gestor, e não como a nova pessoa.",
+      "nobody": "Ninguém",
+      "startAt": "Data de início (opcional)",
+      "startNow": "Deixe vazio para provisionar e entregar agora",
+      "startScheduled": "As contas são criadas agora; a entrega aguarda até esse momento.",
+      "startBeyondDeadline_one": "Esta tarefa deve ser concluída em até {{count}} dia. Escolha uma data de início dentro de {{count}} dia ou inicie a admissão mais perto do prazo.",
+      "startBeyondDeadline_other": "Esta tarefa deve ser concluída em até {{count}} dias. Escolha uma data de início dentro de {{count}} dias ou inicie a admissão mais perto do prazo.",
+      "invalid": "Alguns dados estão faltando ou não estão no formato correto:",
+      "previewStage1": "Etapa 1 — criação das contas (você aprova esta primeiro)",
+      "previewStage1Empty": "Nada será criado automaticamente.",
+      "previewStage2": "Etapa 2 — licenças, grupos e unidade organizacional (você aprova depois que a conta existir)",
+      "previewProvisional": "Provisório: o Breeze confirma estes itens quando a conta existir",
+      "flagsTitle": "O que as verificações encontraram",
+      "previewNote": "A tarefa abre o próprio chamado para os itens do checklist.",
+      "submit": "Iniciar admissão",
+      "started": "Admissão iniciada.",
+      "failed": "Não foi possível iniciar a admissão.",
+      "duplicate": "Já há uma admissão em andamento para esta pessoa.",
+      "replayed": "Esta admissão já havia sido iniciada; abrindo-a.",
+      "existingContactLink": "Abrir os contatos da organização"
+    }
   },
   "taskPanels": {
     "tabsLabel": "Visualizações da tarefa",
     "tabs": {
       "steps": "Etapas",
       "plan": "Plano",
-      "events": "Linha do tempo"
+      "events": "Linha do tempo",
+      "accounts": "Contas"
     },
     "steps": {
       "empty": "Nenhuma etapa foi iniciada ainda.",
@@ -342,7 +412,14 @@
         "effects": "Aprovar e fazer as alterações",
         "manualWork": "Trabalho do checklist",
         "verifyOutcome": "Verificar o resultado",
-        "document": "Escrever o registro"
+        "document": "Escrever o registro",
+        "confirmDetails": "Confirmar os dados da nova pessoa",
+        "createAccounts": "Aprovar e criar as contas",
+        "manualCreateGoogle": "Criar a conta do Google manualmente",
+        "resolveAccounts": "Localizar as novas contas",
+        "provisionEffects": "Aprovar e atribuir licenças e grupos",
+        "waitStart": "Aguardar a data de início",
+        "handoverWork": "Checklist da entrega"
       },
       "kind": {
         "reason": "Raciocínio",
@@ -393,7 +470,10 @@
         "failed": "Falhou",
         "unknown": "Resultado desconhecido",
         "superseded": "Substituída"
-      }
+      },
+      "stageCreation": "Criação das contas",
+      "stageProvision": "Licenças, grupos e unidade organizacional",
+      "followedBy": "Aprovada e executada, seguida pela aprovação {{n}} da próxima etapa. Mantida aqui como registro do que foi aprovado."
     },
     "events": {
       "empty": "Nenhum evento registrado ainda.",
@@ -426,6 +506,22 @@
         "humanWorkUnticked": "Item do checklist desmarcado",
         "taskSettled": "Tarefa concluída"
       }
-    }
+    },
+    "accounts": "Contas criadas",
+    "planStage": "Aprovação {{n}}"
+  },
+  "credential": {
+    "availableTo": "Senha temporária disponível para {{name}} até {{date}}",
+    "availableToNoDate": "Senha temporária disponível para {{name}}",
+    "askTo": "Peça a {{name}} que compartilhe a senha temporária — somente essa pessoa pode revelá-la",
+    "reveal": "Revele-a na atividade de IA (Aprovações)",
+    "revealed": "Senha temporária já revelada",
+    "expired": "Senha temporária expirou sem ser revelada",
+    "expiredRecovery": "Redefina a senha. Não crie uma segunda conta.",
+    "unretrievable": "A senha temporária nunca foi armazenada, portanto ninguém pode revelá-la.",
+    "setByHand": "Senha definida manualmente durante a admissão",
+    "unknown": "Estado da senha temporária desconhecido",
+    "theApprover": "a pessoa que aprovou a criação da conta",
+    "whoReveals": "Somente a pessoa que aprovou a criação da conta pode revelar uma senha temporária, uma única vez — não o técnico que iniciou esta tarefa. Entregue-a pessoalmente ou por telefone."
   }
 }

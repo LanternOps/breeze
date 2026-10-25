@@ -345,7 +345,6 @@
       "skusHelp": "A licence with no free seat is kept: the task turns it into a checklist item.",
       "groups": "Microsoft 365 groups (group ids)",
       "groupsHelp": "Dynamic and admin-role groups are never added automatically: the task turns them into checklist items.",
-      "guidPlaceholder": "00000000-0000-0000-0000-000000000000",
       "add": "Add",
       "invalidEntry": "Enter a value in the format shown.",
       "noSeats": "No licence seats available",

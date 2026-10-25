@@ -73,6 +73,8 @@ export interface StartRecipeOnboardingFieldsProps {
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** A format hint, not copy: the same in every locale, so it is not a translation key. */
+const GUID_PLACEHOLDER = '00000000-0000-0000-0000-000000000000';
 const fieldClass = 'h-9 w-full rounded-md border bg-background px-2 text-sm';
 const badgeClass = 'inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs';
 
@@ -387,7 +389,7 @@ export default function StartRecipeOnboardingFields({
             validate={(v) => GUID.test(v)}
             options={options?.m365Skus}
             badges={noSeatsBadge}
-            placeholder={t('startRecipe.onboarding.guidPlaceholder')}
+            placeholder={GUID_PLACEHOLDER}
           />
           <ListEditor
             testIdPrefix="group"
@@ -398,7 +400,7 @@ export default function StartRecipeOnboardingFields({
             validate={(v) => GUID.test(v)}
             options={options?.m365Groups}
             badges={technicianBadge('group')}
-            placeholder={t('startRecipe.onboarding.guidPlaceholder')}
+            placeholder={GUID_PLACEHOLDER}
           />
         </fieldset>
       )}
