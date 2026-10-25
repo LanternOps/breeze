@@ -1053,6 +1053,54 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
   });
 
   /**
+   * W08 (spec §17.2, w00 A35): the connector is "Wisp" to users, so its flag
+   * gains the alias BREEZE_WISP_CONNECTOR_ENABLED. BREEZE_WORKSPACE_ENABLED
+   * keeps working (deployment contract above). The ENGINE flag
+   * BREEZE_WISP_ENABLED must never imply the connector: the connector needs
+   * pgvector and the engine does not.
+   */
+  it('also enables the workspace built-in under the BREEZE_WISP_CONNECTOR_ENABLED alias, never under BREEZE_WISP_ENABLED', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace')!;
+    expect(workspace.enableEnvAliases).toEqual(['BREEZE_WISP_CONNECTOR_ENABLED']);
+
+    const names = ['BREEZE_WORKSPACE_ENABLED', 'BREEZE_WISP_CONNECTOR_ENABLED', 'BREEZE_WISP_ENABLED'] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      for (const name of names) delete process.env[name];
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+
+      process.env.BREEZE_WISP_CONNECTOR_ENABLED = 'true';
+      expect(isBuiltinEnabled(workspace)).toBe(true);
+
+      // Same strict-string convention as the primary flag.
+      process.env.BREEZE_WISP_CONNECTOR_ENABLED = '1';
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+      delete process.env.BREEZE_WISP_CONNECTOR_ENABLED;
+
+      process.env.BREEZE_WISP_ENABLED = 'true';
+      expect(isBuiltinEnabled(workspace)).toBe(false);
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  });
+
+  it('a built-in with no aliases is gated on its primary flag alone', () => {
+    const fixture = { ...BUILTINS[0]!, enableEnvVar: 'BREEZE_ALIAS_FIXTURE_ENABLED', enableEnvAliases: undefined };
+    vi.stubEnv('BREEZE_ALIAS_FIXTURE_ENABLED', 'true');
+    vi.stubEnv('BREEZE_WISP_CONNECTOR_ENABLED', 'true');
+    try {
+      expect(isBuiltinEnabled(fixture)).toBe(true);
+      vi.stubEnv('BREEZE_ALIAS_FIXTURE_ENABLED', '');
+      expect(isBuiltinEnabled(fixture)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  /**
    * Workspace's /helper/* tree is called by the device helper, so it must sit
    * behind core helper auth rather than the user default-deny. On the built-in
    * path that boundary is declared ONLY by this field — the legacy

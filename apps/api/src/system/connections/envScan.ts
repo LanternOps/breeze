@@ -81,6 +81,9 @@ export function scanApiEnvNames(): Set<string> {
     }
   }
   for (const key of ENV_SCHEMA_KEYS) names.add(key);
-  for (const builtin of BUILTINS) names.add(builtin.enableEnvVar);
+  for (const builtin of BUILTINS) {
+    names.add(builtin.enableEnvVar);
+    for (const alias of builtin.enableEnvAliases ?? []) names.add(alias);
+  }
   return names;
 }

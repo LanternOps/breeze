@@ -310,6 +310,9 @@ describe('parseExtensionManifestV1', () => {
     'ticket-forms',
     'ticket-response-templates',
     'ticketing',
+    // Core /api/v1/wisp (Wisp W02/W04); the ee/workspace connector keeps
+    // routeNamespace 'workspace' even though users see it as "Wisp" (W08).
+    'wisp',
   ])('safeParse rejects reserved routeNamespace %s', (routeNamespace) => {
     expect(RESERVED_ROUTE_NAMESPACES.has(routeNamespace)).toBe(true);
     const result = safeParseExtensionManifestV1({ ...valid, routeNamespace });

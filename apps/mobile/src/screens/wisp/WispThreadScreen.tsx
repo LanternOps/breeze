@@ -16,16 +16,19 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useToast } from '../../components/toast/ToastHost';
 import { safeReportInternalError as safeReport } from '../../lib/errorReporting';
 import type { HomeStackParamList } from '../../navigation/MainNavigator';
+import { navigateToTicket } from '../../navigation/navigationRef';
 import { createAiSession, streamChat, type AiStreamEvent, type SseStreamHandle } from '../../services/aiChat';
 import {
   dismissWispConcern,
   getWispActivity,
+  getWispHome,
   getWispThread,
   listWispConcerns,
   pauseWispGrant,
   resumeWispGrant,
   sendWispConcernFeedback,
   snoozeWispConcern,
+  type WispActivityItem,
   type WispConcern,
   type WispCurrentActivity,
   type WispThread,
@@ -36,6 +39,8 @@ import { radii, spacing, type, useApprovalTheme } from '../../theme';
 import { Composer } from '../chat/components/Composer';
 import { ConversationList } from '../chat/components/ConversationList';
 import { WispConcernSheet } from './WispConcernSheet';
+import { WispActivityTimeline, WispBriefCard, WispLinksList } from './WispHomePanels';
+import { homeSectionsFromPayload, mergeActivityPages, type WispHomeSections } from './wispHomeSections';
 import {
   concernActionFailureCopy,
   feedbackFailureCopy,
@@ -71,6 +76,18 @@ type Phase = 'loading' | 'ready' | 'notFound' | 'error';
 /** w00 A31: the live "Wisp is checking …" line refreshes this often while the screen is focused. */
 const LIVE_LINE_POLL_MS = 30_000;
 
+/** W08: page size of the full activity timeline (cursor-paged). */
+const ACTIVITY_PAGE = 20;
+
+type ActivityState = {
+  items: WispActivityItem[];
+  nextCursor: string | null;
+  loading: boolean;
+  error: string | null;
+};
+
+const EMPTY_ACTIVITY: ActivityState = { items: [], nextCursor: null, loading: false, error: null };
+
 const statusOf = errorStatus;
 
 /**
@@ -87,6 +104,11 @@ const statusOf = errorStatus;
  * chat's `aiChat` slice — a nudge tap must not clobber the conversation the
  * technician had open on Home. Every decision lives in a node-tested sibling
  * module; this file is wiring and layout.
+ *
+ * W08 (spec §17.2, w00 A35) adds the home sections — the morning brief and the
+ * thread's entity links from `GET /wisp/home`, and the full activity timeline
+ * from `GET /wisp/thread/:id/activity` (cursor-paged). Both are best-effort:
+ * a failure hides or annotates its own section and never blocks the thread.
  */
 export function WispThreadScreen({ route, navigation }: Props): React.JSX.Element {
   const params = route.params;
@@ -107,6 +129,8 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   const [session, dispatchSession] = useReducer(wispSessionReducer, INITIAL_WISP_SESSION);
   const [current, setCurrent] = useState<WispCurrentActivity | null>(null);
   const [pausing, setPausing] = useState(false);
+  const [home, setHome] = useState<WispHomeSections | null>(null);
+  const [activity, setActivity] = useState<ActivityState>(EMPTY_ACTIVITY);
 
   const sessionIdRef = useRef<string | null>(null);
   /** Bumped on every thread switch: async work started for an older thread drops its result. */
@@ -138,7 +162,50 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
     setThread(null);
     setConcerns([]);
     setCurrent(null);
+    setHome(null);
+    setActivity(EMPTY_ACTIVITY);
   }, [params.threadId, params.grantId]);
+
+  /**
+   * Brief + links. A 404 is the expected answer when the home is dark (flag
+   * off, no active grant, or a server older than W08): hide quietly.
+   */
+  const loadHome = useCallback(async () => {
+    const gen = generation.current;
+    try {
+      const body = await getWispHome(params.grantId);
+      if (mounted.current && gen === generation.current) setHome(homeSectionsFromPayload(body));
+    } catch (err) {
+      if (mounted.current && gen === generation.current) setHome(null);
+      if (statusOf(err) !== 404) safeReport(err, 'wisp-thread-home');
+    }
+  }, [params.grantId]);
+
+  /** First page when `cursor` is null (a refresh replaces the list), else the next page appended. */
+  const loadActivity = useCallback(
+    async (cursor: string | null) => {
+      const gen = generation.current;
+      setActivity((a) => ({ ...a, loading: true, error: null }));
+      try {
+        const page = await getWispActivity(params.threadId, {
+          limit: ACTIVITY_PAGE,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (!mounted.current || gen !== generation.current) return;
+        setActivity((a) => ({
+          items: cursor ? mergeActivityPages(a.items, page.items) : page.items,
+          nextCursor: page.nextCursor,
+          loading: false,
+          error: null,
+        }));
+      } catch (err) {
+        if (!mounted.current || gen !== generation.current) return;
+        setActivity((a) => ({ ...a, loading: false, error: 'Could not load activity.' }));
+        if (statusOf(err) !== 404) safeReport(err, 'wisp-thread-activity');
+      }
+    },
+    [params.threadId],
+  );
 
   const loadConcerns = useCallback(async () => {
     const gen = generation.current;
@@ -157,6 +224,9 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
 
   const load = useCallback(async () => {
     const gen = generation.current;
+    // Not awaited with the thread: the home sections never hold up first paint.
+    void loadHome();
+    void loadActivity(null);
     try {
       const [t, list] = await Promise.all([getWispThread(params.threadId), loadConcerns()]);
       if (!mounted.current || gen !== generation.current) return;
@@ -175,7 +245,7 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
       }
       safeReport(err, 'wisp-thread-load');
     }
-  }, [params.threadId, params.grantId, params.concernId, loadConcerns]);
+  }, [params.threadId, params.grantId, params.concernId, loadConcerns, loadHome, loadActivity]);
 
   useEffect(() => {
     setPhase('loading');
@@ -542,6 +612,8 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
           ) : null}
         </View>
 
+        {home?.brief ? <WispBriefCard sections={home.brief.sections} theme={theme} /> : null}
+
         {concernsError ? (
           <Text style={[type.meta, { color: theme.deny, marginTop: spacing[4] }]}>{concernsError}</Text>
         ) : null}
@@ -580,6 +652,17 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
             ))}
           </View>
         ))}
+
+        <WispLinksList links={home?.links ?? []} theme={theme} onOpenTicket={(id) => navigateToTicket(id)} />
+
+        <WispActivityTimeline
+          items={activity.items}
+          hasMore={activity.nextCursor !== null}
+          loading={activity.loading}
+          error={activity.error}
+          onLoadMore={() => void loadActivity(activity.error && activity.items.length === 0 ? null : activity.nextCursor)}
+          theme={theme}
+        />
       </ScrollView>
 
       {hasMessages ? (

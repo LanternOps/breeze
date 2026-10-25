@@ -6,6 +6,7 @@ vi.mock('./api', () => ({ coreRequest: (...args: unknown[]) => coreRequest(...ar
 import {
   dismissWispConcern,
   getWispActivity,
+  getWispHome,
   getWispThread,
   listWispConcerns,
   normalizeConcern,
@@ -233,5 +234,23 @@ describe('grant pause/resume', () => {
     expect(coreRequest).toHaveBeenCalledWith('/wisp/grants/g1/resume', { method: 'POST' });
     coreRequest.mockResolvedValue({ id: 'g1', status: '???' });
     await expect(resumeWispGrant('g1')).resolves.toEqual({ status: 'expired', pausedReason: null });
+  });
+});
+
+describe('getWispHome (W08)', () => {
+  it('GETs /wisp/home for the grant and unwraps a { data } envelope', async () => {
+    coreRequest.mockResolvedValue({ data: { brief: null, links: [] } });
+    await expect(getWispHome('g 1')).resolves.toEqual({ brief: null, links: [] });
+    expect(coreRequest).toHaveBeenCalledWith('/wisp/home?grantId=g%201');
+  });
+
+  it('accepts an unwrapped body', async () => {
+    coreRequest.mockResolvedValue({ brief: null, links: [] });
+    await expect(getWispHome('g1')).resolves.toEqual({ brief: null, links: [] });
+  });
+
+  it('throws on a non-object body so the screen hides the sections instead of drawing an empty home', async () => {
+    coreRequest.mockResolvedValue(null);
+    await expect(getWispHome('g1')).rejects.toThrow(/malformed/);
   });
 });
