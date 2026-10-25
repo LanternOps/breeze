@@ -92,7 +92,7 @@ vi.mock('../services/effectiveSettings', () => ({
   getEffectiveAiBudget: vi.fn(async () => ({ maxTurnsPerSession: 50 })),
 }));
 vi.mock('../services/aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
-vi.mock('../services/aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'BASE PROMPT' }));
+vi.mock('../services/aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'BASE PROMPT', renderPageContextToolBlocks: () => '', resolveToolIndexMode: () => 'lazy' }));
 vi.mock('../services/aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('../services/brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn(async () => []) }));
 
