@@ -75,6 +75,7 @@ unit tests, and as a node `http` server on 127.0.0.1 for the end-to-end test.
 | 118 → 119 | 118 is older than 119 (merged into it in the delta) |
 
 The delta: 101 gains an article and one of its articles turns internal; an
-article of 102 is edited; 104 closes; 112 is deleted (404); 113 is merged into
+article of 102 is edited; 103 gains an SMS while its owner (no Breeze user)
+is renamed (`users.json`); 104 closes; 112 is deleted (404); 113 is merged into
 106; 115 is hidden (403); the older 118 is merged into the newer 119, which
 then holds articles older than itself.
