@@ -122,15 +122,18 @@ describe('settings catalogue (#6220)', () => {
   });
 
   // W04 (#10135): Settings → AI is a hub page, reached from the sidebar only.
-  it('the Settings → AI hub is a sidebar-only entry gated on ai_sessions:use', () => {
-    expect(SETTINGS_CATALOG.find((e) => e.id === 'ai')).toMatchObject({
+  it('the Settings → AI hub is a sidebar-only entry gated only by its cards', () => {
+    const hub = SETTINGS_CATALOG.find((e) => e.id === 'ai');
+    expect(hub).toMatchObject({
       name: 'AI',
       labelKey: 'nav.sectionAi',
       href: '/settings/ai',
       group: 'ai',
       sidebarOnly: true,
-      requiredPermission: { resource: 'ai_sessions', action: 'use' },
     });
+    // Visibility comes from "any AI card visible" in the sidebar; a permission
+    // here would hide the hub from roles that hold only a card's permission.
+    expect(hub?.requiredPermission).toBeUndefined();
     expect(SIDEBAR_SETTINGS_IDS.indexOf('ai')).toBe(SIDEBAR_SETTINGS_IDS.indexOf('integrations') + 1);
     // Only the hub is sidebar-only; every real settings screen still gets a card.
     expect(SETTINGS_CATALOG.filter((e) => e.sidebarOnly).map((e) => e.id)).toEqual(['ai']);

@@ -1020,6 +1020,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     // #10135: a settings hub link (Settings → AI) never leads to an empty page —
     // it shows only while one of the hub's cards passes the same gates.
     if (item.hubGroup) {
+      // The hub has no permission of its own, so keep it hidden until the
+      // permission set is known (like every permission-gated item) rather than
+      // flashing it on the server render for users who can open none of it.
+      if (permissions === undefined) return false;
       return SETTINGS_CATALOG.some(
         (entry) => entry.group === item.hubGroup && !entry.sidebarOnly && isNavGateVisible(entry, navGateContext),
       );

@@ -5,7 +5,7 @@
  * Breeze AI for Office. The Workers heading is a label, never a page, and it
  * never shows over nothing (Review Focus 3).
  */
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type Perm = { resource: string; action: string };
@@ -14,6 +14,7 @@ const fetchWithAuthMock = vi.hoisted(() => vi.fn());
 const state = vi.hoisted(() => ({
   user: { isPlatformAdmin: false, permissions: [] as Perm[] },
   scope: 'partner' as 'partner' | 'organization',
+  extensionLinks: [] as Array<{ name: string; href: string }>,
 }));
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
@@ -27,7 +28,7 @@ vi.mock('../../stores/uiStore', () => ({
   useUiStore: () => ({ isMobileMenuOpen: false, closeMobileMenu: vi.fn() }),
 }));
 vi.mock('../extensions/useExtensionNavigation', () => ({
-  useExtensionNavigation: () => [],
+  useExtensionNavigation: () => state.extensionLinks,
 }));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: state.scope }) }));
 vi.mock('./BrandHeader', () => ({ default: () => null }));
@@ -88,6 +89,7 @@ beforeEach(async () => {
   state.user.isPlatformAdmin = false;
   state.user.permissions = [];
   state.scope = 'partner';
+  state.extensionLinks = [];
   localStorage.clear();
   localStorage.setItem('sidebar-mode', 'open');
   localStorage.setItem('sidebar-sections', JSON.stringify({ ai: true }));
@@ -101,6 +103,12 @@ beforeEach(async () => {
 });
 
 afterEach(() => vi.clearAllMocks());
+
+// Lets every pending fetch → json → setState chain land inside act, so an
+// absence asserted afterwards is about the answer, not about timing.
+async function settle() {
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+}
 
 describe('Sidebar — the AI section (#10135)', () => {
   it('has exactly these entries in this order with every gate on', async () => {
@@ -246,7 +254,7 @@ describe('Sidebar — the Wisp entry is locked when the server has Wisp off (#10
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners/me'));
     // Let the answer land, then the entry is a plain link.
     await waitFor(() => expect(container.querySelector('a[href="/wisp"]')).not.toBeNull());
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
     expect(container.querySelector('[data-testid="nav-wisp-locked"]')).toBeNull();
     expect(container.querySelector('a[href="/wisp"]')!.getAttribute('title')).toBeNull();
   });
@@ -272,8 +280,19 @@ describe('Sidebar — the Wisp entry is locked when the server has Wisp off (#10
     );
     const { container } = render(<Sidebar currentPath="/" />);
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners/me'));
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
     expect(container.querySelector('a[href="/wisp"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="nav-wisp-locked"]')).toBeNull();
+  });
+
+  it('does not lock Wisp for a non-partner token, which never asks', async () => {
+    state.scope = 'organization';
+    state.user.permissions = AI_SESSIONS_ONLY;
+    mockServer({ wispEnabled: false });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/wisp"]')).not.toBeNull());
+    await settle();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/orgs/partners/me');
     expect(container.querySelector('[data-testid="nav-wisp-locked"]')).toBeNull();
   });
 });
@@ -303,7 +322,27 @@ describe('Sidebar — the Settings → AI hub link (#10135)', () => {
     mockServer({});
     const { container } = render(<Sidebar currentPath="/" />);
     await waitFor(() => expect(container.querySelector('a[href="/wisp/chat"]')).not.toBeNull());
+    await settle();
     expect(hubLink(container)).toBeNull();
+  });
+
+  it('links the hub for that user once the knowledge extension contributes its sources page', async () => {
+    state.scope = 'organization';
+    state.user.permissions = AI_SESSIONS_ONLY;
+    state.extensionLinks = [{ name: 'Knowledge sources', href: '/extensions/workspace/sources' }];
+    mockServer({});
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(hubLink(container)).not.toBeNull());
+  });
+
+  it('links the hub for a role with ai_agents:read but not ai_sessions:use (Script authoring is its card)', async () => {
+    // These pages left the AI section for the hub; a role that could open
+    // them before must still reach them from the sidebar.
+    state.scope = 'organization';
+    state.user.permissions = [{ resource: 'ai_agents', action: 'read' }];
+    mockServer({});
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(hubLink(container)).not.toBeNull());
   });
 
   it('links the hub for a partner user with only ai_sessions:use (AI Usage is a partner card)', async () => {

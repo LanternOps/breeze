@@ -249,6 +249,13 @@ function usePartnerAiFlags(active: boolean): PartnerAiFlags {
           return;
         }
         const data = read.data as { wispEnabled?: unknown; aiForOfficeEnabled?: unknown } | null;
+        if (data === null || typeof data !== 'object') {
+          // getPartnersMe turns an unparseable 200 body into null: no answer,
+          // not "both off" — ask again next time rather than latching off.
+          askedRef.current = false;
+          console.warn('[CommandPalette] partner AI flags read had no readable body');
+          return;
+        }
         if (!mountedRef.current) return;
         setFlags({ wispEnabled: data?.wispEnabled === true, aiForOfficeEnabled: data?.aiForOfficeEnabled === true });
       })

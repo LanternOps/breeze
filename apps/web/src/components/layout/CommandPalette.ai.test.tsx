@@ -115,6 +115,27 @@ describe('CommandPalette — Wisp and AI for Office gates (#10135)', () => {
     expect(partnersMeCalls()).toBe(1);
   });
 
+  it.each([
+    ['a failed read', () => Promise.resolve({ ok: false, status: 500, json: async () => ({}) })],
+    ['an unreadable 200 body', () => Promise.resolve({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } })],
+  ])('asks again on the next open after %s', async (_label, firstAnswer) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url === '/orgs/partners/me' ? firstAnswer() : Promise.resolve({ ok: true, status: 200, json: async () => ({ results: [] }) }),
+    );
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(partnersMeCalls()).toBe(1));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(warn).toHaveBeenCalled();
+    act(() => { useUiStore.getState().closeCommandPalette(); });
+    mockPartner({ wispEnabled: true });
+    openPalette();
+    await waitFor(() => expect(partnersMeCalls()).toBe(2));
+    await waitFor(() => expect(titlesIn('quick-actions')).toContain('Open Wisp'));
+    warn.mockRestore();
+  });
+
   it('never asks for an org-scoped token (the route is partner-level)', async () => {
     claimsMock.mockReturnValue({ scope: 'organization' });
     mockPartner({ wispEnabled: true });

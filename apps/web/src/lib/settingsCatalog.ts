@@ -111,8 +111,10 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
   // AI
   // W04 (#10135): the Settings → AI hub (/settings/ai renders this group). The
-  // sidebar links it; its cards are the entries below.
-  { id: 'ai', name: 'AI', labelKey: 'nav.sectionAi', href: '/settings/ai', icon: BrainCircuit, group: 'ai', sidebarOnly: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+  // sidebar links it; its cards are the entries below. No permission of its
+  // own: the sidebar shows the link while any of those cards passes its gates
+  // (Sidebar isNavItemVisible), so every role that could open one reaches it.
+  { id: 'ai', name: 'AI', labelKey: 'nav.sectionAi', href: '/settings/ai', icon: BrainCircuit, group: 'ai', sidebarOnly: true },
   { id: 'ai-agents', name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
   { id: 'ai-usage', name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, group: 'ai', partnerScopeOnly: true },
   { id: 'ai-models', name: 'AI Providers & Models', labelKey: 'nav.aiProvidersModels', href: '/settings/partner#ai-provider', icon: Cpu, group: 'ai', partnerScopeOnly: true, requiredPermission: { resource: 'billing', action: 'manage' } },

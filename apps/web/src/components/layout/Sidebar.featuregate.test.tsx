@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Partner fetch drives the AI-for-Office nav gate at runtime.
@@ -68,6 +68,9 @@ describe('Sidebar — AI for Office per-partner gate', () => {
     mockPartner(false);
     const { container } = render(<Sidebar currentPath="/ai-for-office" />);
     await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
+    // Let the partner answer land before asserting the absence it decides.
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners/me'));
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(container.querySelector('a[href="/ai-for-office"]')).toBeNull();
   });
 });
