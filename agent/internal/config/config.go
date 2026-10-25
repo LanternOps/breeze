@@ -855,11 +855,18 @@ func SaveTo(cfg *Config, cfgFile string) error {
 // SaveEnrollment is SaveTo for a freshly enrolled identity: cfg's agent,
 // watchdog and helper tokens replace whatever is on disk, and any staged
 // pending_* set is dropped — it belonged to the previous identity and can
-// never be promoted against the new one.
+// never be promoted against the new one. So is a staged reattach set
+// (#8318): its phase 1 and confirm name the previous agent id.
 func SaveEnrollment(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
-	return saveToLocked(cfg, cfgFile, credentialsFromConfig)
+	if err := saveToLocked(cfg, cfgFile, credentialsFromConfig); err != nil {
+		return err
+	}
+	if err := RemoveRebindStaged(cfgFile); err != nil {
+		log.Warn("enrollment could not remove a staged reattach set of the previous identity", "error", err.Error())
+	}
+	return nil
 }
 
 // credentialSource selects who is authoritative for credential keys in a

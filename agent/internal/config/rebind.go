@@ -1,0 +1,483 @@
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sync"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Reinstall reattach, the bounded rebind (#8318 wave 1b, spec §6.3, §6.6).
+//
+// A reinstalled machine enrolls as a new device (the SOURCE). When a human
+// decides it replaces an existing record (the TARGET), the server signs a
+// `rebind` directive on the source's heartbeat; the agent generates a fresh
+// credential set for the target, persists it HERE before any call, stages
+// its hashes (phase 1), confirms, and then swaps its identity.
+//
+// The staged set lives in its own file beside secrets.yaml, at the same file
+// mode (0600 / the secrets DACL), and is never logged. It is NOT kept in
+// secrets.yaml: SaveTo rebuilds that file from a fixed key list and would
+// drop it, and its life cycle (one set per intent, kept until the source
+// credentials are proven current) is unrelated to token rotation's.
+//
+// The swap (ApplyRebindIdentity) writes secrets.yaml BEFORE agent.yaml, so
+// agent_id in agent.yaml is the commit marker: once it names the confirmed
+// agent, the new credentials are already on disk. A crash anywhere in the
+// swap leaves the staged file in phase "confirmed", and the next start
+// finishes the swap (FinishConfirmedRebind) before anything reads the
+// identity.
+
+const rebindStagedFileName = "rebind-staged.json"
+
+// RebindStagedVersion is the on-disk format version of the staged set.
+const RebindStagedVersion = 1
+
+// Phases of a staged set.
+const (
+	// RebindPhaseGenerated: the set is on disk; phase 1 has not answered 200.
+	RebindPhaseGenerated = "generated"
+	// RebindPhaseStaged: phase 1 answered 200; the staged agent id, the
+	// target and the pending certificate are on disk with the set.
+	RebindPhaseStaged = "staged"
+	// RebindPhaseConfirmed: confirm (or a probe as the target) succeeded; the
+	// identity swap is owed.
+	RebindPhaseConfirmed = "confirmed"
+	// RebindPhaseEnded: the server said the intent is over. Kept until a call
+	// authenticated with the source credentials returns 2xx, then discarded.
+	RebindPhaseEnded = "ended"
+)
+
+// RebindTarget is the target device's identity as the server stated it.
+type RebindTarget struct {
+	DeviceID string `json:"deviceId"`
+	OrgID    string `json:"orgId"`
+	SiteID   string `json:"siteId"`
+}
+
+// RebindCertificate is the target's next mTLS certificate from phase 1.
+type RebindCertificate struct {
+	Certificate  string `json:"certificate"`
+	PrivateKey   string `json:"privateKey"`
+	ExpiresAt    string `json:"expiresAt"`
+	SerialNumber string `json:"serialNumber"`
+}
+
+// RebindConfirmedIdentity is the identity confirm (or the probe) established.
+type RebindConfirmedIdentity struct {
+	DeviceID string `json:"deviceId"`
+	OrgID    string `json:"orgId"`
+	SiteID   string `json:"siteId"`
+	AgentID  string `json:"agentId"`
+}
+
+// RebindStagedSet is the durable record of one reattach intent, from the
+// generated secrets to the confirmed identity.
+type RebindStagedSet struct {
+	Version  int    `json:"version"`
+	Phase    string `json:"phase"`
+	IntentID string `json:"intentId"`
+	// SourceAgentID is the agent id this install had when the set was
+	// generated: the `:id` of phase 1 and of rebind-confirm.
+	SourceAgentID string `json:"sourceAgentId"`
+	// DirectiveTarget is what the verified directive named.
+	DirectiveTarget RebindTarget `json:"directiveTarget"`
+	CreatedAt       time.Time    `json:"createdAt"`
+
+	AuthToken         string `json:"authToken"`
+	WatchdogAuthToken string `json:"watchdogAuthToken"`
+	HelperAuthToken   string `json:"helperAuthToken"`
+	ConfirmationToken string `json:"confirmationToken"`
+
+	// Phase 1's answer (phases staged and later).
+	StagedAgentID   string             `json:"stagedAgentId,omitempty"`
+	Target          *RebindTarget      `json:"target,omitempty"`
+	StagedExpiresAt string             `json:"stagedExpiresAt,omitempty"`
+	Certificate     *RebindCertificate `json:"certificate,omitempty"`
+
+	// Confirm's answer (phase confirmed).
+	Confirmed *RebindConfirmedIdentity `json:"confirmed,omitempty"`
+
+	// Why the intent is over (phase ended).
+	EndedState string     `json:"endedState,omitempty"`
+	EndedCode  string     `json:"endedCode,omitempty"`
+	EndedAt    *time.Time `json:"endedAt,omitempty"`
+}
+
+var (
+	rebindAgentTokenPattern        = regexp.MustCompile(`^brz_[0-9a-f]{64}$`)
+	rebindConfirmationTokenPattern = regexp.MustCompile(`^brz_rbc_[0-9a-f]{64}$`)
+	rebindUUIDPattern              = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+func validRebindTarget(t *RebindTarget) bool {
+	return t != nil && rebindUUIDPattern.MatchString(t.DeviceID) &&
+		rebindUUIDPattern.MatchString(t.OrgID) && rebindUUIDPattern.MatchString(t.SiteID)
+}
+
+// Validate checks the structure every phase requires. It never includes a
+// secret in its error.
+func (s *RebindStagedSet) Validate() error {
+	if s == nil {
+		return errors.New("staged set is nil")
+	}
+	if s.Version != RebindStagedVersion {
+		return fmt.Errorf("staged set version %d is not supported", s.Version)
+	}
+	if !rebindUUIDPattern.MatchString(s.IntentID) {
+		return errors.New("staged set intent id is not a UUID")
+	}
+	if s.SourceAgentID == "" {
+		return errors.New("staged set has no source agent id")
+	}
+	if !validRebindTarget(&s.DirectiveTarget) {
+		return errors.New("staged set directive target is incomplete")
+	}
+	if !rebindAgentTokenPattern.MatchString(s.AuthToken) ||
+		!rebindAgentTokenPattern.MatchString(s.WatchdogAuthToken) ||
+		!rebindAgentTokenPattern.MatchString(s.HelperAuthToken) {
+		return errors.New("staged set agent, watchdog or helper token is malformed")
+	}
+	if !rebindConfirmationTokenPattern.MatchString(s.ConfirmationToken) {
+		return errors.New("staged set confirmation token is malformed")
+	}
+	switch s.Phase {
+	case RebindPhaseGenerated, RebindPhaseEnded:
+	case RebindPhaseStaged:
+		if s.StagedAgentID == "" || !validRebindTarget(s.Target) {
+			return errors.New("staged set in phase staged lacks the staged agent id or the target")
+		}
+	case RebindPhaseConfirmed:
+		if _, err := s.Identity(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("staged set phase %q is unknown", s.Phase)
+	}
+	if s.Certificate != nil && (s.Certificate.Certificate == "" || s.Certificate.PrivateKey == "") {
+		return errors.New("staged set certificate is incomplete")
+	}
+	return nil
+}
+
+// RebindIdentity is the identity and credential set a confirmed reattach
+// swaps in.
+type RebindIdentity struct {
+	AgentID           string
+	DeviceID          string
+	OrgID             string
+	SiteID            string
+	AuthToken         string
+	WatchdogAuthToken string
+	HelperAuthToken   string
+	// Certificate is the target's certificate; nil clears the client
+	// certificate (the source's belongs to the retired source device).
+	Certificate *RebindCertificate
+}
+
+// Identity is the swap a confirmed set owes.
+func (s *RebindStagedSet) Identity() (RebindIdentity, error) {
+	c := s.Confirmed
+	if c == nil || c.AgentID == "" || !rebindUUIDPattern.MatchString(c.DeviceID) ||
+		!rebindUUIDPattern.MatchString(c.OrgID) || !rebindUUIDPattern.MatchString(c.SiteID) {
+		return RebindIdentity{}, errors.New("staged set has no complete confirmed identity")
+	}
+	return RebindIdentity{
+		AgentID:           c.AgentID,
+		DeviceID:          c.DeviceID,
+		OrgID:             c.OrgID,
+		SiteID:            c.SiteID,
+		AuthToken:         s.AuthToken,
+		WatchdogAuthToken: s.WatchdogAuthToken,
+		HelperAuthToken:   s.HelperAuthToken,
+		Certificate:       s.Certificate,
+	}, nil
+}
+
+// rebindStagedMu serializes the staged file's read-modify-write cycles.
+var rebindStagedMu sync.Mutex
+
+// Seams for tests: the staged-file write and the swap's two saves.
+var (
+	rebindAtomicWriteFn = atomicWriteFile
+	rebindSaveFn        = saveToLockedWithIdentity
+)
+
+// RebindStagedPath is the staged set's path for the agent.yaml cfgFile names
+// ("" = the default config file).
+func RebindStagedPath(cfgFile string) string {
+	return filepath.Join(filepath.Dir(ResolveSavePath(cfgFile)), rebindStagedFileName)
+}
+
+// WriteRebindStaged durably writes s (temp file, fsync, rename, directory
+// fsync) at the secrets file's mode, then reads it back: a write that
+// returned nil but does not hold s is reported, so no caller ever makes a
+// call that relies on a set the disk does not hold.
+func WriteRebindStaged(cfgFile string, s *RebindStagedSet) error {
+	if err := s.Validate(); err != nil {
+		return fmt.Errorf("refusing to persist an invalid staged set: %w", err)
+	}
+	path := RebindStagedPath(cfgFile)
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Errorf("encoding the staged set: %w", err)
+	}
+
+	rebindStagedMu.Lock()
+	defer rebindStagedMu.Unlock()
+	if err := prepareSaveDir(ResolveSavePath(cfgFile)); err != nil {
+		return err
+	}
+	if err := rebindAtomicWriteFn(path, data, 0600); err != nil {
+		return fmt.Errorf("writing the staged set: %w", err)
+	}
+	if err := enforceSecretFilePermissions(path); err != nil {
+		return fmt.Errorf("securing the staged set: %w", err)
+	}
+	back, err := readRebindStagedLocked(path)
+	if err != nil {
+		return fmt.Errorf("verifying the staged set: %w", err)
+	}
+	if back == nil {
+		return errors.New("verifying the staged set: the file is missing after the write")
+	}
+	again, err := json.Marshal(back)
+	if err != nil || string(again) != string(data) {
+		return errors.New("the staged set failed readback verification")
+	}
+	return nil
+}
+
+// ErrRebindStagedUnusable reports a staged-set file that exists but cannot be
+// used (unreadable, unparseable or invalid). It has been moved aside, so the
+// caller proceeds as if there were none.
+var ErrRebindStagedUnusable = errors.New("the staged reattach set on disk is unusable")
+
+// ReadRebindStaged returns the staged set, or nil when there is none. A file
+// that cannot be used is moved aside (rebind-staged.json.unusable-<time>) and
+// reported with ErrRebindStagedUnusable; if it cannot be moved, the error is
+// returned without ErrRebindStagedUnusable and nothing may overwrite it.
+func ReadRebindStaged(cfgFile string) (*RebindStagedSet, error) {
+	path := RebindStagedPath(cfgFile)
+	if err := checkConfigTarget(path); err != nil {
+		return nil, err
+	}
+	rebindStagedMu.Lock()
+	defer rebindStagedMu.Unlock()
+	s, err := readRebindStagedLocked(path)
+	if err == nil {
+		return s, nil
+	}
+	aside := fmt.Sprintf("%s.unusable-%s", path, time.Now().UTC().Format("20060102T150405Z"))
+	if renameErr := renameWithRetry(path, aside); renameErr != nil {
+		return nil, fmt.Errorf("staged set unusable (%v) and could not be moved aside: %w", err, renameErr)
+	}
+	return nil, fmt.Errorf("%w (moved to %s): %v", ErrRebindStagedUnusable, filepath.Base(aside), err)
+}
+
+func readRebindStagedLocked(path string) (*RebindStagedSet, error) {
+	data, err := readConfigFileBytes(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var s RebindStagedSet
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, errors.New("the staged set is not valid JSON")
+	}
+	if err := s.Validate(); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// RemoveRebindStaged deletes the staged set. Removing one that is not there
+// is not an error.
+func RemoveRebindStaged(cfgFile string) error {
+	path := RebindStagedPath(cfgFile)
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
+	rebindStagedMu.Lock()
+	defer rebindStagedMu.Unlock()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
+}
+
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+}
+
+func (id RebindIdentity) validate() error {
+	if id.AgentID == "" || id.DeviceID == "" || id.OrgID == "" || id.SiteID == "" {
+		return errors.New("reattached identity is incomplete")
+	}
+	if id.AuthToken == "" || id.WatchdogAuthToken == "" || id.HelperAuthToken == "" {
+		return errors.New("reattached credential set is incomplete")
+	}
+	if id.Certificate != nil && (id.Certificate.Certificate == "" || id.Certificate.PrivateKey == "") {
+		return errors.New("reattached certificate is incomplete")
+	}
+	return nil
+}
+
+// RebindIdentityApplied reports whether agent.yaml already names id's agent:
+// the swap's commit marker (see ApplyRebindIdentity).
+func RebindIdentityApplied(cfgFile string, agentID string) (bool, error) {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+	onDisk, err := readAgentIdentityAt(ResolveSavePath(cfgFile))
+	if err != nil {
+		return false, err
+	}
+	return agentID != "" && onDisk.AgentID == agentID, nil
+}
+
+type agentIdentityOnDisk struct {
+	AgentID  string `yaml:"agent_id"`
+	DeviceID string `yaml:"device_id"`
+	OrgID    string `yaml:"org_id"`
+	SiteID   string `yaml:"site_id"`
+}
+
+func readAgentIdentityAt(cfgPath string) (agentIdentityOnDisk, error) {
+	var onDisk agentIdentityOnDisk
+	raw, err := readConfigFileBytes(cfgPath)
+	if err != nil {
+		return onDisk, err
+	}
+	if err := yaml.Unmarshal(raw, &onDisk); err != nil {
+		return onDisk, fmt.Errorf("parsing %s: %w", filepath.Base(cfgPath), err)
+	}
+	return onDisk, nil
+}
+
+// ApplyRebindIdentity swaps the agent's identity to a confirmed reattach
+// (#8318 §6.4 "On 200"): agent id, device id, org, site, the three tokens and
+// the client certificate. Every other setting is kept from disk. Any staged
+// token rotation and pending certificate renewal belonged to the source and
+// are dropped; the ownership epoch restarts at 0, as on enrollment.
+//
+// Two saves, each write-new-then-rename: the first writes the NEW
+// credentials (secrets.yaml, the helper token file) beside the OLD agent.yaml
+// identity, the second the new agent.yaml identity. agent_id in agent.yaml
+// therefore changes last, and its value is the commit marker
+// (RebindIdentityApplied): a crash before it leaves the old agent id, and the
+// staged set (still on disk) re-applies the swap. Verified by reading both
+// files back.
+func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
+	if err := id.validate(); err != nil {
+		return err
+	}
+	cfgPath := ResolveSavePath(cfgFile)
+
+	persistMu.Lock()
+	defer persistMu.Unlock()
+
+	cfg, err := loadLocked(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg.AuthToken = id.AuthToken
+	cfg.WatchdogAuthToken = id.WatchdogAuthToken
+	cfg.HelperAuthToken = id.HelperAuthToken
+	cfg.PendingAuthToken, cfg.PendingWatchdogAuthToken, cfg.PendingHelperAuthToken = "", "", ""
+	if id.Certificate != nil {
+		cfg.MtlsCertPEM = id.Certificate.Certificate
+		cfg.MtlsKeyPEM = id.Certificate.PrivateKey
+		cfg.MtlsCertExpires = id.Certificate.ExpiresAt
+	} else {
+		cfg.MtlsCertPEM, cfg.MtlsKeyPEM, cfg.MtlsCertExpires = "", "", ""
+	}
+	cfg.PendingMTLSCertificate, cfg.PendingMTLSPrivateKey, cfg.PendingMTLSCertificateID = "", "", ""
+	cfg.PendingMTLSExpiresAt = time.Time{}
+
+	// Save 1: the new credentials; agent.yaml keeps the identity on disk.
+	if err := rebindSaveFn(cfg, cfgPath, credentialsFromConfig, identityFromDisk); err != nil {
+		return fmt.Errorf("writing the reattached credentials: %w", err)
+	}
+
+	// Save 2: the new identity. agent_id is the commit marker.
+	cfg.AgentID = id.AgentID
+	cfg.DeviceID = id.DeviceID
+	cfg.OrgID = id.OrgID
+	cfg.SiteID = id.SiteID
+	cfg.OwnershipEpoch = 0
+	if err := rebindSaveFn(cfg, cfgPath, credentialsFromConfig, identityFromConfig); err != nil {
+		return fmt.Errorf("writing the reattached identity: %w", err)
+	}
+
+	return verifyRebindIdentityLocked(cfgPath, id)
+}
+
+func verifyRebindIdentityLocked(cfgPath string, id RebindIdentity) error {
+	onDisk, err := readAgentIdentityAt(cfgPath)
+	if err != nil {
+		return fmt.Errorf("verifying the reattached identity: %w", err)
+	}
+	if onDisk.AgentID != id.AgentID || onDisk.DeviceID != id.DeviceID || onDisk.OrgID != id.OrgID || onDisk.SiteID != id.SiteID {
+		return errors.New("the reattached identity failed readback verification")
+	}
+	creds, err := readPersistedCredentialsAt(cfgPath)
+	if err != nil {
+		return fmt.Errorf("verifying the reattached credentials: %w", err)
+	}
+	if creds.AuthToken != id.AuthToken || creds.WatchdogAuthToken != id.WatchdogAuthToken ||
+		creds.HelperAuthToken != id.HelperAuthToken || creds.PendingAuthToken != "" {
+		return errors.New("the reattached credentials failed readback verification")
+	}
+	return nil
+}
+
+// FinishConfirmedRebind completes a swap a previous process confirmed but
+// did not finish (spec §6.6, "Crash during the local swap"). Call it at
+// start-up, before anything reads the identity. It reports whether the
+// identity on disk changed, in which case the caller reloads its config.
+//
+// A staged set in any other phase is left for the heartbeat to resume. An
+// identity whose commit marker is already on disk is not written again (a
+// later token rotation must never be overwritten by the staged tokens); only
+// the staged file is removed.
+func FinishConfirmedRebind(cfgFile string) (bool, error) {
+	s, err := ReadRebindStaged(cfgFile)
+	if err != nil || s == nil || s.Phase != RebindPhaseConfirmed {
+		return false, err
+	}
+	id, err := s.Identity()
+	if err != nil {
+		return false, err
+	}
+	applied, err := RebindIdentityApplied(cfgFile, id.AgentID)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	if !applied {
+		if err := ApplyRebindIdentity(cfgFile, id); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	if err := RemoveRebindStaged(cfgFile); err != nil {
+		// The marker is on disk, so a later start only removes the file.
+		return changed, fmt.Errorf("removing the applied staged set: %w", err)
+	}
+	return changed, nil
+}
