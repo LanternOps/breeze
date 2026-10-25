@@ -12,8 +12,9 @@
  *      That is the no-regression rule: whoever could record a signed
  *      agreement yesterday (agreements:write) still can today.
  *   4. A role holding ONLY agreements:read does not receive send.
- *   5. A '*:*' role gets no row and still satisfies agreements:send through
- *      the canonical grant matcher.
+ *   5. A '*:*' role still satisfies agreements:send through the canonical
+ *      grant matcher (the back-fill also gives it a redundant explicit row).
+ *   6. A role holding only the legacy '*:write' grant is back-filled.
  */
 import './setup';
 import { describe, it, expect, afterAll } from 'vitest';
@@ -192,7 +193,32 @@ describe.skipIf(!RUN)('migration: 2027-01-05-110000-agreements-send-permission',
     }
   });
 
-  it('a *:* role gets no send row and still satisfies agreements:send', async () => {
+  it('back-fills a role holding only the legacy *:write (or *:*-action) wildcard grant; a read-only role stays ungranted', async () => {
+    await replay();
+    const partnerId = await makePartner('Agreements Send Legacy Wildcard');
+    const anyWrite = await ensurePermission('*', 'write');
+    const read = await ensurePermission('agreements', 'read');
+    const [wild] = await adminSql`
+      insert into roles (partner_id, scope, name, is_system, force_mfa)
+      values (${partnerId}, 'partner', 'Legacy Wildcard Writer', false, false) returning id
+    `;
+    const [viewer] = await adminSql`
+      insert into roles (partner_id, scope, name, is_system, force_mfa)
+      values (${partnerId}, 'partner', 'Partner Billing Viewer', true, false) returning id
+    `;
+    await grant(wild!.id, anyWrite);
+    await grant(viewer!.id, read);
+    try {
+      await replay();
+      expect(await grantedKeys(wild!.id)).toContain('agreements:send');
+      expect(await grantedKeys(viewer!.id)).not.toContain('agreements:send');
+    } finally {
+      await adminSql`delete from role_permissions where permission_id = ${anyWrite}`;
+      await adminSql`delete from permissions where id = ${anyWrite}`;
+    }
+  });
+
+  it('a *:* role still satisfies agreements:send (the back-fill also writes it a redundant explicit send row)', async () => {
     await replay();
     const partnerId = await makePartner('Agreements Send Wildcard');
     const any = await ensurePermission('*', '*');
@@ -205,7 +231,9 @@ describe.skipIf(!RUN)('migration: 2027-01-05-110000-agreements-send-permission',
     await replay();
 
     const roleGrants = await grants(admin!.id);
-    expect(roleGrants).toEqual([{ resource: '*', action: '*' }]);
+    expect(roleGrants).toEqual(
+      expect.arrayContaining([{ resource: '*', action: '*' }]),
+    );
     expect(roleGrants.some((g) => permissionGrantMatches(g, 'agreements', 'send'))).toBe(true);
   });
 

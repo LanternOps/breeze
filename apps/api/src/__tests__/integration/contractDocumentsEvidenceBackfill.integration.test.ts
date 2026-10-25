@@ -151,3 +151,53 @@ describe.each(MIGRATIONS)('contract_documents evidence back-fill (%s)', (MIGRATI
     expect(await docRow(rowB)).toEqual(firstB);
   });
 });
+
+// #9079 review: the 2027 re-run is tenant-guarded (cd.org_id = qa.org_id). The
+// FK on quote_acceptance_id is org-blind, so a cross-org reference is
+// representable; it must never copy another tenant's signer evidence.
+describe('contract_documents evidence back-fill tenant guard (2027-01-05-110000)', () => {
+  runDb('does not copy evidence across orgs and reports the cross-org count', async () => {
+    const ids = await sys(async () => {
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+      const tv = rows(await db.execute(sql`
+        WITH t AS (
+          INSERT INTO contract_templates (org_id, name) VALUES (${orgA.id}::uuid, 'Cross MSA') RETURNING id
+        )
+        INSERT INTO contract_template_versions
+          (template_id, org_id, version_number, status, source_type, body_html, sha256, declared_variables, published_at)
+        SELECT t.id, ${orgA.id}::uuid, 1, 'published', 'authored', '<p>MSA</p>', ${'b'.repeat(64)}, '[]'::jsonb, now() FROM t
+        RETURNING template_id, id`))[0]!;
+      const quoteB = rows(await db.execute(sql`
+        INSERT INTO quotes (partner_id, org_id, currency_code, status)
+        VALUES (${partner.id}::uuid, ${orgB.id}::uuid, 'EUR', 'accepted') RETURNING id`))[0]!.id as string;
+      const accB = rows(await db.execute(sql`
+        INSERT INTO quote_acceptances
+          (quote_id, org_id, signer_name, signer_email, signed_at, quote_sha256, hash_version, origin, method, reference)
+        VALUES (${quoteB}::uuid, ${orgB.id}::uuid, 'Other Tenant', 'other@example.test', '2026-10-01 12:34:56',
+                ${QUOTE_SHA}, 2, 'on_behalf', 'email', 'PO 2')
+        RETURNING id`))[0]!.id as string;
+      // org A document pointing at org B's acceptance (cross-org reference).
+      const docId = rows(await db.execute(sql`
+        INSERT INTO contract_documents
+          (org_id, quote_acceptance_id, template_id, template_version_id, pdf_data, byte_size, sha256)
+        VALUES (${orgA.id}::uuid, ${accB}::uuid, ${tv.template_id}::uuid, ${tv.id}::uuid,
+                '\\x00'::bytea, 1, ${'c'.repeat(64)})
+        RETURNING id`))[0]!.id as string;
+      return { docId };
+    });
+
+    const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATIONS[1]), 'utf8');
+    notices.length = 0;
+    await adminSql.unsafe(migrationSql);
+
+    const d = await docRow(ids.docId);
+    expect(d.signer_name).toBeNull();
+    expect(d.signed_at).toBeNull();
+    expect(notices.filter((m) => m.startsWith('backfilled signer evidence'))).toEqual([]);
+    expect(notices).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^evidence back-fill skipping 1 contract_documents row\(s\) whose quote_acceptance crosses orgs/)]),
+    );
+  });
+});

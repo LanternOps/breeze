@@ -21,9 +21,11 @@
 -- has. Mapping is action-for-action: agreements:write -> agreements:send.
 -- agreements:read alone confers nothing.
 --
--- WILDCARDS NEED NO BACK-FILL: grant matching is per-axis
--- (services/permissionMatching.ts), so a '*:*' row (the seeded Partner Admin)
--- already satisfies agreements:send. A resource-wildcard ('agreements','*')
+-- WILDCARD SOURCES: grant matching is per-axis (services/permissionMatching.ts),
+-- so a '*:*' row (the seeded Partner Admin) already satisfies agreements:send
+-- and needs nothing; the legacy '*:write' grant satisfied agreements:write but
+-- NOT agreements:send, so it IS a back-fill source (as is '*:*'-action, which
+-- merely receives a redundant explicit row). A resource-wildcard ('agreements','*')
 -- row does not exist in DEFAULT_PERMISSIONS and routes/roles.ts rejects any
 -- wildcard on a custom role; the defensive source below covers one anyway and
 -- reports loudly if it ever fires.
@@ -85,7 +87,11 @@ BEGIN
   FROM role_permissions rp
   WHERE rp.permission_id IN (
       SELECT p.id FROM permissions p
-      WHERE p.resource = 'agreements' AND p.action IN ('write', '*')
+      WHERE (p.resource = 'agreements' AND p.action IN ('write', '*'))
+         -- Legacy wildcard write grants ('*:write', '*:*'-action) satisfied
+         -- agreements:write under per-axis matching, so they were able to
+         -- record-signed before the guard flipped. Re-issue them as send.
+         OR (p.resource = '*' AND p.action IN ('write', '*'))
     )
     AND v_send_id IS NOT NULL
     AND NOT EXISTS (
@@ -118,6 +124,14 @@ DO $$
 DECLARE n integer;
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
+  -- Tenant guard: the quote_acceptance_id FK is org-blind, so a cross-org
+  -- reference is representable. Never copy another tenant's signer evidence;
+  -- report how many rows are skipped (expected 0).
+  SELECT count(*) INTO n
+    FROM contract_documents cd
+    JOIN quote_acceptances qa ON qa.id = cd.quote_acceptance_id
+   WHERE cd.signed_at IS NULL AND cd.org_id <> qa.org_id;
+  RAISE NOTICE 'evidence back-fill skipping % contract_documents row(s) whose quote_acceptance crosses orgs (expected 0)', n;
   UPDATE contract_documents cd
      SET signer_name = qa.signer_name,
          signer_email = qa.signer_email,
@@ -135,6 +149,7 @@ BEGIN
          acceptance_render_locale = COALESCE(qa.render_locale, 'en')
     FROM quote_acceptances qa
    WHERE cd.quote_acceptance_id = qa.id
+     AND cd.org_id = qa.org_id
      AND cd.signed_at IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n > 0 THEN
