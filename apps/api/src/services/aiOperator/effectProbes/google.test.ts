@@ -50,6 +50,9 @@ vi.mock('../../../db', () => ({
     try { return await fn(); } finally { dbCtx.depth -= 1; }
   },
 }));
+// The M365 arm is registered only for the onboarding catalog-coverage case
+// below; its control-plane probe is never called here.
+vi.mock('../../m365ControlPlane/effectProbes', () => ({ probeM365Effect: vi.fn() }));
 vi.mock('../../aiToolsGoogle', () => ({
   resolveContextByOrg: (...a: unknown[]) => { dbCtx.depthAtResolve.push(dbCtx.depth); return resolveContextByOrg(...a); },
   canonicalizeUserEmail: (raw: string) => {
@@ -65,6 +68,8 @@ import {
 } from './google';
 import { __resetEffectProbesForTest, listProbedTools } from './index';
 import type { PlannedEffect } from '../recipes/types';
+import { registerM365EffectProbes } from './m365';
+import { IDENTITY_ONBOARDING_EFFECT_TOOLS } from '../recipes/identityOnboarding';
 
 const ctx = {
   orgId: 'o1', taskId: 't1', planRevision: 1,
@@ -478,5 +483,28 @@ describe('probeGoogleMoveOu', () => {
   it('is unknown when the user 404s', async () => {
     usersGet.mockRejectedValue(Object.assign(new Error('Not Found'), { code: 404 }));
     await expect(probeGoogleMoveOu(e, ctx)).resolves.toMatchObject({ state: 'unknown' });
+  });
+});
+
+/**
+ * R2a Task 3 (deferred from Task 5): the onboarding catalog is probe-covered.
+ * A COVERAGE PIN over shipped registrations, not a red-first case: Task 5
+ * already registered the three Google probes and M1 the three M365 ones, so
+ * this passes on first run. It exists so a future onboarding tool added
+ * without a probe fails here, not as an un-asserted success in
+ * verify_outcome (`IDENTITY_ONBOARDING_UNOBSERVABLE_EFFECTS` is `{}`).
+ */
+describe('identity_onboarding effect catalog coverage', () => {
+  it('every onboarding effect tool has a registered probe (Google + M365 arms)', () => {
+    __resetEffectProbesForTest();
+    registerGoogleEffectProbes();
+    registerM365EffectProbes();
+    const probed = new Set(listProbedTools());
+    const missing = (tools: readonly string[]) => tools.filter((t) => !probed.has(t));
+    // Control: the check names a tool that has no probe.
+    expect(missing(['not_a_probed_tool'])).toEqual(['not_a_probed_tool']);
+    expect(IDENTITY_ONBOARDING_EFFECT_TOOLS).toHaveLength(6);
+    expect(missing(IDENTITY_ONBOARDING_EFFECT_TOOLS)).toEqual([]);
+    __resetEffectProbesForTest();
   });
 });

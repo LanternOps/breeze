@@ -61,6 +61,7 @@ const OPERATOR_DIR = fileURLToPath(new URL('.', import.meta.url));
 const R2A_CREATED_FILES: readonly string[] = [
   'credentialHandover.ts',
   'recipes/capabilityMap.ts',
+  'recipes/identityOnboarding.ts',
 ];
 
 /**
