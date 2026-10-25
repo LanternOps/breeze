@@ -145,6 +145,25 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 250 });
   });
 
+  it('rounds typed dollars to whole cents (0.29 is 29, not 28.999…)', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 29, floorTickMinutes: 30 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '0.29' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 29 });
+  });
+
+  it('an unchanged dollars field sends no budget patch', async () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-settings-panel')).toBeNull());
+    expect(h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')).toBeUndefined();
+  });
+
   it('settings tick below the plan minimum is raised to it', async () => {
     h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 200, floorTickMinutes: 20 }) });
     render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
