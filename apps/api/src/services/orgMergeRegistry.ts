@@ -184,7 +184,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Tool Catalog W03 (#5218). Two orgs may each own a flow with the same slug
   // (`flows_org_slug_uq` is per-org), so a plain repoint aborts on 23505 and a
   // dedupe-DELETE would silently destroy a draft.
-  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames)' },
+  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames), and an ENABLED flow so rewritten is paused paused_reason=org_merged in the same statement (its live publication still names the old qualified tool; it keeps enabled_publication_seq and must be re-enabled). The resolve phase also sets cancel_requested_at on every active loser-org flow run (org and partner-wide flows alike), ends parked runs (queued/waiting/awaiting_approval with no live lease) cancelled error_code=org_merged, and leaves running runs to stop at their next checkpoint — never written cancelled under a live lease' },
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql). Runs are
+  // history that stays with the source org (the ai_agent_runs decision, plan
+  // Open Decision 1); flow_versions is a plain repoint (REPOINT_TABLES).
+  flow_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (flow_runs_immutable_guard); run history stays with the source org like ai_agent_runs, and keeps the action_intents (requesting_flow_run_id, org_id) FK consistent; active loser runs are cancelled in the flows resolve phase' },
+  flow_run_steps: { kind: 'leave-for-erasure', note: 'children of flow_runs (composite FK), erased with them' },
 
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
@@ -1078,6 +1083,15 @@ const REPOINT_TABLES: readonly string[] = [
   "fleet_finding_devices",
   "fleet_remediation_run_targets",
   "fleet_remediation_runs",
+  // flow_versions (Tool Catalog W04, #5219, 2027-01-06-130000-flow-runs.sql):
+  // publications follow their flow; partner-wide rows (org_id NULL) untouched.
+  // The DEFERRED flow_versions_owner_guard_trg checks at commit that each
+  // row's owner equals its parent flow's (flows moves in its own custom move
+  // half), and flow_versions_immutable_guard lets the owner columns move. No
+  // unique key carries org_id (flow_versions_flow_seq_uq is per flow), so a
+  // plain repoint cannot collide. The resolveFlows org_merged pause keeps
+  // enabled_publication_seq, which still names a row that moved with it.
+  "flow_versions",
   "group_membership_log",
   "hardware_alert_retirement_outbox",
   "huntress_agents",
