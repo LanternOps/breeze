@@ -27,7 +27,7 @@ import {
   type TemplateVersionRenderData,
 } from './contractTemplateRender';
 import { assertTemplateVersionUsable } from './contractTemplateService';
-import { freezeSignedAgreement } from './contractDocumentService';
+import { freezeSignedAgreement, type SignedAgreementEvidence } from './contractDocumentService';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES, sniffEvidenceMime } from './quoteAcceptanceEvidence';
 import { buildBillToAddress, buildSellerSnapshot } from './sellerSnapshot';
@@ -85,6 +85,144 @@ export interface RecordSignedAgreementResult {
 }
 
 type ExternalCopy = { data: Buffer; mime: 'application/pdf' | 'image/png' | 'image/jpeg' };
+
+/** The ONE expiry predicate (spec §3.3 step 3): `expires_at` is a timestamptz
+ *  INSTANT, and a request is expired from that instant on (`now >= expiresAt`).
+ *  Send, link, void, accept, decline — and later remind and the reaper — all
+ *  call this so no two paths disagree about the boundary. */
+export function isAgreementRequestExpired(expiresAt: Date, now: Date): boolean {
+  return now.getTime() >= expiresAt.getTime();
+}
+
+// ---------------------------------------------------------------------------
+// The request-side signed-agreement writer (#9075 W2a).
+//
+// "build ctx → variable gate → hash → freeze" is shared by record-signed
+// (on-behalf, W1c) and the customer accept (agreementRequestAcceptService), so
+// there is exactly one request-side writer. It is two steps because
+// record-signed must run the gate BEFORE it inserts the request row it then
+// freezes against: prepareRequestFreeze is pure (no DB) and throws 422 on
+// unresolved variables; signAndFreezeRequest only accepts its branded result,
+// so a freeze can never be reached without the gate having run.
+// ---------------------------------------------------------------------------
+
+/** Request columns that feed the render context and the hash. effectiveDate
+ *  is RESOLVED (sender-set, else the signing day) so the row alone reproduces
+ *  the hash input (W1c decision 3). */
+export type RequestFreezeSnapshot = Pick<
+  AgreementRequestRow,
+  'clientNameSnapshot' | 'clientAddressSnapshot' | 'sellerSnapshot' | 'renderLocale' | 'documentLocale'
+> & { effectiveDate: string };
+
+declare const preparedRequestFreezeBrand: unique symbol;
+
+export interface PreparedRequestFreeze {
+  readonly [preparedRequestFreezeBrand]: true;
+  readonly renderData: TemplateVersionRenderData;
+  readonly ctx: ReturnType<typeof renderContextFromRequest>;
+  readonly manualValues: Record<string, string>;
+  readonly external: ExternalCopy | null;
+  readonly contentSha256: string;
+}
+
+/** Manual values filtered to the template's DECLARED manual variables: a
+ *  manual value can never override an auto variable (client.name …) or smuggle
+ *  an undeclared key into the legal record (W1c decision 1). */
+export function filterDeclaredManualValues(
+  renderData: Pick<TemplateVersionRenderData, 'declaredVariables'>,
+  variableValues: Record<string, string>,
+): Record<string, string> {
+  const manualNames = new Set(renderData.declaredVariables.filter((v) => v.kind === 'manual').map((v) => v.name));
+  return Object.fromEntries(Object.entries(variableValues).filter(([name]) => manualNames.has(name)));
+}
+
+/** Build ctx → filter manual values → variable gate → content hash. Pure.
+ *  Throws 422 AGREEMENT_VARIABLES_UNRESOLVED (message marker parsed by the web
+ *  dialogs: "Agreement variables unresolved: ") for a rendered agreement with
+ *  any declared variable unresolved — never the quote path's blank-and-capture
+ *  fallback. An external copy skips the gate: its bytes are the record and are
+ *  bound into the hash (W1c decision 2). */
+export function prepareRequestFreeze(args: {
+  snapshot: RequestFreezeSnapshot;
+  renderData: TemplateVersionRenderData;
+  variableValues: Record<string, string>;
+  external: ExternalCopy | null;
+}): PreparedRequestFreeze {
+  const { snapshot, renderData, external } = args;
+  // Request render context: no `quote` member, so the quote-only keys
+  // (totals.*, quote.*, dates.expiry) are ABSENT from the auto map.
+  const ctx = renderContextFromRequest(snapshot, { effectiveDate: snapshot.effectiveDate, currencyCode: 'USD' });
+  const auto = resolveAutoVariables(ctx);
+  const manualValues = filterDeclaredManualValues(renderData, args.variableValues);
+
+  if (!external) {
+    const unresolved = findUnresolvedVariables(renderData, manualValues, auto);
+    if (unresolved.length > 0) {
+      throw new AgreementRequestServiceError(
+        `Agreement variables unresolved: ${[...unresolved].sort().join(', ')}`,
+        422,
+        'AGREEMENT_VARIABLES_UNRESOLVED',
+      );
+    }
+  }
+
+  // Content hash (version 1): the rendered branch binds the resolved variable
+  // map; the external branch binds the uploaded bytes.
+  const contentSha256 = external
+    ? computeAgreementSha256({
+        kind: 'external',
+        versionSha: renderData.versionSha256,
+        bytesSha256: createHash('sha256').update(external.data).digest('hex'),
+        mime: external.mime,
+      })
+    : computeAgreementSha256({
+        kind: 'rendered',
+        versionSha: renderData.versionSha256,
+        vars: { ...auto, ...manualValues },
+        renderLocale: ctx.renderLocale,
+        effectiveDate: snapshot.effectiveDate,
+      });
+
+  return { renderData, ctx, manualValues, external, contentSha256 } as PreparedRequestFreeze;
+}
+
+/** Signer evidence the caller supplies; the hash fields come from `prepared`. */
+export type RequestSignerEvidence = Omit<SignedAgreementEvidence, 'contentSha256' | 'contentHashVersion' | 'acceptanceRenderLocale'>;
+
+/** Freeze a prepared request signature through the single signed-agreement
+ *  writer, fail-closed. Runs INSIDE the caller's transaction (system scope),
+ *  so a throw rolls the request transition back with it. */
+export async function signAndFreezeRequest(
+  prepared: PreparedRequestFreeze,
+  args: { requestId: string; orgId: string; contractId: string | null; label: string | null; evidence: RequestSignerEvidence },
+): Promise<{ signedAgreementId: string; contentSha256: string }> {
+  const { renderData, ctx, manualValues, external, contentSha256 } = prepared;
+  const { id: signedAgreementId } = await freezeSignedAgreement({
+    source: { kind: 'request', agreementRequestId: args.requestId, label: args.label },
+    orgId: args.orgId,
+    contractId: args.contractId,
+    templateId: renderData.templateId,
+    templateVersionId: renderData.templateVersionId,
+    render: {
+      sourceType: renderData.sourceType,
+      bodyHtml: renderData.bodyHtml,
+      fileData: renderData.fileData,
+      templateName: renderData.templateName,
+      versionSha256: renderData.versionSha256,
+    },
+    ctx,
+    manualValues,
+    evidence: {
+      ...args.evidence,
+      contentSha256,
+      contentHashVersion: 1,
+      acceptanceRenderLocale: ctx.renderLocale,
+    },
+    externalBytes: external ?? undefined,
+    allowUnresolvedFallback: false,
+  });
+  return { signedAgreementId, contentSha256 };
+}
 
 /** Same ladder as attachAcceptanceEvidence: empty → 400, oversize → 413,
  *  not a PDF/PNG/JPEG by magic bytes → 415. The client-declared type and the
@@ -232,31 +370,14 @@ export async function recordSignedAgreement(params: RecordSignedAgreementParams)
     effectiveDate: input.effectiveDate ?? input.signedAt.toISOString().slice(0, 10),
   };
 
-  // (7) Request render context: no `quote` member, so the quote-only keys
-  // (totals.*, quote.*, dates.expiry) are ABSENT from the auto map.
-  const ctx = renderContextFromRequest(snapshot, { effectiveDate: snapshot.effectiveDate, currencyCode: 'USD' });
-  const auto = resolveAutoVariables(ctx);
-
-  // Only DECLARED manual variables are taken from the input: a manual value can
-  // never override an auto variable (client.name …) or smuggle an undeclared
-  // key into the legal record.
-  const manualNames = new Set(renderData.declaredVariables.filter((v) => v.kind === 'manual').map((v) => v.name));
-  const manualValues = Object.fromEntries(
-    Object.entries(input.variableValues).filter(([name]) => manualNames.has(name)),
-  );
-
-  // (8) Fail closed on unresolved variables for a rendered agreement. Same
-  // message marker the web dialog parses ("Agreement variables unresolved: ").
-  if (!external) {
-    const unresolved = findUnresolvedVariables(renderData, manualValues, auto);
-    if (unresolved.length > 0) {
-      throw new AgreementRequestServiceError(
-        `Agreement variables unresolved: ${[...unresolved].sort().join(', ')}`,
-        422,
-        'AGREEMENT_VARIABLES_UNRESOLVED',
-      );
-    }
-  }
+  // (7)+(8) ctx → declared manual values → fail-closed variable gate (a
+  // rendered agreement only) → content hash. Throws before ANY insert.
+  const prepared = prepareRequestFreeze({
+    snapshot,
+    renderData,
+    variableValues: input.variableValues,
+    external,
+  });
 
   const label = input.label?.trim() || null;
   // (9) The request, created directly as signed. A signed request has no live
@@ -270,7 +391,7 @@ export async function recordSignedAgreement(params: RecordSignedAgreementParams)
       templateVersionId: input.templateVersionId,
       contractId,
       label,
-      variableValues: manualValues,
+      variableValues: prepared.manualValues,
       ...snapshot,
       signedAt: input.signedAt,
       expiresAt: input.signedAt,
@@ -281,39 +402,12 @@ export async function recordSignedAgreement(params: RecordSignedAgreementParams)
     throw new AgreementRequestServiceError('Failed to create the agreement request', 500, 'INVALID_STATE');
   }
 
-  // (10) Content hash (version 1): the rendered branch binds the resolved
-  // variable map; the external branch binds the uploaded bytes.
-  const contentSha256 = external
-    ? computeAgreementSha256({
-        kind: 'external',
-        versionSha: renderData.versionSha256,
-        bytesSha256: createHash('sha256').update(external.data).digest('hex'),
-        mime: external.mime,
-      })
-    : computeAgreementSha256({
-        kind: 'rendered',
-        versionSha: renderData.versionSha256,
-        vars: { ...auto, ...manualValues },
-        renderLocale: snapshot.renderLocale,
-        effectiveDate: snapshot.effectiveDate,
-      });
-
-  // (11) Freeze through the single signed-agreement writer, fail-closed.
-  const { id: signedAgreementId } = await freezeSignedAgreement({
-    source: { kind: 'request', agreementRequestId: request.id, label },
+  // (10)+(11) Freeze through the single request-side writer, fail-closed.
+  const { signedAgreementId, contentSha256 } = await signAndFreezeRequest(prepared, {
+    requestId: request.id,
     orgId: input.orgId,
     contractId,
-    templateId: renderData.templateId,
-    templateVersionId: input.templateVersionId,
-    render: {
-      sourceType: renderData.sourceType,
-      bodyHtml: renderData.bodyHtml,
-      fileData: renderData.fileData,
-      templateName: renderData.templateName,
-      versionSha256: renderData.versionSha256,
-    },
-    ctx,
-    manualValues,
+    label,
     evidence: {
       signerName,
       signerEmail,
@@ -324,12 +418,7 @@ export async function recordSignedAgreement(params: RecordSignedAgreementParams)
       acceptanceMethod: input.method,
       acceptanceReference: input.reference,
       recordedByUserId: params.actorUserId,
-      contentSha256,
-      contentHashVersion: 1,
-      acceptanceRenderLocale: snapshot.renderLocale,
     },
-    externalBytes: external ?? undefined,
-    allowUnresolvedFallback: false,
   });
 
   // (12)
