@@ -76,9 +76,20 @@ const EFFECT_IDEMPOTENCY: Readonly<Record<string, AiOperatorEffectIdempotencyCla
   google_set_vacation: 'idempotent_by_probe',
   google_set_forwarding: 'idempotent_by_probe',
   google_add_mail_delegate: 'idempotent_by_probe',
+  // identity_onboarding provisioning (R2a), mirroring the M365 counterparts.
+  google_assign_license: 'idempotent_by_probe',
+  google_add_to_group: 'idempotent',
+  google_move_ou: 'idempotent',
   ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS)
     .map(([tool, actionId]) => [tool, M365_WRITE_ACTION_IDEMPOTENCY[actionId]])),
 });
+
+/**
+ * Effects that create a principal. Only for these can a `satisfied` pre-probe
+ * mean someone else already holds the name (a collision), so only their
+ * hand-off says so; every other tool keeps the shipped wording.
+ */
+const CREATE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['m365_create_user']);
 
 export function classifyEffectIdempotency(toolName: string): AiOperatorEffectIdempotencyClass {
   return EFFECT_IDEMPOTENCY[toolName] ?? 'non_idempotent';
@@ -144,10 +155,13 @@ export async function dispatchPlannedEffect(args: {
     return {
       kind: 'handoff',
       detail: `pre-probe for ${effect.toolName} was ${pre.state}: ${pre.detail}`,
-      handoffSummary:
-        `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its current state `
-        + `could not be confirmed as not-yet-done (${pre.state}). Nothing was sent for this step. `
-        + 'Check the provider and complete it by hand if it is still needed.',
+      handoffSummary: pre.state === 'satisfied' && CREATE_EFFECT_TOOLS.has(effect.toolName)
+        ? `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its end state `
+          + 'already exists: either an earlier attempt of this task did it, or something else already holds '
+          + 'that principal (a collision). Nothing was sent for this step. Confirm which it is before creating or changing anything by hand.'
+        : `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its current state `
+          + `could not be confirmed as not-yet-done (${pre.state}). Nothing was sent for this step. `
+          + 'Check the provider and complete it by hand if it is still needed.',
     };
   }
   if (pre.state === 'satisfied') {
