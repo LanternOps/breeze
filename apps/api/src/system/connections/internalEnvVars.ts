@@ -57,6 +57,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
   AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
+  AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
