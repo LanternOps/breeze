@@ -203,6 +203,7 @@
       "scanQueued": "Erkennungsscan für „{{name}}“ in der Warteschlange",
       "profileCreated": "Erkennungsprofil „{{name}}“ erstellt",
       "profileUpdated": "Erkennungsprofil „{{name}}“ aktualisiert",
+      "profileDeleted": "Erkennungsprofil „{{name}}“ gelöscht",
       "profileMoved": "Profil nach {{site}} verschoben.",
       "assetsMoved_one": "{{count}} Netzwerkgerät verschoben",
       "assetsMoved_other": "{{count}} Netzwerkgeräte verschoben",

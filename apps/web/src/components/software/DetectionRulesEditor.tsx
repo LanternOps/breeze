@@ -3,7 +3,10 @@ import type {
   FileVersionOperator,
   RegistryHive,
 } from "@breeze/shared";
-import { FILE_VERSION_OPERATORS } from "@breeze/shared";
+import {
+  FILE_VERSION_OPERATORS,
+  serviceRunningDetectionRuleSchema,
+} from "@breeze/shared";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 interface DetectionRulesEditorProps {
@@ -11,14 +14,22 @@ interface DetectionRulesEditorProps {
   onChange: (rules: DetectionRule[]) => void;
 }
 const REGISTRY_HIVES: RegistryHive[] = ["HKLM", "HKCU", "HKCR", "HKU", "HKCC"];
-// service_running is not authorable in the UI yet (#6958 PR D adds it).
-type EditableRuleType = Exclude<DetectionRule["type"], "service_running">;
+type EditableRuleType = DetectionRule["type"];
 const RULE_TYPE_LABELS: Record<EditableRuleType, string> = {
   registry: "Registry key/value",
   file_exists: "File or folder exists",
   msi_product_code: "MSI product code",
   file_version: "File version (Windows)",
+  service_running: "Service running",
 };
+function isEditableRuleType(type: string): type is EditableRuleType {
+  return Object.prototype.hasOwnProperty.call(RULE_TYPE_LABELS, type);
+}
+// Mirrors the shared schema (and the agent's validServiceName): no control
+// characters, no leading "-", not blank, at most 256 UTF-8 bytes.
+function isValidServiceName(name: string): boolean {
+  return serviceRunningDetectionRuleSchema.shape.serviceName.safeParse(name).success;
+}
 // A fresh clause for a given type, with sensible defaults.
 function blankRule(type: EditableRuleType): DetectionRule {
   switch (type) {
@@ -30,6 +41,8 @@ function blankRule(type: EditableRuleType): DetectionRule {
       return { type: "msi_product_code", productCode: "" };
     case "file_version":
       return { type: "file_version", path: "", operator: ">=", version: "" };
+    case "service_running":
+      return { type: "service_running", serviceName: "" };
   }
 }
 const inputClass =
@@ -83,219 +96,298 @@ export default function DetectionRulesEditor({
         </p>
       ) : (
         <div className="mt-3 space-y-3">
-          {rules.map((rule, index) => (
-            <div
-              key={index}
-              className="rounded-md border bg-muted/30 p-3"
-              data-testid="detection-rule-row"
-            >
-              <div className="flex items-center gap-2">
-                <select
-                  value={rule.type}
-                  data-testid="detection-rule-type"
-                  onChange={(event) =>
-                    updateRule(
-                      index,
-                      blankRule(event.target.value as EditableRuleType),
-                    )
-                  }
-                  className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          {rules.map((rule, index) => {
+            // A rule type this build cannot author (e.g. one added to the
+            // shared schema later, created via the API) renders read-only and
+            // stays in `rules` untouched on save.
+            if (!isEditableRuleType(rule.type)) {
+              const unknownType = String((rule as { type: unknown }).type);
+              return (
+                <div
+                  key={index}
+                  className="rounded-md border bg-muted/30 p-3"
+                  data-testid="detection-rule-readonly"
                 >
-                  {(
-                    Object.keys(RULE_TYPE_LABELS) as EditableRuleType[]
-                  ).map((type) => (
-                    <option key={type} value={type}>
-                      {RULE_TYPE_LABELS[type]}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => removeRule(index)}
-                  data-testid="detection-rule-remove"
-                  className="ml-auto rounded-md border px-2 py-1 text-xs text-destructive hover:bg-muted"
-                  aria-label={i18n.t(
-                    "policies:software.detectionRulesEditor.removeDetectionRule",
-                  )}
-                >
-                  {i18n.t("common:actions.remove")}
-                </button>
-              </div>
-
-              {rule.type === "registry" && (
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <select
-                    value={rule.hive ?? "HKLM"}
-                    aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.registryHive",
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm">{unknownType}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeRule(index)}
+                      data-testid="detection-rule-remove"
+                      className="ml-auto rounded-md border px-2 py-1 text-xs text-destructive hover:bg-muted"
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.removeDetectionRule",
+                      )}
+                    >
+                      {i18n.t("common:actions.remove")}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.detectionRulesEditor.readOnlyHint",
                     )}
+                  </p>
+                </div>
+              );
+            }
+            return (
+            <div
+                key={index}
+                className="rounded-md border bg-muted/30 p-3"
+                data-testid="detection-rule-row"
+              >
+                <div className="flex items-center gap-2">
+                  <select
+                    value={rule.type}
+                    data-testid="detection-rule-type"
                     onChange={(event) =>
-                      updateRule(index, {
-                        ...rule,
-                        hive: event.target.value as RegistryHive,
-                      })
+                      updateRule(
+                        index,
+                        blankRule(event.target.value as EditableRuleType),
+                      )
                     }
                     className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    {REGISTRY_HIVES.map((hive) => (
-                      <option key={hive} value={hive}>
-                        {hive}
+                    {(
+                      Object.keys(RULE_TYPE_LABELS) as EditableRuleType[]
+                    ).map((type) => (
+                      <option key={type} value={type}>
+                        {RULE_TYPE_LABELS[type]}
                       </option>
                     ))}
                   </select>
-                  <input
-                    type="text"
-                    value={rule.path}
-                    placeholder={i18n.t(
-                      "policies:software.detectionRulesEditor.sOFTWAREVendorApp",
-                    )}
+                  <button
+                    type="button"
+                    onClick={() => removeRule(index)}
+                    data-testid="detection-rule-remove"
+                    className="ml-auto rounded-md border px-2 py-1 text-xs text-destructive hover:bg-muted"
                     aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.registryKeyPath",
+                      "policies:software.detectionRulesEditor.removeDetectionRule",
                     )}
-                    onChange={(event) =>
-                      updateRule(index, { ...rule, path: event.target.value })
-                    }
-                    className={inputClass}
-                  />
-                  <input
-                    type="text"
-                    value={rule.valueName ?? ""}
-                    placeholder={i18n.t(
-                      "policies:software.detectionRulesEditor.valueNameOptional",
-                    )}
-                    aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.registryValueName",
-                    )}
-                    onChange={(event) =>
-                      updateRule(index, {
-                        ...rule,
-                        valueName: event.target.value || undefined,
-                      })
-                    }
-                    className={inputClass}
-                  />
-                  <input
-                    type="text"
-                    value={rule.valueData ?? ""}
-                    placeholder={i18n.t(
-                      "policies:software.detectionRulesEditor.expectedValueDataOptional",
-                    )}
-                    aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.registryExpectedValueData",
-                    )}
-                    onChange={(event) =>
-                      updateRule(index, {
-                        ...rule,
-                        valueData: event.target.value || undefined,
-                      })
-                    }
-                    className={inputClass}
-                  />
+                  >
+                    {i18n.t("common:actions.remove")}
+                  </button>
                 </div>
-              )}
-
-              {rule.type === "file_exists" && (
-                <div className="mt-2">
-                  <input
-                    type="text"
-                    value={rule.path}
-                    placeholder={i18n.t(
-                      "policies:software.detectionRulesEditor.cProgramFilesVendorAppAppExe",
-                    )}
-                    aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.fileOrFolderPath",
-                    )}
-                    onChange={(event) =>
-                      updateRule(index, { ...rule, path: event.target.value })
-                    }
-                    className={inputClass}
-                  />
-                </div>
-              )}
-
-              {rule.type === "msi_product_code" && (
-                <div className="mt-2">
-                  <input
-                    type="text"
-                    value={rule.productCode}
-                    placeholder={i18n.t(
-                      "policies:software.detectionRulesEditor.text3F2504E04F8941D39A0C0305E82C3301",
-                    )}
-                    aria-label={i18n.t(
-                      "policies:software.detectionRulesEditor.mSIProductCode",
-                    )}
-                    onChange={(event) =>
-                      updateRule(index, {
-                        ...rule,
-                        productCode: event.target.value,
-                      })
-                    }
-                    className={inputClass}
-                  />
-                </div>
-              )}
-
-              {rule.type === "file_version" && (
-                <>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_1fr]">
+  
+                {rule.type === "registry" && (
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <select
+                      value={rule.hive ?? "HKLM"}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.registryHive",
+                      )}
+                      onChange={(event) =>
+                        updateRule(index, {
+                          ...rule,
+                          hive: event.target.value as RegistryHive,
+                        })
+                      }
+                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    >
+                      {REGISTRY_HIVES.map((hive) => (
+                        <option key={hive} value={hive}>
+                          {hive}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       type="text"
                       value={rule.path}
                       placeholder={i18n.t(
-                        "policies:software.detectionRulesEditor.cProgramFilesVendorAppAppExe2",
+                        "policies:software.detectionRulesEditor.sOFTWAREVendorApp",
                       )}
                       aria-label={i18n.t(
-                        "policies:software.detectionRulesEditor.filePath",
+                        "policies:software.detectionRulesEditor.registryKeyPath",
                       )}
                       onChange={(event) =>
                         updateRule(index, { ...rule, path: event.target.value })
                       }
                       className={inputClass}
                     />
-                    <select
-                      value={rule.operator}
-                      aria-label={i18n.t(
-                        "policies:software.detectionRulesEditor.versionComparisonOperator",
-                      )}
-                      onChange={(event) =>
-                        updateRule(index, {
-                          ...rule,
-                          operator: event.target.value as FileVersionOperator,
-                        })
-                      }
-                      className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    >
-                      {FILE_VERSION_OPERATORS.map((op) => (
-                        <option key={op} value={op}>
-                          {op}
-                        </option>
-                      ))}
-                    </select>
                     <input
                       type="text"
-                      value={rule.version}
-                      placeholder="1.2.3.4"
+                      value={rule.valueName ?? ""}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.valueNameOptional",
+                      )}
                       aria-label={i18n.t(
-                        "policies:software.detectionRulesEditor.targetFileVersion",
+                        "policies:software.detectionRulesEditor.registryValueName",
                       )}
                       onChange={(event) =>
                         updateRule(index, {
                           ...rule,
-                          version: event.target.value,
+                          valueName: event.target.value || undefined,
+                        })
+                      }
+                      className={inputClass}
+                    />
+                    <input
+                      type="text"
+                      value={rule.valueData ?? ""}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.expectedValueDataOptional",
+                      )}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.registryExpectedValueData",
+                      )}
+                      onChange={(event) =>
+                        updateRule(index, {
+                          ...rule,
+                          valueData: event.target.value || undefined,
                         })
                       }
                       className={inputClass}
                     />
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {i18n.t(
-                      "policies:software.detectionRulesEditor.readsTheFileSVersionResourceWindows",
+                )}
+  
+                {rule.type === "file_exists" && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={rule.path}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.cProgramFilesVendorAppAppExe",
+                      )}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.fileOrFolderPath",
+                      )}
+                      onChange={(event) =>
+                        updateRule(index, { ...rule, path: event.target.value })
+                      }
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+  
+                {rule.type === "msi_product_code" && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={rule.productCode}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.text3F2504E04F8941D39A0C0305E82C3301",
+                      )}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.mSIProductCode",
+                      )}
+                      onChange={(event) =>
+                        updateRule(index, {
+                          ...rule,
+                          productCode: event.target.value,
+                        })
+                      }
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+  
+                {rule.type === "service_running" && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      value={rule.serviceName}
+                      maxLength={256}
+                      placeholder={i18n.t(
+                        "policies:software.detectionRulesEditor.serviceNamePlaceholder",
+                      )}
+                      aria-label={i18n.t(
+                        "policies:software.detectionRulesEditor.serviceName",
+                      )}
+                      aria-invalid={
+                        rule.serviceName !== "" && !isValidServiceName(rule.serviceName)
+                      }
+                      data-testid="detection-rule-service-name"
+                      onChange={(event) =>
+                        updateRule(index, {
+                          ...rule,
+                          serviceName: event.target.value,
+                        })
+                      }
+                      className={inputClass}
+                    />
+                    {rule.serviceName !== "" && !isValidServiceName(rule.serviceName) ? (
+                      <p
+                        className="mt-1 text-xs text-destructive"
+                        role="alert"
+                        data-testid="detection-rule-service-invalid"
+                      >
+                        {i18n.t(
+                          "policies:software.detectionRulesEditor.serviceNameInvalid",
+                        )}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:software.detectionRulesEditor.serviceNameHint",
+                        )}
+                      </p>
                     )}
-                  </p>
-                </>
-              )}
-            </div>
-          ))}
+                  </div>
+                )}
+
+                {rule.type === "file_version" && (
+                  <>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_1fr]">
+                      <input
+                        type="text"
+                        value={rule.path}
+                        placeholder={i18n.t(
+                          "policies:software.detectionRulesEditor.cProgramFilesVendorAppAppExe2",
+                        )}
+                        aria-label={i18n.t(
+                          "policies:software.detectionRulesEditor.filePath",
+                        )}
+                        onChange={(event) =>
+                          updateRule(index, { ...rule, path: event.target.value })
+                        }
+                        className={inputClass}
+                      />
+                      <select
+                        value={rule.operator}
+                        aria-label={i18n.t(
+                          "policies:software.detectionRulesEditor.versionComparisonOperator",
+                        )}
+                        onChange={(event) =>
+                          updateRule(index, {
+                            ...rule,
+                            operator: event.target.value as FileVersionOperator,
+                          })
+                        }
+                        className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      >
+                        {FILE_VERSION_OPERATORS.map((op) => (
+                          <option key={op} value={op}>
+                            {op}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={rule.version}
+                        placeholder="1.2.3.4"
+                        aria-label={i18n.t(
+                          "policies:software.detectionRulesEditor.targetFileVersion",
+                        )}
+                        onChange={(event) =>
+                          updateRule(index, {
+                            ...rule,
+                            version: event.target.value,
+                          })
+                        }
+                        className={inputClass}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:software.detectionRulesEditor.readsTheFileSVersionResourceWindows",
+                      )}
+                    </p>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

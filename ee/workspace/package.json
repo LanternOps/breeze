@@ -28,11 +28,11 @@
     "@types/mailparser": "^3.9.0",
     "@types/node": "^26.6.5",
     "dotenv": "17.4.2",
-    "happy-dom": "^20.11.0",
+    "happy-dom": "^21.0.4",
     "postgres": "3.4.9",
     "tsup": "8.5.1",
     "tsx": "^4.23.15",
     "typescript": "5.9.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }

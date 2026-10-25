@@ -64,6 +64,7 @@ import { registerSentinelOneTools } from './aiToolsSentinelOne';
 import { registerHuntressTools } from './aiToolsHuntress';
 import { registerEdrTools } from './aiToolsEdr';
 import { registerSecurityTools } from './aiToolsSecurity';
+import { registerIocHuntTools } from './aiToolsIocHunt';
 import { registerDnsTools } from './aiToolsDns';
 import { registerPeripheralTools } from './aiToolsPeripherals';
 import { registerBrowserTools } from './aiToolsBrowser';
@@ -105,6 +106,11 @@ import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
 import { registerFlowTools } from './aiToolsFlows';
+import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
+import { registerTicketRoutingTools } from './aiToolsTicketRouting';
+import { registerWispMemoryTools } from './wisp/memoryTools';
+import { registerWispConcernTools } from './wisp/concernTools';
+import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -346,6 +352,7 @@ registerSentinelOneTools(aiTools);
 registerHuntressTools(aiTools);
 registerEdrTools(aiTools);
 registerSecurityTools(aiTools);
+registerIocHuntTools(aiTools);
 registerDnsTools(aiTools);
 registerPeripheralTools(aiTools);
 registerBrowserTools(aiTools);
@@ -390,6 +397,15 @@ registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
+registerBusinessCalendarTools(aiTools);
+registerTicketRoutingTools(aiTools);
+// Wisp W03 memory tools: inert until W04/W05 attach auth.wispGrant.
+registerWispMemoryTools(aiTools);
+// Wisp W05a concern/watch tools: same posture — inert without auth.wispGrant.
+registerWispConcernTools(aiTools);
+// Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
+// the human-only approval carrier wisp_specialist_request.
+registerWispTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
@@ -679,7 +695,13 @@ export async function executeTool(
   // existing identity — `aiTools.executeToolGate.test.ts` asserts a
   // caller-supplied context is passed through with `toBe` (reference)
   // equality, and a context rebuilt for every call would break that.
-  const captureAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  //
+  // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
+  // thread's attachments — the key is added ONLY when the capture scope
+  // carries one, so every other anchor keeps its exact shape.
+  const writeAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const wispThreadId = opts?.capture?.wispThreadId;
+  const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
 
   // Topology M4-D1 (#6000): every topology tool runs only against the site a

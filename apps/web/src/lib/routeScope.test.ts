@@ -82,6 +82,11 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/monitoring')).toBe('org-required');
     expect(getRouteScope('/settings/organizations')).toBe('partner-settings');
     expect(getRouteScope('/settings/organizations/abc-123')).toBe('org-required');
+    // #9794: the Sites list and a site's detail work fleet-wide or in one org,
+    // not as MSP-level settings (which would hide the fleet scope line).
+    expect(getRouteScope('/settings/sites')).toBe('org-or-all');
+    expect(getRouteScope('/settings/sites/abc')).toBe('org-or-all');
+    expect(getRouteScope('/settings/sites/abc/extra')).toBe('partner-settings');
     expect(getRouteScope('/settings/users')).toBe('partner-settings');
     expect(getRouteScope('/integrations')).toBe('partner-settings');
     expect(getRouteScope('/remote/terminal/dev-1')).toBe('device');
@@ -112,6 +117,13 @@ describe('getRouteScope', () => {
   it('classifies /flows (Tool Catalog W3) as org-or-all', () => {
     expect(getRouteScope('/flows')).toBe('org-or-all');
     expect(getRouteScope('/flows/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
+  });
+
+  it('classifies the Wisp thread page (W06 #9918) as partner-settings — its subject is the grant, not the switcher', () => {
+    expect(getRouteScope('/ai/wisp/thread/9f1c0f4e-0000-4000-8000-000000000000')).toBe('partner-settings');
+    expect(getRouteScope('/ai/wisp/thread')).toBeNull();
+    // Not catalog: the page opts out of ambient orgId per request instead.
+    expect(isGlobalScopeRoute('/ai/wisp/thread/abc')).toBe(false);
   });
 
   it('returns null for routes outside the registry', () => {

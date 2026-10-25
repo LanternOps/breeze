@@ -302,6 +302,9 @@
     "workspace": "Arbeitsbereich",
     "workspaceID": "Arbeitsbereich-ID: {{id}}",
     "connectWorkspace": "Arbeitsbereich verbinden",
+    "notConnected": "Nicht verbunden",
+    "pendingConnection": "Verbindung ausstehend",
+    "turnOnSlackToConnectWorkspace": "Aktivieren Sie Slack-Benachrichtigungen, um einen Arbeitsbereich zu verbinden.",
     "oauthRedirectStartsWhenYouConnectASlack": "Die OAuth-Umleitung startet, wenn Sie eine Verbindung zu einem Slack-Workspace herstellen.",
     "defaultChannel": "Standardkanal",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "Verbindungsstatus",
     "allHealthy": "Alle Verbindungen sind in Ordnung",
+    "allHealthyDetail": "Verbundene Integrationen werden automatisch geprüft. Probleme erscheinen hier und neben der Integration in der Liste.",
     "loadError": "Der Verbindungsstatus konnte nicht geladen werden.",
     "retry": "Erneut versuchen",
     "since": "seit {{time}}",
     "fix": "Beheben",
-    "remedy": { "reconnect": "Verbinden Sie sich erneut über die Client-App (z. B. den MCP-Server neu hinzufügen). In Breeze ist nichts zu tun." },
+    "remedy": {
+      "reconnect": "Verbinden Sie sich erneut über die Client-App (z. B. den MCP-Server neu hinzufügen). In Breeze ist nichts zu tun."
+    },
     "truncated": "Die ersten {{count}} werden angezeigt",
     "recentlyResolved": "Kürzlich behoben ({{count}})",
     "resolution": {
@@ -548,6 +554,14 @@
     "pageOf": "Seite {{current}} von {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "Partnerweit",
+      "partnerWideDetail": "Gilt für alle Organisationen, die Sie verwalten."
+    },
+    "nav": {
+      "select": "Integration auswählen",
+      "openProblems": "Offene Probleme: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Integrationen werden konfiguriert für",
       "thisOrganization": "diese Organisation",
@@ -566,16 +580,16 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Preis",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
     "payments": "Zahlungen",
     "integrations": "Integrationen",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Verwalten Sie alle Verbindungen und sorgen Sie für reibungslose Automatisierungsworkflows.",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Verbinden Sie Breeze mit den Tools, mit denen Ihr MSP arbeitet, und sehen Sie, welche Verbindungen Aufmerksamkeit brauchen.",
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor-Integrationen (Pax8 und TD SYNNEX) sind nur für Partnerkonten verfügbar.",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Buchhaltungsintegrationen sind nur für Partnerkonten verfügbar.",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "Die UniFi-Netzwerkintegration ist nur für Partnerkonten verfügbar.",
     "psa": "PSA",
     "viewNameDocumentation": "{{name}} Dokumentation ansehen",
-    "tdSYNNEXPriceFile": "TD SYNNEX Preisdatei",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "backup": "Backup",
     "edrProviders": "EDR-Anbieter"
   },
@@ -728,7 +742,10 @@
     "allApplications": "Alle Anwendungen",
     "searchAllApplicationsFirst2": " (nicht „Eigene Anwendungen“) nach einer vorhandenen Breeze-App in diesem Mandanten. ",
     "tenantIdGuidPlaceholder": "Mandanten-ID (GUID), z. B. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Zum Speichern ist eine MFA-Bestätigung erforderlich.",
+    "clientSecretPlaceholder": "Client-Geheimnis der App",
+    "clientSecretStoredPlaceholder": "•••••••••• (gespeichert, verschlüsselt)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Gerätezustand",

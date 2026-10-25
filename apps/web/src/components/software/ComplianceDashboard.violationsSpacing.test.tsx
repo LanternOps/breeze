@@ -45,4 +45,33 @@ describe('ComplianceDashboard — Recent Violations spacing (#9638)', () => {
     expect(screen.getByText('Remediation: none')).toBeInTheDocument();
     expect(screen.getByText(/^Checked: \S/)).toBeInTheDocument();
   });
+
+  it.each([
+    [1, '1 violation'],
+    [2, '2 violations'],
+  ])('renders a counted plural for %i violation(s)', async (count, label) => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/software-policies/compliance/overview'))
+        return Promise.resolve(json({ total: 1, compliant: 0, violations: 1, unknown: 0 }));
+      if (url.startsWith('/software-policies/violations'))
+        return Promise.resolve(
+          json({
+            data: [
+              {
+                device: { id: 'd1', hostname: 'host-1' },
+                compliance: {
+                  policyId: 'p1',
+                  violations: Array.from({ length: count }, () => ({ type: 'prohibited' })),
+                  lastChecked: '2026-10-22T10:00:00Z',
+                },
+              },
+            ],
+          }),
+        );
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<ComplianceDashboard />);
+    await waitFor(() => expect(screen.getByText('host-1')).toBeInTheDocument());
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
 });

@@ -33,6 +33,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // pooled connection idle-in-transaction (#1105). The handler reads the set
   // in a short caller-scoped context and audits afterwards.
   { method: 'POST', pattern: /^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test\/?$/i },
+  // IOC sweep create and cancel (#6263 W05-6): the per-user create limiter
+  // is a Redis round-trip that must precede any DB context (#1105); the
+  // service then takes its own caller-scoped transaction (per-org advisory
+  // locks, FOR UPDATE on the sweep) and audits + enqueues the pump only
+  // after it commits. Preview and the reads keep the request's context.
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/[0-9a-f-]{36}\/cancel\/?$/i },
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/groups\/[0-9a-f-]{36}\/cancel\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
@@ -124,6 +132,16 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #5861 PR 2: the per-asset list opens the same org-scoped context as the
   // overview, so it must opt out of the portal request transaction too.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
+  // #8973 W4 Gate B1: portal ticket create. portalTicketsEnabledMiddleware
+  // opens one org-scoped context with currentPartnerId (the validated owning
+  // partner) BEFORE its enable_tickets read, so createTicket's business-calendar
+  // resolver can read a partner-wide default through the SELECT-only branch.
+  // Every other portal ticket route keeps the generic request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/tickets\/?$/ },
+  // #8973 W4 D12 apply-revision: walks open tickets in 500-row chunks, each
+  // in its own short caller-scoped transaction (FOR UPDATE SKIP LOCKED), so
+  // no request transaction holds every touched ticket's row lock to the end.
+  { method: 'POST', pattern: /^\/api\/v1\/business-calendars\/[0-9a-f-]{36}\/apply-revision\/?$/i },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
@@ -217,6 +235,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // #9796 bulk site move — same connection-hold reason as bulk restore. `runBulkIsolated` moves
+  // each device (row lock + guarded UPDATE + denormalized rewrite) in its own short RLS
+  // transaction, up to BULK_SITE_MOVE_CAP. Under the ambient request transaction every row lock
+  // would be held until the last device finished, and a Postgres error late in the batch would
+  // roll back every move already reported `moved`. The handler's whole-batch pre-read opens its
+  // own caller-scoped context too.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/site\/?$/ },
   // Parked-device assignment. Each assignment runs in its own short system
   // transaction (one per device for a bulk batch of up to 50), and the list
   // opens its own system read. Under the ambient request transaction every one

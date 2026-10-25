@@ -327,7 +327,9 @@ export async function rearmIdempotentCommandForDelivery(input: {
   if (claimed.status !== 'claimed') {
     return { delivered: false, reason: 'delivery_failed' };
   }
-  const delivered = sendCommandToAgent(prepared.agentId, {
+  // #8318 §6.4: push to the agent_id read IN the claim. The one read above,
+  // before it, can belong to an install a reattach or re-enroll retired since.
+  const delivered = sendCommandToAgent(claimed.agentId, {
     id: input.commandId,
     type: input.type,
     payload: input.payload,
@@ -1600,15 +1602,19 @@ async function dispatchPreparedCommand(
         const delivered = refreshed.ok
           ? decryptCommandForDelivery({ id: command.id, type, deviceId, payload: refreshed.payload })
           : null;
+        // #8318 §6.4: every attempt goes to the agent_id read IN the claim,
+        // never to `device.agentId`, read before it: a reattach or re-enroll
+        // that committed in between hands the row to a different install.
+        const claimedAgentId = claimed.agentId;
         let sent = false;
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered));
+          sent = sendCommandToAgent(claimedAgentId, toAgentCommandFrame(delivered));
           if (sent) {
             if (attempt > 0) {
               console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
                 commandId: command.id,
                 deviceId,
-                agentId: device.agentId,
+                agentId: claimedAgentId,
                 type,
                 attempt: attempt + 1,
               });
@@ -1618,7 +1624,7 @@ async function dispatchPreparedCommand(
           console.warn('[commandQueue] sendCommandToAgent failed, will retry', {
             commandId: command.id,
             deviceId,
-            agentId: device.agentId,
+            agentId: claimedAgentId,
             type,
             attempt: attempt + 1,
             maxAttempts: SEND_RETRY_ATTEMPTS,
@@ -1632,7 +1638,7 @@ async function dispatchPreparedCommand(
           console.warn('[commandQueue] sendCommandToAgent exhausted retries', {
             commandId: command.id,
             deviceId,
-            agentId: device.agentId,
+            agentId: claimedAgentId,
             type,
             attempts: SEND_RETRY_ATTEMPTS,
           });

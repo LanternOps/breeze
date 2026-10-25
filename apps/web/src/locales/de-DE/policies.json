@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Gilt für alle Organisationen. Deaktivieren Sie „Alle Organisationen“, um eine Teilmenge auszuwählen.",
       "polite": "höflich",
       "loading": "Laden…",
-      "loadMoreOrganizations": "Weitere Organisationen laden"
+      "loadMoreOrganizations": "Weitere Organisationen laden",
+      "appliedToAllOrgs": "Richtlinie gilt jetzt für alle Organisationen",
+      "removedFromAllOrgs": "Richtlinie gilt nicht mehr für alle Organisationen"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Vollständiger Scan",
         "maxFileSizeMb": "Maximale Dateigröße (MB)",
         "scanTimeoutMinutes": "Scan-Zeitlimit (Minuten)",
-        "scanRunsServerSideDescription": "Breeze startet diesen Scan vom Server aus — das Gerät benötigt keinen lokalen Zeitplan."
+        "scanRunsServerSideDescription": "Breeze startet diesen Scan vom Server aus — das Gerät benötigt keinen lokalen Zeitplan.",
+        "ruleSets": {
+          "title": "Erkennungsregelsätze",
+          "description": "Regelsätze, die die IOC-Scans dieser Richtlinie verwenden.",
+          "manageLink": "Erkennungsregeln verwalten",
+          "loading": "Regelsätze werden geladen…",
+          "loadError": "Die Regelsätze konnten nicht geladen werden. Die Richtlinie behält ihre aktuellen Regelsätze; die übrigen Einstellungen können Sie trotzdem speichern.",
+          "none": "Für diese Richtlinie sind keine Regelsätze verfügbar.",
+          "legacyNote": "Keine Regelsätze: Scans verwenden nur die integrierten älteren Signaturen.",
+          "cap": "Eine Richtlinie kann höchstens {{max}} Regelsätze verwenden.",
+          "unavailable": "Nicht verfügbarer Regelsatz",
+          "blocking": "Diese Richtlinie kann die nicht verfügbaren Regelsätze nicht verwenden (gelöscht, verschoben oder Eigentum einer anderen Organisation). Entfernen Sie sie vor dem Speichern.",
+          "overrideDraft": "Die geerbten Einstellungen enthalten Regelsätze, die diese Richtlinie nicht verwenden kann. Entfernen Sie die nicht verfügbaren Regelsätze und speichern Sie dann.",
+          "errors": {
+            "tooMany": "Eine Richtlinie kann höchstens {{max}} Regelsätze verwenden.",
+            "invalidIds": "Die Liste der Regelsätze ist ungültig. Laden Sie die Seite neu und versuchen Sie es erneut.",
+            "notAttachable": "Diese Richtlinie kann einige der ausgewählten Regelsätze nicht verwenden. Sie sind unten hervorgehoben."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Anmeldeinformationen",
@@ -1235,7 +1255,7 @@
       "uploadFile": "Datei hochladen",
       "source2": "Quelle",
       "downloadUrl": "downloadURL",
-      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "Unterstützte Betriebssysteme",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "SilentInstallArgs",
@@ -1291,7 +1311,19 @@
       "thisOrganizationOnly": "Nur diese Organisation",
       "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar.",
       "selectedFileRemoved": "Die ausgewählte Datei wurde entfernt — partnerweite Pakete verwenden eine Download-URL.",
-      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden."
+      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden.",
+      "installScripts": "Installationsskripte",
+      "installScriptsHelp": "Für zip-Pakete erforderlich, sonst optional. Skripte laufen unter Windows als SYSTEM bzw. unter macOS und Linux als root, werden nach 10 Minuten abgebrochen, benötigen die Berechtigung devices.execute und genau ein Zielbetriebssystem.",
+      "availableTokens": "Verfügbare Platzhalter:",
+      "preInstallScript": "Skript vor der Installation",
+      "postInstallScript": "Skript nach der Installation",
+      "preInstallScriptPlaceholder": "Wird vor dem Installationsprogramm ausgeführt (PowerShell unter Windows, bash unter macOS und Linux)",
+      "postInstallScriptPlaceholder": "Wird nach dem Installationsprogramm bzw. nach dem Entpacken der zip-Datei ausgeführt",
+      "silentArgsNotUsedForType": "Argumente für die stille Installation werden bei pkg-, dmg-, deb- und zip-Installationsprogrammen nicht verwendet.",
+      "issueZipRequiresPostInstallScript": "zip-Pakete benötigen ein Skript nach der Installation: Der Agent entpackt das Archiv nur.",
+      "issueScriptsRequireSingleOs": "Installationsskripte benötigen genau ein Zielbetriebssystem.",
+      "issueScriptTooLarge": "Jedes Installationsskript darf höchstens 64 KiB groß sein.",
+      "issueArgsUnsupportedForFileType": "Argumente für die stille Installation werden für diesen Installationstyp nicht unterstützt."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",
@@ -1337,7 +1369,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Keine Softwarerichtlinien gefunden. Erstellen Sie zunächst eine Richtlinie.",
       "recentViolations": "Aktuelle Verstöße",
       "noCurrentSoftwareViolations": "Keine aktuellen Softwareverstöße.",
-      "violationS": "Verstoß(e)",
       "remediation": "Abhilfe: {{value}}",
       "checked": "Geprüft: {{date}}",
       "deactivatePolicy": "Richtlinie deaktivieren",
@@ -1375,7 +1406,18 @@
       "coverageVendor": "Hersteller",
       "coverageReason": "Grund",
       "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent",
-      "coverageRowsNote": "{{shown}} von {{total}} angezeigt"
+      "coverageRowsNote": "{{shown}} von {{total}} angezeigt",
+      "violationCount": "{{count}} Verstoß",
+      "violationCount_one": "{{count}} Verstoß",
+      "violationCount_other": "{{count}} Verstöße",
+      "violationTypes": {
+        "unauthorized": "Nicht autorisiert",
+        "missing": "Fehlend",
+        "outdated": "Veraltet",
+        "not_running": "Läuft nicht",
+        "service_unverified": "Dienst nicht verifiziert",
+        "serviceTitle": "Dienst: {{name}}"
+      }
     },
     "deploymentList": {
       "running": "Wird ausgeführt",
@@ -1591,7 +1633,13 @@
       "registry": "Registrierung",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Dienst läuft",
+      "readOnlyHint": "Über die API erstellt. Hier nicht bearbeitbar; beim Speichern bleibt sie unverändert.",
+      "serviceName": "Dienstname",
+      "serviceNamePlaceholder": "z. B. ctrld",
+      "serviceNameHint": "Windows-Dienstname, macOS-launchd-Label oder Linux-systemd-Unit. Wird vor und nach der Installation geprüft.",
+      "serviceNameInvalid": "Geben Sie einen Dienstnamen ohne Steuerzeichen und ohne führendes „-“ ein (höchstens 256 Byte)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Geräte konnten nicht abgerufen werden",
@@ -1708,7 +1756,10 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
       "summaryFailed7d": "Fehlgeschlagen (7 Tage)",
-      "categoryFilterLabel": "Kategorie"
+      "categoryFilterLabel": "Kategorie",
+      "requiredVariables": "Erforderliche Variablen",
+      "uninstallCommand": "Deinstallationsbefehl",
+      "managedByBreezeHint": "Wird von Breeze verwaltet. Dieses Paket kann hier weder bearbeitet noch gelöscht werden, und es können keine neuen Versionen hinzugefügt werden."
     },
     "softwareInventory": {
       "allowed": "Erlaubt",
@@ -1850,7 +1901,10 @@
       "uploadsRequireS3Storage": "Datei-Uploads erfordern einen auf dem Server konfigurierten S3-Objektspeicher.",
       "editingVersion": "Version bearbeiten",
       "failedToUpdateVersion": "Version konnte nicht aktualisiert werden",
-      "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu."
+      "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu.",
+      "inactiveStoredScripts": "Gespeicherte Installationsskripte sind nicht aktiv; erstellen Sie die Version neu, um sie zu aktivieren.",
+      "addZipFromAddPackage": "zip-Pakete fügen Sie über „Paket hinzufügen“ hinzu.",
+      "builtinVersionsReadOnly": "Wird von Breeze verwaltet. Versionen integrierter Pakete können hier nicht hinzugefügt oder geändert werden."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",
@@ -1884,6 +1938,30 @@
       "queuedNone": "Nichts wurde in die Warteschlange gestellt: Die Geräte aus der Vorschau benötigen keine Abhilfe mehr oder sie steht bereits aus.",
       "queuedPartial": "Abhilfe für {{queued}} von {{requested}} Gerät(en) aus der Vorschau in die Warteschlange gestellt; die übrigen benötigen sie nicht mehr oder sie steht bereits aus.",
       "previewFailedWithReason": "Die Vorschau konnte nicht geladen werden: {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Integrierte Pakete",
+      "description": "DNS-Filter-Clients, die von Breeze fixiert und geprüft werden. Fügen Sie einen zu Ihrem Katalog hinzu, legen Sie seine Variable für jede Organisation fest und stellen Sie ihn dann wie jedes andere Paket bereit.",
+      "colPackage": "Paket",
+      "colPlatform": "Plattform",
+      "colPinnedVersion": "Fixierte Version",
+      "colRequiredVariables": "Erforderliche Variablen",
+      "colUninstallCommand": "Deinstallationsbefehl",
+      "colStatus": "Status",
+      "addToCatalog": "Zum Katalog hinzufügen",
+      "adding": "Wird hinzugefügt…",
+      "inCatalog": "Im Katalog",
+      "archived": "Archiviert",
+      "restoreToCatalog": "Wiederherstellen",
+      "addedToCatalog": "{{name}} wurde zum Katalog hinzugefügt",
+      "couldNotAddToCatalog": "{{name}} konnte nicht zum Katalog hinzugefügt werden",
+      "couldNotLoadBuiltinPackages": "Integrierte Pakete konnten nicht geladen werden",
+      "loadingBuiltinPackages": "Integrierte Pakete werden geladen…",
+      "setVariablesPerOrganization": "Pro Organisation unter Einstellungen → Variablen festlegen",
+      "copyUninstallCommand": "Deinstallationsbefehl kopieren",
+      "uninstallCommandCopied": "Deinstallationsbefehl kopiert",
+      "breezeDoesNotUninstall": "Breeze deinstalliert diese Clients nicht. Führen Sie den Befehl auf dem Gerät aus, um einen zu entfernen.",
+      "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell."
     }
   }
 }

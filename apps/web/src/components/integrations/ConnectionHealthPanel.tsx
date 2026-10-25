@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { fetchWithAuth } from "../../stores/auth";
 import { formatTimeAgo } from "../../lib/formatTime";
 import { claimSamePageHashClick } from "../../lib/samePageHashClick";
+import { useConnectionHealth, type ConnectionHealth } from "./useConnectionHealth";
 
 export const KNOWN_CONDITIONS = [
   "sync_failed",
@@ -29,83 +29,44 @@ export const KNOWN_CONDITIONS = [
   "verification_failed",
 ] as const;
 
-type Incident = {
-  id: string;
-  sourceKind: string;
-  orgId: string | null;
-  condition: string;
-  severity: "permanent" | "transient";
-  detail: string | null;
-  displayName: string;
-  fixHref: string;
-  /** Set when the only remedy is outside Breeze (no repair page to link to). */
-  remedy?: { kind: "reconnect" } | null;
-  firstFailedAt: string;
-  openedAt: string | null;
-  lastObservedAt: string;
-  resolvedAt: string | null;
-  resolution: "recovered" | "retired" | null;
-};
-
-type IncidentList = { data: Incident[]; truncated: boolean };
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "hidden" }
-  | { kind: "error" }
-  | { kind: "ready"; open: IncidentList; recent: IncidentList };
-
 const isSafeHref = (href: unknown): href is string =>
   typeof href === "string" && href.startsWith("/") && !href.startsWith("//");
 
-/** null = not an incident list; never read as "nothing is broken". */
-const asList = (body: unknown): IncidentList | null => {
-  const b = (body ?? {}) as Partial<IncidentList>;
-  if (!Array.isArray(b.data)) return null;
-  return { data: b.data, truncated: b.truncated === true };
-};
+interface ConnectionHealthPanelProps {
+  /** Incidents the page already loaded; omitted, the panel loads its own. */
+  health?: ConnectionHealth;
+  /** Name for an incident's org; null hides the label (org not in the list). */
+  resolveOrgName?: (orgId: string) => string | null;
+}
 
-export default function ConnectionHealthPanel() {
+export default function ConnectionHealthPanel({
+  health,
+  resolveOrgName,
+}: ConnectionHealthPanelProps = {}) {
   const { t } = useTranslation("integrations");
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const own = useConnectionHealth(!health);
+  const { state, retry } = health ?? own;
   const [showRecent, setShowRecent] = useState(false);
 
-  const load = useCallback(async (): Promise<LoadState> => {
-    try {
-      const [openRes, recentRes] = await Promise.all([
-        fetchWithAuth("/connection-health/incidents?status=open"),
-        fetchWithAuth("/connection-health/incidents?status=recent"),
-      ]);
-      if (openRes?.status === 401 || openRes?.status === 403) {
-        return { kind: "hidden" };
-      }
-      if (!openRes?.ok) return { kind: "error" };
-      const open = asList(await openRes.json());
-      if (!open) return { kind: "error" };
-      // Recent is secondary: a failure there must not hide open incidents.
-      const recent = (recentRes?.ok ? asList(await recentRes.json()) : null)
-        ?? { data: [], truncated: false };
-      return { kind: "ready", open, recent };
-    } catch {
-      return { kind: "error" };
-    }
-  }, []);
+  if (state.kind === "hidden") return null;
 
-  useEffect(() => {
-    let cancelled = false;
-    void load().then((next) => {
-      if (!cancelled) setState(next);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+  if (state.kind === "loading") {
+    return (
+      <section
+        data-testid="connection-health-loading"
+        aria-busy="true"
+        className="rounded-lg border bg-card p-4"
+      >
+        <h2 className="text-sm font-semibold">{t("connectionHealthPanel.title")}</h2>
+        <div className="mt-3 h-4 w-48 animate-pulse rounded bg-muted" />
+      </section>
+    );
+  }
 
-  const retry = () => {
-    setState({ kind: "loading" });
-    void load().then(setState);
-  };
-
-  if (state.kind === "hidden" || state.kind === "loading") return null;
+  const scopeLabel = (orgId: string | null) =>
+    orgId === null
+      ? t("integrationsPage.scope.partnerWide")
+      : resolveOrgName?.(orgId) ?? null;
 
   const conditionLabel = (code: string) =>
     (KNOWN_CONDITIONS as readonly string[]).includes(code)
@@ -115,7 +76,7 @@ export default function ConnectionHealthPanel() {
   return (
     <section
       data-testid="connection-health-panel"
-      className="rounded-lg border bg-card p-4 shadow-sm"
+      className="rounded-lg border bg-card p-4"
     >
       <h2 className="text-sm font-semibold">{t("connectionHealthPanel.title")}</h2>
 
@@ -137,18 +98,27 @@ export default function ConnectionHealthPanel() {
       ) : (
         <>
           {state.open.data.length === 0 ? (
-            <p
-              data-testid="connection-health-empty"
-              className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"
-            >
-              <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
-              {t("connectionHealthPanel.allHealthy")}
-            </p>
+            <div className="mt-3">
+              <p
+                data-testid="connection-health-empty"
+                className="flex items-center gap-2 text-sm text-foreground"
+              >
+                <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+                {t("connectionHealthPanel.allHealthy")}
+              </p>
+              <p
+                data-testid="connection-health-empty-detail"
+                className="mt-1 pl-6 text-xs text-muted-foreground"
+              >
+                {t("connectionHealthPanel.allHealthyDetail")}
+              </p>
+            </div>
           ) : (
             <ul className="mt-3 divide-y">
               {state.open.data.map((inc) => {
                 const permanent = inc.severity === "permanent";
                 const since = inc.openedAt ?? inc.firstFailedAt;
+                const scope = scopeLabel(inc.orgId);
                 return (
                   <li
                     key={inc.id}
@@ -165,6 +135,14 @@ export default function ConnectionHealthPanel() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{inc.displayName}</span>
+                        {scope ? (
+                          <span
+                            data-testid="connection-health-row-scope"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {scope}
+                          </span>
+                        ) : null}
                         <span
                           className={`rounded-full border px-2 py-0.5 text-xs ${
                             permanent

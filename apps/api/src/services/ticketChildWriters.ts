@@ -32,9 +32,17 @@
  * - `maintenance`      a background or exceptional writer that takes no ticket
  *                      lock at all, with the reason it cannot form a cycle.
  *
- * `tombstoneGuard` is false for every entry in W0. W1 Task 1.2 flips it for
- * the `ticket-first` / `pre-ticket-child` writers and adds
- * `assertTicketNotMerged` right after the lock.
+ * Tombstones (#8972 W1, spec §3.2, Gate B10): a merged ticket is read-only.
+ * Every `ticket-first` / `pre-ticket-child` writer has `tombstoneGuard: true`
+ * and checks `assertTicketNotMerged` (or, for a sweep or a mover's side note
+ * that must skip rather than fail its batch, `isMergedTombstone`) on the row
+ * its ticket lock returned, before its first child write — directly, through
+ * a TICKET_GUARDING_LOCK_WRAPPERS wrapper, or (`lockHeldByCaller` /
+ * `guardHeldByCaller`) at every call site. The few that must not refuse a
+ * tombstone carry `tombstoneExempt` with the reason instead. The guard runs
+ * under the lock because the merge transaction holds the same row lock: an
+ * unlocked pre-check races with a merge. Movers carry tombstones with their
+ * survivor (T1.9) and are not guarded here.
  */
 
 export const TICKET_CHILD_TABLES = [
@@ -64,7 +72,14 @@ export interface TicketChildWriter {
   reason?: string;
   /** The writer addresses child tables through a table list, so the literal scan cannot see it; it must still exist. */
   dynamicTables?: true;
+  /** `tombstoneGuard` only: the guard is checked by every caller (a helper run under its caller's lock). */
+  guardHeldByCaller?: true;
+  /** A `ticket-first` / `pre-ticket-child` writer that must NOT refuse a tombstone, and why. */
+  tombstoneExempt?: string;
 }
+
+/** The tombstone guards (services/ticketMerge/errors.ts). */
+export const TICKET_TOMBSTONE_GUARDS = ['assertTicketNotMerged', 'assertTicketsNotMerged', 'isMergedTombstone'] as const;
 
 /** The functions that take the ticket row lock. */
 export const TICKET_LOCK_PRIMITIVES = ['lockTicketForWrite', 'lockTicketsForWrite'] as const;
@@ -93,6 +108,9 @@ export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
     'attachment upload / from-artifact: lockTicketForWrite, then the 404 / 409 re-check against the unlocked read',
   'services/contractHourBlockClose.ts::lockHourBlockSourceTickets':
     'hour-block close: every closable period\'s entries\' tickets, one ascending lockTicketsForWrite batch, after the contract row',
+  'services/ticketService.ts::lockCallerVerificationTarget':
+    '#8972 W1 Gate B6: exactly ONE ticket via lockTicketForWrite — the snapshotted ticket, or its survivor when merged '
+    + '(pointer re-checked under the lock inside a savepoint)',
   'services/timeEntryService.ts::lockTicketRow':
     'the time-entry 404 mapping around lockTicketForWrite',
   'services/timeEntryService.ts::lockTicketsInOrder':
@@ -124,11 +142,47 @@ export const TICKET_LOCK_HELD_FUNCTIONS: Record<string, string> = {
     'runs closeOne per period; the billing run and the close-out sweep call it after lockHourBlockSourceTickets',
 };
 
+/**
+ * Lock wrappers that also check the tombstone guard on the row they lock
+ * (each must be a TICKET_LOCK_WRAPPERS entry; the contract checks the guard
+ * follows the lock in its body). A writer that locks through one of these is
+ * guarded.
+ */
+export const TICKET_GUARDING_LOCK_WRAPPERS: Record<string, string> = {
+  'services/ticketService.ts::lockTicketOrThrow': 'assertTicketNotMerged on the locked row (every ticketService writer that locks through it)',
+  'services/ticketService.ts::lockCommentForWrite': 'assertTicketNotMerged before the comment row lock (a merge note on a tombstone is read-only)',
+  'services/ticketChecklistService.ts::lockItemTicket': 'assertTicketNotMerged on the item\'s ticket',
+  'services/ticketLinkService.ts::lockTickets': 'assertTicketsNotMerged on both link ends',
+  'services/ticketApproval/decisions.ts::lockRequestScope': 'assertTicketNotMerged on the request\'s ticket (unreachable: D3 refuses merging a ticket with requests)',
+  'routes/tickets/attachments.ts::lockTicketForAttach': 'isMergedTombstone → 409 TICKET_MERGED, bytes discarded by the caller',
+  'services/timeEntryService.ts::lockTicketRow': 'assertTicketNotMerged; every time-entry and part lock below funnels through it',
+  'services/timeEntryService.ts::lockTicketsInOrder': 'through lockTicketRow',
+  'services/timeEntryService.ts::resolveAndLockTicketLink': 'through lockTicketRow / lockTicketsInOrder',
+  'services/timeEntryService.ts::lockEntryForWrite': 'through resolveAndLockTicketLink / lockTicketsInOrder',
+  'services/timeEntryService.ts::stopRunningEntry': 'through lockTicketsInOrder (a ticketless timer has no ticket to guard)',
+  'services/timeEntryService.ts::lockPartForWrite': 'through lockTicketRow',
+};
+
+/**
+ * Ticket-ROW writers that write no child row (so the scan above cannot find
+ * them) but must refuse a tombstone all the same (spec §3.2 list).
+ */
+export const TICKET_ROW_GUARDED_WRITERS: Record<string, string> = {
+  'services/ticketService.ts::applyAiFieldUpdates': 'AI category / priority CAS update',
+  'services/ticketService.ts::restoreTicket': 'a tombstone cannot be restored (spec §3.2)',
+  'services/ticketApproval/decisions.ts::createStaffApprovalRequest': 'approval request create',
+};
+
+const BILLING_TOMBSTONE_EXEMPT =
+  'Billing stamper: locks the tickets its source rows point at now (merge re-points time and parts to the survivor, '
+  + 'never to a tombstone) and flips billing state by row id; refusing would fail an invoice or a contract close over '
+  + 'a ticket it no longer touches.';
+
 const TF = (tables: readonly TicketChildTable[], extra: Partial<TicketChildWriter> = {}): TicketChildWriter => ({
-  tables, lock: 'ticket-first', tombstoneGuard: false, ...extra,
+  tables, lock: 'ticket-first', tombstoneGuard: true, ...extra,
 });
-const PRE = (tables: readonly TicketChildTable[]): TicketChildWriter => ({
-  tables, lock: 'pre-ticket-child', tombstoneGuard: false,
+const PRE = (tables: readonly TicketChildTable[], extra: Partial<TicketChildWriter> = {}): TicketChildWriter => ({
+  tables, lock: 'pre-ticket-child', tombstoneGuard: true, ...extra,
 });
 
 export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
@@ -138,7 +192,12 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/ticketService.ts::deleteTicketComment': TF(['ticket_comments']),
   'services/ticketService.ts::addAiTriageNote': TF(['ticket_comments']),
   'services/ticketService.ts::postProposalNote': TF(['ticket_comments']),
-  'services/ticketService.ts::addCallerVerificationSystemComment': TF(['ticket_comments']),
+  'services/ticketService.ts::addCallerVerificationSystemComment': TF(['ticket_comments'], {
+    tombstoneGuard: false,
+    tombstoneExempt:
+      'Gate B6: a verification effect after a merge redirects its note to the SURVIVOR (lockCallerVerificationTarget '
+      + 'locks only that one row) and never throws TICKET_MERGED: a merge must never roll back a security decision.',
+  }),
   // Ticket-row writers that also write a feed comment.
   'services/ticketService.ts::changeTicketStatus': TF(['ticket_comments']),
   'services/ticketService.ts::updateTicketFields': TF(['ticket_comments']),
@@ -152,11 +211,17 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/inboundEmail/inboundAttachments.ts::persistInboundAttachments': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments/from-artifact': TF(['ticket_attachments']),
-  'routes/tickets/attachments.ts::DELETE /:id/attachments/:attachmentId': TF(['ticket_attachments']),
+  'routes/tickets/attachments.ts::DELETE /:id/attachments/:attachmentId': TF(['ticket_attachments'], {
+    tombstoneGuard: false,
+    tombstoneExempt:
+      'Refuses a tombstone BEFORE the object delete (unlocked read); after the bytes are gone the row must go too, '
+      + 'so the locked step cannot refuse. A merge moves attachments by row id, so the delete stays correct.',
+  }),
   'services/ticketLinkMoveNotes.ts::noteTicketLinksRemovedByOrgMove': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::recordRefusal': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::finishRun': TF(['ticket_comments']),
   'services/aiOperator/humanWorkService.ts::sendHumanWorkReminders': TF(['ticket_comments']),
+  'services/aiOperator/completionRecord.ts::postCompletionRecord': TF(['ticket_comments']),
   'services/serviceDeliverableService.ts::applyTicketStatusChange': TF(['ticket_comments']),
   'services/serviceDeliverableService.ts::openOneOccurrence': TF(['ticket_checklist_items', 'ticket_comments']),
 
@@ -167,6 +232,8 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/ticketChecklistService.ts::deleteChecklistItem': TF(['ticket_checklist_items']),
   'services/ticketChecklistTemplateService.ts::applyChecklistTemplateToTicket': TF(['ticket_checklist_items']),
   'services/aiOperator/humanWorkService.ts::openHumanWorkStep': TF(['ticket_checklist_items']),
+  'services/aiOperator/manualWork.ts::ensureManualWorkItems': TF(['ticket_checklist_items']),
+  'services/aiOperator/manualWork.ts::attachHumanWorkStep': TF(['ticket_checklist_items'], { lockHeldByCaller: true }),
 
   // ── Links, external refs, email links ───────────────────────────────────
   'services/ticketLinkService.ts::addTicketLink': TF(['ticket_links', 'ticket_comments']),
@@ -205,14 +272,15 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/ticketApproval/requests.ts::insertApprovalComment': TF(['ticket_comments'], { lockHeldByCaller: true }),
 
   // ── Billing stampers: several tickets per write, ascending, after the contract rows ──
-  'services/invoiceService.ts::issueTx': TF(['time_entries', 'ticket_parts']),
-  'services/invoiceService.ts::voidInvoice': TF(['time_entries', 'ticket_parts']),
-  'services/contractHourBlockClose.ts::closeOne': TF(['time_entries'], { lockHeldByCaller: true }),
+  // #8972 W1: exempt from the tombstone guard (BILLING_TOMBSTONE_EXEMPT).
+  'services/invoiceService.ts::issueTx': TF(['time_entries', 'ticket_parts'], { tombstoneGuard: false, tombstoneExempt: BILLING_TOMBSTONE_EXEMPT }),
+  'services/invoiceService.ts::voidInvoice': TF(['time_entries', 'ticket_parts'], { tombstoneGuard: false, tombstoneExempt: BILLING_TOMBSTONE_EXEMPT }),
+  'services/contractHourBlockClose.ts::closeOne': TF(['time_entries'], { lockHeldByCaller: true, tombstoneGuard: false, tombstoneExempt: BILLING_TOMBSTONE_EXEMPT }),
 
   // ── Drafts: pre-ticket children (#3778 order: ticket_drafts before tickets) ──
   'services/ticketService.ts::sendTicketDraft': PRE(['ticket_drafts', 'ticket_comments']),
   'services/ticketService.ts::discardTicketDraft': PRE(['ticket_drafts']),
-  'services/ticketService.ts::consumeResolutionDraft': PRE(['ticket_drafts']),
+  'services/ticketService.ts::consumeResolutionDraft': PRE(['ticket_drafts'], { guardHeldByCaller: true }),
   'services/aiToolsTicketing.ts::insertDraft': PRE(['ticket_drafts']),
 
   // ── Movers ──────────────────────────────────────────────────────────────
@@ -256,6 +324,47 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
       + 'ticket_drafts is a pre-ticket table in the #3778 order, and the merge holds the fenced org set.',
   },
 
+  // ── Ticket merge (#8972 W1, spec §3.5) ──────────────────────────────────
+  'services/ticketMerge/execute.ts::mergeInTx': {
+    tables: ['ticket_comments', 'ticket_drafts'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge: per-org links lock (exclusive), org SHARE, the source\'s drafts and Operator targets, then '
+      + 'source + survivor + every ticket merged into the source in ONE ascending lockTicketsForWrite batch, then '
+      + 'the children (repoint.ts). Writes the two merge notes after every lock is held; eligibility (incl. '
+      + 'already-merged) is re-checked on the locked rows.',
+  },
+  'services/ticketMerge/repoint.ts::repointTicketChildren': {
+    tables: ['ticket_comments', 'time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_attachments',
+      'ticket_email_links', 'ticket_checklist_items', 'ticket_external_refs', 'ticket_drafts'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge re-point: runs only inside mergeInTx after the ticket locks, one statement per table in '
+      + 'ticket_comments → TICKET_CHILD_ORG_REWRITE_LOCK_ORDER; same-org, ticket_id only (billing fields untouched).',
+  },
+  'services/ticketMerge/movers.ts::carryMergedTombstonesInTx': {
+    tables: ['ticket_drafts', 'ticket_comments', 'ticket_links', 'time_entries', 'ticket_parts', 'ticket_alert_links',
+      'ticket_attachments', 'ticket_email_links', 'ticket_checklist_items', 'ticket_external_refs'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    dynamicTables: true,
+    reason:
+      'Org movers carry merged tombstones (spec §3.9): called by moveTicketOrg and the device mover after the '
+      + 'survivor(s) and their children are re-stamped; locks the tombstones in one ascending batch, then the '
+      + 'ticket-axis per-ticket routine. A tombstone is read-only (every writer refuses it under its lock without '
+      + 'touching a child) and merge serializes with both movers on the per-org links lock, so it cannot cycle.',
+  },
+  'services/ticketMerge/repoint.ts::repointTicketLinks': {
+    tables: ['ticket_links'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    reason:
+      'Ticket merge link re-point: the ticket_links slot of the canonical order, under mergeInTx\'s exclusive '
+      + 'per-org links lock and ticket locks; drops what would break a link rule.',
+  },
+
   // ── Cascades (erasure) ──────────────────────────────────────────────────
   'services/tenantCascade.ts::deleteOrgRows': {
     tables: ['ticket_comments', 'ticket_attachments', 'time_entries', 'ticket_parts', 'ticket_checklist_items',
@@ -279,6 +388,15 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   },
 
   // ── Maintenance ─────────────────────────────────────────────────────────
+  'services/ticketService.ts::writeRoutingNote': {
+    tables: ['ticket_comments'],
+    lock: 'maintenance',
+    tombstoneGuard: false,
+    reason:
+      '#8883 W5 routing note, called only by createTicket right after its own ticket insert: no other transaction can '
+      + 'see the uncommitted ticket row, so there is nothing to lock or wait on and no cycle can form; a brand-new '
+      + 'ticket cannot be a merge tombstone.',
+  },
   'jobs/ticketAttachmentReaper.ts::reapPendingAttachments': {
     tables: ['ticket_attachments'],
     lock: 'maintenance',

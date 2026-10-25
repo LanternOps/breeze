@@ -85,6 +85,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // handler re-checks org/partner/site reach at run time (see the
   // aiTools*WritesScope integration suites). Save-time owner checks for them
   // need new FLOW_OWNED_REFERENCE_FIELDS kinds — a follow-up, flows are flag-off.
+  // recall / remember (Wisp W03) and the W05a concern tools (list_concerns, raise_concern,
+  // snooze_concern, resolve_concern, create_watch) are absent: they refuse outright without
+  // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
+  // (FLOW_EXCLUDED_CORE_TOOLS).
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -176,6 +180,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_vm_restore_estimate.snapshotId",
         "list_ai_agent_runs.agentId",
         "list_ai_agent_runs.orgId",
+        "list_business_calendars.orgId",
         "list_contracts.orgId",
         "list_deliverable_templates.orgId",
         "list_deliverables.contractId",
@@ -192,6 +197,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "list_quotes.orgId",
         "list_remediation_suggestions.orgId",
         "list_sites.orgId",
+        "list_ticket_routing_rules.orgId",
         "list_time_entries.orgId",
         "list_time_entries.ticketId",
         "list_time_entries.userId",
@@ -282,6 +288,14 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_ticket_checklist.orgId",
         "manage_ticket_checklist.templateId",
         "manage_ticket_checklist.ticketId",
+        "manage_ticket_routing_rules.ids",
+        "manage_ticket_routing_rules.matchCategoryId",
+        "manage_ticket_routing_rules.orgId",
+        "manage_ticket_routing_rules.orgIds",
+        "manage_ticket_routing_rules.ruleId",
+        "manage_ticket_routing_rules.setAssigneeUserId",
+        "manage_ticket_routing_rules.setCategoryId",
+        "manage_ticket_routing_rules.setStatusId",
         "manage_tickets.alertId",
         "manage_tickets.assigneeId",
         "manage_tickets.commentId",
@@ -315,6 +329,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "sync_huntress_data.orgId",
         "system_cleanup.cleanupRunId",
         "system_cleanup.commandId",
+        "test_ticket_routing_rule.categoryId",
+        "test_ticket_routing_rule.orgId",
         "test_webhook.webhookId",
         "workspace_run.stdinHandle",
         "workspace_stage.handles",

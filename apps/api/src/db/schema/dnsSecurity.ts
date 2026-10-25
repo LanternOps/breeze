@@ -110,6 +110,12 @@ export interface DnsIntegrationConfig {
   // egress on the hosted platform. Enabling it is recorded in the audit log via
   // the integration create/update route.
   allowCarrierNatEgress?: boolean;
+  // Sync state, not a setting: the time-slice width (ms) the last sliced
+  // provider walk (Cisco Umbrella) ended on. Written only by the DNS sync job,
+  // read back as the next run's starting width so a backlog does not pay its
+  // splitting cost again every run (#10018). The create route's schema does
+  // not accept it, so a tenant cannot set it.
+  syncSliceWidthMs?: number;
 }
 
 export interface DnsPolicyDomain {
@@ -148,7 +154,7 @@ export const dnsFilterIntegrations = pgTable('dns_filter_integrations', {
 export const dnsSecurityEvents = pgTable('dns_security_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => devices.id),
   timestamp: timestamp('timestamp').notNull(),
   domain: varchar('domain', { length: 500 }).notNull(),
@@ -175,7 +181,7 @@ export const dnsSecurityEvents = pgTable('dns_security_events', {
 export const dnsPolicies = pgTable('dns_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   type: dnsPolicyTypeEnum('type').notNull(),
@@ -197,7 +203,7 @@ export const dnsEventAggregations = pgTable('dns_event_aggregations', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   date: date('date').notNull(),
-  integrationId: uuid('integration_id').references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => devices.id),
   domain: varchar('domain', { length: 500 }),
   category: dnsThreatCategoryEnum('category'),

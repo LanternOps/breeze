@@ -34,7 +34,7 @@ import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
-  reportRuns, reports, ticketDrafts, type AiAgentRow,
+  reportRuns, reports, ticketDrafts, users, wispGrants, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -1408,6 +1408,15 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       agentName: aiAgents.name,
       agentKind: aiAgents.kind,
       deviceHostname: devices.hostname,
+      // W07 "Wisp for <user>" provenance. Joined under the REQUEST db context:
+      // if RLS hides the grant row, grantorUserId is null and the DTO's `wisp`
+      // is null (we cannot name a grantor we cannot see). The partner SELECT
+      // branch on wisp_grants admits the partner's own users.
+      grantId: aiAgentRuns.grantId,
+      requestedByRunId: aiAgentRuns.requestedByRunId,
+      depth: aiAgentRuns.depth,
+      grantorUserId: wispGrants.grantorUserId,
+      grantorName: users.name,
     })
     .from(aiAgentRuns)
     // LEFT, not INNER — same residual RLS-visibility gap as `GET /runs` above.
@@ -1418,6 +1427,8 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
+    .leftJoin(wispGrants, eq(aiAgentRuns.grantId, wispGrants.id))
+    .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
     .where(and(
       eq(aiAgentRuns.id, runId),
       auth.orgCondition(aiAgentRuns.orgId),

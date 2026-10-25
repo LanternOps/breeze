@@ -1,9 +1,12 @@
-// The newest migration redefining ai_agents_kind_chk / ai_agent_runs_profile_chk
-// is where the live contract lives (same convention as
-// aiAgentsAnalysisProfile.migration.test.ts, which stays frozen at v-prev).
+// The newest migration redefining ai_agents_kind_chk is where that live
+// contract lives (same convention as aiAgentsAnalysisProfile.migration.test.ts,
+// which stays frozen at v-prev). ai_agent_runs_profile_chk was redefined again
+// by Wisp W05 (2027-01-04-110350-ai-agent-runs-assessment-profile.sql), so the
+// profile assertion below is FROZEN at what this migration shipped and the live
+// profile contract moved to aiAgentsAssessmentProfile.migration.test.ts.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { AI_AGENT_KINDS, AI_AGENT_RUN_PROFILES } from '@breeze/shared';
+import { AI_AGENT_KINDS } from '@breeze/shared';
 import { CORE_TENANT_EXPORT_POLICY } from '../services/tenantExportPolicyRegistry';
 import { aiAgents } from './schema/aiAgents';
 
@@ -15,8 +18,10 @@ describe(`${FILE}`, () => {
   it('ai_agents_kind_chk lists exactly AI_AGENT_KINDS', () => {
     expect(listed(/ai_agents_kind_chk\s+CHECK \(kind IN \(([^)]*)\)\)/)).toEqual([...AI_AGENT_KINDS].sort());
   });
-  it('ai_agent_runs_profile_chk lists exactly AI_AGENT_RUN_PROFILES', () => {
-    expect(listed(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+  it('ai_agent_runs_profile_chk lists the nine profiles that existed when it shipped', () => {
+    expect(listed(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual(
+      ['analysis', 'design', 'full', 'narrative', 'patch', 'remediation_research', 'sweep', 'triage', 'verdict'],
+    );
   });
   it('makes created_by nullable only together with an XOR provisioner CHECK', () => {
     expect(SQL).toMatch(/ALTER COLUMN created_by DROP NOT NULL/);

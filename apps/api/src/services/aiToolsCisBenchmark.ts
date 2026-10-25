@@ -27,21 +27,9 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
-import type { ToolExecutionContext } from './toolExecutionContext';
+// #6911: apply_cis_remediation writes auth.user.id into cis_remediation_actions.approved_by/requested_by, a users FK; refused on an approver-release mismatch.
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
-
-/**
- * #6911: `apply_cis_remediation` is user-owned on release
- * (`USER_OWNED_RELEASE_ACTIONS` in `jobs/intentReleaseWorker.ts`) — it writes
- * `auth.user.id` into `cis_remediation_actions.approved_by` and
- * `.requested_by`, both `users` FKs. Under the rebuilt agent auth that id is
- * an `aiAgents.id`, so refuse rather than write a row whose owner the worker
- * and this handler's auth disagree about. Mirrors `aiToolsFleet.ts`'s
- * `approverReleaseMismatch`.
- */
-function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
-  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
-}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 

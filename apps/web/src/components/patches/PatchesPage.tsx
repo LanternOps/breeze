@@ -34,9 +34,9 @@ import { useHashState } from '@/lib/useHashState';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { replaceUrl } from '../../lib/replaceUrl';
+import { parsePatchesHash, type PatchesTab } from './patchesHash';
 
-type TabKey = 'rings' | 'patches' | 'compliance' | 'jobs';
-const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
+type TabKey = PatchesTab;
 
 // Tab state lives in window.location.hash (`#patches`) per the project
 // convention for transient UI state (CLAUDE.md); DiscoveryPage and DeviceDetails
@@ -47,10 +47,13 @@ const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
 //
 // `#patches/<patchId>` deep-links the read-only patch details drawer (#9544): the
 // tab is the segment before the first `/`, the drawer's patch id the rest.
+//
+// Tabs are read through the shared hash grammar (#9791 C, patchesHash.ts), so
+// `#compliance&status=failed` and a bare `#status=failed` (no tab token) both
+// select the default compliance tab and leave the filter to the compliance view.
 function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
-  const tab = window.location.hash.replace(/^#/, '').split('/')[0];
-  return validTabs.includes(tab as TabKey) ? (tab as TabKey) : 'compliance';
+  return parsePatchesHash(window.location.hash).tab ?? 'compliance';
 }
 
 function parsePatchIdFromHash(hash: string): string | null {

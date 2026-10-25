@@ -56,7 +56,9 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
-import { CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, isCommandQueueable } from './bulkActionGating';
+import { BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
+import ChangeSiteModal from './ChangeSiteModal';
+import { summarizeBulkSiteMove, type BulkSiteMoveResponse } from './bulkSiteMove';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
 import { FILTER_FIELDS } from '../filters/filterFields';
@@ -380,6 +382,11 @@ export default function DevicesPage() {
   const [pendingBulkDeleteManual, setPendingBulkDeleteManual] = useState<Device[] | null>(null);
   // Endpoint messaging: the agent devices a technician is composing a message for.
   const [messageDevices, setMessageDevices] = useState<Device[] | null>(null);
+  // "Move to site" (#9796): one device → ChangeSiteModal's PATCH variant; a
+  // bulk selection → its POST /devices/bulk/site variant.
+  const [moveSiteTarget, setMoveSiteTarget] = useState<
+    { kind: 'single'; device: Device } | { kind: 'bulk'; devices: Device[] } | null
+  >(null);
   // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
   // runBulkPurge then starts the async job and polls it.
   const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
@@ -1314,6 +1321,11 @@ export default function DevicesPage() {
           setSettingsDevice(device);
           break;
 
+        case 'move-site':
+          // The dialog does the PATCH (expectedSiteId-guarded) and reports back via onSaved.
+          setMoveSiteTarget({ kind: 'single', device });
+          break;
+
         case 'decommission': {
           // Deferred execution with undo — gives the user 5 seconds to cancel
           let cancelled = false;
@@ -1492,6 +1504,31 @@ export default function DevicesPage() {
     });
   };
 
+  /**
+   * Report a bulk site move (#9796). The route answers 200 with one outcome per
+   * device even when none moved, so the BODY decides: all at the target →
+   * success; some moved → warning "Moved N of M" naming the rest; none moved →
+   * error. (Whole-batch 400/403s never get here: runAction toasted them.)
+   */
+  const reportBulkSiteMove = (devices: Device[], result: BulkSiteMoveResponse, site: string) => {
+    const summary = summarizeBulkSiteMove(result, devices);
+    if (summary.tone === 'success') {
+      showToast({ type: 'success', message: t('devicesPage.toasts.bulkMoveSiteSuccess', { count: summary.total, site }) });
+    } else if (summary.tone === 'warning') {
+      showToast({
+        type: 'warning',
+        message: t('devicesPage.toasts.bulkMoveSiteSomeFailed', {
+          moved: summary.moved, total: summary.total, site, devices: summarizeFailedDevices(summary.failedNames),
+        }),
+      });
+    } else {
+      showToast({
+        type: 'error',
+        message: t('devicesPage.toasts.bulkMoveSiteAllFailed', { site, devices: summarizeFailedDevices(summary.failedNames) }),
+      });
+    }
+  };
+
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
     if (!canActOnDevices(allSelectedDevices)) return;
     if (actionInProgress || allSelectedDevices.length === 0) return;
@@ -1633,6 +1670,28 @@ export default function DevicesPage() {
 
     if (action === 'run-script') {
       openScriptPicker(selectedDevices);
+      return;
+    }
+
+    // #9796: the bulk bar already disables this item for a mixed-org or
+    // over-cap selection (bulkMoveSiteBlock); re-checked here because this
+    // funnel must not trust its callers. Never chunked past the cap — that
+    // would be the client loop spec Decision 5 rejected.
+    if (action === 'move-site') {
+      const block = bulkMoveSiteBlock(selectedDevices);
+      if (block === 'mixed_org') {
+        showToast({ type: 'error', message: t('deviceList.moveSiteMixedOrgs') });
+        return;
+      }
+      if (block === 'over_cap') {
+        showToast({ type: 'error', message: t('deviceList.moveSiteOverCap', { count: BULK_SITE_MOVE_CAP }) });
+        return;
+      }
+      if (block === 'no_agents') {
+        showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+        return;
+      }
+      setMoveSiteTarget({ kind: 'bulk', devices: bulkMoveSiteAgents(selectedDevices) });
       return;
     }
 
@@ -2584,6 +2643,28 @@ export default function DevicesPage() {
             reportMaintenanceEntryOutcome(maintenanceDialogDevices, result);
             void fetchDevices();
           }}
+        />
+      )}
+
+      {moveSiteTarget?.kind === 'single' && (
+        <ChangeSiteModal
+          device={moveSiteTarget.device}
+          isOpen
+          onClose={() => setMoveSiteTarget(null)}
+          onSaved={() => {
+            showToast({ type: 'success', message: t('devicesPage.toasts.deviceMovedToSite', { hostname: moveSiteTarget.device.hostname }) });
+            void refreshDevices();
+          }}
+        />
+      )}
+      {moveSiteTarget?.kind === 'bulk' && (
+        <ChangeSiteModal
+          devices={moveSiteTarget.devices}
+          isOpen
+          onClose={() => setMoveSiteTarget(null)}
+          onSaved={() => void refreshDevices()}
+          onBulkMoved={(result, site) => reportBulkSiteMove(moveSiteTarget.devices, result, site)}
+          onUnauthorized={handleSessionExpired}
         />
       )}
 

@@ -1,8 +1,9 @@
 ---
 title: Installer bootstrap from an independent artifact source (implementation plan)
 spec: docs/superpowers/specs/installer-enrollment/2026-10-18-installer-unblockable-bootstrap-spec.md
-tracking_issue: LanternOps/breeze#8874
-status: draft, awaiting Todd's review (Gate B). Not approved.
+tracking_issue: LanternOps/breeze#9832
+spec_issue: LanternOps/breeze#8874
+status: parked — feature LanternOps/breeze#9832 closed as not planned on 2026-10-23 before any wave merged; W1 branch feature/9832-installer-unblockable-bootstrap/wave-9833 is pushed, unmerged
 depends_on: "#8868 W2 (Windows one-liner catch), for W4b only"
 ---
 

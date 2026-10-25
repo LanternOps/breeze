@@ -69,7 +69,26 @@ import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTaskPendingPollIntervalMs, mcpTaskPollIntervalMs, mcpTaskTtlGraceMs, mcpTasksEffective, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
+import {
+  NO_MCP_CLIENT_EXTENSIONS,
+  parseMcpClientExtensions,
+  readLegacySessionExtensions,
+  toLegacyClientExtensions,
+  writeLegacySessionExtensions,
+  type McpClientExtensions,
+} from '../services/mcpClientExtensions';
+import { MCP_TASK_ID_MAX_CHARS, MCP_TASK_NOT_FOUND, buildCreateTaskResult, buildTasksExtensionRequiredData, toMcpTask, type McpTask, type McpTaskIntentRow } from '../services/mcpTasks';
+import {
+  MCP_APPS,
+  findMcpAppByTool,
+  findMcpAppByUri,
+  isMcpAppAvailable,
+  mcpAppResourceContents,
+  mcpAppToolMeta,
+  type McpAppDefinition,
+} from '../services/mcpApps/registry';
 import { mcpRequestStateKey, openMcpRequestState, sealMcpRequestState } from '../services/mcpRequestState';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import { isMcpIntentEligible, mcpOriginRef, type McpIntentIneligibleReason } from '../services/mcpIntentEligibility';
@@ -77,6 +96,7 @@ import type * as McpIntentCreation from '../services/mcpIntentCreation';
 import {
   buildApprovalInputRequiredResult,
   buildPendingApprovalResult,
+  buildTerminalActionResult,
   MCP_CANCEL_ACTION_TOOL_LIST_ENTRY,
   MCP_CANCEL_ACTION_TOOL_NAME,
   MCP_GET_ACTION_STATUS_TOOL_LIST_ENTRY,
@@ -85,7 +105,7 @@ import {
   type McpActionStatus,
 } from '../services/mcpActionStatus';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, isModernMcpProtocolVersion, mcpStatelessEnabled, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader, type McpProtocolVersion } from '../services/mcpProtocol';
-import { classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
+import { MCP_CAPABILITY_REQUIRED, classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
 import { buildDiscoverResult, decorateModernResult, recordMcpEraRejection, resolveMcpHttpStatus } from '../services/mcpModernResult';
 import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCorrelation } from '../services/mcpRequestCorrelation';
 import { requestAuditSink, runMcpTier3Lifecycle, writeMcpToolAuditEvent, type McpTier3ExecutionOutcome } from '../services/mcpTier3Lifecycle';
@@ -596,7 +616,7 @@ async function preflightMcpRequest(
     if (!redis) {
       return { kind: 'response', status: 503, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } } };
     }
-    const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
+    const limit = mcpMessageRateLimitPerMinute();
     const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
     if (!rate.allowed) {
       const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
@@ -712,7 +732,46 @@ type McpDispatchContext = {
   correlation: McpRequestCorrelation;
   /** B-W04 (#6158, D-B32): the modern request's declared client capabilities; null/absent in the legacy era. */
   clientCapabilities?: Record<string, unknown> | null;
+  /**
+   * B-W05 (#6159, D-B40): the HTTP transport. `http_sse` (the deprecated
+   * HTTP+SSE `/message` endpoint, always era `legacy`) never advertises or
+   * resolves MCP Apps; `streamable` (era `legacy` or `modern`) may. Modern is
+   * always `streamable`.
+   */
+  transport: 'http_sse' | 'streamable';
+  /**
+   * B-W05 (#6159, D-B42): the client's negotiated extensions for THIS request —
+   * memoised (at most one side-key read per request) and never throwing.
+   * Handlers receive the resolved value, never the thunk.
+   */
+  resolveClientExtensions: () => Promise<McpClientExtensions>;
+  /** B-W05 (#6159, D-B44): per-request audit additions, read by dispatchAndAudit after dispatch. */
+  auditExtras: McpAuditExtras;
 };
+
+/**
+ * B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text).
+ * B-W06 (#6160, D-B53): `taskId` only when it is a UUID; `taskResult` on a
+ * tools/call that returned a CreateTaskResult.
+ */
+type McpAuditExtras = { mcpApp?: string; taskId?: string; taskResult?: true };
+
+/** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
+const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
+
+/**
+ * B-W05 (#6159): memoise a resolver and degrade any failure to "nothing
+ * declared". Today's resolvers cannot reject, so a rejection here is a code
+ * defect — reported, not swallowed silently.
+ */
+function memoizeClientExtensions(resolve: () => Promise<McpClientExtensions>): () => Promise<McpClientExtensions> {
+  let pending: Promise<McpClientExtensions> | undefined;
+  return () => (pending ??= resolve().catch((err: unknown) => {
+    console.error('[MCP] Client-extension resolution failed; treating as undeclared:', err);
+    captureException(err);
+    return NO_MCP_CLIENT_EXTENSIONS;
+  }));
+}
 
 async function dispatchAndAudit(
   c: Context,
@@ -723,6 +782,8 @@ async function dispatchAndAudit(
 ): Promise<JsonRpcResponse> {
   const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, ctx);
   const sessionId = ctx.correlation.sessionId;
+  // B-W05 (#6159, D-B44): memoised, so a handler's read is reused here.
+  const clientExtensions = await ctx.resolveClientExtensions();
 
   // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
   // by design (partner admins span every org). Without the fallback, every
@@ -751,6 +812,12 @@ async function dispatchAndAudit(
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
       ...domainDenialAuditDetails(body, response),
+      // B-W05 (#6159, D-B44): both keys absent unless set, so pre-W05 rows and
+      // queries are unchanged. `mcpApp` is a registry key, never caller text.
+      ...(clientExtensions.ui ? { uiExtension: true } : {}),
+      ...(ctx.auditExtras.mcpApp ? { mcpApp: ctx.auditExtras.mcpApp } : {}),
+      ...(ctx.auditExtras.taskId ? { taskId: ctx.auditExtras.taskId } : {}),
+      ...(ctx.auditExtras.taskResult ? { taskResult: true } : {}),
       ...correlationAuditDetails(ctx.correlation),
     },
     result: response.error ? 'failure' : 'success',
@@ -860,7 +927,14 @@ mcpServerRoutes.post(
       principalKey,
       apiKeyId: apiKey.id,
     });
-    const response = await dispatchAndAudit(c, pre.body, { era: 'legacy', correlation }, auth, apiKey);
+    // B-W05 (#6159, D-B42): the deprecated HTTP+SSE transport never negotiates MCP Apps.
+    const response = await dispatchAndAudit(c, pre.body, {
+      era: 'legacy',
+      correlation,
+      transport: 'http_sse',
+      resolveClientExtensions: async () => NO_MCP_CLIENT_EXTENSIONS,
+      auditExtras: {},
+    }, auth, apiKey);
 
     // Legacy SSE transport: if the request carries a verified-owned sessionId
     // pointing at an active SSE stream, push the response into that stream
@@ -997,6 +1071,8 @@ mcpServerRoutes.post(
       headers: readMcpRequestHeaders(c),
       statelessEnabled: mcpStatelessEnabled(),
       endpoint: 'streamable',
+      // B-W06 (#6160, D-B51): tasks/* mirror Mcp-Name only while effective.
+      tasksEffective: mcpTasksEffective(),
     });
     if (decision.era === 'reject') return mcpRejectionResponse(c, pre.body, decision.rejection);
     if (decision.era === 'modern') return handleModernStreamableRequest(c, pre.body, decision.meta);
@@ -1023,6 +1099,13 @@ mcpServerRoutes.post(
     }
     const redis = getRedis();
 
+    // B-W05 (#6159, D-B42): the legacy era declares extensions once, on
+    // initialize. Parsed only while the flag is on; otherwise nothing is kept.
+    // B-W06 (#6160): legacy keeps `ui` only (Tasks are modern-only, D-B47).
+    const initializeExtensions = isInitialize && mcpAppsEnabled()
+      ? toLegacyClientExtensions(parseMcpClientExtensions(pre.body.params?.capabilities))
+      : NO_MCP_CLIENT_EXTENSIONS;
+
     let trustedSessionId: string | undefined;
     if (isInitialize) {
       // Ignore any client-supplied Mcp-Session-Id on initialize. The server
@@ -1035,6 +1118,9 @@ mcpServerRoutes.post(
             MCP_SESSION_TTL_SECONDS,
             principalKey,
           );
+          // B-W05: side key with the SAME absolute, never-refreshed lifetime.
+          // No-op unless ui was declared; never throws.
+          await writeLegacySessionExtensions(redis, trustedSessionId, initializeExtensions, MCP_SESSION_TTL_SECONDS);
         } catch (err) {
           // We still mint and return the id. Either way the next call fails
           // closed, but WHICH way depends on the failure, so don't promise one:
@@ -1152,7 +1238,22 @@ mcpServerRoutes.post(
       apiKeyId: apiKey.id,
       rawClientInfo: isInitialize ? pre.body.params?.clientInfo : undefined,
     });
-    const dispatchCtx: McpDispatchContext = { era: 'legacy', correlation };
+    const dispatchCtx: McpDispatchContext = {
+      era: 'legacy',
+      correlation,
+      transport: 'streamable',
+      // B-W05 (#6159, D-B42): built only after the ownership check above
+      // passed. Resolved once per request (memoised; dispatchAndAudit always
+      // resolves it for the audit row). The Redis side key is read only with
+      // the flag on and only for tools/list, resources/read and tools/call.
+      resolveClientExtensions: memoizeClientExtensions(async () => {
+        if (!mcpAppsEnabled()) return NO_MCP_CLIENT_EXTENSIONS;
+        if (isInitialize) return initializeExtensions;
+        if (!MCP_SIDE_KEY_METHODS.has(pre.body.method)) return NO_MCP_CLIENT_EXTENSIONS;
+        return readLegacySessionExtensions(redis, trustedSessionId);
+      }),
+      auditExtras: {},
+    };
 
     if (pre.body.id === undefined) {
       void dispatchAndAudit(c, pre.body, dispatchCtx, auth, apiKey).catch((err) => {
@@ -1198,7 +1299,24 @@ async function handleModernStreamableRequest(
   // side effect worth dispatching one for (D-B17).
   if (body.id === undefined) return c.body(null, 202);
 
-  const response = await dispatchAndAudit(c, body, { era: 'modern', correlation, clientCapabilities: meta.clientCapabilities }, auth, apiKey);
+  const response = await dispatchAndAudit(c, body, {
+    era: 'modern',
+    correlation,
+    clientCapabilities: meta.clientCapabilities,
+    transport: 'streamable',
+    // B-W05 (#6159, D-B42): declared per request; nothing is stored.
+    // B-W06 (#6160): each extension counts only while its own flag is on, so
+    // a flag-off server sees exactly what it saw before.
+    resolveClientExtensions: memoizeClientExtensions(async () => {
+      const apps = mcpAppsEnabled();
+      const tasks = mcpTasksEffective();
+      if (!apps && !tasks) return NO_MCP_CLIENT_EXTENSIONS;
+      const declared = parseMcpClientExtensions(meta.clientCapabilities);
+      if (!(apps && declared.ui) && !(tasks && declared.tasks)) return NO_MCP_CLIENT_EXTENSIONS;
+      return { ui: apps && declared.ui, tasks: tasks && declared.tasks };
+    }),
+    auditExtras: {},
+  }, auth, apiKey);
   const status = resolveMcpHttpStatus('modern', response, applyInsufficientScopeChallenge(c, apiKey, response));
   const decorated: JsonRpcResponse = response.result !== undefined
     ? { ...response, result: decorateModernResult(body.method, response.result as Record<string, unknown>) }
@@ -1215,13 +1333,20 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
-export function buildInitializeResult(requestedProtocolVersion?: unknown) {
+/**
+ * `advertiseApps` (B-W05 #6159, D-B40): true only for the streamable
+ * transport. HTTP+SSE `/message` shares this builder and never gets Apps, so
+ * the default is false and existing one-argument callers are unchanged.
+ */
+export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: { advertiseApps?: boolean } = {}) {
+  const extensions = opts.advertiseApps ? mcpAppsServerExtensions() : undefined;
   return {
     protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
       resources: { subscribe: false, listChanged: false },
       prompts: { listChanged: false },
+      ...(extensions ? { extensions } : {}),
     },
     serverInfo: {
       name: 'breeze-rmm',
@@ -1247,7 +1372,10 @@ async function handleJsonRpc(
     // `server/discover` replaces them; each falls through to -32601 in the
     // other era (still audited by the caller).
     if (ctx.era === 'legacy' && req.method === 'initialize') {
-      return jsonRpcResult(req.id, buildInitializeResult((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion));
+      return jsonRpcResult(req.id, buildInitializeResult(
+        (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion,
+        { advertiseApps: ctx.transport === 'streamable' },
+      ));
     }
     if (ctx.era === 'legacy' && req.method === 'notifications/initialized') {
       // Client acknowledgment — no response needed but return empty result
@@ -1259,10 +1387,16 @@ async function handleJsonRpc(
 
     switch (req.method) {
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth, req.params, apiKey);
+        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions());
 
-      case 'tools/call':
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null);
+      case 'tools/call': {
+        noteMcpAppToolCall(req.params, ctx.auditExtras);
+        // B-W06 (#6160, D-B47): Tasks are modern-only and declared per request.
+        const tasksDeclared = ctx.era === 'modern' && (await ctx.resolveClientExtensions()).tasks;
+        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared);
+        if (tasksDeclared && isCreateTaskResponse(response)) ctx.auditExtras.taskResult = true;
+        return response;
+      }
 
       case 'resources/list':
         return handleResourcesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
@@ -1271,7 +1405,12 @@ async function handleJsonRpc(
         return handleResourceTemplatesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
 
       case 'resources/read':
-        return await handleResourcesRead(req.id, req.params ?? {}, auth, parseStoredMcpDomains(apiKey?.mcpDomains));
+        return await handleResourcesRead(req.id, req.params ?? {}, auth, parseStoredMcpDomains(apiKey?.mcpDomains), {
+          clientExtensions: await ctx.resolveClientExtensions(),
+          scopes,
+          apiKey,
+          auditExtras: ctx.auditExtras,
+        });
 
       case 'prompts/list':
         return handlePromptsList(req.id);
@@ -1279,6 +1418,15 @@ async function handleJsonRpc(
       case 'prompts/get':
         return handlePromptsGet(req.id, req.params ?? {});
 
+      // B-W06 (#6160, D-B47/D-B51): Tasks are modern-only and exist only
+      // while effective; otherwise these are exactly the default below.
+      case 'tasks/get':
+      case 'tasks/update':
+      case 'tasks/cancel':
+        if (ctx.era === 'modern' && mcpTasksEffective()) {
+          return await handleTasksRequest(req.method, req.id, req.params ?? {}, auth, scopes, apiKey, ctx);
+        }
+      // falls through
       default:
         return jsonRpcError(req.id, -32601, `Method not found: ${req.method}`);
     }
@@ -1329,7 +1477,8 @@ async function handleJsonRpc(
 // around normal tier design — fix the tier in aiGuardrails.ts instead if a
 // tool's tier is simply wrong; this constant is a narrow, documented
 // exception, not a second gating mechanism.
-const MCP_APPROVAL_REQUIRED_EXTRA_TOOLS: Record<string, true> = {
+// Exported read-only for the MCP App registry contract (B-W05 #6159, D-B46).
+export const MCP_APPROVAL_REQUIRED_EXTRA_TOOLS: Readonly<Record<string, true>> = {
   collect_evidence: true,
 };
 
@@ -1544,19 +1693,34 @@ async function liveExecuteTenantToolDetailed(
 // tools/list
 // ============================================
 
-async function handleToolsList(
-  id: string | number,
+/**
+ * B-W05 (#6159, D-B43): the per-caller inputs of the core-registry tools/list
+ * filter, computed once per request. Extracted from handleToolsList without
+ * behaviour change so the MCP App gate in resources/read asks exactly the
+ * same "is this tool listed for this caller?" question.
+ */
+type McpListingContext = {
+  domainGrant: McpDomainGrant;
+  hasExecute: boolean;
+  requireExecuteAdmin: boolean;
+  hasExecuteAdmin: boolean;
+  hasWrite: boolean;
+  callerFailsMfaGate: boolean;
+  ownsIntents: boolean;
+  canRunTier3Unattended: (toolName: string) => boolean;
+  canFileTier3Intent: (toolName: string) => boolean;
+};
+
+function buildMcpListingContext(
   scopes: string[],
   auth: AuthContext,
-  params?: Record<string, unknown>,
-  apiKey?: McpApiKeyContext,
-): Promise<JsonRpcResponse> {
+  apiKey: McpApiKeyContext | undefined,
+): McpListingContext {
   const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
   // B-W02 (#6156): per-grant tool domains — a second axis on the SAME filter,
   // applied after every existing gate. Listed ⇒ callable: handleToolsCall
   // applies the identical predicate to the canonical name.
   const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
-  const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('ai:execute_admin');
@@ -1584,40 +1748,121 @@ async function handleToolsList(
     && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
     && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(toolName));
 
+  return {
+    domainGrant,
+    hasExecute,
+    requireExecuteAdmin,
+    hasExecuteAdmin,
+    hasWrite,
+    callerFailsMfaGate,
+    ownsIntents,
+    canRunTier3Unattended,
+    canFileTier3Intent,
+  };
+}
+
+/** B-W05 (#6159): the per-tool filter body of handleToolsList, moved verbatim. */
+function isToolListedForCaller(
+  tool: ReturnType<typeof getToolDefinitions>[number],
+  ctx: McpListingContext,
+): boolean {
+  const {
+    domainGrant, hasExecute, requireExecuteAdmin, hasExecuteAdmin, hasWrite,
+    callerFailsMfaGate, canRunTier3Unattended, canFileTier3Intent,
+  } = ctx;
+  // Deployment kill switch (e.g. FLOWS_ENABLED): never listed when off.
+  if (isToolEnvGatedOff(tool.name)) return false;
+  // A wholly-gated tool (every possible invocation resolves to a gated
+  // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
+  // it would be denied by the tools/call gate below, so listing it is
+  // exactly the advertised-but-dead pattern this payoff eliminates.
+  if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
+  // Same invariant for the MFA gate: every call would be refused by the handler.
+  if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
+
+  const registryTier = getToolTier(tool.name);
+  if (registryTier === undefined) return false;
+  const tier = Math.max(registryTier, mcpTierFloor(tool.name));
+
+  if (!isMcpToolGranted(domainGrant, tool.name)) return false;
+
+  // Tier 1 (read-only) = ai:read is enough
+  if (tier <= 1) return true;
+  // Tier 2 (low-risk mutations) = ai:write
+  if (tier === 2) return hasWrite;
+  // Tier 3+ (destructive) = ai:execute. (A FLAT Tier 3 tool never reaches
+  // here — isToolWhollyGatedOverMcp already suppressed it above — but a
+  // multiplexer whose base tier is <3 can still surface here if only SOME
+  // of its actions escalate to Tier 3, and those callers need ai:execute
+  // to reach the tools/call gate at all, same as before this payoff.)
+  return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
+    // Listed ⇒ callable: tools/call rejects a Tier 3 tool missing from the
+    // production allowlist, so don't advertise it. Only a whole-tool Tier 3
+    // (flat Tier 3 or an approval extra) is filtered here; a mixed
+    // multiplexer keeps its lower-tier actions.
+    && (tier < 3 || process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(tool.name));
+}
+
+/**
+ * B-W05 (#6159, D-B43): the one MCP App gate, shared by tools/list (`_meta.ui`)
+ * and resources/read (the view). Flag and declaration are checked first so
+ * flag-off and non-declaring callers pay nothing; the RBAC check runs only for
+ * a listed tool, and a thrown check fails closed (not available).
+ */
+async function isMcpAppAvailableForCaller(
+  app: McpAppDefinition,
+  auth: AuthContext,
+  clientExtensions: McpClientExtensions,
+  listedForCaller: () => boolean,
+): Promise<boolean> {
+  const flagOn = mcpAppsEnabled();
+  const declared = clientExtensions.ui;
+  if (!flagOn || !declared) return false;
+  const listed = listedForCaller();
+  if (!listed) return false;
+  let permissionGranted = false;
+  try {
+    permissionGranted = !(await checkPermissionRequirement(auth, app.permission));
+  } catch (err) {
+    console.error('[MCP] Permission check failed for MCP App:', app.key, err);
+    captureException(err);
+  }
+  return isMcpAppAvailable({ flagOn, declared, listedForCaller: listed, permissionGranted });
+}
+
+/** B-W05 (#6159, D-B44): a tools/call of an app's tool is counted for the go/no-go. */
+function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditExtras: McpAuditExtras): void {
+  if (!mcpAppsEnabled() || typeof params?.name !== 'string') return;
+  const app = findMcpAppByTool(resolveDeprecatedToolAlias(params.name));
+  if (app) auditExtras.mcpApp = app.key;
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+  params?: Record<string, unknown>,
+  apiKey?: McpApiKeyContext,
+  clientExtensions: McpClientExtensions = NO_MCP_CLIENT_EXTENSIONS,
+): Promise<JsonRpcResponse> {
+  const listing = buildMcpListingContext(scopes, auth, apiKey);
+  const { domainGrant, hasWrite, callerFailsMfaGate, ownsIntents, canRunTier3Unattended, canFileTier3Intent } = listing;
+  const allTools = getToolDefinitions();
+
   // Filter tools based on API key scopes.
-  const scopedTools = allTools.filter((tool) => {
-    // Deployment kill switch (e.g. FLOWS_ENABLED): never listed when off.
-    if (isToolEnvGatedOff(tool.name)) return false;
-    // A wholly-gated tool (every possible invocation resolves to a gated
-    // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
-    // it would be denied by the tools/call gate below, so listing it is
-    // exactly the advertised-but-dead pattern this payoff eliminates.
-    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
-    // Same invariant for the MFA gate: every call would be refused by the handler.
-    if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
+  const scopedTools = allTools.filter((tool) => isToolListedForCaller(tool, listing));
 
-    const registryTier = getToolTier(tool.name);
-    if (registryTier === undefined) return false;
-    const tier = Math.max(registryTier, mcpTierFloor(tool.name));
-
-    if (!isMcpToolGranted(domainGrant, tool.name)) return false;
-
-    // Tier 1 (read-only) = ai:read is enough
-    if (tier <= 1) return true;
-    // Tier 2 (low-risk mutations) = ai:write
-    if (tier === 2) return hasWrite;
-    // Tier 3+ (destructive) = ai:execute. (A FLAT Tier 3 tool never reaches
-    // here — isToolWhollyGatedOverMcp already suppressed it above — but a
-    // multiplexer whose base tier is <3 can still surface here if only SOME
-    // of its actions escalate to Tier 3, and those callers need ai:execute
-    // to reach the tools/call gate at all, same as before this payoff.)
-    return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
-      // Listed ⇒ callable: tools/call rejects a Tier 3 tool missing from the
-      // production allowlist, so don't advertise it. Only a whole-tool Tier 3
-      // (flat Tier 3 or an approval extra) is filtered here; a mixed
-      // multiplexer keeps its lower-tier actions.
-      && (tier < 3 || process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(tool.name));
-  });
+  // B-W05 (#6159, D-B43): `_meta.ui` for each app whose tool is listed here
+  // and whose gate holds for this caller. Empty unless flag on + declared.
+  const appToolMeta = new Map<string, ReturnType<typeof mcpAppToolMeta>>();
+  if (mcpAppsEnabled() && clientExtensions.ui) {
+    for (const app of MCP_APPS) {
+      const listed = scopedTools.some((tool) => tool.name === app.toolName);
+      if (await isMcpAppAvailableForCaller(app, auth, clientExtensions, () => listed)) {
+        appToolMeta.set(app.toolName, mcpAppToolMeta(app));
+      }
+    }
+  }
 
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
@@ -1653,8 +1898,11 @@ async function handleToolsList(
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
     }
     const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
+    // B-W05: merged, so `app.breeze/domain` survives and `_meta` keeps its position.
+    const appMeta = appToolMeta.get(tool.name);
     return {
       ...presentation,
+      ...(appMeta ? { _meta: { ...presentation._meta, ...appMeta } } : {}),
       name: tool.name,
       description,
       inputSchema: tool.input_schema,
@@ -1811,6 +2059,8 @@ async function handleToolsCall(
   c: Context | undefined,
   correlation: McpRequestCorrelation,
   clientCapabilities: Record<string, unknown> | null = null,
+  /** B-W06 (#6160): this modern request declared the Tasks extension (and Tasks are effective). */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -1824,7 +2074,7 @@ async function handleToolsCall(
   // ai:read preflight (already passed) and the always-granted core domain —
   // `decline` additionally needs ai:write, checked inside.
   if (correlation.era === 'modern' && params.requestState !== undefined) {
-    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName));
+    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared);
   }
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
@@ -2090,7 +2340,7 @@ async function handleToolsCall(
     if (!executionOrgId || !apiKey) {
       return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
     }
-    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities });
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities }, tasksDeclared);
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2230,6 +2480,8 @@ async function fileMcpActionIntent(
     correlation: McpRequestCorrelation;
     clientCapabilities?: Record<string, unknown> | null;
   },
+  /** B-W06 (#6160, D-B47): a live intent is answered with a CreateTaskResult. */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   let outcome: Awaited<ReturnType<typeof McpIntentCreation.createMcpActionIntent>>;
   try {
@@ -2275,12 +2527,67 @@ async function fileMcpActionIntent(
       return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
     } catch (err) {
       // The intent is already filed: never turn that into an error. The
-      // client still gets the pollable pending result.
+      // client still gets the pollable pending result (or its task).
       console.error('[MCP] Failed to seal approval requestState; answering pending_approval:', err);
       captureException(err);
     }
   }
+  // B-W06 (#6160, D-B51): a Tasks-declaring modern client gets a task handle
+  // for the live intent — no URL elicitation applies, an approved/executing
+  // replay, or a sealing failure. Built from the committed row (reloaded), so
+  // tasks/get already resolves; a failed or empty reload keeps the pending
+  // result: a filed intent never becomes an error.
+  if (tasksDeclared && args.correlation.era === 'modern') {
+    try {
+      const task = await loadOwnedMcpTask(args.auth, outcome.status.actionId);
+      if (task) return jsonRpcResult(id, buildCreateTaskResult(task));
+      // The intent was just filed or replayed by this credential, so a null
+      // reload means a read-your-writes or ownership-predicate defect.
+      captureMessage('MCP task reload found no owned intent right after filing; answered pending_approval', {
+        eventCode: 'mcp_task_reload_missing',
+        level: 'warning',
+      });
+    } catch (err) {
+      console.error('[MCP] Failed to build the task for a filed intent; answering pending_approval:', err);
+      captureException(err);
+    }
+  }
   return jsonRpcResult(id, buildPendingApprovalResult(outcome.status));
+}
+
+/** B-W06 (#6160, D-B52): the knobs for one projection, budgeted on the caller's live count. */
+async function mcpTaskKnobsFor(auth: AuthContext): Promise<Parameters<typeof toMcpTask>[2]> {
+  const { countLiveMcpIntentsForOrigin } = await liveMcpIntentCreation();
+  // The live count only tunes pollIntervalMs. A failed count must not fail a
+  // read the ownership load already answered (get_action_status has no such
+  // dependency): degrade to the base intervals, and report it.
+  let liveCount = 0;
+  try {
+    liveCount = await countLiveMcpIntentsForOrigin(auth);
+  } catch (err) {
+    console.error('[MCP] Failed to count live intents for the task poll budget; using base intervals:', err);
+    captureException(err);
+  }
+  return {
+    pendingPollMs: mcpTaskPendingPollIntervalMs(),
+    runningPollMs: mcpTaskPollIntervalMs(),
+    ttlGraceMs: mcpTaskTtlGraceMs(),
+    liveCount,
+    perMinuteLimit: mcpMessageRateLimitPerMinute(),
+  };
+}
+
+/** B-W06 (#6160, D-B48): the caller's own task (ownership = loadOwnedMcpIntent), or null. */
+async function loadOwnedMcpTask(auth: AuthContext, taskId: unknown): Promise<McpTask | null> {
+  const { loadOwnedMcpIntent } = await liveMcpIntentCreation();
+  const intent = await loadOwnedMcpIntent(auth, taskId);
+  if (!intent) return null;
+  return toMcpTask(intent, mcpAppBaseUrl(), await mcpTaskKnobsFor(auth));
+}
+
+function isCreateTaskResponse(response: JsonRpcResponse): boolean {
+  const result = response.result as Record<string, unknown> | undefined;
+  return !!result && result.resultType === 'task';
 }
 
 /** URL mode only: `elicitation: {}` (form-only) or anything else never qualifies. */
@@ -2311,6 +2618,8 @@ async function handleToolsCallContinuation(
   apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
   toolName: string,
+  /** B-W06 (#6160, D-B51): a still-live outcome is answered with a CreateTaskResult. */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   const callerRef = canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null;
   const invalid = () => jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_request_state' });
@@ -2364,6 +2673,7 @@ async function handleToolsCallContinuation(
       return mcpActionStatusResult(id, outcome.status, { outcome: outcome.kind });
     }
 
+    let row: McpTaskIntentRow = intent;
     let current = toMcpActionStatus(intent, base);
     if (action === 'accept' && (current.status === 'pending_approval' || current.status === 'in_progress')) {
       const inFlight = approvalWaitsByOrigin.get(callerRef) ?? 0;
@@ -2387,26 +2697,21 @@ async function handleToolsCallContinuation(
         if (!signal?.aborted) {
           const fresh = await loadOwnedMcpIntent(auth, intent.id);
           if (!fresh) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+          row = fresh;
           current = toMcpActionStatus(fresh, base);
         }
       }
     }
 
     if (current.status === 'pending_approval' || current.status === 'in_progress') {
-      // The MRTR cycle ends here; the model polls get_action_status.
+      // The MRTR cycle ends here: a Tasks-declaring client gets the task
+      // (built from the same row), everyone else polls get_action_status.
+      if (tasksDeclared) {
+        return jsonRpcResult(id, buildCreateTaskResult(toMcpTask(row, base, await mcpTaskKnobsFor(auth))));
+      }
       return jsonRpcResult(id, buildPendingApprovalResult(current));
     }
-    if (current.status === 'completed') {
-      return jsonRpcResult(id, {
-        content: [{ type: 'text', text: current.result ?? JSON.stringify(current) }],
-        structuredContent: current,
-      });
-    }
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(current) }],
-      structuredContent: current,
-      isError: true,
-    });
+    return jsonRpcResult(id, buildTerminalActionResult(current));
   } catch (err) {
     console.error('[MCP] approval continuation failed:', err);
     captureException(err);
@@ -2453,6 +2758,87 @@ async function handleCancelActionCall(
   } catch (err) {
     console.error('[MCP] cancel_action failed:', err);
     return jsonRpcError(id, -32000, 'Unable to cancel the action');
+  }
+}
+
+/** The UUID shape loadOwnedMcpIntent accepts; the only taskId shape ever audited. */
+const MCP_TASK_ID_AUDIT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * B-W06 (#6160, D-B51): `tasks/get` / `tasks/update` / `tasks/cancel`. A task
+ * id is a name, never a capability: every call re-runs the same gates as
+ * get_action_status / cancel_action, in this order —
+ *   1. the ai:read preflight (already ran before dispatch);
+ *   2. this request declares the Tasks extension, else -32021 (no DB read);
+ *   3. taskId is a string of ≤ 64 chars, else not-found;
+ *   4. canOwnMcpIntents, else not-found;
+ *   5. tasks/cancel: ai:write or ai:execute (the exact cancel_action error);
+ *   6. tasks/update: inputResponses, when present, is a plain object;
+ *   7. loadOwnedMcpIntent / cancelOwnedMcpIntent — null → not-found;
+ *   8. act.
+ * Unknown, foreign and malformed ids all get the same not-found body. An
+ * infrastructure failure is the get_action_status / cancel_action -32000
+ * body, never an empty ack. The only intent write is cancelOwnedMcpIntent.
+ */
+async function handleTasksRequest(
+  method: 'tasks/get' | 'tasks/update' | 'tasks/cancel',
+  id: string | number,
+  params: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey: McpApiKeyContext | undefined,
+  ctx: McpDispatchContext,
+): Promise<JsonRpcResponse> {
+  const taskNotFound = () => jsonRpcError(id, -32602, 'Task not found', MCP_TASK_NOT_FOUND);
+  const taskId = params.taskId;
+  // D-B53: bounded, server-validated — never arbitrary caller text.
+  if (typeof taskId === 'string' && MCP_TASK_ID_AUDIT_RE.test(taskId)) ctx.auditExtras.taskId = taskId.toLowerCase();
+
+  if (!(await ctx.resolveClientExtensions()).tasks) {
+    return jsonRpcError(id, MCP_CAPABILITY_REQUIRED, 'Tasks extension required', buildTasksExtensionRequiredData());
+  }
+  if (typeof taskId !== 'string' || taskId.length > MCP_TASK_ID_MAX_CHARS) return taskNotFound();
+  if (!canOwnMcpIntents(auth, apiKey)) return taskNotFound();
+  if (method === 'tasks/cancel' && !scopes.includes('ai:write') && !scopes.includes('ai:execute')) {
+    return jsonRpcError(id, -32603, `Tool "${MCP_CANCEL_ACTION_TOOL_NAME}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+  }
+  if (method === 'tasks/update') {
+    const responses = params.inputResponses;
+    if (responses !== undefined && (!responses || typeof responses !== 'object' || Array.isArray(responses))) {
+      return jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_input_responses' });
+    }
+  }
+
+  if (method === 'tasks/cancel') {
+    try {
+      const { cancelOwnedMcpIntent } = await liveMcpIntentCreation();
+      // Cooperative (SEP-2663): cancelled and not_cancellable (already
+      // running or finished) both ack; tasks/get then reports the real end.
+      const outcome = await cancelOwnedMcpIntent(auth, taskId, mcpAppBaseUrl());
+      if (outcome.kind === 'not_found') return taskNotFound();
+      return jsonRpcResult(id, {});
+    } catch (err) {
+      console.error('[MCP] tasks/cancel failed:', err);
+      captureException(err);
+      return jsonRpcError(id, -32000, 'Unable to cancel the action');
+    }
+  }
+
+  try {
+    if (method === 'tasks/update') {
+      // No input request is ever outstanding (D-B49), so the keys are ignored
+      // once the caller has proved ownership.
+      const { loadOwnedMcpIntent } = await liveMcpIntentCreation();
+      if (!(await loadOwnedMcpIntent(auth, taskId))) return taskNotFound();
+      return jsonRpcResult(id, {});
+    }
+    const task = await loadOwnedMcpTask(auth, taskId);
+    if (!task) return taskNotFound();
+    return jsonRpcResult(id, task);
+  } catch (err) {
+    console.error(`[MCP] ${method} failed:`, err);
+    captureException(err);
+    return jsonRpcError(id, -32000, 'Unable to read the action status');
   }
 }
 
@@ -3144,10 +3530,35 @@ async function handleResourcesRead(
   params: Record<string, unknown>,
   auth: AuthContext,
   domainGrant: McpDomainGrant,
+  apps: {
+    clientExtensions: McpClientExtensions;
+    scopes: string[];
+    apiKey: McpApiKeyContext | undefined;
+    auditExtras: McpAuditExtras;
+  },
 ): Promise<JsonRpcResponse> {
   const uri = params.uri as string;
   if (!uri) {
     return jsonRpcError(id, -32602, 'Missing required parameter: uri');
+  }
+  // One copy of the unknown-URI body: the B-W05 app branch must answer it
+  // byte-for-byte, or a caller failing the app gate could tell the app exists.
+  const unknownResourceUri = () => jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+
+  // B-W05 (#6159, D-B43): a registered MCP App URI (exact match) is decided
+  // here, before MCP_RESOURCE_PERMISSIONS (which has no row for it), by the
+  // same gate as its tools/list `_meta.ui`. Every gate failure — flag,
+  // declaration, scope, domain, RBAC — is the unknown-URI body: a caller who
+  // fails it was never shown the URI. The view carries no tenant data; no DB.
+  const app = findMcpAppByUri(uri);
+  if (app) {
+    const available = await isMcpAppAvailableForCaller(app, auth, apps.clientExtensions, () => {
+      const tool = getToolDefinitions().find((definition) => definition.name === app.toolName);
+      return tool !== undefined && isToolListedForCaller(tool, buildMcpListingContext(apps.scopes, auth, apps.apiKey));
+    });
+    if (!available) return unknownResourceUri();
+    apps.auditExtras.mcpApp = app.key;
+    return jsonRpcResult(id, mcpAppResourceContents(app));
   }
 
   // MCP-OAUTH-03: authorize the URI before any site resolution or DB query.
@@ -3156,7 +3567,7 @@ async function handleResourcesRead(
   // check's job, and it must fail closed (unknown URI families denied).
   const requiredPermission = findMcpResourcePermission(uri);
   if (!requiredPermission) {
-    return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+    return unknownResourceUri();
   }
   // B-W02 (#6156): domain gate after the (pure) unknown-URI check — so an
   // unknown URI answers identically for every principal — and before RBAC

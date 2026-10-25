@@ -254,41 +254,7 @@
       "twelveHour": "12-hour",
       "twentyFourHour": "24-hour",
       "language": "Language",
-      "languageDescription": "Default language for partner settings.",
-      "businessHours": {
-        "title": "Business Hours",
-        "description": "Set your standard operating hours for support and alerts.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Always available"
-          },
-          "business": {
-            "label": "Business Hours",
-            "description": "Mon-Fri 9am-5pm"
-          },
-          "extended": {
-            "label": "Extended Hours",
-            "description": "Mon-Fri 7am-7pm, Sat 9am-1pm"
-          },
-          "custom": {
-            "label": "Custom",
-            "description": "Set your own schedule"
-          }
-        },
-        "customSchedule": "Custom Schedule",
-        "open": "Open",
-        "to": "to"
-      },
-      "days": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
-      }
+      "languageDescription": "Default language for partner settings."
     }
   },
   "partnerAiBudgets": {
@@ -1154,7 +1120,6 @@
     "title": "Partner Settings",
     "description": "Configure defaults for {{name}}.",
     "yourMsp": "your MSP",
-    "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
     "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
     "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
@@ -1183,6 +1148,27 @@
       "topologyAiDescription": "Let Breeze AI summarise the map and flag unusual changes in a site's topology.",
       "saved": "Modules updated",
       "saveFailed": "Failed to update modules"
+    },
+    "status": {
+      "clean": "All changes saved · {{time}}",
+      "cleanNoTime": "All changes saved",
+      "dirty": "Unsaved changes in <tabs></tabs>.",
+      "invalid_one": "Fix {{count}} field in {{tab}} to save.",
+      "invalid_other": "Fix {{count}} fields in {{tab}} to save.",
+      "saving": "Saving…",
+      "partial": "Couldn't save <tabs></tabs>. Other changes saved.",
+      "failed": "Couldn't save <tabs></tabs>.",
+      "autosaved": "Saved · {{time}}",
+      "autosaveFailed": "Couldn't save — try again",
+      "readOnly": "Saving needs full partner access"
+    },
+    "validation": {
+      "retentionDays": "Enter a whole number of days from 1 to 3650."
+    },
+    "unsavedConfirm": "You have unsaved changes. Leave this page and discard them?",
+    "knownGuests": {
+      "added": "Known guest added",
+      "removed": "Known guest removed"
     }
   },
   "partnerSendingDomains": {
@@ -1509,7 +1495,8 @@
       "approval_ask": "Approval ask",
       "approval_snapshot": "Approval figures",
       "approval_expires": "Approval deadline",
-      "approval_status": "Approval status"
+      "approval_status": "Approval status",
+      "merged_into_number": "Merged-into ticket number"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1524,7 +1511,8 @@
       "payment_failed": "Payment could not be completed",
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
-      "ticket_approval_decided": "Work approval decision"
+      "ticket_approval_decided": "Work approval decision",
+      "ticket_merged": "Ticket merged"
     }
   },
   "inboundEmail": {
@@ -1558,9 +1546,6 @@
     "dropUnverifiedDescription": "When off, unverified mail is quarantined for review. When on, it's dropped silently. This applies to <all>all</all> unverified senders — including mapped customers whose individual message fails the check.",
     "staffForwardRouting": "File staff forwards under the original sender's customer",
     "staffForwardRoutingDescription": "When one of your partner-level staff forwards a customer's email to the support address, the new ticket is filed under the organization mapped to the original sender's domain, not your own. The staff member must have access to that organization. Works only for forwards made in Gmail and received by a connected Gmail mailbox; not for the native inbound address, Microsoft 365 mailboxes or Outlook forwards.",
-    "defaultAssignee": "Default assignee for new inbound tickets",
-    "defaultAssigneeDescription": "Every new ticket created from inbound email is assigned to this person, unless something else already assigned it. If they can't access the ticket's organization, the ticket stays unassigned.",
-    "defaultAssigneeUnavailable": "Unavailable user",
     "defaultAssigneeNotAssignable": "That user can't be the default assignee. Pick an active member of your team who has ticket access.",
     "enableAutoresponse": "Send an autoresponse acknowledging new email tickets",
     "editEmailTemplates": "The acknowledgement email is edited under Email templates.",
@@ -4519,6 +4504,9 @@
     "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
+    "revokeTitle": "Revoke connected app",
+    "revokeSuccess": "Revoked access for {{name}}",
+    "revokeFailedGeneric": "Revoke failed",
     "networkError": "Network error",
     "networkErrorDuringRevoke": "Network error during revoke",
     "revoking": "Revoking…",
@@ -5292,7 +5280,8 @@
     "timeTracking": "Time Tracking",
     "email": "Email",
     "templates": "Templates",
-    "timeCapture": "Time capture"
+    "timeCapture": "Time capture",
+    "routing": "Routing"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -5794,6 +5783,20 @@
       "sourceOrg": "Organization override",
       "sourcePartner": "Partner default",
       "sourceDefault": "Built-in default"
+    },
+    "businessCalendar": {
+      "title": "Business hours",
+      "description": "The calendar this organization's SLA clocks are counted on. Leave on Inherit to follow the partner default.",
+      "label": "Business calendar",
+      "inherit": "Inherit",
+      "inheritedDefault": "Inherited: {{name}} (partner default)",
+      "inheritedNone": "Inherited: 24×7 (no partner default)",
+      "partnerWideOption": "{{name}} (all orgs)",
+      "archivedOverride": "Archived calendar (no longer applies)",
+      "loadFailed": "Business calendar failed to load.",
+      "errors": {
+        "save": "Couldn't save the business calendar. Retry."
+      }
     }
   },
   "organizationForm": {
@@ -6016,8 +6019,10 @@
   "siteDetailPage": {
     "loading": "Loading site...",
     "backToOrganizations": "Back to organizations",
+    "backToSites": "Back to sites",
     "breadcrumbs": {
       "settings": "Settings",
+      "sites": "Sites",
       "organizations": "Organizations"
     },
     "errors": {
@@ -6103,6 +6108,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Primary contact"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locations where your devices live. Open a site to see its details and devices.",
+      "organizationColumn": "Organization",
+      "pickOrg": "Organization",
+      "pickOrgPlaceholder": "Choose an organization",
+      "pickOrgRequired": "Choose the organization this site belongs to.",
+      "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
+      "empty": "No sites yet. Add a site to an organization to get started.",
+      "viewDevicesAt": "view devices at {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",
@@ -6923,5 +6941,346 @@
     "enabledToast": "Character-key shortcuts turned on",
     "disabledToast": "Character-key shortcuts turned off",
     "saveFailed": "Could not save character-key shortcuts."
+  },
+  "businessHoursCard": {
+    "title": "Business hours",
+    "description": "Calendars that response and resolution SLA clocks are counted on. A ticket uses its organization's calendar, or your default calendar, or runs around the clock when neither is set.",
+    "newTicketsOnly": "Editing hours or the time zone applies to new tickets only. Use \"Apply to open tickets\" to update tickets that are already open.",
+    "create": "New calendar",
+    "loading": "Loading business hours…",
+    "loadError": "Business hours failed to load.",
+    "retry": "Retry",
+    "empty": "No business-hours calendars yet. Tickets run around the clock (24×7) until you create one and set it as the default.",
+    "allOrgs": "All orgs",
+    "default": "Default",
+    "archived": "Archived",
+    "edit": "Edit",
+    "setDefault": "Set as default",
+    "clearDefault": "Clear default",
+    "applyOpen": "Apply to open tickets",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "delete": "Delete",
+    "deleteTitle": "Delete {{name}}?",
+    "deleteMessage": "This permanently deletes the calendar and its holidays. A calendar that tickets or organizations still use cannot be deleted; archive it instead.",
+    "name": "Name",
+    "timezone": "Time zone",
+    "appliesTo": "Applies to",
+    "ownerPartner": "All organizations (partner-wide)",
+    "ownerOrg": "One organization",
+    "organization": "Organization",
+    "chooseOrg": "Choose an organization",
+    "weeklyHours": "Weekly hours",
+    "closed": "Closed",
+    "to": "to",
+    "addInterval": "Add hours",
+    "intervalStart": "{{day}} opens at",
+    "intervalEnd": "{{day}} closes at",
+    "removeInterval": "Remove {{day}} hours",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "holidays": "Holidays",
+    "holidayHint": "Holidays dated today or earlier won't change open tickets.",
+    "noHolidays": "No holidays.",
+    "holidayDate": "Date",
+    "holidayName": "Name",
+    "holidayAdd": "Add holiday",
+    "holidayRemove": "Remove holiday {{name}}",
+    "weekdays": {
+      "0": "Sunday",
+      "1": "Monday",
+      "2": "Tuesday",
+      "3": "Wednesday",
+      "4": "Thursday",
+      "5": "Friday",
+      "6": "Saturday"
+    },
+    "errors": {
+      "nameRequired": "Enter a name.",
+      "orgRequired": "Choose an organization.",
+      "invalidTime": "Enter times as HH:MM (for example 09:00); the end can be 24:00.",
+      "order": "Each interval must end after it starts.",
+      "overlap": "Intervals on the same day must not overlap.",
+      "empty": "Add at least one open interval.",
+      "timezone": "Choose a valid time zone.",
+      "save": "Couldn't save the calendar. Retry.",
+      "holidayInvalid": "Enter a valid date and a name for the holiday.",
+      "holidayAdd": "Couldn't add the holiday. Retry.",
+      "holidayRemove": "Couldn't remove the holiday. Retry.",
+      "inUse": "This calendar is in use by tickets or organizations and can't be deleted. Archive it instead.",
+      "isDefault": "This calendar is the default. Clear the default before deleting it.",
+      "default": "Couldn't change the default calendar. Retry.",
+      "archive": "Couldn't change the archive state. Retry.",
+      "delete": "Couldn't delete the calendar. Retry.",
+      "apply": "Couldn't apply the calendar to open tickets. Retry."
+    },
+    "toasts": {
+      "created": "Calendar created",
+      "updated": "Calendar updated",
+      "defaultSet": "Default calendar set",
+      "defaultCleared": "Default cleared; tickets without an override run 24×7",
+      "archived": "Calendar archived",
+      "unarchived": "Calendar restored",
+      "deleted": "Calendar deleted",
+      "holidayAdded": "Holiday added",
+      "holidayRemoved": "Holiday removed",
+      "recompute": "Open tickets' deadlines are being updated.",
+      "applied": "Applied to open tickets: {{count}} updated",
+      "appliedPartial": "{{skipped}} tickets were being edited and kept their old hours. Apply again to retry them."
+    },
+    "apply": {
+      "title": "Apply {{name}} to open tickets",
+      "explanation": "Tickets that are open and have never been paused will switch to the current hours and have their deadlines recalculated. Tickets with a pause history are left alone.",
+      "loading": "Loading preview…",
+      "loadFailed": "The preview failed to load.",
+      "revisionChanged": "The hours changed since this preview. Review the updated counts before applying.",
+      "eligible": "Tickets that will be updated: {{count}}",
+      "breached": "Of those, would become breached immediately: {{count}}",
+      "paused": "Skipped because they have paused: {{count}}",
+      "confirm": "Apply to open tickets"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan & features",
+    "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
+    "currentPlan": "Current plan",
+    "plans": {
+      "free": "Free",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unlimited"
+    },
+    "columns": {
+      "feature": "Feature",
+      "state": "Status",
+      "source": "Source",
+      "expires": "Expires",
+      "limits": "Limits"
+    },
+    "state": {
+      "enabled": "Included",
+      "disabled": "Locked"
+    },
+    "source": {
+      "plan": "Plan default",
+      "billing": "Billing",
+      "license": "Licence",
+      "manual": "Manual"
+    },
+    "graceWarning": "Expired {{expiresAt}} — grace until {{graceUntil}}",
+    "noExpiry": "Never",
+    "noLimits": "—",
+    "reason": "Reason: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding supervisor",
+        "why": "An AI supervisor that diagnoses and repairs zero-touch onboarding failures."
+      },
+      "verified_library": {
+        "label": "Verified software library",
+        "why": "Curated, verified packages you can deploy with confidence."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp triages your fleet continuously and nudges the right person; available on Pro and above."
+      }
+    },
+    "loadError": "Could not load your plan.",
+    "retry": "Retry"
+  },
+  "ticketRouting": {
+    "title": "Ticket routing",
+    "description": "Rules run when a ticket is created and fill in the assignee, priority, category, status and tags the creator did not choose. Organization rules run first, then partner-wide rules. The first match wins.",
+    "createRule": "New rule",
+    "loadFailed": "Could not load routing rules.",
+    "lookupsFailed": "Some technicians, categories or statuses could not be loaded, so the pickers may be incomplete. Reload the page to try again.",
+    "empty": "No routing rules yet.",
+    "groupOrg": "Rules for {{org}}",
+    "groupPartner": "Partner-wide rules",
+    "thisOrganization": "This organization",
+    "allOrgs": "All orgs",
+    "limitedOrgs": "{{count}} orgs only",
+    "catchAll": "Matches every ticket",
+    "noActions": "Sets nothing",
+    "enabledLabel": "Enable rule {{name}}",
+    "enabledOn": "Rule enabled",
+    "enabledOff": "Rule disabled",
+    "saveFailed": "Could not save the rule. Try again.",
+    "deleteFailed": "Could not delete the rule. Try again.",
+    "saved": "Rule saved",
+    "created": "Rule created",
+    "deleted": "Rule deleted",
+    "reorderFailed": "Could not save the new order. Try again.",
+    "dragHandle": "Drag to reorder {{name}}, or press the up or down arrow key to move it.",
+    "readOnly": "You can view this rule but not change it.",
+    "chips": {
+      "add": "Add",
+      "remove": "Remove {{value}}"
+    },
+    "errors": {
+      "keywordShort": "Keywords need at least 2 characters.",
+      "keywordLong": "Keywords can be at most 100 characters.",
+      "keywordsMax": "You can add at most 20 keywords.",
+      "domainInvalid": "Use a host like example.com or *.example.com.",
+      "domainsMax": "You can add at most 50 domains.",
+      "tagEmpty": "Enter a tag.",
+      "tagLong": "Tags can be at most 50 characters.",
+      "tagsMax": "You can add at most 20 tags.",
+      "nameRequired": "Enter a name for the rule.",
+      "orgRequired": "Choose an organization.",
+      "orgLinksRequired": "Pick at least one organization, or apply the rule to all organizations."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "Email",
+      "alert": "Alert",
+      "manual": "Manual",
+      "api": "API",
+      "ai": "AI"
+    },
+    "priorities": {
+      "low": "Low",
+      "normal": "Normal",
+      "high": "High",
+      "urgent": "Urgent"
+    },
+    "drawer": {
+      "titleCreate": "New routing rule",
+      "titleEdit": "Edit routing rule",
+      "close": "Close",
+      "owner": "Owner",
+      "ownerOrg": "This organization only",
+      "ownerPartner": "All organizations (partner-wide)",
+      "organization": "Organization",
+      "chooseOrg": "Choose an organization",
+      "appliesTo": "Applies to",
+      "orgLinksAll": "All organizations",
+      "orgLinksSelected": "Only selected organizations",
+      "name": "Name",
+      "conditions": "When a ticket matches",
+      "conditionsHelp": "Every filled-in condition must match. Leave a condition empty to ignore it.",
+      "matchSources": "Source is any of",
+      "matchPriorities": "Priority is any of",
+      "matchCategory": "Category",
+      "any": "Any",
+      "matchKeywords": "Subject contains any of",
+      "matchKeywordsHint": "2 to 100 characters each, up to 20.",
+      "matchDomains": "Requester email domain is any of",
+      "matchDomainsHint": "example.com or *.example.com, up to 50.",
+      "actions": "Then set",
+      "actionsHelp": "Applied only to fields the creator did not choose. Set at least one.",
+      "setAssignee": "Assignee",
+      "setPriority": "Priority",
+      "setCategory": "Category",
+      "setStatus": "Status",
+      "addTags": "Add tags",
+      "noChange": "No change",
+      "unavailableUser": "Unavailable user",
+      "unavailableStatus": "Unavailable status",
+      "enabled": "Enabled",
+      "save": "Save",
+      "saving": "Saving...",
+      "delete": "Delete",
+      "deleteTitle": "Delete this rule?",
+      "deleteMessage": "\"{{name}}\" will stop applying to new tickets. This cannot be undone."
+    },
+    "test": {
+      "title": "Test a ticket",
+      "description": "Dry run: see which rule a new ticket would match and what it would change. Nothing is created.",
+      "org": "Organization",
+      "source": "Source",
+      "subject": "Subject",
+      "email": "Requester email (optional)",
+      "category": "Category (optional)",
+      "priority": "Priority (optional)",
+      "notChosen": "Not chosen",
+      "run": "Run test",
+      "running": "Testing...",
+      "failed": "Could not run the test. Try again.",
+      "matched": "Matched rule: {{name}}",
+      "noMatch": "No rule matched",
+      "applied": "Would apply",
+      "appliedNothing": "Nothing would change",
+      "skipped": "Skipped",
+      "actions": {
+        "set_assignee": "Assignee",
+        "set_category": "Category",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "The assignee cannot access this organization's tickets.",
+        "assignee_deleted": "The assignee no longer exists.",
+        "category_foreign": "The category belongs to a different partner.",
+        "status_foreign": "The status belongs to a different partner.",
+        "status_inactive": "The status is inactive.",
+        "status_core_not_allowed": "This status cannot be set by a rule."
+      }
+    },
+    "fallback": {
+      "title": "If no rule assigns an email ticket",
+      "description": "Every new ticket created from inbound email is assigned to this person when no routing rule assigns it. If they cannot access the ticket's organization, the ticket stays unassigned.",
+      "label": "Default assignee",
+      "unavailable": "Unavailable user",
+      "saveFailed": "Could not save the fallback assignee. Try again.",
+      "saved": "Fallback assignee saved",
+      "loadFailed": "Could not load the fallback assignee."
+    }
+  },
+  "wispMemory": {
+    "title": "Wisp memory",
+    "description": "Review what Wisp has remembered for you, a client, or your whole team, and confirm or retract it.",
+    "tabs": {
+      "mine": "My memory",
+      "org": "Client",
+      "partner": "All clients",
+      "users": "Technicians"
+    },
+    "empty": "No memory blocks here yet.",
+    "loading": "Loading memory…",
+    "loadFailed": "Failed to load memory.",
+    "retry": "Try again",
+    "columns": {
+      "subject": "Subject",
+      "type": "Type",
+      "status": "Status",
+      "confidence": "Confidence",
+      "updated": "Updated",
+      "actions": "Actions"
+    },
+    "statusValue": {
+      "unconfirmed": "Unconfirmed",
+      "confirmed": "Confirmed",
+      "retracted": "Retracted"
+    },
+    "type": {
+      "preference": "Preference",
+      "standing_instruction": "Standing instruction",
+      "fact": "Fact",
+      "decision": "Decision",
+      "concern_outcome": "Concern outcome",
+      "work_summary": "Work summary"
+    },
+    "confidenceValue": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "confirm": "Confirm",
+    "retract": "Retract",
+    "confirmed": "Memory confirmed.",
+    "retracted": "Memory retracted.",
+    "confirmFailed": "Failed to confirm memory.",
+    "retractFailed": "Failed to retract memory.",
+    "fromConversation": "From conversation",
+    "pickOrg": "Select a client",
+    "pickUser": "Select a technician",
+    "pickPrompt": "Choose one above to see its memory.",
+    "showContent": "Show content",
+    "hideContent": "Hide content",
+    "conversationUnavailable": "This conversation is no longer available.",
+    "usersLoadFailed": "Couldn't load technicians."
   }
 }

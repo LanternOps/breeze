@@ -93,6 +93,18 @@ beforeEach(() => {
 });
 
 describe('SecurityDashboard', () => {
+  it('uses singular forms when the count is 1', async () => {
+    routeSecurity(
+      { ...overviewPayload, encryption: { bitlockerEnabled: 1, filevaultEnabled: 0, total: 1 } },
+      { openBySeverity: { critical: 1, high: 0, medium: 0, low: 0 }, totalFindings: 1 }
+    );
+    render(<SecurityDashboard />);
+
+    expect(await screen.findByText('1 open item')).toBeInTheDocument();
+    expect(screen.queryByText('1 open items')).toBeNull();
+    expect(screen.queryByText('1 devices reviewed')).toBeNull();
+  });
+
   it('renders score, interpolated captions, and deep links on the happy path', async () => {
     routeSecurity(overviewPayload, threatsPayload);
     render(<SecurityDashboard />);

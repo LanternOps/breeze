@@ -33,6 +33,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
+    it('/ai/wisp/thread/:id maps to the AI docs with a Wisp label (W06 #9918)', () => {
+      const result = getDocsForPath('/ai/wisp/thread/abc-123');
+      expect(result.label).toBe('Wisp');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+    });
+
     it('/ai-agents/runs/:id maps to AI Agents docs', () => {
       const result = getDocsForPath('/ai-agents/runs/abc-123');
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);

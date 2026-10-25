@@ -97,6 +97,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
       { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
+      { name: 'ioc_hunt (list_rule_sets/preview_sweep/list_sweeps/sweep_status)', description: 'Detection rule sets, IOC sweep preview, list and status', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
@@ -207,12 +208,19 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
       { name: 'get_ticket_approval_status', description: 'View a ticket\'s budget and customer-approval status', category: 'Ticketing' },
+      { name: 'list_business_calendars', description: 'List business-hours calendars used for SLA deadlines', category: 'Ticketing' },
+      { name: 'list_ticket_routing_rules', description: 'List ticket routing rules applied to new tickets', category: 'Ticketing' },
+      { name: 'test_ticket_routing_rule', description: 'Dry-run which routing rule would match a sample ticket', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
       { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
       { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
+      // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
+      // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'list_concerns', description: 'List the loose ends Wisp is tracking inside the delegation grant', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -282,6 +290,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Fleet Operations
       { name: 'manage_deployments (pause/resume)', description: 'Pause or resume deployments', category: 'Fleet Operations' },
       { name: 'manage_patches (approve/decline/defer)', description: 'Patch approval decisions', category: 'Fleet Operations' },
+      { name: 'ioc_hunt (cancel_sweep)', description: 'Cancel an IOC sweep', category: 'Security & Compliance' },
       { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
@@ -300,6 +309,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
       { name: 'manage_billing_catalog (create_item)', description: 'Add a billing catalog item (inert until a quote, invoice, or contract uses it)', category: 'Billing' },
+      // Wisp memory (W03 #9909): remember writes an unconfirmed block.
+      { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
+      // Wisp concerns and watches (W05a #9911): grant-bound, inside the delegation ceiling.
+      { name: 'raise_concern', description: 'Ask Wisp to track a loose end for one customer', category: 'AI Governance' },
+      { name: 'snooze_concern', description: 'Snooze a Wisp concern for up to 30 days', category: 'AI Governance' },
+      { name: 'resolve_concern', description: 'Resolve a Wisp concern and remember the outcome', category: 'AI Governance' },
+      { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
+      // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
+      { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
     ],
   },
   {
@@ -330,6 +348,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       // Security & Compliance
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
+      { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
@@ -379,11 +398,19 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Billing (full-control W02, #6756)
       { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
+      { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
       { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      // Wisp specialists (W07a #9913): every other kind asks first; an assessment's
+      // request for one becomes the wisp_specialist_request approval card.
+      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an Operator task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
+      { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
+      // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
+      { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
+      { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
     ],
   },
   {
@@ -437,6 +464,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_scheduled_tasks', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   // Security & Compliance
   { toolName: 'security_scan', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'ioc_hunt', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   // Files, Disk & Registry
   { toolName: 'file_operations', tier: 3, permission: 'devices.execute', category: 'Files, Disk & Registry' },
   { toolName: 'analyze_disk_usage', tier: 1, permission: 'devices.read', category: 'Files, Disk & Registry' },
@@ -531,6 +559,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // AI Governance
   { toolName: 'manage_ai_agents', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
   { toolName: 'operator_plan', tier: 3, permission: 'organizations.write', category: 'AI Governance' },
+  { toolName: 'remember', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'raise_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'create_watch', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'snooze_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
+  { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -598,6 +633,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   manage_scheduled_tasks: { list: 'devices.execute', run: 'devices.execute', disable: 'devices.execute', enable: 'devices.execute' },
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
+  ioc_hunt: { list_rule_sets: 'devices.read', preview_sweep: 'devices.read', list_sweeps: 'devices.read', sweep_status: 'devices.read', sweep: 'devices.execute', cancel_sweep: 'devices.execute', import_iocs: 'devices.write' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
   // Tool Catalog W03 (#5218)
@@ -605,6 +641,11 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   validate_flow: 'automations.read',
   get_flow: 'automations.read',
   list_flows: 'automations.read',
+  // #8973 W4: business-hours calendars (read-only)
+  list_business_calendars: 'tickets.read',
+  // #8883 W5: ticket routing rules
+  list_ticket_routing_rules: 'tickets.read',
+  test_ticket_routing_rule: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
@@ -760,6 +801,20 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   },
   // AI agent governance
   manage_ai_agents: { authorize_supervised_key: 'ai_agents.write' },
+  // Wisp memory (W03 #9909)
+  recall: 'ai_sessions.use',
+  remember: 'ai_sessions.use',
+  confirm_memory: 'ai_sessions.use',
+  retract_memory: 'ai_sessions.use',
+  // Wisp concerns and watches (W05a #9911)
+  list_concerns: 'ai_sessions.use',
+  raise_concern: 'ai_sessions.use',
+  snooze_concern: 'ai_sessions.use',
+  resolve_concern: 'ai_sessions.use',
+  create_watch: 'ai_sessions.use',
+  // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
+  launch_specialist: 'ai_sessions.use',
+  wisp_specialist_request: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',
     generate: 'reports.export',

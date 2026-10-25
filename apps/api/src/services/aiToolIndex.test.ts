@@ -202,6 +202,18 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   });
 });
 
+// #8883 W5: +128 B (6656 -> 6784) for the three ticket routing tools on the
+// Tickets line (+112 B: list_ticket_routing_rules, test_ticket_routing_rule,
+// manage_ticket_routing_rules (create/update/reorder/delete)); measured 6714
+// default / 6763 flag-on. Every SDK tool must carry a searchHint, so a new
+// tool cannot stay out of the index, and paying 112 B by rewriting other
+// domains' notes would change unrelated guidance. Flagged for prompt-size
+// review in the PR.
+// #6263 W05 PR B (#6268): +128 B (6784 -> 6912) for `ioc_hunt
+// (list_rule_sets/preview_sweep/list_sweeps/sweep_status/sweep/cancel_sweep/import_iocs)`
+// on the Security line (+97 B); measured 6811 default / 6860 flag-on (6714 /
+// 6763 before). Pre-authorized by Todd 2026-10-24 (Gate B 5); action names and
+// other domains' notes left unchanged.
 const INDEX_BUDGET_BYTES = 6.75 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */

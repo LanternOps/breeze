@@ -8,6 +8,7 @@
 // hence the local structural attach_state check instead of isAttachStateEvent.
 import type { AiAttachState, AiStreamEvent } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { registerLogoutHook } from './logoutHooks';
 
 export type AttachOutcome =
   | { kind: 'done' }
@@ -206,3 +207,6 @@ export function abortAllAttaches(): void {
   tracked.clear();
   for (const c of all) c.abort();
 }
+
+// #9427 W3 (T14): logout stops every live attach before storage is wiped.
+registerLogoutHook(abortAllAttaches);

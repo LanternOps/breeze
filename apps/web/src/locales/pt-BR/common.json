@@ -48,6 +48,7 @@
     "timesheets": "Folhas de Horas",
     "productCatalog": "Catálogo de Produtos",
     "deviceGroups": "Grupos de dispositivos",
+    "sites": "Sites",
     "unassignedDevices": "Dispositivos não atribuídos",
     "configPolicies": "Políticas de Configuração",
     "integrations": "Integrações",
@@ -116,7 +117,9 @@
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Mudanças",
-    "endpointMessages": "Mensagens"
+    "endpointMessages": "Mensagens",
+    "securityDetectionRules": "Regras de detecção",
+    "planAndFeatures": "Plano e recursos"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -427,13 +430,21 @@
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "empty": "Ainda sem dados de patches",
       "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
-      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas",
+      "devicesNeedPatches_one": "{{count}} dispositivo precisa de patches",
+      "devicesNeedPatches_other": "{{count}} dispositivos precisam de patches",
+      "viewPendingDevices": "Ver dispositivos com patches pendentes",
+      "viewFailedDevices": "Ver dispositivos com patches com falha",
+      "viewCriticalDevices": "Ver dispositivos com patches críticos"
     },
     "vuln": {
       "title": "Vulnerabilidades",
       "criticalOpen": "Críticas abertas",
       "kev": "Exploração conhecida",
       "patchReady": "Patch disponível",
+      "viewCritical": "Ver CVEs críticas",
+      "viewPatchReady": "Ver CVEs com patch pronto",
+      "viewOpen": "Ver CVEs abertas",
       "totalOpen": "{{count}} descobertas abertas",
       "totalOpen_one": "{{count}} descoberta aberta",
       "totalOpen_other": "{{count}} descobertas abertas",
@@ -1404,7 +1415,7 @@
           "name": "Webhook de produção",
           "signingSecret": "Informe um segredo de assinatura"
         },
-        "subtitle": "Defina entrega, autenticação e comportamento do payload.",
+        "subtitle": "Defina o destino, os eventos, a autenticação e os cabeçalhos.",
         "title": "Configuração do webhook",
         "validation": {
           "eventRequired": "Selecione pelo menos um evento",
@@ -1466,7 +1477,7 @@
           "noPayloadTemplate": "Ainda não há modelo de payload salvo.",
           "payloadPreview": "Prévia do modelo de payload",
           "testEvent": "Evento de teste",
-          "testEventHelp": "Os testes usam o evento selecionado e seu modelo de payload.",
+          "testEventHelp": "Envia um payload de exemplo do evento selecionado para este endpoint.",
           "title": "Detalhes do webhook"
         },
         "emptySelection": "Selecione um webhook para ver histórico de entrega e ferramentas de teste.",
@@ -2774,5 +2785,9 @@
     "title": "Esta seção falhou",
     "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
     "retry": "Tentar novamente"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloqueado",
+    "upgrade": "Ver planos"
   }
 }

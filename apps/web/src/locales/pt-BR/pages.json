@@ -155,6 +155,7 @@
     "settingsProfile": "Configurações de perfil",
     "settingsRoles": "Funções",
     "settingsSitesDetail": "Configurações do site",
+    "settingsSites": "Sites",
     "settingsSso": "Login único (SSO)",
     "settingsUsers": "Usuários",
     "settingsVariables": "Variáveis",
@@ -179,7 +180,11 @@
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
     "billingAutopay": "Pagamentos automáticos",
-    "endpointMessages": "Mensagens para dispositivos"
+    "endpointMessages": "Mensagens para dispositivos",
+    "securityDetectionRules": "Regras de detecção",
+    "settingsPlan": "Plano e recursos",
+    "settingsWispMemory": "Memória do Wisp",
+    "wispThread": "Conversa do Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -262,6 +267,14 @@
       },
       "alertTemplates": {
         "title": "Modelos de alerta"
+      },
+      "plan": {
+        "title": "Plano e recursos",
+        "description": "Seu plano, quais recursos ele inclui e de onde vem cada um."
+      },
+      "wispMemory": {
+        "title": "Memória do Wisp",
+        "description": "Revise, confirme e retire o que o Wisp lembra."
       }
     },
     "groups": {

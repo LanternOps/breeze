@@ -460,6 +460,27 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('BODYAFTERCOVER');
   });
 
+  it('cover image: centre-crops (align/valign center) like the on-screen preview', async () => {
+    const imageSpy = vi.spyOn(PDFKitDocument.prototype, 'image');
+    try {
+      await renderQuotePdf(
+        {
+          id: 'q1', quoteNumber: 'Q-COVER-ALIGN', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+          coverPage: { enabled: true, title: 'COVERALIGN', coverImageId: 'cover-png' },
+        } as never,
+        [],
+        [],
+        async () => ({ data: ONE_BY_ONE_PNG }),
+        {},
+      );
+      const coverCall = imageSpy.mock.calls.find((c) => Array.isArray((c[3] as { cover?: unknown } | undefined)?.cover));
+      expect(coverCall).toBeDefined();
+      expect(coverCall![3]).toMatchObject({ align: 'center', valign: 'center' });
+    } finally {
+      imageSpy.mockRestore();
+    }
+  });
+
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
     const requested: string[] = [];
     const buf = await renderQuotePdf(

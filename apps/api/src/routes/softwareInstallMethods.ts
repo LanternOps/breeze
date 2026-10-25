@@ -110,7 +110,9 @@ softwareInstallMethodRoutes.post(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const item = await loadOwnedCatalogItem(c.req.param('id'), orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
-    if (item.integrationProvider !== null) {
+    // Integration rows and Breeze built-in packages (#6958) alike: the package
+    // definition is not the caller's to extend.
+    if (item.integrationProvider !== null || item.builtinPackageKey != null) {
       return c.json({ error: 'Built-in packages cannot carry install methods' }, 400);
     }
     const payload = c.req.valid('json');

@@ -251,6 +251,21 @@ describe('softwareInstallMethodRoutes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('rejects methods on Breeze built-in packages (builtinPackageKey set, #6958)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        chainMock([ownedCatalogItem({ builtinPackageKey: 'controld_windows' })]) as any,
+      );
+
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ platform: 'windows', kind: 'winget', packageId: 'Vendor.App' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     async function postDuplicate() {
       return app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
         method: 'POST',

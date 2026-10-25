@@ -224,6 +224,11 @@ export function toYaraThreatRuleView(details: unknown, ruleSet: YaraThreatRuleVi
     sha256: typeof d.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(d.sha256) ? d.sha256.toLowerCase() : null,
     quarantinedTo: typeof d.quarantinedTo === 'string' && d.quarantinedTo.length > 0 ? d.quarantinedTo.slice(0, 4096) : null,
     quarantineFailed: d.quarantineFailed === true,
+    // #6263 W05-9: written server-side at ingest from the scan's dispatched refs.
+    ruleSetVersion:
+      typeof d.ruleSetVersion === 'number' && Number.isInteger(d.ruleSetVersion) && d.ruleSetVersion > 0
+        ? d.ruleSetVersion
+        : null,
   };
 }
 

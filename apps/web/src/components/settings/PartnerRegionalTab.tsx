@@ -1,7 +1,6 @@
-import { Clock } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
-import type { BusinessHoursPreset, DateFormat, TimeFormat, DaySchedule, SupportedLocale } from '@breeze/shared';
+import type { DateFormat, TimeFormat, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
 
 const DATE_FORMATS: { value: DateFormat; labelKey: string }[] = [
@@ -10,31 +9,15 @@ const DATE_FORMATS: { value: DateFormat; labelKey: string }[] = [
   { value: 'YYYY-MM-DD', labelKey: 'iso' }
 ];
 
-const BUSINESS_HOURS_PRESETS: { value: BusinessHoursPreset; key: string }[] = [
-  { value: '24/7', key: 'always' },
-  { value: 'business', key: 'business' },
-  { value: 'extended', key: 'extended' },
-  { value: 'custom', key: 'custom' }
-];
-
-const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
-const BH: DaySchedule = { start: '09:00', end: '17:00' };
-const BH_CLOSED: DaySchedule = { start: '09:00', end: '17:00', closed: true };
-export const DEFAULT_BUSINESS_HOURS: Record<string, DaySchedule> = { mon: BH, tue: BH, wed: BH, thu: BH, fri: BH, sat: BH_CLOSED, sun: BH_CLOSED };
-
 type PartnerRegionalTabProps = {
   timezone: string;
   dateFormat: DateFormat;
   timeFormat: TimeFormat;
   language: SupportedLocale;
-  businessHoursPreset: BusinessHoursPreset;
-  customHours: Record<string, DaySchedule>;
   onTimezoneChange: (value: string) => void;
   onDateFormatChange: (value: DateFormat) => void;
   onTimeFormatChange: (value: TimeFormat) => void;
   onLanguageChange: (value: SupportedLocale) => void;
-  onBusinessHoursPresetChange: (value: BusinessHoursPreset) => void;
-  onCustomHoursChange: (day: string, field: keyof DaySchedule, value: string | boolean) => void;
 };
 
 export default function PartnerRegionalTab({
@@ -42,14 +25,10 @@ export default function PartnerRegionalTab({
   dateFormat,
   timeFormat,
   language,
-  businessHoursPreset,
-  customHours,
   onTimezoneChange,
   onDateFormatChange,
   onTimeFormatChange,
   onLanguageChange,
-  onBusinessHoursPresetChange,
-  onCustomHoursChange,
 }: PartnerRegionalTabProps) {
   const { t } = useTranslation('settings');
 
@@ -108,62 +87,6 @@ export default function PartnerRegionalTab({
             </select>
             <p className="text-xs text-muted-foreground">{t('partner.regional.languageDescription')}</p>
           </div>
-        </div>
-      </section>
-
-      {/* Business Hours */}
-      <section className="rounded-lg border bg-card p-6 shadow-xs">
-        <div className="mb-6">
-          <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">{t('partner.regional.businessHours.title')}</h3>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {t('partner.regional.businessHours.description')}
-          </p>
-        </div>
-        <div className="space-y-4">
-          <div role="radiogroup" aria-label={t('partner.regional.businessHours.title')} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {BUSINESS_HOURS_PRESETS.map(preset => (
-              <label key={preset.value}
-                className={`cursor-pointer rounded-lg border p-4 transition ${
-                  businessHoursPreset === preset.value
-                    ? 'border-primary bg-primary/5' : 'hover:border-muted-foreground/50'
-                }`}>
-                <input type="radio" name="businessHoursPreset" value={preset.value}
-                  checked={businessHoursPreset === preset.value}
-                  onChange={() => onBusinessHoursPresetChange(preset.value)} className="sr-only" />
-                <div className="font-medium">{t(/* i18n-dynamic */ `partner.regional.businessHours.presets.${preset.key}.label`)}</div>
-                <div className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `partner.regional.businessHours.presets.${preset.key}.description`)}</div>
-              </label>
-            ))}
-          </div>
-          {businessHoursPreset === 'custom' && (
-            <div className="mt-6 space-y-3 border-t pt-6">
-              <h3 className="text-sm font-semibold">{t('partner.regional.businessHours.customSchedule')}</h3>
-              {DAYS.map(day => (
-                <div key={day} className="flex items-center gap-4">
-                  <div className="w-24 text-sm font-medium">{t(/* i18n-dynamic */ `partner.regional.days.${day}`)}</div>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={!customHours[day]?.closed}
-                      onChange={e => onCustomHoursChange(day, 'closed', !e.target.checked)} className="h-4 w-4" />
-                    <span className="text-sm">{t('partner.regional.businessHours.open')}</span>
-                  </label>
-                  {!customHours[day]?.closed && (
-                    <>
-                      <input type="time" value={customHours[day]?.start || '09:00'}
-                        onChange={e => onCustomHoursChange(day, 'start', e.target.value)}
-                        className="h-8 rounded-md border bg-background px-2 text-sm" />
-                      <span className="text-sm text-muted-foreground">{t('partner.regional.businessHours.to')}</span>
-                      <input type="time" value={customHours[day]?.end || '17:00'}
-                        onChange={e => onCustomHoursChange(day, 'end', e.target.value)}
-                        className="h-8 rounded-md border bg-background px-2 text-sm" />
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </section>
     </>

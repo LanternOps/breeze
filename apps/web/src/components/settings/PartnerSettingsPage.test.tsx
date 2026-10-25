@@ -11,7 +11,9 @@ import { getJwtClaims } from '../../lib/authScope';
 import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
 }));
 
 vi.mock('../../stores/orgStore', () => ({
@@ -158,7 +160,6 @@ describe('PartnerSettingsPage language control', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language,
-          businessHours: { preset: 'business' },
           contact: {}
         }
       })
@@ -176,6 +177,14 @@ describe('PartnerSettingsPage language control', () => {
     window.location.hash = '';
     await act(async () => { await i18n.changeLanguage('en'); });
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('uses the full content width, not a centred max-width column', async () => {
+    await renderPartner();
+    const heading = screen.getByRole('heading', { name: /Partner Settings/i });
+    const root = heading.closest('header')!.parentElement!;
+    expect(root.className).not.toMatch(/\bmax-w-/);
+    expect(root.className).not.toMatch(/\bmx-auto\b/);
   });
 
   it('renders an active selector with exactly the supported locales', async () => {
@@ -206,6 +215,24 @@ describe('PartnerSettingsPage language control', () => {
     expect(patchCall).toBeDefined();
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.settings.language).toBe('en');
+  });
+
+  it('regional tab keeps tz/date/time/language controls and the save payload carries no businessHours (#8973)', async () => {
+    const user = await renderPartner('en');
+    expect(screen.getByTestId('partner-timezone-trigger')).toBeTruthy();
+    expect(screen.getByLabelText('Language')).toBeTruthy();
+    expect(document.getElementById('partner-date-format')).toBeTruthy();
+    expect(document.querySelector('input[name="timeFormat"]')).toBeTruthy();
+    expect(document.querySelector('input[name="businessHoursPreset"]')).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Language'), 'de-DE');
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.settings).not.toHaveProperty('businessHours');
   });
 
   it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const)(
@@ -249,7 +276,6 @@ describe('PartnerSettingsPage language control', () => {
     // The panel's own h2 (from the shell) now carries the tab label; the card keeps only its description.
     expect(screen.getByTestId('partner-settings-panel-heading').textContent).toBe(i18n.t('partnerSettingsPage.tabs.regional.label', { ns: 'settings' }));
     expect(screen.getByLabelText('Fuso horário')).not.toBeNull();
-    expect(screen.getAllByText('Horário comercial')).toHaveLength(2);
     expect(screen.getByText('Idioma padrão das configurações do parceiro.')).not.toBeNull();
   });
 });
@@ -270,7 +296,7 @@ describe('PartnerSettingsPage security clear (#8976)', () => {
         createdAt: '2026-02-09T00:00:00.000Z',
         settings: {
           timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
-          businessHours: { preset: 'business' }, contact: {},
+          contact: {},
           security: { sessionTimeout: 720, maxSessions: 3 },
         },
       })
@@ -317,7 +343,6 @@ describe('PartnerSettingsPage Company tab', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language: 'en',
-          businessHours: { preset: 'business' },
           contact: { name: 'Jane' },
           address: { city: 'Denver', country: 'US' },
         },
@@ -349,7 +374,6 @@ describe('PartnerSettingsPage Company tab', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language: 'en',
-          businessHours: { preset: 'business' },
           contact: {},
           address: {},
         },
@@ -429,7 +453,7 @@ describe('PartnerSettingsPage Company tab', () => {
         createdAt: '2026-02-09T00:00:00.000Z',
         settings: {
           timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
-          businessHours: { preset: 'business' }, contact: {}, address: {},
+          contact: {}, address: {},
         },
       });
 
@@ -487,7 +511,6 @@ describe('PartnerSettingsPage Company tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -563,7 +586,6 @@ describe('PartnerSettingsPage Ticketing tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -624,7 +646,6 @@ describe('PartnerSettingsPage Email templates tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -649,7 +670,7 @@ describe('PartnerSettingsPage Email templates tab', () => {
     expect(screen.getByText(/quotes, invoices, invites/i)).not.toBeNull();
   });
 
-  it('mounts the email templates tab as self-saving with hash #email-templates', async () => {
+  it('mounts the email templates tab (list kind) with hash #email-templates', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
@@ -661,8 +682,8 @@ describe('PartnerSettingsPage Email templates tab', () => {
 
     expect(screen.getByTestId('stub-email-templates-tab')).not.toBeNull();
     expect(window.location.hash).toBe('#email-templates');
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    // W2: one header Save on every tab; nothing is dirty, so it is disabled.
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('deep-links #email-templates straight to the Email templates tab on mount', async () => {
@@ -691,7 +712,6 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
       ...extraSettings,
@@ -725,7 +745,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('hydrates an opted-in partner, marks the tab dirty on toggle, and saves the explicit choice', async () => {
     const toggle = await openRemoteAccess({ networkProxy: { dedicatedTunnelOrigin: true } });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toBeChecked();
     const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
 
@@ -739,7 +759,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('leaves the choice unset for a partner who never chose, so a later default flip still reaches them', async () => {
     const toggle = await openRemoteAccess({});
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(toggle).not.toBeChecked();
     const user = userEvent.setup();
     // An unrelated edit on another tab makes the page saveable.
     await user.click(screen.getByRole('link', { name: /^company$/i }));
@@ -763,7 +783,6 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -792,15 +811,15 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
     expect(screen.getByRole('link', { name: /^company \(unsaved changes\)$/i })).not.toBeNull();
   });
 
-  it('replaces the global Save button with a note on self-saving tabs', async () => {
+  it('keeps the header Save on list tabs: an edit on Company stays saveable from Email templates', async () => {
     render(<PartnerSettingsPage />);
 
-    await screen.findByText('Partner Settings');
     const user = userEvent.setup();
+    await user.type(await screen.findByLabelText(/company name/i), ' Inc.');
     await user.click(screen.getByRole('link', { name: /^email templates$/i }));
 
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText('This section saves its own changes.')).toBeNull();
   });
 
   it('marks the active tab with aria-current and pushes the canonical kebab hash on click', async () => {
@@ -848,7 +867,6 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -959,7 +977,6 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
       aiBudgets: { enabled: true, monthlyBudgetCents: 5000, alertThresholdPercents: [50, 80] },

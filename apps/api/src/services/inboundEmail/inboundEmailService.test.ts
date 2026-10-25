@@ -722,6 +722,8 @@ describe('processInboundEmail', () => {
     expect(input.submitterEmail).toBe('jane@customer.com');
     expect(input.orgId).toBe('o-1');
     expect(input.submittedBy).toBe('pu-1');
+    // #8883 W5: a fresh create is not a continuation, so routing runs.
+    expect(input).not.toHaveProperty('continuationOfTicketId');
 
     const log = inboundOf();
     expect(log).toHaveLength(1);
@@ -771,6 +773,8 @@ describe('processInboundEmail', () => {
     expect(createTicketMock).toHaveBeenCalledTimes(1);
     // A reply to a CLOSED ticket spawns a linked ticket but is NOT a fresh acknowledgement.
     expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
+    // #8883 W5 (Gate B14): explicit continuation provenance, so createTicket skips routing.
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).continuationOfTicketId).toBe('t-closed');
   });
 
   it('stamps a stable generated anchor on email_thread_key when the inbound email has no Message-Id', async () => {
@@ -1037,6 +1041,21 @@ describe('processInboundEmail', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
     expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('deadlock');
+  });
+
+  it('#8972: a ticket merged under the match is retried (BullMQ), not recorded as a terminal failed row', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    const { TicketMergedError } = await import('../ticketMerge/errors');
+    const merged = new TicketMergedError('t-src', 't-survivor');
+    createTicketMock.mockRejectedValue(merged);
+
+    await expect(processInboundEmail(email({ subject: 'Raced a merge' }))).rejects.toBe(merged);
+    expect(inboundOf().filter((r) => r.parseStatus === 'failed')).toEqual([]);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('when the durable failed-row insert ALSO fails, it throws the ORIGINAL error (not the sentinel) so BullMQ retries — no silent ack', async () => {

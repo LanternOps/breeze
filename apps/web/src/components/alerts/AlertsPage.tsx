@@ -9,6 +9,7 @@ import { useAlertActions } from './useAlertActions';
 import AlertsSummary from './AlertsSummary';
 import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
+import { EMPTY_ALERTS_HASH, mergeAlertsHash, parseAlertsHash, type AlertsHashState } from './alertsHash';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgIdParamSwitch } from '@/hooks/useOrgIdParamSwitch';
@@ -35,14 +36,11 @@ const BULK_PAST_TENSE_KEY: Record<string, string> = {
   dismiss: 'dismissed',
 };
 
-// Hash layout (hash-based UI state per CLAUDE.md): the bare token
-// `#hideAiNoise` when the AI-noise filter is on, empty otherwise. Pure: takes
-// the raw hash (leading `#` already stripped by useHashState, #2421).
-// Anything else (including empty) falls back to useHashState's `false`
-// default, so this page currently owns the whole hash — a future second
-// hash-state consumer on this page would need to combine into one segment.
-function hideAiNoiseFromHash(hash: string): boolean | undefined {
-  return hash === 'hideAiNoise' ? true : undefined;
+// Hash layout (hash-based UI state per CLAUDE.md, spec §3.2.1):
+// `#status=active&severity=critical,high&hideAiNoise=1`. Codec lives in
+// alertsHash.ts; the bare legacy token `#hideAiNoise` still parses as on.
+function alertsStateFromHash(hash: string): AlertsHashState {
+  return parseAlertsHash(hash);
 }
 
 // `#<alertId>` deep-links straight to that alert's drawer (the Ticket
@@ -114,7 +112,6 @@ export default function AlertsPage() {
   const [selectedAlertTicketsFailed, setSelectedAlertTicketsFailed] = useState(false);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
-  const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
 
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
@@ -124,7 +121,28 @@ export default function AlertsPage() {
   // Phase 2 wave P2-1 (alert verdicts), Task 15. SSR-safe hash adoption +
   // hashchange subscription live in the hook (#2421); the write happens in
   // handleHideAiNoiseChange below, per CLAUDE.md's URL-state rule.
-  const [hideAiNoise, setHideAiNoiseState] = useHashState<boolean>(false, hideAiNoiseFromHash);
+  const [hashState, setHashState] = useHashState<AlertsHashState>(EMPTY_ALERTS_HASH, alertsStateFromHash);
+  const hideAiNoise = hashState.hideAiNoise;
+
+  // Legacy `/alerts?severity=<sev>` (CommandPalette recents, old bookmarks):
+  // read once, fold into the hash, strip from the query with replaceState (no
+  // reload, no extra history entry). Existing hash keys win over the legacy
+  // value; unrelated query params are kept.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const legacy = params.get('severity');
+    if (legacy === null) return;
+    params.delete('severity');
+    const legacySeverity = parseAlertsHash(`severity=${legacy.toLowerCase()}`).severity;
+    const current = parseAlertsHash(window.location.hash);
+    const nextHash =
+      legacySeverity.length > 0 && current.severity.length === 0
+        ? mergeAlertsHash(window.location.hash, { severity: legacySeverity })
+        : window.location.hash;
+    const search = params.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${search ? `?${search}` : ''}${nextHash}`);
+    setHashState(parseAlertsHash(nextHash));
+  }, [setHashState]);
   const [hashAlertId] = useHashState<string | null>(null, alertIdFromHash);
   // Last hash id already opened, so closing the drawer doesn't re-open it.
   const openedHashAlertRef = useRef<string | null>(null);
@@ -284,8 +302,9 @@ export default function AlertsPage() {
   // read. fetchAlerts depends on hideAiNoise, so the effect below re-fires
   // and refetches with hideAiNoise=true/omitted as soon as this state lands.
   const handleHideAiNoiseChange = (value: boolean) => {
-    window.location.hash = value ? 'hideAiNoise' : '';
-    setHideAiNoiseState(value);
+    const next = mergeAlertsHash(window.location.hash, { hideAiNoise: value });
+    window.location.hash = next;
+    setHashState(parseAlertsHash(next));
   };
 
   const handleSelect = async (alert: Alert) => {
@@ -432,8 +451,9 @@ export default function AlertsPage() {
   };
 
   const handleFilterBySeverity = (severity: AlertSeverity) => {
-    setSeverityFilter(severity);
-    void navigateTo(`/alerts?severity=${severity}`);
+    const next = mergeAlertsHash(window.location.hash, { severity: [severity] });
+    window.location.hash = next;
+    setHashState(parseAlertsHash(next));
   };
 
   const alertCounts = alerts
@@ -621,6 +641,8 @@ export default function AlertsPage() {
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
           showOrgColumn={isFleetView}
+          initialStatus={hashState.status[0]}
+          initialSeverity={hashState.severity}
           hideAiNoise={hideAiNoise}
           onHideAiNoiseChange={handleHideAiNoiseChange}
         />

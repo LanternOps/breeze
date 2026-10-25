@@ -71,6 +71,7 @@ import { and, eq, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
+import { updateOwnDeviceRow } from './agentOwnDeviceRow';
 import { scripts } from '../db/schema/scripts';
 import { getBinaryEdition } from './binaryEdition';
 import { getGithubReleaseVersion } from './binarySource';
@@ -185,7 +186,9 @@ async function computeStagedMsiSha256(): Promise<string | null> {
 }
 
 type AutoMigrateDevice = DispatchScriptInput['device'] &
-  Pick<typeof devices.$inferSelect, 'editionMigrationDispatchedAt'>;
+  // `agentId`: the claim and its release are bound to the identity the
+  // heartbeat authenticated as (#8318 §6.4).
+  Pick<typeof devices.$inferSelect, 'editionMigrationDispatchedAt' | 'agentId'>;
 
 /**
  * The cheap, non-DB gate — exported so the heartbeat can decide whether to
@@ -458,18 +461,21 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
     // moved to another org (whose policy/pins were never consulted) or
     // decommissioned between the heartbeat and this detached claim must not
     // be migrated on stale grounds.
-    const claimRows = await db
-      .update(devices)
-      .set({ editionMigrationDispatchedAt: new Date() })
-      .where(
-        and(
-          eq(devices.id, device.id),
+    // #8318 §6.4: also bound to the agent_id the heartbeat authenticated as,
+    // through updateOwnDeviceRow (detached from the beat, so a reattach
+    // confirm in between makes this a 0-row stand-down).
+    const claimRows = await updateOwnDeviceRow(
+      db,
+      { deviceId: device.id, agentId: device.agentId },
+      { editionMigrationDispatchedAt: new Date() },
+      {
+        where: and(
           eq(devices.orgId, device.orgId),
           ne(devices.status, 'decommissioned'),
           isNull(devices.editionMigrationDispatchedAt),
         ),
-      )
-      .returning({ id: devices.id });
+      },
+    );
     if (claimRows.length === 0) return null;
     claimed = true;
 
@@ -497,7 +503,7 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
     if (!result.ok) {
       // Nothing reached the device: release the claim so a future process can
       // retry, but stop THIS process from retrying every 60s heartbeat.
-      await releaseClaim(device.id);
+      await releaseClaim(device);
       claimed = false;
       if (result.code === 'maintenance_suppressed') {
         // #4919 — an ORDINARY stand-down, not a fault. The migration IS this
@@ -538,7 +544,7 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
     // process dispatch a second reinstall to a device that is mid-dance.
     // Fail toward the one-attempt invariant and leave the claim standing.
     if (claimed && !dispatchAttempted) {
-      await releaseClaim(device.id);
+      await releaseClaim(device);
     }
     console.error(`[edition-auto-migrate] failed for device ${device.id}:`, err);
     captureException(err);
@@ -591,14 +597,22 @@ function warnStagedVersionHoldBack(args: {
   console.warn(`${subject}: ${reason}`);
 }
 
-async function releaseClaim(deviceId: string): Promise<void> {
+async function releaseClaim(device: Pick<AutoMigrateDevice, 'id' | 'agentId'>): Promise<void> {
   try {
-    await db
-      .update(devices)
-      .set({ editionMigrationDispatchedAt: null })
-      .where(eq(devices.id, deviceId));
+    const released = await updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, { editionMigrationDispatchedAt: null });
+    if (released.length === 0) {
+      // #8318 §6.4: the row no longer carries the agent_id the claim was taken
+      // under (a reattach confirm or an in-place re-enroll since), or it is
+      // gone. Nothing is released here, and nothing needs to be: both of
+      // those clear the previous install's claim themselves. Said once, per
+      // release, so a claim that seems stuck has a trail.
+      console.warn(
+        `[edition-auto-migrate] claim release for device ${device.id} matched no row: it changed hands ` +
+          '(reattach / re-enroll, which clear the claim themselves) or is gone; nothing released',
+      );
+    }
   } catch (releaseErr) {
     // The stale claim just means no second attempt — safe, log and move on.
-    console.error(`[edition-auto-migrate] failed to release claim for device ${deviceId}:`, releaseErr);
+    console.error(`[edition-auto-migrate] failed to release claim for device ${device.id}:`, releaseErr);
   }
 }

@@ -880,6 +880,15 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
     expect(result.requiresApproval).toBe(true);
   });
 
+  it('merge_preview is Tier 1 (read) and merge is Tier 3 with approval (#8972)', () => {
+    const preview = checkGuardrails('manage_tickets', { action: 'merge_preview' });
+    expect(preview.tier).toBe(1);
+    expect(preview.requiresApproval).toBe(false);
+    const merge = checkGuardrails('manage_tickets', { action: 'merge' });
+    expect(merge.tier).toBe(3);
+    expect(merge.requiresApproval).toBe(true);
+  });
+
   // P2-4 (#4191): new ticket-triage actions, same family as update_fields.
   it('link_device and draft resolve to Tier 2 (auto-execute + audit)', () => {
     for (const action of ['link_device', 'draft']) {

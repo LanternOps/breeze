@@ -254,41 +254,7 @@
       "twelveHour": "12 horas",
       "twentyFourHour": "24 horas",
       "language": "Idioma",
-      "languageDescription": "Idioma predeterminado para la configuración de socios.",
-      "businessHours": {
-        "title": "Horario comercial",
-        "description": "Establezca su horario de atención estándar para soporte y alertas.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Siempre disponible"
-          },
-          "business": {
-            "label": "Horario comercial",
-            "description": "Lunes a viernes de 9 a. m. a 5 p. m."
-          },
-          "extended": {
-            "label": "Horario extendido",
-            "description": "Lunes a viernes de 7 a. m. a 7 p. m., sábados de 9 a. m. a 1 p. m."
-          },
-          "custom": {
-            "label": "Personalizado",
-            "description": "Establezca su propio horario"
-          }
-        },
-        "customSchedule": "Horario personalizado",
-        "open": "Abierto",
-        "to": "a"
-      },
-      "days": {
-        "mon": "Lunes",
-        "tue": "Martes",
-        "wed": "Miércoles",
-        "thu": "Jueves",
-        "fri": "Viernes",
-        "sat": "Sábado",
-        "sun": "Domingo"
-      }
+      "languageDescription": "Idioma predeterminado para la configuración de socios."
     }
   },
   "partnerAiBudgets": {
@@ -1154,7 +1120,6 @@
     "title": "Configuración de socios",
     "description": "Configure los valores predeterminados para {{name}}.",
     "yourMsp": "su MSP",
-    "selfSaving": "Esta sección guarda sus propios cambios.",
     "saveSettings": "Guardar configuración",
     "enforcedDescription": "Los valores que establezca aquí se aplicarán en todas las organizaciones. Deje los campos vacíos para permitir que cada organización configure individualmente.",
     "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones.",
@@ -1183,6 +1148,27 @@
       "topologyAiDescription": "Permitir que Breeze AI resuma el mapa y señale cambios inusuales en la topología de un sitio.",
       "saved": "Módulos actualizados",
       "saveFailed": "No se pudieron actualizar los módulos"
+    },
+    "status": {
+      "clean": "Todos los cambios guardados · {{time}}",
+      "cleanNoTime": "Todos los cambios guardados",
+      "dirty": "Cambios sin guardar en <tabs></tabs>.",
+      "invalid_one": "Corrige {{count}} campo en {{tab}} para guardar.",
+      "invalid_other": "Corrige {{count}} campos en {{tab}} para guardar.",
+      "saving": "Guardando…",
+      "partial": "No se pudo guardar <tabs></tabs>. Los demás cambios se guardaron.",
+      "failed": "No se pudo guardar <tabs></tabs>.",
+      "autosaved": "Guardado · {{time}}",
+      "autosaveFailed": "No se pudo guardar; inténtalo de nuevo",
+      "readOnly": "Para guardar se necesita acceso completo de socio"
+    },
+    "validation": {
+      "retentionDays": "Ingresa un número entero de días entre 1 y 3650."
+    },
+    "unsavedConfirm": "Tienes cambios sin guardar. ¿Salir de esta página y descartarlos?",
+    "knownGuests": {
+      "added": "Invitado conocido agregado",
+      "removed": "Invitado conocido eliminado"
     }
   },
   "partnerSendingDomains": {
@@ -1509,7 +1495,8 @@
       "approval_ask": "Solicitud de aprobación",
       "approval_snapshot": "Cifras de la aprobación",
       "approval_expires": "Fecha límite de aprobación",
-      "approval_status": "Estado de la aprobación"
+      "approval_status": "Estado de la aprobación",
+      "merged_into_number": "Número del ticket de destino"
     },
     "billingPayments": "Facturación y pagos",
     "supportPortal": "Soporte y portal",
@@ -1524,7 +1511,8 @@
       "payment_failed": "No se pudo completar el pago",
       "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
       "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
-      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo"
+      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo",
+      "ticket_merged": "Ticket combinado"
     }
   },
   "inboundEmail": {
@@ -1558,9 +1546,6 @@
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
     "staffForwardRouting": "Asignar los reenvíos del personal al cliente del remitente original",
     "staffForwardRoutingDescription": "Cuando un miembro de su personal a nivel de socio reenvía el correo de un cliente a la dirección de soporte, el nuevo ticket se asigna a la organización vinculada al dominio del remitente original y no a la suya. El miembro del personal debe tener acceso a esa organización. Solo funciona con reenvíos hechos en Gmail y recibidos en un buzón de Gmail conectado; no con la dirección de entrada nativa, los buzones de Microsoft 365 ni los reenvíos de Outlook.",
-    "defaultAssignee": "Asignado predeterminado para nuevos tickets entrantes",
-    "defaultAssigneeDescription": "Cada ticket nuevo creado a partir de un correo entrante se asigna a esta persona, salvo que ya lo haya asignado otra regla. Si no tiene acceso a la organización del ticket, el ticket queda sin asignar.",
-    "defaultAssigneeUnavailable": "Usuario no disponible",
     "defaultAssigneeNotAssignable": "Ese usuario no puede ser el asignado predeterminado. Elija un miembro activo de su equipo con acceso a tickets.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
     "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
@@ -4519,6 +4504,9 @@
     "notEnabledBody": "MCP OAuth está deshabilitado en este servidor. Configure MCP_OAUTH_ENABLED=true y reinicie la API para permitir apps conectadas.",
     "revokeConfirm": "¿Revocar el acceso a {{name}}? Su token de acceso dejará de funcionar en 10 minutos.",
     "revokeFailed": "Falló la revocación ({{status}})",
+    "revokeTitle": "Revocar aplicación conectada",
+    "revokeSuccess": "Se revocó el acceso de {{name}}",
+    "revokeFailedGeneric": "Falló la revocación",
     "networkError": "error de red",
     "networkErrorDuringRevoke": "Error de red durante la revocación",
     "revoking": "Revocando…",
@@ -5239,7 +5227,8 @@
     "timeTracking": "Seguimiento de tiempo",
     "email": "Correo electrónico",
     "templates": "Plantillas",
-    "timeCapture": "Registro de tiempo"
+    "timeCapture": "Registro de tiempo",
+    "routing": "Enrutamiento"
   },
   "ticketFormsCard": {
     "heading": "Formularios de admisión",
@@ -5746,6 +5735,20 @@
       "sourceOrg": "Reemplazo de la organización",
       "sourcePartner": "Predeterminado del socio",
       "sourceDefault": "Predeterminado integrado"
+    },
+    "businessCalendar": {
+      "title": "Horario comercial",
+      "description": "El calendario según el cual corren los relojes de SLA de esta organización. Déjelo en Heredar para seguir el predeterminado del partner.",
+      "label": "Calendario comercial",
+      "inherit": "Heredar",
+      "inheritedDefault": "Heredado: {{name}} (predeterminado del partner)",
+      "inheritedNone": "Heredado: 24×7 (sin predeterminado del partner)",
+      "partnerWideOption": "{{name}} (todas las orgs)",
+      "archivedOverride": "Calendario archivado (ya no se aplica)",
+      "loadFailed": "No se pudo cargar el calendario comercial.",
+      "errors": {
+        "save": "No se pudo guardar el calendario comercial. Reintente."
+      }
     }
   },
   "organizationForm": {
@@ -5968,8 +5971,10 @@
   "siteDetailPage": {
     "loading": "Cargando sitio...",
     "backToOrganizations": "Volver a organizaciones",
+    "backToSites": "Volver a sitios",
     "breadcrumbs": {
       "settings": "Configuración",
+      "sites": "Sitios",
       "organizations": "Organizaciones"
     },
     "errors": {
@@ -6055,6 +6060,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contacto principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sitios",
+      "description": "Ubicaciones donde se encuentran sus dispositivos. Abra un sitio para ver sus detalles y dispositivos.",
+      "organizationColumn": "Organización",
+      "pickOrg": "Organización",
+      "pickOrgPlaceholder": "Elija una organización",
+      "pickOrgRequired": "Elija la organización a la que pertenece este sitio.",
+      "fleetAddDescription": "Agregue un nuevo sitio y elija la organización a la que pertenece.",
+      "empty": "Aún no hay sitios. Agregue un sitio a una organización para comenzar.",
+      "viewDevicesAt": "ver dispositivos en {{name}}"
+    }
   },
   "siteList": {
     "title": "Sitios",
@@ -6923,5 +6941,346 @@
     "enabledToast": "Atajos de una sola tecla activados",
     "disabledToast": "Atajos de una sola tecla desactivados",
     "saveFailed": "No se pudieron guardar los atajos de una sola tecla."
+  },
+  "businessHoursCard": {
+    "title": "Horario comercial",
+    "description": "Calendarios según los cuales corren los relojes de SLA de respuesta y resolución. Un ticket usa el calendario de su organización o su calendario predeterminado; si no hay ninguno, corre las 24 horas.",
+    "newTicketsOnly": "Editar los horarios o la zona horaria se aplica solo a los tickets nuevos. Use \"Aplicar a tickets abiertos\" para actualizar los tickets que ya están abiertos.",
+    "create": "Nuevo calendario",
+    "loading": "Cargando horario comercial…",
+    "loadError": "No se pudo cargar el horario comercial.",
+    "retry": "Reintentar",
+    "empty": "Aún no hay calendarios de horario comercial. Los tickets corren las 24 horas (24×7) hasta que cree uno y lo establezca como predeterminado.",
+    "allOrgs": "Todas las orgs",
+    "default": "Predeterminado",
+    "archived": "Archivado",
+    "edit": "Editar",
+    "setDefault": "Establecer como predeterminado",
+    "clearDefault": "Quitar predeterminado",
+    "applyOpen": "Aplicar a tickets abiertos",
+    "archive": "Archivar",
+    "unarchive": "Restaurar",
+    "delete": "Eliminar",
+    "deleteTitle": "¿Eliminar {{name}}?",
+    "deleteMessage": "Esto elimina de forma permanente el calendario y sus feriados. No se puede eliminar un calendario que aún usan tickets u organizaciones; archívelo en su lugar.",
+    "name": "Nombre",
+    "timezone": "Zona horaria",
+    "appliesTo": "Se aplica a",
+    "ownerPartner": "Todas las organizaciones (a nivel de partner)",
+    "ownerOrg": "Una organización",
+    "organization": "Organización",
+    "chooseOrg": "Elija una organización",
+    "weeklyHours": "Horario semanal",
+    "closed": "Cerrado",
+    "to": "a",
+    "addInterval": "Agregar horario",
+    "intervalStart": "{{day}} abre a las",
+    "intervalEnd": "{{day}} cierra a las",
+    "removeInterval": "Quitar el horario de {{day}}",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "cancel": "Cancelar",
+    "holidays": "Feriados",
+    "holidayHint": "Los feriados con fecha de hoy o anterior no modifican los tickets abiertos.",
+    "noHolidays": "Sin feriados.",
+    "holidayDate": "Fecha",
+    "holidayName": "Nombre",
+    "holidayAdd": "Agregar feriado",
+    "holidayRemove": "Quitar el feriado {{name}}",
+    "weekdays": {
+      "0": "Domingo",
+      "1": "Lunes",
+      "2": "Martes",
+      "3": "Miércoles",
+      "4": "Jueves",
+      "5": "Viernes",
+      "6": "Sábado"
+    },
+    "errors": {
+      "nameRequired": "Ingrese un nombre.",
+      "orgRequired": "Elija una organización.",
+      "invalidTime": "Ingrese las horas como HH:MM (por ejemplo 09:00); el final puede ser 24:00.",
+      "order": "Cada intervalo debe terminar después de comenzar.",
+      "overlap": "Los intervalos del mismo día no deben superponerse.",
+      "empty": "Agregue al menos un intervalo de apertura.",
+      "timezone": "Elija una zona horaria válida.",
+      "save": "No se pudo guardar el calendario. Reintente.",
+      "holidayInvalid": "Ingrese una fecha válida y un nombre para el feriado.",
+      "holidayAdd": "No se pudo agregar el feriado. Reintente.",
+      "holidayRemove": "No se pudo quitar el feriado. Reintente.",
+      "inUse": "Este calendario lo usan tickets u organizaciones y no se puede eliminar. Archívelo en su lugar.",
+      "isDefault": "Este calendario es el predeterminado. Quite el predeterminado antes de eliminarlo.",
+      "default": "No se pudo cambiar el calendario predeterminado. Reintente.",
+      "archive": "No se pudo cambiar el estado de archivo. Reintente.",
+      "delete": "No se pudo eliminar el calendario. Reintente.",
+      "apply": "No se pudo aplicar el calendario a los tickets abiertos. Reintente."
+    },
+    "toasts": {
+      "created": "Calendario creado",
+      "updated": "Calendario actualizado",
+      "defaultSet": "Calendario predeterminado establecido",
+      "defaultCleared": "Predeterminado quitado; los tickets sin excepción corren 24×7",
+      "archived": "Calendario archivado",
+      "unarchived": "Calendario restaurado",
+      "deleted": "Calendario eliminado",
+      "holidayAdded": "Feriado agregado",
+      "holidayRemoved": "Feriado quitado",
+      "recompute": "Se están actualizando los plazos de los tickets abiertos.",
+      "applied": "Aplicado a tickets abiertos: {{count}} actualizados",
+      "appliedPartial": "{{skipped}} tickets se estaban editando y conservan su horario anterior. Vuelve a aplicar para reintentarlos."
+    },
+    "apply": {
+      "title": "Aplicar {{name}} a tickets abiertos",
+      "explanation": "Los tickets abiertos que nunca se han pausado pasarán al horario actual y se recalcularán sus plazos. Los tickets con historial de pausas no se modifican.",
+      "loading": "Cargando vista previa…",
+      "loadFailed": "No se pudo cargar la vista previa.",
+      "revisionChanged": "El horario cambió desde esta vista previa. Revise los conteos actualizados antes de aplicar.",
+      "eligible": "Tickets que se actualizarán: {{count}}",
+      "breached": "De ellos, vencerían de inmediato: {{count}}",
+      "paused": "Omitidos por haberse pausado: {{count}}",
+      "confirm": "Aplicar a tickets abiertos"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan y funciones",
+    "description": "Lo que incluye tu plan. Las funciones bloqueadas siguen visibles para que veas lo que agrega una mejora.",
+    "currentPlan": "Plan actual",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Ilimitado"
+    },
+    "columns": {
+      "feature": "Función",
+      "state": "Estado",
+      "source": "Origen",
+      "expires": "Vence",
+      "limits": "Límites"
+    },
+    "state": {
+      "enabled": "Incluida",
+      "disabled": "Bloqueada"
+    },
+    "source": {
+      "plan": "Predeterminado del plan",
+      "billing": "Facturación",
+      "license": "Licencia",
+      "manual": "Asignación manual"
+    },
+    "graceWarning": "Venció el {{expiresAt}} — período de gracia hasta el {{graceUntil}}",
+    "noExpiry": "Nunca",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisor de incorporación",
+        "why": "Un supervisor de IA que diagnostica y repara fallas de incorporación sin intervención."
+      },
+      "verified_library": {
+        "label": "Biblioteca de software verificada",
+        "why": "Paquetes seleccionados y verificados que puedes implementar con confianza."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp clasifica tu flota de forma continua y avisa a la persona indicada; disponible en Pro y superiores."
+      }
+    },
+    "loadError": "No se pudo cargar tu plan.",
+    "retry": "Reintentar"
+  },
+  "ticketRouting": {
+    "title": "Enrutamiento de tickets",
+    "description": "Las reglas se ejecutan al crear un ticket y completan el asignado, la prioridad, la categoría, el estado y las etiquetas que el creador no eligió. Primero se aplican las reglas de la organización y luego las del socio. Gana la primera coincidencia.",
+    "createRule": "Nueva regla",
+    "loadFailed": "No se pudieron cargar las reglas de enrutamiento.",
+    "lookupsFailed": "No se pudieron cargar algunos técnicos, categorías o estados, por lo que las listas pueden estar incompletas. Vuelve a cargar la página para intentarlo de nuevo.",
+    "empty": "Aún no hay reglas de enrutamiento.",
+    "groupOrg": "Reglas de {{org}}",
+    "groupPartner": "Reglas para todo el socio",
+    "thisOrganization": "Esta organización",
+    "allOrgs": "Todas las orgs",
+    "limitedOrgs": "Solo {{count}} orgs",
+    "catchAll": "Coincide con todos los tickets",
+    "noActions": "No establece nada",
+    "enabledLabel": "Activar la regla {{name}}",
+    "enabledOn": "Regla activada",
+    "enabledOff": "Regla desactivada",
+    "saveFailed": "No se pudo guardar la regla. Inténtalo de nuevo.",
+    "deleteFailed": "No se pudo eliminar la regla. Inténtalo de nuevo.",
+    "saved": "Regla guardada",
+    "created": "Regla creada",
+    "deleted": "Regla eliminada",
+    "reorderFailed": "No se pudo guardar el nuevo orden. Inténtalo de nuevo.",
+    "dragHandle": "Arrastra para reordenar {{name}}, o usa las flechas arriba y abajo para moverla.",
+    "readOnly": "Puedes ver esta regla, pero no cambiarla.",
+    "chips": {
+      "add": "Agregar",
+      "remove": "Quitar {{value}}"
+    },
+    "errors": {
+      "keywordShort": "Las palabras clave necesitan al menos 2 caracteres.",
+      "keywordLong": "Las palabras clave pueden tener como máximo 100 caracteres.",
+      "keywordsMax": "Puedes agregar como máximo 20 palabras clave.",
+      "domainInvalid": "Usa un host como example.com o *.example.com.",
+      "domainsMax": "Puedes agregar como máximo 50 dominios.",
+      "tagEmpty": "Ingresa una etiqueta.",
+      "tagLong": "Las etiquetas pueden tener como máximo 50 caracteres.",
+      "tagsMax": "Puedes agregar como máximo 20 etiquetas.",
+      "nameRequired": "Ingresa un nombre para la regla.",
+      "orgRequired": "Elige una organización.",
+      "orgLinksRequired": "Elige al menos una organización o aplica la regla a todas las organizaciones."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "Correo",
+      "alert": "Alerta",
+      "manual": "Manual",
+      "api": "API",
+      "ai": "IA"
+    },
+    "priorities": {
+      "low": "Baja",
+      "normal": "Normal",
+      "high": "Alta",
+      "urgent": "Urgente"
+    },
+    "drawer": {
+      "titleCreate": "Nueva regla de enrutamiento",
+      "titleEdit": "Editar regla de enrutamiento",
+      "close": "Cerrar",
+      "owner": "Propietario",
+      "ownerOrg": "Solo esta organización",
+      "ownerPartner": "Todas las organizaciones (para todo el socio)",
+      "organization": "Organización",
+      "chooseOrg": "Elige una organización",
+      "appliesTo": "Se aplica a",
+      "orgLinksAll": "Todas las organizaciones",
+      "orgLinksSelected": "Solo las organizaciones seleccionadas",
+      "name": "Nombre",
+      "conditions": "Cuando un ticket coincide",
+      "conditionsHelp": "Deben cumplirse todas las condiciones completadas. Deja una condición vacía para ignorarla.",
+      "matchSources": "El origen es alguno de",
+      "matchPriorities": "La prioridad es alguna de",
+      "matchCategory": "Categoría",
+      "any": "Cualquiera",
+      "matchKeywords": "El asunto contiene alguna de",
+      "matchKeywordsHint": "De 2 a 100 caracteres cada una, hasta 20.",
+      "matchDomains": "El dominio del correo del solicitante es alguno de",
+      "matchDomainsHint": "example.com o *.example.com, hasta 50.",
+      "actions": "Entonces establecer",
+      "actionsHelp": "Solo se aplica a los campos que el creador no eligió. Establece al menos uno.",
+      "setAssignee": "Asignado",
+      "setPriority": "Prioridad",
+      "setCategory": "Categoría",
+      "setStatus": "Estado",
+      "addTags": "Agregar etiquetas",
+      "noChange": "Sin cambios",
+      "unavailableUser": "Usuario no disponible",
+      "unavailableStatus": "Estado no disponible",
+      "enabled": "Activada",
+      "save": "Guardar",
+      "saving": "Guardando...",
+      "delete": "Eliminar",
+      "deleteTitle": "¿Eliminar esta regla?",
+      "deleteMessage": "«{{name}}» dejará de aplicarse a los tickets nuevos. Esta acción no se puede deshacer."
+    },
+    "test": {
+      "title": "Probar un ticket",
+      "description": "Simulación: mira qué regla coincidiría con un ticket nuevo y qué cambiaría. No se crea nada.",
+      "org": "Organización",
+      "source": "Origen",
+      "subject": "Asunto",
+      "email": "Correo del solicitante (opcional)",
+      "category": "Categoría (opcional)",
+      "priority": "Prioridad (opcional)",
+      "notChosen": "Sin elegir",
+      "run": "Ejecutar prueba",
+      "running": "Probando...",
+      "failed": "No se pudo ejecutar la prueba. Inténtalo de nuevo.",
+      "matched": "Regla coincidente: {{name}}",
+      "noMatch": "Ninguna regla coincidió",
+      "applied": "Se aplicaría",
+      "appliedNothing": "No cambiaría nada",
+      "skipped": "Omitido",
+      "actions": {
+        "set_assignee": "Asignado",
+        "set_category": "Categoría",
+        "set_status": "Estado"
+      },
+      "reasons": {
+        "assignee_ineligible": "El asignado no puede acceder a los tickets de esta organización.",
+        "assignee_deleted": "El asignado ya no existe.",
+        "category_foreign": "La categoría pertenece a otro socio.",
+        "status_foreign": "El estado pertenece a otro socio.",
+        "status_inactive": "El estado está inactivo.",
+        "status_core_not_allowed": "Una regla no puede establecer este estado."
+      }
+    },
+    "fallback": {
+      "title": "Si ninguna regla asigna un ticket de correo",
+      "description": "Cada ticket nuevo creado desde el correo entrante se asigna a esta persona cuando ninguna regla de enrutamiento lo asigna. Si no puede acceder a la organización del ticket, queda sin asignar.",
+      "label": "Asignado predeterminado",
+      "unavailable": "Usuario no disponible",
+      "saveFailed": "No se pudo guardar el asignado de respaldo. Inténtalo de nuevo.",
+      "saved": "Asignado de respaldo guardado",
+      "loadFailed": "No se pudo cargar el asignado de respaldo."
+    }
+  },
+  "wispMemory": {
+    "title": "Memoria de Wisp",
+    "description": "Revisa lo que Wisp recordó para ti, un cliente o todo tu equipo, y confírmalo o retíralo.",
+    "tabs": {
+      "mine": "Mi memoria",
+      "org": "Cliente",
+      "partner": "Todos los clientes",
+      "users": "Técnicos"
+    },
+    "empty": "Aún no hay bloques de memoria aquí.",
+    "loading": "Cargando memoria…",
+    "loadFailed": "No se pudo cargar la memoria.",
+    "retry": "Reintentar",
+    "columns": {
+      "subject": "Asunto",
+      "type": "Tipo",
+      "status": "Estado",
+      "confidence": "Confianza",
+      "updated": "Actualizado",
+      "actions": "Acciones"
+    },
+    "statusValue": {
+      "unconfirmed": "Sin confirmar",
+      "confirmed": "Confirmado",
+      "retracted": "Retirado"
+    },
+    "type": {
+      "preference": "Preferencia",
+      "standing_instruction": "Instrucción permanente",
+      "fact": "Dato",
+      "decision": "Decisión",
+      "concern_outcome": "Resultado de una inquietud",
+      "work_summary": "Resumen de trabajo"
+    },
+    "confidenceValue": {
+      "low": "Baja",
+      "medium": "Media",
+      "high": "Alta"
+    },
+    "confirm": "Confirmar",
+    "retract": "Retirar",
+    "confirmed": "Memoria confirmada.",
+    "retracted": "Memoria retirada.",
+    "confirmFailed": "No se pudo confirmar la memoria.",
+    "retractFailed": "No se pudo retirar la memoria.",
+    "fromConversation": "Desde la conversación",
+    "pickOrg": "Selecciona un cliente",
+    "pickUser": "Selecciona un técnico",
+    "pickPrompt": "Elige una opción arriba para ver su memoria.",
+    "showContent": "Mostrar contenido",
+    "hideContent": "Ocultar contenido",
+    "conversationUnavailable": "Esta conversación ya no está disponible.",
+    "usersLoadFailed": "No se pudieron cargar los técnicos."
   }
 }

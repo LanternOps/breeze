@@ -48,6 +48,7 @@
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",
+    "sites": "Standorte",
     "unassignedDevices": "Nicht zugewiesene Geräte",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
@@ -116,7 +117,9 @@
     "ticketsServiceRequests": "Serviceanfragen",
     "ticketsProblems": "Probleme",
     "ticketsChanges": "Änderungen",
-    "endpointMessages": "Nachrichten"
+    "endpointMessages": "Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
+    "planAndFeatures": "Tarif & Funktionen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -427,13 +430,21 @@
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "empty": "Noch keine Patch-Daten",
       "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
-      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft",
+      "devicesNeedPatches_one": "{{count}} Gerät benötigt Patches",
+      "devicesNeedPatches_other": "{{count}} Geräte benötigen Patches",
+      "viewPendingDevices": "Geräte mit ausstehenden Patches anzeigen",
+      "viewFailedDevices": "Geräte mit fehlgeschlagenen Patches anzeigen",
+      "viewCriticalDevices": "Geräte mit kritischen Patches anzeigen"
     },
     "vuln": {
       "title": "Schwachstellen",
       "criticalOpen": "Kritisch offen",
       "kev": "Bekannt ausgenutzt",
       "patchReady": "Patch verfügbar",
+      "viewCritical": "Kritische CVEs anzeigen",
+      "viewPatchReady": "CVEs mit verfügbarem Patch anzeigen",
+      "viewOpen": "Offene CVEs anzeigen",
       "totalOpen": "{{count}} offene Funde",
       "totalOpen_one": "{{count}} offener Fund",
       "totalOpen_other": "{{count}} offene Funde",
@@ -1404,7 +1415,7 @@
           "name": "Produktions-Webhook",
           "signingSecret": "Signaturgeheimnis eingeben"
         },
-        "subtitle": "Konfigurieren Sie Zustellung, Authentifizierung und Nutzdatenverhalten.",
+        "subtitle": "Legen Sie Ziel, Ereignisse, Authentifizierung und Header fest.",
         "title": "Webhook-Konfiguration",
         "validation": {
           "eventRequired": "Wählen Sie mindestens ein Ereignis aus",
@@ -1466,7 +1477,7 @@
           "noPayloadTemplate": "Noch keine Payload-Vorlage gespeichert.",
           "payloadPreview": "Vorschau der Nutzlastvorlage",
           "testEvent": "Testereignis",
-          "testEventHelp": "Tests verwenden das ausgewählte Ereignis und Ihre Nutzlastvorlage.",
+          "testEventHelp": "Sendet eine Beispiel-Nutzlast für das ausgewählte Ereignis an diesen Endpunkt.",
           "title": "Webhook-Details"
         },
         "emptySelection": "Wählen Sie einen Webhook aus, um den Übermittlungsverlauf und die Testtools anzuzeigen.",
@@ -2774,5 +2785,9 @@
     "title": "Dieser Bereich ist abgestürzt",
     "description": "Ein Darstellungsfehler hat die Anzeige dieser Seite verhindert. Versuche es erneut und gib bei wiederholtem Auftreten die folgende Meldung in deiner Fehlermeldung an.",
     "retry": "Erneut versuchen"
+  },
+  "featureLock": {
+    "lockedLabel": "Gesperrt",
+    "upgrade": "Tarife ansehen"
   }
 }

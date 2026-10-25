@@ -45,7 +45,11 @@ export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction
 /** Only `select` is needed to take the lock, so narrower connections (a `Pick` of db) qualify. */
 type LockExecutor = Pick<typeof db, 'select'>;
 
-/** The ticket state a writer re-checks under the lock. W1 adds `mergedIntoTicketId`. */
+/**
+ * The ticket state a writer re-checks under the lock. `mergedIntoTicketId`
+ * (#8972 W1) is the tombstone guard's input: `assertTicketNotMerged(row)`
+ * (services/ticketMerge/errors.ts) right after the lock.
+ */
 export interface LockedTicketRow {
   id: string;
   orgId: string;
@@ -53,6 +57,7 @@ export interface LockedTicketRow {
   status: (typeof tickets.$inferSelect)['status'];
   deletedAt: Date | null;
   workKind: (typeof tickets.$inferSelect)['workKind'];
+  mergedIntoTicketId: string | null;
 }
 
 // Built per call, not at module load: suites that partially mock
@@ -64,6 +69,7 @@ const lockedTicketColumns = () => ({
   status: tickets.status,
   deletedAt: tickets.deletedAt,
   workKind: tickets.workKind,
+  mergedIntoTicketId: tickets.mergedIntoTicketId,
 });
 
 /**

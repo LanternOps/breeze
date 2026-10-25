@@ -199,6 +199,24 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   taskId: uuid('task_id'),
   taskStepKey: text('task_step_key'),
   taskAttemptOrdinal: integer('task_attempt_ordinal'),
+  // Wisp W02 (Wisp design §4.3): the delegation grant + the revision this run
+  // was admitted under. Both NULL for every non-Wisp run, both set otherwise
+  // (`ai_agent_runs_grant_link_chk`). FKs (grant_revision_id, grant_id) ->
+  // wisp_grant_revisions(id, grant_id) (ON DELETE SET NULL, erasure only) and
+  // grant_id -> wisp_grants(id) (ON DELETE RESTRICT) are SQL-ONLY
+  // (migrations/2027-01-04-100100-wisp-grants.sql), like `taskId` above.
+  grantId: uuid('grant_id'),
+  grantRevisionId: uuid('grant_revision_id'),
+  // Wisp W07 (w00 A11): specialist lineage. A child run requested by Wisp's
+  // assessment run carries depth 1, the requesting run and the grant revision
+  // the request was made under; every other row is depth 0 with both NULL
+  // (`ai_agent_runs_depth_chk`). FKs are SQL-ONLY
+  // (migrations/2027-01-05-100400-wisp-specialist-lineage.sql): the
+  // (requested_by_run_id, org_id) self-FK uses `ON DELETE SET NULL
+  // (requested_by_run_id)`, which Drizzle cannot model.
+  requestedByRunId: uuid('requested_by_run_id'),
+  parentGrantRevisionId: uuid('parent_grant_revision_id'),
+  depth: smallint('depth').notNull().default(0),
   // Spec §6.2: no prompt registry exists yet, so runs 1 and 4 of one task may
   // use different released prompts. That drift is accepted but must be
   // RECORDED. `resolvedModel` because runLoop.ts may fall back to the org's

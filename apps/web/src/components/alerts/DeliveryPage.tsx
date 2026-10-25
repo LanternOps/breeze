@@ -45,7 +45,7 @@ export default function DeliveryPage() {
             <span className="font-medium">{channel.name}</span>
             <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{t('notificationChannelsPage.allOrgs')}</span>
           </div>
-          <p className="mt-1 text-sm capitalize text-muted-foreground">{channel.type}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{t(/* i18n-dynamic */ `notificationChannelList.channelType.${channel.type}`, { defaultValue: channel.type })}</p>
           <p className="mt-2 text-xs text-muted-foreground">{t('deliveryPage.routing.partnerRowHint')}</p>
         </div>)}</div>
       </section>}

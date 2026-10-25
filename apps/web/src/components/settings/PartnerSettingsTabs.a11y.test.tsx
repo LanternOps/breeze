@@ -89,7 +89,7 @@ describe('partner settings tabs: every form control has an accessible name (#916
 const PARTNER = {
   id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
   createdAt: '2026-02-09T00:00:00.000Z',
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {}, address: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {}, address: {} },
 };
 const json = (body: unknown, status = 200) =>
   ({ ok: status < 400, status, statusText: 'OK', json: async () => body }) as unknown as Response;
@@ -144,7 +144,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
 
   it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('every control has an accessible name on %s', async (_key, hash, labelKey) => {
     await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
-    const controls = Array.from(document.querySelectorAll('main input, main select, main textarea, section input, section select, section textarea'));
+    // Autosave switches (W2: ML features, Modules) are buttons with role="switch" and need a name too.
+    const controls = Array.from(document.querySelectorAll('main input, main select, main textarea, section input, section select, section textarea, section [role="switch"]'));
     // callerVerification (form loads policy data) and emailTemplates (link list) expose no inputs under these fixtures.
     if (!['callerVerification', 'emailTemplates'].includes(_key)) expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {

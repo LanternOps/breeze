@@ -360,7 +360,22 @@
     "moving": "Taşınıyor...",
     "toADifferentSite": "farklı bir siteye taşı.",
     "deviceMovedByOther": "Bu cihaz başka biri tarafından taşındı; geçerli sitesini görmek için sayfayı yenileyin",
-    "policyNote": "Taşıma, {{device}} cihazına uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onu otomatik olarak geri taşımaz."
+    "policyNote": "Taşıma, {{device}} cihazına uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onu otomatik olarak geri taşımaz.",
+    "bulkIntro": "Seçilen {{count}} cihazı {{org}} içindeki farklı bir siteye taşıyın.",
+    "bulkIntro_one": "Seçilen {{count}} cihazı {{org}} içindeki farklı bir siteye taşıyın.",
+    "bulkIntro_other": "Seçilen {{count}} cihazı {{org}} içindeki farklı bir siteye taşıyın.",
+    "bulkIntroNoOrg": "Seçilen {{count}} cihazı farklı bir siteye taşıyın.",
+    "bulkIntroNoOrg_one": "Seçilen {{count}} cihazı farklı bir siteye taşıyın.",
+    "bulkIntroNoOrg_other": "Seçilen {{count}} cihazı farklı bir siteye taşıyın.",
+    "devicesFromSites": "{{siteCount}} siteden {{count}} cihaz",
+    "devicesFromSites_one": "{{siteCount}} siteden {{count}} cihaz",
+    "devicesFromSites_other": "{{siteCount}} siteden {{count}} cihaz",
+    "selectSite": "Site seçin",
+    "moveDevices": "{{count}} cihazı taşı",
+    "moveDevices_one": "{{count}} cihazı taşı",
+    "moveDevices_other": "{{count}} cihazı taşı",
+    "bulkPolicyNote": "Taşıma, bu cihazlara uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onları otomatik olarak geri taşımaz.",
+    "failedToMoveDevices": "Cihazlar taşınamadı"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Grup oluşturulamadı",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} / {{count}} cihaz",
     "countLine_other": "{{shown}} / {{count}} cihaz",
-    "noMatchesTitle": "Bu filtrelerle eşleşen cihaz yok"
+    "noMatchesTitle": "Bu filtrelerle eşleşen cihaz yok",
+    "moveToSite": "Siteye taşı",
+    "moveSelectedToSite": "Siteye taşı",
+    "moveSiteMixedOrgs": "Seçilen cihazlar birden fazla kuruluşa ait",
+    "moveSiteOverCap": "Aynı anda taşımak için en fazla {{count}} cihaz seçin"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -1868,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Cihaz günlükleri yükleniyor...",
     "noLogsMatchTheSelectedFilters": "Seçilen filtrelerle eşleşen günlük yok.",
-    "noDeviceLogsRecordedYet": "Henüz kayıtlı cihaz kaydı yok."
+    "noDeviceLogsRecordedYet": "Henüz kayıtlı cihaz kaydı yok.",
+    "linkedWindow": "Güvenilirlik puanlama aralığı gösteriliyor: {{from}} – {{to}}",
+    "linkedWindowWithSource": "Güvenilirlik puanlama aralığı gösteriliyor: {{from}} – {{to}}, kaynak: {{source}}",
+    "clearLinkedFilter": "Bağlantı filtresini temizle"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Yönetim duruşu yükleniyor...",
@@ -1950,6 +1972,7 @@
     "title": "Aktif Ağ Bağlantıları"
   },
   "devicePatchStatusTab": {
+    "released": "Yayın tarihi: {{date}}",
     "compliance": {
       "compliant": "{{percent}}% uyumlu",
       "description": "Bekleyen ve yüklü güncellemeler",
@@ -2288,7 +2311,11 @@
       "savedNotActive": "İşaretçi kaydedildi. Daha sonraki bir işaretçi hâlâ geçerli olduğundan puan değişmedi.",
       "clearNotFound": "Bu işaretçi artık mevcut değil.",
       "clearAlreadyCleared": "Bu işaretçi zaten devre dışı bırakılmış."
-    }
+    },
+    "eventLogLinkExact": "Olay günlüğünde görüntüle",
+    "eventLogLinkWindow": "Olay günlüğünü aç",
+    "eventLogLinkTitle": "Olay günlüğü, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "{{source}} için olay günlüğü, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Panoya kopyala",
@@ -2694,7 +2721,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
       "bulkRestored_one": "{{count}} cihaz geri yüklendi",
-      "bulkRestored_other": "{{count}} cihaz geri yüklendi"
+      "bulkRestored_other": "{{count}} cihaz geri yüklendi",
+      "bulkMoveSiteSuccess": "{{count}} cihaz artık {{site}} konumunda",
+      "bulkMoveSiteSuccess_one": "{{count}} cihaz artık {{site}} konumunda",
+      "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
+      "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
+      "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",

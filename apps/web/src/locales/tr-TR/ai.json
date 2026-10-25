@@ -106,6 +106,24 @@
     "noM365Customer": "M365 müşterisi yok",
     "dismiss": "Kapat"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Yapay Zeka Asistanında aç",
+    "continueInPanel": "Yan panelde devam et",
+    "openPastConversation": "Geçmiş bir konuşmayı aç",
+    "closeTabInAssistant": "Bu konuşmayı açmak için Yapay Zeka Asistanında bir sekmeyi kapatın",
+    "closeTabToOpen": "Bu konuşmayı açmak için bir sekmeyi kapatın",
+    "notAvailable": "Bu konuşma kullanılamıyor",
+    "wasClosed": "Bu konuşma kapatıldı",
+    "topologyFromMap": "İncelemeler topoloji haritasından açılır",
+    "openInPanel": "Yan panelde aç",
+    "replaceConfirm": "Yan paneldeki konuşma değiştirilsin mi? Geçmişinizde kalmaya devam eder.",
+    "joinedMidResponse": "Yanıtın ortasında katıldınız. Tam yanıt tamamlandığında görünür.",
+    "chooseModelInPanel": "Model seçmek için yan panelde devam edin",
+    "tabMenu": "Sekme seçenekleri",
+    "anotherOrg": "Başka bir kuruluş",
+    "device": "Cihaz",
+    "newChat": "Yeni sohbet"
+  },
   "aiContextBadge": {
     "context": "Bağlam",
     "dashboard": "Kontrol Paneli"
@@ -555,5 +573,180 @@
   },
   "buyCredits": {
     "link": "Kredi satın al"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Wisp'i aç",
+      "turningOn": "Wisp açılıyor…"
+    },
+    "locked": {
+      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir."
+    },
+    "modal": {
+      "title": "Wisp'i aç",
+      "refreshTitle": "Wisp yetkisini yenile",
+      "scopeLabel": "Wisp şunun üzerinde çalışabilir",
+      "scopeOrg": "Bu kuruluş",
+      "scopePartner": "Tüm kuruluşlar",
+      "explain": "Wisp, sizin yapmaya yetkili olduğunuz işlemler kapsamında çalışır. Devam etmek için kimliğinizi doğrulayın.",
+      "code": "Kimlik doğrulayıcı kodu",
+      "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
+      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce profilinizde birini kurun.",
+      "noOrg": "Önce üst bölümden bir kuruluş seçin.",
+      "confirm": "Onayla",
+      "cancel": "İptal",
+      "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
+      "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin."
+    },
+    "header": {
+      "scopeAll": "Tüm kuruluşlar",
+      "status": {
+        "active": "Etkin",
+        "paused": "Duraklatıldı",
+        "revoked": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "refresh": "Yetkiyi yenile",
+      "revoke": "Wisp'i kapat",
+      "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Açık konular okunabilir kalır.",
+      "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin."
+    },
+    "settings": {
+      "title": "Bütçe ve kontrol aralığı",
+      "budget": "Günlük bütçe (¢)",
+      "tick": "Kontrol aralığı (dakika)",
+      "save": "Kaydet"
+    },
+    "focus": {
+      "label": "Çalışılan müşteri",
+      "none": "Müşteri odağı yok",
+      "pick": "Bir müşteriye odaklan…",
+      "clear": "Odağı temizle"
+    },
+    "attachments": {
+      "title": "Bu konuya eklendi",
+      "drop": "Buraya bir e-posta konuşması, .eml veya CSV bırakın ya da metin yapıştırın",
+      "paste": "Metin yapıştır",
+      "label": "Etiket",
+      "add": "Ekle",
+      "empty": "Henüz bir şey eklenmedi",
+      "expires": "Bitiş: {{date}}",
+      "limits": "En fazla 20 dosya, her biri 5 MB, yalnızca metin",
+      "focusRequired": "Eklemeden önce bir müşteri odağı seçin",
+      "loadFailed": "Ekler yüklenemedi"
+    },
+    "toast": {
+      "on": "Wisp açık",
+      "onFailed": "Wisp açılamadı",
+      "off": "Wisp kapalı",
+      "offFailed": "Wisp kapatılamadı",
+      "refreshed": "Yetki yenilendi",
+      "refreshFailed": "Yetki yenilenemedi",
+      "settingsSaved": "Wisp ayarları kaydedildi",
+      "settingsFailed": "Wisp ayarları kaydedilemedi",
+      "focusSet": "Wisp artık {{org}} üzerinde çalışıyor",
+      "focusCleared": "Müşteri odağı temizlendi",
+      "focusFailed": "Odak değiştirilemedi",
+      "attached": "Konuya eklendi",
+      "attachFailed": "Eklenemedi",
+      "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
+      "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın.",
+      "paused": "Wisp duraklatıldı",
+      "resumed": "Wisp devam ettirildi",
+      "pauseFailed": "Wisp duraklatılamadı",
+      "resumeFailed": "Wisp devam ettirilemedi"
+    },
+    "spend": {
+      "meter": "Bugün {{budget}}¢ içinden {{spent}}¢",
+      "resets": "{{hours}} saat içinde sıfırlanır",
+      "raise": "Bugünün bütçesini artır",
+      "label": "Bugünkü Wisp harcaması"
+    },
+    "pause": "Wisp'i duraklat",
+    "resume": "Devam et",
+    "paused": {
+      "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez."
+    },
+    "live": {
+      "checking": "{{org}} kontrol ediliyor…",
+      "checkingUnnamed": "Bir müşteri kontrol ediliyor…"
+    },
+    "thread": {
+      "title": "Wisp konuşması",
+      "openChat": "Sohbette aç",
+      "openChatInactive": "Bu konuşmada sohbet etmek için Wisp'in etkin olması gerekir.",
+      "notFound": "Bu Wisp konuşması yok ya da size ait değil.",
+      "loadFailed": "Bu Wisp konuşması yüklenemedi.",
+      "retry": "Tekrar dene",
+      "stale": "Bu ileti dizisi yenilenemedi. Gördükleriniz güncel olmayabilir."
+    },
+    "activity": {
+      "title": "Etkinlik",
+      "empty": "Henüz bir şey yok. Wisp'in çalışmaları burada görünür.",
+      "loadFailed": "Etkinlik yüklenemedi",
+      "loadMore": "Daha fazla yükle",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Kontrol",
+        "concern": "Endişe",
+        "specialist": "Uzman",
+        "approval": "Onay",
+        "memory": "Bellek",
+        "nudge": "Hatırlatma",
+        "brief": "Özet"
+      }
+    }
+  },
+  "wispConcerns": {
+    "title": "Endişeler",
+    "empty": "Şu anda Wisp'in radarında bir şey yok.",
+    "snooze": "Ertele",
+    "snoozeOneHour": "1 saat",
+    "snoozeTomorrow": "Yarın 9:00'a kadar",
+    "snoozeWeek": "7 gün",
+    "dismiss": "Yok say",
+    "resolve": "Çöz",
+    "resolveOutcomePlaceholder": "Ne oldu?",
+    "resolveSubmit": "Çözüldü olarak işaretle",
+    "snoozed": "Ertelendi",
+    "dismissed": "Yok sayıldı",
+    "resolved": "Çözüldü",
+    "quietUntil": "{{when}} tarihine kadar sessiz",
+    "digestOnly": "yalnızca özet",
+    "showAll": "Tümünü göster",
+    "showLive": "Açık olanları göster",
+    "loadFailed": "Endişeler yüklenemedi",
+    "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+    "severity": {
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "subject": {
+      "ticket": "Talep",
+      "device": "Cihaz",
+      "alert": "Uyarı",
+      "org": "Müşteri",
+      "integration": "Entegrasyon",
+      "run": "Çalıştırma",
+      "task": "Görev",
+      "incident": "Olay",
+      "quote": "Teklif",
+      "invoice": "Fatura",
+      "contract": "Sözleşme",
+      "site": "Konum"
+    },
+    "reviewApproval": "Onayı incele",
+    "useful": "Yararlı",
+    "notUseful": "Yararlı değil",
+    "feedbackNotePlaceholder": "Ne daha iyi olabilirdi? (isteğe bağlı)",
+    "feedbackSend": "Gönder",
+    "feedbackGivenUseful": "Bunu yararlı olarak işaretlediniz",
+    "feedbackGivenNotUseful": "Bunu yararlı değil olarak işaretlediniz",
+    "feedbackSaved": "Teşekkürler. Wisp bunu hatırlayacak."
   }
 }

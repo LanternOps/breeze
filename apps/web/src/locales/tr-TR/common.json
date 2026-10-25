@@ -48,6 +48,7 @@
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
+    "sites": "Siteler",
     "unassignedDevices": "Atanmamış Cihazlar",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
@@ -116,7 +117,9 @@
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
     "ticketsChanges": "Değişiklikler",
-    "endpointMessages": "Mesajlar"
+    "endpointMessages": "Mesajlar",
+    "securityDetectionRules": "Tespit Kuralları",
+    "planAndFeatures": "Plan ve özellikler"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -427,13 +430,21 @@
       "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "empty": "Henüz yama verisi yok",
       "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
-      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi",
+      "devicesNeedPatches_one": "{{count}} cihazın yamaya ihtiyacı var",
+      "devicesNeedPatches_other": "{{count}} cihazın yamaya ihtiyacı var",
+      "viewPendingDevices": "Bekleyen yaması olan cihazları göster",
+      "viewFailedDevices": "Başarısız yaması olan cihazları göster",
+      "viewCriticalDevices": "Kritik yaması olan cihazları göster"
     },
     "vuln": {
       "title": "Güvenlik Açıkları",
       "criticalOpen": "Kritik açık",
       "kev": "Kullanıldığı biliniyor",
       "patchReady": "Yama mevcut",
+      "viewCritical": "Kritik CVE'leri göster",
+      "viewPatchReady": "Yaması hazır CVE'leri göster",
+      "viewOpen": "Açık CVE'leri görüntüle",
       "totalOpen": "{{count}} açık bulgular",
       "totalOpen_one": "{{count}} açık bulgu",
       "totalOpen_other": "{{count}} açık bulgular",
@@ -1404,7 +1415,7 @@
           "name": "Prodüksiyon Web Kancası",
           "signingSecret": "İmza sırrını girin"
         },
-        "subtitle": "Teslimatı, kimlik doğrulamayı ve yük davranışını ayarlayın.",
+        "subtitle": "Hedefi, etkinlikleri, kimlik doğrulamayı ve üstbilgileri ayarlayın.",
         "title": "Web kancası yapılandırması",
         "validation": {
           "eventRequired": "En az bir etkinlik seçin",
@@ -1466,7 +1477,7 @@
           "noPayloadTemplate": "Henüz kayıtlı yük şablonu yok.",
           "payloadPreview": "Yük şablonu önizlemesi",
           "testEvent": "Test etkinliği",
-          "testEventHelp": "Testler, seçilen etkinliği ve yük şablonunuzu kullanır.",
+          "testEventHelp": "Seçilen etkinlik için bu uç noktaya örnek bir yük gönderir.",
           "title": "Web kancası ayrıntıları"
         },
         "emptySelection": "Teslimat geçmişini ve test araçlarını görüntülemek için bir web kancası seçin.",
@@ -2774,5 +2785,9 @@
     "title": "Bu bölüm çöktü",
     "description": "Bir görüntüleme hatası bu sayfanın gösterilmesini engelledi. Tekrar deneyin; sorun devam ederse bildirirken aşağıdaki mesajı ekleyin.",
     "retry": "Tekrar dene"
+  },
+  "featureLock": {
+    "lockedLabel": "Kilitli",
+    "upgrade": "Planları gör"
   }
 }

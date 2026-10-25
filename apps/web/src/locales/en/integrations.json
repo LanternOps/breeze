@@ -302,6 +302,9 @@
     "workspace": "Workspace",
     "workspaceID": "Workspace ID: {{id}}",
     "connectWorkspace": "Connect workspace ",
+    "notConnected": "Not connected",
+    "pendingConnection": "Pending connection",
+    "turnOnSlackToConnectWorkspace": "Turn on Slack notifications to connect a workspace.",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth redirect starts when you connect a Slack workspace. ",
     "defaultChannel": "Default channel",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "Connection health",
     "allHealthy": "All connections are healthy",
+    "allHealthyDetail": "Connected integrations are checked automatically. Problems show here and beside the integration in the list.",
     "loadError": "Could not load connection health.",
     "retry": "Retry",
     "since": "since {{time}}",
     "fix": "Fix",
-    "remedy": { "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze." },
+    "remedy": {
+      "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze."
+    },
     "truncated": "Showing the first {{count}}",
     "recentlyResolved": "Recently resolved ({{count}})",
     "resolution": {
@@ -527,6 +533,14 @@
     "pageOf": "Page {{current}} of {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "Partner-wide",
+      "partnerWideDetail": "Applies to every organization you manage."
+    },
+    "nav": {
+      "select": "Choose an integration",
+      "openProblems": "Open problems: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configuring integrations for",
       "thisOrganization": "this organization",
@@ -545,14 +559,14 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Pricing",
-    "tdSYNNEXPriceFile": "TD SYNNEX Price File",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "payments": "Payments",
     "integrations": "Integrations",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Manage all connections and keep automation workflows healthy. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Accounting integrations are available to partner accounts only. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "The UniFi network integration is available to partner accounts only. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Connect Breeze to the tools your MSP runs on, and see which connections need attention.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Accounting integrations are available to partner accounts only.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "The UniFi network integration is available to partner accounts only.",
     "psa": "PSA",
     "viewNameDocumentation": "View {{name}} documentation",
     "backup": "Backup",
@@ -707,7 +721,10 @@
     "allApplications": "All applications",
     "searchAllApplicationsFirst2": " (not Owned applications) for an existing Breeze app in this tenant. ",
     "tenantIdGuidPlaceholder": "Tenant ID (GUID), e.g. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain."
+    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.",
+    "savingRequiresMfa": " Saving requires MFA verification.",
+    "clientSecretPlaceholder": "app client secret",
+    "clientSecretStoredPlaceholder": "•••••••••• (stored, encrypted)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

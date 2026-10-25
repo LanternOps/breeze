@@ -84,7 +84,8 @@
       "low": "Low"
     },
     "checklistProgress": "{{done}}/{{total}} steps",
-    "checklistTitle": "Checklist: {{done}} of {{total}} steps done"
+    "checklistTitle": "Checklist: {{done}} of {{total}} steps done",
+    "merged": "Merged"
   },
   "ticketArchivedList": {
     "emptyTitle": "No archived tickets.",
@@ -176,7 +177,9 @@
       "broken": "Couldn't load {{name}}",
       "open": "Open attachment",
       "remove": "Remove attachment"
-    }
+    },
+    "mergedFrom": "from {{number}}",
+    "mergedFromUnknown": "from a merged ticket"
   },
   "ticketPartsCard": {
     "title": "Parts",
@@ -336,6 +339,7 @@
     "selectedCount_other": "{{count}} selected",
     "clearSelection": "Clear",
     "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "ticketNotInView": "Ticket {{number}} is not in this view.",
     "movedToClosed": {
       "message": "{{status}} — now under {{tab}}",
       "view": "View in {{tab}}"
@@ -411,13 +415,15 @@
       "confirm": "Delete tickets"
     },
     "filterByType": "Filter by type",
-    "allTypes": "All types"
+    "allTypes": "All types",
+    "showMerged": "Show merged"
   },
   "ticketWorkbench": {
     "notFound": "Ticket not found. It may have been deleted, or you may not have access to it.",
     "loadFailed": "Ticket failed to load.",
     "backToQueue": "Back to queue",
     "ticketSubject": "Ticket subject",
+    "subjectEditButton": "Edit subject",
     "openFullPage": "Open full page",
     "priorityLabel": "Priority",
     "categoryLabel": "Category",
@@ -477,6 +483,90 @@
       "blockedCurrency": "This ticket has {{timeCount}} unbilled time entries and {{partCount}} unbilled parts priced in {{sourceCurrency}}, but {{targetOrg}} bills in {{targetCurrency}}. Bill them first, or move anyway — the amounts stay in {{sourceCurrency}} and can only be invoiced on a {{sourceCurrency}} draft.",
       "acceptCurrency": "I understand these amounts stay in {{sourceCurrency}} and are not converted.",
       "moveAnyway": "Move anyway"
+    },
+    "merge": {
+      "open": "Merge into…",
+      "title": "Merge {{number}} into another ticket",
+      "description": "The comments, time, parts and links of {{number}} move to the ticket you pick. {{number}} is then closed and points at it.",
+      "pickerLabel": "Target ticket",
+      "searchPlaceholder": "Search by number or subject",
+      "pickerHint": "Only open tickets in this organization are listed, oldest first.",
+      "loading": "Loading tickets…",
+      "candidatesFailed": "Could not load tickets. Close the dialog and try again.",
+      "noCandidates": "No other open tickets in this organization.",
+      "previewLoading": "Checking the merge…",
+      "previewFailed": "Could not check this merge. Pick the ticket again to retry.",
+      "side": {
+        "source": "This ticket",
+        "survivor": "The target",
+        "both": "Both tickets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "A ticket cannot be merged into itself.",
+        "MERGE_CROSS_ORG": "Both tickets must belong to the same organization.",
+        "MERGE_SOURCE_INELIGIBLE": "This ticket cannot be merged (it is deleted or already merged).",
+        "MERGE_SURVIVOR_INELIGIBLE": "The target cannot receive a merge (it is closed, deleted or already merged).",
+        "MERGE_DELIVERABLE_PINNED": "A ticket pinned to a service deliverable cannot be merged.",
+        "MERGE_IMPORT_WINDOW": "A ticket in an open import window cannot be merged.",
+        "MERGE_APPROVAL_STATE": "Tickets with approval requests or a budget cannot be merged.",
+        "MERGE_WORK_KIND_MISMATCH": "Support and project work cannot be merged together.",
+        "MERGE_PENDING_INTENTS": "This ticket has pending AI actions. Wait for them to finish or cancel them.",
+        "ORG_MERGING": "This organization is being merged. Try again later.",
+        "MERGE_SCOPE_DENIED": "You do not have access to a device or site on one of these tickets."
+      },
+      "suggested": "{{number}} is older; it is usually the one to keep.",
+      "movesTo": "Moves to {{number}}",
+      "nothingMoves": "Nothing else moves.",
+      "counts": {
+        "ticket_comments": "Comments: {{count}}",
+        "time_entries": "Time entries: {{count}}",
+        "ticket_parts": "Parts: {{count}}",
+        "ticket_alert_links": "Alert links: {{count}}",
+        "ticket_attachments": "Attachments: {{count}}",
+        "ticket_email_links": "Email links: {{count}}",
+        "ticket_checklist_items": "Checklist items: {{count}}",
+        "ticket_external_refs": "External references: {{count}}",
+        "ticket_links": "Ticket links: {{count}}",
+        "device_vulnerabilities": "Vulnerabilities: {{count}}",
+        "organization_key_dates": "Key-date reminders: {{count}}",
+        "service_deliverable_occurrences": "Deliverable occurrences: {{count}}",
+        "ai_operator_task_targets": "AI operator targets: {{count}}",
+        "ticket_drafts": "Drafts discarded: {{count}}"
+      },
+      "droppedHeading": "Links that are dropped",
+      "dropped": {
+        "between_pair": "link between the two tickets",
+        "pair_unique": "duplicate of a link the target already has",
+        "self": "would point at itself",
+        "canonical_duplicate": "duplicate after re-ordering",
+        "cycle": "would create a cycle",
+        "limit": "over the per-ticket link limit"
+      },
+      "retained": "Stays on {{number}}: {{name}}",
+      "anIntegration": "an integration",
+      "device": {
+        "keeps": "The merged ticket keeps {{device}}.",
+        "takes": "The merged ticket takes {{device}}.",
+        "unknown": "another device"
+      },
+      "requesterAccess": "The requester of {{source}} will see the public thread of {{survivor}} in the portal and can reply there.",
+      "notify": "Email the requester of {{number}} that their request was merged",
+      "noRequester": "{{number}} has no requester to email.",
+      "warning": "This cannot be undone. {{source}} becomes read-only and points at {{survivor}}.",
+      "confirm": "Merge",
+      "merging": "Merging…",
+      "failed": "Merge failed. Try again.",
+      "merged": "Merged into {{number}}",
+      "mfaRequired": "Merging tickets requires multi-factor authentication. Sign in again with MFA and retry.",
+      "alreadyMerged": "One of these tickets was already merged. Pick another target.",
+      "retry": "These tickets changed while merging. Try again."
+    },
+    "mergedBanner": {
+      "mergedInto": "This ticket was merged into {{number}} on {{date}}.",
+      "pending": "This ticket was merged into another ticket on {{date}}.",
+      "deleted": "This ticket was merged on {{date}} into a ticket that was deleted or that you cannot see.",
+      "open": "Open {{number}}",
+      "readOnly": "Merged tickets are read-only. Reply on the ticket it was merged into."
     },
     "triage": {
       "title": "Suggested triage",

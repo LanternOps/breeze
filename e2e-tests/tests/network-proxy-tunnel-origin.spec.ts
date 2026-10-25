@@ -132,12 +132,12 @@ test('a tunnel host never serves app, web or portal routes', async ({ authedPage
 
 test('a partner that opts out gets path mode on the next session', async ({ authedPage: page }) => {
   try {
-    // The Partner Settings toggle (plan Task 13b), saved by the page Save.
+    // The Partner Settings checkbox (plan Task 13b), saved by the page's header Save.
     await page.goto('/settings/partner#remote-access');
     const toggle = page.getByTestId('partner-network-proxy-dedicated-origin');
-    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await expect(toggle).toBeChecked();
     await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).not.toBeChecked();
     const saved = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/v1/orgs/partners/me' && r.request().method() === 'PATCH');
     await page.getByRole('button', { name: /save settings/i }).click();
     expect((await saved).status()).toBe(200);

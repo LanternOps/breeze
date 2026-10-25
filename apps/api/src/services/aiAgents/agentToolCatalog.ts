@@ -189,6 +189,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- security_response (tone: high) ----
   security_scan: 'security_response',
+  // #6268: mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (Gate B 10).
+  ioc_hunt: 'security_response',
   s1_isolate_device: 'security_response',
   s1_threat_action: 'security_response',
   get_s1_status: 'security_response',
@@ -210,6 +213,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   validate_flow: 'automations_reports',
   get_flow: 'automations_reports',
   list_flows: 'automations_reports',
+  list_business_calendars: 'tickets', // #8973 W4: read-only
+  list_ticket_routing_rules: 'tickets', // #8883 W5: read-only
+  test_ticket_routing_rule: 'tickets', // #8883 W5: dry run, writes nothing
+  manage_ticket_routing_rules: 'tickets', // #8883 W5: Tier 3 writes
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',
@@ -390,6 +397,23 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_psa_status: 'tenancy',
   manage_ai_agents: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS; mapped for completeness, never reachable
   operator_plan: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS (plan approval carrier); mapped for completeness, never reachable
+  // Wisp W03 memory (domain 'ai'). confirm/retract are HUMAN_ONLY_TOOLS
+  // (never tiered, so never agent-reachable); mapped for completeness.
+  recall: 'tenancy',
+  remember: 'tenancy',
+  confirm_memory: 'tenancy',
+  retract_memory: 'tenancy',
+  // Wisp W05a concerns/watches (domain 'ai'), as W03 chose for memory.
+  list_concerns: 'tenancy',
+  raise_concern: 'tenancy',
+  snooze_concern: 'tenancy',
+  resolve_concern: 'tenancy',
+  create_watch: 'tenancy',
+  // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
+  // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
+  // (raised only by the coordinator); mapped for completeness.
+  launch_specialist: 'tenancy',
+  wisp_specialist_request: 'tenancy',
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

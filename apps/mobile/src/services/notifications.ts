@@ -99,6 +99,16 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
         sound: 'default',
       });
 
+      // Wisp W06. DEFAULT, not HIGH: a nudge is a suggestion, never an
+      // interruption — the server already applied quiet hours and backoff.
+      await Notifications.setNotificationChannelAsync('wisp', {
+        name: 'Wisp',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        vibrationPattern: [0, 150],
+        lightColor: '#1c8a9e',
+        sound: 'default',
+      });
+
       await Notifications.setNotificationChannelAsync('default', {
         name: 'Default',
         importance: Notifications.AndroidImportance.DEFAULT,
@@ -324,15 +334,91 @@ export function parseTicketNotification(
 }
 
 /**
- * Ticket pushes never touch the app badge.
+ * Wisp W06. What a `wisp_nudge` push carries once validated.
+ *
+ * `grantId` is required: the thread screen creates its reply session with
+ * `wispGrantId`, and the concern routes name the caller's recipient row by
+ * grant. `concernId` is null for a digest or brief; `approvalIntentId` is set
+ * when the nudge points at an approval card.
+ */
+export interface WispNudgePushData {
+  threadId: string;
+  grantId: string;
+  concernId: string | null;
+  approvalIntentId: string | null;
+}
+
+/** `breeze://wisp/thread/:threadId[?concern=:concernId]` (w00 "Nudges (W06)"). */
+const WISP_DEEP_LINK = /^breeze:\/\/wisp\/thread\/([^/?#]+)(?:\?(.*))?$/;
+
+function parseWispDeepLink(link: unknown): { threadId: string; concernId: string | null } | null {
+  if (typeof link !== 'string') return null;
+  const m = WISP_DEEP_LINK.exec(link);
+  if (!m) return null;
+  try {
+    let concernId: string | null = null;
+    for (const pair of (m[2] ?? '').split('&')) {
+      const [k, v] = pair.split('=');
+      if (k === 'concern' && v) concernId = decodeURIComponent(v);
+    }
+    return { threadId: decodeURIComponent(m[1]), concernId };
+  } catch {
+    // Malformed percent-encoding: a link we cannot read routes nowhere.
+    return null;
+  }
+}
+
+const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+/**
+ * Pure parser over the notification `data` map.
+ *
+ * Wire contract: `buildWispNudgePush` in `apps/api/src/services/expoPush.ts`
+ * emits `{ type: 'wisp_nudge', threadId, concernId, grantId, deepLink,
+ * approvalIntentId? }`. The explicit keys win; `deepLink` is only a fallback
+ * for `threadId`/`concernId` and is accepted only in the `breeze://` form.
+ * `grantId` never comes from the link — without it the screen cannot load
+ * concerns or reply, so the push is refused rather than half-routed.
+ */
+export function parseWispNudgeData(
+  data: Record<string, unknown> | null | undefined
+): WispNudgePushData | null {
+  if (!data || data.type !== 'wisp_nudge') return null;
+  if (!nonEmpty(data.grantId)) return null;
+  const fromLink = parseWispDeepLink(data.deepLink);
+  let threadId: string | null = null;
+  if (nonEmpty(data.threadId)) threadId = data.threadId;
+  else if (data.threadId === undefined && fromLink) threadId = fromLink.threadId;
+  if (!threadId) return null;
+  const concernId = nonEmpty(data.concernId)
+    ? data.concernId
+    : data.concernId === undefined
+      ? (fromLink?.concernId ?? null)
+      : null;
+  return {
+    threadId,
+    grantId: data.grantId,
+    concernId,
+    approvalIntentId: nonEmpty(data.approvalIntentId) ? data.approvalIntentId : null,
+  };
+}
+
+export function parseWispNudgeNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): WispNudgePushData | null {
+  return parseWispNudgeData(notification.request.content.data as Record<string, unknown> | undefined);
+}
+
+/**
+ * Ticket and Wisp pushes never touch the app badge.
  *
  * `reconcileApprovalNotifications` SETS the badge to the pending-approval
  * count, so the badge means "approvals waiting on you" and nothing else. A
- * ticket push that bumped it would read as a phantom approval until the next
- * reconcile silently corrected it.
+ * ticket or nudge push that bumped it would read as a phantom approval until
+ * the next reconcile silently corrected it.
  */
 export function shouldSetBadgeFor(data: Record<string, unknown> | null | undefined): boolean {
-  return !(data && data.type === 'ticket');
+  return !(data && (data.type === 'ticket' || data.type === 'wisp_nudge'));
 }
 
 /** The server sends a date-only `YYYY-MM-DD`; the screen puts it straight into `?date=`. */

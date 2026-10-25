@@ -46,6 +46,15 @@ export type McpExemptReason =
    */
   | 'human_only_autopay'
   /**
+   * MSP catalog provisioning of executable, Breeze-pinned packages that agents
+   * run as SYSTEM/root (#6958 D2, the DNS filtering client built-ins). Every
+   * write is an interactive partner-admin session with MFA, `devices.execute`
+   * and partner-wide-manage (`canManagePartnerWidePolicies`); no AI surface by
+   * design. Deploying a provisioned package goes through the ordinary software
+   * deployment and policy surfaces.
+   */
+  | 'human_only_provisioning'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -224,6 +233,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/autopayRollout.ts': { exempt: 'platform_admin' },
   'admin/deprecations.ts': { exempt: 'platform_admin' },
   'admin/desktopFinalization.ts': { exempt: 'platform_admin' },
+  'admin/entitlements.ts': { exempt: 'platform_admin' },
   'admin/exchangeRates.ts': { exempt: 'platform_admin' },
   'admin/llmProviderCatalog.ts': { exempt: 'platform_admin' },
   'admin/monitorConversion.ts': { exempt: 'platform_admin' },
@@ -373,6 +383,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'billingProfiles.ts': { gap: '#6784' },
   'billingStepUp.ts': { exempt: 'internal_plumbing', note: 'Second-factor confirmation shared by the charge-now, partner and organization payment-settings and autopay request routes; no endpoint of its own.' },
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
+  // #8973 W4 business-hours calendars: read-only list_business_calendars; writes are human-only in v1 (spec §5.7).
+  'businessCalendars.ts': { tools: ['list_business_calendars'] },
   'c2c/configs.ts': { gap: '#6788' },
   'c2c/connections.ts': { tools: ['query_c2c_connections'] },
   'c2c/items.ts': { tools: ['search_c2c_items', 'restore_c2c_items'] },
@@ -435,6 +447,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/billing.ts': { gap: '#6784' },
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
+  'devices/bulkSite.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk site move (#9796); the single-device move (PATCH /devices/:id) is covered by core.ts tools.' },
   'devices/commands.ts': { tools: ['registry_operations', 'execute_command', 'trigger_agent_restart', 'trigger_agent_upgrade'] },
   'devices/core.ts': { tools: ['query_devices', 'get_device_details', 'get_device_context', 'set_device_context', 'resolve_device_context', 'manage_tags'] },
   'devices/customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
@@ -580,6 +593,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
+  'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
   'partnerApi/ticketWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API ticket writes for service principals; in-product ticket writes already have tools (manage_tickets).' },
@@ -678,16 +692,19 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'security/recoveryKeys.ts': { gap: '#6781' },
   'security/scans.ts': { tools: ['security_scan'] },
   'security/status.ts': { gap: '#6781' },
+  'security/sweeps.ts': { tools: ['ioc_hunt'] },
   'security/threats.ts': { tools: ['security_scan'] },
-  'security/yara.ts': { exempt: 'tool_in_later_wave', note: 'YARA rule set CRUD (#6263 W03a); the AI security_scan rule-set actions ship in W05 (#6268).' },
-  'security/yaraIocImport.ts': { exempt: 'tool_in_later_wave', note: 'YARA IOC import (#6263 W04); AI rule-set actions ship in W05 (#6268).' },
-  'security/yaraTest.ts': { exempt: 'tool_in_later_wave', note: 'YARA rule test upload (#6263 W04); AI rule-set actions ship in W05 (#6268).' },
+  // Reads covered by ioc_hunt list_rule_sets; rule-set and rule CRUD stay UI-only (#6268 Gate B 7).
+  'security/yara.ts': { tools: ['ioc_hunt'] },
+  'security/yaraIocImport.ts': { tools: ['ioc_hunt'] },
+  'security/yaraTest.ts': { exempt: 'tool_in_later_wave', note: 'YARA sample test needs a file upload; no AI tool in W05 (#6268 Gate B 7).' },
   'sensitiveData.ts': { tools: ['get_sensitive_data_overview', 'remediate_sensitive_data'] },
   'sentinelOne.ts': { tools: ['get_s1_status', 'get_s1_threats', 's1_isolate_device', 's1_threat_action'] },
   'serviceDeliverables.ts': { tools: ['list_deliverables', 'manage_deliverables'] },
   'servicePrincipals.ts': { exempt: 'identity' },
   'snmp.ts': { gap: '#6779' },
   'software.ts': { gap: '#6782' },
+  'softwareBuiltinPackages.ts': { exempt: 'human_only_provisioning', note: 'Provisions Breeze-pinned DNS client packages (scripts run as SYSTEM/root); MFA + devices.execute + partner-wide-manage (#6958 D2).' },
   'softwareInstallMethods.ts': { gap: '#6782' },
   'softwareInventory.ts': { gap: '#6782' },
   'softwarePolicies.ts': { tools: ['get_software_compliance', 'manage_software_policy', 'manage_software_policies', 'remediate_software_violation'] },
@@ -720,6 +737,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/bulk.ts': { gap: '#6776' },
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
   'tickets/links.ts': { tools: ['manage_tickets'] },
+  'tickets/merge.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
   'tickets/forms.ts': { gap: '#6776' },
@@ -727,6 +745,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/mailboxConnect.ts': { exempt: 'vendor_console_admin' },
   'tickets/moveOrg.ts': { tools: ['manage_tickets'] },
   'tickets/parts.ts': { tools: ['list_time_entries'] },
+  // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
+  // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
+  'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
   'tickets/ticketResponseTemplates.ts': { gap: '#6776' },
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -802,4 +823,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
   'webhooks/xero.ts': { exempt: 'inbound_integration' },
+  'wisp.ts': { exempt: 'human_only_ai_governance', note: 'Wisp delegation grants (Wisp design §4.2): a human lends their own authority on a fresh step-up proof -- the AI must never mint, widen, resume or reconfigure its own grant.' },
+  'wisp/memory.ts': { tools: ['recall', 'remember'] },
+  'wispConcerns.ts': { tools: ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern'] },
+  'wispWatches.ts': { tools: ['create_watch'] },
+  'wispNudgePreferences.ts': { exempt: 'human_only_ai_governance', note: 'Wisp nudge preferences (W06): how and when Wisp may reach the person (channels, quiet-hour override, brief time, proactivity) and the partner urgent-capable severities that break quiet hours; the AI must never set its own reach.' },
+  'wispThreads.ts': { exempt: 'human_only_ai_governance', note: 'Wisp thread surface (W04): the human reads their grant\'s thread, picks its customer focus and attaches context; focus and attachments decide what Wisp sees, so the AI never sets them. The model reads attachments through read_artifact.' },
 };

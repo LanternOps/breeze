@@ -254,6 +254,30 @@ const EMPTY_DETAIL_ROW: Omit<ClientProfitabilityDetailRow, 'orgId' | 'orgName'> 
   effectiveServiceRate: null, estimatedContributionAfterLabor: null,
 };
 
+/**
+ * The detail rows ARE the CSV/XLSX: `rowsToCsv` takes its header from the first
+ * row's key order, so the order here is the column order a customer sees.
+ * Client first, then revenue -> cost -> margin, then the mix, hours and estimate.
+ */
+const DETAIL_COLUMN_ORDER = [
+  'orgName', 'orgId', 'invoiceNumber', 'invoiceId', 'issueDate', 'currencyCode',
+  'revenue', 'cost', 'grossMargin', 'marginPct', 'costCoveragePct', 'unknownCostRevenue',
+  'recurringRevenue', 'laborRevenue', 'productRevenue', 'aiRevenue', 'otherRevenue',
+  'hoursTotal', 'hoursBillable', 'hoursIncluded', 'hoursNonBillable',
+  'effectiveServiceRate', 'estimatedContributionAfterLabor',
+] as const satisfies ReadonlyArray<keyof ClientProfitabilityDetailRow>;
+
+/** A 0..1 ratio rounded to one decimal of a percent (0.33334 -> 0.333). */
+const roundRatio = (v: number | null): number | null => (v === null ? null : Math.round(v * 1000) / 1000);
+
+/** Fixed column order and a display-rounded marginPct, for the exported rows only. */
+function exportDetailRow(r: ClientProfitabilityDetailRow): ClientProfitabilityDetailRow {
+  const out = {} as Record<string, unknown>;
+  for (const k of DETAIL_COLUMN_ORDER) out[k] = r[k];
+  out.marginPct = roundRatio(r.marginPct);
+  return out as ClientProfitabilityDetailRow;
+}
+
 const hoursColumns = (h: ProfitabilityHours) =>
   ({ hoursTotal: h.total, hoursBillable: h.billable, hoursIncluded: h.included, hoursNonBillable: h.nonBillable });
 
@@ -504,7 +528,7 @@ export async function generateClientProfitabilityReport(
       unattributedHours,
       detail,
       notes,
-      rows,
+      rows: rows.map(exportDetailRow),
     });
   });
 }

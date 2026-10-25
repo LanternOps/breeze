@@ -5,7 +5,11 @@ import PartnerSettingsPage from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
+}));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/authScope', () => ({
@@ -31,7 +35,7 @@ vi.mock('../../stores/featuresStore', () => ({
 const PARTNER = {
   id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
   createdAt: '2026-02-09T00:00:00.000Z',
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {}, address: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {}, address: {} },
 };
 const json = (body: unknown, status = 200) =>
   ({ ok: status < 400, status, statusText: 'OK', json: async () => body }) as unknown as Response;

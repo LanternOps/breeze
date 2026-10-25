@@ -17,6 +17,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import RestoreResultNotices from './RestoreResultNotices';
@@ -348,6 +349,15 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // Selecting a folder stores its tree path; the API expands it to the indexed
   // files beneath it (#9628). Counts are remembered to gate very large picks.
   const folderCounts = useRef(new Map<string, number>());
+  const [pendingFolder, setPendingFolder] = useState<{ item: SnapshotTreeItem; total: number } | null>(null);
+  const applyFolderToggle = (item: SnapshotTreeItem) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.path)) next.delete(item.path);
+      else next.add(item.path);
+      return next;
+    });
+  };
   const toggleFolder = (item: SnapshotTreeItem) => {
     const count = item.fileCount ?? 0;
     folderCounts.current.set(item.path, count);
@@ -356,20 +366,27 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     if (state === 'checked' && !selectedFiles.has(item.path)) return;
     if (state !== 'checked' && count > 0) {
       const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
-      if (
-        total > LARGE_FOLDER_SELECTION_THRESHOLD &&
-        !window.confirm(t('restoreWizard.confirmLargeFolderSelection', { count: total }))
-      ) {
+      if (total > LARGE_FOLDER_SELECTION_THRESHOLD) {
+        setPendingFolder({ item, total });
         return;
       }
     }
-    setSelectedFiles((prev) => {
-      const next = new Set(prev);
-      if (next.has(item.path)) next.delete(item.path);
-      else next.add(item.path);
-      return next;
-    });
+    applyFolderToggle(item);
   };
+
+  // Folder paths are remembered in folderCounts when toggled; everything else
+  // in the selection is a file. Count them separately so a folder isn't "1 file".
+  const selectedFolderCount = Array.from(selectedFiles).filter((path) => folderCounts.current.has(path)).length;
+  const selectedFileCount = selectedFiles.size - selectedFolderCount;
+  const selectionSummary =
+    selectedFolderCount === 0
+      ? t('restoreWizard.filesSelected', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+      : [
+          selectedFileCount > 0
+            ? t('restoreWizard.selectionFiles', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+            : null,
+          t('restoreWizard.selectionFolders', { count: selectedFolderCount, formatted: formatNumber(selectedFolderCount) }),
+        ].filter(Boolean).join(', ');
 
   const restoreKindLabel = (job: RestoreJob): string => {
     if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
@@ -704,7 +721,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                           </button>
                           {typeof item.fileCount === 'number' && (
                             <span className="text-xs text-muted-foreground">
-                              {t('restoreWizard.folderFileCount', { count: item.fileCount })}
+                              {t('restoreWizard.folderFileCount', { count: item.fileCount, formatted: formatNumber(item.fileCount) })}
                             </span>
                           )}
                         </div>
@@ -852,7 +869,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     <Server className="h-4 w-4 text-primary" />
                     {t('restoreWizard.restoreType')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {restoreType === 'full' ? 'Full restore' : 'Selective restore'}
+                    {restoreType === 'full' ? t('restoreWizard.kindFull') : t('restoreWizard.kindSelective')}
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
@@ -871,8 +888,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {t('restoreWizard.files')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full'
-                      ? 'All files from snapshot'
-                      : t('restoreWizard.filesSelected', { count: selectedFiles.size })}
+                      ? t('restoreWizard.allFilesFromSnapshot')
+                      : selectionSummary}
                   </p>
                 </div>
               </div>
@@ -1085,6 +1102,24 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={pendingFolder !== null}
+        onClose={() => setPendingFolder(null)}
+        onConfirm={() => {
+          if (!pendingFolder) return;
+          const { item } = pendingFolder;
+          setPendingFolder(null);
+          applyFolderToggle(item);
+        }}
+        title={t('restoreWizard.largeFolderSelectionTitle')}
+        message={t('restoreWizard.confirmLargeFolderSelection', {
+          count: pendingFolder?.total ?? 0,
+          formatted: formatNumber(pendingFolder?.total ?? 0),
+        })}
+        variant="warning"
+        dialogTestId="restore-large-folder-dialog"
+        confirmTestId="restore-large-folder-confirm"
+      />
     </div>
   );
 }

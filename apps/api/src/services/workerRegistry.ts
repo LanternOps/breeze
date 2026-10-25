@@ -574,6 +574,27 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Wisp W05 (#9917): daily concern retention + concern_outcome memory
+    // retention; returns zeros while BREEZE_WISP_ENABLED is off.
+    name: 'wispConcernRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispConcernRetention');
+      return { init: m.initializeWispConcernRetention, shutdown: m.shutdownWispConcernRetention };
+    },
+  },
+  {
+    // Wisp W06a (#9912): 15-minute digest + morning-brief sweep; the Worker is
+    // constructed unconditionally and each sweep returns zeros while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispNudgeDigest',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispNudgeDigest');
+      return { init: m.initializeWispNudgeDigestWorker, shutdown: m.shutdownWispNudgeDigestWorker };
+    },
+  },
+  {
     name: 'ipHistoryRetention',
     placement: 'global',
     load: async () => {
@@ -662,6 +683,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return {
         init: m.initializeWebhookDeliveryRetention,
         shutdown: m.shutdownWebhookDeliveryRetention,
+      };
+    },
+  },
+  {
+    // #10019/#10020 — daily prune of DNS security events + aggregations, and
+    // the background delete of a DNS filter integration.
+    name: 'dnsSecurityRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/dnsSecurityRetention');
+      return {
+        init: m.initializeDnsSecurityRetention,
+        shutdown: m.shutdownDnsSecurityRetention,
       };
     },
   },
@@ -762,6 +796,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/quickSupportReaper');
       return { init: m.initializeQuickSupportReaper, shutdown: m.shutdownQuickSupportReaper };
+    },
+  },
+  {
+    // Wisp W02 (#9908): 5-minute grant standing sweep; skips every tick while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispGrantReconciler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispGrantReconciler');
+      return { init: m.initializeWispGrantReconciler, shutdown: m.shutdownWispGrantReconciler };
     },
   },
   {
@@ -1543,6 +1587,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8973 W4: one-shot holiday recompute of business-calendar SLA deadlines.
+    name: 'businessCalendarRecomputeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/businessCalendarRecomputeWorker');
+      return { init: m.initializeBusinessCalendarRecomputeWorker, shutdown: m.shutdownBusinessCalendarRecomputeWorker };
+    },
+  },
+  {
     name: 'inboundEmailWorker',
     placement: 'global',
     load: async () => {
@@ -1699,6 +1752,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentSweepScheduler');
       return { init: m.initializeAiAgentSweepScheduler, shutdown: m.shutdownAiAgentSweepScheduler };
+    },
+  },
+  {
+    // Wisp W05b Task 9 (#9917): the 5-minute wake tick (entitlement
+    // reconcile, watch stop, floor-tick round-robin, due watches, pollers)
+    // plus the debounced per-(grant, org) assess jobs. Registered
+    // unconditionally; the tick and the job return at once when Wisp is off.
+    // `global`, verified by workerEntrypointClosure.contract.test.ts: like
+    // aiAgentSweepScheduler, its deepest AI dependency is
+    // runService.createAndEnqueueAgentRun (insert + enqueue only).
+    name: 'wispWakeScheduler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispWakeScheduler');
+      return { init: m.initializeWispWakeScheduler, shutdown: m.shutdownWispWakeScheduler };
     },
   },
   {

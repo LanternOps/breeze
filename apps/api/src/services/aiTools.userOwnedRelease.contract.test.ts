@@ -111,8 +111,8 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `apply_cis_remediation:` this file's own allowlist entry covers. Both
   // values (and the omitted/default case) reach the identical unguarded
   // `approvedBy`/`requestedBy` insert, so all three keys are required.
-  ['services/aiToolsCisBenchmark.ts:520', ['', 'apply', 'rollback']],
-  ['services/aiToolsCisBenchmark.ts:523', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:508', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:511', ['', 'apply', 'rollback']],
   // aiToolsEdr.ts (#8167 W03): edr_endpoint_action has ONE write site — the
   // `requestedBy: auth.user.id` handed to dispatchEdrAction, which writes
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
@@ -163,7 +163,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:606', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBrowser.ts:599', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
@@ -180,8 +180,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:631', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:720', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:666', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:763', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.

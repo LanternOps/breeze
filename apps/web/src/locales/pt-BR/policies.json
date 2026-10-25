@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Aplicada a todas as organizações. Desmarque “Todas as organizações” para escolher um subconjunto.",
       "polite": "polite",
       "loading": "Carregando…",
-      "loadMoreOrganizations": "Carregar mais organizações"
+      "loadMoreOrganizations": "Carregar mais organizações",
+      "appliedToAllOrgs": "A política agora se aplica a todas as organizações",
+      "removedFromAllOrgs": "A política não se aplica mais a todas as organizações"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Varredura completa",
         "maxFileSizeMb": "Tamanho máximo de arquivo (MB)",
         "scanTimeoutMinutes": "Tempo limite da varredura (minutos)",
-        "scanRunsServerSideDescription": "O Breeze despacha essa varredura a partir do servidor — o dispositivo não precisa de um agendamento local."
+        "scanRunsServerSideDescription": "O Breeze despacha essa varredura a partir do servidor — o dispositivo não precisa de um agendamento local.",
+        "ruleSets": {
+          "title": "Conjuntos de regras de detecção",
+          "description": "Conjuntos de regras que as varreduras de IOC desta política usam.",
+          "manageLink": "Gerenciar regras de detecção",
+          "loading": "Carregando conjuntos de regras…",
+          "loadError": "Não foi possível carregar os conjuntos de regras. A política mantém os conjuntos atuais; você ainda pode salvar as outras configurações.",
+          "none": "Nenhum conjunto de regras está disponível para esta política.",
+          "legacyNote": "Sem conjuntos de regras: as varreduras usam apenas as assinaturas legadas integradas.",
+          "cap": "Uma política pode usar no máximo {{max}} conjuntos de regras.",
+          "unavailable": "Conjunto de regras indisponível",
+          "blocking": "Esta política não pode usar os conjuntos de regras indisponíveis (excluídos, movidos ou de outra organização). Remova-os antes de salvar.",
+          "overrideDraft": "As configurações herdadas incluem conjuntos de regras que esta política não pode usar. Remova os conjuntos indisponíveis e depois salve.",
+          "errors": {
+            "tooMany": "Uma política pode usar no máximo {{max}} conjuntos de regras.",
+            "invalidIds": "A lista de conjuntos de regras não é válida. Recarregue a página e tente novamente.",
+            "notAttachable": "Esta política não pode usar alguns dos conjuntos de regras selecionados. Eles estão destacados abaixo."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credenciais",
@@ -1235,7 +1255,7 @@
       "uploadFile": "Enviar arquivo",
       "source2": "source",
       "downloadUrl": "downloadUrl",
-      "noFileSelectedMsiExeDmgDeb": "Nenhum arquivo selecionado (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Nenhum arquivo selecionado (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "supportedOs",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "silentInstallArgs",
@@ -1291,7 +1311,19 @@
       "thisOrganizationOnly": "Apenas esta organização",
       "partnerWideUrlOnly": "Pacotes de nível de parceiro usam uma URL de download — o upload de arquivos ainda não está disponível para eles.",
       "selectedFileRemoved": "O arquivo selecionado foi removido — pacotes de nível de parceiro usam uma URL de download.",
-      "scopeLockedAfterCreate": "O pacote já foi criado com este escopo — a propriedade não pode mudar após a criação."
+      "scopeLockedAfterCreate": "O pacote já foi criado com este escopo — a propriedade não pode mudar após a criação.",
+      "installScripts": "Scripts de instalação",
+      "installScriptsHelp": "Obrigatórios para pacotes zip, opcionais nos demais casos. Os scripts são executados como SYSTEM no Windows ou root no macOS e no Linux, expiram após 10 minutos, exigem a permissão devices.execute e exatamente um sistema operacional de destino.",
+      "availableTokens": "Tokens disponíveis:",
+      "preInstallScript": "Script de pré-instalação",
+      "postInstallScript": "Script de pós-instalação",
+      "preInstallScriptPlaceholder": "Executado antes do instalador (PowerShell no Windows, bash no macOS e no Linux)",
+      "postInstallScriptPlaceholder": "Executado após o instalador ou após a extração do zip",
+      "silentArgsNotUsedForType": "Os argumentos de instalação silenciosa não são usados em instaladores pkg, dmg, deb ou zip.",
+      "issueZipRequiresPostInstallScript": "Pacotes zip precisam de um script de pós-instalação: o agente apenas extrai o arquivo.",
+      "issueScriptsRequireSingleOs": "Os scripts de instalação exigem exatamente um sistema operacional de destino.",
+      "issueScriptTooLarge": "Cada script de instalação deve ter 64 KiB ou menos.",
+      "issueArgsUnsupportedForFileType": "Os argumentos de instalação silenciosa não são compatíveis com este tipo de instalador."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Integrado gerenciado",
@@ -1337,7 +1369,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Nenhuma política de software encontrada. Crie uma para começar.",
       "recentViolations": "Violações recentes",
       "noCurrentSoftwareViolations": "Nenhuma violação de software atual.",
-      "violationS": "violação(ões)",
       "remediation": "Correção: {{value}}",
       "checked": "Verificado em: {{date}}",
       "deactivatePolicy": "Desativar política",
@@ -1375,7 +1406,18 @@
       "coverageVendor": "Fornecedor",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agente somente do fornecedor",
-      "coverageRowsNote": "Exibindo {{shown}} de {{total}}"
+      "coverageRowsNote": "Exibindo {{shown}} de {{total}}",
+      "violationCount": "{{count}} violação",
+      "violationCount_one": "{{count}} violação",
+      "violationCount_other": "{{count}} violações",
+      "violationTypes": {
+        "unauthorized": "Não autorizado",
+        "missing": "Ausente",
+        "outdated": "Desatualizado",
+        "not_running": "Não está em execução",
+        "service_unverified": "Serviço não verificado",
+        "serviceTitle": "Serviço: {{name}}"
+      }
     },
     "deploymentList": {
       "running": "Em execução",
@@ -1591,7 +1633,13 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Serviço em execução",
+      "readOnlyHint": "Criada pela API. Não editável aqui; é mantida sem alterações ao salvar.",
+      "serviceName": "Nome do serviço",
+      "serviceNamePlaceholder": "ex.: ctrld",
+      "serviceNameHint": "Nome de serviço do Windows, rótulo launchd do macOS ou unidade systemd do Linux. Verificado antes e depois da instalação.",
+      "serviceNameInvalid": "Informe um nome de serviço sem caracteres de controle e sem \"-\" no início (no máximo 256 bytes)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Falha ao buscar dispositivos",
@@ -1708,7 +1756,10 @@
       "catalogTab": "Catálogo",
       "summaryCompleted7d": "Concluídas (7 dias)",
       "summaryFailed7d": "Com falha (7 dias)",
-      "categoryFilterLabel": "Categoria"
+      "categoryFilterLabel": "Categoria",
+      "requiredVariables": "Variáveis obrigatórias",
+      "uninstallCommand": "Comando de desinstalação",
+      "managedByBreezeHint": "Gerenciado pelo Breeze. Este pacote não pode ser editado nem excluído, e novas versões não podem ser adicionadas aqui."
     },
     "softwareInventory": {
       "allowed": "Permitido",
@@ -1850,7 +1901,10 @@
       "uploadsRequireS3Storage": "O upload de arquivos requer um armazenamento de objetos S3 configurado no servidor.",
       "editingVersion": "Editando versão",
       "failedToUpdateVersion": "Falha ao atualizar a versão",
-      "replaceFileAddNewVersion": "Para substituir o arquivo do instalador, adicione uma nova versão."
+      "replaceFileAddNewVersion": "Para substituir o arquivo do instalador, adicione uma nova versão.",
+      "inactiveStoredScripts": "Os scripts de instalação armazenados não estão ativos; recrie a versão para ativá-los.",
+      "addZipFromAddPackage": "Adicione pacotes zip em Adicionar pacote.",
+      "builtinVersionsReadOnly": "Gerenciado pelo Breeze. As versões dos pacotes integrados não podem ser adicionadas nem alteradas aqui."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserir uma variável de tempo de implantação",
@@ -1884,6 +1938,30 @@
       "queuedNone": "Nada foi enfileirado: os dispositivos da prévia não precisam mais de correção ou já a têm pendente.",
       "queuedPartial": "Correção enfileirada para {{queued}} de {{requested}} dispositivo(s) da prévia; os demais não precisam mais dela ou já a têm pendente.",
       "previewFailedWithReason": "Não foi possível carregar a prévia da correção: {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Pacotes integrados",
+      "description": "Clientes de filtragem de DNS fixados e verificados pelo Breeze. Adicione um ao seu catálogo, defina a variável dele para cada organização e depois implante-o como qualquer outro pacote.",
+      "colPackage": "Pacote",
+      "colPlatform": "Plataforma",
+      "colPinnedVersion": "Versão fixada",
+      "colRequiredVariables": "Variáveis obrigatórias",
+      "colUninstallCommand": "Comando de desinstalação",
+      "colStatus": "Status",
+      "addToCatalog": "Adicionar ao catálogo",
+      "adding": "Adicionando…",
+      "inCatalog": "No catálogo",
+      "archived": "Arquivado",
+      "restoreToCatalog": "Restaurar",
+      "addedToCatalog": "{{name}} adicionado ao catálogo",
+      "couldNotAddToCatalog": "Não foi possível adicionar {{name}} ao catálogo",
+      "couldNotLoadBuiltinPackages": "Não foi possível carregar os pacotes integrados",
+      "loadingBuiltinPackages": "Carregando pacotes integrados…",
+      "setVariablesPerOrganization": "Defina por organização em Configurações → Variáveis",
+      "copyUninstallCommand": "Copiar comando de desinstalação",
+      "uninstallCommandCopied": "Comando de desinstalação copiado",
+      "breezeDoesNotUninstall": "O Breeze não desinstala esses clientes. Execute o comando no dispositivo para remover um.",
+      "copyFailed": "Falha ao copiar. Selecione o comando e copie-o manualmente."
     }
   }
 }

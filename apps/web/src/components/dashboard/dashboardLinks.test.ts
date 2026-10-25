@@ -112,6 +112,44 @@ describe('devices hrefs', () => {
   });
 });
 
+// #9791 C: device-grain patch numbers are count links into the filtered
+// compliance list; patch-grain numbers stay text with a named affected link.
+describe('patch registry (#9791 C)', () => {
+  it.each([
+    ['kpi.patchCompliance', 'count', '/patches#compliance'],
+    ['patch.devicesCompliant', 'count', '/patches#compliance&status=compliant'],
+    ['patch.devicesNonCompliant', 'count', '/patches#compliance&status=needs-patches'],
+    ['patch.viewPendingDevices', 'affected', '/patches#compliance&status=needs-patches'],
+    ['patch.viewFailedDevices', 'affected', '/patches#compliance&status=failed'],
+    ['patch.viewCriticalDevices', 'affected', '/patches#compliance&status=critical'],
+  ] as const)('%s is %s → %s', (key, kind, href) => {
+    expect(DASHBOARD_METRICS[key].kind).toBe(kind);
+    expect(metricHref(key)).toBe(href);
+  });
+
+  it.each([
+    'patch.headline',
+    'patch.installed',
+    'patch.pending',
+    'patch.failed',
+    'patch.criticalPending',
+    'patch.unratedPending',
+    'patch.imagesNotChecked',
+  ] as const)('%s stays exempt with a reason', (key) => {
+    const def: MetricDef = DASHBOARD_METRICS[key];
+    expect(def.kind).toBe('exempt');
+    expect(def.reason?.length).toBeGreaterThan(10);
+  });
+
+  it('patch links need devices:read (the /patches nav gate)', () => {
+    const noDevices = viewer({ permissions: [{ resource: 'alerts', action: 'read' }] });
+    for (const key of ['kpi.patchCompliance', 'patch.devicesCompliant', 'patch.viewFailedDevices'] as const) {
+      expect(DASHBOARD_METRICS[key].visible?.(noDevices)).toBe(false);
+      expect(DASHBOARD_METRICS[key].visible?.(viewer())).toBe(true);
+    }
+  });
+});
+
 describe('visibility gates (R4)', () => {
   it('devices links need devices:read', () => {
     const v = viewer({ permissions: [{ resource: 'alerts', action: 'read' }] });
@@ -138,7 +176,12 @@ describe('each metric is gated by its own destination', () => {
     if (def.kind === 'exempt') continue;
     it(key, () => {
       const href = metricHref(key, { devices: stats })!;
-      const path = new URL(href, 'http://x').pathname as keyof typeof DESTINATION_GATES;
+      // A sub-page (`/security/vulnerabilities`) is gated by its Sidebar section
+      // root (`/security`): resolve to the longest registered gate prefix.
+      const pathname = new URL(href, 'http://x').pathname;
+      const path = ((Object.keys(DESTINATION_GATES) as Array<keyof typeof DESTINATION_GATES>)
+        .filter((g) => pathname === g || pathname.startsWith(`${g}/`))
+        .sort((a, b) => b.length - a.length)[0] ?? pathname) as keyof typeof DESTINATION_GATES;
       expect(DESTINATION_GATES[path], `no gate for ${path}`).toBeTruthy();
       for (const v of viewers) {
         expect(def.visible?.(v)).toBe(canOpenDestination(DESTINATION_GATES[path], v));

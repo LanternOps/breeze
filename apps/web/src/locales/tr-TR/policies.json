@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Tüm kuruluşlara uygulanır. Bir alt küme seçmek için \"Tüm kuruluşlar\" seçeneğinin işaretini kaldırın.",
       "polite": "kibar",
       "loading": "Yükleniyor…",
-      "loadMoreOrganizations": "Daha fazla kuruluş yükle"
+      "loadMoreOrganizations": "Daha fazla kuruluş yükle",
+      "appliedToAllOrgs": "Politika artık tüm kuruluşlara uygulanıyor",
+      "removedFromAllOrgs": "Politika artık tüm kuruluşlara uygulanmıyor"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Tam tarama",
         "maxFileSizeMb": "Maksimum dosya boyutu (MB)",
         "scanTimeoutMinutes": "Tarama zaman aşımı (dakika)",
-        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur."
+        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur.",
+        "ruleSets": {
+          "title": "Tespit kural kümeleri",
+          "description": "Bu ilkenin IOC taramalarının kullandığı kural kümeleri.",
+          "manageLink": "Tespit kurallarını yönet",
+          "loading": "Kural kümeleri yükleniyor…",
+          "loadError": "Kural kümeleri yüklenemedi. İlke mevcut kural kümelerini korur; diğer ayarları yine de kaydedebilirsiniz.",
+          "none": "Bu ilke için kullanılabilir kural kümesi yok.",
+          "legacyNote": "Kural kümesi yok: taramalar yalnızca yerleşik eski imzaları kullanır.",
+          "cap": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+          "unavailable": "Kullanılamayan kural kümesi",
+          "blocking": "Bu ilke kullanılamayan kural kümelerini (silinmiş, taşınmış veya başka bir kuruluşa ait) kullanamaz. Kaydetmeden önce bunları kaldırın.",
+          "overrideDraft": "Devralınan ayarlar bu ilkenin kullanamayacağı kural kümeleri içeriyor. Kullanılamayan kural kümelerini kaldırın, ardından kaydedin.",
+          "errors": {
+            "tooMany": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+            "invalidIds": "Kural kümesi listesi geçerli değil. Sayfayı yeniden yükleyip tekrar deneyin.",
+            "notAttachable": "Bu ilke seçilen kural kümelerinden bazılarını kullanamaz. Aşağıda vurgulanmıştır."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Kimlik Bilgileri",
@@ -1235,7 +1255,7 @@
       "uploadFile": "Dosya yükle",
       "source2": "kaynak",
       "downloadUrl": "indirme URL'si",
-      "noFileSelectedMsiExeDmgDeb": "Hiçbir dosya seçilmedi (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Hiçbir dosya seçilmedi (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "desteklenen işletim sistemleri",
       "pkgInstall": "pkg kurulumu",
       "silentInstallArgs2": "sessizInstallArgs",
@@ -1291,7 +1311,19 @@
       "thisOrganizationOnly": "Yalnızca bu organizasyon",
       "partnerWideUrlOnly": "İş ortağı genelindeki paketler bir indirme URL’si kullanır — bunlar için dosya yükleme henüz kullanılamıyor.",
       "selectedFileRemoved": "Seçilen dosya kaldırıldı — iş ortağı genelindeki paketler bir indirme URL’si kullanır.",
-      "scopeLockedAfterCreate": "Paket zaten bu kapsamla oluşturuldu — oluşturulduktan sonra sahiplik değiştirilemez."
+      "scopeLockedAfterCreate": "Paket zaten bu kapsamla oluşturuldu — oluşturulduktan sonra sahiplik değiştirilemez.",
+      "installScripts": "Yükleme betikleri",
+      "installScriptsHelp": "zip paketleri için zorunlu, diğerlerinde isteğe bağlıdır. Betikler Windows'ta SYSTEM, macOS ve Linux'ta root olarak çalışır, 10 dakika sonra zaman aşımına uğrar, devices.execute iznini ve tam olarak bir hedef işletim sistemini gerektirir.",
+      "availableTokens": "Kullanılabilir belirteçler:",
+      "preInstallScript": "Yükleme öncesi betik",
+      "postInstallScript": "Yükleme sonrası betik",
+      "preInstallScriptPlaceholder": "Yükleyiciden önce çalışır (Windows'ta PowerShell, macOS ve Linux'ta bash)",
+      "postInstallScriptPlaceholder": "Yükleyiciden sonra veya zip dosyası çıkarıldıktan sonra çalışır",
+      "silentArgsNotUsedForType": "Sessiz yükleme argümanları pkg, dmg, deb veya zip yükleyicileri için kullanılmaz.",
+      "issueZipRequiresPostInstallScript": "zip paketleri için yükleme sonrası betik gerekir: aracı yalnızca arşivi çıkarır.",
+      "issueScriptsRequireSingleOs": "Yükleme betikleri için tam olarak bir hedef işletim sistemi gerekir.",
+      "issueScriptTooLarge": "Her yükleme betiği en fazla 64 KiB olmalıdır.",
+      "issueArgsUnsupportedForFileType": "Sessiz yükleme argümanları bu yükleyici türü için desteklenmez."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Yönetilen yerleşik",
@@ -1337,7 +1369,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Hiçbir yazılım ilkesi bulunamadı. Başlamak için bir tane oluşturun.",
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
-      "violationS": "ihlalleri",
       "remediation": "Düzeltme: {{value}}",
       "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
@@ -1375,7 +1406,18 @@
       "coverageVendor": "Sağlayıcı",
       "coverageReason": "Neden",
       "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
-      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor"
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "violationCount": "{{count}} ihlal",
+      "violationCount_one": "{{count}} ihlal",
+      "violationCount_other": "{{count}} ihlal",
+      "violationTypes": {
+        "unauthorized": "Yetkisiz",
+        "missing": "Eksik",
+        "outdated": "Güncel değil",
+        "not_running": "Çalışmıyor",
+        "service_unverified": "Hizmet doğrulanmadı",
+        "serviceTitle": "Hizmet: {{name}}"
+      }
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1591,7 +1633,13 @@
       "registry": "kayıt defteri",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Hizmet çalışıyor",
+      "readOnlyHint": "API ile oluşturuldu. Burada düzenlenemez; kaydettiğinizde olduğu gibi korunur.",
+      "serviceName": "Hizmet adı",
+      "serviceNamePlaceholder": "ör. ctrld",
+      "serviceNameHint": "Windows hizmet adı, macOS launchd etiketi veya Linux systemd birimi. Yüklemeden önce ve sonra denetlenir.",
+      "serviceNameInvalid": "Kontrol karakteri içermeyen ve başında \"-\" bulunmayan bir hizmet adı girin (en fazla 256 bayt)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Cihazlar getirilemedi",
@@ -1708,7 +1756,10 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Tamamlandı (7 gün)",
       "summaryFailed7d": "Başarısız (7 gün)",
-      "categoryFilterLabel": "Kategori"
+      "categoryFilterLabel": "Kategori",
+      "requiredVariables": "Gerekli değişkenler",
+      "uninstallCommand": "Kaldırma komutu",
+      "managedByBreezeHint": "Breeze tarafından yönetilir. Bu paket burada düzenlenemez, silinemez veya yeni sürüm eklenemez."
     },
     "softwareInventory": {
       "allowed": "İzin veriliyor",
@@ -1850,7 +1901,10 @@
       "uploadsRequireS3Storage": "Dosya yüklemeleri için sunucuda S3 nesne depolamasının yapılandırılmış olması gerekir.",
       "editingVersion": "Sürüm düzenleniyor",
       "failedToUpdateVersion": "Sürüm güncellenemedi",
-      "replaceFileAddNewVersion": "Yükleyici dosyasını değiştirmek için bunun yerine yeni bir sürüm ekleyin."
+      "replaceFileAddNewVersion": "Yükleyici dosyasını değiştirmek için bunun yerine yeni bir sürüm ekleyin.",
+      "inactiveStoredScripts": "Kayıtlı yükleme betikleri etkin değil; etkinleştirmek için sürümü yeniden oluşturun.",
+      "addZipFromAddPackage": "zip paketlerini Paket Ekle bölümünden ekleyin.",
+      "builtinVersionsReadOnly": "Breeze tarafından yönetilir. Dahili paketlerin sürümleri burada eklenemez veya değiştirilemez."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Dağıtım zamanı değişkeni ekleyin",
@@ -1884,6 +1938,30 @@
       "queuedNone": "Kuyruğa hiçbir şey eklenmedi: önizlemedeki cihazların artık düzeltmeye ihtiyacı yok ya da düzeltme zaten beklemede.",
       "queuedPartial": "Önizlemedeki {{requested}} cihazdan {{queued}} tanesi için düzeltme kuyruğa alındı; kalanların artık ihtiyacı yok ya da zaten beklemede.",
       "previewFailedWithReason": "Düzeltme önizlemesi yüklenemedi: {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Dahili paketler",
+      "description": "Breeze tarafından sabitlenen ve doğrulanan DNS filtreleme istemcileri. Birini kataloğunuza ekleyin, her kuruluş için değişkenini ayarlayın, ardından diğer paketler gibi dağıtın.",
+      "colPackage": "Paket",
+      "colPlatform": "Platform",
+      "colPinnedVersion": "Sabitlenen sürüm",
+      "colRequiredVariables": "Gerekli değişkenler",
+      "colUninstallCommand": "Kaldırma komutu",
+      "colStatus": "Durum",
+      "addToCatalog": "Kataloğa ekle",
+      "adding": "Ekleniyor…",
+      "inCatalog": "Katalogda",
+      "archived": "Arşivlendi",
+      "restoreToCatalog": "Geri yükle",
+      "addedToCatalog": "{{name}} kataloğa eklendi",
+      "couldNotAddToCatalog": "{{name}} kataloğa eklenemedi",
+      "couldNotLoadBuiltinPackages": "Dahili paketler yüklenemedi",
+      "loadingBuiltinPackages": "Dahili paketler yükleniyor…",
+      "setVariablesPerOrganization": "Kuruluş başına Ayarlar → Değişkenler bölümünden ayarlanır",
+      "copyUninstallCommand": "Kaldırma komutunu kopyala",
+      "uninstallCommandCopied": "Kaldırma komutu kopyalandı",
+      "breezeDoesNotUninstall": "Breeze bu istemcileri kaldırmaz. Birini kaldırmak için komutu cihazda çalıştırın.",
+      "copyFailed": "Kopyalama başarısız oldu. Komutu seçip elle kopyalayın."
     }
   }
 }

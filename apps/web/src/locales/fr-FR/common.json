@@ -48,6 +48,7 @@
     "timesheets": "Feuilles de temps",
     "productCatalog": "Catalogue de produits",
     "deviceGroups": "Groupes d'appareils",
+    "sites": "Sites",
     "unassignedDevices": "Appareils non attribués",
     "configPolicies": "Politiques de configuration",
     "integrations": "Intégrations",
@@ -116,7 +117,9 @@
     "ticketsServiceRequests": "Demandes de service",
     "ticketsProblems": "Problèmes",
     "ticketsChanges": "Changements",
-    "endpointMessages": "Messagerie"
+    "endpointMessages": "Messagerie",
+    "securityDetectionRules": "Règles de détection",
+    "planAndFeatures": "Offre et fonctionnalités"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -427,13 +430,21 @@
       "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "empty": "Pas encore de données de correctifs",
       "imagesNotChecked_one": "{{count}} image de conteneur non vérifiée",
-      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées"
+      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées",
+      "devicesNeedPatches_one": "{{count}} appareil a besoin de correctifs",
+      "devicesNeedPatches_other": "{{count}} appareils ont besoin de correctifs",
+      "viewPendingDevices": "Voir les appareils avec des correctifs en attente",
+      "viewFailedDevices": "Voir les appareils avec des correctifs échoués",
+      "viewCriticalDevices": "Voir les appareils avec des correctifs critiques"
     },
     "vuln": {
       "title": "Vulnérabilités",
       "criticalOpen": "Critiques ouvertes",
       "kev": "Exploitation connue",
       "patchReady": "Correctif disponible",
+      "viewCritical": "Voir les CVE critiques",
+      "viewPatchReady": "Voir les CVE avec correctif prêt",
+      "viewOpen": "Voir les CVE ouvertes",
       "totalOpen": "{{count}} détections ouvertes",
       "totalOpen_one": "{{count}} détection ouverte",
       "totalOpen_other": "{{count}} détections ouvertes",
@@ -1404,7 +1415,7 @@
           "name": "Crochet de production",
           "signingSecret": "Entrez dans un secret de signature"
         },
-        "subtitle": "Définir la livraison, l’authentification et le comportement de la charge utile.",
+        "subtitle": "Définir la destination, les événements, l’authentification et les en-têtes.",
         "title": "Configuration Webhook",
         "validation": {
           "eventRequired": "Sélectionnez au moins un événement",
@@ -1466,7 +1477,7 @@
           "noPayloadTemplate": "Aucun modèle de charge utile n’a encore été enregistré.",
           "payloadPreview": "Aperçu du modèle de charge utile",
           "testEvent": "Événement test",
-          "testEventHelp": "Les tests utilisent l’événement sélectionné et le modèle de votre charge utile.",
+          "testEventHelp": "Envoie un exemple de charge utile pour l’événement sélectionné à ce point de terminaison.",
           "title": "Détails sur le webhook"
         },
         "emptySelection": "Sélectionnez un webhook pour consulter l’historique de livraison et les outils de test.",
@@ -2774,5 +2785,9 @@
     "title": "Cette section a planté",
     "description": "Une erreur d’affichage a empêché cette page de s’afficher. Réessayez et, si le problème persiste, incluez le message ci-dessous dans votre signalement.",
     "retry": "Réessayer"
+  },
+  "featureLock": {
+    "lockedLabel": "Verrouillé",
+    "upgrade": "Voir les offres"
   }
 }

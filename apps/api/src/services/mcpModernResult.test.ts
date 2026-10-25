@@ -62,6 +62,79 @@ describe('mcpModernResult', () => {
     expect(decorateModernResult('tools/list', { resultType: 'input_required' }).resultType).toBe('complete');
   });
 
+  it('B-W05: buildDiscoverResult advertises the MCP Apps extension only when MCP_APPS_ENABLED', () => {
+    const prev = process.env.MCP_APPS_ENABLED;
+    try {
+      delete process.env.MCP_APPS_ENABLED;
+      const off = buildDiscoverResult();
+      expect(off.capabilities).toEqual({ tools: {}, resources: {}, prompts: {} });
+      expect(JSON.stringify(off.capabilities)).toBe('{"tools":{},"resources":{},"prompts":{}}');
+      process.env.MCP_APPS_ENABLED = 'true';
+      expect(buildDiscoverResult().capabilities).toEqual({
+        tools: {}, resources: {}, prompts: {}, extensions: { 'io.modelcontextprotocol/ui': {} },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.MCP_APPS_ENABLED; else process.env.MCP_APPS_ENABLED = prev;
+    }
+  });
+
+  it('B-W06: decoration keeps the task envelope (resultType task, the task ttlMs, no cacheScope)', () => {
+    const task = { resultType: 'task', taskId: 't-1', status: 'working', createdAt: 'a', lastUpdatedAt: 'b', ttlMs: 90_000_000, pollIntervalMs: 30_000 };
+    const out = decorateModernResult('tools/call', task);
+    expect(out.resultType).toBe('task');
+    expect(out.ttlMs).toBe(90_000_000);
+    expect(out).not.toHaveProperty('cacheScope');
+    expect(out).toMatchObject({ taskId: 't-1', status: 'working', pollIntervalMs: 30_000 });
+    // Only tools/call keeps it.
+    expect(decorateModernResult('tools/list', { resultType: 'task' }).resultType).toBe('complete');
+    expect(decorateModernResult('tasks/get', { resultType: 'task' }).resultType).toBe('complete');
+  });
+
+  it('B-W06: tasks/get results are complete, flat and keep the task ttlMs', () => {
+    const flat = { taskId: 't-1', status: 'completed', createdAt: 'a', lastUpdatedAt: 'b', ttlMs: 90_000_000, result: { content: [] } };
+    for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel']) {
+      const out = decorateModernResult(method, flat);
+      expect(out.resultType).toBe('complete');
+      expect(out.ttlMs).toBe(method === 'tasks/get' ? 90_000_000 : 90_000_000);
+      expect(out).not.toHaveProperty('cacheScope');
+      expect(out.result).toEqual({ content: [] });
+    }
+    expect(decorateModernResult('tasks/cancel', {})).not.toHaveProperty('ttlMs');
+  });
+
+  it('B-W06: discover advertises tasks only when Tasks are effective, beside B-W05 ui; no extensions key when neither', () => {
+    const keys = ['MCP_APPS_ENABLED', 'MCP_TASKS_ENABLED', 'MCP_STATELESS_ENABLED'] as const;
+    const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    const set = (apps: boolean, tasks: boolean, stateless: boolean) => {
+      for (const [k, v] of [['MCP_APPS_ENABLED', apps], ['MCP_TASKS_ENABLED', tasks], ['MCP_STATELESS_ENABLED', stateless]] as const) {
+        if (v) process.env[k] = 'true'; else delete process.env[k];
+      }
+    };
+    try {
+      set(false, false, true);
+      expect(JSON.stringify(buildDiscoverResult().capabilities)).toBe('{"tools":{},"resources":{},"prompts":{}}');
+      set(false, true, false); // flag on, stateless off: not effective
+      expect(JSON.stringify(buildDiscoverResult().capabilities)).toBe('{"tools":{},"resources":{},"prompts":{}}');
+      set(false, true, true);
+      expect(buildDiscoverResult().capabilities).toEqual({
+        tools: {}, resources: {}, prompts: {}, extensions: { 'io.modelcontextprotocol/tasks': {} },
+      });
+      set(true, true, true);
+      const both = buildDiscoverResult().capabilities as Record<string, unknown>;
+      expect(both).toEqual({
+        tools: {}, resources: {}, prompts: {},
+        extensions: { 'io.modelcontextprotocol/ui': {}, 'io.modelcontextprotocol/tasks': {} },
+      });
+      expect(Object.keys(both).filter((k) => k === 'extensions')).toHaveLength(1);
+      set(true, false, true);
+      expect(buildDiscoverResult().capabilities).toEqual({
+        tools: {}, resources: {}, prompts: {}, extensions: { 'io.modelcontextprotocol/ui': {} },
+      });
+    } finally {
+      for (const k of keys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; }
+    }
+  });
+
   it('buildDiscoverResult advertises every supported version, private 5-minute cache', () => {
     expect(buildDiscoverResult()).toEqual({
       resultType: 'complete',

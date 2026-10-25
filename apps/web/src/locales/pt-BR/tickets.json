@@ -84,7 +84,8 @@
       "low": "Baixa"
     },
     "checklistProgress": "{{done}}/{{total}} etapas",
-    "checklistTitle": "Checklist: {{done}} de {{total}} etapas concluídas"
+    "checklistTitle": "Checklist: {{done}} de {{total}} etapas concluídas",
+    "merged": "Mesclado"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nenhum chamado arquivado.",
@@ -176,7 +177,9 @@
       "broken": "Não foi possível carregar {{name}}",
       "open": "Abrir anexo",
       "remove": "Remover anexo"
-    }
+    },
+    "mergedFrom": "de {{number}}",
+    "mergedFromUnknown": "de um chamado mesclado"
   },
   "ticketPartsCard": {
     "title": "Peças",
@@ -336,6 +339,7 @@
     "selectedCount_other": "{{count}} selecionados",
     "clearSelection": "Limpar",
     "noSelection": "Selecione um chamado. Use j/k para mover, Enter para expandir.",
+    "ticketNotInView": "O chamado {{number}} não está nesta visualização.",
     "movedToClosed": {
       "message": "{{status}} — agora em {{tab}}",
       "view": "Ver em {{tab}}"
@@ -411,13 +415,15 @@
       "confirm": "Excluir chamados"
     },
     "filterByType": "Filtrar por tipo",
-    "allTypes": "Todos os tipos"
+    "allTypes": "Todos os tipos",
+    "showMerged": "Mostrar mesclados"
   },
   "ticketWorkbench": {
     "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",
     "loadFailed": "Falha ao carregar chamado.",
     "backToQueue": "Voltar à fila",
     "ticketSubject": "Assunto do chamado",
+    "subjectEditButton": "Editar assunto",
     "openFullPage": "Abrir página completa",
     "priorityLabel": "Prioridade",
     "categoryLabel": "Categoria",
@@ -477,6 +483,90 @@
       "blockedCurrency": "Este chamado tem {{timeCount}} registros de tempo não faturados e {{partCount}} peças não faturadas precificados em {{sourceCurrency}}, mas {{targetOrg}} fatura em {{targetCurrency}}. Fature-os primeiro ou mova mesmo assim: os valores permanecem em {{sourceCurrency}} e só podem ser faturados em um rascunho em {{sourceCurrency}}.",
       "acceptCurrency": "Entendo que esses valores permanecem em {{sourceCurrency}} e não são convertidos.",
       "moveAnyway": "Mover mesmo assim"
+    },
+    "merge": {
+      "open": "Mesclar com…",
+      "title": "Mesclar {{number}} com outro chamado",
+      "description": "Os comentários, o tempo, as peças e os vínculos de {{number}} passam para o chamado escolhido. Depois, {{number}} é fechado e aponta para ele.",
+      "pickerLabel": "Chamado de destino",
+      "searchPlaceholder": "Pesquisar por número ou assunto",
+      "pickerHint": "Somente chamados abertos desta organização são listados, do mais antigo para o mais recente.",
+      "loading": "Carregando chamados…",
+      "candidatesFailed": "Não foi possível carregar os chamados. Feche a caixa de diálogo e tente novamente.",
+      "noCandidates": "Não há outros chamados abertos nesta organização.",
+      "previewLoading": "Verificando a mesclagem…",
+      "previewFailed": "Não foi possível verificar esta mesclagem. Escolha o chamado novamente para tentar outra vez.",
+      "side": {
+        "source": "Este chamado",
+        "survivor": "O destino",
+        "both": "Ambos os chamados"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Um chamado não pode ser mesclado com ele mesmo.",
+        "MERGE_CROSS_ORG": "Os dois chamados precisam pertencer à mesma organização.",
+        "MERGE_SOURCE_INELIGIBLE": "Este chamado não pode ser mesclado (foi excluído ou já foi mesclado).",
+        "MERGE_SURVIVOR_INELIGIBLE": "O destino não pode receber uma mesclagem (está fechado, excluído ou já foi mesclado).",
+        "MERGE_DELIVERABLE_PINNED": "Um chamado vinculado a uma entrega de serviço não pode ser mesclado.",
+        "MERGE_IMPORT_WINDOW": "Um chamado em uma janela de importação aberta não pode ser mesclado.",
+        "MERGE_APPROVAL_STATE": "Chamados com solicitações de aprovação ou orçamento não podem ser mesclados.",
+        "MERGE_WORK_KIND_MISMATCH": "Trabalho de suporte e trabalho de projeto não podem ser mesclados.",
+        "MERGE_PENDING_INTENTS": "Este chamado tem ações de IA pendentes. Aguarde a conclusão ou cancele-as.",
+        "ORG_MERGING": "Esta organização está sendo mesclada. Tente novamente mais tarde.",
+        "MERGE_SCOPE_DENIED": "Você não tem acesso a um dispositivo ou local de um destes chamados."
+      },
+      "suggested": "{{number}} é mais antigo; normalmente é o que deve ser mantido.",
+      "movesTo": "Vai para {{number}}",
+      "nothingMoves": "Nada mais é movido.",
+      "counts": {
+        "ticket_comments": "Comentários: {{count}}",
+        "time_entries": "Lançamentos de tempo: {{count}}",
+        "ticket_parts": "Peças: {{count}}",
+        "ticket_alert_links": "Vínculos de alertas: {{count}}",
+        "ticket_attachments": "Anexos: {{count}}",
+        "ticket_email_links": "Vínculos de e-mail: {{count}}",
+        "ticket_checklist_items": "Itens da checklist: {{count}}",
+        "ticket_external_refs": "Referências externas: {{count}}",
+        "ticket_links": "Vínculos entre chamados: {{count}}",
+        "device_vulnerabilities": "Vulnerabilidades: {{count}}",
+        "organization_key_dates": "Lembretes de datas importantes: {{count}}",
+        "service_deliverable_occurrences": "Ocorrências de entregas: {{count}}",
+        "ai_operator_task_targets": "Alvos do operador de IA: {{count}}",
+        "ticket_drafts": "Rascunhos descartados: {{count}}"
+      },
+      "droppedHeading": "Vínculos descartados",
+      "dropped": {
+        "between_pair": "vínculo entre os dois chamados",
+        "pair_unique": "duplicata de um vínculo que o destino já tem",
+        "self": "apontaria para ele mesmo",
+        "canonical_duplicate": "duplicata após a reordenação",
+        "cycle": "criaria um ciclo",
+        "limit": "acima do limite de vínculos por chamado"
+      },
+      "retained": "Permanece em {{number}}: {{name}}",
+      "anIntegration": "uma integração",
+      "device": {
+        "keeps": "O chamado mesclado mantém {{device}}.",
+        "takes": "O chamado mesclado assume {{device}}.",
+        "unknown": "outro dispositivo"
+      },
+      "requesterAccess": "O solicitante de {{source}} verá a conversa pública de {{survivor}} no portal e poderá responder por lá.",
+      "notify": "Enviar e-mail ao solicitante de {{number}} avisando que a solicitação foi mesclada",
+      "noRequester": "{{number}} não tem um solicitante para receber e-mail.",
+      "warning": "Esta ação não pode ser desfeita. {{source}} passa a ser somente leitura e aponta para {{survivor}}.",
+      "confirm": "Mesclar",
+      "merging": "Mesclando…",
+      "failed": "Falha ao mesclar. Tente novamente.",
+      "merged": "Mesclado com {{number}}",
+      "mfaRequired": "Mesclar chamados exige autenticação multifator. Entre novamente com MFA e tente outra vez.",
+      "alreadyMerged": "Um destes chamados já foi mesclado. Escolha outro destino.",
+      "retry": "Estes chamados mudaram durante a mesclagem. Tente novamente."
+    },
+    "mergedBanner": {
+      "mergedInto": "Este chamado foi mesclado com {{number}} em {{date}}.",
+      "pending": "Este chamado foi mesclado com outro chamado em {{date}}.",
+      "deleted": "Este chamado foi mesclado em {{date}} com um chamado que foi excluído ou que você não pode ver.",
+      "open": "Abrir {{number}}",
+      "readOnly": "Chamados mesclados são somente leitura. Responda no chamado com o qual ele foi mesclado."
     },
     "triage": {
       "title": "Triagem sugerida",

@@ -80,7 +80,21 @@ function wrapText(doc: jsPDF, text: string, width: number): string[] {
   return doc.splitTextToSize(text, width) as string[];
 }
 
-function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size = 9.5, color?: RGB): number {
+/** Start a fresh page (with chrome) when `needed` mm will not fit. */
+function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): number {
+  if (y + needed <= chrome.PAGE.footY - 6) return y;
+  doc.addPage();
+  chrome.drawHeaderBand(doc);
+  chrome.drawFooter(doc);
+  return chrome.PAGE.bandH + 10;
+}
+
+/** Section heading that never lands in the footer: keeps ~30 mm for what follows. */
+function heading(doc: jsPDF, chrome: PdfChrome, text: string, y: number): number {
+  return chrome.drawSectionHeading(doc, text, ensureSpace(doc, chrome, y, 30));
+}
+
+function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y0: number, size = 9.5, color?: RGB): number {
   const { C, PAGE } = chrome;
   const width = PAGE.w - PAGE.mx * 2;
   doc.setFont('helvetica', 'normal');
@@ -88,8 +102,13 @@ function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size 
   ink(doc, color ?? C.ink);
   const lines = wrapText(doc, text, width);
   const lineH = size * 0.56;
-  lines.forEach((line, i) => doc.text(line, PAGE.mx, y + i * lineH));
-  return y + lines.length * lineH + 2.5;
+  let y = y0;
+  lines.forEach((line) => {
+    y = ensureSpace(doc, chrome, y, lineH);
+    doc.text(line, PAGE.mx, y);
+    y += lineH;
+  });
+  return y + 2.5;
 }
 
 function scopeLabel(scope: ReportScopeMeta): string {
@@ -136,7 +155,7 @@ export function renderQuoteWinRateReport(
   );
 
   // --- Basis ---------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'Basis', y + 6);
+  y = heading(doc, chrome, 'Basis', y + 6);
   for (const note of summary.notes) {
     y = drawProse(doc, chrome, note, y + 1, 8.6, C.muted);
   }
@@ -144,7 +163,7 @@ export function renderQuoteWinRateReport(
   // --- Headline: decided-only win rate, the open count beside it ----------
   const o = summary.overall;
   const decided = o.won + o.lost + o.expired;
-  y = chrome.drawSectionHeading(doc, 'Win rate', y + 4);
+  y = heading(doc, chrome, 'Win rate', y + 4);
   y = drawProse(
     doc,
     chrome,
@@ -167,7 +186,7 @@ export function renderQuoteWinRateReport(
   );
 
   // --- Per currency ------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'Value per currency', y + 2);
+  y = heading(doc, chrome, 'Value per currency', y + 2);
   if (o.money.length === 0) {
     y = drawProse(doc, chrome, 'No quoted value in any currency.', y + 1, 9, C.muted);
   } else {
@@ -190,7 +209,7 @@ export function renderQuoteWinRateReport(
   }
 
   // --- By <groupBy> ------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, `By ${GROUP_BY_LABEL[summary.groupBy]}`, y + 2);
+  y = heading(doc, chrome, `By ${GROUP_BY_LABEL[summary.groupBy]}`, y + 2);
   if (summary.groups.length === 0) {
     y = drawProse(doc, chrome, 'No quotes were sent in the covered scope for this period.', y + 1, 9, C.muted);
   } else {
@@ -229,7 +248,7 @@ export function renderQuoteWinRateReport(
     pdfMax: DETAIL_TABLE_MAX,
     storedCap: summary.detail.cap,
   });
-  y = chrome.drawSectionHeading(doc, disclosure.heading, y + 2);
+  y = heading(doc, chrome, disclosure.heading, y + 2);
   if (disclosure.note) y = drawProse(doc, chrome, disclosure.note, y + 1, 8.6, C.muted);
   if (summary.rows.length === 0) {
     drawProse(doc, chrome, 'No quotes were sent in the covered scope for this period.', y + 1, 9, C.muted);

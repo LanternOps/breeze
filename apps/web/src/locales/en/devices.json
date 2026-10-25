@@ -360,7 +360,22 @@
     "moving": "Moving...",
     "toADifferentSite": "to a different site.",
     "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
-    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically.",
+    "bulkIntro": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntro_one": "Move {{count}} selected device to a different site within {{org}}.",
+    "bulkIntro_other": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntroNoOrg": "Move {{count}} selected devices to a different site.",
+    "bulkIntroNoOrg_one": "Move {{count}} selected device to a different site.",
+    "bulkIntroNoOrg_other": "Move {{count}} selected devices to a different site.",
+    "devicesFromSites": "{{count}} devices from {{siteCount}} sites",
+    "devicesFromSites_one": "{{count}} device from {{siteCount}} sites",
+    "devicesFromSites_other": "{{count}} devices from {{siteCount}} sites",
+    "selectSite": "Select a site",
+    "moveDevices": "Move {{count}} devices",
+    "moveDevices_one": "Move {{count}} device",
+    "moveDevices_other": "Move {{count}} devices",
+    "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
+    "failedToMoveDevices": "Couldn't move the devices. Try again."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} of {{count}} device",
     "countLine_other": "{{shown}} of {{count}} devices",
-    "noMatchesTitle": "No devices match these filters"
+    "noMatchesTitle": "No devices match these filters",
+    "moveToSite": "Move to site",
+    "moveSelectedToSite": "Move to site",
+    "moveSiteMixedOrgs": "Selected devices belong to more than one organization",
+    "moveSiteOverCap": "Select at most {{count}} devices to move at once"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -1868,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Loading device logs...",
     "noLogsMatchTheSelectedFilters": "No logs match the selected filters.",
-    "noDeviceLogsRecordedYet": "No device logs recorded yet."
+    "noDeviceLogsRecordedYet": "No device logs recorded yet.",
+    "linkedWindow": "Showing the reliability scoring window {{from}} – {{to}}",
+    "linkedWindowWithSource": "Showing the reliability scoring window {{from}} – {{to}} for {{source}}",
+    "clearLinkedFilter": "Clear link filter"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Loading management posture...",
@@ -1950,6 +1972,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",
@@ -2288,7 +2311,11 @@
       "savedNotActive": "Marker saved. A later marker is still in effect, so the score didn't change.",
       "clearNotFound": "This marker no longer exists.",
       "clearAlreadyCleared": "This marker was already cleared."
-    }
+    },
+    "eventLogLinkExact": "View in event log",
+    "eventLogLinkWindow": "Open event log",
+    "eventLogLinkTitle": "Event log, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Event log for {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copy to clipboard",
@@ -2695,7 +2722,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} device had already received the uninstall — that machine may need the agent reinstalled.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} devices had already received the uninstall — those machines may need the agent reinstalled.",
       "bulkRestored_one": "{{count}} device restored",
-      "bulkRestored_other": "{{count}} devices restored"
+      "bulkRestored_other": "{{count}} devices restored",
+      "bulkMoveSiteSuccess": "{{count}} devices are now at {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} device is now at {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} devices are now at {{site}}",
+      "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} moved to a new site"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",

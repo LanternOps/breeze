@@ -108,6 +108,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('restorePointAttemptRetention'),
   // #9128. Plain Redis-required consumer, no feature flag.
   consumers('webhookDeliveryRetention'),
+  // #10019/#10020. Plain Redis-required consumer, no feature flag.
+  consumers('dnsSecurityRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
@@ -119,6 +121,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('migrationWindowSweep'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
+  consumers('wispGrantReconciler'),
   consumers('softwareUploadSessionCleanup'),
   consumers('softwareRemediationRequestCleanup'),
   consumers('auditRetention'),
@@ -217,6 +220,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // W02: workstation decision repair (terminal results + late rejections).
   consumers('callerVerificationReconciliation'),
   consumers('ticketSlaWorker'),
+  // #8973 W4: business-calendar holiday recompute (one-shot jobs).
+  consumers('businessCalendarRecomputeWorker'),
   consumers('inboundEmailWorker'),
   consumers('gmailMarkHandledWorker'),
   consumers('ticketMailboxPollWorker'),
@@ -248,6 +253,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('aiChargebackWorker'),
   consumers('alertVerdictScheduler'),
   consumers('aiAgentSweepScheduler'),
+  // Wisp W05b (#9917): one Worker constructed and attached unconditionally
+  // under its registry-key name; the Wisp flag is read inside the tick and
+  // the assess job, not before construction — plain-required (`redis`).
+  consumers('wispWakeScheduler'),
   // Task 8 merge-forward (origin/main fcd5b498a): three more `global` registry
   // entries, each constructing one Worker and attaching unconditionally (no
   // flag gate before the attach — aiAgentImpactRollup reads
@@ -290,6 +299,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
+  // flag gate before construction, attached under its registry-key name).
+  consumers('wispConcernRetention'),
+  // Wisp W06a (#9912): 15-minute nudge digest + morning brief — same shape
+  // (one Worker constructed and attached unconditionally; flag read per run).
+  consumers('wispNudgeDigest'),
   // #5290 (W03) — daily monitor breach-episode retention prune, same shape as
   // mlOutputRetention/metricAnomalyIncidentRetention/agentLogRetention: one
   // Worker, no flag gate, constructs and attaches unconditionally under its

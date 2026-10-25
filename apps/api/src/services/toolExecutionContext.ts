@@ -1,4 +1,5 @@
 import type { ReleaseDecision } from './scriptProposals/approvalMethod';
+import type { ActionIntentSource } from '../db/schema/actionIntents';
 import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
@@ -124,6 +125,14 @@ export type ToolExecutionContext = {
    */
   releaseDecision?: ReleaseDecision;
   /**
+   * The released intent's `source` (`chat` | `mcp_api` | `ai_agent`) — set by
+   * the SAME two release paths that set `actionIntentId`, from the intent row
+   * they hold, and by nothing else (#6268). `ioc_hunt sweep` stamps its sweep
+   * `origin` from it (`mcp_api` → `mcp`, otherwise `ai_chat`); the auth alone
+   * cannot say which surface filed the approval. Absent on every direct call.
+   */
+  intentSource?: ActionIntentSource;
+  /**
    * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
    * releases an agent-originated intent whose action creates a row OWNED by
    * a real user (`USER_OWNED_RELEASE_ACTIONS` — `manage_tickets:
@@ -161,8 +170,12 @@ export type ToolExecutionContext = {
    * site in `aiTools.ts`. Absent for a call with no attributable org/run/
    * session (an unauthenticated or system-scope caller), which is what makes
    * "no anchor" a safe, typed refusal rather than an unscoped lookup.
+   *
+   * `wispThreadId` (Wisp W04, w00 A24) is present only when the chat session
+   * is attached to a Wisp thread; it lets the read also match that thread's
+   * attachments (see `ArtifactCallerAnchor.wispThreadId`).
    */
-  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null };
+  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
    * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a

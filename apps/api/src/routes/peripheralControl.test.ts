@@ -383,6 +383,22 @@ describe('peripheralControl routes', () => {
       expect(set.mock.calls[0]![0].targetIds).toEqual({ siteIds: [siteA], groupIds: [], deviceIds: [] });
     });
 
+    it('keeps stored exceptions when the update omits exceptions', async () => {
+      const set = mockUpdate({ ...sitePolicy, exceptions: [{ vendor: 'SanDisk', allow: true }] });
+      const res = await postUpdate();
+
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('exceptions');
+    });
+
+    it('clears exceptions when the update sends an explicit empty array', async () => {
+      const set = mockUpdate({ ...sitePolicy, exceptions: [{ vendor: 'SanDisk', allow: true }] });
+      const res = await postUpdate({ exceptions: [] });
+
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0].exceptions).toEqual([]);
+    });
+
     it('still defaults a create without targeting to the whole organization', async () => {
       const values = vi.fn((v: Record<string, unknown>) => ({
         returning: vi.fn().mockResolvedValue([{ ...basePolicy, ...v }])

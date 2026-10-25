@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Quem concordou",
         "signerEmailLabel": "E-mail dessa pessoa (opcional)",
         "consequenceInvoice": "Uma fatura de {{amount}} será emitida e numerada agora.",
+        "consequenceInvoiceDraft": "Será criada uma fatura em rascunho. Ela ainda não é emitida nem numerada.",
         "consequenceContracts": "Linhas recorrentes viram contratos em rascunho que você ativa depois.",
         "consequenceEmail": "A fatura será enviada por e-mail para {{recipients}}.",
         "consequenceEmailNotConfigured": "Nenhum serviço de e-mail está configurado; a fatura não será enviada por e-mail. Compartilhe-a pela página da fatura.",
@@ -1368,6 +1369,7 @@
         "evidenceError": "A aceitação foi registrada, mas não foi possível anexar o arquivo de evidência. Anexe-o a partir da página da proposta.",
         "consequenceEmailNoRecipient": "Nenhum destinatário está registrado nesta proposta, então a fatura pode não ser enviada por e-mail. Envie-a ao cliente você mesmo, se necessário.",
         "successNoRecipient": "Proposta aceita. Fatura {{number}} emitida. Ela pode não ter sido enviada por e-mail: nenhum destinatário está registrado nesta proposta.",
+        "successNoEmailService": "Proposta aceita. Fatura {{number}} emitida. Ela não foi enviada por e-mail: nenhum serviço de e-mail está configurado. Compartilhe-a pela página da fatura.",
         "overlap": {
           "title": "Esta organização já tem um contrato na mesma periodicidade",
           "body": "O aceite criou um novo rascunho de contrato. Se você ativá-lo além do existente, o cliente paga pelos dois. Revise os dois antes de ativar qualquer um.",

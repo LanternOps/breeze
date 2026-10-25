@@ -23,6 +23,7 @@ import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 type Integration = {
   id: string;
@@ -660,24 +661,16 @@ export default function HuntressIntegration() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Shield className="h-5 w-5" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("huntressIntegration.huntressIntegration")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "huntressIntegration.connectOnePartnerLevelHuntressAccountAndMap",
-            )}
-          </p>
-        </div>
-      </div>
+      <IntegrationPanelHeader
+        icon={<Shield className="h-4 w-4" />}
+        title={t("huntressIntegration.huntressIntegration")}
+        description={t(
+          "huntressIntegration.connectOnePartnerLevelHuntressAccountAndMap",
+        )}
+      />
 
       {loadError && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {loadError}
         </div>
       )}

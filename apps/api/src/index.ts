@@ -70,6 +70,8 @@ import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
+import { businessCalendarRoutes } from './routes/businessCalendars';
+import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
@@ -162,6 +164,7 @@ import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
 import { auditBaselineRoutes } from './routes/auditBaselines';
 import { softwareRoutes } from './routes/software';
+import { softwareBuiltinPackagesRoutes } from './routes/softwareBuiltinPackages';
 import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './routes/vulnerabilities';
 import { systemRoutes } from './routes/system';
@@ -201,6 +204,8 @@ import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
 import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
+import { wispRoutes } from './routes/wisp';
+import { wispMemoryRoutes } from './routes/wisp/memory';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -213,6 +218,7 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
+import { refreshPinnedBuiltinPackages } from './services/builtinDeploymentPackages';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
@@ -327,6 +333,8 @@ import {
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { wispEnabled } from './config/env';
+import { installWispGrantHooks } from './services/wisp/grantLifecycle';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher, warnOnUnsupportedPlatformInferenceGeo } from './services/aiModels/platformModels';
 import { partnerTrustMode } from './config/partnerTrustMode';
@@ -869,6 +877,8 @@ api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
+api.route('/business-calendars', businessCalendarRoutes);
+api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
@@ -1047,6 +1057,8 @@ api.route('/monitoring', monitoringRoutes);
 // lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
 api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
+// #6958 D2: deeper mount first so `/software` never shadows it.
+api.route('/software/builtin-packages', softwareBuiltinPackagesRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
 // Deeper mount first: isolates the platform-admin sync router from the main
@@ -1100,6 +1112,15 @@ api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// Wisp W03 (#9909): memory page routes. MUST stay above '/wisp': wispRoutes'
+// use('*') gates (partner scope only) match /wisp/memory/* too, and Hono runs
+// matching handlers in registration order. Registered first, a matched memory
+// handler answers before those gates are reached (pinned in
+// routes/wisp/memory.test.ts). Its own gates: auth → wispEnabled() → ai_sessions:use.
+api.route('/wisp/memory', wispMemoryRoutes);
+// Wisp W02 (#9908): delegation grants. Every route 404s while
+// BREEZE_WISP_ENABLED is off (checked per request inside wispRoutes).
+api.route('/wisp', wispRoutes);
 // W03 (#5612): more specific than '/ai', so it must be registered first — same
 // reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
 // registration order.
@@ -1776,6 +1797,9 @@ async function bootstrap(): Promise<void> {
   // userId bumps the shared Redis version key, so every replica invalidates at
   // once rather than each aging out independently.
   await clearPermissionCache();
+  // Wisp W02: re-evaluate a user's delegation grants whenever their permission
+  // authority changes (pause on lost access, lift its own pauses on recovery).
+  if (wispEnabled()) installWispGrantHooks();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
@@ -2032,6 +2056,26 @@ async function bootstrap(): Promise<void> {
     })
     .catch((err) => {
       console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // #6958: move every partner's provisioned DNS built-in rows forward to the
+  // code-pinned version. Forward-only (an older replica booting never reverts
+  // a newer pin), one row-locked transaction per catalog row, per-row failures
+  // counted rather than thrown. Detached after serve() like the task above.
+  void runStartupTaskWithRetry('pinned built-in package refresh', () => refreshPinnedBuiltinPackages(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error, result }) =>
+      console.error(`[startup] pinned built-in package refresh attempt ${attempt + 1} failed:`, error ?? `${result?.failed} row(s) failed`),
+  })
+    .then((result) => {
+      // Counts are from the last attempt. Rows still failing after the retries
+      // are already in Sentry per key; surface the exhaustion as an error too.
+      const line = `[startup] pinned built-in package refresh: refreshed ${result.refreshed}, failed ${result.failed}`;
+      if (result.failed > 0) console.error(`${line} (retries exhausted)`);
+      else console.log(line);
+    })
+    .catch((err) => {
+      console.error('[startup] pinned built-in package refresh failed:', err);
     });
 
   // Notification-channel secrets in partner/org/site settings are sealed on

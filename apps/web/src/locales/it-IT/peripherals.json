@@ -112,6 +112,10 @@
     "reason": "Motivo",
     "expiresAt": "Scade (ora locale)",
     "updatePolicy": "Aggiorna criterio",
-    "createPolicy": "Crea criterio"
+    "createPolicy": "Crea criterio",
+    "saved": {
+      "created": "Criterio creato",
+      "updated": "Criterio aggiornato"
+    }
   }
 }

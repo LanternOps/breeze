@@ -26,9 +26,20 @@ import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
-import { AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+import { AGENT_COORDINATOR_CARRIER_TOOLS, AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+// Leaf data module (no imports) — the specialist kind table, so the tier
+// tables below derive from it instead of re-typing kind names.
+import {
+  ASK_FIRST_SPECIALIST_KINDS,
+  AUTO_ADMIT_SPECIALIST_KINDS,
+  SPECIALIST_KIND_LABELS,
+  isSpecialistKind,
+} from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+// Env-only operator knob; the module imports nothing but @breeze/shared.
+import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
+import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -55,6 +66,8 @@ export const BLOCKED_TOOLS: ReadonlySet<string> = new Set<string>([
 // Exported for the tier-parity contract tests (aiGuardrailsTierParity.shared.ts).
 export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
   execute_command: 'commandType',
+  // Wisp W07: launch_specialist is multiplexed on the specialist KIND.
+  launch_specialist: 'kind',
 };
 
 // Actions that are Tier 2 (auto-execute + audit):
@@ -64,6 +77,9 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
+  // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
+  // from SPECIALIST_KIND_POLICY (leaf data module).
+  launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
   manage_policy_feature_link: ['describe'],
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
@@ -180,6 +196,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
   // consistent with approve/decline/defer here. install/rollback stay Tier 3.
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
+  // #6268: stopping an IOC sweep is the safe direction (queued scans are
+  // cancelled, running ones finish), so it auto-executes with an audit row.
+  ioc_hunt: ['cancel_sweep'],
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
@@ -297,6 +316,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // changes no device state. Reclassifying it is W04's call (spec W01-D3).
   disk_cleanup: ['preview'],
   generate_report: ['list', 'data', 'history', 'download'],
+  // #6268 (base Tier 1): reads over PR A's sweep services; preview writes nothing.
+  ioc_hunt: ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status'],
   get_dns_security: ['allowed', 'blocked', 'redirected'],
   get_service_monitoring_status: ['status', 'summary', 'results', 'known_services'],
   manage_alert_rules: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'],
@@ -322,7 +343,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links', 'merge_preview'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -335,6 +356,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
+  // Wisp W07 (spec §3 "asks first"): every specialist kind the policy does not
+  // auto-admit needs the person's approval in chat — for a bulk reply the card
+  // shows the exact ticket list and message.
+  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
   // Customer-visible: the text is shown to an end user under the MSP's brand,
   // so a human must always have read it (same class as a public ticket reply).
   send_endpoint_message: ['send'],
@@ -368,6 +393,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // through configuration policies"), so the gate costs no live workflow —
   // it is here so re-enabling the handler cannot silently reopen the hole.
   manage_patches: ['install', 'rollback', 'setup_auto_approval'],
+  // #6268: a fleet IOC sweep (detect-only, single org; scope input-aware in
+  // resolveApprovalScope) and an IOC rule import (publishes a rule set every
+  // policy using it then scans with).
+  ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
   manage_groups: ['create', 'update', 'delete'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
@@ -436,7 +465,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // edit_comment/delete_comment (W02, #6756): no restore — a public comment's
   // text changes or disappears in the portal at once (the old text survives
   // only in the audit log).
-  manage_tickets: ['move_org', 'edit_comment', 'delete_comment'],
+  manage_tickets: ['move_org', 'merge', 'edit_comment', 'delete_comment'],
+  // #8883 W5: ticket routing rule writes (partner-wide gate enforced in the service).
+  manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -543,6 +574,8 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // resolved by resolveApprovalScope's override hook, not this static table.
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
+  // #8972: `merge` is Tier 3 (one approver, spec §5.7), not four-eyes: it is
+  // same-org, unlike move_org's re-tenanting.
   manage_tickets: ['move_org'],
   // W02 QV3 (#6756): deleting a PARTNER-WIDE channel is irreversible (its
   // destination and secret config are gone) and silences alerting for every
@@ -593,6 +626,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // for the same reason every effect inside it is: the set can destroy a
   // person's access across two providers.
   'operator_plan',
+  // Wisp memory (W03 #9909): human-only (HUMAN_ONLY_TOOLS) and never declared to
+  // chat, Helper or agents — a person confirms/retracts on the memory page. Tier 3
+  // with operator_plan so the external MCP never advertises them; four_eyes is
+  // the conservative classification should any approval path ever reach them.
+  'confirm_memory', 'retract_memory',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -606,6 +644,7 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'google_set_forwarding', 'google_disable_forwarding',
   'google_add_mail_delegate', 'google_remove_mail_delegate',
   'google_suspend_user', 'google_offboard_user', 'google_wipe_mobile_device',
+  'google_account_wipe_mobile_device',
   'google_restore_user', 'google_signout', 'google_set_vacation',
   'google_update_user', 'google_share_calendar', 'google_move_ou',
   'google_rename_user', 'google_add_to_group', 'google_remove_from_group',
@@ -629,9 +668,22 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
 // near the top of this file so every existing importer keeps working.
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
+  // Wisp W07: one approver (the person asking, or a colleague) — the
+  // specialist's own effects still mint their own intents.
+  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
+  // #6268 Gate B 8: an IOC import authors detection rules (a set with
+  // auto-quarantine on is refused in the handler, under the set lock).
+  // ioc_hunt:sweep is NOT here: its scope is input-aware (expectedDeviceCount).
+  ioc_hunt: ['import_iocs'],
   // Supervised, not four_eyes: same class as a public ticket reply. list/get
   // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
   send_endpoint_message: ['send'],
+  // #8972: merging two tickets of ONE org (spec §5.7: Tier 3, approval). It is
+  // irreversible, which is why it needs approval at all; it is not tenant-
+  // shaping like move_org (four_eyes), so one approver suffices.
+  manage_tickets: ['merge'],
+  // #8883 W5: routing rules are config objects, not externally binding: one approver.
+  manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
@@ -701,6 +753,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
+  // Wisp W07: the specialist approval carrier — one approver, no four-eyes and
+  // no effect-digest pin (the coordinator re-runs every gate at release under
+  // the approver). launch_specialist is NOT here: its base tier is 2, and its
+  // tier-3 kinds are classified by TIER3_SUPERVISED_ACTIONS above.
+  'wisp_specialist_request',
   // #8742: customer-visible endpoint message; every action is enumerated in
   // TIER1_ACTIONS / TIER3_SUPERVISED_ACTIONS.
   'send_endpoint_message',
@@ -732,6 +789,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // browser/peripheral policy tools above — no identity, tenant-destruction,
   // or restore/rewind action in its surface.
   'manage_monitor_definitions',
+  // Ticket routing rules (#8883 W5): config-object CRUD + reorder, same class;
+  // whole-tool backstop for its TIER3_SUPERVISED_ACTIONS entry.
+  'manage_ticket_routing_rules',
   'network_discovery', 'remediate_sensitive_data',
   'remediate_software_violation', 'remediate_vulnerability',
   'execute_playbook', 'execute_containment',
@@ -764,6 +824,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // #6268 Gate B 6: supervised up to IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD
+  // expected devices, four_eyes above it or when the count is missing.
+  'ioc_hunt:sweep',
   // A customer-visible ticket reply is a different class of act from an
   // internal note — the note stays at the tool's base Tier 2 (auto-execute
   // + audit), but an AI-composed comment that will be shown to the ticket
@@ -899,6 +962,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   run_script: ['proposalId'],
   // resolveApprovalScope: update_org with a `status` key is four-eyes.
   manage_organizations: ['status'],
+  // resolveApprovalScope: sweep above the four-eyes device threshold (or with no count) is four-eyes.
+  ioc_hunt: ['expectedDeviceCount'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -980,6 +1045,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
+    // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
+    // supervised up to the four-eyes threshold, four_eyes above it. A count
+    // that is missing or not a non-negative integer cannot be trusted to bound
+    // the sweep, so it takes the stricter scope. createSweep refuses the
+    // released call as a scope change when it would target more devices.
+    const n = input.expectedDeviceCount;
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= iocHuntFourEyesDeviceThreshold()
+      ? 'supervised'
+      : 'four_eyes';
   }
   if (isInputAwareTier3(toolName, action, input)) {
     // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
@@ -1071,6 +1147,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     list: { resource: 'endpoint_messages', action: 'read' },
     get: { resource: 'endpoint_messages', action: 'read' },
   },
+  manage_ticket_routing_rules: {
+    create: { resource: 'tickets', action: 'write' },
+    update: { resource: 'tickets', action: 'write' },
+    reorder: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+  },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
     get: { resource: 'tickets', action: 'read' },
@@ -1085,6 +1167,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     edit_comment: { resource: 'tickets', action: 'write' },
     delete_comment: { resource: 'tickets', action: 'write' },
     move_org: { resource: 'tickets', action: 'write' },
+    // #8972: the staff routes gate both on tickets:write (routes/tickets/merge.ts).
+    merge_preview: { resource: 'tickets', action: 'write' },
+    merge: { resource: 'tickets', action: 'write' },
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
@@ -1253,6 +1338,31 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   validate_flow: { resource: 'automations', action: 'read' },
   get_flow: { resource: 'automations', action: 'read' },
   list_flows: { resource: 'automations', action: 'read' },
+  // #8973 W4: business-hours calendars read with the ticket permission.
+  list_business_calendars: { resource: 'tickets', action: 'read' },
+  // #8883 W5: ticket routing rules (reads here; manage_ticket_routing_rules is per-action below).
+  list_ticket_routing_rules: { resource: 'tickets', action: 'read' },
+  test_ticket_routing_rule: { resource: 'tickets', action: 'read' },
+  // Wisp W03 memory (services/wisp/memoryTools.ts): the chat-use permission
+  // (routes/ai.ts), same as the /wisp/memory routes. confirm/retract are
+  // HUMAN_ONLY_TOOLS; mapped so a direct dispatch still carries an RBAC gate.
+  recall: { resource: 'ai_sessions', action: 'use' },
+  remember: { resource: 'ai_sessions', action: 'use' },
+  confirm_memory: { resource: 'ai_sessions', action: 'use' },
+  retract_memory: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts), w00 A1: the
+  // chat-use permission, same as the /wisp/concerns and /wisp/watches routes.
+  list_concerns: { resource: 'ai_sessions', action: 'use' },
+  raise_concern: { resource: 'ai_sessions', action: 'use' },
+  snooze_concern: { resource: 'ai_sessions', action: 'use' },
+  resolve_concern: { resource: 'ai_sessions', action: 'use' },
+  create_watch: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W07 specialists (services/aiToolsWisp.ts), w00 A1: the chat-use
+  // permission. The kind's own permissions (SPECIALIST_KIND_POLICY) are
+  // ceiling terms the coordinator checks against the grantor AND the acting
+  // human — not tool gates.
+  launch_specialist: { resource: 'ai_sessions', action: 'use' },
+  wisp_specialist_request: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -1278,6 +1388,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove: { resource: 'devices', action: 'execute' },
     restore: { resource: 'devices', action: 'execute' },
     vulnerabilities: { resource: 'devices', action: 'read' },
+  },
+  // #6268: mirrors routes/security/sweeps.ts (reads devices:read, create/cancel
+  // devices:execute) and routes/security/yaraIocImport.ts (devices:write).
+  ioc_hunt: {
+    list_rule_sets: { resource: 'devices', action: 'read' },
+    preview_sweep: { resource: 'devices', action: 'read' },
+    list_sweeps: { resource: 'devices', action: 'read' },
+    sweep_status: { resource: 'devices', action: 'read' },
+    sweep: { resource: 'devices', action: 'execute' },
+    cancel_sweep: { resource: 'devices', action: 'execute' },
+    import_iocs: { resource: 'devices', action: 'write' },
   },
   // Stored snapshot read. `refresh: true` scans the device live and requires
   // devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
@@ -1451,25 +1572,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // mapping exists so the chat path reports that typed error rather than
   // "No RBAC permission mapping".
   //
-  // LANDMINE (2026-09-17 AI tool ROLE audit §2.7). Flat `ai_agents:read` is a
-  // LOW-BAR grant — seeded Org Admin holds it — and `workspace_run` executes
-  // arbitrary bash / python / node. It is safe ONLY because no chat or MCP
-  // caller can ever reach a workspace: `resolveWorkspace`
-  // (workspace/workspaceTools.ts) derives the run id from the caller identity
-  // alone (`auth.principal.kind === 'ai_agent'` + `runId`), there is no
-  // `runId` tool input, and chat-initiated launch is withdrawn (#6086,
-  // `workspace_launch_analysis` in AGENT_HUMAN_ONLY_TOOLS below). Agent
-  // principals bypass this table entirely, so it is never the control for a
-  // legitimate run.
-  //
-  // RE-ENABLING chat-initiated launch hands a CHAT caller a run-bearing
-  // principal, and at that moment this table becomes the ONLY gate. These four
-  // entries MUST be raised to an execute-class permission in the same change.
-  // Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
-  workspace_stage: { resource: 'ai_agents', action: 'read' },
-  workspace_run: { resource: 'ai_agents', action: 'read' },
-  workspace_collect: { resource: 'ai_agents', action: 'read' },
-  workspace_cancel: { resource: 'ai_agents', action: 'read' },
+  // CLOSED (2026-09-17 AI tool ROLE audit §2.7 landmine): raised to the
+  // execute-class `ai_workspace:execute` by Wisp W02 (spec §4.6) — the old
+  // flat `ai_agents:read` was a low-bar grant seeded Org Admin holds, while
+  // `workspace_run` executes arbitrary bash / python / node. Partner Admin
+  // holds the new key through `*:*`; no other role is seeded with it.
+  // `resolveWorkspace` (workspace/workspaceTools.ts) still answers non-agent
+  // principals with `workspace_requires_run`, and agent principals still
+  // bypass this table. Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
+  workspace_stage: { resource: 'ai_workspace', action: 'execute' },
+  workspace_run: { resource: 'ai_workspace', action: 'execute' },
+  workspace_collect: { resource: 'ai_workspace', action: 'execute' },
+  workspace_cancel: { resource: 'ai_workspace', action: 'execute' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
@@ -1765,6 +1879,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   google_share_calendar: { resource: 'organizations', action: 'write' },
   google_offboard_user: { resource: 'organizations', action: 'write' },
   google_wipe_mobile_device: { resource: 'organizations', action: 'write' },
+  google_account_wipe_mobile_device: { resource: 'organizations', action: 'write' },
   google_security_drift: { resource: 'organizations', action: 'read' },
   google_email_report: { resource: 'organizations', action: 'read' },
   google_list_user_groups: { resource: 'organizations', action: 'read' },
@@ -2786,11 +2901,22 @@ export function checkAgentGuardrails(
   // reachable only by this run). It is still allowlist- and
   // protected-resource-gated below.
   const workspaceTool = TIER1_NON_READONLY_TOOLS.has(toolName);
-  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool) {
+  // Wisp W07 exemption: a coordinator approval CARRIER (AGENT_COORDINATOR_
+  // CARRIER_TOOLS — every entry is also HUMAN_ONLY_TOOLS, so no model can
+  // raise one) is minted by deterministic code under a device-less assessment
+  // run. It executes nothing org-wide by itself: its release re-runs every
+  // coordinator gate (grant ceiling, org, budget, per-kind permissions held by
+  // the APPROVER). Exempt from the device-less deny and from the agent's own
+  // mutation allowlist — which an operator would never list it in — and
+  // nothing else: the kill switch, disabled/off, tier-4 and never-agent
+  // denies above still apply, and shadow mode still yields 'propose'.
+  const coordinatorCarrier = AGENT_COORDINATOR_CARRIER_TOOLS.has(toolName);
+  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool && !coordinatorCarrier) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
-  const allowlisted = policy.toolAllowlist.includes(toolName)
+  const allowlisted = coordinatorCarrier
+    || policy.toolAllowlist.includes(toolName)
     || (action !== undefined && policy.toolAllowlist.includes(`${toolName}:${action}`));
   if (!readOnly && !allowlisted) {
     return deny(`Tool "${toolName}"${action ? `:${action}` : ''} is not in the agent's allowlist`);
@@ -2930,7 +3056,7 @@ type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
 
-function resolveToolPermissionRequirements(
+export function resolveToolPermissionRequirements(
   toolName: string,
   input: Record<string, unknown>,
 ): ToolPermissionResolution {
@@ -3179,6 +3305,46 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
   },
 };
 
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+function iocSweepScopeLabel(scope: unknown): string {
+  const s = (scope && typeof scope === 'object' ? scope : {}) as Record<string, unknown>;
+  const count = (key: string) => (Array.isArray(s[key]) ? (s[key] as unknown[]).length : 0);
+  switch (s.kind) {
+    case 'sites': return plural(count('siteIds'), 'site', 'sites');
+    case 'groups': return plural(count('groupIds'), 'group', 'groups');
+    case 'devices': return plural(count('deviceIds'), 'device', 'devices');
+    case 'orgs': return 'this organization';
+    default: return 'all reachable devices';
+  }
+}
+
+/**
+ * #6268 approval headlines for ioc_hunt. Sync and DB-free, so a sweep names
+ * the rule-set COUNT and "this organization" rather than set and org names
+ * (the approval card shows the ids and the org beside it).
+ */
+function iocHuntHeadline(action: string | undefined, input: Record<string, unknown>): string {
+  const idPrefix = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v.slice(0, 8) : 'unknown');
+  if (action === IOC_HUNT_RUN_ACTION) {
+    const sets = Array.isArray(input.ruleSetIds) ? input.ruleSetIds.length : 0;
+    const n = input.expectedDeviceCount;
+    const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0
+      ? `up to ${plural(n, 'device', 'devices')}`
+      : 'an unconfirmed number of devices';
+    const scan = input.scanType === 'custom'
+      ? `custom scan of ${plural(Array.isArray(input.paths) ? input.paths.length : 0, 'path', 'paths')}`
+      : input.scanType === 'full' ? 'full scan' : 'quick scan';
+    return `IOC sweep (${scan}): ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
+  }
+  if (action === 'import_iocs') {
+    const count = Array.isArray(input.iocs) ? input.iocs.length : 0;
+    return `Import ${plural(count, 'IOC', 'IOCs')} into rule set ${idPrefix(input.ruleSetId)}`;
+  }
+  if (action === 'cancel_sweep') return `Cancel IOC sweep ${idPrefix(input.sweepId)}`;
+  return humanizeToolAction('ioc_hunt', action);
+}
+
 /**
  * Build a human-readable description of what the tool is about to do.
  */
@@ -3236,6 +3402,23 @@ function describeChannelDestination(config: unknown): string | null {
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
+/** "Wisp wants to run <kind> at <org>: <reason>" — plus the exact batch for a bulk reply (w00 A30). */
+function describeSpecialistRequest(input: Record<string, unknown>): string {
+  const kind = typeof input.kind === 'string' ? input.kind : '';
+  const label = isSpecialistKind(kind) ? SPECIALIST_KIND_LABELS[kind] : 'a specialist';
+  const org = typeof input.orgId === 'string' ? input.orgId.slice(0, 8) : 'this organization';
+  const reason = nonEmptyText(input.reason);
+  let text = `Wisp wants to run ${label} at ${org}${reason ? `: ${reason}` : ''}`;
+  const params = input.params && typeof input.params === 'object' ? input.params as Record<string, unknown> : {};
+  if (kind === 'bulk_ticket_reply') {
+    const ids = Array.isArray(params.ticketIds) ? params.ticketIds.length : 0;
+    const message = nonEmptyText(params.message);
+    text += ` — sends this message to ${ids} ticket(s)${params.holdTickets === true ? ' and sets them to pending' : ''}`;
+    if (message) text += `: "${message.length > 300 ? `${message.slice(0, 300)}…` : message}"`;
+  }
+  return text;
+}
+
 export function buildApprovalDescription(
   toolName: string,
   action: string | undefined,
@@ -3247,6 +3430,12 @@ export function buildApprovalDescription(
     case 'operator_plan': {
       const n = Array.isArray(input.effects) ? input.effects.length : 0;
       parts.push(`Approve a ${n}-effect plan for AI Operator task ${String(input.taskId ?? '')}`);
+      break;
+    }
+    // Wisp W07: the specialist approval card and the chat escalation.
+    case 'wisp_specialist_request':
+    case 'launch_specialist': {
+      parts.push(describeSpecialistRequest(input));
       break;
     }
     case 'execute_command': {
@@ -3366,6 +3555,10 @@ export function buildApprovalDescription(
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }
+      break;
+
+    case 'ioc_hunt':
+      parts.push(iocHuntHeadline(action, input));
       break;
 
     case 'security_scan':

@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpunkterkennung und -reaktion",
     "huntressIncidents": "Huntress-Vorfälle",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress.",
+    "iocScansLink": "Suchen Sie die IOC-Scans von Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Weitere EDR",
@@ -558,7 +559,8 @@
   },
   "securitySecurityDashboard": {
     "acrossAllAssets": "Über alle Assets hinweg",
-    "actionsPrioritized": "{{count}} Aktionen priorisiert",
+    "actionsPrioritized_one": "{{countLabel}} Aktion priorisiert",
+    "actionsPrioritized_other": "{{countLabel}} Aktionen priorisiert",
     "adminAccountAudit": "Prüfung des Administratorkontos",
     "antivirusCoverage": "Antiviren-Abdeckung",
     "bitlockerEnabled": "BitLocker aktiviert",
@@ -569,7 +571,8 @@
     "defaultAdmins": "Standardadministratoren",
     "devicesAudited": "{{count}} Geräte geprüft",
     "devicesFlagged": "{{count}} Geräte markiert",
-    "devicesReviewed": "{{count}} Geräte überprüft",
+    "devicesReviewed_one": "{{countLabel}} Gerät überprüft",
+    "devicesReviewed_other": "{{countLabel}} Geräte überprüft",
     "devicesTracked": "{{count}} Geräte verfolgt",
     "disabled": "Deaktiviert",
     "diskProtection": "Festplattenschutz",
@@ -589,7 +592,8 @@
     "noDevicesReportingYet": "Es wurden noch keine Geräte gemeldet",
     "noRecommendationsRightNowKeepMonitoringFor": "Im Moment keine Empfehlungen. Halten Sie Ausschau nach neuen Leitlinien.",
     "noWeakAdminAccountsDetected": "Es wurden keine schwachen Administratorkonten erkannt.",
-    "openItems": "{{count}} offene Punkte",
+    "openItems_one": "{{countLabel}} offener Punkt",
+    "openItems_other": "{{countLabel}} offene Punkte",
     "overallPosture": "Gesamte Sicherheitslage",
     "passwordPolicy": "Passwortrichtlinie",
     "policyAdherence": "Einhaltung der Richtlinien",
@@ -674,6 +678,10 @@
     "wed": "Mi"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
+    },
     "activeScans": "Aktive Scans",
     "allScanRequestsFailed": "Alle {{count}} Scan-Anfragen sind fehlgeschlagen",
     "cData": "C:\\\\Data\\\\",
@@ -750,7 +758,28 @@
     "threatRemoved": "Bedrohung entfernt",
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
-    "timeline": "Zeitleiste"
+    "timeline": "Zeitleiste",
+    "actionFailed": "Aktion fehlgeschlagen",
+    "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
+    "restoreSucceeded": "Bedrohung wiederhergestellt",
+    "removeSucceeded": "Bedrohung entfernt",
+    "notFound": "Diese Bedrohung wurde nicht gefunden. Sie wurde möglicherweise gelöscht, oder Sie haben keinen Zugriff auf ihr Gerät.",
+    "relatedLoadFailed": "Verwandte Bedrohungen konnten nicht geladen werden.",
+    "rule": {
+      "version": "Version Nr. {{version}}",
+      "title": "Erkennungsregel",
+      "legacy": "Integrierte Signatur (älterer Scan)",
+      "ruleName": "Regel",
+      "ruleSet": "Regelsatz",
+      "ruleSetMissing": "Regelsatz nicht mehr verfügbar",
+      "tags": "Schlagwörter",
+      "matchedStrings": "Gefundene Zeichenfolgen",
+      "noMatchedStrings": "Es wurden keine gefundenen Zeichenfolgen gemeldet.",
+      "sha256": "SHA-256 der Datei",
+      "copy": "SHA-256 kopieren",
+      "quarantinedTo": "In Quarantäne verschoben nach (zum Scanzeitpunkt)",
+      "quarantineFailed": "Automatische Quarantäne fehlgeschlagen"
+    }
   },
   "securityThreatList": {
     "active": "Aktiv",
@@ -1702,16 +1731,17 @@
     "actions": {
       "addIntegration": "Integration hinzufügen",
       "syncNow": "Jetzt synchronisieren",
-      "deleteIntegration": "Integration löschen"
+      "deleteIntegration": "Integration löschen",
+      "editRetention": "Aufbewahrungsdauer ändern"
     },
     "messages": {
       "loadHttpError": "Integrationen konnten nicht geladen werden (HTTP {{status}})",
       "loadFailed": "Integrationen konnten nicht geladen werden",
       "syncFailed": "Die Synchronisierung für {{name}} konnte nicht ausgelöst werden",
       "syncQueued": "Die Synchronisierung steht für {{name}} in der Warteschlange",
-      "deleteConfirm": "{{name}} löschen? Gespeicherte Ereignisse werden gemäß der Aufbewahrungsrichtlinie aufbewahrt.",
+      "deleteConfirm": "{{name}} löschen? Richtlinien, Ereignisse und Statistiken werden im Hintergrund entfernt.",
       "deleteFailed": "Fehler beim Löschen von {{name}}",
-      "deleteSuccess": "Gelöscht {{name}}"
+      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht"
     },
     "loading": "Integrationen werden geladen…",
     "empty": {
@@ -1726,7 +1756,25 @@
       "actions": "Aktionen"
     },
     "lastSyncFailedSuffix": "– gescheitert",
-    "never": "Niemals"
+    "lastSyncPartialSuffix": " – holt auf",
+    "never": "Niemals",
+    "deletingInBackground": "Wird gelöscht…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Datenaufbewahrung",
+    "description": "Ältere Ereignisse und Tagesstatistiken werden von der nächtlichen Bereinigung gelöscht.",
+    "fieldLabel": "DNS-Ereignisse und Statistiken aufbewahren für (Tage)",
+    "fieldHelp": "1–365 Tage. Leer lassen, um den Standardwert der Installation zu verwenden (90 Tage, sofern Ihr Administrator ihn nicht geändert hat).",
+    "invalid": "Geben Sie eine ganze Zahl von 1 bis 365 Tagen ein oder lassen Sie das Feld leer.",
+    "actions": {
+      "dismiss": "Abbrechen",
+      "submit": "Speichern",
+      "saving": "Wird gespeichert…"
+    },
+    "messages": {
+      "saved": "Aufbewahrung für {{name}} aktualisiert",
+      "saveFailed": "Aufbewahrung für {{name}} konnte nicht aktualisiert werden"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Richtlinien blockieren/zulassen",
@@ -2286,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "IOC-Sweeps",
     "iocScans": "IOC-Scans",
     "subtitle": "Signaturbasierte Malware- und IOC-Sweeps in Ihrer Flotte. Kein Ersatz für umfassenden Endpunktschutz.",
     "scansTab": "Scans",
@@ -2319,6 +2368,318 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    }
+  },
+  "sweeps": {
+    "title": "IOC-Sweeps",
+    "started": "Sweep gestartet",
+    "cancelled": "Sweep abgebrochen. Vor der Zustellung gestoppt: {{queued}}. Bereits zugestellt und auf dem Gerät noch in Arbeit: {{stillRunning}}.",
+    "detectOnly": "Sweeps erkennen nur. Nichts wird automatisch in Quarantäne verschoben, und es wird kein Defender-Scan gestartet.",
+    "version": "Version Nr. {{version}}",
+    "sweepNow": "Jetzt Sweep starten",
+    "sweepNowUnpublished": "Veröffentlichen Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
+    "sweepNowDisabled": "Aktivieren Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
+    "progress": {
+      "label": "{{done}} von {{total}} Geräten abgeschlossen"
+    },
+    "errors": {
+      "orgOutOfScope": "Mindestens eine Organisation liegt außerhalb Ihres Zugriffs.",
+      "siteOutOfScope": "Mindestens ein Standort liegt außerhalb Ihres Zugriffs.",
+      "deviceOutOfScope": "Mindestens ein Gerät liegt außerhalb Ihres Zugriffs.",
+      "ruleSetNotFound": "Ein ausgewählter Regelsatz existiert nicht mehr.",
+      "ruleSetNotPublished": "Ein ausgewählter Regelsatz ist deaktiviert oder wurde nie veröffentlicht.",
+      "sweepTooLarge": "Dieser Sweep würde {{targeted}} Geräte scannen; ein Sweep ist auf {{max}} begrenzt. Schränken Sie den Bereich ein.",
+      "noEligibleDevices": "Kein Gerät in diesem Bereich kann den Sweep derzeit ausführen. Prüfen Sie die Agent-Versionen und den Bereich.",
+      "scopeChanged": "Die Geräte oder Regelsätze haben sich seit der Vorschau geändert. Prüfen Sie die neuen Zahlen.",
+      "alreadyRunning": "Dieser Sweep läuft bereits auf diesen Geräten.",
+      "tooManyActive": "Diese Organisation hat bereits {{max}} aktive Sweeps. Warten Sie, bis einer abgeschlossen ist, oder brechen Sie einen ab.",
+      "mfaRequired": "Dieser Sweep betrifft {{targeted}} Geräte, mehr als {{threshold}}. Melden Sie sich mit Multi-Faktor-Authentifizierung an oder schränken Sie den Bereich ein.",
+      "rateLimited": "Es wurden zu viele Sweeps in kurzer Zeit gestartet. Versuchen Sie es später erneut."
+    },
+    "skipReasons": {
+      "agent_too_old": "Geräte mit zu altem Agent",
+      "busy_same_sweep": "Geräte, auf denen dieser Sweep bereits läuft",
+      "rule_set_not_eligible": "Geräte, für die die Regelsätze nicht gelten"
+    },
+    "skipExplain": {
+      "agent_too_old": "Der Agent muss aktualisiert werden, bevor er YARA-Regelsätze ausführen kann.",
+      "busy_same_sweep": "Auf diesen Geräten ist noch ein identischer Sweep aktiv.",
+      "rule_set_not_eligible": "Betriebssystem oder Organisation des Geräts liegen außerhalb der Reichweite des Regelsatzes."
+    },
+    "dialog": {
+      "title": "Geräte auf IOC-Treffer prüfen",
+      "ruleSets": "Regelsätze: {{names}}",
+      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze und Scan-Typ bleiben erhalten.",
+      "back": "Zurück",
+      "next": "Weiter",
+      "previewAction": "Vorschau",
+      "confirm": "{{targeted}} Geräte prüfen",
+      "viewRunning": "Laufenden Sweep anzeigen",
+      "confirmSummary": "{{targeted}} Geräte in {{orgs}} Organisationen werden anhand der in der Vorschau gezeigten Regelsatz-Versionen gescannt. Treffer werden als Bedrohungen gemeldet; auf den Geräten wird nichts verändert.",
+      "steps": {
+        "scope": "Bereich",
+        "type": "Scan-Typ",
+        "duration": "Dauer",
+        "preview": "Vorschau",
+        "confirm": "Bestätigen"
+      },
+      "scope": {
+        "legend": "Welche Geräte?",
+        "all": "Alle erreichbaren Geräte",
+        "orgs": "Organisationen",
+        "sites": "Standorte",
+        "groups": "Gerätegruppen",
+        "devices": "Geräte",
+        "allHelp": "Jedes Gerät, auf das Sie zugreifen können und das den Sweep ausführen kann.",
+        "noOrgs": "Keine Organisationen verfügbar.",
+        "siteOrg": "Organisation",
+        "pickOrg": "Organisation auswählen",
+        "noSites": "Diese Organisation hat keine Standorte.",
+        "sitesFailed": "Die Standorte konnten nicht geladen werden.",
+        "sitesSelected": "Ausgewählte Standorte: {{selected}}"
+      },
+      "type": {
+        "label": "Scan-Typ",
+        "quick": "Schnell",
+        "full": "Vollständig",
+        "custom": "Eigene Pfade",
+        "paths": "Pfade, einer pro Zeile",
+        "pathsHelp": "Bis zu {{max}} Pfade mit je {{chars}} Zeichen."
+      },
+      "duration": {
+        "label": "Laufzeit (Stunden)",
+        "help": "Offline-Geräte führen den Scan aus, wenn sie innerhalb dieser Zeit wieder online kommen. Zwischen 1 und {{max}} Stunden."
+      },
+      "preview": {
+        "targeted": "{{devices}} Geräte in {{orgs}} Organisationen",
+        "org": "{{org}}: {{devices}} Geräte",
+        "ruleSets": "Regelsätze",
+        "skipped": "Übersprungen",
+        "scopeChanged": "Die Geräte oder Regelsätze haben sich seit der Vorschau geändert. Prüfen Sie die neuen Zahlen und bestätigen Sie erneut."
+      }
+    },
+    "panel": {
+      "empty": "Noch keine IOC-Sweeps. Starten Sie einen über einen Regelsatz für Erkennungsregeln.",
+      "refreshFailed": "Die Liste konnte nicht aktualisiert werden. Die Anzeige ist möglicherweise veraltet.",
+      "allSweeps": "Alle Sweeps",
+      "openGroup": "Gruppe öffnen",
+      "cancel": "Abbrechen",
+      "cancelAll": "Alle abbrechen",
+      "resweep": "Erneut mit den aktuellen Regeln prüfen",
+      "rulesChanged": "Regeln seit dem Start dieses Sweeps geändert",
+      "queued": "In der Warteschlange: {{queued}}",
+      "columns": {
+        "ruleSets": "Regelsätze",
+        "origin": "Gestartet über",
+        "progress": "Fortschritt",
+        "skipped": "Übersprungen",
+        "degraded": "Eingeschränkt",
+        "threats": "Bedrohungen",
+        "created": "Erstellt",
+        "state": "Status"
+      },
+      "state": {
+        "active": "Aktiv",
+        "completed": "Abgeschlossen",
+        "cancelled": "Abgebrochen",
+        "expired": "Abgelaufen"
+      },
+      "origin": {
+        "web": "Weboberfläche",
+        "api": "API-Zugriff",
+        "ai_chat": "KI-Chat",
+        "mcp": "MCP-Client"
+      },
+      "scanType": {
+        "quick": "Schnellscan",
+        "full": "Vollscan",
+        "custom": "Eigene Pfade"
+      }
+    }
+  },
+  "detectionRules": {
+    "title": "Erkennungsregeln",
+    "subtitle": "Regelsätze für IOC-Scans und Threat Hunting. Jede Änderung wird auf dem Server geprüft, bevor Geräte sie erhalten.",
+    "listHelp": "Hängen Sie Regelsätze im Sicherheits-Tab einer Konfigurationsrichtlinie an, um sie in IOC-Scans zu verwenden.",
+    "newRuleSet": "Neuer Regelsatz",
+    "back": "Zurück zu den Regelsätzen",
+    "loadFailed": "Die Regelsätze konnten nicht geladen werden.",
+    "empty": "Noch keine Regelsätze.",
+    "rulesLabel": "Regeln: {{total}}",
+    "publishedVersion": "Version {{version}}",
+    "created": "Regelsatz erstellt",
+    "deleted": "Regelsatz gelöscht",
+    "columns": {
+      "name": "Bezeichnung",
+      "owner": "Eigentümer",
+      "rules": "Regeln",
+      "published": "Veröffentlicht"
+    },
+    "owner": {
+      "builtin": "Breeze (integriert)",
+      "allOrgs": "Alle Organisationen",
+      "organization": "Organisation"
+    },
+    "badges": {
+      "builtin": "Integriert",
+      "allOrgs": "Alle Organisationen",
+      "errors": "Fehlerhaft",
+      "unpublished": "Nicht veröffentlicht",
+      "disabled": "Deaktiviert"
+    },
+    "create": {
+      "title": "Neuer Regelsatz",
+      "name": "Bezeichnung",
+      "description": "Beschreibung (optional)",
+      "owner": "Eigentümer",
+      "ownerAllOrgs": "Alle Organisationen (partnerweit)",
+      "ownerOrganization": "Eine Organisation",
+      "organization": "Organisation",
+      "selectOrganization": "Organisation auswählen",
+      "submit": "Regelsatz erstellen"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Zum Aktivieren der automatischen Quarantäne ist die Berechtigung devices:execute erforderlich, da sie Dateien auf jedem Gerät verschiebt, das mit diesem Satz scannt.",
+      "iocBatchAlreadyImported": "Diese IOCs wurden bereits in diesen Satz importiert.",
+      "iocRuleNameTaken": "In diesem Satz gibt es bereits eine Regel mit demselben generierten Namen, aber anderem Inhalt. Benennen Sie sie um oder löschen Sie sie und importieren Sie erneut.",
+      "iocTooManyRules": "Mit diesem Import hätte der Satz mehr als {{max}} Regeln. Importieren Sie in einen anderen Satz.",
+      "iocInvalid": "Einige IOCs sind ungültig. Korrigieren Sie die markierten Zeilen und versuchen Sie es erneut."
+    },
+    "test": {
+      "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "privacy": "Die Datei wird auf dem Breeze-Server in einer Sandbox mit den aktuellen Regeln dieses Satzes gescannt, einschließlich noch nicht veröffentlichter Änderungen. Die Datei wird nicht gespeichert. Im Audit-Protokoll werden nur ihr SHA-256-Wert, ihre Größe und die Anzahl der Treffer erfasst.",
+      "sandboxUnavailable": "Dateitests sind auf diesem Server nicht verfügbar",
+      "sandboxUnavailableHelp": "Der Server kann den Scan nicht isolieren und führt daher keine hochgeladenen Dateien aus. Regelbearbeitung, IOC-Import und Gerätescans sind nicht betroffen.",
+      "file": "Zu testende Datei",
+      "filepath": "Pfad auf dem Gerät (optional)",
+      "filepathHelp": "Wo die Datei auf einem Gerät liegen würde. Regeln, die auf den Pfad prüfen, verwenden ihn; standardmäßig der Dateiname.",
+      "run": "Test starten",
+      "running": "Wird getestet…",
+      "testedVersion": "Getestete Version {{version}}",
+      "unpublishedChanges": "Ihre unveröffentlichten Änderungen werden getestet.",
+      "noMatches": "Keine Regel hat angeschlagen.",
+      "errors": {
+        "tooLarge": "Die Datei ist größer als {{max}} MB. Wählen Sie eine kleinere Datei.",
+        "busy": "Ein anderer Test läuft gerade. Versuchen Sie es in einigen Sekunden erneut.",
+        "rateLimited": "Sie haben in den letzten Minuten zu viele Tests ausgeführt. Versuchen Sie es später erneut.",
+        "unavailable": "Die Regelprüfung ist nicht verfügbar. Versuchen Sie es später erneut.",
+        "noRules": "Dieser Satz hat keine aktivierten Regeln zum Testen.",
+        "compileFailed": "Dieser Satz lässt sich mit seinen aktuellen Regeln nicht kompilieren, daher wurde nichts gescannt:",
+        "bodyTimeout": "Der Upload hat zu lange gedauert. Versuchen Sie es erneut.",
+        "unexpected": "Der Test konnte nicht abgeschlossen werden. Versuchen Sie es erneut."
+      }
+    },
+    "severity": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "critical": "Kritisch"
+    },
+    "publish": {
+      "saved": "Gespeichert",
+      "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
+      "published": "Gespeichert und als Version {{version}} veröffentlicht",
+      "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
+      "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
+      "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
+      "noEnabledRules": "Keine aktivierten Regeln: Geräte scannen nicht mehr mit diesem Satz.",
+      "unknown": "Gespeichert, aber das Veröffentlichungsergebnis konnte nicht gelesen werden. Laden Sie den Satz neu, um zu sehen, welche Version die Geräte verwenden.",
+      "devicesKeep": "Geräte behalten Version {{version}}.",
+      "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
+      "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regeln",
+        "import": "IOCs importieren",
+        "test": "Datei testen"
+      },
+      "rename": "Regelsatz umbenennen",
+      "enabled": "Aktiviert",
+      "autoQuarantine": "Automatische Quarantäne",
+      "autoQuarantineHelp": "Treffende Dateien auf jedem Gerät, das mit diesem Satz scannt, in die Quarantäne verschieben.",
+      "deleteSet": "Löschen",
+      "deleteSetTitle": "Diesen Regelsatz löschen?",
+      "deleteSetMessage": "Seine Regeln werden ebenfalls gelöscht. Richtlinien, die ihn noch enthalten, melden ihn beim nächsten Scan als nicht gefunden.",
+      "deleteRuleTitle": "Diese Regel löschen?",
+      "deleteRuleMessage": "Der Satz wird ohne sie geprüft und erneut veröffentlicht.",
+      "addRule": "Regel hinzufügen",
+      "noRules": "Dieser Satz enthält noch keine Regeln.",
+      "columns": {
+        "name": "Regel",
+        "severity": "Schweregrad",
+        "tags": "Schlagwörter",
+        "state": "Zustand"
+      },
+      "viewSource": "Quelltext anzeigen",
+      "hideSource": "Quelltext ausblenden",
+      "editRule": "Regel bearbeiten",
+      "deleteRule": "Regel löschen",
+      "errorLine": "Zeile {{line}}:",
+      "publishedVersion": "Veröffentlichte Version {{version}}",
+      "readOnlyBuiltin": "Der integrierte Regelsatz ist schreibgeschützt. Seine Regeln werden mit Breeze-Versionen aktualisiert.",
+      "refreshFailed": "Die Änderung wurde gesendet, aber der Regelsatz konnte nicht neu geladen werden. Die Anzeige ist möglicherweise veraltet."
+    },
+    "dialog": {
+      "titleAdd": "Regel hinzufügen",
+      "titleEdit": "Regel bearbeiten",
+      "name": "Regelname",
+      "nameHelp": "Buchstaben, Ziffern und Unterstriche; beginnt mit einem Buchstaben oder Unterstrich (max. 128).",
+      "severity": "Schweregrad",
+      "tags": "Schlagwörter",
+      "tagsHelp": "Durch Kommas getrennt, z. B. ransomware, advisory-42",
+      "enabled": "Aktiviert",
+      "source": "YARA-Quelltext",
+      "sourceTooLarge": "Der Regelquelltext ist größer als {{max}} KB.",
+      "checkedOnSave": "Beim Speichern wird der Satz mit demselben Compiler geprüft, den die Geräte verwenden. Fehlerhafte Regeln werden nicht veröffentlicht."
+    },
+    "ioc": {
+      "help": {
+        "title": "So funktioniert der Import",
+        "format": "Ein IOC pro Zeile (# leitet einen Kommentar ein) oder ein JSON-Array. Stellen Sie einer Zeile ihre Art voran, etwa sha256: oder domain:, um die Art selbst festzulegen.",
+        "exactMatch": "Nur exakte Übereinstimmung: keine Platzhalter oder Muster.",
+        "contentNotTraffic": "Domains und IP-Adressen werden mit Text in gescannten Dateien abgeglichen, nicht mit Netzwerkverkehr.",
+        "partialOverlap": "Ein erneuter Import derselben IOCs wird erkannt. Ein Stapel, der sich nur teilweise mit einem früheren Import überschneidet, wird nicht dedupliziert."
+      },
+      "label": "Bezeichnung",
+      "labelPlaceholder": "Zum Beispiel: Herstellerhinweis 2026-10",
+      "labelRequired": "Geben Sie eine Bezeichnung ein, um die erzeugten Regeln in der Vorschau zu sehen.",
+      "paste": "IOCs einfügen",
+      "textTooLong": "Der eingefügte Text ist größer als {{max}} KB. Teilen Sie ihn auf mehrere Importe auf.",
+      "skippedLines": "Diese Zeilen werden übersprungen:",
+      "lineError": "Zeile {{line}}: {{error}}",
+      "validCount": "{{valid}} von {{total}} IOCs bereit zum Import",
+      "kind": "Art",
+      "value": "Wert",
+      "kinds": {
+        "md5": "MD5-Hash",
+        "sha1": "SHA-1-Hash",
+        "sha256": "SHA-256-Hash",
+        "filename": "Dateiname",
+        "filepath": "Dateipfad",
+        "domain": "Domäne",
+        "ip": "IP-Adresse",
+        "string": "Textzeichenfolge"
+      },
+      "errors": {
+        "empty": "Leerer Wert",
+        "unknown_kind": "Unbekannte Art",
+        "bad_hash": "Kein gültiger Hash für diese Art",
+        "too_short": "Text muss mindestens 4 Byte lang sein",
+        "too_long": "Zu lang",
+        "bad_path": "Kein gültiger Pfad für diese Art",
+        "bad_ip": "Keine gültige IP-Adresse",
+        "bad_domain": "Keine gültige Domäne",
+        "duplicate": "Duplikat einer früheren Zeile"
+      },
+      "overCap": "Höchstens {{max}} IOCs pro Import. Teilen Sie die Liste auf mehrere Importe auf.",
+      "hashNote": "Hash-IOCs lassen Geräte jede gescannte Datei vollständig hashen, daher dauern vollständige Scans länger.",
+      "generateFailed": "Aus diesen IOCs konnten keine Regeln erzeugt werden.",
+      "generatedTitle": "Regeln, die gespeichert werden: {{total}}",
+      "import": "{{total}} IOCs importieren"
     }
   },
   "sensitiveDataAccess": {

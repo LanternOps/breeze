@@ -114,3 +114,43 @@ describe('Sidebar — Flows server gate', () => {
     expect(container.querySelector('a[href="/flows"]')).toBeNull();
   });
 });
+
+// Operator Recipe Library W06 R1b (#6171): the /operator entry rides the same
+// /config store, on `features.aiOperatorTasks`, plus ai_agents:read.
+describe('Sidebar — Operator workspace server gate', () => {
+  const withAiRead = (fn: () => Promise<void>) => async () => {
+    state.user.permissions = [{ resource: 'ai_agents', action: 'read' }];
+    try {
+      await fn();
+    } finally {
+      state.user.permissions = [{ resource: 'automations', action: 'read' }];
+    }
+  };
+
+  it('shows /operator when /config reports features.aiOperatorTasks true', withAiRead(async () => {
+    mockConfig({ features: { aiOperatorTasks: true } });
+    const { container } = render(<Sidebar currentPath="/operator" />);
+    await waitFor(() => expect(container.querySelector('a[href="/operator"]')).not.toBeNull());
+  }));
+
+  it('hides /operator when the flag is false', withAiRead(async () => {
+    mockConfig({ features: { aiOperatorTasks: false } });
+    const { container } = render(<Sidebar currentPath="/operator" />);
+    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    expect(container.querySelector('a[href="/operator"]')).toBeNull();
+  }));
+
+  it('hides /operator when /config is unreachable (fails closed)', withAiRead(async () => {
+    mockConfig({}, false);
+    const { container } = render(<Sidebar currentPath="/operator" />);
+    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    expect(container.querySelector('a[href="/operator"]')).toBeNull();
+  }));
+
+  it('hides /operator from a user without ai_agents:read even when the flag is on', async () => {
+    mockConfig({ features: { aiOperatorTasks: true } });
+    const { container } = render(<Sidebar currentPath="/operator" />);
+    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    expect(container.querySelector('a[href="/operator"]')).toBeNull();
+  });
+});

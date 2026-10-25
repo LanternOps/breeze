@@ -31,6 +31,7 @@ vi.mock('react-i18next', () => ({
 vi.mock('@/lib/utils', () => ({ formatRelativeTime: () => '2 minutes ago' }));
 
 import RecentApprovals from './RecentApprovals';
+import enApprovals from '../../locales/en/approvals.json';
 
 const refusal =
   'Arming autoInstall requires a human operator with devices.execute and MFA; the AI agent cannot arm software installation.';
@@ -262,5 +263,22 @@ describe('RecentApprovals (#6022)', () => {
 
     await waitFor(() => expect(screen.getByTestId('approvals-recent-empty')).toBeTruthy());
     expect(screen.queryByTestId('approvals-recent-error')).toBeNull();
+  });
+
+  it('capitalizes the outcome sentence and labels a human rejection "Denied", matching the Deny button', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        { ...failedRow, intentOutcome: { status: 'rejected', errorCode: null, reason: 'the approval was denied, so it did not run', executedAt: null } },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-appr-1')).toBeTruthy());
+    expect(screen.getByTestId('approvals-recent-reason-appr-1').textContent).toBe(
+      'The approval was denied, so it did not run',
+    );
+    expect(enApprovals.deny).toBe('Deny');
+    expect(enApprovals.recent.status.rejected).toBe('Denied');
   });
 });

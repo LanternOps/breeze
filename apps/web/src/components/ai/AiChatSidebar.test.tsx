@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 const permState = vi.hoisted(() => ({ canUseAi: true }));
@@ -24,20 +24,28 @@ vi.mock('./AiChatMessages', () => ({ default: () => null }));
 vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
+// #9840 W4: History renders the shared list; its source is tested in its own
+// file and with the real stores in AiChatSidebar.history.test.tsx.
+vi.mock('./useAiConversationSource', () => ({
+  MIN_SEARCH_CHARS: 2,
+  useAiConversationSource: () => ({ items: [], query: '', setQuery: () => undefined, isLoading: false, isSearching: false, error: null }),
+}));
 
 const noop = vi.fn();
 const baseState = {
   toggle: noop, close: noop, messages: [], isStreaming: false, isLoading: false,
   error: null, pageContext: null, pendingApproval: null, pendingPlan: null,
   activePlan: null, approvalMode: 'manual', isPaused: false, sessionId: null,
-  showHistory: false, sessions: [], searchResults: [], isSearching: false,
+  showHistory: false, sessions: [],
   sendMessage: noop, approveExecution: noop, approvePlan: noop, abortPlan: noop,
   pauseAi: noop, createSession: noop, closeSession: noop, clearError: noop,
   toggleHistory: noop, loadSessions: noop, loadSession: noop,
-  searchConversations: noop, switchSession: noop, interruptResponse: noop,
+  switchSession: noop, interruptResponse: noop,
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
+  // #9840 W3: the Open in AI Assistant control reads both.
+  topologySiteId: null, wisp: null,
 };
 
 // #1419: the off-canvas shell stays mounted (transition:persist); collapsed it
@@ -164,5 +172,55 @@ describe('AiChatSidebar keyboard shortcut (#9613)', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
     expect(toggle).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
+// suites cover them; this pins where the sidebar mounts them.
+vi.mock('./WispToggle', () => ({ default: () => <button data-testid="wisp-toggle-stub" /> }));
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
+    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
+  ),
+}));
+vi.mock('./WispThreadAttachments', () => ({ default: () => <div data-testid="wisp-attachments-stub" /> }));
+
+describe('AiChatSidebar Wisp mode (W04)', () => {
+  const wisp = {
+    grantId: 'g-1', threadId: 't-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active',
+    expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
+  };
+
+  it('renders WispToggle in the header when wisp is null', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('wisp-toggle-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+  });
+
+  it('hides WispToggle while the history panel is open', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null, showHistory: true });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.getByText('Wisp')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('shows the thread attachments behind a disclosure', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-attachments-stub')).toBeNull();
+    const toggle = screen.getByTestId('wisp-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('wisp-attachments-stub')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 });

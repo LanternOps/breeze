@@ -89,6 +89,7 @@ vi.mock('../services/eventBus', () => ({ publishEvent: vi.fn() }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 import { sensitiveDataRoutes } from './sensitiveData';
+import { db } from '../db';
 
 const dialect = new PgDialect();
 
@@ -189,4 +190,99 @@ describe('sensitive data reads honour the selected organization (#9681)', () => 
       });
     });
   }
+});
+
+// Policies: the web client never sends a body orgId; fetchWithAuth appends the
+// header switcher's ?orgId= query param instead. Create must resolve the target
+// org from that (validated) query param, and the list must narrow to it.
+describe('sensitive data policies honour the selected organization', () => {
+  let app: Hono;
+  let inserted: Record<string, unknown> | undefined;
+
+  const body = { name: 'P', detectionClasses: ['pii'] };
+  const post = (qs: string, extra: Record<string, unknown> = {}) =>
+    app.request(`/sensitive-data/policies${qs}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, ...extra }),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    whereCalls.length = 0;
+    inserted = undefined;
+    (db.insert as any).mockImplementation(() => ({
+      values: (v: Record<string, unknown>) => {
+        inserted = v;
+        return {
+          returning: async () => [{
+            id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', name: v.name, orgId: v.orgId, partnerId: v.partnerId,
+            scope: v.scope, detectionClasses: v.detectionClasses, schedule: null, isActive: true,
+            createdAt: new Date(), updatedAt: new Date(),
+          }],
+        };
+      },
+    }));
+    app = new Hono();
+    app.route('/sensitive-data', sensitiveDataRoutes);
+  });
+
+  it('POST resolves the org from ?orgId when the body has none (multi-org partner)', async () => {
+    const res = await post(`?orgId=${ORG_B}`);
+
+    expect(res.status).toBe(201);
+    expect(inserted?.orgId).toBe(ORG_B);
+    expect(inserted?.partnerId).toBeNull();
+  });
+
+  it('POST body orgId wins over ?orgId', async () => {
+    const res = await post(`?orgId=${ORG_B}`, { orgId: ORG_A });
+
+    expect(res.status).toBe(201);
+    expect(inserted?.orgId).toBe(ORG_A);
+  });
+
+  it('POST denies an inaccessible ?orgId (403) and inserts nothing', async () => {
+    const res = await post(`?orgId=${ORG_OTHER}`);
+
+    expect(res.status).toBe(403);
+    expect(inserted).toBeUndefined();
+  });
+
+  it('POST still 400s for a multi-org partner with no org anywhere', async () => {
+    const res = await post('');
+
+    expect(res.status).toBe(400);
+    expect(inserted).toBeUndefined();
+  });
+
+  it('GET narrows org-owned rows to ?orgId and keeps own partner-wide rows', async () => {
+    const res = await app.request(`/sensitive-data/policies?orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    expect(whereCalls).toHaveLength(1);
+    const where = renderedWheres()[0]!;
+    expect(where.sql).toContain('"sensitive_data_policies"."org_id" = $');
+    expect(where.sql).toContain('"sensitive_data_policies"."org_id" in (');
+    // The narrowing clause itself must keep partner-wide rows: the access
+    // condition already renders one `org_id IS NULL`, so assert the OR form.
+    expect(where.sql).toMatch(/\("sensitive_data_policies"\."org_id" = \$\d+ OR "sensitive_data_policies"\."org_id" IS NULL\)/i);
+    expect(where.params).toContain(ORG_A);
+  });
+
+  it('GET returns 403 for an inaccessible ?orgId and queries nothing', async () => {
+    const res = await app.request(`/sensitive-data/policies?orgId=${ORG_OTHER}`);
+
+    expect(res.status).toBe(403);
+    expect(whereCalls).toHaveLength(0);
+  });
+
+  it('GET without ?orgId keeps every accessible org', async () => {
+    const res = await app.request('/sensitive-data/policies');
+
+    expect(res.status).toBe(200);
+    const where = renderedWheres()[0]!;
+    expect(where.sql).not.toContain('"sensitive_data_policies"."org_id" = $');
+    expect(where.params).toEqual(expect.arrayContaining([ORG_A, ORG_B]));
+  });
 });

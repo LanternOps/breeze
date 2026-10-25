@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 
 import { db } from '../db';
 import { devices } from '../db/schema';
+import { updateOwnDeviceRow, type OwnDeviceRowIdentity } from './agentOwnDeviceRow';
 
 /** Grace window the superseded credential keeps after a confirmed promotion. */
 export const PREVIOUS_TOKEN_GRACE_MS = 5 * 60 * 1000;
@@ -30,10 +31,16 @@ export const PREVIOUS_TOKEN_GRACE_MS = 5 * 60 * 1000;
  * replacement and roll the revocation back, and `previousTokenHash` would be
  * written from a stale read, re-arming an already-dead credential.
  *
+ * #8318 §6.4: the write goes through updateOwnDeviceRow, so it is also bound
+ * to the `agent_id` the caller authenticated as. A reattach confirm changes
+ * that on the target row, and a promotion the old install started just before
+ * it then matches 0 rows instead of re-arming its staged hashes on the new one.
+ *
  * Returns true when exactly one row was promoted.
  */
 export async function promotePendingAgentCredentials(params: {
-  deviceId: string;
+  /** The row and `agent_id` the caller authenticated as. */
+  agent: OwnDeviceRowIdentity;
   /** Hash of the token the caller authenticated with — must be the staged one. */
   pendingTokenHash: string;
   /** Current-token hash as observed by the caller; part of the CAS. */
@@ -45,7 +52,7 @@ export async function promotePendingAgentCredentials(params: {
   now?: Date;
 }): Promise<boolean> {
   const {
-    deviceId,
+    agent,
     pendingTokenHash,
     expectedAgentTokenHash,
     pendingWatchdogTokenHash,
@@ -57,9 +64,10 @@ export async function promotePendingAgentCredentials(params: {
 
   const previousTokenExpiresAt = new Date(now.getTime() + PREVIOUS_TOKEN_GRACE_MS);
 
-  const promotedRows = await db
-    .update(devices)
-    .set({
+  const promotedRows = await updateOwnDeviceRow(
+    db,
+    agent,
+    {
       previousTokenHash: expectedAgentTokenHash,
       previousTokenExpiresAt,
       agentTokenHash: pendingTokenHash,
@@ -77,15 +85,14 @@ export async function promotePendingAgentCredentials(params: {
       pendingHelperTokenHash: null,
       pendingTokenExpiresAt: null,
       updatedAt: now,
-    })
-    .where(
-      and(
-        eq(devices.id, deviceId),
+    },
+    {
+      where: and(
         eq(devices.pendingTokenHash, pendingTokenHash),
-        eq(devices.agentTokenHash, expectedAgentTokenHash)
-      )
-    )
-    .returning({ id: devices.id });
+        eq(devices.agentTokenHash, expectedAgentTokenHash),
+      ),
+    },
+  );
 
   return promotedRows.length === 1;
 }

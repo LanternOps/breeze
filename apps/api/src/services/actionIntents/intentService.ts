@@ -15,6 +15,7 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
+import { publishEvent } from '../eventBus';
 import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
 import { subjectMatchesArguments } from './intentTargetScope';
 import {
@@ -40,6 +41,7 @@ import {
   type GuardrailCheck,
   type GuardrailContext,
 } from '../aiGuardrails';
+import { AGENT_COORDINATOR_CARRIER_TOOLS } from '../aiToolExposure';
 import {
   consumeProposalForIntent,
   latestCompletedReview,
@@ -229,6 +231,14 @@ export interface CreateActionIntentInput {
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
+  /**
+   * Wisp W07 — TRUSTED INTERNAL INPUT, set ONLY by the Wisp coordinator
+   * (`wisp/specialistIntent.raiseSpecialistIntent`). A coordinator approval
+   * carrier (AGENT_COORDINATOR_CARRIER_TOOLS) is refused without it, so no
+   * other agent path (e.g. a model's `propose_action`) can mint one through
+   * the agent-guardrail carve-out those carriers get.
+   */
+  coordinatorCarrier?: true;
   /**
    * B-W04 (#6158): the MCP request's server-minted request id, stored as the
    * intent's `correlation_id` so the creation audit row and the intent link.
@@ -1285,6 +1295,12 @@ export async function createActionIntent(
   // outright rather than recorded as whatever synthetic user the agent's
   // attribution record carries — or, in the other direction, as a human
   // intent masquerading as an agent proposal.
+  if (AGENT_COORDINATOR_CARRIER_TOOLS.has(input.toolName) && input.coordinatorCarrier !== true) {
+    throw new ActionIntentError(
+      `"${input.toolName}" is an approval carrier only the Wisp coordinator may raise`,
+      'coordinator_carrier_only',
+    );
+  }
   const isAgentIntent = auth.principal.kind === 'ai_agent';
   if (isAgentIntent !== (input.source === 'ai_agent')) {
     throw new ActionIntentError(
@@ -3488,17 +3504,70 @@ export async function transitionIntent(
         : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
   }
 
-  return withSystemDbAccessContext(async () => {
+  const decided = await withSystemDbAccessContext(async () => {
     const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
     if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })
       .where(and(...conditions))
-      .returning({ id: actionIntents.id });
-    return rows.length > 0;
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        toolName: actionIntents.actionName,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+      });
+    const row = rows[0];
+    if (!row) return null;
+    // Wisp W05: the grant is reachable through the run that minted the intent
+    // (action_intents carries no grant column). Only decision transitions
+    // publish, so only they pay for the extra read.
+    let grantId: string | null = null;
+    if (DECISION_STATUSES.has(to) && row.requestingAgentRunId) {
+      const [run] = await db
+        .select({ grantId: aiAgentRuns.grantId })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, row.requestingAgentRunId))
+        .limit(1);
+      grantId = run?.grantId ?? null;
+    }
+    return { row, grantId };
   });
+  if (!decided) return false;
+
+  // Wisp W05: `ai.intent.decided` wakes the triage engine. Published AFTER the
+  // system block has returned (never inside an open DB context, #1105) and
+  // never awaited: a bus outage must not fail or delay the CAS the caller won.
+  if (DECISION_STATUSES.has(to)) {
+    const { row, grantId } = decided;
+    // publishEvent is `async`, so in production it only ever rejects; the
+    // outer catch covers a non-async stand-in (test doubles) that throws.
+    try {
+      void publishEvent('ai.intent.decided', row.orgId, {
+        intentId: row.id,
+        orgId: row.orgId,
+        toolName: row.toolName,
+        decision: to,
+        requestingAgentRunId: row.requestingAgentRunId ?? null,
+        grantId,
+      }, 'action-intents').catch(reportIntentDecidedPublishFailure);
+    } catch (err) {
+      reportIntentDecidedPublishFailure(err);
+    }
+  }
+  return true;
 }
+
+/** A lost `ai.intent.decided` is a lost Wisp wake: report it, never fail the caller. */
+function reportIntentDecidedPublishFailure(err: unknown): void {
+  console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'actionIntents', op: 'publish_intent_decided' });
+}
+
+/** Statuses that are decisions (not execution progress) — they emit `ai.intent.decided`. */
+const DECISION_STATUSES: ReadonlySet<ActionIntentStatus> = new Set<ActionIntentStatus>([
+  'approved', 'rejected', 'expired', 'cancelled',
+]);
 
 // ---------------------------------------------------------------------------
 // waitForIntentDecision — chat SDK's blocking poll (spec §6.1)

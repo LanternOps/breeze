@@ -52,6 +52,11 @@ vi.mock('../services/featureConfigResolver', () => ({
 vi.mock('../middleware/auth', () => ({
   // Step-up MFA gate on privileged routes; not under test here.
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // POST /scan/:deviceId passes the session's MFA state to startDeviceScan
+  // (#6263 W05-11); the sweep routes also read the principal kind.
+  hasSatisfiedMfa: vi.fn(() => false),
+  isInteractiveUserSession: vi.fn(() => true),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',

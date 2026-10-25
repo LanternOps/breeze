@@ -482,6 +482,52 @@ describe('processSweepOccurrence', () => {
     expect(Number.isNaN(Date.parse(summary.enqueuedAt))).toBe(false);
   });
 
+  // Wisp W07 (plan Task 3): a one-off specialist occurrence.
+  describe('a Wisp specialist occurrence (orgIds + grant in the job data)', () => {
+    const GRANT = { grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: 'parent-run' };
+    const WISP_KEY = 'wisp-req-1';
+
+    it('admits only the named org, forwards the grant, and does not clobber last_run_summary', async () => {
+      seedFanout();
+      const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_B], grant: GRANT });
+      expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+      expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: ORG_B, profile: 'sweep', grant: GRANT, dedupeKey: `sweep-${SCHEDULE_ID}-${ORG_B}-${WISP_KEY}`,
+      }));
+      expect(summary).toMatchObject({ orgsTotal: 1, runsAdmitted: 1 });
+      expect(callOrder.current).not.toContain('summary');
+    });
+
+    it('an org outside the partner\'s sweepable set is never admitted', async () => {
+      seedFanout();
+      await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_QS], grant: GRANT });
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+
+    it('intersects the requested sweep kinds with the effective ones (never widens)', async () => {
+      seedFanout();
+      await processSweepOccurrence({
+        scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_A], grant: GRANT,
+        sweepKinds: ['stale_agents', 'not_a_kind' as never],
+      });
+      expect((createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { sweepKinds: string[] } }).triggerRef.sweepKinds)
+        .toEqual(['stale_agents']);
+    });
+
+    it('an ineligible baseline does not overwrite the schedule\'s summary for a Wisp one-off', async () => {
+      queueSelect([]); // baseline gone / ineligible
+      queueUpdate([], 'summary');
+      await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_A], grant: GRANT });
+      expect(callOrder.current).not.toContain('summary');
+    });
+
+    it('a grant on a non-sweep baseline admits nothing (specialist occurrences are sweep-only)', async () => {
+      seedFanout({ baseline: { kind: 'narrative', sweepKinds: [] } });
+      await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_A], grant: GRANT });
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+  });
+
   it('narrows the kinds to the org override intersection (tighten-only)', async () => {
     seedFanout({
       overridesByOrg: new Map([[ORG_A, { id: 'ovr-a', enabled: true, sweepKinds: ['stale_agents'] }]]),

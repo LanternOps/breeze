@@ -106,6 +106,24 @@
     "noM365Customer": "Aucun client M365",
     "dismiss": "Fermer"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Ouvrir dans l'Assistant IA",
+    "continueInPanel": "Continuer dans le panneau latéral",
+    "openPastConversation": "Ouvrir une conversation précédente",
+    "closeTabInAssistant": "Fermez un onglet dans l'Assistant IA pour ouvrir cette conversation",
+    "closeTabToOpen": "Fermez un onglet pour ouvrir cette conversation",
+    "notAvailable": "Cette conversation n'est pas disponible",
+    "wasClosed": "Cette conversation a été fermée",
+    "topologyFromMap": "Les enquêtes s'ouvrent à partir de la carte de topologie",
+    "openInPanel": "Ouvrir dans le panneau latéral",
+    "replaceConfirm": "Remplacer la conversation du panneau latéral? Elle reste dans votre historique.",
+    "joinedMidResponse": "Vous avez rejoint la réponse en cours. La réponse complète s'affichera une fois terminée.",
+    "chooseModelInPanel": "Continuez dans le panneau latéral pour choisir un modèle",
+    "tabMenu": "Options de l'onglet",
+    "anotherOrg": "Autre organisation",
+    "device": "Appareil",
+    "newChat": "Nouvelle discussion"
+  },
   "aiContextBadge": {
     "context": "Contexte",
     "dashboard": "Tableau de bord"
@@ -555,5 +573,180 @@
   },
   "buyCredits": {
     "link": "Acheter des crédits"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Activer Wisp",
+      "turningOn": "Activation de Wisp…"
+    },
+    "locked": {
+      "why": "Wisp est offert avec les forfaits Pro et supérieurs."
+    },
+    "modal": {
+      "title": "Activer Wisp",
+      "refreshTitle": "Renouveler l’autorisation de Wisp",
+      "scopeLabel": "Wisp peut travailler sur",
+      "scopeOrg": "Cette organisation",
+      "scopePartner": "Toutes les organisations",
+      "explain": "Wisp agit dans la limite de vos propres droits. Confirmez que c’est bien vous pour continuer.",
+      "code": "Code d’authentification",
+      "passkey": "Vous confirmerez avec votre clé d’accès.",
+      "noFactor": "Wisp a besoin d’une clé d’accès ou d’une application d’authentification. Configurez-en une d’abord dans votre profil.",
+      "noOrg": "Sélectionnez d’abord une organisation dans l’en-tête.",
+      "confirm": "Confirmer",
+      "cancel": "Annuler",
+      "stepUpUnavailable": "Impossible de vérifier votre facteur. Réessayez.",
+      "reverify": "Votre accès a changé pendant la confirmation. Entrez un nouveau code pour continuer.",
+      "invalidCode": "Ce code n’a pas été accepté. Réessayez."
+    },
+    "header": {
+      "scopeAll": "Toutes les organisations",
+      "status": {
+        "active": "Actif",
+        "paused": "En pause",
+        "revoked": "Révoqué",
+        "expired": "Expiré"
+      },
+      "refresh": "Renouveler l’autorisation",
+      "revoke": "Désactiver Wisp",
+      "revokeConfirm": "Désactiver Wisp pour cette portée? Les fils ouverts restent consultables.",
+      "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive."
+    },
+    "settings": {
+      "title": "Budget et suivi",
+      "budget": "Budget quotidien (¢)",
+      "tick": "Suivi toutes les (minutes)",
+      "save": "Enregistrer"
+    },
+    "focus": {
+      "label": "Travaille sur",
+      "none": "Aucun client ciblé",
+      "pick": "Cibler un client…",
+      "clear": "Retirer le ciblage"
+    },
+    "attachments": {
+      "title": "Joint à ce fil",
+      "drop": "Déposez ici un fil de courriel, un fichier .eml ou CSV, ou collez du texte",
+      "paste": "Coller du texte",
+      "label": "Étiquette",
+      "add": "Joindre",
+      "empty": "Rien n’est joint pour l’instant",
+      "expires": "Expire le {{date}}",
+      "limits": "Jusqu’à 20 fichiers, 5 Mo chacun, texte seulement",
+      "focusRequired": "Ciblez un client avant de joindre un élément",
+      "loadFailed": "Impossible de charger les pièces jointes"
+    },
+    "toast": {
+      "on": "Wisp est activé",
+      "onFailed": "Impossible d’activer Wisp",
+      "off": "Wisp est désactivé",
+      "offFailed": "Impossible de désactiver Wisp",
+      "refreshed": "Autorisation renouvelée",
+      "refreshFailed": "Impossible de renouveler l’autorisation",
+      "settingsSaved": "Paramètres de Wisp enregistrés",
+      "settingsFailed": "Impossible d’enregistrer les paramètres de Wisp",
+      "focusSet": "Wisp travaille maintenant sur {{org}}",
+      "focusCleared": "Ciblage du client retiré",
+      "focusFailed": "Impossible de modifier le ciblage",
+      "attached": "Joint au fil",
+      "attachFailed": "Impossible de joindre l’élément",
+      "attachTooLarge": "Ce fichier dépasse 5 Mo",
+      "attachUnsupported": "Seuls les fichiers texte peuvent être joints",
+      "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir.",
+      "paused": "Wisp mis en pause",
+      "resumed": "Wisp réactivé",
+      "pauseFailed": "Impossible de mettre Wisp en pause",
+      "resumeFailed": "Impossible de réactiver Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ sur {{budget}}¢ aujourd'hui",
+      "resets": "réinitialisation dans {{hours}} h",
+      "raise": "Augmenter le budget du jour",
+      "label": "Dépenses de Wisp aujourd'hui"
+    },
+    "pause": "Mettre Wisp en pause",
+    "resume": "Reprendre",
+    "paused": {
+      "byYou": "Vous avez mis Wisp en pause. Il ne fera aucune vérification et ne vous enverra aucun rappel tant que vous n'aurez pas repris."
+    },
+    "live": {
+      "checking": "Vérification de {{org}}…",
+      "checkingUnnamed": "Vérification d'un client…"
+    },
+    "thread": {
+      "title": "Fil Wisp",
+      "openChat": "Ouvrir dans le clavardage",
+      "openChatInactive": "Wisp doit être actif pour clavarder dans ce fil.",
+      "notFound": "Ce fil Wisp n'existe pas ou ne vous appartient pas.",
+      "loadFailed": "Impossible de charger ce fil Wisp.",
+      "retry": "Réessayer",
+      "stale": "Impossible d'actualiser ce fil. Ce qui est affiché n'est peut-être plus à jour."
+    },
+    "activity": {
+      "title": "Activité",
+      "empty": "Rien pour le moment. Le travail de Wisp s'affichera ici.",
+      "loadFailed": "Impossible de charger l'activité",
+      "loadMore": "Charger plus",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Vérification",
+        "concern": "Préoccupation",
+        "specialist": "Spécialiste",
+        "approval": "Approbation",
+        "memory": "Mémoire",
+        "nudge": "Rappel",
+        "brief": "Synthèse"
+      }
+    }
+  },
+  "wispConcerns": {
+    "title": "Préoccupations",
+    "empty": "Rien sur le radar de Wisp pour l'instant.",
+    "snooze": "Reporter",
+    "snoozeOneHour": "1 heure",
+    "snoozeTomorrow": "Jusqu'à demain 9 h",
+    "snoozeWeek": "7 jours",
+    "dismiss": "Ignorer",
+    "resolve": "Résoudre",
+    "resolveOutcomePlaceholder": "Qu'est-il arrivé?",
+    "resolveSubmit": "Marquer comme résolu",
+    "snoozed": "Reporté",
+    "dismissed": "Ignoré",
+    "resolved": "Résolu",
+    "quietUntil": "en sourdine jusqu'à {{when}}",
+    "digestOnly": "résumé seulement",
+    "showAll": "Tout afficher",
+    "showLive": "Afficher les ouvertes",
+    "loadFailed": "Impossible de charger les préoccupations",
+    "actionFailed": "Ça n'a pas fonctionné. Réessayez.",
+    "severity": {
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Information"
+    },
+    "subject": {
+      "ticket": "Billet",
+      "device": "Appareil",
+      "alert": "Alerte",
+      "org": "Client",
+      "integration": "Intégration",
+      "run": "Exécution",
+      "task": "Tâche",
+      "incident": "Événement",
+      "quote": "Soumission",
+      "invoice": "Facture",
+      "contract": "Contrat",
+      "site": "Emplacement"
+    },
+    "reviewApproval": "Examiner l'approbation",
+    "useful": "Utile",
+    "notUseful": "Pas utile",
+    "feedbackNotePlaceholder": "Qu'est-ce qui aurait été mieux ? (facultatif)",
+    "feedbackSend": "Envoyer",
+    "feedbackGivenUseful": "Vous avez jugé ceci utile",
+    "feedbackGivenNotUseful": "Vous avez jugé ceci pas utile",
+    "feedbackSaved": "Merci. Wisp s'en souviendra."
   }
 }

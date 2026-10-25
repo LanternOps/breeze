@@ -17,6 +17,7 @@ import { FilterSelect } from "../shared/FilterSelect";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 import RecoveryKeysPanel from "./RecoveryKeysPanel";
+import { encryptionMethodLabel, encryptionStatusLabel } from "./encryptionLabels";
 type Volume = {
   drive: string;
   encrypted: boolean;
@@ -385,19 +386,17 @@ export default function EncryptionPage() {
                         <div className="px-4 py-3 text-sm capitalize text-muted-foreground">
                           {d.os}
                         </div>
-                        <div className="px-4 py-3 text-sm capitalize">
-                          {d.encryptionMethod === "unknown"
-                            ? t("securityEncryptionPage.unknown")
-                            : d.encryptionMethod}
+                        <div className="px-4 py-3 text-sm">
+                          {encryptionMethodLabel(d.encryptionMethod, t)}
                         </div>
                         <div className="px-4 py-3">
                           <span
                             className={cn(
-                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize",
+                              "inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold",
                               encStatusBadge[d.encryptionStatus],
                             )}
                           >
-                            {d.encryptionStatus}
+                            {encryptionStatusLabel(d.encryptionStatus, t)}
                           </span>
                         </div>
                         <div
@@ -471,10 +470,10 @@ export default function EncryptionPage() {
                                     )}
                                   </td>
                                   <td className="py-1 text-muted-foreground">
-                                    {v.method}
+                                    {encryptionMethodLabel(v.method, t)}
                                   </td>
                                   <td className="py-1 text-muted-foreground">
-                                    {v.status ?? "-"}
+                                    {encryptionStatusLabel(v.status, t)}
                                     {typeof v.percentEncrypted === "number"
                                       ? ` (${Math.round(v.percentEncrypted)}%)`
                                       : ""}

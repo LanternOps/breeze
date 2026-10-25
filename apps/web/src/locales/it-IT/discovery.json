@@ -203,6 +203,7 @@
       "scanQueued": "Scansione di rilevamento accodata per \"{{name}}\"",
       "profileCreated": "Profilo di rilevamento \"{{name}}\" creato",
       "profileUpdated": "Profilo di rilevamento \"{{name}}\" aggiornato",
+      "profileDeleted": "Profilo di rilevamento \"{{name}}\" eliminato",
       "profileMoved": "Profilo spostato in {{site}}.",
       "assetsMoved_one": "{{count}} dispositivo di rete spostato",
       "assetsMoved_other": "{{count}} dispositivi di rete spostati",

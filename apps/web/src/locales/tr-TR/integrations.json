@@ -302,6 +302,9 @@
     "workspace": "Çalışma Alanı",
     "workspaceID": "Çalışma Alanı Kimliği: {{id}}",
     "connectWorkspace": "Çalışma alanını bağlayın ",
+    "notConnected": "Bağlı değil",
+    "pendingConnection": "Bağlantı bekleniyor",
+    "turnOnSlackToConnectWorkspace": "Bir çalışma alanı bağlamak için Slack bildirimlerini açın.",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth yönlendirmesi, bir Slack çalışma alanına bağlandığınızda başlar. ",
     "defaultChannel": "Varsayılan kanal",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "Bağlantı durumu",
     "allHealthy": "Tüm bağlantılar sağlıklı",
+    "allHealthyDetail": "Bağlı entegrasyonlar otomatik olarak denetlenir. Sorunlar burada ve listede entegrasyonun yanında görünür.",
     "loadError": "Bağlantı durumu yüklenemedi.",
     "retry": "Yeniden dene",
     "since": "{{time}} beri",
     "fix": "Düzelt",
-    "remedy": { "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok." },
+    "remedy": {
+      "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok."
+    },
     "truncated": "İlk {{count}} gösteriliyor",
     "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
     "resolution": {
@@ -548,6 +554,14 @@
     "pageOf": "Sayfa {{current}} / {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "İş ortağı çapında",
+      "partnerWideDetail": "Yönettiğiniz tüm kuruluşlar için geçerlidir."
+    },
+    "nav": {
+      "select": "Bir entegrasyon seçin",
+      "openProblems": "Açık sorunlar: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Entegrasyonlar şu kuruluş için yapılandırılıyor:",
       "thisOrganization": "bu kuruluş",
@@ -566,14 +580,14 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Fiyatlandırması",
-    "tdSYNNEXPriceFile": "TD SYNNEX Fiyat Dosyası",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "payments": "Ödemeler",
     "integrations": "Entegrasyonlar",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Tüm bağlantıları yönetin ve otomasyon iş akışlarını sağlıklı tutun. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distribütör entegrasyonları (Pax8 ve TD SYNNEX) yalnızca ortak hesaplar için geçerlidir. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Muhasebe entegrasyonları yalnızca iş ortağı hesapları tarafından kullanılabilir. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "UniFi ağ entegrasyonu yalnızca ortak hesapları tarafından kullanılabilir. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Breeze'i MSP'nizin kullandığı araçlara bağlayın ve hangi bağlantıların ilgi gerektirdiğini görün.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distribütör entegrasyonları (Pax8 ve TD SYNNEX) yalnızca ortak hesaplar için geçerlidir.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Muhasebe entegrasyonları yalnızca iş ortağı hesapları tarafından kullanılabilir.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "UniFi ağ entegrasyonu yalnızca ortak hesapları tarafından kullanılabilir.",
     "psa": "PSA",
     "viewNameDocumentation": "{{name}} belgelerini görüntüleyin",
     "backup": "Yedekleme",
@@ -728,7 +742,10 @@
     "allApplications": "Tüm uygulamalar",
     "searchAllApplicationsFirst2": " (Sahip olunan uygulamalar değil) bölümünde bu tenant’ta mevcut bir Breeze uygulaması arayın. ",
     "tenantIdGuidPlaceholder": "Tenant Kimliği (GUID), ör. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın."
+    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın.",
+    "savingRequiresMfa": " Kaydetmek için MFA doğrulaması gerekir.",
+    "clientSecretPlaceholder": "uygulama istemci sırrı",
+    "clientSecretStoredPlaceholder": "•••••••••• (saklandı, şifrelendi)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",

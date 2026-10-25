@@ -6100,6 +6100,107 @@ describe('org routes', () => {
       expect(body.pagination.total).toBe(0);
       expect(db.select).not.toHaveBeenCalled();
     });
+
+    // #9794: the fleet-wide Sites page lists with no organizationId and needs
+    // each row's org name for its Organization column.
+    describe('orgName on a cross-org listing (#9794)', () => {
+      const ORG_A = '11111111-1111-1111-1111-111111111111';
+      const ORG_B = '22222222-2222-2222-2222-222222222222';
+
+      // count, page, device counts, removed counts, then the ONE org-name lookup.
+      const mockCrossOrgPage = (rows: Array<{ id: string; orgId: string }>, orgRows: Array<{ id: string; name: string }>) => {
+        const orgWhere = vi.fn().mockResolvedValue(orgRows);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: rows.length }]) }) } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({ offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(rows) }) })
+              })
+            })
+          } as any)
+          .mockReturnValueOnce(mockSiteDeviceCounts([]))
+          .mockReturnValueOnce(mockSiteDeviceCounts([]))
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: orgWhere }) } as any);
+        return orgWhere;
+      };
+
+      it('carries orgName per row from one lookup over the distinct org ids', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [ORG_A, ORG_B] });
+        const orgWhere = mockCrossOrgPage(
+          [{ id: 'site-a1', orgId: ORG_A }, { id: 'site-a2', orgId: ORG_A }, { id: 'site-b1', orgId: ORG_B }],
+          [{ id: ORG_A, name: 'Alpha' }, { id: ORG_B, name: 'Bravo' }],
+        );
+
+        const res = await app.request('/orgs/sites');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((s: { id: string; orgName: string }) => [s.id, s.orgName])).toEqual([
+          ['site-a1', 'Alpha'],
+          ['site-a2', 'Alpha'],
+          ['site-b1', 'Bravo'],
+        ]);
+        // One query for the page, never one per row; deduplicated org ids.
+        expect(orgWhere).toHaveBeenCalledTimes(1);
+        expect(db.select).toHaveBeenCalledTimes(5);
+        expect(inArray).toHaveBeenCalledWith(organizations.id, [ORG_A, ORG_B]);
+      });
+
+      it('keeps the allowedSiteIds narrowing on the cross-org listing', async () => {
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: [ORG_A, ORG_B],
+          allowedSiteIds: ['site-a1'],
+        });
+        mockCrossOrgPage([{ id: 'site-a1', orgId: ORG_A }], [{ id: ORG_A, name: 'Alpha' }]);
+
+        const res = await app.request('/orgs/sites');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([
+          expect.objectContaining({ id: 'site-a1', orgId: ORG_A, orgName: 'Alpha' }),
+        ]);
+        expect(inArray).toHaveBeenCalledWith(sites.id, ['site-a1']);
+      });
+
+      it('scopes an org-scoped caller to its own org and still names it', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG_A });
+        mockCrossOrgPage([{ id: 'site-a1', orgId: ORG_A }], [{ id: ORG_A, name: 'Alpha' }]);
+
+        const res = await app.request('/orgs/sites');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([expect.objectContaining({ id: 'site-a1', orgName: 'Alpha' })]);
+        expect(eq).toHaveBeenCalledWith(sites.orgId, ORG_A);
+        expect(inArray).not.toHaveBeenCalledWith(sites.orgId, expect.anything());
+      });
+
+      it('falls back to a null orgName when the lookup cannot see the org', async () => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: [ORG_A] });
+        mockCrossOrgPage([{ id: 'site-a1', orgId: ORG_A }], []);
+
+        const res = await app.request('/orgs/sites');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data[0]).toMatchObject({ id: 'site-a1', orgName: null });
+      });
+
+      it('adds no lookup to an org-filtered listing (the hot path)', async () => {
+        setAuthContext({ scope: 'organization', orgId: ORG_A });
+        mockSitesPage();
+
+        const res = await app.request(`/orgs/sites?organizationId=${ORG_A}`);
+
+        expect(res.status).toBe(200);
+        expect('orgName' in (await res.json()).data[0]).toBe(false);
+        // count, page, device counts, removed counts — no org-name query.
+        expect(db.select).toHaveBeenCalledTimes(4);
+      });
+    });
   });
 
   describe('POST /orgs/sites/:id/location mount', () => {
@@ -6992,6 +7093,39 @@ describe('org routes', () => {
       expect(body.name).toBe('Acme MSP');
     });
 
+    describe('wispEnabled (Wisp W03 web gate — computed, not a column)', () => {
+      const mockPartnerRow = () => vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', settings: {} }])
+          })
+        })
+      } as any);
+      afterEach(() => { vi.unstubAllEnvs(); });
+
+      it('is false by default (flags unset)', async () => {
+        vi.stubEnv('IS_HOSTED', '');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', '');
+        vi.stubEnv('BREEZE_WISP_ENABLED', '');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(false);
+      });
+
+      it('is true when wispEnabled() is (hosted + AI agents + Wisp flags), and is never selected from the table', async () => {
+        vi.stubEnv('IS_HOSTED', 'true');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+        vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(true);
+        const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(Object.keys(projection)).not.toContain('wispEnabled');
+      });
+    });
+
     it('returns 404 when the partner record is not found (soft-deleted)', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.select).mockReturnValue({
@@ -7691,6 +7825,66 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // #8973 W4 Gate B5: business hours moved to Ticketing → Priorities & SLAs
+    // (business calendars). partnerSettingsSchema no longer reads or writes
+    // settings.businessHours: a stale client's key is stripped, and the stored
+    // blob (already imported into a calendar by 2027-01-03-160000) survives.
+    describe('PATCH /partners/me — retired businessHours (Gate B5)', () => {
+      const STORED = { preset: 'custom', custom: { mon: { start: '08:00', end: '16:00' } } };
+
+      function mockStoredPartner() {
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: { timezone: 'UTC', businessHours: STORED } };
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([currentPartner]) })
+            })
+          } as any)
+          .mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+                limit: vi.fn().mockResolvedValue([])
+              })
+            })
+          } as any);
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...currentPartner, ...data }]) }) };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      it('a stale client still sending businessHours parses, the key is dropped, and the stored blob is kept', async () => {
+        const updateData = mockStoredPartner();
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { timezone: 'Europe/London', businessHours: { preset: '24/7' } } })
+        });
+        expect(res.status).toBe(200);
+        expect(updateData().settings.timezone).toBe('Europe/London');
+        // The incoming '24/7' never reaches the write; the stored value survives untouched.
+        expect(updateData().settings.businessHours).toEqual(STORED);
+      });
+
+      it('accepts a malformed legacy businessHours shape without a 400 (it is no longer validated)', async () => {
+        const updateData = mockStoredPartner();
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { timezone: 'UTC', businessHours: { preset: 'not-a-preset' } } })
+        });
+        expect(res.status).toBe(200);
+        expect(updateData().settings.businessHours).toEqual(STORED);
+      });
     });
 
     describe('PATCH /partners/me — inboundLocalPart', () => {

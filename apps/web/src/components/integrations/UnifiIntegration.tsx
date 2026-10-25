@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Loader2, Unplug } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 import { useUnifiIntegration } from "./unifi/useUnifiIntegration";
 import ConnectionChooser from "./unifi/ConnectionChooser";
 import ConnectedSummaryCard from "./unifi/ConnectedSummaryCard";
@@ -255,20 +256,12 @@ export default function UnifiIntegration() {
 function Header() {
   const { t } = useTranslation("integrations");
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <span className="text-sm font-bold">UI</span>
-      </div>
-      <div>
-        <h1 className="text-2xl font-semibold">
-          {t("unifiIntegration.unifiNetwork")}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "unifiIntegration.discoverAndReconcileUniFiNetworkAssetsAcrossYour",
-          )}
-        </p>
-      </div>
-    </div>
+    <IntegrationPanelHeader
+      icon={<span className="text-xs font-bold">UI</span>}
+      title={t("unifiIntegration.unifiNetwork")}
+      description={t(
+        "unifiIntegration.discoverAndReconcileUniFiNetworkAssetsAcrossYour",
+      )}
+    />
   );
 }

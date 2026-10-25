@@ -35,7 +35,11 @@ vi.mock('./DeploymentWizard', () => ({
   ),
 }));
 vi.mock('./SoftwareVersionManager', () => ({
-  default: ({ catalogId }: { catalogId: string }) => <div data-testid="version-manager-probe">versions:{catalogId}</div>,
+  default: ({ catalogId, builtinReadOnly }: { catalogId: string; builtinReadOnly?: boolean }) => (
+    <div data-testid="version-manager-probe" data-builtin-readonly={String(Boolean(builtinReadOnly))}>
+      versions:{catalogId}
+    </div>
+  ),
 }));
 vi.mock('./DeploymentList', () => ({
   default: (props: { onSelectDeployment?: (id: string) => void }) => (
@@ -59,6 +63,15 @@ vi.mock('./DeploymentProgress', () => ({
       </button>
     </div>
   ),
+}));
+
+// #6958 PR D: the built-in packages panel renders for partner scope only.
+const ownerScope = vi.hoisted(() => ({ isPartnerScope: false }));
+vi.mock('../../hooks/useDefaultOwnerScope', () => ({
+  useDefaultOwnerScope: () => ({
+    isPartnerScope: ownerScope.isPartnerScope,
+    defaultOwnerScope: 'organization',
+  }),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -499,5 +512,113 @@ describe('SoftwareCatalog deployments tab (hash-driven)', () => {
       'progress:dep-42',
     );
     expect(window.location.hash).toBe('#deployment=dep-42');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6958 PR D: Breeze-pinned DNS built-ins (builtin_package_key rows).
+// ---------------------------------------------------------------------------
+const KEYED_ITEM = {
+  id: 'cat-ctrld',
+  orgId: null,
+  partnerId: 'partner-1',
+  builtinPackageKey: 'controld_windows',
+  name: 'Control D (Windows)',
+  vendor: 'Control D',
+  category: 'security',
+  description: '',
+  createdAt: '2026-10-24T00:00:00Z',
+  versionCount: 1,
+};
+const BUILTIN_ROWS = [
+  {
+    key: 'controld_windows',
+    name: 'Control D (Windows)',
+    vendor: 'Control D',
+    os: 'windows',
+    version: '1.5.8',
+    fileType: 'zip',
+    requiredVars: ['controld_provisioning_code'],
+    uninstallCommand: 'C:\\ControlD\\ctrld.exe uninstall',
+    catalogId: 'cat-ctrld',
+    archived: false,
+  },
+];
+
+function routeKeyed(items: unknown[]) {
+  fetchMock.mockImplementation((url: string) => {
+    if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: items }));
+    if (url === '/software/builtin-packages') return Promise.resolve(jsonResponse({ data: BUILTIN_ROWS }));
+    return Promise.resolve(jsonResponse({ data: null }));
+  });
+}
+
+describe('SoftwareCatalog DNS built-ins (#6958)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+    ownerScope.isPartnerScope = false;
+    window.location.hash = '';
+  });
+
+  it('partner scope: renders the Built-in packages panel above the grid', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    expect(await screen.findByTestId('builtin-packages-panel')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/software/builtin-packages');
+  });
+
+  it('org scope: no panel and no built-in packages fetch', async () => {
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+    expect(screen.queryByTestId('builtin-packages-panel')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('/software/builtin-packages');
+  });
+
+  it('a keyed card wears the Built-in pill and no ownership badge', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    const card = await screen.findByTestId('catalog-card-cat-ctrld');
+    expect(card.textContent).toContain('Built-in');
+    expect(card.querySelector('[data-testid="scope-badge"]')).toBeNull();
+  });
+
+  it('the keyed detail shows required variables and the uninstall command, with no Delete', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    const detail = await screen.findByTestId('builtin-catalog-detail');
+    await waitFor(() => expect(detail.textContent).toContain('controld_provisioning_code'));
+    expect(detail.textContent).toContain('C:\\ControlD\\ctrld.exe uninstall');
+    expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
+  });
+
+  it('the keyed Versions tab opens the version manager read-only', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('catalog-card-cat-ctrld'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Versions' }));
+    expect(await screen.findByTestId('version-manager-probe')).toHaveAttribute('data-builtin-readonly', 'true');
+  });
+
+  it('a plain package still opens the version manager editable', async () => {
+    routeKeyed([ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByText('TestApp'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Versions' }));
+    expect(await screen.findByTestId('version-manager-probe')).toHaveAttribute('data-builtin-readonly', 'false');
+  });
+
+  it('"In catalog" in the panel opens that card', async () => {
+    ownerScope.isPartnerScope = true;
+    routeKeyed([KEYED_ITEM]);
+    render(<SoftwareCatalog />);
+    fireEvent.click(await screen.findByTestId('builtin-package-in-catalog-controld_windows'));
+    expect(await screen.findByTestId('builtin-catalog-detail')).toBeInTheDocument();
   });
 });

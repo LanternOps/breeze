@@ -1330,18 +1330,35 @@ describe('RestoreWizard folder selection (#9628)', () => {
     expect(checkbox.indeterminate).toBe(true);
   });
 
-  it('asks before selecting a folder that expands past 1,000 files, and respects a refusal', async () => {
+  it('asks (in-app dialog, not window.confirm) before selecting a folder past 1,000 files, and respects a refusal', async () => {
     mockTree(5000);
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const nativeConfirm = vi.spyOn(window, 'confirm');
     const checkbox = (await openSelectStep()) as HTMLInputElement;
     fireEvent.click(checkbox);
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
-    expect(confirmSpy.mock.calls[0]![0]).toContain('5000');
+    expect(screen.getByTestId('restore-large-folder-dialog').textContent).toContain('5,000');
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    expect(screen.queryByTestId('restore-large-folder-dialog')).toBeNull();
     expect(checkbox.checked).toBe(false);
 
-    confirmSpy.mockReturnValue(true);
     fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId('restore-large-folder-confirm'));
     expect(checkbox.checked).toBe(true);
-    confirmSpy.mockRestore();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    nativeConfirm.mockRestore();
+  });
+
+  it('summarises a selected folder as a folder, not "1 file", and formats large counts', async () => {
+    mockTree(10001);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(screen.getByText((10001).toLocaleString() + ' files')).toBeTruthy();
+    fireEvent.click(checkbox);
+    expect(screen.getByTestId('restore-large-folder-dialog').textContent).toContain((10001).toLocaleString());
+    fireEvent.click(screen.getByTestId('restore-large-folder-confirm'));
+    for (let index = 0; index < 2; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    expect(screen.getByText('1 file, 1 folder')).toBeTruthy();
+    expect(screen.queryByText('2 files selected')).toBeNull();
   });
 });

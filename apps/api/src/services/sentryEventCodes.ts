@@ -387,6 +387,10 @@ export const SENTRY_EVENT_CODES = [
   'mcp_session_unknown_rate_high',
   /** SEP-2243 header/body mismatch rate spiked on stateless MCP — suspect a body-rewriting gateway or request smuggling (B-W03 #6157). */
   'mcp_header_mismatch_rate_high',
+  /** A legacy MCP session's negotiated-extension side key could not be written; that session gets no MCP Apps for its lifetime (B-W05 #6159). */
+  'mcp_session_ext_write_failed',
+  /** A Tasks-declaring tools/call filed an intent but the owned reload returned nothing; the client got pending_approval (B-W06 #6160). */
+  'mcp_task_reload_missing',
 
   // --- retention --------------------------------------------------------
   /**

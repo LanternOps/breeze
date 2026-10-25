@@ -16,6 +16,7 @@
  * `google_signout` is ALWAYS `unknown`: the Directory user resource exposes no
  * session-validity field (`lastLoginTime` is not one).
  */
+import { runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { getDirectoryClient, getGmailClient, getLicensingClient } from '../../googleClient';
 import { canonicalizeUserEmail, resolveContextByOrg, type GoogleToolContext } from '../../aiToolsGoogle';
 import type { PlannedEffect } from '../recipes/types';
@@ -51,8 +52,15 @@ const lc = (s: string | null | undefined): string => (s ?? '').trim().toLowerCas
 
 async function ctxForOrg(orgId: string): Promise<GoogleToolContext> {
   // Same resolver the headless write path uses, so a probe can never read
-  // through a different connection than the write wrote through.
-  const resolved = await resolveContextByOrg(orgId);
+  // through a different connection than the write wrote through. The task
+  // worker calls probes with NO db context, and the connection table has
+  // forced RLS: resolve it in a context scoped to exactly this org (the M365
+  // probe's pattern), or every Google probe reads "not connected" → unknown.
+  // Only the lookup is inside the context; the Google API calls are not.
+  const resolved = await runOutsideDbContext(() => withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.effectProbe.google' },
+    () => resolveContextByOrg(orgId),
+  ));
   if ('error' in resolved) throw new Error(resolved.error);
   return resolved;
 }
@@ -214,16 +222,16 @@ export const probeGoogleSignout: EffectProbe = async () =>
   );
 
 /**
- * `google_wipe_mobile_device` — reads `userEmail`. Mirrors `resolveWipeTarget`:
+ * `google_wipe_mobile_device` and `google_account_wipe_mobile_device` — read `userEmail`. Mirrors `resolveWipeTarget`:
  * canonicalize, `users.get` for the primaryEmail, `mobiledevices.list` with
  * `email:<primaryEmail>`, then local EXACT-match on each device's `email[]`.
  */
 export const probeGoogleWipeMobileDevice: EffectProbe = async (effect, ctx) => {
   const raw = arg(effect, 'userEmail');
-  if (!raw) return missing('google_wipe_mobile_device', 'userEmail');
+  if (!raw) return missing(effect.toolName, 'userEmail');
   const canonical = canonicalizeUserEmail(raw);
   if (!canonical) {
-    return result('unknown', 'google_wipe_mobile_device: userEmail is not a single canonical address, so the device set cannot be resolved');
+    return result('unknown', `${effect.toolName}: userEmail is not a single canonical address, so the device set cannot be resolved`);
   }
   const g = await ctxForOrg(ctx.orgId);
   const dir = getDirectoryClient(g.keyJson, g.conn.adminEmail);
@@ -260,9 +268,10 @@ const GOOGLE_PROBES: ReadonlyArray<readonly [string, EffectProbe, EffectProbeReg
   // Structurally unobservable: no provider call, always `unknown` (R1a-0).
   ['google_signout', probeGoogleSignout, { alwaysUnknown: true }],
   ['google_wipe_mobile_device', probeGoogleWipeMobileDevice],
+  ['google_account_wipe_mobile_device', probeGoogleWipeMobileDevice],
 ];
 
-/** Registers the eight Google probes; returns the tool names. The registry refuses duplicates, so call once. */
+/** Registers the Google probes; returns the tool names. The registry refuses duplicates, so call once. */
 export function registerGoogleEffectProbes(): string[] {
   for (const [name, probe, opts] of GOOGLE_PROBES) registerEffectProbe(name, probe, opts);
   return GOOGLE_PROBES.map(([name]) => name);
