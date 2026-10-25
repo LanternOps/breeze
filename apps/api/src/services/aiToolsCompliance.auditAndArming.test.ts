@@ -118,7 +118,7 @@ beforeEach(() => {
   // Update writes now run in a transaction (W04-D15); route tx.update to the
   // same mock the tests already configure.
   mockDb.transaction.mockImplementation(async (fn: any) =>
-    fn({ update: (...a: unknown[]) => mockDb.update(...a), delete: () => chain([]), execute: vi.fn(async () => ({ rows: [] })) }));
+    fn({ update: (...a: unknown[]) => (mockDb.update as unknown as (...x: unknown[]) => unknown)(...a), delete: () => chain([]), execute: vi.fn(async () => ({ rows: [] })) }));
 });
 
 describe('manage_software_policy create — writes both audit stores (#3543)', () => {
