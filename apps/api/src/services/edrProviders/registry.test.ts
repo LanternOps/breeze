@@ -16,6 +16,8 @@ describe('edr provider registry', () => {
       expect(a.capabilities.actions.length === 0 || typeof a.performAction === 'function').toBe(true);
       expect(a.capabilities.detectionDelivery === 'poll' || typeof a.verifyWebhook === 'function').toBe(true);
       expect(a.capabilities.installer === 'none' || typeof a.getInstaller === 'function').toBe(true);
+      // A5: the re-read status model needs its read hook, and only that model has one.
+      expect(typeof a.rereadDetectionStatus === 'function').toBe(a.capabilities.detectionStatusModel === 'reread_open_on_inventory');
     }
   });
 

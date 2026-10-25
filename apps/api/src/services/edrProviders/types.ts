@@ -57,6 +57,8 @@ export interface EdrCapabilities {
   detailOwnedFields?: readonly EdrDetailOwnedField[];
   /** Opt-in. Vendor calls per tenant/connection, fed to `planCadence`; default `DEFAULT_ESTIMATED_CALLS`. */
   estimatedCalls?: { perTenantDetection: number; perTenantInventory: number; perConnectionOverhead: number };
+  /** Open detections re-read per mapped tenant per inventory run. Default 20; only read when `detectionStatusModel === 'reread_open_on_inventory'`. */
+  rereadOpenPerRun?: number;
 }
 
 export interface VendorEdrTenant {
@@ -97,6 +99,26 @@ export interface VendorEdrDetection {
   /** Rows sharing a groupKey are ONE vendor object (one Emsisoft incident across N devices). Clipped to 128 chars. */
   groupKey?: string | null;
 }
+/** An open detection row as the status re-read sees it: vendor ids and the trusted locator only. */
+export interface EdrDetectionRef {
+  vendorDetectionId: string;
+  vendorKind: EdrVendorKind;
+  vendorRef: string | null;
+  groupKey: string | null;
+}
+
+/** The vendor's current verdict for one re-read detection row. */
+export interface EdrDetectionStatusUpdate {
+  vendorDetectionId: string;
+  vendorKind: EdrVendorKind;
+  status: EdrDetectionStatus;
+  vendorStatus: string | null;
+  severity: EdrSeverity;
+  vendorSeverity: string | null;
+  resolvedAt: Date | null;
+  lastVendorUpdateAt: Date | null;
+}
+
 export interface EdrDetectionPage {
   detections: VendorEdrDetection[];
   cursor: string | null;
@@ -187,6 +209,12 @@ export interface EdrProviderAdapter {
   countEndpoints?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef): Promise<number>;
   enrichEndpoints?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, vendorEndpointIds: string[]): Promise<VendorEdrEndpointDetail[]>;
   listDetections(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, cursor: string | null, now: Date): Promise<EdrDetectionPage>;
+  /**
+   * Present iff `detectionStatusModel === 'reread_open_on_inventory'`. Read-only vendor calls. Returns
+   * updates ONLY for refs the vendor still knows: a ref it cannot find is omitted and never closed.
+   * ALL-OR-NOTHING per tenant like `listEndpoints`: a failure throws.
+   */
+  rereadDetectionStatus?(ctx: EdrAdapterContext, tenant: VendorEdrTenantRef, refs: EdrDetectionRef[]): Promise<EdrDetectionStatusUpdate[]>;
   /**
    * W03. Sends ONE action to the vendor. Must not retry a write that may have
    * reached the vendor: an ambiguous outcome throws `code: 'outcome_unknown'`.

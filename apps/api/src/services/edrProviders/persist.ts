@@ -7,6 +7,8 @@ import { pgErrorCode } from '../../utils/pgErrors';
 import type {
   EdrDetailOwnedField,
   EdrDetectionPage,
+  EdrDetectionRef,
+  EdrDetectionStatusUpdate,
   EdrErrorScope,
   VendorEdrEndpoint,
   VendorEdrDetection,
@@ -58,6 +60,8 @@ export type TenantFetch<T> =
 export interface InventoryFetch {
   endpoints: VendorEdrEndpoint[];
   details: VendorEdrEndpointDetail[];
+  /** `reread_open_on_inventory` adapters: the open detections asked about and the verdicts returned (applied by the job). */
+  reread?: { refs: EdrDetectionRef[]; updates: EdrDetectionStatusUpdate[] };
   /** Vendor-reported total, used for UNMAPPED tenants (their endpoints are counted, never stored). */
   count?: number;
 }
@@ -586,6 +590,137 @@ export async function persistDetections(
   }
 
   return { upserted, failedTenants, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// reread_open_on_inventory (A5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phase 1 loader: per tenant, at most `perTenant` LIVE open detections, stalest
+ * first. The rotation key is `updated_at` (every applied update and every
+ * omitted-ref bump moves it), so each open row reaches the front of the queue in
+ * turn. The locator comes from `details._breeze`, which sync itself wrote from
+ * vendor data. Takes any drizzle handle with `execute`.
+ */
+export async function loadOpenDetectionRefs(
+  tx: Pick<EdrSyncTx, 'execute'>,
+  connectionId: string,
+  tenantIds: string[],
+  perTenant: number,
+): Promise<Map<string, EdrDetectionRef[]>> {
+  const out = new Map<string, EdrDetectionRef[]>();
+  if (tenantIds.length === 0 || perTenant <= 0) return out;
+  const rows = (await tx.execute(sql`
+    SELECT tenant_id, vendor_detection_id, vendor_kind, vendor_ref, group_key FROM (
+      SELECT tenant_id, vendor_detection_id, vendor_kind,
+             details->'_breeze'->>'vendorRef' AS vendor_ref,
+             details->'_breeze'->>'groupKey' AS group_key,
+             row_number() OVER (PARTITION BY tenant_id ORDER BY updated_at ASC, id ASC) AS rn
+      FROM edr_detections
+      WHERE connection_id = ${connectionId}::uuid
+        AND tenant_id IN (${sql.join(tenantIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        AND detached_at IS NULL
+        AND status IN ('open', 'in_progress', 'unknown')
+    ) ranked
+    WHERE rn <= ${perTenant}
+    ORDER BY tenant_id, rn
+  `)) as unknown as Array<{
+    tenant_id: string; vendor_detection_id: string; vendor_kind: EdrDetectionRef['vendorKind'];
+    vendor_ref: string | null; group_key: string | null;
+  }>;
+  for (const r of rows) {
+    const list = out.get(r.tenant_id) ?? [];
+    list.push({
+      vendorDetectionId: r.vendor_detection_id,
+      vendorKind: r.vendor_kind,
+      vendorRef: r.vendor_ref ?? null,
+      groupKey: r.group_key ?? null,
+    });
+    out.set(r.tenant_id, list);
+  }
+  return out;
+}
+
+/**
+ * Phase 3 writer for the re-read. A narrow UPDATE: status/severity/resolution
+ * fields only. It never moves org_id / tenant_id and never touches
+ * `notified_severity`, so Phase 4 still sees an escalation. Rows the adapter was
+ * asked about but omitted (the vendor no longer knows them) are NOT closed: they
+ * only get `updated_at` bumped so they rotate to the back of the queue.
+ */
+export async function applyDetectionStatusUpdates(
+  tx: EdrSyncTx,
+  o: {
+    connectionId: string;
+    tenantId: string;
+    orgId: string;
+    updates: EdrDetectionStatusUpdate[];
+    /** Every ref the adapter was asked about (for rotation of the omitted ones). */
+    attempted?: Array<{ vendorDetectionId: string; vendorKind: string }>;
+  },
+): Promise<number> {
+  let changed = 0;
+  const updatedKeys = new Set(o.updates.map((u) => `${u.vendorKind}\u0000${u.vendorDetectionId}`));
+
+  for (const batch of chunk(o.updates, 200)) {
+    const values = sql.join(
+      batch.map((u) => sql`(
+        ${u.vendorDetectionId.slice(0, 255)}::text, ${u.vendorKind}::text, ${u.status}::text, ${clip(u.vendorStatus, 64)}::text,
+        ${u.severity}::text, ${clip(u.vendorSeverity, 64)}::text,
+        ${u.resolvedAt ? u.resolvedAt.toISOString() : null}::timestamptz,
+        ${u.lastVendorUpdateAt ? u.lastVendorUpdateAt.toISOString() : null}::timestamptz
+      )`),
+      sql`, `,
+    );
+    const written = await tx.execute(sql`
+      UPDATE edr_detections AS d
+      SET status = v.status,
+          vendor_status = v.vendor_status,
+          severity = v.severity,
+          vendor_severity = v.vendor_severity,
+          resolved_at = v.resolved_at,
+          last_vendor_update_at = v.last_vendor_update_at,
+          updated_at = now()
+      FROM (VALUES ${values}) AS v(vendor_detection_id, vendor_kind, status, vendor_status, severity, vendor_severity, resolved_at, last_vendor_update_at)
+      WHERE d.connection_id = ${o.connectionId}::uuid
+        AND d.tenant_id = ${o.tenantId}::uuid
+        AND d.org_id = ${o.orgId}::uuid
+        AND d.vendor_kind = v.vendor_kind
+        AND d.vendor_detection_id = v.vendor_detection_id
+        AND d.detached_at IS NULL
+      RETURNING d.id
+    `);
+    changed += (written as unknown as unknown[]).length;
+  }
+
+  const omitted = (o.attempted ?? []).filter((a) => !updatedKeys.has(`${a.vendorKind}\u0000${a.vendorDetectionId}`));
+  for (const batch of chunk(omitted, 200)) {
+    await tx.execute(sql`
+      UPDATE edr_detections SET updated_at = now()
+      WHERE connection_id = ${o.connectionId}::uuid
+        AND tenant_id = ${o.tenantId}::uuid
+        AND org_id = ${o.orgId}::uuid
+        AND detached_at IS NULL
+        AND (vendor_kind, vendor_detection_id) IN (${sql.join(
+          batch.map((a) => sql`(${a.vendorKind}::text, ${a.vendorDetectionId.slice(0, 255)}::text)`),
+          sql`, `,
+        )})
+    `);
+  }
+
+  if (changed > 0) {
+    await tx.execute(sql`
+      UPDATE edr_tenants SET open_detection_count = (
+        SELECT count(*)::int FROM edr_detections x
+        WHERE x.tenant_id = ${o.tenantId}::uuid
+          AND x.detached_at IS NULL
+          AND x.status IN ('open', 'in_progress', 'unknown')
+      ), updated_at = now()
+      WHERE id = ${o.tenantId}::uuid
+    `);
+  }
+  return changed;
 }
 
 // ---------------------------------------------------------------------------

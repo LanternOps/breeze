@@ -21,7 +21,7 @@ export const emsisoftAdapter: EdrProviderAdapter = {
     tenantModel: 'partner', // Open Decision 1 (Gate B: (a))
     perTenantHost: false,
     detectionDelivery: 'poll', // the vendor has no webhooks
-    detectionStatusModel: 'delta_with_updates', // becomes 'reread_open_on_inventory' in A5
+    detectionStatusModel: 'reread_open_on_inventory', // Open Decision 2 (Gate B: (c)): incidents have no change cursor and no closed state
     actions: [], // PR-B
     endpointIdentifiers: ['hostname', 'fqdn'], // no mac / serial -> strict matching (A3); ip is never an identifier
     installer: 'none', // W06
@@ -35,9 +35,11 @@ export const emsisoftAdapter: EdrProviderAdapter = {
     // inventory: device pages (~2) + up to DETAIL_ENRICH_PER_RUN (50) details + re-read (<= 20)
     // detection: incident pages (~1) + device-name pages for attribution (~2)
     estimatedCalls: { perTenantDetection: 3, perTenantInventory: 72, perConnectionOverhead: 2 },
+    rereadOpenPerRun: 20,
   },
   testConnection: async () => notImplemented(),
   listTenants: async () => notImplemented(),
   listEndpoints: async () => notImplemented(),
   listDetections: async () => notImplemented(),
+  rereadDetectionStatus: async () => notImplemented(),
 };

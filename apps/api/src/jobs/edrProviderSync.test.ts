@@ -124,6 +124,9 @@ const m = vi.hoisted(() => ({
   evaluateEdrStaleTenants: vi.fn(),
   clearExpiredTenantDenials: vi.fn(),
   pollEdrActionStatus: vi.fn(),
+  loadOpenDetectionRefs: vi.fn(),
+  applyDetectionStatusUpdates: vi.fn(),
+  rereadDetectionStatus: vi.fn(),
 }));
 
 vi.mock('../services/edrProviders/types', () => ({ EdrProviderRequestError: FakeEdrError }));
@@ -143,6 +146,7 @@ vi.mock('../services/edrProviders/registry', () => ({
     countEndpoints: m.countEndpoints,
     enrichEndpoints: m.enrichEndpoints,
     listDetections: m.listDetections,
+    rereadDetectionStatus: m.rereadDetectionStatus,
   }),
 }));
 const SECRET_KEY = 'sk-distinctive-secret-9f3a';
@@ -156,6 +160,8 @@ vi.mock('../services/edrProviders/persist', () => ({
   refreshDetectionDeviceLinks: m.refreshDetectionDeviceLinks,
   isDeadlockError: m.isDeadlockError,
   clearExpiredTenantDenials: m.clearExpiredTenantDenials,
+  loadOpenDetectionRefs: m.loadOpenDetectionRefs,
+  applyDetectionStatusUpdates: m.applyDetectionStatusUpdates,
 }));
 vi.mock('../services/edrProviders/actionStatus', () => ({
   pollEdrActionStatus: m.pollEdrActionStatus,
@@ -245,6 +251,9 @@ beforeEach(() => {
   m.evaluateEdrEndpointHealth.mockResolvedValue({ raised: 0, resolved: 0 });
   m.evaluateEdrStaleTenants.mockResolvedValue({ published: 0 });
   m.clearExpiredTenantDenials.mockResolvedValue(0);
+  m.loadOpenDetectionRefs.mockResolvedValue(new Map());
+  m.applyDetectionStatusUpdates.mockResolvedValue(0);
+  m.rereadDetectionStatus.mockResolvedValue([]);
   m.pollEdrActionStatus.mockResolvedValue({ checked: 0, settled: 0 });
   hintDepths.read = []; hintDepths.ack = [];
   h.readEdrHints.mockResolvedValue({ members: [], hints: [], markerAt: null });
@@ -485,6 +494,87 @@ describe('syncEdrInventory', () => {
     m.persistInventory.mockRejectedValue(other);
     await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: false })).rejects.toBe(other);
     expect(m.persistInventory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reread_open_on_inventory (A5)', () => {
+  const REREAD = { detectionStatusModel: 'reread_open_on_inventory' };
+  const ref = (id: string) => ({ vendorDetectionId: id, vendorKind: 'incident', vendorRef: `sha-${id}`, groupKey: `g-${id}` });
+  const update = (id: string) => ({
+    vendorDetectionId: id, vendorKind: 'incident', status: 'false_positive', vendorStatus: 'ConfirmedBenign/None', severity: 'low',
+    vendorSeverity: 'Unwanted', resolvedAt: new Date('2026-10-01T00:00:00Z'), lastVendorUpdateAt: null,
+  });
+
+  it('a delta_with_updates adapter (GravityZone) loads nothing and makes no re-read call', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.loadOpenDetectionRefs).not.toHaveBeenCalled();
+    expect(m.rereadDetectionStatus).not.toHaveBeenCalled();
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
+  });
+
+  it('loads open rows for MAPPED tenants only, capped by rereadOpenPerRun (default 20), and passes them to the adapter', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a'), ref('b')]]]));
+    await syncEdrInventory(CONNECTION_ID);
+    const [, connId, tenantIds, cap] = m.loadOpenDetectionRefs.mock.calls[0]!;
+    expect(connId).toBe(CONNECTION_ID);
+    expect(tenantIds).toEqual(['t-mapped']);
+    expect(cap).toBe(20);
+    expect(m.rereadDetectionStatus).toHaveBeenCalledTimes(1);
+    expect(m.rereadDetectionStatus.mock.calls[0]![2]).toEqual([ref('a'), ref('b')]);
+
+    m.caps = { ...REREAD, rereadOpenPerRun: 5 };
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.loadOpenDetectionRefs.mock.calls[1]![3]).toBe(5);
+  });
+
+  it('the re-read runs in Phase 2 (outside any db context) and its updates are applied in Phase 3 scoped to the tenant row and org', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a'), ref('b')]]]));
+    m.rereadDetectionStatus.mockImplementation(async () => { fetchDepths.push(contextDepth); return [update('a')]; });
+    await syncEdrInventory(CONNECTION_ID);
+    expect(fetchDepths.every((d) => d === 0)).toBe(true);
+    expect(m.applyDetectionStatusUpdates).toHaveBeenCalledTimes(1);
+    const [, o] = m.applyDetectionStatusUpdates.mock.calls[0]!;
+    expect(o).toMatchObject({ connectionId: CONNECTION_ID, tenantId: 't-mapped', orgId: 'org-1' });
+    expect(o.updates).toEqual([update('a')]);
+    // 'b' was asked about and omitted -> rotated (not closed) by the writer
+    expect(o.attempted).toEqual([
+      { vendorDetectionId: 'a', vendorKind: 'incident' }, { vendorDetectionId: 'b', vendorKind: 'incident' },
+    ]);
+  });
+
+  it('a throwing re-read fails THAT tenant\'s inventory (skip semantics): nothing is applied for it, the other tenant persists', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a')]], ['t-mapped2', [ref('z')]]]));
+    m.rereadDetectionStatus.mockImplementation(async (_c: unknown, t: { vendorTenantId: string }) => {
+      if (t.vendorTenantId === 'v-mapped') throw new FakeEdrError('forbidden', { code: 'forbidden', reauth: false, scope: 'tenant' });
+      return [update('z')];
+    });
+    m.persistInventory.mockResolvedValue({ endpoints: 1, failedTenants: 1 });
+    await expect(syncEdrInventory(CONNECTION_ID)).resolves.toBeUndefined();
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string; ok: boolean }>;
+    expect(results.find((r) => r.vendorTenantId === 'v-mapped')).toMatchObject({ ok: false });
+    expect(m.applyDetectionStatusUpdates).toHaveBeenCalledTimes(1);
+    expect(m.applyDetectionStatusUpdates.mock.calls[0]![1]).toMatchObject({ tenantId: 't-mapped2' });
+  });
+
+  it('a connection-scope error from the re-read fails the whole run like any other connection error', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a')]]]));
+    m.rereadDetectionStatus.mockRejectedValue(new FakeEdrError('bad key', { code: 'auth', reauth: true, scope: 'connection' }));
+    await expect(syncEdrInventory(CONNECTION_ID)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
+  });
+
+  it('a tenant with no open rows makes no re-read call', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map());
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.rereadDetectionStatus).not.toHaveBeenCalled();
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
   });
 });
 
