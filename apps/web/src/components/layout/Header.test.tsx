@@ -108,6 +108,16 @@ describe('Header terminal logout UX', () => {
     return rendered;
   }
 
+  // #9840 W5: e2e-tests/pages/BasePage.ts signs out by these ids (testid-only suite).
+  it('the account menu trigger and its Sign out item carry the ids BasePage.signOut uses', async () => {
+    render(<Header />);
+    expect(screen.getByTestId('account-menu-button')).toBe(screen.getByLabelText('layout.header.accountMenu'));
+    fireEvent.click(screen.getByTestId('account-menu-button'));
+    expect(screen.getByTestId('account-menu-sign-out')).toHaveTextContent('layout.header.signOut');
+    fireEvent.click(screen.getByTestId('account-menu-sign-out'));
+    await waitFor(() => expect(authState.apiLogout).toHaveBeenCalled());
+  });
+
   it('never navigates to a ticketless GET when Cloudflare preparation fails and offers retry', async () => {
     featureState.cfEnabled = true;
     authState.apiPrepare.mockResolvedValue({ kind: 'partial', message: 'Durable preparation failed.' });

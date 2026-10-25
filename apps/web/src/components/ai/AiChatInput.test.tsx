@@ -51,4 +51,21 @@ describe('AiChatInput', () => {
     expect(seen).toEqual(['']);
     expect(textbox().value).toBe('');
   });
+
+  // #9840 W5: the E2E locates the composer by data-testid, scoped under its
+  // surface root (the component renders in the panel and in every tab).
+  it('the textarea, send and stop controls carry their test ids', () => {
+    const onSend = vi.fn();
+    const onInterrupt = vi.fn();
+    const { rerender } = render(<AiChatInput onSend={onSend} />);
+    expect(screen.getByTestId('ai-chat-input')).toBe(textbox());
+    fireEvent.change(screen.getByTestId('ai-chat-input'), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByTestId('ai-chat-send'));
+    expect(onSend).toHaveBeenCalledWith('hi');
+    expect(screen.queryByTestId('ai-chat-stop')).toBeNull();
+    rerender(<AiChatInput onSend={onSend} isStreaming onInterrupt={onInterrupt} />);
+    expect(screen.queryByTestId('ai-chat-send')).toBeNull();
+    fireEvent.click(screen.getByTestId('ai-chat-stop'));
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+  });
 });

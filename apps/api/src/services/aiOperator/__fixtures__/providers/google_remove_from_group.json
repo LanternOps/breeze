@@ -1,0 +1,21 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API groups.list (userKey filter) and members.delete",
+  "toolName": "google_remove_from_group",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.groups.list": { "data": { "kind": "admin#directory#groups", "groups": [ { "id": "grp-2", "email": "staff@customer.example", "name": "Staff" } ] } }
+  },
+  "preUnsatisfied": {
+    "directory.groups.list": { "data": { "kind": "admin#directory#groups", "groups": [ { "id": "grp-1", "email": "all@customer.example", "name": "All Staff" }, { "id": "grp-2", "email": "staff@customer.example", "name": "Staff" } ] } }
+  },
+  "writeOk": {
+    "directory.members.delete": { "data": "" }
+  },
+  "postSatisfied": {
+    "directory.groups.list": { "data": { "kind": "admin#directory#groups", "groups": [ { "id": "grp-2", "email": "staff@customer.example", "name": "Staff" } ] } }
+  },
+  "writeRefusal": {
+    "directory.members.delete": { "error": { "code": 403, "message": "Not Authorized to access this resource/api" } }
+  }
+}

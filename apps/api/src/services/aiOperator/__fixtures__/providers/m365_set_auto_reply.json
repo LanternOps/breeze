@@ -1,0 +1,20 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 mailboxSettings (automaticRepliesSetting), via the actions executor's m365.user.mailbox.auto_reply and m365.user.mailbox.auto_reply.state arms",
+  "toolName": "m365_set_auto_reply",
+  "provider": "m365",
+  "preSatisfied": null,
+  "preSatisfiedUnreachable": "the recipe sets internal and external reply bodies, which the state read never returns, so a matching state before the write answers unknown by design",
+  "preUnsatisfied": {
+    "write:m365.user.mailbox.auto_reply.state": { "ok": true, "result": { "success": true, "action": "m365.user.mailbox.auto_reply.state", "userId": "00000000-0000-4000-8000-0000000a0001", "status": "disabled", "externalAudience": "none", "hasInternalReplyMessage": false, "hasExternalReplyMessage": false, "scheduledStartDateTime": null, "scheduledEndDateTime": null } }
+  },
+  "writeOk": {
+    "write:m365.user.mailbox.auto_reply": { "ok": true, "result": { "success": true, "action": "m365.user.mailbox.auto_reply", "userId": "00000000-0000-4000-8000-0000000a0001", "status": "alwaysEnabled" } }
+  },
+  "postSatisfied": {
+    "write:m365.user.mailbox.auto_reply.state": { "ok": true, "result": { "success": true, "action": "m365.user.mailbox.auto_reply.state", "userId": "00000000-0000-4000-8000-0000000a0001", "status": "alwaysEnabled", "externalAudience": "all", "hasInternalReplyMessage": true, "hasExternalReplyMessage": true, "scheduledStartDateTime": null, "scheduledEndDateTime": null } }
+  },
+  "writeRefusal": {
+    "write:m365.user.mailbox.auto_reply": { "ok": false, "code": "consent_upgrade_required", "message": "Microsoft 365 needs to be re-consented before Breeze can change mailbox settings." }
+  }
+}
