@@ -41,7 +41,8 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   },
   {
     "id": 2,
@@ -100,7 +101,8 @@
       "4": [
         "read"
       ]
-    }
+    },
+    "cf_employee_number": null
   },
   {
     "id": 3,
@@ -156,7 +158,8 @@
       "3": [
         "full"
       ]
-    }
+    },
+    "cf_employee_number": null
   },
   {
     "id": 4,
@@ -206,7 +209,8 @@
       "2": [
         "full"
       ]
-    }
+    },
+    "cf_employee_number": null
   },
   {
     "id": 5,
@@ -256,7 +260,8 @@
       "1": [
         "full"
       ]
-    }
+    },
+    "cf_employee_number": null
   },
   {
     "id": 10,
@@ -302,7 +307,8 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   },
   {
     "id": 11,
@@ -348,7 +354,8 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   },
   {
     "id": 12,
@@ -394,7 +401,8 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   },
   {
     "id": 13,
@@ -440,7 +448,8 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   },
   {
     "id": 14,
@@ -486,6 +495,7 @@
     "organization_ids": [],
     "authorization_ids": [],
     "overview_sorting_ids": [],
-    "group_ids": {}
+    "group_ids": {},
+    "cf_employee_number": null
   }
 ]

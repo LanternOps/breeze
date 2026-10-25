@@ -16,10 +16,11 @@ import {
   zammadTagsSchema,
   zammadTicketSchema,
   zammadUserSchema,
+  zammadVersionSchema,
 } from './shapes';
 
 /**
- * The Zammad 7.2.2 REST calls of the module (#8313 W5; spec 2026-10-19
+ * The Zammad 7.2.x REST calls of the module (shapes from 7.2.2; #8313 W5; spec 2026-10-19
  * §6.1, §6.2), over the framework's SSRF-safe client (sourceFetch.ts): every
  * request is the stored base URL plus `/api/v1/` and fixed segments or
  * numeric ids, never a URL from a response (§5.6). Auth is
@@ -125,6 +126,11 @@ export async function getUser(src: SourceHandle<unknown>, userId: number) {
 /** The token's user (`/users/me`; documented, unverified in the 7.2.2 source, §11). */
 export function getMe(src: SourceHandle<unknown>) {
   return zammadGet(src, ['users', 'me'], zammadMeSchema, { expand: true });
+}
+
+/** The instance's version. Its policy is `default_permit!('admin')`: a `ticket.agent` token gets 403. */
+export async function getVersion(src: SourceHandle<unknown>): Promise<string> {
+  return (await zammadGet(src, ['version'], zammadVersionSchema)).body.version;
 }
 
 export function listRoles(src: SourceHandle<unknown>) {

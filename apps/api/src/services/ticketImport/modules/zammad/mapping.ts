@@ -46,20 +46,27 @@ export type StateMapping = {
   finalStatus: FinalStatus;
   resolvedAt?: string;
   closedAt?: string;
-  /** The internal note of a pending state: Breeze has no pending-until time and no auto-close (F18). */
-  pendingNote?: { kind: 'reminder' | 'auto_close'; pendingTime: string | null };
+  /**
+   * The internal note of a pending state: Breeze has no pending-until time
+   * and no auto-close (F18). `reminder`: a pending reminder; `auto_close`: a
+   * pending action that closes when its time comes (`pending close`);
+   * `until`: a pending action whose next state is not a closed one (a pause).
+   */
+  pendingNote?: { kind: 'reminder' | 'auto_close' | 'until'; pendingTime: string | null };
   merged?: true;
   /** A legacy `removed` state (Z12), counted in the report. */
   removed?: true;
 };
 
-/**
- * By state TYPE, never by name: custom states follow their type (Z12).
- * `pending close` (type `pending action`) is `resolved`, not `pending`: done,
- * closing unless the customer replies (decision 10). Null for a type 7.2.2
- * does not have.
- */
-export function mapState(state: ZammadStateInfo, ticket: ZammadTicket): StateMapping | null {
+/** The times a status carries: a resolve at the last change, a close at the latest close (Z12). */
+function timesFor(status: FinalStatus, ticket: ZammadTicket): Pick<StateMapping, 'resolvedAt' | 'closedAt'> {
+  if (status === 'resolved') return { resolvedAt: ticket.updated_at };
+  // close_at is the first close and never reset; last_close_at the latest.
+  if (status === 'closed') return { closedAt: ticket.last_close_at ?? ticket.close_at ?? ticket.updated_at };
+  return {};
+}
+
+function byStateType(state: ZammadStateInfo, ticket: ZammadTicket): StateMapping | null {
   const pendingTime = ticket.pending_time ?? null;
   switch (state.type) {
     case 'new':
@@ -70,10 +77,17 @@ export function mapState(state: ZammadStateInfo, ticket: ZammadTicket): StateMap
     case 'pending reminder':
       return { finalStatus: 'pending', pendingNote: { kind: 'reminder', pendingTime } };
     case 'pending action':
-      return { finalStatus: 'resolved', resolvedAt: ticket.updated_at, pendingNote: { kind: 'auto_close', pendingTime } };
+      // `pending close` goes to a closed state: done, closing unless the
+      // customer replies, which is Breeze's resolved (decision 10). A state
+      // list that does not say (`undefined`) is read the seeded way.
+      if (state.nextStateType === 'closed' || state.nextStateType === undefined) {
+        return { finalStatus: 'resolved', ...timesFor('resolved', ticket), pendingNote: { kind: 'auto_close', pendingTime } };
+      }
+      // A pending action that closes nothing (a custom "paused" state, seen
+      // on a live 7.2.0): on hold until someone acts.
+      return { finalStatus: 'on_hold', pendingNote: { kind: 'until', pendingTime } };
     case 'closed':
-      // close_at is the first close and never reset; last_close_at the latest (Z12).
-      return { finalStatus: 'closed', closedAt: ticket.last_close_at ?? ticket.close_at ?? ticket.updated_at };
+      return { finalStatus: 'closed', ...timesFor('closed', ticket) };
     case 'merged':
       return { finalStatus: 'closed', closedAt: ticket.updated_at, merged: true };
     case 'removed':
@@ -81,6 +95,29 @@ export function mapState(state: ZammadStateInfo, ticket: ZammadTicket): StateMap
     default:
       return null;
   }
+}
+
+/**
+ * By state TYPE, never by name: custom states follow their type (Z12). The
+ * options' per-state map overrides one state's status (its times follow the
+ * new status, its pending note stays) and can map a type 7.2 does not have.
+ * A merged ticket stays closed with its merge note whatever the map says.
+ * Null for a type 7.2 does not have and no override.
+ */
+export function mapState(
+  state: ZammadStateInfo,
+  ticket: ZammadTicket,
+  stateMap: ZammadOptions['stateMap'] = {},
+): StateMapping | null {
+  const base = byStateType(state, ticket);
+  const override = stateMap[String(state.id)]?.status;
+  if (!override || base?.merged) return base;
+  return {
+    finalStatus: override,
+    ...timesFor(override, ticket),
+    ...(base?.pendingNote ? { pendingNote: base.pendingNote } : {}),
+    ...(base?.removed ? { removed: true as const } : {}),
+  };
 }
 
 // ------------------------------------------------------------ priorities

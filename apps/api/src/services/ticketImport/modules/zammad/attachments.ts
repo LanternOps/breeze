@@ -5,7 +5,7 @@ import { storeIdOf } from './ids';
 import { rememberedFileLocation, rememberFileLocations, zammadRow } from './reading';
 
 /**
- * Files and probes of a Zammad 7.2.2 source (#8313 W5; spec 2026-10-19 §4.3,
+ * Files and probes of a Zammad 7.2.x source (#8313 W5; spec 2026-10-19 §4.3,
  * §5.9 deletions, §6.2).
  *
  * - **fetchAttachment** downloads `GET /ticket_attachment/:ticket/:article/:id`

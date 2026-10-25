@@ -3,6 +3,7 @@ import { clockSkewFromDateHeader, SourceAuthError, SourceHttpError } from '../..
 import {
   firstTicket,
   getMe,
+  getVersion,
   listGroups,
   listObjectAttributes,
   listOrganizations,
@@ -17,22 +18,35 @@ import { personOf, type zammadMeSchema } from './shapes';
 import type { z } from 'zod';
 
 /**
- * Token, access and catalog of a Zammad 7.2.2 source (#8313 W5; spec
+ * Token, access and catalog of a Zammad 7.2.x source (#8313 W5; spec
  * 2026-10-19 §6.1, §5.11 preflight).
  *
  * - The token must read tickets: one ticket page is the live test (a 401 is
  *   a refused credential, a 403 a token that cannot read tickets).
+ * - The version: any 7.2.x is accepted and reported (`sourceVersion`); one
+ *   outside 7.2 is a warning, not a refusal: the module's shape checks fail
+ *   loudly on what it does not know. `GET /version` needs the exact `admin`
+ *   permission, so the recommended `ticket.agent` token reads none: a
+ *   warning, and `sourceVersion` null.
  * - Ticket visibility comes from group access, and only ACTIVE groups count
  *   (Z1): every inactive group is flagged "tickets here will not be
  *   imported". When the token user's group access can be read (`/users/me`
  *   and its roles; `/users/me` is documented but unverified in the 7.2.2
- *   source, §11), an active group it has no `read` on is flagged too.
+ *   source, §11), an active group it has no `read` on is flagged too. Only
+ *   active roles count, as in 7.2.2; 7.2.0 still honours an inactive role's
+ *   group access (fixed in 7.2.1/7.2.2), so on 7.2.0 such a group can be
+ *   flagged although readable.
  * - A token cannot be read-only: `ticket.agent` can still change users and
  *   organizations (Z11). Every connect says so, so the wizard can recommend
  *   revoking the token after the cutover.
  * - The clock skew is the source's `Date` header against Breeze's clock
  *   (§5.2).
  */
+
+/** 7.2, 7.2.0, 7.2.2, or a packaged 7.2.0-<build>; not 7.20 or 7.3. */
+export function isZammad72(version: string): boolean {
+  return /^7\.2(?:\.\d+)?(?:$|[-+ ])/.test(version.trim());
+}
 
 type Me = z.infer<typeof zammadMeSchema>;
 type GroupAccess = Map<string, Set<string>>;
@@ -77,6 +91,11 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   const warnings: ConnectReport['warnings'] = [];
   if (probe.body.length === 0) warnings.push({ code: 'no_visible_tickets' });
 
+  const version = await quiet(getVersion(src));
+  const sourceVersion = version === null ? null : cleanText(version).trim().slice(0, 100);
+  if (sourceVersion === null) warnings.push({ code: 'version_unreadable' });
+  else if (!isZammad72(sourceVersion)) warnings.push({ code: 'version_unsupported', detail: sourceVersion });
+
   const { me, permissions, access } = await tokenUser(src);
   if (!me) warnings.push({ code: 'identity_unreadable' });
   if (me && permissions === null) warnings.push({ code: 'permissions_unreadable' });
@@ -96,6 +115,7 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
     permissions: permissions ?? [],
     warnings,
     clockSkewMs,
+    sourceVersion,
   };
 }
 

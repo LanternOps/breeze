@@ -42,8 +42,9 @@
     "created_by_id": 10,
     "created_at": "2026-03-02T09:15:00.000Z",
     "updated_at": "2026-03-03T16:40:12.345Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 102,
@@ -88,8 +89,9 @@
     "created_by_id": 10,
     "created_at": "2026-03-05T08:00:00.000Z",
     "updated_at": "2026-03-08T08:30:01.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": true
   },
   {
     "id": 103,
@@ -132,8 +134,9 @@
     "created_by_id": 12,
     "created_at": "2026-04-10T13:00:00.000Z",
     "updated_at": "2026-04-10T13:20:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 104,
@@ -176,8 +179,9 @@
     "created_by_id": 10,
     "created_at": "2026-04-20T07:00:00.000Z",
     "updated_at": "2026-04-21T07:30:00.000Z",
-    "customer_reference": "PO-7788",
-    "contract_tier": null
+    "cf_customer_reference": "PO-7788",
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 105,
@@ -222,8 +226,9 @@
     "created_by_id": 11,
     "created_at": "2026-05-01T10:00:00.000Z",
     "updated_at": "2026-05-02T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 106,
@@ -268,8 +273,9 @@
     "created_by_id": 11,
     "created_at": "2026-05-01T11:00:00.000Z",
     "updated_at": "2026-05-02T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 107,
@@ -314,8 +320,9 @@
     "created_by_id": 10,
     "created_at": "2026-06-01T09:00:00.000Z",
     "updated_at": "2026-06-03T10:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 108,
@@ -360,8 +367,9 @@
     "created_by_id": 10,
     "created_at": "2026-06-02T09:00:00.000Z",
     "updated_at": "2026-06-04T10:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 109,
@@ -406,8 +414,9 @@
     "created_by_id": 10,
     "created_at": "2026-06-02T12:00:00.000Z",
     "updated_at": "2026-06-04T10:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 110,
@@ -450,8 +459,9 @@
     "created_by_id": 13,
     "created_at": "2026-07-01T08:00:00.000Z",
     "updated_at": "2026-07-01T08:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 111,
@@ -496,8 +506,9 @@
     "created_by_id": 11,
     "created_at": "2026-07-02T08:00:00.000Z",
     "updated_at": "2026-07-02T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 112,
@@ -542,8 +553,9 @@
     "created_by_id": 10,
     "created_at": "2026-07-03T08:00:00.000Z",
     "updated_at": "2026-07-03T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 113,
@@ -588,8 +600,9 @@
     "created_by_id": 10,
     "created_at": "2026-07-04T08:00:00.000Z",
     "updated_at": "2026-07-04T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 114,
@@ -634,8 +647,9 @@
     "created_by_id": 10,
     "created_at": "2026-07-05T08:00:00.000Z",
     "updated_at": "2026-07-05T10:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 115,
@@ -680,8 +694,9 @@
     "created_by_id": 10,
     "created_at": "2026-07-06T08:00:00.000Z",
     "updated_at": "2026-07-06T09:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   },
   {
     "id": 116,
@@ -724,7 +739,55 @@
     "created_by_id": 14,
     "created_at": "2026-07-07T08:00:00.000Z",
     "updated_at": "2026-07-07T08:00:00.000Z",
-    "customer_reference": null,
-    "contract_tier": null
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
+  },
+  {
+    "id": 117,
+    "group_id": 2,
+    "priority_id": 2,
+    "state_id": 8,
+    "organization_id": 2,
+    "number": "31017",
+    "title": "Waiting for the vendor",
+    "owner_id": 3,
+    "customer_id": 10,
+    "note": null,
+    "first_response_at": null,
+    "first_response_escalation_at": null,
+    "first_response_in_min": null,
+    "first_response_diff_in_min": null,
+    "close_at": null,
+    "close_escalation_at": null,
+    "close_in_min": null,
+    "close_diff_in_min": null,
+    "update_escalation_at": null,
+    "update_in_min": null,
+    "update_diff_in_min": null,
+    "last_close_at": null,
+    "last_contact_at": "2026-07-08T09:00:00.000Z",
+    "last_contact_agent_at": null,
+    "last_contact_customer_at": "2026-07-08T08:00:00.000Z",
+    "last_owner_update_at": null,
+    "create_article_type_id": 1,
+    "create_article_sender_id": 2,
+    "article_count": 1,
+    "escalation_at": null,
+    "pending_time": "2026-08-01T09:00:00.000Z",
+    "type": null,
+    "time_unit": null,
+    "preferences": {
+      "channel_id": 3
+    },
+    "ai_agent_running": false,
+    "checklist_id": null,
+    "updated_by_id": 3,
+    "created_by_id": 10,
+    "created_at": "2026-07-08T08:00:00.000Z",
+    "updated_at": "2026-07-08T09:00:00.000Z",
+    "cf_customer_reference": null,
+    "cf_contract_tier": null,
+    "cf_billable": null
   }
 ]

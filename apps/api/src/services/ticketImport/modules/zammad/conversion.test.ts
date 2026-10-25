@@ -146,8 +146,25 @@ describe('an HTML mail with inline images (102)', () => {
     expect(reply.content).toContain('KB 42 <https://kb.example.com/article/42>');
     expect(reply.content).toContain('> see the error below');
     expect(reply.content).toContain('[image: image001.png]');
-    expect(reply.attachments).toEqual([{ sourceId: 'attachment:5004', filename: 'image001.png', declaredBytes: 70, inline: true }]);
+    expect(reply.attachments).toEqual([
+      { sourceId: 'attachment:5004', filename: 'image001.png', declaredBytes: 70, inline: true },
+      // Stored inline (Content-Disposition inline + Content-ID) though the body does not show it:
+      // inline, with no placeholder (the second rule, after the body reference).
+      { sourceId: 'attachment:5007', filename: 'signature-logo.png', declaredBytes: 70, inline: true },
+    ]);
+    expect(reply.content).not.toContain('signature-logo.png');
     expect(conversion.notes).toContainEqual({ kind: 'attachments_alternative_ignored', count: 1 });
+  });
+
+  it('a file with no Content-Disposition, or inline without a Content-ID, is a plain attachment unless the body shows it', async () => {
+    const data = loadZammadFixtures('base');
+    data.byTicket.set(102, data.byTicket.get(102)!.map((a) => (a.id === 1005
+      ? { ...a, attachments: (a.attachments as Array<{ id: number; preferences: Record<string, unknown> }>).map((f) => (f.id === 5007 ? { ...f, preferences: { 'Content-Type': 'image/png', 'Content-Disposition': 'inline' } } : f)) }
+      : a)));
+    const reply = byId(ticketOf((await convert(102, { data })).conversion).ticket, 'article:1005');
+    expect(reply.attachments!.map((f) => [f.sourceId, f.inline])).toEqual([['attachment:5004', true], ['attachment:5007', false]]);
+    const files = byId(ticketOf((await convert(102)).conversion).ticket, 'article-files:1004').attachments!;
+    expect(files.find((f) => f.sourceId === 'attachment:5003')!.inline).toBe(false);
   });
 
   it('closes at last_close_at; the deactivated owner matches; the time accounted is one internal note', async () => {
@@ -221,13 +238,40 @@ describe('pending close and custom fields (104)', () => {
     // Unassigned in Zammad: no owner note.
     expect(ticket.comments.some((c) => c.sourceId.includes(':owner:'))).toBe(false);
     // Custom attributes are counted by name, never imported (§6.5).
-    expect(conversion.notes).toContainEqual({ kind: 'custom_attribute', name: 'customer_reference' });
+    expect(conversion.notes).toContainEqual({ kind: 'custom_attribute', name: 'cf_customer_reference' });
     expect(JSON.stringify(ticket)).not.toContain('PO-7788');
   });
 
   it('a custom priority with no mapping is normal', async () => {
     const { ticket } = ticketOf((await convert(104, { options: { priorityMap: {} } })).conversion);
     expect(ticket.priority).toBe('normal');
+  });
+});
+
+describe('a custom pending-action state with no next state (117, as a live 7.2.0 has)', () => {
+  it('is on hold, with its pending time in a note', async () => {
+    const { ticket } = ticketOf((await convert(117)).conversion);
+    expect(ticket.finalStatus).toBe('on_hold');
+    expect(ticket.resolvedAt).toBeUndefined();
+    expect(byId(ticket, 'note:117:pending:8:2026-08-01T09:00:00.000Z')).toMatchObject({
+      isPublic: false,
+      content: 'Pending in Zammad (Paused) until 2026-08-01 09:00 UTC',
+    });
+  });
+
+  it('follows the operator\'s per-state map, keeping the note', async () => {
+    const { ticket } = ticketOf((await convert(117, { options: { stateMap: { '8': { status: 'pending', name: 'Paused' } } } })).conversion);
+    expect(ticket.finalStatus).toBe('pending');
+    expect(byId(ticket, 'note:117:pending:8:2026-08-01T09:00:00.000Z').content).toBe('Pending in Zammad (Paused) until 2026-08-01 09:00 UTC');
+    const resolved = ticketOf((await convert(117, { options: { stateMap: { '8': { status: 'resolved' } } } })).conversion).ticket;
+    expect(resolved.finalStatus).toBe('resolved');
+    expect(resolved.resolvedAt!.toISOString()).toBe('2026-07-08T09:00:00.000Z');
+  });
+
+  it('pending close keeps resolved when the state list names its closed next state', async () => {
+    const { loaded, conversion } = await convert(104);
+    expect((loaded.data as { state: unknown }).state).toEqual({ id: 6, name: 'pending close', type: 'pending action', nextStateType: 'closed' });
+    expect(ticketOf(conversion).ticket.finalStatus).toBe('resolved');
   });
 });
 

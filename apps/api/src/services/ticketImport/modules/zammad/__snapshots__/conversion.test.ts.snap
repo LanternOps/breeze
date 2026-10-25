@@ -74,6 +74,10 @@ exports[`every fixture ticket (§6.8) > base 102 matches its snapshot 1`] = `
       "count": 1,
       "kind": "attachments_alternative_ignored",
     },
+    {
+      "kind": "custom_attribute",
+      "name": "cf_billable",
+    },
   ],
   "ticket": {
     "assigneeUserId": "22222222-2222-4222-8222-222222222222",
@@ -112,6 +116,12 @@ exports[`every fixture ticket (§6.8) > base 102 matches its snapshot 1`] = `
             "filename": "image001.png",
             "inline": true,
             "sourceId": "attachment:5004",
+          },
+          {
+            "declaredBytes": 70,
+            "filename": "signature-logo.png",
+            "inline": true,
+            "sourceId": "attachment:5007",
           },
         ],
         "author": {
@@ -256,7 +266,7 @@ exports[`every fixture ticket (§6.8) > base 104 matches its snapshot 1`] = `
   "notes": [
     {
       "kind": "custom_attribute",
-      "name": "customer_reference",
+      "name": "cf_customer_reference",
     },
   ],
   "ticket": {
@@ -901,6 +911,47 @@ exports[`every fixture ticket (§6.8) > base 116 matches its snapshot 1`] = `
     "subject": "Foundation newsletter",
     "tags": [],
     "updatedAt": 2026-07-07T08:00:00.000Z,
+  },
+}
+`;
+
+exports[`every fixture ticket (§6.8) > base 117 matches its snapshot 1`] = `
+{
+  "kind": "ticket",
+  "links": [],
+  "notes": [],
+  "ticket": {
+    "assigneeUserId": "11111111-1111-4111-8111-111111111111",
+    "categoryId": "cccccccc-0000-4000-8000-00000000000c",
+    "comments": [
+      {
+        "author": {
+          "kind": "staff",
+          "name": "Zammad (system)",
+        },
+        "content": "Pending in Zammad (Paused) until 2026-08-01 09:00 UTC",
+        "createdAt": 2026-07-08T09:00:00.000Z,
+        "isPublic": false,
+        "sourceId": "note:117:pending:8:2026-08-01T09:00:00.000Z",
+      },
+    ],
+    "createdAt": 2026-07-08T08:00:00.000Z,
+    "description": "To: support@msp.example.test
+
+Any news from the vendor?",
+    "finalStatus": "on_hold",
+    "orgId": "0a0a0a0a-0000-4000-8000-00000000000a",
+    "priority": "normal",
+    "requester": {
+      "contactId": "33333333-3333-4333-8333-333333333333",
+    },
+    "source": "email",
+    "sourceId": "117",
+    "sourceNumber": "31017",
+    "sourceUrl": "https://zammad.example.test/#ticket/zoom/117",
+    "subject": "Waiting for the vendor",
+    "tags": [],
+    "updatedAt": 2026-07-08T09:00:00.000Z,
   },
 }
 `;

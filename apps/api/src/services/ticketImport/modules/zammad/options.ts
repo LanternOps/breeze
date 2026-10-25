@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ImportedTicket } from '../../importedTicket';
 
 /**
  * The Zammad module's options (#8313 W5; spec 2026-10-19 §6.3, §6.5, §9
@@ -7,6 +8,8 @@ import { z } from 'zod';
  * W4b adds the created-contacts option.
  */
 export const ZAMMAD_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+/** importedTicket's final statuses (a type import keeps this file free of the writer's runtime). */
+export const ZAMMAD_TARGET_STATUSES = ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] as const satisfies ReadonlyArray<ImportedTicket['finalStatus']>;
 
 export const zammadOptionsSchema = z.object({
   /**
@@ -15,6 +18,19 @@ export const zammadOptionsSchema = z.object({
    * to normal: Zammad priorities have no level (Z13).
    */
   priorityMap: z.record(z.string().regex(/^\d{1,12}$/), z.enum(ZAMMAD_PRIORITIES)).default({}),
+  /**
+   * Source state id -> Breeze status, overriding the mapping by state type
+   * (§6.3) for one state: a custom state an instance added. `name` is the
+   * state's name when it was mapped, for display only. A merged ticket stays
+   * closed with its merge note whatever this says.
+   */
+  stateMap: z.record(
+    z.string().regex(/^\d{1,12}$/),
+    z.object({
+      status: z.enum(ZAMMAD_TARGET_STATUSES),
+      name: z.string().max(255).regex(/^[^\u0000-\u001F\u007F]*$/u).optional(),
+    }).strict(),
+  ).default({}),
   /**
    * System articles (triggers, schedulers, delivery notes; Z14): skipped and
    * counted by default (#8313 answer 5), or kept as internal notes by

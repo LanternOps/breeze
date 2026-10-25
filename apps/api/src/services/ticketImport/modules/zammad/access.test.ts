@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceHttpError } from '../../sourceFetch';
-import { catalogZammad, connectZammad } from './access';
+import { catalogZammad, connectZammad, isZammad72 } from './access';
 import { clearZammadDirectoryCache } from './directory';
 import { FakeZammad, zammadTestHandle } from './fakeZammad.fixtures';
 
@@ -26,12 +26,35 @@ describe('connect', () => {
     // The Date header has a one-second resolution.
     expect(report.clockSkewMs).toBeGreaterThan(88_000);
     expect(report.clockSkewMs).toBeLessThan(92_000);
+    // The first live instance runs 7.2.0: any 7.2.x connects with no warning.
+    expect(report.sourceVersion).toBe('7.2.0');
     expect(fake.requestedPaths()).toEqual([
       '/api/v1/tickets?page=1&per_page=1',
+      '/api/v1/version',
       '/api/v1/users/me?expand=true',
       '/api/v1/roles?expand=true&page=1&per_page=1000',
       '/api/v1/groups?page=1&per_page=1000',
     ]);
+  });
+
+  it('reports the version: any 7.2.x without a warning; another one connects with a warning; none readable without admin', async () => {
+    const versioned = async (version: string | null) => {
+      const fake = new FakeZammad();
+      fake.data.version = version === null ? null : { version };
+      const report = await connectZammad(zammadTestHandle(fake));
+      return { version: report.sourceVersion, codes: report.warnings.filter((w) => w.code.startsWith('version_')) };
+    };
+    expect(await versioned('7.2.2')).toEqual({ version: '7.2.2', codes: [] });
+    expect(await versioned('7.2.1-1730000000.abc123.noble')).toEqual({ version: '7.2.1-1730000000.abc123.noble', codes: [] });
+    expect(await versioned('7.1.3')).toEqual({ version: '7.1.3', codes: [{ code: 'version_unsupported', detail: '7.1.3' }] });
+    expect(await versioned('8.0.0')).toEqual({ version: '8.0.0', codes: [{ code: 'version_unsupported', detail: '8.0.0' }] });
+    // GET /version needs the exact admin permission: the recommended ticket.agent token gets 403.
+    expect(await versioned(null)).toEqual({ version: null, codes: [{ code: 'version_unreadable' }] });
+  });
+
+  it('tells 7.2.x from look-alikes', () => {
+    for (const v of ['7.2', '7.2.0', '7.2.2', ' 7.2.10 ', '7.2.0-1729.e9cb.focal']) expect(isZammad72(v)).toBe(true);
+    for (const v of ['7.20.1', '7.3.0', '6.5.2', '17.2.0', '7.2x', 'unknown', '']) expect(isZammad72(v)).toBe(false);
   });
 
   it('refuses a token that is refused (401) or cannot read tickets (403)', async () => {
@@ -87,12 +110,12 @@ describe('catalog', () => {
     expect(catalog.priorities.map((p) => p.name)).toEqual(['1 low', '2 normal', '3 high', '4 critical']);
     expect(catalog.states.map((s) => s.name)).toEqual([
       'new (new)', 'open (open)', 'pending reminder (pending reminder)', 'closed (closed)', 'merged (merged)',
-      'pending close (pending action)', 'removed (removed)',
+      'pending close (pending action)', 'removed (removed)', 'Paused (pending action)',
     ]);
     // No admin.object: attribute names are discovered from tickets during the dry run.
     expect(catalog.attributes).toEqual([]);
     expect(catalog.counts).toEqual({
-      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 7, priorities: 4, attributeDefinitionsReadable: 0,
+      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 8, priorities: 4, attributeDefinitionsReadable: 0,
     });
   });
 

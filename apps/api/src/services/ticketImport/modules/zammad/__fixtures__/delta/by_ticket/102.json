@@ -32,6 +32,7 @@
           "Content-Type": "image/png",
           "Mime-Type": "image/png",
           "Content-ID": "part1.abc@mail.example.test",
+          "Content-Disposition": "inline",
           "resizable": true
         }
       },
@@ -60,6 +61,8 @@
     ],
     "body_rendering_error": false,
     "time_unit": null,
+    "ai_stored_result_ids": [],
+    "ai_stored_results": [],
     "type": "email",
     "sender": "Customer",
     "created_by": "dana@acme.example.test",
@@ -101,10 +104,24 @@
           "Content-Disposition": "inline",
           "resizable": true
         }
+      },
+      {
+        "id": 5007,
+        "store_file_id": 9007,
+        "filename": "signature-logo.png",
+        "size": "70",
+        "preferences": {
+          "Content-Type": "image/png",
+          "Mime-Type": "image/png",
+          "Content-ID": "logo.5007@zammad.example.test",
+          "Content-Disposition": "inline"
+        }
       }
     ],
     "body_rendering_error": false,
     "time_unit": null,
+    "ai_stored_result_ids": [],
+    "ai_stored_results": [],
     "type": "email",
     "sender": "Agent",
     "created_by": "bob.former@msp.example.test",

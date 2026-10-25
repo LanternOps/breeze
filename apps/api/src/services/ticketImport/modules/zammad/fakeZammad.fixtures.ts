@@ -1,11 +1,11 @@
 /**
- * A fake Zammad 7.2.2 for tests (#8313 W5; spec 2026-10-19 §6.8, §8 W5
+ * A fake Zammad 7.2.x for tests (#8313 W5; spec 2026-10-19 §6.8, §8 W5
  * row). It serves the synthesized fixture sets of `__fixtures__/` (see its
- * README: shaped after the 7.2.2 API, not captured from a live instance) the
- * way 7.2.2 answers them: token auth, page clamps, `id ASC` ticket pages, 404
- * for a deleted ticket and 403 for a hidden one, the attachment route's
- * ticket/article check, original bytes without `view` and a resized copy
- * with it.
+ * README: shapes from the 7.2.2 source, validated later against a live
+ * 7.2.0; not captured from a live instance) the way 7.2.2 answers them:
+ * token auth, page clamps, `id ASC` ticket pages, 404 for a deleted ticket
+ * and 403 for a hidden one, the attachment route's ticket/article check,
+ * original bytes without `view` and a resized copy with it.
  *
  * Two transports over one router: `fetchImpl` answers in process (unit
  * tests), and `listen()` runs a node `http` server on 127.0.0.1 (the
@@ -34,6 +34,8 @@ type Row = Record<string, unknown> & { id: number };
 
 /** One fixture set as plain data; tests may change it before serving. */
 export type ZammadFixtureData = {
+  /** `GET /version`; null answers 403, as for a token without `admin`. */
+  version: Json | null;
   me: Json;
   roles: Row[];
   users: Row[];
@@ -96,6 +98,7 @@ export function loadZammadFixtures(set: FixtureSetName = 'base'): ZammadFixtureD
   const tags = get('tags.json') as Record<string, string[]>;
   const fileBytes = get('files.json') as Record<string, { base64: string }>;
   return {
+    version: get('version.json'),
     me: get('users-me.json'),
     roles: get('roles.json') as Row[],
     users: get('users.json') as Row[],
@@ -205,6 +208,9 @@ export class FakeZammad {
     const id = (value: string | undefined) => (value && /^\d+$/.test(value) ? Number(value) : NaN);
 
     switch (head) {
+      case 'version':
+        // version_controller_policy: default_permit!('admin').
+        return d.version === null ? forbidden() : jsonResponse(200, d.version, now);
       case 'users':
         if (second === 'me') return jsonResponse(200, d.me, now);
         if (second === undefined) return jsonResponse(200, page(d.users, query, 100, 1000), now);

@@ -15,7 +15,8 @@
     "member_ids": [
       14
     ],
-    "secondary_member_ids": []
+    "secondary_member_ids": [],
+    "cf_account_code": ""
   },
   {
     "id": 2,
@@ -34,7 +35,8 @@
       10,
       11
     ],
-    "secondary_member_ids": []
+    "secondary_member_ids": [],
+    "cf_account_code": ""
   },
   {
     "id": 3,
@@ -52,7 +54,8 @@
     "member_ids": [
       12
     ],
-    "secondary_member_ids": []
+    "secondary_member_ids": [],
+    "cf_account_code": ""
   },
   {
     "id": 4,
@@ -68,6 +71,7 @@
     "created_at": "2025-01-05T09:00:00.000Z",
     "updated_at": "2025-01-05T09:00:00.000Z",
     "member_ids": [],
-    "secondary_member_ids": []
+    "secondary_member_ids": [],
+    "cf_account_code": ""
   }
 ]

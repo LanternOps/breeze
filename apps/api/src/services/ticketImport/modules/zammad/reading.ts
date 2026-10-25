@@ -21,7 +21,7 @@ import {
 } from './shapes';
 
 /**
- * Reading a Zammad 7.2.2 source (#8313 W5; spec 2026-10-19 §6.2).
+ * Reading a Zammad 7.2.x source (#8313 W5; spec 2026-10-19 §6.2).
  *
  * - **scan** pages `GET /tickets?page=N&per_page=100`, ordered `id ASC`, with
  *   no state filter (Z2). The cursor is the page number and the last id seen:

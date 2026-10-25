@@ -50,8 +50,33 @@ describe('states, by state type (§6.3, Z12)', () => {
     expect(mapState(closed, { ...at, last_close_at: null, close_at: null })!.closedAt).toBe('2026-05-05T10:00:00.000Z');
   });
 
-  it('a state type 7.2.2 does not have maps to nothing', () => {
+  it('a state type 7.2 does not have maps to nothing', () => {
     expect(mapState({ id: 9, name: 'odd', type: 'unknown' }, at)).toBeNull();
+  });
+
+  it('pending action: a closed next state is resolved; no next state (a custom pause) is on hold (live 7.2.0)', () => {
+    expect(mapState({ id: 6, name: 'pending close', type: 'pending action', nextStateType: 'closed' }, at)).toMatchObject({ finalStatus: 'resolved' });
+    expect(mapState({ id: 8, name: 'Paused', type: 'pending action', nextStateType: null }, at)).toEqual({
+      finalStatus: 'on_hold', pendingNote: { kind: 'until', pendingTime: '2026-05-20T09:00:00.000Z' },
+    });
+    expect(mapState({ id: 8, name: 'Paused', type: 'pending action', nextStateType: 'open' }, at)!.finalStatus).toBe('on_hold');
+  });
+
+  it('the per-state map overrides one state: its times follow the new status, its pending note stays', () => {
+    const paused = { id: 8, name: 'Paused', type: 'pending action', nextStateType: null };
+    expect(mapState(paused, at, { '8': { status: 'pending', name: 'Paused' } })).toEqual({
+      finalStatus: 'pending', pendingNote: { kind: 'until', pendingTime: '2026-05-20T09:00:00.000Z' },
+    });
+    expect(mapState(paused, at, { '8': { status: 'closed' } })).toEqual({
+      finalStatus: 'closed', closedAt: '2026-05-04T00:00:00.000Z', pendingNote: { kind: 'until', pendingTime: '2026-05-20T09:00:00.000Z' },
+    });
+    expect(mapState({ id: 2, name: 'open', type: 'open' }, at, { '2': { status: 'resolved' } })).toEqual({ finalStatus: 'resolved', resolvedAt: '2026-05-05T10:00:00.000Z' });
+    // Another state's entry does not apply.
+    expect(mapState(paused, at, { '9': { status: 'closed' } })!.finalStatus).toBe('on_hold');
+    // A type 7.2 lacks can be mapped explicitly.
+    expect(mapState({ id: 9, name: 'odd', type: 'unknown' }, at, { '9': { status: 'open' } })).toEqual({ finalStatus: 'open' });
+    // A merged ticket stays closed, with its merge, whatever the map says.
+    expect(mapState({ id: 5, name: 'merged', type: 'merged' }, at, { '5': { status: 'open' } })).toMatchObject({ finalStatus: 'closed', merged: true });
   });
 });
 
@@ -94,9 +119,13 @@ describe('header fields (§6.3)', () => {
   });
 
   it('custom attributes with a value are counted by name; core columns and empty values are not (Z17)', () => {
-    expect(customAttributesWithValue(ticket(104))).toEqual(['customer_reference']);
+    expect(customAttributesWithValue(ticket(104))).toEqual(['cf_customer_reference']);
+    expect(customAttributesWithValue(ticket(102))).toEqual(['cf_billable']);
     expect(customAttributesWithValue(ticket(101))).toEqual([]);
     expect(customAttributesWithValue({ ...ticket(101), flags: [], vip_level: 0, approved: false, notes_rt: '' } as never)).toEqual(['approved', 'vip_level']);
+    // Many cf_* attributes (a live 7.2.0 has eleven editable ones on tickets).
+    const many = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`cf_field_${String(i).padStart(2, '0')}`, `v${i}`]));
+    expect(customAttributesWithValue({ ...ticket(101), ...many } as never)).toEqual(Object.keys(many).sort());
   });
 
   it('time_unit as a number string; none when empty or zero (Z16)', () => {

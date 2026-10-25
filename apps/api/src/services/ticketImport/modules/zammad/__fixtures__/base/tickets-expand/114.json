@@ -41,8 +41,9 @@
   "created_by_id": 10,
   "created_at": "2026-07-05T08:00:00.000Z",
   "updated_at": "2026-07-05T10:00:00.000Z",
-  "customer_reference": null,
-  "contract_tier": null,
+  "cf_customer_reference": null,
+  "cf_contract_tier": null,
+  "cf_billable": null,
   "article_ids": [
     1027,
     1028,

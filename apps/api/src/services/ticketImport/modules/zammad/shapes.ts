@@ -2,11 +2,13 @@ import { z } from 'zod';
 import { SourceUnavailableError } from '../../sourceFetch';
 
 /**
- * The Zammad 7.2.2 JSON the module reads (#8313 W5; spec 2026-10-19 §3, the
+ * The Zammad 7.2.x JSON the module reads: shapes from the 7.2.2 source,
+ * validated later against a live 7.2.0 (#8313 W5; spec 2026-10-19 §3, the
  * research notes' §3–§8). Every schema is loose: it names the fields the
  * module uses and keeps the rest (custom Object Manager attributes are extra
- * top-level ticket keys, Z17). Ids are numbers; times are ISO 8601 UTC
- * strings with milliseconds.
+ * top-level ticket keys, Z17; newer article keys such as `ai_stored_results`
+ * are ignored). Ids are numbers; times are ISO 8601 UTC strings with
+ * milliseconds.
  */
 
 const id = z.number().int().positive();
@@ -97,14 +99,23 @@ export const zammadOrganizationSchema = z.looseObject({ id, name: z.string(), ac
 export const zammadGroupSchema = z.looseObject({ id, name: z.string(), active: z.boolean().nullable().optional() });
 export const zammadPrioritySchema = z.looseObject({ id, name: z.string(), active: z.boolean().nullable().optional() });
 
-/** `GET /ticket_states?expand=true`: `state_type` is the type's name (there is no state type route). */
+/**
+ * `GET /ticket_states?expand=true`: `state_type` is the type's name (there is
+ * no state type route; a live 7.2.0 answers none for `ticket_state_types`).
+ * `next_state_id` is where a `pending action` state goes when its time comes:
+ * the seeded `pending close` goes to `closed`; a custom one may go nowhere.
+ */
 export const zammadStateSchema = z.looseObject({
   id,
   name: z.string(),
   state_type_id: id,
   state_type: text,
+  next_state_id: id.nullable().optional(),
   active: z.boolean().nullable().optional(),
 });
+
+/** `GET /version` (`{ version: "7.2.0" }`); its policy needs the exact `admin` permission. */
+export const zammadVersionSchema = z.looseObject({ version: z.string().min(1).max(100) });
 
 /** `GET /roles?expand=true`: permission names per role, and the role's group access. */
 export const zammadRoleSchema = z.looseObject({
@@ -151,8 +162,11 @@ export const ZAMMAD_ARTICLE_TYPE_BY_ID: Readonly<Record<number, string>> = {
 };
 export const ZAMMAD_SENDER_BY_ID: Readonly<Record<number, string>> = { 1: 'Agent', 2: 'Customer', 3: 'System' };
 
-/** A state with its type, as the conversion maps it (§6.3). */
-export type ZammadStateInfo = { id: number; name: string; type: string };
+/**
+ * A state with its type, as the conversion maps it (§6.3), and the type of
+ * its next state (null when it has none).
+ */
+export type ZammadStateInfo = { id: number; name: string; type: string; nextStateType?: string | null };
 
 /** A user reduced to what a conversion names: never the rest of the profile. */
 export type ZammadPerson = {

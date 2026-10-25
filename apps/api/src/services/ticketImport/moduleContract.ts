@@ -43,6 +43,8 @@ export type ConnectReport = {
   warnings: Array<{ code: string; detail?: string }>;
   /** The source clock minus Breeze's, from the response `Date` header; null when the source sent none. */
   clockSkewMs: number | null;
+  /** The source's own version string, as it reports it; null when the credential may not read it. */
+  sourceVersion?: string | null;
 };
 
 export type SourceCatalogEntry = {

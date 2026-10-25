@@ -7,13 +7,15 @@ import { zammadOptionsSchema, type ZammadOptions } from './options';
 import { loadZammad, scanZammad, type ZammadCursor } from './reading';
 
 /**
- * The Zammad 7.2.2 import module (#8313 W5; spec
+ * The Zammad 7.2.x import module (#8313 W5; spec
  * docs/superpowers/specs/api-platform/2026-10-19-ticket-import-modules-design.md
- * §6). It reads through the REST API with an agent token and needs no
- * Elasticsearch: the id-ordered ticket list plus the framework's ledger make
- * the delta (decision 12).
+ * §6): shapes from the 7.2.2 source, validated later against a live 7.2.0.
+ * Any 7.2.x connects; another version connects with a warning. It reads
+ * through the REST API with an agent token and needs no Elasticsearch: the
+ * id-ordered ticket list plus the framework's ledger make the delta
+ * (decision 12).
  *
- * Files: `api.ts` (the calls), `shapes.ts` (the 7.2.2 JSON), `directory.ts`
+ * Files: `api.ts` (the calls), `shapes.ts` (the 7.2.x JSON), `directory.ts`
  * (users, states and priorities, cached 30 minutes), `access.ts` (connect,
  * catalog), `reading.ts` (scan, load), `mapping.ts` and `conversion.ts` (the
  * pure conversion), `attachments.ts` (files, probe), `ids.ts` (the id

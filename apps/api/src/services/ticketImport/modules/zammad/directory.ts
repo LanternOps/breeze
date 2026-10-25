@@ -57,7 +57,14 @@ export function stateTypeName(stateTypeId: number, named: string | null | undefi
 
 async function readStates(src: SourceHandle<unknown>): Promise<Map<number, ZammadStateInfo>> {
   const rows = await listStates(src);
-  return new Map(rows.map((s) => [s.id, { id: s.id, name: s.name, type: stateTypeName(s.state_type_id, s.state_type) }]));
+  const types = new Map(rows.map((s) => [s.id, stateTypeName(s.state_type_id, s.state_type)]));
+  return new Map(rows.map((s) => [s.id, {
+    id: s.id,
+    name: s.name,
+    type: types.get(s.id)!,
+    // undefined: the list does not say (the seeded reading applies); null: no next state.
+    nextStateType: s.next_state_id === undefined ? undefined : s.next_state_id === null ? null : types.get(s.next_state_id) ?? null,
+  }]));
 }
 
 /** A ticket's state with its type; the states are read again once for a state created since. */

@@ -25,7 +25,7 @@ import { zammadOptionsSchema, type ZammadOptions } from './options';
 import type { ZammadArticle, ZammadAttachment, ZammadLoadedData } from './shapes';
 
 /**
- * The pure conversion of one loaded Zammad 7.2.2 ticket (#8313 W5; spec
+ * The pure conversion of one loaded Zammad 7.2.x ticket (#8313 W5; spec
  * 2026-10-19 §5.2, §6.3–§6.6). No I/O, no clock: `now` and every Breeze
  * lookup arrive in the context, so it is tested against the recorded
  * responses alone (§6.8).
@@ -73,6 +73,19 @@ function filenameOf(file: ZammadAttachment): string {
 function isAlternative(file: ZammadAttachment): boolean {
   const flag = file.preferences?.['content-alternative'];
   return flag === true || flag === 'true';
+}
+
+/**
+ * Inline although the body does not show it: an image Zammad stored as
+ * inline, `Content-Disposition: inline` with a `Content-ID` (how a live 7.2.0
+ * sends inline images). The body reference decides first; a mail attachment
+ * often has no Content-Disposition at all (Z7).
+ */
+function declaredInline(file: ZammadAttachment): boolean {
+  const disposition = file.preferences?.['Content-Disposition'];
+  const cid = file.preferences?.['Content-ID'];
+  return typeof disposition === 'string' && disposition.trim().toLowerCase().startsWith('inline')
+    && typeof cid === 'string' && cid.trim().length > 0;
 }
 
 /**
@@ -143,7 +156,7 @@ export function zammadArticleText(article: ZammadArticle, baseUrl: string): Arti
       sourceId: zammadIds.attachment(file.id),
       filename: filenameOf(file),
       ...(Number.isSafeInteger(size) && size >= 0 ? { declaredBytes: size } : {}),
-      inline: inline.has(file.id),
+      inline: inline.has(file.id) || declaredInline(file),
     });
   }
   return { content, truncated, files, alternatives, renderError };
@@ -177,7 +190,7 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
   // A later Zammad moves inline images out of `attachments` (Z6): refuse
   // loudly rather than import their bodies without them.
   if (data.articles.some((a) => (a.inline_attachments?.length ?? 0) > 0)) return { kind: 'skip', code: 'unsupported', notes };
-  const state = mapState(data.state, t);
+  const state = mapState(data.state, t, options.stateMap);
   if (!state) return { kind: 'skip', code: 'unsupported', notes };
 
   const createdAt = instant(t.created_at);
@@ -247,9 +260,12 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
   if (state.pendingNote) {
     const { kind, pendingTime } = state.pendingNote;
     const when = pendingTime ? formatInstant(pendingTime) : null;
+    const stateName = cleanText(data.state.name).trim() || 'pending';
     const content = kind === 'reminder'
       ? (when ? `Pending reminder in Zammad: ${when}` : 'Pending reminder in Zammad, with no reminder time set.')
-      : (when ? `Zammad would have closed this at ${when}` : 'Zammad would have closed this, with no close time set.');
+      : kind === 'auto_close'
+        ? (when ? `Zammad would have closed this at ${when}` : 'Zammad would have closed this, with no close time set.')
+        : (when ? `Pending in Zammad (${stateName}) until ${when}` : `Pending in Zammad (${stateName}), with no time set.`);
     comments.push(composed(zammadIds.pendingNote(t.id, data.state.id, pendingTime), content));
   }
   const links: ImportedLink[] = [];
