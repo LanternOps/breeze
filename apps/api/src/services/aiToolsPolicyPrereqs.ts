@@ -908,7 +908,18 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!updated) {
           return JSON.stringify({ error: 'Backup profile not found or access denied' });
         }
-        return JSON.stringify({ success: true, profile: updated });
+        // W03 quorum QW6 (#6757): the approver saw only the new values, so
+        // return what was replaced — the change can be undone from here.
+        return JSON.stringify({
+          success: true,
+          profile: updated,
+          previous: {
+            name: existing.name,
+            description: existing.description,
+            selections: existing.selections,
+            isActive: existing.isActive,
+          },
+        });
       }
 
       if (action === 'delete') {
