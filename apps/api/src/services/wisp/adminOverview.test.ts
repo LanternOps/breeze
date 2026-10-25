@@ -42,7 +42,12 @@ import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { partners } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispConcerns } from '../../db/schema/wispConcerns';
-import { SPECIALIST_KEY_PATTERN, buildWispOverview, listGrantsForPartner } from './adminOverview';
+import {
+  SPECIALIST_KEY_PATTERN,
+  SPECIALIST_SWEEP_KEY_PATTERN,
+  buildWispOverview,
+  listGrantsForPartner,
+} from './adminOverview';
 import { specialistDedupeKey } from './specialistLaunchers';
 
 const dialect = new PgDialect();
@@ -62,6 +67,7 @@ const G3 = 'a3333333-3333-4333-8333-333333333333';
 const G4 = 'a4444444-4444-4444-8444-444444444444';
 const G5 = 'a5555555-5555-4555-8555-555555555555';
 const G6 = 'a6666666-6666-4666-8666-666666666666';
+const G7 = 'a7777777-7777-4777-8777-777777777777';
 
 beforeEach(() => {
   h.results.length = 0;
@@ -78,16 +84,32 @@ function whereFor(table: unknown): { sql: string; params: unknown[] } {
   return compile(h.whereArgs[i]);
 }
 
+/** Asserts `column >= MIDNIGHT` and `column < NEXT_MIDNIGHT` — bound to the right side each. */
 function expectTodayWindow(q: { sql: string; params: unknown[] }, column: string) {
-  expect(q.sql).toContain(`${column} >= $`);
-  expect(q.sql).toContain(`${column} < $`);
-  const isoParams = q.params.map((p) => (p instanceof Date ? p.toISOString() : p));
-  expect(isoParams).toContain(MIDNIGHT);
-  expect(isoParams).toContain(NEXT_MIDNIGHT);
+  const esc = column.replace(/[.*+?^${}()|[\]\\"]/g, '\\$&');
+  const param = (op: string) => {
+    const m = q.sql.match(new RegExp(`${esc} ${op} \\$(\\d+)`));
+    expect(m, `${column} ${op} $n`).not.toBeNull();
+    const v = q.params[Number(m![1]) - 1];
+    return v instanceof Date ? v.toISOString() : v;
+  };
+  expect(param('>=')).toBe(MIDNIGHT);
+  expect(param('<')).toBe(NEXT_MIDNIGHT);
 }
 
-it('SPECIALIST_KEY_PATTERN matches the coordinator\'s admission keys', () => {
+/** SQL LIKE (no escapes) → RegExp, to check real keys against the patterns. */
+const likeToRegExp = (pattern: string) =>
+  new RegExp(`^${pattern.split('%').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/_/g, '.')).join('.*')}$`);
+
+it('the specialist key patterns match the coordinator\'s admission keys and nothing else', () => {
+  const requestId = 'f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f';
   expect(SPECIALIST_KEY_PATTERN).toBe(`${specialistDedupeKey('')}%`);
+  expect(likeToRegExp(SPECIALIST_KEY_PATTERN).test(specialistDedupeKey(requestId))).toBe(true);
+  // aiAgentSweepScheduler: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`, launchSweep: occurrenceKey `wisp-${requestId}`
+  const sweep = likeToRegExp(SPECIALIST_SWEEP_KEY_PATTERN);
+  expect(sweep.test(`sweep-${P1}-${P2}-wisp-${requestId}`)).toBe(true);
+  // a cron sweep occurrence (ISO-ish slot key) is not Wisp's
+  expect(sweep.test(`sweep-${P1}-${P2}-2027-01-05T15:00`)).toBe(false);
 });
 
 describe('buildWispOverview', () => {
@@ -109,9 +131,11 @@ describe('buildWispOverview', () => {
         grant({ id: G2, partnerId: P1, status: 'paused', pausedReason: 'budget_exhausted' }),
         grant({ id: G3, partnerId: P1, status: 'paused', pausedReason: 'budget_exhausted' }),
         grant({ id: G4, partnerId: P1, status: 'paused', pausedReason: 'grantor_suspended' }),
-        // status still 'active' but already past expiry: not counted as active
+        // status still 'active' but already past expiry: neither active nor live
         grant({ id: G5, partnerId: P1, expiresAt: PAST }),
         grant({ id: G6, partnerId: P2, status: 'revoked' }),
+        // paused with no recorded reason
+        grant({ id: G7, partnerId: P2, status: 'paused', pausedReason: null }),
       ],
       // 2. partners
       [
@@ -120,9 +144,14 @@ describe('buildWispOverview', () => {
       ],
       // 3. today's runs per grant
       [
-        { grantId: G1, assessments: 4, specialistRuns: 1, spentCents: '250' },
-        { grantId: G2, assessments: '2', specialistRuns: '0', spentCents: 100 },
-        // revoked grant spent past its budget: not "budget exhausted"
+        // active grant at exactly its budget: exhausted (chargeableUnderGrant refuses any estimate > 0)
+        { grantId: G1, assessments: 4, specialistRuns: 1, spentCents: '200' },
+        // paused grant over budget: exhausted
+        { grantId: G2, assessments: '2', specialistRuns: '0', spentCents: 300 },
+        // paused grant under budget: not exhausted
+        { grantId: G4, assessments: 0, specialistRuns: 0, spentCents: 199 },
+        // expired-by-time grant and revoked grant over budget: not live, not counted
+        { grantId: G5, assessments: 0, specialistRuns: 0, spentCents: 500 },
         { grantId: G6, assessments: 1, specialistRuns: 0, spentCents: 999 },
       ],
       // 4. today's specialist tasks per grant
@@ -141,11 +170,11 @@ describe('buildWispOverview', () => {
         assessmentsToday: 6,
         specialistRequestsToday: 4,
         openConcerns: 5,
-        budgetExhaustedGrantsToday: 1,
+        budgetExhaustedGrantsToday: 2,
       },
       {
         partnerId: P2, partnerName: 'Globex IT', plan: 'starter',
-        activeGrants: 0, pausedGrants: {},
+        activeGrants: 0, pausedGrants: { unknown: 1 },
         assessmentsToday: 1, specialistRequestsToday: 0, openConcerns: 0, budgetExhaustedGrantsToday: 0,
       },
     ]);
@@ -164,10 +193,10 @@ describe('buildWispOverview', () => {
     const assessments = compile(fields.assessments);
     expect(assessments.sql).toContain('"ai_agent_runs"."profile" = $');
     expect(assessments.params).toContain('assessment');
-    // specialist runs are the coordinator's admissions (dedupe key wisp-specialist-<requestId>)
+    // specialist runs: direct admissions (wisp-specialist-<requestId>) OR Wisp sweep runs
     const specialists = compile(fields.specialistRuns);
-    expect(specialists.sql).toContain('"ai_agent_runs"."dedupe_key" like $');
-    expect(specialists.params).toContain('wisp-specialist-%');
+    expect(specialists.sql).toMatch(/"ai_agent_runs"\."dedupe_key" like \$\d+ or \("ai_agent_runs"\."profile" = \$\d+ and "ai_agent_runs"\."dedupe_key" like \$\d+\)/);
+    expect(specialists.params).toEqual([SPECIALIST_KEY_PATTERN, 'sweep', SPECIALIST_SWEEP_KEY_PATTERN]);
     // spend mirrors budget.ts spentUnderGrant: skipped runs cost nothing
     const spent = compile(fields.spentCents);
     expect(spent.sql).toContain('"ai_agent_runs"."cost_cents"');
@@ -176,7 +205,10 @@ describe('buildWispOverview', () => {
   });
 
   it('counts specialist Operator tasks by the coordinator idempotency key created today, and only open concerns', async () => {
-    h.results.push([grant({ id: G1, partnerId: P1 })], [{ id: P1, name: 'Acme', plan: 'pro' }]);
+    h.results.push(
+      [grant({ id: G1, partnerId: P1 }), grant({ id: G2, partnerId: P2 })],
+      [{ id: P1, name: 'Acme', plan: 'pro' }, { id: P2, name: 'Globex', plan: 'pro' }],
+    );
     await buildWispOverview(NOW);
 
     const tasks = whereFor(aiOperatorTasks);
@@ -189,6 +221,7 @@ describe('buildWispOverview', () => {
     expect(concerns.sql).toContain('"wisp_concerns"."status" = $');
     expect(concerns.params).toContain('open');
     expect(concerns.sql).toContain('"wisp_concerns"."partner_id" in (');
+    expect(concerns.params).toEqual(['open', P1, P2]);
   });
 
   it('a grant with no runs today is not budget-exhausted, and a missing partner row still renders', async () => {

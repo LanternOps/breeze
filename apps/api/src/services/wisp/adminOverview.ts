@@ -10,7 +10,7 @@
  * "Today" is the UTC day `now` falls in (`utcDayWindow`, the same window the
  * per-grant budget is charged against in budget.ts).
  */
-import { and, eq, gte, inArray, isNotNull, like, lt, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
@@ -31,14 +31,16 @@ export interface WispPartnerOverviewRow {
   /** `assessment`-profile runs under the partner's grants queued today */
   assessmentsToday: number;
   /**
-   * Specialist work the W07 coordinator admitted today: runs plus Operator
-   * tasks keyed `wisp-specialist-<requestId>` (specialistLaunchers). Refused
-   * requests and still-pending approval cards leave no row and are not counted.
+   * Specialist work the W07 coordinator admitted today and that left a row:
+   * runs and Operator tasks keyed `wisp-specialist-<requestId>`, plus Wisp
+   * sweep runs (`sweep-<schedule>-<org>-wisp-<requestId>`). Refused requests,
+   * still-pending approval cards and `bulk_ticket_reply` (deterministic, no
+   * run or task row) are not counted.
    */
   specialistRequestsToday: number;
   /** `wisp_concerns` rows with status `open` */
   openConcerns: number;
-  /** live (active/paused) grants whose spend today reached `budget_cents_per_day` */
+  /** live (active/paused, not past expiry) grants whose spend today reached `budget_cents_per_day` */
   budgetExhaustedGrantsToday: number;
 }
 
@@ -58,13 +60,19 @@ export interface WispGrantAdminRow {
 }
 
 /**
- * Every coordinator admission is keyed `specialistDedupeKey(requestId)` =
- * `wisp-specialist-<requestId>` (specialistLaunchers.ts) — the run's
- * `dedupe_key` or the task's `client_idempotency_key`. Kept literal so this
- * read-only module does not import the launchers; adminOverview.test.ts pins it
- * to specialistDedupeKey.
+ * Coordinator admissions that create their row directly are keyed
+ * `specialistDedupeKey(requestId)` = `wisp-specialist-<requestId>`
+ * (specialistLaunchers.ts) — the run's `dedupe_key` or the task's
+ * `client_idempotency_key`. Kept literal so this read-only module does not
+ * import the launchers; adminOverview.test.ts pins it to specialistDedupeKey.
  */
 export const SPECIALIST_KEY_PATTERN = 'wisp-specialist-%';
+/**
+ * `launchSweep` only queues an occurrence (occurrenceKey `wisp-<requestId>`);
+ * the run is admitted later by aiAgentSweepScheduler with dedupe key
+ * `sweep-<scheduleId>-<orgId>-wisp-<requestId>`.
+ */
+export const SPECIALIST_SWEEP_KEY_PATTERN = 'sweep-%-wisp-%';
 
 const toCount = (v: unknown): number => {
   const n = Number(v ?? 0);
@@ -99,7 +107,10 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     .select({
       grantId: aiAgentRuns.grantId,
       assessments: sql<number>`count(*) filter (where ${eq(aiAgentRuns.profile, 'assessment')})::int`,
-      specialistRuns: sql<number>`count(*) filter (where ${like(aiAgentRuns.dedupeKey, SPECIALIST_KEY_PATTERN)})::int`,
+      specialistRuns: sql<number>`count(*) filter (where ${or(
+        like(aiAgentRuns.dedupeKey, SPECIALIST_KEY_PATTERN),
+        and(eq(aiAgentRuns.profile, 'sweep'), like(aiAgentRuns.dedupeKey, SPECIALIST_SWEEP_KEY_PATTERN)),
+      )})::int`,
       spentCents: sql<string | number>`coalesce(sum(${aiAgentRuns.costCents}) filter (where ${ne(aiAgentRuns.status, 'skipped')}), 0)::bigint`,
     })
     .from(aiAgentRuns)
@@ -150,7 +161,8 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
 
   for (const g of grants) {
     const row = rows.get(g.partnerId)!;
-    if (g.status === 'active' && g.expiresAt.getTime() > now.getTime()) row.activeGrants += 1;
+    const notExpired = g.expiresAt.getTime() > now.getTime();
+    if (g.status === 'active' && notExpired) row.activeGrants += 1;
     if (g.status === 'paused') {
       const reason = g.pausedReason ?? 'unknown';
       row.pausedGrants[reason] = (row.pausedGrants[reason] ?? 0) + 1;
@@ -158,7 +170,9 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     const runs = runsByGrant.get(g.id);
     row.assessmentsToday += toCount(runs?.assessments);
     row.specialistRequestsToday += toCount(runs?.specialistRuns) + (tasksByGrant.get(g.id) ?? 0);
-    const live = g.status === 'active' || g.status === 'paused';
+    // Live = could run again today: not revoked/expired, and not past expires_at
+    // (the status may lag the clock until the lifecycle sweep flips it).
+    const live = (g.status === 'active' || g.status === 'paused') && notExpired;
     if (live && runs && toCount(runs.spentCents) >= g.budgetCentsPerDay) row.budgetExhaustedGrantsToday += 1;
   }
 
