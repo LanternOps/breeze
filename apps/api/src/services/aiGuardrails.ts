@@ -3456,7 +3456,10 @@ function describeChannelDestination(config: unknown): string | null {
 export function describeSpecialistRequest(input: Record<string, unknown>, orgName?: string | null): string {
   const kind = typeof input.kind === 'string' ? input.kind : '';
   const label = isSpecialistKind(kind) ? SPECIALIST_KIND_LABELS[kind] : 'a specialist';
-  const org = orgName?.trim() ? orgName.trim() : 'this organization';
+  // Tenant-controlled text on a card, a stored intent reason and a push: one
+  // line, bounded.
+  const name = orgName?.replace(/\s+/g, ' ').trim() ?? '';
+  const org = name ? (name.length > 80 ? `${name.slice(0, 80)}…` : name) : 'this organization';
   const reason = nonEmptyText(input.reason);
   let text = `Wisp wants to run ${label} at ${org}${reason ? `: ${reason}` : ''}`;
   const params = input.params && typeof input.params === 'object' ? input.params as Record<string, unknown> : {};

@@ -698,11 +698,10 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     allowTier(2);
   });
 
-  it('a session without a Wisp grant refuses wisp_grant_required before any guardrail or card', async () => {
+  it('a session without a Wisp grant refuses wisp_grant_required before any card', async () => {
     const session = makeActiveSession();
     const result = await createSessionPreToolUse(session)('launch_specialist', SWEEP);
     expect(result).toEqual({ allowed: false, error: 'wisp_grant_required' });
-    expect(checkGuardrails).not.toHaveBeenCalled();
     expect(mockPrecheckSpecialistRequest).not.toHaveBeenCalled();
     expect(approvalCards(session)).toHaveLength(0);
     expect(db.insert).not.toHaveBeenCalled();
@@ -720,10 +719,20 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     expect(mockPrecheckSpecialistRequest).toHaveBeenCalledWith({
       orgId: ORG_ID, partnerId: 'partner-1', kind: 'sweep', params: { goal: 'x' },
     });
-    expect(checkGuardrails).not.toHaveBeenCalled();
     expect(approvalCards(session)).toHaveLength(0);
     expect(db.insert).not.toHaveBeenCalled();
     expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  it('runs after RBAC and the rate limit: a permission or rate-limit denial wins and nothing is read', async () => {
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Permission denied: ai_sessions:use');
+    expect(await createSessionPreToolUse(wispSession())('launch_specialist', SWEEP))
+      .toEqual({ allowed: false, error: 'Permission denied: ai_sessions:use' });
+    vi.mocked(checkToolRateLimit).mockResolvedValueOnce('Rate limit exceeded');
+    expect(await createSessionPreToolUse(wispSession())('launch_specialist', SWEEP))
+      .toEqual({ allowed: false, error: 'Rate limit exceeded' });
+    expect(mockPrecheckSpecialistRequest).not.toHaveBeenCalled();
   });
 
   it('runs the precheck only for launch_specialist (every other tool is unchanged)', async () => {

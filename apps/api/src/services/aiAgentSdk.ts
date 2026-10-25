@@ -974,7 +974,7 @@ async function runWispCeilingGate(
 
 /**
  * #10144 — the coordinator's cheap, deterministic gates for one
- * `launch_specialist` call, run BEFORE guardrails and therefore before any
+ * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
  * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
  * …) is refused here with the SAME code the tool's handler returns, and nobody
@@ -1138,16 +1138,6 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined);
     if (inputRefusal) return { allowed: false, error: inputRefusal };
 
-    // #10144: a launch_specialist call the coordinator would refuse
-    // deterministically never reaches an approval card; an admitted one gets
-    // the org's name on its card.
-    let specialistOrgName: string | null = null;
-    if (toolName === 'launch_specialist' && !tenant) {
-      const gate = await specialistPreApprovalGate(session, input, wispCall.current);
-      if (!gate.ok) return gate.denial;
-      specialistOrgName = gate.orgName;
-    }
-
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs
     // four_eyes; every other tool call passes `undefined` and is unchanged. A
@@ -1200,6 +1190,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     } catch (err) {
       console.error('[AI-SDK] Tool rate limit check failed for:', toolName, err);
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
+    }
+
+    // #10144: a launch_specialist call the coordinator would refuse
+    // deterministically never reaches an approval card; an admitted one gets
+    // the org's name on its card. After RBAC and the rate limit (so its reads
+    // are permissioned and metered), before any approval below.
+    let specialistOrgName: string | null = null;
+    if (toolName === 'launch_specialist' && !tenant) {
+      const gate = await specialistPreApprovalGate(session, input, wispCall.current);
+      if (!gate.ok) return gate.denial;
+      specialistOrgName = gate.orgName;
     }
 
     // Tier 2+: Requires user approval (mutating and destructive tools)

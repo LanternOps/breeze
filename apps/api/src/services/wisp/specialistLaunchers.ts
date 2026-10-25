@@ -113,7 +113,8 @@ export function parseSpecialistParams(kind: SpecialistKind, params: unknown): Re
 
 /**
  * Why `params` do not fit `kind`, for the model to correct its call (#10144);
- * null when they parse. Zod's messages name keys and expectations, never values.
+ * null when they parse. Zod's messages name the offending keys (the model's
+ * own input) and the expected shape; capped at 300 chars.
  */
 export function specialistParamsError(kind: SpecialistKind, params: unknown): string | null {
   const parsed = PARAMS_SCHEMAS[kind].safeParse(params ?? {});

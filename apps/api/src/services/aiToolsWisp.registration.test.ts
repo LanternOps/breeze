@@ -133,6 +133,9 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     // No resolved name → never the raw id prefix.
     expect(describeSpecialistRequest(input)).toBe('Wisp wants to run a health sweep at this organization: disks are filling');
     expect(checkGuardrails('launch_specialist', input).description).not.toContain('64233cbe');
+    // Tenant-controlled: one line, bounded.
+    expect(describeSpecialistRequest(input, `Acme\n${'x'.repeat(200)}`))
+      .toBe(`Wisp wants to run a health sweep at ${`Acme ${'x'.repeat(200)}`.slice(0, 80)}…: disks are filling`);
   });
 
   it('the tool tells the model which params each kind takes (goal is analysis-only)', () => {
