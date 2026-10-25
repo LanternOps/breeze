@@ -176,18 +176,18 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     const row = await runRow(run.id);
     expect(row).toMatchObject({ state: 'completed', kind: 'dry_run', stopReason: null });
     const counters = normalizeCounters(row.counters);
-    // 17 tickets; 110 (no org) and 116 (Zammad org 1) have no mapping and no fallback.
-    expect(counters.tickets).toMatchObject({ seen: 17, skipped: 2, failed: 0, created: 0 });
+    // 19 tickets; 110 (no org) and 116 (Zammad org 1) have no mapping and no fallback.
+    expect(counters.tickets).toMatchObject({ seen: 19, skipped: 2, failed: 0, created: 0 });
     expect(counters.predicted).toMatchObject({
-      creates: 15, resumes: 0, invalid: 0,
+      creates: 17, resumes: 0, invalid: 0,
       // 102's four files; 111's oversized and empty ones are skipped by their declared size.
       attachments: 4, attachmentBytes: 70 + 53 + 70 + 70, attachmentsSkipped: 2,
     });
     expect(counters.comments.systemSkipped).toBe(1);
     expect(counters.attachments.alternativesIgnored).toBe(1);
     expect(counters.customAttributes).toEqual({ cf_billable: 1, cf_customer_reference: 1 });
-    // Raised: 1012 on 106 and 1019 on 109 (the oldest moved article of each is its description).
-    expect(counters.moduleCounts).toEqual({ article_time_raised: 2, body_rendering_error: 1, state_removed: 1 });
+    // Raised: 1011 and 1012 on 106, 1018 and 1019 on 109 (moved in, older than their survivor).
+    expect(counters.moduleCounts).toEqual({ article_time_raised: 4, body_rendering_error: 1, state_removed: 1 });
     // The merged pair and the chain: three links, notes until W2 writes links.
     expect(counters.linksAsNotes).toBe(3);
     expect(counters.ownersUnmatched).toBe(1);
@@ -223,18 +223,18 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     const bulkRow = await runRow(bulk.id);
     expect(bulkRow).toMatchObject({ state: 'completed', stopReason: null });
     const c1 = normalizeCounters(bulkRow.counters);
-    expect(c1.tickets).toMatchObject({ seen: 17, created: 17, failed: 0, skipped: 0 });
+    expect(c1.tickets).toMatchObject({ seen: 19, created: 19, failed: 0, skipped: 0 });
     expect(c1.attachments).toMatchObject({ written: 4, skipped: 2, bytes: 70 + 53 + 70 + 70, alternativesIgnored: 1 });
     expect(c1.comments.systemSkipped).toBe(1);
     expect(c1.linksAsNotes).toBe(3);
 
     const t = await importedTickets(fx);
-    expect([...t.keys()].sort()).toEqual(Array.from({ length: 17 }, (_, i) => String(101 + i)));
+    expect([...t.keys()].sort()).toEqual(Array.from({ length: 19 }, (_, i) => String(101 + i)));
     const status = Object.fromEntries([...t].map(([k, v]) => [k, v.status]));
     expect(status).toEqual({
       101: 'open', 102: 'closed', 103: 'pending', 104: 'resolved', 105: 'closed', 106: 'open', 107: 'closed',
       108: 'closed', 109: 'open', 110: 'new', 111: 'open', 112: 'closed', 113: 'open', 114: 'open', 115: 'closed',
-      116: 'open', 117: 'on_hold',
+      116: 'open', 117: 'on_hold', 118: 'open', 119: 'open',
     });
     expect(t.get('101')).toMatchObject({
       orgId: fx.orgA.id, assignedTo: fx.alice.id, requesterContactId: fx.dana, categoryId: fx.categoryId, tags: ['printer', 'network'], priority: 'normal',
@@ -288,14 +288,14 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     const deltaRow = await runRow(delta.id);
     expect(deltaRow).toMatchObject({ state: 'completed', stopReason: null });
     const c2 = normalizeCounters(deltaRow.counters);
-    // 112 is deleted and 115 hidden: the list shows 15; five of them changed.
-    expect(c2.tickets).toMatchObject({ seen: 15, unchanged: 10, resumed: 5, created: 0, failed: 0 });
+    // 112 is deleted and 115 hidden: the list shows 17; seven of them changed.
+    expect(c2.tickets).toMatchObject({ seen: 17, unchanged: 10, resumed: 7, created: 0, failed: 0 });
     expect(c2).toMatchObject({ deletedInSource: 1, hiddenInSource: 1, commentsMissingInSource: 0, commentsChangedInSource: 2 });
-    expect(c2.linksAsNotes).toBe(1);
+    expect(c2.linksAsNotes).toBe(2);
     // Only the changed tickets were loaded; the rest cost their list row.
     expect(requested('/api/v1/ticket_articles/by_ticket/').sort()).toEqual([
       '/api/v1/ticket_articles/by_ticket/101', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_articles/by_ticket/104',
-      '/api/v1/ticket_articles/by_ticket/106', '/api/v1/ticket_articles/by_ticket/113',
+      '/api/v1/ticket_articles/by_ticket/106', '/api/v1/ticket_articles/by_ticket/113', '/api/v1/ticket_articles/by_ticket/118', '/api/v1/ticket_articles/by_ticket/119',
     ]);
     expect(requested('/api/v1/tickets/').sort()).toEqual(['/api/v1/tickets/112', '/api/v1/tickets/115']);
 
@@ -326,6 +326,23 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
       ['article:1026', t2.get('113')!.id],
     ]);
     expect(t2.get('113')!.description).toBe('');
+
+    // 118, OLDER than 119, merged into the already-imported 119 between the
+    // passes: the survivor keeps its own description and its comments, and
+    // nothing is written twice. 1044 was a comment on 118 (skipped on 119);
+    // 1043 was 118's description, never a comment: it joins 119's thread
+    // once, at 119's creation, and 118 is handled like 113.
+    expect(t2.get('119')!.description).toBe(t.get('119')!.description);
+    expect(t2.get('119')!.description).toBe('To: support@msp.example.test\n\nJammed again, second ticket.');
+    const c119Before = await commentsOf(t.get('119')!.id);
+    const c119 = await commentsOf(t2.get('119')!.id);
+    expect(c119.map((c) => c.sourceId).sort()).toEqual(['article:1043', 'article:1046']);
+    expect(c119.find((c) => c.sourceId === 'article:1046')!.content).toBe(c119Before.find((c) => c.sourceId === 'article:1046')!.content);
+    expect(t2.get('118')).toMatchObject({ status: 'closed', description: '' });
+    expect((await commentsOf(t2.get('118')!.id)).map((c) => c.sourceId).sort()).toEqual(['article:1044', 'note:118:merged:119']);
+    const once = await getTestDb().select({ sourceId: ticketComments.importSourceId }).from(ticketComments)
+      .where(inArray(ticketComments.importSourceId, ['article:1043', 'article:1044', 'article:1045', 'article:1046']));
+    expect(once.map((r) => r.sourceId).sort()).toEqual(['article:1043', 'article:1044', 'article:1046']);
     // Nothing is ever deleted in Breeze.
     expect([...t2.values()].every((x) => x.deletedAt === null)).toBe(true);
     const items = await ledger(fx.sourceId);

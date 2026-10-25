@@ -22,7 +22,7 @@ describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
     const fake = new FakeZammad();
     const page = await scanZammad(zammadTestHandle(fake), null);
     expect(page.next).toBeNull();
-    expect(page.rows.map((r) => r.key)).toEqual(['101', '102', '103', '104', '105', '106', '107', '108', '109', '110', '111', '112', '113', '114', '115', '116', '117']);
+    expect(page.rows.map((r) => r.key)).toEqual(['101', '102', '103', '104', '105', '106', '107', '108', '109', '110', '111', '112', '113', '114', '115', '116', '117', '118', '119']);
     expect(page.rows[0]).toMatchObject({ key: '101', version: '2026-03-03T16:40:12.345Z', orgKey: '2', number: '31001' });
     expect(page.rows.find((r) => r.key === '110')!.orgKey).toBeNull();
     expect(fake.requestedPaths()).toEqual(['/api/v1/tickets?page=1&per_page=100']);
@@ -91,7 +91,7 @@ describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
   it('a malformed cursor starts at page 1; an answer that is not a ticket page is a shape error', async () => {
     const fake = new FakeZammad();
     const rows = await scanZammad(zammadTestHandle(fake), { page: -3, lastId: 'x' } as never);
-    expect(rows.rows).toHaveLength(17);
+    expect(rows.rows).toHaveLength(19);
     fake.data.tickets = [{ id: 1, nonsense: true }] as never;
     await expect(scanZammad(zammadTestHandle(fake), null)).rejects.toBeInstanceOf(ZammadShapeError);
   });
@@ -99,7 +99,7 @@ describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
   it('retries a 503, honours a long Retry-After as a deferral, and stops on a refused token', async () => {
     const fake = new FakeZammad();
     fake.failNext({ pathPrefix: '/api/v1/tickets', status: 503 });
-    expect((await scanZammad(zammadTestHandle(fake), null)).rows).toHaveLength(17);
+    expect((await scanZammad(zammadTestHandle(fake), null)).rows).toHaveLength(19);
 
     fake.failNext({ pathPrefix: '/api/v1/tickets', status: 429, headers: { 'retry-after': '120' }, times: 5 });
     const deferred = await scanZammad(zammadTestHandle(fake), null).catch((e: unknown) => e);

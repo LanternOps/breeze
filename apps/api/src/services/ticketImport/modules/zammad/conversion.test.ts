@@ -296,14 +296,38 @@ describe('merges (§6.6)', () => {
     }
   });
 
-  it('the survivor keeps the moved articles, raised to its creation and counted', async () => {
+  it('the survivor keeps its own description; the moved articles are comments raised to its creation and counted', async () => {
     const { conversion } = await convert(106);
     const { ticket } = ticketOf(conversion);
-    // The oldest public article (moved from 105) is the description.
-    expect(ticket.description).toBe('To: support@msp.example.test\n\nThe VPN is broken.');
-    expect(ticket.comments.map((c) => c.sourceId)).toEqual(['article:1012', 'article:1014', 'article:1015']);
+    // 1011 and 1012 came from 105 and are older than 106: never the description.
+    expect(ticket.description).toBe('To: support@msp.example.test\n\nVPN still broken, second mail.');
+    expect(ticket.comments.map((c) => c.sourceId)).toEqual(['article:1011', 'article:1012', 'article:1015']);
+    expect(byId(ticket, 'article:1011').createdAt.toISOString()).toBe('2026-05-01T11:00:00.000Z');
     expect(byId(ticket, 'article:1012').createdAt.toISOString()).toBe('2026-05-01T11:00:00.000Z');
-    expect(conversion.notes).toContainEqual({ kind: 'module_count', name: 'article_time_raised', count: 1 });
+    expect(conversion.notes).toContainEqual({ kind: 'module_count', name: 'article_time_raised', count: 2 });
+  });
+
+  it('an older ticket merged into a newer survivor leaves the survivor\'s description as it was (delta 118 into 119)', async () => {
+    const before = ticketOf((await convert(119)).conversion).ticket;
+    const after = ticketOf((await convert(119, { set: 'delta' })).conversion).ticket;
+    expect(after.description).toBe(before.description);
+    expect(after.description).toBe('To: support@msp.example.test\n\nJammed again, second ticket.');
+    // 119's own comment is unchanged; 118's two articles arrive as comments at 119's creation.
+    expect(byId(after, 'article:1046').content).toBe(byId(before, 'article:1046').content);
+    expect(after.comments.map((c) => [c.sourceId, c.createdAt.toISOString()])).toEqual([
+      ['article:1043', '2026-07-10T08:00:00.000Z'],
+      ['article:1044', '2026-07-10T08:00:00.000Z'],
+      ['article:1046', '2026-07-10T09:00:00.000Z'],
+    ]);
+    const merged = ticketOf((await convert(118, { set: 'delta' })).conversion);
+    expect(merged.ticket).toMatchObject({ finalStatus: 'closed', description: '' });
+    expect(merged.links.map((l) => l.targetKey)).toEqual(['119']);
+  });
+
+  it('a public article exactly at the ticket\'s creation is its own', async () => {
+    const data = loadZammadFixtures('base');
+    data.byTicket.set(119, data.byTicket.get(119)!.map((a) => ({ ...a, created_at: a.id === 1045 ? '2026-07-10T08:00:00.000Z' : a.created_at })));
+    expect(ticketOf((await convert(119, { data })).conversion).ticket.description).toContain('Jammed again');
   });
 
   it('a merged ticket whose survivor the token cannot see keeps only the note', async () => {

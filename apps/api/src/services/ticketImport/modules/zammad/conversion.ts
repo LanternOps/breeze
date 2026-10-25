@@ -30,8 +30,9 @@ import type { ZammadArticle, ZammadAttachment, ZammadLoadedData } from './shapes
  * lookup arrive in the context, so it is tested against the recorded
  * responses alone (§6.8).
  *
- * - **Description**: the first article that is public and not from System
- *   (an internal note never becomes the portal's description). It is not
+ * - **Description**: the ticket's own first article that is public and not
+ *   from System (an internal note never becomes the portal's description;
+ *   an article moved in by a merge, older than the ticket, never does). It is not
  *   imported again as a comment; its files ride on one public comment by the
  *   same author, "Attachments from the original message." (F8's shape).
  * - **Articles** become comments: internal stays internal, a Customer is the
@@ -169,6 +170,22 @@ function isMergeMarker(article: ZammadArticle, data: ZammadLoadedData): boolean 
     && (article.body ?? '').replace(/<[^>]*>/g, '').trim() === 'merged';
 }
 
+/**
+ * The ticket's own first message: the first article that is public, not from
+ * System, not the merge marker, and not older than the ticket. An article
+ * older than its ticket can only have been moved in by a merge (Z9 keeps its
+ * `created_at`), so it never becomes the survivor's description: an older
+ * ticket merged into an imported newer one leaves the survivor's description
+ * as it was.
+ */
+export function descriptionArticle(data: ZammadLoadedData): ZammadArticle | null {
+  const created = new Date(data.ticket.created_at).getTime();
+  return data.articles.find((a) => a.internal !== true
+    && senderName(a) !== 'System'
+    && !isMergeMarker(a, data)
+    && new Date(a.created_at).getTime() >= created) ?? null;
+}
+
 function later(a: string, b: string | null | undefined): string {
   if (!b) return a;
   return new Date(b).getTime() > new Date(a).getTime() ? b : a;
@@ -207,7 +224,7 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
     sourceId, createdAt: noteAt, isPublic: false, author: { kind: 'staff', name: ZAMMAD_SYSTEM_NAME }, content: cleanText(content),
   });
 
-  const description = data.articles.find((a) => a.internal !== true && senderName(a) !== 'System' && !isMergeMarker(a, data)) ?? null;
+  const description = descriptionArticle(data);
   let descriptionText = '';
   let truncated = 0;
   let systemSkipped = 0;
