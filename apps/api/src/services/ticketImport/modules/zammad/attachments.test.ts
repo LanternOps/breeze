@@ -3,11 +3,14 @@ import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceUn
 import { fetchZammadAttachment, probeZammad } from './attachments';
 import { clearZammadDirectoryCache } from './directory';
 import { FakeZammad, loadZammadFixtures, RESIZED_COPY, zammadTestHandle } from './fakeZammad.fixtures';
-import { loadZammad, zammadRow } from './reading';
+import { __zammadReadingTestHooks, forgetFileLocations, loadZammad, rememberedFileLocation, rememberFileLocations, ZAMMAD_FILE_LOCATION_TICKETS, zammadRow } from './reading';
 
 /** Files and probes (spec 2026-10-19 §4.3, §5.9 deletions, §6.2; Z6, Z8, Z10). */
 
-afterEach(() => clearZammadDirectoryCache());
+afterEach(() => {
+  clearZammadDirectoryCache();
+  forgetFileLocations();
+});
 
 async function loaded(fake: FakeZammad, ticketId: number) {
   const src = zammadTestHandle(fake);
@@ -32,7 +35,53 @@ describe('fetchAttachment', () => {
     const fake = new FakeZammad();
     const bytes = await fetchZammadAttachment(zammadTestHandle(fake), { sourceId: 'attachment:5004', ticketKey: '102' }, 1024);
     expect(Buffer.from(bytes).equals(fake.data.files.get(5004)!)).toBe(true);
-    expect(fake.requestedPaths()).toEqual(['/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_attachment/102/1005/5004']);
+    expect(fake.requestedPaths()).toEqual([
+      '/api/v1/tickets/102?expand=true', '/api/v1/ticket_articles/by_ticket/102', '/api/v1/ticket_attachment/102/1005/5004',
+    ]);
+  });
+
+  it('a location miss re-reads the way a load does: article by article for a big ticket, never by_ticket (review 7)', async () => {
+    const data = loadZammadFixtures('base');
+    data.byTicket.set(114, data.byTicket.get(114)!.map((a) => (a.id === 1028
+      ? { ...a, attachments: [{ id: 5003, store_file_id: 9003, filename: 'report.pdf', size: '53', preferences: {} }] }
+      : a)));
+    const fake = new FakeZammad(data);
+    __zammadReadingTestHooks.setBigTicketArticles(5);
+    try {
+      await fetchZammadAttachment(zammadTestHandle(fake), { sourceId: 'attachment:5003', ticketKey: '114' }, 1024);
+    } finally {
+      __zammadReadingTestHooks.setBigTicketArticles(null);
+    }
+    const paths = fake.requestedPaths();
+    expect(paths).not.toContain('/api/v1/ticket_articles/by_ticket/114');
+    expect(paths.filter((p) => /^\/api\/v1\/ticket_articles\/\d+$/.test(p))).toHaveLength(6);
+    expect(paths.at(-1)).toBe('/api/v1/ticket_attachment/114/1028/5003');
+  });
+
+  it('locations are kept per source and ticket, whichever handle asks, in a bounded LRU (review 7)', async () => {
+    const fake = new FakeZammad();
+    const loader = zammadTestHandle(fake, { sourceId: 'lru-source' });
+    await loadZammad(loader, zammadRow(fake.data.tickets.find((t) => t.id === 102) as never));
+    // Another handle of the same source (the next slice) finds it without reading again.
+    fake.requests.length = 0;
+    await fetchZammadAttachment(zammadTestHandle(fake, { sourceId: 'lru-source' }), { sourceId: 'attachment:5004', ticketKey: '102' }, 1024);
+    expect(fake.requestedPaths()).toEqual(['/api/v1/ticket_attachment/102/1005/5004']);
+    // Another source never sees it.
+    expect(rememberedFileLocation(zammadTestHandle(fake, { sourceId: 'other-source' }), '102', 5004)).toBeNull();
+    // Bounded: the least recently used ticket goes first.
+    for (let i = 0; i < ZAMMAD_FILE_LOCATION_TICKETS; i += 1) rememberFileLocations(loader, `9${i}`, []);
+    expect(rememberedFileLocation(loader, '102', 5004)).toBeNull();
+  });
+
+  it('the attachment id is the attachment\'s own, not the shared store file (review 7)', async () => {
+    const fake = new FakeZammad();
+    const articles = fake.data.byTicket.get(102)!.flatMap((a) => (a.attachments as Array<{ id: number; store_file_id: number }>).map((f) => ({ article: a.id, ...f })));
+    // 5001 and 5004 hold equal content: one store file, two attachments on two articles.
+    expect(articles.filter((f) => f.store_file_id === 9001).map((f) => [f.article, f.id])).toEqual([[1004, 5001], [1005, 5004]]);
+    const src = await loaded(fake, 102);
+    await fetchZammadAttachment(src, { sourceId: 'attachment:5001', ticketKey: '102' }, 1024);
+    await fetchZammadAttachment(src, { sourceId: 'attachment:5004', ticketKey: '102' }, 1024);
+    expect(fake.requestedPaths().slice(-2)).toEqual(['/api/v1/ticket_attachment/102/1004/5001', '/api/v1/ticket_attachment/102/1005/5004']);
   });
 
   it('an article moved by a merge is downloaded through its current ticket', async () => {

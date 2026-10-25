@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
 import { clearZammadDirectoryCache, takeZammadInvalidRows, zammadPeople } from './directory';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
-import { __zammadReadingTestHooks, boundedInOrder, loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
+import { __zammadReadingTestHooks, boundedInOrder, forgetFileLocations, loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
 
 /**
@@ -10,7 +10,10 @@ import { ZammadShapeError, type ZammadLoadedData } from './shapes';
  * through the real source client against the fake's synthesized fixtures.
  */
 
-afterEach(() => clearZammadDirectoryCache());
+afterEach(() => {
+  clearZammadDirectoryCache();
+  forgetFileLocations();
+});
 
 function ticketRows(count: number, from = 1) {
   const template = loadZammadFixtures('base').tickets[0]!;

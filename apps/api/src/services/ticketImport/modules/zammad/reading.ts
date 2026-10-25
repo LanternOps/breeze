@@ -108,31 +108,51 @@ export async function scanZammad(
 /**
  * Where each file of a loaded ticket lives: the article's **current** ticket
  * and the article (§6.2 files), which the attachment route needs and an
- * attachment source id (`attachment:<store id>`) does not carry. Kept per
- * source handle (one slice), for the last few tickets loaded with it: a file
- * is fetched right after its ticket's load, by the same handle.
+ * attachment source id (`attachment:<id>`) does not carry. The id is the
+ * attachment's own (`stores.id`), never `store_file_id`, which Zammad shares
+ * between attachments of equal content (Z8).
+ *
+ * A bounded LRU keyed by source and ticket, so a file is found whichever
+ * handle of the source asks (a file is normally fetched right after its
+ * ticket's load) and two sources never share an entry. Nothing personal: ids
+ * only. A miss re-reads the ticket's articles (`fetchZammadAttachment`).
  */
-type FileLocation = { ticketId: number; articleId: number };
-const LOCATIONS = new WeakMap<object, Map<string, Map<number, FileLocation>>>();
-const TICKETS_REMEMBERED = 8;
+export type FileLocation = { ticketId: number; articleId: number };
+const LOCATIONS = new Map<string, Map<number, FileLocation>>();
+export const ZAMMAD_FILE_LOCATION_TICKETS = 64;
+
+function locationKey(src: SourceHandle<unknown>, ticketKey: string): string {
+  return `${src.sourceId}\n${src.baseUrl}\n${ticketKey}`;
+}
 
 export function rememberFileLocations(src: SourceHandle<unknown>, ticketKey: string, articles: readonly ZammadArticle[]): void {
-  let byTicket = LOCATIONS.get(src);
-  if (!byTicket) {
-    byTicket = new Map();
-    LOCATIONS.set(src, byTicket);
-  }
   const files = new Map<number, FileLocation>();
   for (const article of articles) {
     for (const file of article.attachments ?? []) files.set(file.id, { ticketId: article.ticket_id, articleId: article.id });
   }
-  byTicket.delete(ticketKey);
-  byTicket.set(ticketKey, files);
-  while (byTicket.size > TICKETS_REMEMBERED) byTicket.delete(byTicket.keys().next().value!);
+  const key = locationKey(src, ticketKey);
+  LOCATIONS.delete(key);
+  LOCATIONS.set(key, files);
+  while (LOCATIONS.size > ZAMMAD_FILE_LOCATION_TICKETS) LOCATIONS.delete(LOCATIONS.keys().next().value!);
 }
 
 export function rememberedFileLocation(src: SourceHandle<unknown>, ticketKey: string, storeId: number): FileLocation | null {
-  return LOCATIONS.get(src)?.get(ticketKey)?.get(storeId) ?? null;
+  const key = locationKey(src, ticketKey);
+  const files = LOCATIONS.get(key);
+  if (!files) return null;
+  // Most recently used last.
+  LOCATIONS.delete(key);
+  LOCATIONS.set(key, files);
+  return files.get(storeId) ?? null;
+}
+
+/** Forgets a source's file locations (its run ended, `dispose`), or all of them (tests). */
+export function forgetFileLocations(sourceId?: string): void {
+  if (sourceId === undefined) {
+    LOCATIONS.clear();
+    return;
+  }
+  for (const key of [...LOCATIONS.keys()]) if (key.startsWith(`${sourceId}\n`)) LOCATIONS.delete(key);
 }
 
 // ------------------------------------------------------------------- load

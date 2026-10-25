@@ -1,8 +1,8 @@
 import type { AttachmentRef, ProbeResult, SourceHandle } from '../../moduleContract';
 import { SourceAuthError, SourceHttpError } from '../../sourceFetch';
-import { articlesByTicket, downloadAttachment, getTicket } from './api';
+import { downloadAttachment, getTicket } from './api';
 import { storeIdOf } from './ids';
-import { rememberedFileLocation, rememberFileLocations, zammadRow } from './reading';
+import { rememberedFileLocation, rememberFileLocations, zammadArticles, zammadRow } from './reading';
 
 /**
  * Files and probes of a Zammad 7.2.x source (#8313 W5; spec 2026-10-19 §4.3,
@@ -27,8 +27,9 @@ export async function fetchZammadAttachment(src: SourceHandle<unknown>, ref: Att
   if (storeId === null || !Number.isSafeInteger(ticketId) || ticketId <= 0) throw new SourceHttpError(404);
   let location = rememberedFileLocation(src, ref.ticketKey, storeId);
   if (!location) {
-    // Normally remembered by the ticket's load in this slice; otherwise read where the file lives now.
-    rememberFileLocations(src, ref.ticketKey, await articlesByTicket(src, ticketId));
+    // Normally remembered by the ticket's load; otherwise read where the file
+    // lives now, the way a load reads (the per-article path for a big ticket).
+    rememberFileLocations(src, ref.ticketKey, await zammadArticles(src, ticketId));
     location = rememberedFileLocation(src, ref.ticketKey, storeId);
     if (!location) throw new SourceHttpError(404);
   }
