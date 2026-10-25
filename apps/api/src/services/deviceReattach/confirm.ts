@@ -47,9 +47,12 @@
  *  5. the device_reattachments ledger row;
  *  6. the intent → confirmed.
  * After commit: revocation broadcast and socket close for EVERY hash of both
- * rows, the source's socket closed (4040, reconnect), the target's demoted
- * certificate revoked at the provider, audit `device.reinstall.reattached` in
- * both orgs with the requester as actor, the `device.reinstalled` event.
+ * rows (the source's with 4040, reconnect; the target's old install's with
+ * 4001), the source marker cleared, audit `device.reinstall.reattached` in
+ * both orgs with the requester as actor (durable, bounded wait), and — not
+ * awaited, so no provider or Redis latency holds the agent's answer — the
+ * target's demoted certificate revoked at the provider (the five-minute sweep
+ * is the backstop) and the `device.reinstalled` event.
  *
  * The source certificate's 24 h path: confirm marks it pending_revocation with
  * `next_revoke_attempt_at = now + 24 h`; the existing five-minute revocation
@@ -517,7 +520,7 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
   }
 
   await clearReattachSourceMarker(intent.sourceDeviceId, intent.id);
-  await revokeCertificatesAfterCommit(committed.revokeCertificateIds);
+  void revokeCertificatesAfterCommit(committed.revokeCertificateIds);
 
   await writeReattachAudit({
     action: 'device.reinstall.reattached',
@@ -540,8 +543,9 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
     },
   });
 
-  try {
-    await publishEvent(
+  // Redis-bound and not needed for the answer: not awaited (idempotent by
+  // eventId = the ledger id).
+  void publishEvent(
       'device.reinstalled',
       identity.orgId,
       {
@@ -558,10 +562,7 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
       },
       'device-reattach',
       { siteId: identity.siteId, eventId: committed.ledgerId, userId: intent.requestedBy ?? undefined },
-    );
-  } catch (err) {
-    report('device.reinstalled event', err);
-  }
+    ).catch((err: unknown) => report('device.reinstalled event', err));
 
   const redis = getRedis();
   for (const orgId of new Set([identity.orgId, source.orgId])) {
@@ -620,7 +621,7 @@ export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<Co
   if (outcome.kind === 'refused') {
     if (outcome.ended && outcome.intent) {
       await clearReattachSourceMarker(outcome.intent.sourceDeviceId, outcome.intent.id);
-      await revokeCertificatesAfterCommit(outcome.ended.revokeCertificateIds);
+      void revokeCertificatesAfterCommit(outcome.ended.revokeCertificateIds);
       await writeReattachAudit({
         action: outcome.ended.state === 'expired' ? 'device.reinstall.expired' : 'device.reinstall.cancelled',
         actorUserId: null,

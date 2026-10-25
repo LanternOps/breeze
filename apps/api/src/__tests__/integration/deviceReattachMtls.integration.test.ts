@@ -143,6 +143,14 @@ async function arrange() {
 
 const certRow = async (id: string) => (await getTestDb().select().from(deviceMtlsCertificates).where(eq(deviceMtlsCertificates.id, id)))[0];
 
+/** Provider revocations run after the answer (not awaited, review finding 13): poll for one. */
+async function eventuallyRevoked(providerCertificateId: string): Promise<void> {
+  for (let attempt = 0; attempt < 60 && !provider.revoked.includes(providerCertificateId); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  expect(provider.revoked).toContain(providerCertificateId);
+}
+
 const originalBindingMode = process.env.AGENT_MTLS_BINDING_MODE;
 beforeEach(() => {
   provider.issued.length = 0;
@@ -180,7 +188,7 @@ describe('rebind with mTLS (#8318 §6.3, §6.4)', () => {
     const restaged = await readIntent(intent.id);
     expect(restaged!.stagedMtlsCertificateId).not.toBe(pending!.id);
     expect((await certRow(pending!.id))!.state).toMatch(/^(pending_revocation|revoked)$/);
-    expect(provider.revoked).toContain(provider.issued[0]!.id);
+    await eventuallyRevoked(provider.issued[0]!.id);
   });
 
   it('a refused restage revokes the staged certificate', async () => {
@@ -191,7 +199,7 @@ describe('rebind with mTLS (#8318 §6.3, §6.4)', () => {
     const refused = await call(`/${source.agentId}/rebind`, source.agentToken, { intentId: intent.id, ...stagedSet().hashes }, sourceCert.serial);
     expect(refused.body).toMatchObject({ code: 'restage_refused' });
     expect((await certRow(stagedCertId))!.state).toMatch(/^(pending_revocation|revoked)$/);
-    expect(provider.revoked).toContain(provider.issued[0]!.id);
+    await eventuallyRevoked(provider.issued[0]!.id);
     // A different set is decided before any provider call: nothing new was issued.
     expect(provider.issued).toHaveLength(1);
   });
@@ -215,7 +223,7 @@ describe('rebind with mTLS (#8318 §6.3, §6.4)', () => {
 
     expect(await certRow(stagedCertId)).toMatchObject({ state: 'active', deviceId: target.id });
     expect((await certRow(targetCert.id))!.state).toMatch(/^(pending_revocation|revoked)$/);
-    expect(provider.revoked).toContain(targetCert.providerId);
+    await eventuallyRevoked(targetCert.providerId);
     expect(await readDevice(target.id)).toMatchObject({ mtlsCertSerialNumber: stagedSerial, mtlsCertCfId: provider.issued[0]!.id });
 
     // The source's certificate: pending_revocation, due in 24 h, not revoked yet.
@@ -248,6 +256,22 @@ describe('rebind with mTLS (#8318 §6.3, §6.4)', () => {
     expect(await call(`/${source.agentId}/rebind-confirm`, set.tokens.confirmationToken, {}, sourceCert.serial))
       .toMatchObject({ status: 403, body: { code: 'certificate_binding_failed' } });
     expect((await readIntent(intent.id))!.state).toBe('staged');
+  });
+
+  // Review finding 13: no provider latency holds the agent's answer.
+  it('confirm answers without waiting for the provider: a hung revocation does not hold the response', async () => {
+    const { source, target, sourceCert, targetCert, intent } = await arrange();
+    const set = stagedSet();
+    expect((await call(`/${source.agentId}/rebind`, source.agentToken, { intentId: intent.id, ...set.hashes }, sourceCert.serial)).status).toBe(200);
+    fakeCloudflare.revokeCertificate.mockImplementationOnce(() => new Promise(() => { /* the provider never answers */ }));
+    const started = Date.now();
+    const confirmed = await call(`/${source.agentId}/rebind-confirm`, set.tokens.confirmationToken, {}, sourceCert.serial);
+    expect(confirmed.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // The old certificate is already demoted (in the transaction); its
+    // revocation is pending at the provider, and the sweep is the backstop.
+    expect((await certRow(targetCert.id))!.state).toBe('pending_revocation');
+    expect((await readDevice(target.id))!.installIncarnation).toBe(2);
   });
 
   it('confirm accepts the source\'s active certificate before confirm', async () => {

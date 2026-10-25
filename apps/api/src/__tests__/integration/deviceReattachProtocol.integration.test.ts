@@ -340,9 +340,15 @@ describe('the bounded rebind, happy path (#8318 §6.1–§6.4)', () => {
       .where(and(eq(auditLogs.action, 'device.reinstall.reattached'), eq(auditLogs.resourceId, target.id)));
     expect(audits.map((a) => a.orgId).sort()).toEqual([tenant.orgA.orgId, tenant.pool.orgId].sort());
     expect(audits.every((a) => a.actorId === tenant.admin.id)).toBe(true);
-    const stream = await getRedis()!.xrange(`breeze:events:${tenant.orgA.orgId}`, '-', '+');
-    const events = stream.map(([, fields]) => JSON.parse(fields[1]!) as { type: string; id: string; payload: Record<string, unknown> });
-    const reinstalled = events.filter((e) => e.type === 'device.reinstalled');
+    // The event is published after the answer (not awaited): poll for it.
+    let reinstalled: Array<{ type: string; id: string; payload: Record<string, unknown> }> = [];
+    for (let attempt = 0; attempt < 50 && reinstalled.length === 0; attempt += 1) {
+      const stream = await getRedis()!.xrange(`breeze:events:${tenant.orgA.orgId}`, '-', '+');
+      reinstalled = stream
+        .map(([, fields]) => JSON.parse(fields[1]!) as { type: string; id: string; payload: Record<string, unknown> })
+        .filter((e) => e.type === 'device.reinstalled');
+      if (reinstalled.length === 0) await sleep(50);
+    }
     expect(reinstalled).toHaveLength(1);
     expect(reinstalled[0]!.id).toBe(ledger!.id);
     expect(reinstalled[0]!.payload).toMatchObject({

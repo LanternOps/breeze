@@ -304,17 +304,17 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
       };
     })));
   } catch (err) {
-    if (issued) await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
+    if (issued) void revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
     if (err instanceof ReattachRefusedError) return err.refusal;
     if (isPgUniqueViolation(err, 'device_reattach_intents_confirmation_hash_uq')) return CONFIRMATION_TOKEN_REUSED();
     throw err;
   }
 
   if (committed.kind === 'refused') {
-    if (issued) await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
+    if (issued) void revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
     if (committed.ended && committed.intent) {
       await clearReattachSourceMarker(committed.intent.sourceDeviceId, committed.intent.id);
-      await revokeCertificatesAfterCommit(committed.ended.revokeCertificateIds);
+      void revokeCertificatesAfterCommit(committed.ended.revokeCertificateIds);
       const copyWarning = committed.ended.cancelReason === 'restage_refused'
         ? 'A second, different staged set was sent for this reattach. The source device\'s credentials may have been copied; request the reattach again only after checking the source.'
         : committed.ended.cancelReason === 'staged_credential_reused'
@@ -342,9 +342,9 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
   }
 
   if (issued && !committed.certificateUsed) {
-    await revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
+    void revokeOrphanStagedCertificate({ orgId: preview.targetOrgId, deviceId: preview.targetDeviceId }, issued);
   }
-  await revokeCertificatesAfterCommit(committed.revokeCertificateIds);
+  void revokeCertificatesAfterCommit(committed.revokeCertificateIds);
   if (committed.kind === 'staged') {
     // The directive keeps coming while staged; the marker follows the new expiry.
     await extendReattachSourceMarker(committed.intent.sourceDeviceId, committed.intent.id, committed.expiresAt);
