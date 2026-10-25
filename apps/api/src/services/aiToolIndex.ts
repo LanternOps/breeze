@@ -58,17 +58,9 @@ export const PAGE_CONTEXT_TOOL_DOMAINS: Readonly<Record<AiPageContext['type'], r
 
 export const MAX_INLINE_ACTIONS = 7;
 
-/**
- * `AI_TOOL_INDEX`: `lazy` (default) ships the always-on domain index plus
- * page-context blocks; `full` is the kill switch and ships the whole legacy
- * index byte for byte. Read at prompt-build time, never at module load.
- * Anything else reads as `lazy`.
- */
-export type ToolIndexMode = 'lazy' | 'full';
+import { resolveToolIndexMode, type ToolIndexMode } from './aiToolIndexMode';
 
-export function resolveToolIndexMode(env: Readonly<Record<string, string | undefined>> = process.env): ToolIndexMode {
-  return env.AI_TOOL_INDEX?.trim().toLowerCase() === 'full' ? 'full' : 'lazy';
-}
+export { resolveToolIndexMode, type ToolIndexMode };
 
 function actionsOf(name: string): string[] {
   const schema = aiTools.get(name)?.definition.input_schema as { properties?: Record<string, { enum?: unknown[] }> } | undefined;
