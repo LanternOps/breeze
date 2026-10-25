@@ -347,7 +347,15 @@ describe('seedContextForSession', () => {
       href: `/tickets/${TICKET}`, addedBy: 'wisp', createdAt: '2026-10-20T00:00:00.000Z', ...over,
     });
 
-    it('lists visible links by handle after the attachments, inside a wisp_thread_links fence, before memory; listLinks runs in seed mode ({ ceiling }, no auth)', async () => {
+    it('passes the creating caller\'s auth to listLinks so an org-scoped sign-in keeps its token scope', async () => {
+      h.threads = [threadRow];
+      h.listLinks.mockResolvedValueOnce([]);
+      const callerAuth = { user: { id: GRANTOR }, scope: 'organization', orgId: ORG_A } as never;
+      await seedContextForSession(THREAD, ceiling, callerAuth);
+      expect(h.listLinks).toHaveBeenCalledWith({ auth: callerAuth, ceiling }, THREAD);
+    });
+
+    it('lists visible links by handle after the attachments, inside a wisp_thread_links fence, before memory; listLinks runs in seed mode (no auth) when there is no caller', async () => {
       h.threads = [threadRow];
       h.recallForGrant.mockResolvedValue([{ id: 'b1' }]);
       h.listThreadAttachments.mockResolvedValueOnce([{
@@ -361,7 +369,7 @@ describe('seedContextForSession', () => {
 
       const out = await seedContextForSession(THREAD, ceiling);
 
-      expect(h.listLinks).toHaveBeenCalledWith({ ceiling }, THREAD);
+      expect(h.listLinks).toHaveBeenCalledWith({ auth: null, ceiling }, THREAD);
       const section = [
         HEADER,
         '<untrusted_data source="wisp_thread_links">',

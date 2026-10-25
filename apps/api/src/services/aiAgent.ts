@@ -403,7 +403,8 @@ async function anchorWispSession(
     threadId: thread.id,
     orgId,
     focusOrgId,
-    seed: await seedContextForSession(thread.id, ceiling),
+    // The caller's auth: an org-scoped sign-in never sees another org's or a partner-level link.
+    seed: await seedContextForSession(thread.id, ceiling, auth),
   };
 }
 

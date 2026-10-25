@@ -20,6 +20,7 @@ import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadSessions, wispThreads, type WispThreadRow } from '../../db/schema/wispThreads';
 import { WISP_LINK_LABEL_MAX, type WispThreadLink } from '@breeze/shared';
 import { sanitizeUntrustedText, wrapUntrustedData } from '../aiInputSanitizer';
+import type { AuthContext } from '../../middleware/auth';
 import { captureException } from '../sentry';
 import { assertWithinCeiling, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { recallForGrant, renderMemoryForPrompt } from './memoryBroker';
@@ -95,9 +96,9 @@ function renderLinkSection(links: WispThreadLink[], flags: string[]): string {
  * entity table read) is captured and leaves the rest of the seed intact; the
  * thread still works without its links.
  */
-async function linkSeedSection(threadId: string, ceiling: GrantCeiling, flags: string[]): Promise<string> {
+async function linkSeedSection(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null, flags: string[]): Promise<string> {
   try {
-    return renderLinkSection(await listLinks({ ceiling }, threadId), flags);
+    return renderLinkSection(await listLinks({ auth, ceiling }, threadId), flags);
   } catch (err) {
     console.error(`[wisp] seed: listing links of thread ${threadId} failed; omitting the section`, err);
     captureException(err, undefined, { threadId, grantId: ceiling.grantId, op: 'wisp.seed_links' });
@@ -211,7 +212,7 @@ export async function updateThreadSummary(threadId: string, summary: string): Pr
  * CeilingViolationError; it propagates (the caller re-checks the focus at
  * session create, w00 A24).
  */
-export async function seedContextForSession(threadId: string, ceiling: GrantCeiling): Promise<string> {
+export async function seedContextForSession(threadId: string, ceiling: GrantCeiling, auth: AuthContext | null = null): Promise<string> {
   return inSystemContext(async () => {
     const [row] = await db
       .select()
@@ -247,7 +248,7 @@ export async function seedContextForSession(threadId: string, ceiling: GrantCeil
       if (lines !== '') parts.push(wrapUntrustedData('wisp_thread_attachments', lines, flags));
     }
 
-    const links = await linkSeedSection(threadId, ceiling, flags);
+    const links = await linkSeedSection(threadId, ceiling, auth, flags);
     if (links !== '') parts.push(links);
 
     if (thread.focusOrgId !== null) {

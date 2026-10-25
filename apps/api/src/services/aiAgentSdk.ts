@@ -623,7 +623,7 @@ export async function runPreFlightChecks(
     const { lookupWispGrant, wispSeedForSession, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
     try {
       const grant = await lookupWispGrant(sessionId);
-      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(grant)].filter(Boolean).join('\n');
+      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(grant, auth)].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
       throw err;
