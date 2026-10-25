@@ -806,6 +806,70 @@ describe('W02 static classes (#6756)', () => {
   });
 });
 
+// ── W04 class rows (#6758, spec checklist item 3) ──────────────────────────
+// Copied from the W04 plan's "Final per-action classes" table, NOT derived
+// from the guardrail tables. Every action-enum member of the multiplexers has
+// a row, so a new action reds here until someone classifies it.
+// collect_evidence (no action enum) is pinned on both input branches.
+const W04_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_processes: { list: 't2', kill: 'supervised' },
+  manage_scheduled_tasks: { list: 't2', run: 'supervised', disable: 'supervised', enable: 'supervised' },
+  registry_operations: {
+    read_key: 't2', get_value: 't2', set_value: 'supervised', create_key: 'supervised', delete_key: 'supervised',
+  },
+  manage_software_policy: { list: 't1', get: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_browser_policy: { list: 't1', create: 'supervised', update: 'supervised', apply: 'supervised' },
+  manage_peripheral_policy: {
+    create: 'supervised', update: 'supervised', disable: 'supervised', add_exception: 'supervised', remove_exception: 'supervised',
+  },
+  remediate_sensitive_data: {
+    encrypt: 'supervised', quarantine: 'supervised', secure_delete: 'supervised',
+    accept_risk: 'supervised', false_positive: 'supervised', mark_remediated: 'supervised',
+  },
+};
+/** Single-purpose W04 tools (no action enum): the whole tool has one class. */
+const W04_WHOLE_TOOL: Record<string, W02Class> = {
+  execute_containment: 'supervised', trigger_agent_restart: 'supervised', trigger_agent_upgrade: 'supervised',
+  remediate_software_violation: 'supervised', configure_network_baseline: 'supervised',
+  create_remote_session: 'four_eyes', request_elevation: 'four_eyes',
+  create_incident: 't2', revoke_elevation: 't2', assign_security_training: 't2', acknowledge_network_device: 't2',
+};
+/** collect_evidence's two input branches (W04-D3). */
+const W04_COLLECT_EVIDENCE: ReadonlyArray<readonly [readonly string[], W02Class]> = [
+  [['logs', 'processes', 'connections'], 't2'],
+  [['processes', 'screenshot'], 'supervised'],
+];
+
+describe('W04 class rows (#6758)', () => {
+  it('covers all 19 W04 tools exactly once', () => {
+    const tools = [...Object.keys(W04_EXPECTED), ...Object.keys(W04_WHOLE_TOOL), 'collect_evidence'];
+    expect(new Set(tools).size).toBe(19);
+    expect(tools).toHaveLength(19);
+  });
+
+  it.each(Object.keys(W04_EXPECTED))('%s: W04_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W04_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W04_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W04_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+
+  it.each(W04_COLLECT_EVIDENCE)('collect_evidence evidenceTypes %j is %s', (evidenceTypes, cls) => {
+    expect(toolActionEnum('collect_evidence') ?? []).toEqual([]);
+    expect(classOf('collect_evidence', { evidenceTypes: [...evidenceTypes] })).toBe(cls);
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have
