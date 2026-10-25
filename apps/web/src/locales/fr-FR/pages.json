@@ -169,7 +169,6 @@
     "ticketsNew": "Créer un ticket",
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
-    "workspace": "Assistant IA",
     "aiAgentsFleetDesign": "Conception de flotte",
     "agreementTemplates": "Modèles de convention",
     "agreementTemplateDetail": "Modèle de convention",
@@ -185,7 +184,9 @@
     "securityDetectionRules": "Règles de détection",
     "settingsPlan": "Offre et fonctionnalités",
     "settingsWispMemory": "Mémoire de Wisp",
-    "wispThread": "Fil Wisp"
+    "wispThread": "Fil Wisp",
+    "wisp": "Wisp",
+    "wispChat": "Wisp — discussions"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

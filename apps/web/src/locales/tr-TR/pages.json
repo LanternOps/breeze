@@ -169,7 +169,6 @@
     "ticketsNew": "Bilet Oluştur",
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
-    "workspace": "Yapay Zeka Asistanı",
     "aiAgentsFleetDesign": "Filo Tasarımı",
     "agreementTemplates": "Anlaşma şablonları",
     "agreementTemplateDetail": "Anlaşma şablonu",
@@ -185,7 +184,9 @@
     "securityDetectionRules": "Tespit Kuralları",
     "settingsPlan": "Plan ve özellikler",
     "settingsWispMemory": "Wisp belleği",
-    "wispThread": "Wisp konuşması"
+    "wispThread": "Wisp konuşması",
+    "wisp": "Wisp",
+    "wispChat": "Wisp — Sohbetler"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

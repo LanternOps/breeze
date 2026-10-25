@@ -107,10 +107,10 @@
     "dismiss": "Fermer"
   },
   "aiConversationMove": {
-    "openInAssistant": "Ouvrir dans l'Assistant IA",
+    "openInAssistant": "Ouvrir dans les discussions Wisp",
     "continueInPanel": "Continuer dans le panneau latéral",
     "openPastConversation": "Ouvrir une conversation précédente",
-    "closeTabInAssistant": "Fermez un onglet dans l'Assistant IA pour ouvrir cette conversation",
+    "closeTabInAssistant": "Fermez un onglet dans les discussions Wisp pour ouvrir cette conversation",
     "closeTabToOpen": "Fermez un onglet pour ouvrir cette conversation",
     "notAvailable": "Cette conversation n'est pas disponible",
     "wasClosed": "Cette conversation a été fermée",
@@ -454,7 +454,7 @@
     "dismiss": "Fermer"
   },
   "workspaceEmptyState": {
-    "title": "Espace de travail IA",
+    "title": "Discussions Wisp",
     "description": "Faites plusieurs conversations IA simultanément. Enquêtez sur un problème de périphérique dans un onglet tout en configurant une politique dans un autre.",
     "newConversation": "Nouvelle conversation",
     "limit": "Jusqu’à 5 conversations simultanées"

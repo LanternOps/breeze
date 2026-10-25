@@ -30,6 +30,11 @@ describe('getDocsForPath', () => {
       expect(getDocsForPath('/admin/wisp').url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
     });
 
+    it('maps the Wisp home to the Wisp docs and /wisp/chat to the AI chat docs (W08 #9921)', () => {
+      expect(getDocsForPath('/wisp')).toEqual({ url: `${DOCS_BASE_URL}/features/wisp/`, label: 'Wisp' });
+      expect(getDocsForPath('/wisp/chat')).toEqual({ url: `${DOCS_BASE_URL}/features/ai/`, label: 'AI chat' });
+    });
+
     it('/approvals maps to AI Agents docs', () => {
       const result = getDocsForPath('/approvals');
       expect(result.label).toBe('Approvals');

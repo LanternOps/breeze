@@ -7,7 +7,7 @@ import { waitForAppReady } from './hydration';
  * button. It is mounted on every dashboard page (inert while closed) and its
  * composer is the same `AiChatInput` the AI Assistant tabs render, so every
  * locator inside it is scoped under `sidebar()` — an unscoped `ai-chat-input`
- * on /workspace matches twice and fails Playwright's strict mode.
+ * on /wisp/chat matches twice and fails Playwright's strict mode.
  */
 export class AiChatPage extends BasePage {
   url = '/';
@@ -27,7 +27,7 @@ export class AiChatPage extends BasePage {
   conversationRow = (sessionId: string) =>
     this.sidebar().locator(`[data-testid="ai-conversation-row"][data-session-id="${sessionId}"]`);
   conversationRows = () => this.sidebar().getByTestId('ai-conversation-row');
-  /** "Open in AI Assistant" label on a History row that a workspace tab holds. */
+  /** "Open in Wisp chats" label on a History row that a workspace tab holds. */
   openElsewhereLabel = (sessionId: string) =>
     this.conversationRow(sessionId).getByTestId('ai-conversation-open-elsewhere');
   composer = () => this.sidebar().getByTestId('ai-chat-input');

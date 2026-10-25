@@ -107,10 +107,10 @@
     "dismiss": "Ignora"
   },
   "aiConversationMove": {
-    "openInAssistant": "Apri nell'Assistente IA",
+    "openInAssistant": "Apri nelle chat di Wisp",
     "continueInPanel": "Continua nel pannello laterale",
     "openPastConversation": "Apri una conversazione precedente",
-    "closeTabInAssistant": "Chiudi una scheda nell'Assistente IA per aprire questa conversazione",
+    "closeTabInAssistant": "Chiudi una scheda nelle chat di Wisp per aprire questa conversazione",
     "closeTabToOpen": "Chiudi una scheda per aprire questa conversazione",
     "notAvailable": "Questa conversazione non è disponibile",
     "wasClosed": "Questa conversazione è stata chiusa",
@@ -454,7 +454,7 @@
     "dismiss": "Ignora"
   },
   "workspaceEmptyState": {
-    "title": "Area di lavoro AI",
+    "title": "Chat di Wisp",
     "description": "Esegui più conversazioni AI contemporaneamente. Analizza un problema su un dispositivo in una scheda mentre configuri un criterio in un'altra.",
     "newConversation": "Nuova conversazione",
     "limit": "Fino a 5 conversazioni simultanee"

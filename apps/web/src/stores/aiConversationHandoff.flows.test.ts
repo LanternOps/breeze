@@ -107,7 +107,7 @@ describe('moveToAssistant (panel → workspace)', () => {
     useWorkspaceStore.setState({ tabs: [1, 2, 3, 4, 5].map((i) => tab({ id: `t${i}`, sessionId: `s${i}` })), activeTabId: 't1' });
     await expect(moveToAssistant(S, { draft: 'half a thought' })).resolves.toBe('tab_cap');
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'Close a tab in the AI Assistant to open this conversation',
+      message: 'Close a tab in Wisp chats to open this conversation',
     }));
     expect(navigateMock).not.toHaveBeenCalled();
     expect(useHandoffStore.getState().pending).toBeNull();
@@ -123,9 +123,9 @@ describe('moveToAssistant (panel → workspace)', () => {
     await expect(result).resolves.toBe('moved');
   });
 
-  it('from another page → navigate(/workspace#session=<id>) with the draft on the pending hand-off; nothing released yet', async () => {
+  it('from another page → navigate(/wisp/chat#session=<id>) with the draft on the pending hand-off; nothing released yet', async () => {
     const result = moveToAssistant(S, { draft: 'half a thought' });
-    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/workspace#session=${S}`));
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/wisp/chat#session=${S}`));
     expect(useHandoffStore.getState().pending).toMatchObject({ sessionId: S, origin: 'panel', draft: 'half a thought' });
     expect(useAiStore.getState().sessionId).toBe(S);
     expect(useAiStore.getState().isOpen).toBe(true);
@@ -133,8 +133,8 @@ describe('moveToAssistant (panel → workspace)', () => {
     await result;
   });
 
-  it('on /workspace → a real hash change, no navigate', async () => {
-    window.history.replaceState(null, '', '/workspace');
+  it('on /wisp/chat → a real hash change, no navigate', async () => {
+    window.history.replaceState(null, '', '/wisp/chat');
     const onHash = vi.fn();
     window.addEventListener('hashchange', onHash);
     const result = moveToAssistant(S, {});

@@ -107,10 +107,10 @@
     "dismiss": "Dismiss"
   },
   "aiConversationMove": {
-    "openInAssistant": "Open in AI Assistant",
+    "openInAssistant": "Open in Wisp chats",
     "continueInPanel": "Continue in side panel",
     "openPastConversation": "Open a past conversation",
-    "closeTabInAssistant": "Close a tab in the AI Assistant to open this conversation",
+    "closeTabInAssistant": "Close a tab in Wisp chats to open this conversation",
     "closeTabToOpen": "Close a tab to open this conversation",
     "notAvailable": "This conversation isn't available",
     "wasClosed": "This conversation was closed",
@@ -454,7 +454,7 @@
     "dismiss": "Dismiss"
   },
   "workspaceEmptyState": {
-    "title": "AI Workspace",
+    "title": "Wisp chats",
     "description": "Run multiple AI conversations simultaneously. Investigate a device issue in one tab while configuring a policy in another.",
     "newConversation": "New Conversation",
     "limit": "Up to 5 concurrent conversations"

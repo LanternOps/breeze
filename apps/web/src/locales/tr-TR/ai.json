@@ -107,10 +107,10 @@
     "dismiss": "Kapat"
   },
   "aiConversationMove": {
-    "openInAssistant": "Yapay Zeka Asistanında aç",
+    "openInAssistant": "Wisp sohbetlerinde aç",
     "continueInPanel": "Yan panelde devam et",
     "openPastConversation": "Geçmiş bir konuşmayı aç",
-    "closeTabInAssistant": "Bu konuşmayı açmak için Yapay Zeka Asistanında bir sekmeyi kapatın",
+    "closeTabInAssistant": "Bu konuşmayı açmak için Wisp sohbetlerinde bir sekmeyi kapatın",
     "closeTabToOpen": "Bu konuşmayı açmak için bir sekmeyi kapatın",
     "notAvailable": "Bu konuşma kullanılamıyor",
     "wasClosed": "Bu konuşma kapatıldı",
@@ -454,7 +454,7 @@
     "dismiss": "Kapat"
   },
   "workspaceEmptyState": {
-    "title": "Yapay Zeka Çalışma Alanı",
+    "title": "Wisp Sohbetleri",
     "description": "Aynı anda birden fazla AI görüşmesini çalıştırın. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
     "newConversation": "Yeni Konuşma",
     "limit": "5'e kadar eşzamanlı görüşme"

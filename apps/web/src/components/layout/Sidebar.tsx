@@ -46,7 +46,6 @@ import {
   ScanSearch,
   ArrowRightLeft,
   Usb,
-  MessagesSquare,
   Ticket,
   X,
   Cloud,
@@ -295,11 +294,12 @@ export const navSections: NavSection[] = [
     icon: BrainCircuit,
     items: [
       { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
-      // #6498: /workspace drives the own-session /ai/* routes, every one of
-      // which requires ai_sessions:use (#6396). Without this gate a role holding
-      // only devices:read saw the full AI Workspace and a bare "Permission
-      // denied" on send.
-      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      // Wisp W08 (#9921): the Wisp home; the multi-tab chat that used to be
+      // "AI Assistant" at /workspace lives at /wisp/chat (/workspace redirects).
+      // #6498: both drive the own-session /ai/* routes, every one of which
+      // requires ai_sessions:use (#6396). Without this gate a role holding only
+      // devices:read saw the full chat page and a bare "Permission denied" on send.
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not

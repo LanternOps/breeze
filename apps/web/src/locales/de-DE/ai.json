@@ -107,10 +107,10 @@
     "dismiss": "Schließen"
   },
   "aiConversationMove": {
-    "openInAssistant": "Im KI-Assistenten öffnen",
+    "openInAssistant": "In Wisp-Chats öffnen",
     "continueInPanel": "In der Seitenleiste fortsetzen",
     "openPastConversation": "Frühere Unterhaltung öffnen",
-    "closeTabInAssistant": "Schließen Sie einen Tab im KI-Assistenten, um diese Unterhaltung zu öffnen",
+    "closeTabInAssistant": "Schließen Sie einen Tab in den Wisp-Chats, um diese Unterhaltung zu öffnen",
     "closeTabToOpen": "Schließen Sie einen Tab, um diese Unterhaltung zu öffnen",
     "notAvailable": "Diese Unterhaltung ist nicht verfügbar",
     "wasClosed": "Diese Unterhaltung wurde geschlossen",
@@ -454,7 +454,7 @@
     "dismiss": "Schließen"
   },
   "workspaceEmptyState": {
-    "title": "KI-Arbeitsbereich",
+    "title": "Wisp-Chats",
     "description": "Mehrere KI-Unterhaltungen gleichzeitig führen. Ein Geräteproblem in einem Tab untersuchen und parallel in einem anderen eine Richtlinie konfigurieren.",
     "newConversation": "Neue Unterhaltung",
     "limit": "Bis zu 5 gleichzeitige Unterhaltungen"

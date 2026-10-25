@@ -1,0 +1,11 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import WorkspacePage from '../../components/workspace/WorkspacePage';
+
+// Wisp W08 (#9921): the multi-tab chat, moved unchanged from /workspace
+// (workspaceStore and its persisted `breeze-workspace` tabs are untouched).
+---
+
+<DashboardLayout titleKey="titles.wispChat">
+  <WorkspacePage client:load />
+</DashboardLayout>

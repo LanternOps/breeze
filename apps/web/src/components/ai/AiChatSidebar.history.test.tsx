@@ -145,13 +145,13 @@ describe('History list', () => {
     expect(rowEl(TOPO)).toBeDefined();
   });
 
-  it('a row a workspace tab holds says "Open in AI Assistant"; the label follows tabs opening and closing', async () => {
+  it('a row a workspace tab holds says "Open in Wisp chats"; the label follows tabs opening and closing', async () => {
     await openHistory();
     const label = (id: string) => within(rowEl(id)!).queryByTestId('ai-conversation-open-elsewhere');
-    expect(label(S)).toHaveTextContent('Open in AI Assistant');
+    expect(label(S)).toHaveTextContent('Open in Wisp chats');
     expect(label(PLAIN)).toBeNull();
     act(() => useWorkspaceStore.setState((s) => ({ tabs: [...s.tabs, tab({ id: 'tab-p', sessionId: PLAIN })] })));
-    await waitFor(() => expect(label(PLAIN)).toHaveTextContent('Open in AI Assistant'));
+    await waitFor(() => expect(label(PLAIN)).toHaveTextContent('Open in Wisp chats'));
     act(() => useWorkspaceStore.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== 'tab-p') })));
     await waitFor(() => expect(label(PLAIN)).toBeNull());
   });

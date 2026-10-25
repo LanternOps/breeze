@@ -261,7 +261,7 @@ describe('RT1 panel → workspace mid-turn, approval pending, approved from the 
     });
 
     const moved = moveToAssistant(S, { draft: useAiStore.getState().composerDraft });
-    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/workspace#session=${S}`));
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/wisp/chat#session=${S}`));
 
     // The destination, exactly as WorkspaceSessionLink drives it.
     const handed = takeHandoff(S);

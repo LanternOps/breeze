@@ -169,7 +169,6 @@
     "ticketsNew": "Create Ticket",
     "timesheet": "Timesheet",
     "vulnerabilities": "Vulnerabilities",
-    "workspace": "AI Assistant",
     "aiAgentsFleetDesign": "Fleet Design",
     "agreementTemplates": "Agreement templates",
     "agreementTemplateDetail": "Agreement template",
@@ -185,7 +184,9 @@
     "securityDetectionRules": "Detection Rules",
     "settingsPlan": "Plan & features",
     "settingsWispMemory": "Wisp memory",
-    "wispThread": "Wisp thread"
+    "wispThread": "Wisp thread",
+    "wisp": "Wisp",
+    "wispChat": "Wisp — chats"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
