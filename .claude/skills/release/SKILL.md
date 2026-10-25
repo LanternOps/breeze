@@ -415,6 +415,23 @@ ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
 
 **Why this check exists.** The deploy line names services explicitly (rather than a bare `docker compose pull && up -d`) for two real reasons: `billing` is built from a local `breeze-billing:local` image that has no registry to pull from, and a bare `up -d` would bounce `caddy`/`redis`/`tunnel` unnecessarily. But that makes the service list a **hand-maintained list that goes stale the moment a new first-party service is added** — and nothing else catches it. `portal` was added in v0.94.0, never made it into the deploy line, and silently sat on `0.94.0` through five releases while `/health` cheerfully reported `0.98.1`; a portal fix shipped in v0.97.0 was invisible in production for 11 days until a customer-facing proposal link surfaced it. Watchtower is **not** a safety net here: it runs with `WATCHTOWER_LABEL_ENABLE=true` and no service carries the enable label, so it updates nothing. The parity check is the backstop that does not depend on anyone remembering to update a list.
 
+### Record the deploy (required)
+
+Once a region is running the new build (`/health` 200 and every parity line `OK`), record it before moving on. Read the digest of the image the running api container was started from, on that host:
+
+```bash
+ssh root@<droplet> "docker image inspect --format '{{index .RepoDigests 0}}' \$(docker inspect --format '{{.Image}}' breeze-api)"
+# prints ghcr.io/lanternops/breeze/api@sha256:<64 hex>; keep the part from "sha256:" on
+```
+
+Then append one line for that region, in exactly this form, to the release register at the path given in `internal/ops/release-infra.md` as `SECURITY_RELEASE_REGISTER`:
+
+```
+deploy <EU|US> <tag> <YYYY-MM-DD> <sha256:digest>
+```
+
+for example `deploy EU v0.X.Y 2026-10-24 sha256:<64 hex>`, with the tag as pushed (`v` prefix) and the UTC date of the deploy. One line per region, written after that region's deploy, never ahead of it. The security steward publishes security advisories only against these lines: a tag missing the line for either region holds every advisory for that tag. `/health` is not a substitute.
+
 ### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
 
 `autoMigrate` applies each migration file in its own transaction and records success per file. If migration #7 of 10 fails, files #1–6 have **already committed**. Rolling `BREEZE_VERSION` back to `$PREV` restores the old *code* but the DB is now on a **newer-than-$PREV schema**, and the old code can choke on it. This bit us on v0.95.0: the auth-epochs migration committed a `NOT NULL`-no-default column (`refresh_token_families.absolute_expires_at`) before a *later* migration failed; after rolling back, the old version could not `INSERT` a refresh-token family (the column it doesn't know about is `NOT NULL`), so **new logins silently failed while `/health` stayed green**.
