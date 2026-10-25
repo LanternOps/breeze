@@ -65,6 +65,7 @@ const R2A_CREATED_FILES: readonly string[] = [
   'identityProvisioning.ts',
   'taskContextOnboarding.ts',
   'onboardingAccounts.ts',
+  'onboardingAdvancers.ts',
 ];
 
 /**

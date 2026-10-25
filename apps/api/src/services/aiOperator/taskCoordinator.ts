@@ -76,6 +76,7 @@ import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/servi
 import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
 import { IDENTITY_ONBOARDING_WORKFLOW_KEY } from './recipes/identityOnboarding';
 import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
+import { IDENTITY_ONBOARDING_ADVANCERS } from './onboardingAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -702,6 +703,7 @@ const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdva
     verify: withServiceRecoveryCheckpoint((a, c) => advanceVerify(a.task, a.leaseEpoch, c, a.recipe)),
   },
   [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
+  [IDENTITY_ONBOARDING_WORKFLOW_KEY]: IDENTITY_ONBOARDING_ADVANCERS,
 };
 
 /**
