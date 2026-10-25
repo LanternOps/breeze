@@ -718,7 +718,14 @@
       },
       "fileType": {
         "image": "scanned copy"
-      }
+      },
+      "sendForSignature": "Send for signature",
+      "filter": {
+        "pending": "Awaiting signature",
+        "signed": "Signed",
+        "closed": "Declined / voided / expired"
+      },
+      "downloadOriginal": "Original"
     },
     "templateEditor": {
       "usage": "Used on {{quotes}} quotes · {{signed}} signed agreements",
@@ -764,6 +771,100 @@
       "submit": "Record signed agreement",
       "success": "Signed agreement recorded.",
       "error": "Couldn't record the signed agreement."
+    },
+    "requests": {
+      "columns": {
+        "template": "Template",
+        "organization": "Organization",
+        "recipients": "Recipients",
+        "sent": "Sent",
+        "expires": "Expires",
+        "status": "Status"
+      },
+      "status": {
+        "draft": "Draft",
+        "sent": "Awaiting signature",
+        "viewed": "Viewed",
+        "signed": "Signed",
+        "declined": "Declined",
+        "voided": "Voided",
+        "expired": "Expired"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nothing awaiting signature",
+          "description": "Agreements you send for signature appear here until the customer signs."
+        },
+        "closed": {
+          "title": "No declined, voided or expired requests",
+          "description": "Requests that were declined, voided or ran past their expiry show up here."
+        }
+      },
+      "loadError": "Couldn’t load agreement requests.",
+      "recipientsMore": "+{{count}} more",
+      "notSent": "Not sent",
+      "declinedReason": "Declined: {{reason}}",
+      "voidedReason": "Voided: {{reason}}",
+      "copyLink": {
+        "label": "Copy link",
+        "success": "Signing link copied",
+        "error": "Couldn’t copy the signing link."
+      },
+      "void": {
+        "label": "Void",
+        "title": "Void this agreement request?",
+        "description": "The signing link stops working and the recipients can no longer sign this agreement.",
+        "reasonLabel": "Reason (optional)",
+        "confirm": "Void request",
+        "confirming": "Voiding…",
+        "success": "Agreement request voided.",
+        "error": "Couldn’t void the agreement request."
+      },
+      "deleteDraft": {
+        "label": "Delete draft",
+        "success": "Draft deleted.",
+        "error": "Couldn’t delete the draft."
+      }
+    },
+    "send": {
+      "title": "Send for signature",
+      "contract": "File against contract (optional)",
+      "contractsError": "Couldn’t load this organization’s contracts. You can still send the agreement and link it to a contract later.",
+      "recipients": "Recipients",
+      "recipientsHelp": "Email addresses, separated by commas or new lines. Prefilled from the organization’s billing contact.",
+      "recipientsRequired": "Add at least one recipient email.",
+      "recipientsInvalid": "These don’t look like email addresses: {{emails}}",
+      "recipientsTooMany": "At most 50 recipients.",
+      "cover": "Cover message (optional)",
+      "expiry": "Link expires on",
+      "expiryPast": "Choose an expiry date in the future.",
+      "label": "Label (optional)",
+      "createDraft": "Create draft & preview",
+      "creating": "Creating…",
+      "preview": {
+        "title": "Preview",
+        "loading": "Loading preview…",
+        "error": "Couldn’t load the preview.",
+        "uploaded": "This template is an uploaded document. The uploaded file is what the customer signs."
+      },
+      "unresolved": {
+        "title": "Fill in the missing values before sending"
+      },
+      "updatePreview": "Update preview",
+      "updating": "Updating…",
+      "submit": "Send",
+      "sending": "Sending…",
+      "createError": "Couldn’t create the draft.",
+      "updateError": "Couldn’t update the agreement.",
+      "sendError": "Couldn’t send the agreement.",
+      "discardError": "Couldn’t discard the draft agreement.",
+      "sent_one": "Agreement sent to {{count}} recipient",
+      "sent_other": "Agreement sent to {{count}} recipients",
+      "notEmailed": {
+        "no_email_service": "Sent, but email isn’t configured. Copy the signing link from Awaiting signature and share it.",
+        "no_recipients": "Sent, but there were no recipients to email. Copy the signing link from Awaiting signature and share it.",
+        "send_failed": "Sent, but the email failed to deliver. Copy the signing link from Awaiting signature and share it."
+      }
     }
   },
   "quotes": {

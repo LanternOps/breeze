@@ -718,7 +718,14 @@
       },
       "fileType": {
         "image": "gescannte Kopie"
-      }
+      },
+      "sendForSignature": "Zur Unterschrift senden",
+      "filter": {
+        "pending": "Wartet auf Unterschrift",
+        "signed": "Unterzeichnet",
+        "closed": "Abgelehnt / annulliert / abgelaufen"
+      },
+      "downloadOriginal": "Originaldatei"
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
@@ -764,6 +771,100 @@
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
       "error": "Die unterzeichnete Vereinbarung konnte nicht erfasst werden."
+    },
+    "requests": {
+      "columns": {
+        "template": "Vorlage",
+        "organization": "Organisation",
+        "recipients": "Empfänger",
+        "sent": "Gesendet",
+        "expires": "Läuft ab",
+        "status": "Bearbeitungsstand"
+      },
+      "status": {
+        "draft": "Entwurf",
+        "sent": "Wartet auf Unterschrift",
+        "viewed": "Angesehen",
+        "signed": "Unterzeichnet",
+        "declined": "Abgelehnt",
+        "voided": "Annulliert",
+        "expired": "Abgelaufen"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nichts wartet auf Unterschrift",
+          "description": "Zur Unterschrift gesendete Vereinbarungen erscheinen hier, bis der Kunde unterzeichnet."
+        },
+        "closed": {
+          "title": "Keine abgelehnten, annullierten oder abgelaufenen Anfragen",
+          "description": "Anfragen, die abgelehnt oder annulliert wurden oder abgelaufen sind, erscheinen hier."
+        }
+      },
+      "loadError": "Vereinbarungsanfragen konnten nicht geladen werden.",
+      "recipientsMore": "+{{count}} weitere",
+      "notSent": "Nicht gesendet",
+      "declinedReason": "Abgelehnt: {{reason}}",
+      "voidedReason": "Annulliert: {{reason}}",
+      "copyLink": {
+        "label": "Link kopieren",
+        "success": "Signaturlink kopiert",
+        "error": "Der Signaturlink konnte nicht kopiert werden."
+      },
+      "void": {
+        "label": "Annullieren",
+        "title": "Diese Vereinbarungsanfrage annullieren?",
+        "description": "Der Signaturlink funktioniert nicht mehr und die Empfänger können diese Vereinbarung nicht mehr unterzeichnen.",
+        "reasonLabel": "Grund (optional)",
+        "confirm": "Anfrage annullieren",
+        "confirming": "Wird annulliert …",
+        "success": "Vereinbarungsanfrage annulliert.",
+        "error": "Die Vereinbarungsanfrage konnte nicht annulliert werden."
+      },
+      "deleteDraft": {
+        "label": "Entwurf löschen",
+        "success": "Entwurf gelöscht.",
+        "error": "Der Entwurf konnte nicht gelöscht werden."
+      }
+    },
+    "send": {
+      "title": "Zur Unterschrift senden",
+      "contract": "Einem Vertrag zuordnen (optional)",
+      "contractsError": "Die Verträge dieser Organisation konnten nicht geladen werden. Sie können die Vereinbarung trotzdem senden und später einem Vertrag zuordnen.",
+      "recipients": "Empfänger",
+      "recipientsHelp": "E-Mail-Adressen, getrennt durch Kommas oder Zeilenumbrüche. Vorausgefüllt mit dem Rechnungskontakt der Organisation.",
+      "recipientsRequired": "Fügen Sie mindestens eine Empfänger-E-Mail hinzu.",
+      "recipientsInvalid": "Das sind keine gültigen E-Mail-Adressen: {{emails}}",
+      "recipientsTooMany": "Höchstens 50 Empfänger.",
+      "cover": "Begleitnachricht (optional)",
+      "expiry": "Link läuft ab am",
+      "expiryPast": "Wählen Sie ein Ablaufdatum in der Zukunft.",
+      "label": "Bezeichnung (optional)",
+      "createDraft": "Entwurf erstellen und Vorschau anzeigen",
+      "creating": "Wird erstellt …",
+      "preview": {
+        "title": "Vorschau",
+        "loading": "Vorschau wird geladen …",
+        "error": "Die Vorschau konnte nicht geladen werden.",
+        "uploaded": "Diese Vorlage ist ein hochgeladenes Dokument. Der Kunde unterzeichnet die hochgeladene Datei."
+      },
+      "unresolved": {
+        "title": "Fehlende Werte vor dem Senden ausfüllen"
+      },
+      "updatePreview": "Vorschau aktualisieren",
+      "updating": "Wird aktualisiert …",
+      "submit": "Senden",
+      "sending": "Wird gesendet …",
+      "createError": "Der Entwurf konnte nicht erstellt werden.",
+      "updateError": "Die Vereinbarung konnte nicht aktualisiert werden.",
+      "sendError": "Die Vereinbarung konnte nicht gesendet werden.",
+      "discardError": "Der Vereinbarungsentwurf konnte nicht verworfen werden.",
+      "sent_one": "Vereinbarung an {{count}} Empfänger gesendet",
+      "sent_other": "Vereinbarung an {{count}} Empfänger gesendet",
+      "notEmailed": {
+        "no_email_service": "Gesendet, aber E-Mail ist nicht eingerichtet. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "no_recipients": "Gesendet, aber es gab keine Empfänger für die E-Mail. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "send_failed": "Gesendet, aber die E-Mail konnte nicht zugestellt werden. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter."
+      }
     }
   },
   "quotes": {

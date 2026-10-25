@@ -8,13 +8,18 @@ import { useHashState } from '@/lib/useHashState';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, signedAgreementFilename, type ContractDocument } from '../../lib/api/contractDocuments';
+import { listContractDocuments, contractDocumentPdfPath, linkContractDocument, signedAgreementFilename, type ContractDocument, type SignedAgreementCopy } from '../../lib/api/contractDocuments';
 import { listContracts, type ContractSummary } from '../../lib/api/contracts';
 import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePermissions } from '../../lib/permissions';
 import RecordSignedAgreementDialog from './RecordSignedAgreementDialog';
+import SendAgreementDialog from './SendAgreementDialog';
+import AgreementRequestsTable from './AgreementRequestsTable';
+
+type StatusView = 'pending' | 'signed' | 'closed';
+const STATUS_VIEWS: readonly StatusView[] = ['pending', 'signed', 'closed'];
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -23,27 +28,34 @@ interface Organization {
   name: string;
 }
 
-/** Same reasoning as ContractDocumentsSection's DocumentDownloadButton — the
- *  download hook must be called once per row, not inside a `.map()`. */
-function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
+/** Same reasoning as ContractDocumentsSection's DocumentDownloadButton - the
+ *  download hook must be called once per row, not inside a `.map()`. The
+ *  certified copy is always a PDF (agreement + signature certificate); the
+ *  original streams the stored bytes, which for an externally signed scan is a
+ *  PNG/JPEG. */
+function DocumentDownloadButton({ doc, copy }: { doc: ContractDocument; copy: SignedAgreementCopy }) {
   const { t } = useTranslation('billing');
   const { download, downloading } = usePdfDownload({
-    path: contractDocumentPdfPath(doc.id),
-    filename: signedAgreementFilename(doc),
+    path: contractDocumentPdfPath(doc.id, copy),
+    filename: signedAgreementFilename(doc, copy),
     errorMessage: t('contracts.contractDetail.documents.downloadError'),
   });
+  const original = copy === 'original';
   return (
     <button
       type="button"
       onClick={() => void download()}
       disabled={downloading}
-      data-testid={`contract-document-download-${doc.id}`}
-      className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+      data-testid={original ? `contract-document-download-original-${doc.id}` : `contract-document-download-${doc.id}`}
+      className={
+        original
+          ? 'rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50'
+          : 'rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50'
+      }
     >
       {downloading
         ? t('contracts.documentsTab.preparing')
-        // An externally signed scan downloads as a PNG/JPEG — don't promise a PDF.
-        : doc.mime?.startsWith('image/') ? t('common:actions.download') : t('contracts.documentsTab.download')}
+        : original ? t('agreements.signedPage.downloadOriginal') : t('contracts.documentsTab.download')}
     </button>
   );
 }
@@ -76,7 +88,11 @@ export default function SignedAgreementsPage({
   // UX only — the record-signed route re-checks agreements:send server-side
   // (#9075 W2a moved it off agreements:write, OD7 B).
   const canRecord = can('agreements', 'send');
+  // Sending creates a draft (write) and then sends it (send); server re-checks both.
+  const canSendRequest = can('agreements', 'send') && can('agreements', 'write');
   const [recordOpen, setRecordOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
+  const [requestsReload, setRequestsReload] = useState(0);
 
   // CLAUDE.md: hash for transient UI state, never query params. Embeds do NOT
   // read the hash — two lists on one page (org record) would fight over it.
@@ -84,10 +100,29 @@ export default function SignedAgreementsPage({
     defaultUnlinkedOnly,
     (h) => (locked ? undefined : new URLSearchParams(h).get('unlinked') === '1' || undefined),
   );
+  // `#status=pending|closed` (omitted for the default signed view), combined
+  // with `unlinked=1`, which only applies to the signed view. Embeds keep the
+  // chip state local for the same two-lists-fight-over-the-hash reason.
+  const [status, setStatus] = useHashState<StatusView>('signed', (h) => {
+    if (locked) return undefined;
+    const v = new URLSearchParams(h).get('status');
+    return STATUS_VIEWS.includes(v as StatusView) ? (v as StatusView) : undefined;
+  });
+  const writeHash = (nextStatus: StatusView, nextUnlinked: boolean) => {
+    if (locked) return;
+    const params = new URLSearchParams();
+    if (nextStatus !== 'signed') params.set('status', nextStatus);
+    else if (nextUnlinked) params.set('unlinked', '1');
+    window.location.hash = params.toString();
+  };
   const toggleUnlinked = () => {
     const next = !unlinkedOnly;
     setUnlinkedOnly(next);
-    if (!locked) window.location.hash = next ? 'unlinked=1' : '';
+    writeHash(status, next);
+  };
+  const selectStatus = (next: StatusView) => {
+    setStatus(next);
+    writeHash(next, unlinkedOnly);
   };
 
   const [documents, setDocuments] = useState<ContractDocument[]>([]);
@@ -104,6 +139,7 @@ export default function SignedAgreementsPage({
   const [linking, setLinking] = useState(false);
 
   const load = useCallback(async () => {
+    if (status !== 'signed') { setLoading(false); return; }
     try {
       setLoading(true);
       setError(undefined);
@@ -124,7 +160,7 @@ export default function SignedAgreementsPage({
     } finally {
       setLoading(false);
     }
-  }, [stableT, unlinkedOnly, lockedOrgId, lockedContractId]);
+  }, [stableT, status, unlinkedOnly, lockedOrgId, lockedContractId]);
 
   useEffect(() => {
     void load();
@@ -217,7 +253,7 @@ export default function SignedAgreementsPage({
           org record's <summary>, the contract page's own heading), so the
           header row there holds only the record button. The button lives in
           this row on all three surfaces. */}
-      {(!locked || canRecord) && (
+      {(!locked || canRecord || canSendRequest) && (
         <div className="flex items-start justify-between gap-3">
           {!locked ? (
             <div>
@@ -227,21 +263,54 @@ export default function SignedAgreementsPage({
           ) : (
             <span />
           )}
-          {canRecord && (
-            <button
-              type="button"
-              onClick={() => setRecordOpen(true)}
-              data-testid="agreements-record-open"
-              className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-              {t('agreements.signedPage.recordSigned')}
-            </button>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {canSendRequest && (
+              <button
+                type="button"
+                onClick={() => setSendOpen(true)}
+                data-testid="agreements-send-open"
+                className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                {t('agreements.signedPage.sendForSignature')}
+              </button>
+            )}
+            {canRecord && (
+              <button
+                type="button"
+                onClick={() => setRecordOpen(true)}
+                data-testid="agreements-record-open"
+                className={
+                  canSendRequest
+                    ? 'rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted'
+                    : 'rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90'
+                }
+              >
+                {t('agreements.signedPage.recordSigned')}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      {!lockedContractId && (
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2" data-testid="agreements-status-filter">
+          {STATUS_VIEWS.map((view) => (
+            <button
+              key={view}
+              type="button"
+              onClick={() => selectStatus(view)}
+              aria-pressed={status === view}
+              data-testid={`agreements-status-${view}`}
+              className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                status === view ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              {/* i18n-dynamic: key built from the status view enum. */}
+              {t(/* i18n-dynamic */ `agreements.signedPage.filter.${view}`)}
+            </button>
+          ))}
+        </div>
+        {status === 'signed' && !lockedContractId && (
           <button
             type="button"
             onClick={toggleUnlinked}
@@ -253,10 +322,18 @@ export default function SignedAgreementsPage({
           >
             {t('agreements.signedPage.unlinkedOnly')}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
-      {loading ? (
+      {status !== 'signed' ? (
+        <AgreementRequestsTable
+          bucket={status}
+          lockedOrgId={lockedOrgId}
+          lockedContractId={lockedContractId}
+          orgNames={orgNames}
+          reloadKey={requestsReload}
+        />
+      ) : loading ? (
         <div className="flex items-center justify-center py-16" data-testid="contract-documents-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
@@ -369,7 +446,8 @@ export default function SignedAgreementsPage({
                   )}
                   <td className="px-3 py-2 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <DocumentDownloadButton doc={doc} />
+                      <DocumentDownloadButton doc={doc} copy="certified" />
+                      <DocumentDownloadButton doc={doc} copy="original" />
                       {!doc.contractId && !lockedContractId && (
                         <button
                           type="button"
@@ -398,6 +476,20 @@ export default function SignedAgreementsPage({
           onRecorded={() => {
             setRecordOpen(false);
             void load();
+          }}
+        />
+      )}
+
+      {canSendRequest && (
+        <SendAgreementDialog
+          open={sendOpen}
+          onClose={() => setSendOpen(false)}
+          lockedOrgId={lockedOrgId}
+          lockedContractId={lockedContractId}
+          onSent={() => {
+            setSendOpen(false);
+            selectStatus('pending');
+            setRequestsReload((n) => n + 1);
           }}
         />
       )}
