@@ -101,6 +101,7 @@ export function registerTicketInboxTools(aiTools: Map<string, AiTool>): void {
           });
           return json({ email: row });
         }
+        return jsonError(`Unknown action: ${String(action)}`);
       } catch (err) {
         const mapped = serviceErrorJson(err);
         if (mapped) return mapped;

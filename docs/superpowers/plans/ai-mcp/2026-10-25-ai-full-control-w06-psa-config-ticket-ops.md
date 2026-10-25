@@ -122,8 +122,25 @@ Measured in T5 on the branch: always-on < 2,560 B (main 2,494), every domain blo
 - **W06-D10: five hard deletes are four-eyes** (`delete_inbound_domain`, response-template `delete`, forms `delete`, checklist-template `delete`; spec: irreversible and partner-wide). `categories delete` is a soft deactivate and stays supervised. Each new four-eyes key follows the `effectDigestCoverage` contract (resolver or a recorded `DELIBERATELY_UNPINNED` reason).
 - **W06-D11: inbox `convert` and `dismiss` are supervised** (terminal, and convert sets an external requester, quorum QW3). `list` is plain t2.
 - **W06-D12: `duplicate` stays on `manage_ticket_checklist`** (already wired in #6930, route-bound); the new templates tool does not repeat it (quorum QW5: classified there as supervised-by-ownership is a follow-up, its existing class is t2).
-- **W06-D8: agent principals are refused on every W06 write** (users-FK and "agent must not reconfigure its queue"). Reads follow the class (t1 reads are agent-reachable; t2-ro reads need an allowlist entry).
+- **W06-D8: agent principals are refused on every W06 write** (users-FK actors; an agent must not reconfigure its own queue). Reads follow the class (t1 reads are agent-reachable; the plain-t2 inbox list and attachment read need an allowlist entry). `manage_time_suggestions` refuses an agent principal for every action, `list` included (an agent has no suggestions of its own). Two writes are the exception: **`manage_ticket_forms:create` and `manage_ticket_inbox:convert` are in `USER_OWNED_RELEASE_ACTIONS`** (jobs/intentReleaseWorker.ts) with an `approverReleaseMismatch(auth, context)` guard in the branch, because `aiTools.userOwnedRelease.contract` requires every agent-mintable tier-3 write of `auth.user.id` into a users FK to be released as the approver; an approved agent proposal for those two therefore runs as the approving person. `manage_ticket_attachments:attach_from_artifact` (tier 2) refuses an agent principal in its branch, the contract's tier-2 alternative.
 - **W06-D9: tool handlers mirror the route logic; the routes are not refactored.** Categories, forms and response templates have inline route logic; extracting shared services would touch three routes and their suites in a wave about tool exposure. Parity is pinned by route-binding rows and handler tests instead. Recorded as a follow-up.
+
+## Measured (W19 bounds, `AI_TOOL_INDEX=lazy` default, T5; branch vs the same catalog without the seven W06 tools)
+
+| Measure | main-equivalent | branch |
+|---|---|---|
+| Always-on index (B1 < 2,560 B) | 2,494 | 2,494 (flags on: 2,494) |
+| `tickets` block (B2 < 2,048 B; the only block that grows) | 345 | 720 |
+| Largest block overall | security 1,268 (flags on: integrations 1,472) | unchanged |
+| Worst page turn, alert (B3 < 7,040 B) | 4,423 | 4,423 |
+| Device page turn, default / flags on | 3,999 / 4,048 | 3,999 / 4,048 |
+| Legacy whole index (informational), default / flags on | 8,199 / 9,121 | 8,574 / 9,496 |
+
+No ceiling change, no `DOMAIN_NOTES` or vocabulary edit, none of the seven is `alwaysLoad`. `MCP_TOOL_COUNT_APPROX` 270 → 280 (registry now 284; the pin's own rule is "to the nearest ten").
+
+## REMAPs #41, #42, #44
+
+`mcpCoverage.ts` already maps `devices/diagnose.ts`, `devices/diagnosticLogs.ts` and `devices/filesystemSystemCleanup.ts` to `{ tools: [...] }` on `origin/main` (`take_screenshot` + `get_device_context`, `search_agent_logs`, `system_cleanup`), and `FROZEN_GAPS` no longer exists, so W06 has **no REMAP diff to make**; `mcp-coverage.test.ts` is the proof. The triage note on #44 ("cancel is missing: add a `cancel` action") is not done here — the brief says no code for REMAPs; it is recorded as a follow-up.
 
 ## Quorum (codex `exec`, read-only, xhigh)
 
@@ -141,9 +158,23 @@ Measured in T5 on the branch: always-on < 2,560 B (main 2,494), every domain blo
 
 T1 (this doc + quorum) → T2 guardrail classes → T3 route bindings + permissions → T4 handlers (7 tools + bulk) → T5 wiring (schemas, registry, SDK declarations, `TOOL_TIERS`, rate limits, fencing) + W19 measure → T6 agent catalog → T7 `W06_EXPECTED` class-coverage rows → T8 web `tierConfig.ts` → T9 docs (ai.mdx, mcp-server.mdx) + REMAPs → T10 prompt-size gate → T11 golden prompts (+3) → T12 integration suites (config scope, ticket-ops site scope, guard-flip controls) → T13 merge main, gates, PR, review. Red test first in each task; one commit per task.
 
+## Deviations from the brief (all recorded for Todd in the PR)
+
+1. **Classes:** 26 writes are supervised and 5 hard deletes four-eyes, where the brief said "t2 unless the triage row says sup" (W06-D1, D10, D11). Quorum: AGREE WITH CHANGES, all six changes accepted.
+2. **`manage_ticket_attachments:list` added** (no REST twin) and **`bulk_update` priority** is new behaviour (the route has no priority action).
+3. **`bulk_update` is single-org, ≤ 50** (route: any orgs, ≤ 100).
+4. **`inbox:convert` and `forms:create` join `USER_OWNED_RELEASE_ACTIONS`** (W06-D8) — a one-line addition to a release-path allowlist, in a high-blast-radius file.
+5. **REMAPs** needed no diff (already on main).
+6. **Pre-existing, found not fixed:** `toolInputSchemas.manage_tickets.action` has no `merge_preview` / `merge` (registry and guardrails have both), so the chat SDK shape cannot call them; one-line fix, flagged to Todd.
+
 ## Follow-ups (not filed)
 
 - Extract shared services for categories / forms / response templates so route and tool cannot drift (W06-D9).
 - `manage_tickets comment` has no `attachmentIds`; an AI-attached file stays pending until a human posts it.
 - Route-style audit rows (`writeRouteAudit`) are not written on the tool paths; the central tool-call audit row is.
 - Tier-2 W06 tools over MCP skip the routes' `requireMfa()` where the route has it (inbox convert has none; no t2 W06 action mirrors an MFA route after D1) — recorded for completeness, W02-D11 class.
+- `toolInputSchemas.manage_tickets.action` is missing `merge_preview` and `merge` (see deviation 6).
+- The REMAP #44 note: `system_cleanup` has no `cancel` action.
+- Org-owned form / checklist-template deletes are four-eyes only because guardrails are DB-free; a pre-handler ownership lookup could split them back to supervised.
+- `AGENT_HUMAN_ONLY_ACTIONS` for the W06 write actions would hide them from the agent picker (today: reachable in the catalog, refused at run time except the two user-owned releases).
+- `SAFE_WRITE_SITES`-style scanners miss `createdBy: auth.user.id ?? null` (response templates) and service-level `actor.userId` stamps; all W06 writes refuse an agent principal at the top regardless.
