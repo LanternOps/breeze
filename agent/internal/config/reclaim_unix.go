@@ -15,9 +15,10 @@ import (
 // reclaimConfigFileModes are the files whose contents the agent loads as its
 // configuration and identity, with the mode a fresh copy gets.
 var reclaimConfigFileModes = map[string]os.FileMode{
-	"agent.yaml":        0o644,
-	"secrets.yaml":      0o600,
-	"helper_token.yaml": 0o600, // the agent restores root:breeze 0640 on start
+	"agent.yaml":         0o644,
+	"secrets.yaml":       0o600,
+	"helper_token.yaml":  0o600, // the agent restores root:breeze 0640 on start
+	rebindStagedFileName: 0o600, // #8318, the staged reattach set
 }
 
 // reclaimSkipDirs are left alone when they are real directories root owns:

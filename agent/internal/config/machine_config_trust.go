@@ -190,13 +190,14 @@ func checkConfigObjectTrust(p string, sec programDataPathSecurity) error {
 // means that account could write the folder, so the folder is replaced.
 // Other entries another account owns are set aside one by one.
 var reclaimAgentEntries = map[string]bool{
-	"agent.yaml":   true,
-	"secrets.yaml": true,
-	"agent.state":  true,
-	"data":         true,
-	"logs":         true,
-	"run":          true,
-	"sessions":     true,
+	"agent.yaml":         true,
+	"secrets.yaml":       true,
+	rebindStagedFileName: true, // #8318, the staged reattach set
+	"agent.state":        true,
+	"data":               true,
+	"logs":               true,
+	"run":                true,
+	"sessions":           true,
 	// Watchdog install retry (#8619): disposable attempt state, the durable
 	// operator opt-out marker, and the cross-process install lock. Names
 	// mirror watchdoginstall.StateFileName / OptOutFileName / LockFileName.
