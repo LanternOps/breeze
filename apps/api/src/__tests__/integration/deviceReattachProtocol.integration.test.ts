@@ -59,6 +59,9 @@ import { canonicalRebindDirectiveBytes, type RebindDirective } from '../../servi
 import { requestDeviceReattach, cancelReattachIntent } from '../../services/deviceReattach/requestIntent';
 import { ensureActiveSigningKey } from '../../services/manifestSigning';
 import { getRedis } from '../../services/redis';
+import { holdingAreaLockSql } from '../../services/unassignedPool/holdingAreaLock';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 import { createOrganization, createPartner, createSite } from './db-utils';
 import {
   ageIntent,
@@ -406,6 +409,28 @@ describe('phase 1 (#8318 §6.3)', () => {
     expect((await phase1(source, intent.id, stagedSet().hashes)).body).toMatchObject({ code: 'expired' });
   });
 
+  it('an intent that expires while phase 1 waits for its lock is never staged (409 expired)', async () => {
+    const { source, intent } = await arrange();
+    // Requested 60 minutes ago minus 2 s: it expires in about 2 s.
+    await ageIntent(intent.id, 60 * 60_000 - 2_000);
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = getTestDb().transaction(async (tx: any) => {
+      await tx.execute(sql`SELECT 1 FROM device_reattach_intents WHERE id = ${intent.id}::uuid FOR UPDATE`);
+      locked();
+      await released;
+    });
+    await isLocked;
+    const pending = phase1(source, intent.id, stagedSet().hashes);
+    await sleep(3_500);
+    release();
+    await holder;
+    expect(await pending).toMatchObject({ status: 409, body: { code: 'expired', state: 'expired' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'expired', stagedAgentId: null });
+  });
+
   it('on a cancelled intent: 409 cancelled with the reason', async () => {
     const { source, intent } = await arrange();
     await cancelReattachIntent(intent.id, 'admin');
@@ -507,6 +532,31 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     expect(await identitySnapshot(target.id)).toEqual(targetBefore);
     // Asked again: the same typed answer, from the intent, before any lock.
     expect((await confirm(source.agentId, set.tokens.confirmationToken)).body).toMatchObject({ code: 'expired' });
+  });
+
+  // Review of wave 1b-2, finding 6: the clock is read once the locks are held.
+  it('an intent that expires while the confirm waits for its locks is never confirmed (409 expired)', async () => {
+    const { tenant, source, target, intent, set } = await arrangeStaged();
+    // Staged 15 minutes ago minus 2 s: it expires in about 2 s.
+    await ageIntent(intent.id, 15 * 60_000 - 2_000);
+    const targetBefore = await identitySnapshot(target.id);
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = getTestDb().transaction(async (tx: any) => {
+      await tx.execute(holdingAreaLockSql(tenant.partnerId));
+      locked();
+      await released;
+    });
+    await isLocked;
+    const pending = confirm(source.agentId, set.tokens.confirmationToken);
+    await sleep(3_500); // the intent expires while the confirm waits
+    release();
+    await holder;
+    expect(await pending).toMatchObject({ status: 409, body: { code: 'expired', state: 'expired' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'expired' });
+    expect(await identitySnapshot(target.id)).toEqual(targetBefore);
   });
 
   it('on a cancelled intent: 409 cancelled with the reason', async () => {

@@ -213,7 +213,6 @@ async function confirmUnderLocks(
   tx: ReattachTx,
   located: DeviceReattachIntent,
   input: ConfirmRebindInput,
-  now: Date,
   redisLiveness: RedisLivenessSignals,
 ): Promise<ConfirmOutcome> {
   await lockPartnerHoldingArea(tx, located.partnerId);
@@ -228,6 +227,9 @@ async function confirmUnderLocks(
     return { kind: 'refused', refusal: INVALID_CREDENTIALS() };
   }
   await input.hooks?.afterLocks?.(intent.id);
+  // The clock is read only now, with every lock held: an intent that expired
+  // while this request waited for them is never confirmed.
+  const now = input.now ?? new Date();
 
   if (intent.state === 'confirmed') {
     // A racing confirm committed first: this one answers its replay.
@@ -545,7 +547,6 @@ async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
 }
 
 export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<ConfirmRebindResult> {
-  const now = input.now ?? new Date();
   const presentedHash = sha256Hex(input.token);
   const located = await locateByToken(input.sourceAgentId, presentedHash);
   if (!located) return INVALID_CREDENTIALS();
@@ -584,7 +585,7 @@ export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<Co
   let outcome: ConfirmOutcome;
   try {
     outcome = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.transaction((tx) => confirmUnderLocks(tx, intent, input, now, redisLiveness))));
+      db.transaction((tx) => confirmUnderLocks(tx, intent, input, redisLiveness))));
   } catch (err) {
     if (err instanceof ReattachRefusedError) return err.refusal;
     throw err;

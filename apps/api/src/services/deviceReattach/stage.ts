@@ -120,7 +120,9 @@ type Committed =
     };
 
 export async function stageRebindIntent(input: StageRebindInput): Promise<StageRebindResult> {
-  const now = input.now ?? new Date();
+  // Only for the unlocked preview below; every decision inside the
+  // transaction reads the clock again once the locks are held.
+  const previewNow = input.now ?? new Date();
   const hashes: StagedSetHashes = {
     stagedTokenHash: input.stagedTokenHash,
     stagedWatchdogTokenHash: input.stagedWatchdogTokenHash,
@@ -146,7 +148,7 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
     return intentStateRefusal(preview.state, preview.cancelReason);
   }
 
-  const needsCertificate = preview.expiresAt.getTime() > now.getTime()
+  const needsCertificate = preview.expiresAt.getTime() > previewNow.getTime()
     && (preview.state === 'requested' || sameStagedSet(preview, hashes));
   let issued: IssuedStagedCertificate | null = null;
   if (needsCertificate) {
@@ -162,6 +164,9 @@ export async function stageRebindIntent(input: StageRebindInput): Promise<StageR
     committed = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx): Promise<Committed> => {
       const locked = await lockReattachDevices(tx, [preview.sourceDeviceId, preview.targetDeviceId], 'key share');
       const intent = await readIntentForUpdate(tx, input.intentId);
+      // With the locks held: an intent that expired while this request
+      // waited for them is never staged.
+      const now = input.now ?? new Date();
       if (!belongsToCaller(intent, input.caller) || intent.targetDeviceId !== preview.targetDeviceId) {
         return { kind: 'refused', refusal: INTENT_NOT_FOUND() };
       }
