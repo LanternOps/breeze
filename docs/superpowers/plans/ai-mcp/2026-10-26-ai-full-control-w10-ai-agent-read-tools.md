@@ -61,7 +61,15 @@ No W10 action is supervised or four-eyes: nothing is written, nothing leaves the
 
 ## Measured (W19 bounds; `AI_TOOL_INDEX=lazy`)
 
-Filled in at T5/T10 (see PR body).
+| Measure | W09 main | with the 6 tools |
+|---|---|---|
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| `ai` block (B2 < 2,048) | ~198 | 325 |
+| Largest block | security 1,268 | security 1,268 (`network` 1,113, `devices` 1,187) |
+| Worst page turn, alert (B3 < 7,040) | 4,731 | 4,731 (device 4,069) |
+| Legacy whole index (informational) | 9,487 | 9,614 |
+
+All six sit in the `ai` domain, capability `tenancy`; no ceiling, `DOMAIN_NOTES` or vocabulary change. `MCP_TOOL_COUNT_APPROX` 296 -> 310 (registry 310; the ±10 pin went red at +14 against W08's value, own commit).
 
 ## Quorum (codex `exec`, read-only, xhigh): AGREE WITH CHANGES
 
