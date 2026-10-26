@@ -52,14 +52,15 @@
     "waiting": "Yanıt bekleniyor...",
     "placeholder": "Cihazlarınız hakkında bilgi alın...",
     "stopResponse": "Yanıtı durdur",
-    "thinking": "AI düşünüyor... İptal etmek için durdur'a tıklayın",
-    "sendShortcut": "Göndermek için Cmd+Enter"
+    "send": "Mesajı gönder"
   },
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Cihazlarınız, uyarılarınız, ölçümleriniz hakkında bilgi alın veya sorunları giderin.",
     "unknownTool": "Bilinmeyen araç",
     "toolResult": "Araç sonucu",
+    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı.",
+    "openScriptProposal": "Çalıştırmalarını görmek veya kitaplığa kaydetmek için öneriyi açın",
     "pauseAi": "AI'yi duraklat",
     "quickActions": {
       "serverHealth": {
@@ -87,8 +88,21 @@
         "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
       }
     },
-    "unattendedRelease": "Yapay zekâ betik incelemecisi tarafından incelendi ve onay kartı olmadan yayınlandı.",
-    "openScriptProposal": "Çalıştırmalarını görmek veya kitaplığa kaydetmek için öneriyi açın"
+    "toolGroup": {
+      "done": "{{count}} tamamlandı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "expand": "Ayrıntıları göster",
+      "collapse": "Ayrıntıları gizle"
+    },
+    "divider": {
+      "today": "Bugün {{time}}",
+      "yesterday": "Dün {{time}}"
+    },
+    "specialists": {
+      "heading_one": "{{count}} uzmana devredildi",
+      "heading_other": "{{count}} uzmana devredildi"
+    }
   },
   "aiChatSidebar": {
     "history": "Geçmiş",
@@ -676,9 +690,6 @@
       "checkingUnnamed": "Bir müşteri kontrol ediliyor…"
     },
     "thread": {
-      "title": "Wisp konuşması",
-      "openChat": "Sohbette aç",
-      "openChatInactive": "Bu konuşmada sohbet etmek için Wisp'in etkin olması gerekir.",
       "notFound": "Bu Wisp konuşması yok ya da size ait değil.",
       "loadFailed": "Bu Wisp konuşması yüklenemedi.",
       "retry": "Tekrar dene",
@@ -698,11 +709,13 @@
         "memory": "Bellek",
         "nudge": "Hatırlatma",
         "brief": "Özet"
-      }
+      },
+      "show": "Göster",
+      "hide": "Gizle",
+      "count_one": "{{count}} yeni",
+      "count_other": "{{count}} yeni"
     },
     "home": {
-      "briefTitle": "Bu sabahki özet",
-      "briefEmpty": "Henüz özet yok. Wisp, etrafa bir göz attıktan sonra her sabah bir tane gönderir.",
       "briefSentAt": "Gönderildi: {{time}}",
       "briefStale": "Önceki bir günden",
       "needsYouTitle": "Dikkatinizi bekleyenler",
@@ -710,7 +723,6 @@
       "needsYouCount_other": "{{count}} öğe",
       "needsYouApprovals_one": "{{count}} öğe onayınızı bekliyor",
       "needsYouApprovals_other": "{{count}} öğe onayınızı bekliyor",
-      "threadTitle": "Wisp ile konuş",
       "threadPaused": "Wisp duraklatıldı. Konuşmaya devam etmek için üst bölümden sürdürün.",
       "threadEnded": "Bu yetki sona erdi. Wisp ile konuşmak için yeni bir yetki başlatın.",
       "threadOpening": "Konuşma açılıyor…",
@@ -778,6 +790,44 @@
       "saveFailed": "Wisp ayarı değiştirilemedi.",
       "adminOnly": "Bunu yalnızca iş ortağı yöneticileri değiştirebilir.",
       "loadFailed": "Wisp ayarı yüklenemedi."
+    },
+    "post": {
+      "brief": "Sabah özeti",
+      "nudge": "Hatırlatma",
+      "digest": "Derleme",
+      "summary": "Özet"
+    },
+    "welcome": {
+      "title": "{{scope}} kapsamına göz atıyorum.",
+      "body": "İlk özetiniz, göz attıktan sonra her sabah gelir. Bu arada bana her şeyi sorabilirsiniz.",
+      "suggestions": {
+        "needsMe": {
+          "label": "Bugün neye ihtiyacım var?",
+          "prompt": "Bugün hangi konular dikkatimi gerektiriyor? Kısa tut."
+        },
+        "offline": {
+          "label": "Hangi cihazlar çevrimdışı?",
+          "prompt": "Cihazlarımdan hangileri şu an çevrimdışı?"
+        },
+        "sweep": {
+          "label": "Sağlık taraması çalıştır",
+          "prompt": "{{scope}} için şimdi bir sağlık taraması çalıştır."
+        },
+        "overnight": {
+          "label": "Gece boyunca ne oldu?",
+          "prompt": "Müşterilerimde gece boyunca ne oldu?"
+        }
+      }
+    },
+    "rail": {
+      "workersTitle": "Çalışanlar",
+      "workersEmpty": "Çalışan uzman yok.",
+      "allRuns": "Tüm çalıştırmalar",
+      "details": "Ayrıntılar"
+    },
+    "composer": {
+      "placeholder": "Wisp'e mesaj",
+      "link": "Bir öğe bağla"
     }
   },
   "wispConcerns": {

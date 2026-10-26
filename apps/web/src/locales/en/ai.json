@@ -89,7 +89,6 @@
       }
     },
     "toolGroup": {
-      "elapsed": "{{seconds}} s",
       "done": "{{count}} done",
       "failed_one": "{{count}} failed",
       "failed_other": "{{count}} failed",
@@ -98,8 +97,7 @@
     },
     "divider": {
       "today": "Today {{time}}",
-      "yesterday": "Yesterday {{time}}",
-      "date": "{{date}}, {{time}}"
+      "yesterday": "Yesterday {{time}}"
     },
     "specialists": {
       "heading_one": "Handed to {{count}} specialist",
@@ -692,9 +690,6 @@
       "checkingUnnamed": "Checking a customer…"
     },
     "thread": {
-      "title": "Wisp thread",
-      "openChat": "Open in chat",
-      "openChatInactive": "Wisp must be active to chat on this thread.",
       "notFound": "This Wisp thread doesn't exist or isn't yours.",
       "loadFailed": "Couldn't load this Wisp thread.",
       "retry": "Try again",
@@ -728,7 +723,6 @@
       "needsYouCount_other": "{{count}} items",
       "needsYouApprovals_one": "{{count}} waiting for your approval",
       "needsYouApprovals_other": "{{count}} waiting for your approval",
-      "threadTitle": "Talk to Wisp",
       "threadPaused": "Wisp is paused. Resume it from the header to keep talking.",
       "threadEnded": "This delegation has ended. Start a new one to talk to Wisp.",
       "threadOpening": "Opening the conversation…",
@@ -797,7 +791,6 @@
       "adminOnly": "Only partner administrators can change this.",
       "loadFailed": "Could not load the Wisp setting."
     },
-    "name": "Wisp",
     "post": {
       "brief": "Morning brief",
       "nudge": "Nudge",
