@@ -19,7 +19,8 @@
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
-import { flowRunRetentionDays } from '../config/env';
+import { flowUsagePeriodKey } from '@breeze/shared';
+import { flowRunRetentionDays, flowWebhookDeliveryRetentionDays } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -97,6 +98,84 @@ export async function pruneFlowRunBodies(opts: { now?: Date; batchSize?: number;
   return summary;
 }
 
+// ── W5 (#5220, Decision 16): the delivery log and the usage counters ────────
+// Webhook payloads live only in flow_runs.trigger_payload (pruned above).
+// Delivery rows carry no body: NON-accepted rows go after
+// FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS; an accepted row lives as long as its
+// run (it is the durable delivery → run mapping, Decision 2), so it is never
+// deleted here. Counter rows go 13 months after their month. Runs are never
+// deleted by any clause.
+
+export interface FlowRetentionDeleteSummary {
+  deleted: number;
+  batches: number;
+  hasMore: boolean;
+}
+
+async function deleteBatch(query: ReturnType<typeof sql>, label: string): Promise<number> {
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(query), label));
+  const row = (rows as unknown as Array<{ deleted: number }>)[0];
+  if (!row || typeof row.deleted !== 'number') throw new Error(`${LOG} ${label} returned no summary row`);
+  return row.deleted;
+}
+
+async function deleteInBatches(
+  makeQuery: (batchSize: number) => ReturnType<typeof sql>,
+  label: string,
+  opts: { batchSize?: number; maxBatches?: number },
+): Promise<FlowRetentionDeleteSummary> {
+  const batchSize = Math.max(1, opts.batchSize ?? FLOW_RUN_RETENTION_BATCH_SIZE);
+  const maxBatches = Math.max(1, opts.maxBatches ?? MAX_BATCHES);
+  const summary: FlowRetentionDeleteSummary = { deleted: 0, batches: 0, hasMore: false };
+  let last = 0;
+  while (summary.batches < maxBatches) {
+    last = await deleteBatch(makeQuery(batchSize), label);
+    summary.deleted += last;
+    summary.batches += 1;
+    if (last < batchSize) break;
+  }
+  summary.hasMore = summary.batches >= maxBatches && last >= batchSize;
+  if (summary.hasMore) console.warn(`${LOG} ${label} hit the ${maxBatches}-batch cap; continues next run`);
+  return summary;
+}
+
+export async function pruneFlowWebhookDeliveries(opts: { now?: Date; batchSize?: number; maxBatches?: number } = {}): Promise<FlowRetentionDeleteSummary> {
+  const now = opts.now ?? new Date();
+  const cutoffIso = new Date(now.getTime() - flowWebhookDeliveryRetentionDays() * DAY_MS).toISOString();
+  return deleteInBatches((batchSize) => sql`
+    WITH target AS (
+      SELECT id FROM flow_webhook_deliveries
+      WHERE status <> 'accepted' AND last_attempt_at < ${cutoffIso}::timestamptz
+      ORDER BY last_attempt_at
+      LIMIT ${batchSize}
+      FOR UPDATE SKIP LOCKED
+    ),
+    gone AS (
+      DELETE FROM flow_webhook_deliveries d USING target WHERE d.id = target.id RETURNING d.id
+    )
+    SELECT (SELECT count(*) FROM gone)::int AS deleted
+  `, 'flowRunRetention.deliveries', opts);
+}
+
+/** Counter rows of months more than 13 months back (`period_key` < the UTC month 13 months ago). */
+export async function pruneFlowUsageCounters(opts: { now?: Date; batchSize?: number; maxBatches?: number } = {}): Promise<FlowRetentionDeleteSummary> {
+  const now = opts.now ?? new Date();
+  const cutoffKey = flowUsagePeriodKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 13, 1)));
+  return deleteInBatches((batchSize) => sql`
+    WITH target AS (
+      SELECT id FROM flow_usage_counters
+      WHERE period_key < ${cutoffKey}
+      ORDER BY period_key
+      LIMIT ${batchSize}
+      FOR UPDATE SKIP LOCKED
+    ),
+    gone AS (
+      DELETE FROM flow_usage_counters c USING target WHERE c.id = target.id RETURNING c.id
+    )
+    SELECT (SELECT count(*) FROM gone)::int AS deleted
+  `, 'flowRunRetention.counters', opts);
+}
+
 // ── BullMQ wiring ───────────────────────────────────────────────────────────
 
 let queue: Queue | null = null;
@@ -115,8 +194,14 @@ export async function initializeFlowRunRetention(): Promise<void> {
     async (_job: Job) => {
       const summary = await pruneFlowRunBodies();
       console.log(`${LOG} pruned runs=${summary.runs} steps=${summary.steps} batches=${summary.batches} hasMore=${summary.hasMore}`);
-      recordRetentionRun('flow_run_retention', { rowsDeleted: summary.runs + summary.steps, incomplete: summary.hasMore });
-      return summary;
+      const deliveries = await pruneFlowWebhookDeliveries();
+      const counters = await pruneFlowUsageCounters();
+      console.log(`${LOG} deleted webhook deliveries=${deliveries.deleted} usage counters=${counters.deleted}`);
+      recordRetentionRun('flow_run_retention', {
+        rowsDeleted: summary.runs + summary.steps + deliveries.deleted + counters.deleted,
+        incomplete: summary.hasMore || deliveries.hasMore || counters.hasMore,
+      });
+      return { ...summary, deliveries, counters };
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );

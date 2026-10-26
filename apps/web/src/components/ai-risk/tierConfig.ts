@@ -247,6 +247,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
       { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
       { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
+      // Full-control W10 (#6780): read-back of what the AI did and plans. The operator-task reads are chat/MCP only (free text from
+      // other runs; not offered to AI agents). Text in all of them is untrusted data.
+      { name: 'get_device_ai_activity', description: 'Count the scripts and commands the AI dispatched to a device, and show who started one action', category: 'AI Governance' },
+      { name: 'list_operator_tasks', description: 'List the multi-step tasks the AI operator is running or has finished (whole organization; not for site-restricted sessions)', category: 'AI Governance' },
+      { name: 'get_operator_task', description: 'Read one operator task: steps, timeline, proposed plan and linked runs (credential hand-over details are never shown)', category: 'AI Governance' },
+      { name: 'list_ai_agent_schedules', description: 'List when AI agents run on a schedule, with partner baselines and organization overrides', category: 'AI Governance' },
+      { name: 'list_fleet_designs', description: 'List completed Fleet Design reports (whole organization; not for site-restricted sessions)', category: 'AI Governance' },
+      { name: 'get_fleet_design', description: 'Read one Fleet Design report as markdown (applying it is a separate, approval-gated action)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -705,6 +713,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_known_guests', tier: 1, permission: 'organizations.read / organizations.write', category: 'Network & DNS' },
   { toolName: 'get_unifi_status', tier: 1, permission: 'billing.manage', category: 'Network & DNS' },
   { toolName: 'trigger_unifi_sync', tier: 2, permission: 'billing.manage', category: 'Network & DNS' },
+  // Full-control W10 (#6780): all tier 1.
+  { toolName: 'get_device_ai_activity', tier: 1, permission: 'devices.read', category: 'AI Governance' },
+  { toolName: 'list_operator_tasks', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'get_operator_task', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'list_ai_agent_schedules', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'list_fleet_designs', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'get_fleet_design', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -763,6 +778,13 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   manage_known_guests: { list: 'organizations.read', add: 'organizations.write', delete: 'organizations.write' },
   get_unifi_status: 'billing.manage',
   trigger_unifi_sync: 'billing.manage',
+  // Full-control W10 (#6780).
+  get_device_ai_activity: 'devices.read',
+  list_operator_tasks: 'ai_agents.read',
+  get_operator_task: 'ai_agents.read',
+  list_ai_agent_schedules: 'ai_agents.read',
+  list_fleet_designs: 'ai_agents.read',
+  get_fleet_design: 'ai_agents.read',
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },

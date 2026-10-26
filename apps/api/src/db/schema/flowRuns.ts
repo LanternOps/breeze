@@ -139,7 +139,6 @@ export const flowRuns = pgTable(
     /** Composite FK (flow_version_id, flow_id) → flow_versions(id, flow_id) below. */
     flowVersionId: uuid('flow_version_id').notNull(),
     definitionVersion: integer('definition_version').notNull(),
-    /** W04 writes FlowTriggerKind only; the CHECK also admits 'webhook' | 'tool' (W05). */
     triggerKind: text('trigger_kind').$type<FlowTriggerKind>().notNull(),
     triggeredVia: text('triggered_via').$type<FlowTriggeredVia>().notNull(),
     /** Nullable only for retention pruning; the service always writes an object. */
@@ -166,6 +165,12 @@ export const flowRuns = pgTable(
     bodiesPrunedAt: timestamp('bodies_pruned_at', { withTimezone: true }),
     errorCode: text('error_code').$type<FlowRunErrorCode>(),
     error: text('error'),
+    /** W05: tokens the run's `ai` steps used, against the per-run ceiling (flow_runs_ai_tokens_chk >= 0). */
+    aiTokensUsed: integer('ai_tokens_used').notNull().default(0),
+    /** W05: the agent run that started this run; set iff triggered_via = 'ai_agent'. Plain uuid, immutable. */
+    parentAgentRunId: uuid('parent_agent_run_id'),
+    /** W05: provenance of an API-key (api / mcp) start. Plain uuid, immutable. */
+    triggeredByApiKeyId: uuid('triggered_by_api_key_id'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -240,6 +245,10 @@ export const flowRunSteps = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     durationMs: integer('duration_ms'),
+    /** W05: model usage of an `ai` step; all three NULL otherwise (flow_run_steps_ai_usage_chk). */
+    aiInputTokens: integer('ai_input_tokens'),
+    aiOutputTokens: integer('ai_output_tokens'),
+    aiCostCents: integer('ai_cost_cents'),
   },
   (table) => ({
     runFk: foreignKey({

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
@@ -93,7 +95,7 @@ func promptGrantFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) promptGra
 	if g.protocol > ipc.PromptProtocolVersion {
 		g.protocol = ipc.PromptProtocolVersion
 	}
-	g.rendererVersion = truncateSessionString(authReq.RendererVersion, 32)
+	g.rendererVersion = capCodePoints(strings.TrimSpace(authReq.RendererVersion), 32)
 	seen := map[string]struct{}{}
 	var wantPrompt, wantOperator bool
 	for i, ad := range authReq.PromptKinds {
@@ -126,6 +128,16 @@ func promptGrantFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) promptGra
 		g.scopes = append(g.scopes, ipc.ScopePromptOperator)
 	}
 	return g
+}
+
+// capCodePoints keeps at most n code points, never splitting one and never
+// adding a suffix (the API caps rendererVersion at 32 code points and drops
+// an over-long observation whole).
+func capCodePoints(v string, n int) string {
+	if utf8.RuneCountInString(v) <= n {
+		return v
+	}
+	return string([]rune(v)[:n])
 }
 
 // ApplyPromptAuthForTest records a prompt advertisement on a session built

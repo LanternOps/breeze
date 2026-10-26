@@ -158,14 +158,19 @@
     "trigger": {
       "manual": "Manuel",
       "schedule": "Planification",
-      "event": "Événement"
+      "event": "Événement",
+      "webhook": "Appel de webhook",
+      "tool": "Appel d'outil"
     },
     "via": {
       "ui": "Depuis l'application web",
       "api": "Depuis l'API",
       "ai_tool": "Depuis Breeze AI",
       "scheduler": "Par le planificateur",
-      "event": "Par un événement"
+      "event": "Par un événement",
+      "webhook": "Par webhook",
+      "mcp": "Par MCP",
+      "ai_agent": "Par un agent IA"
     },
     "columns": {
       "started": "Début",
@@ -205,7 +210,13 @@
       "flow_disabled": "Le flux a été désactivé pendant que cette exécution était active.",
       "flows_disabled": "Les flux sont désactivés sur ce serveur.",
       "delegator_inactive": "La personne au nom de qui cette exécution agit n'est plus active.",
-      "org_merged": "L'organisation a été fusionnée avec une autre."
+      "org_merged": "L'organisation a été fusionnée avec une autre.",
+      "egress_blocked": "La requête sortante a été bloquée par la politique de sortie.",
+      "http_status": "L'API externe a répondu avec un statut d'erreur.",
+      "notify_failed": "La notification n'a pas pu être envoyée.",
+      "ai_budget_exhausted": "Le budget d'IA de l'organisation est épuisé.",
+      "ai_output_invalid": "Le résultat de l'IA ne correspondait pas au format attendu.",
+      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA."
     },
     "step": {
       "status": {

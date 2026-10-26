@@ -118,6 +118,15 @@ func TestPromptGrantClampsProtocolAndRecordsVersions(t *testing.T) {
 	if s.RendererVersion() != "0.2.0" {
 		t.Fatalf("RendererVersion = %q", s.RendererVersion())
 	}
+	long := &Session{}
+	longAuth := promptAuth(ipc.HelperRoleAssist, 1)
+	longAuth.RendererVersion = strings.Repeat("é", 40)
+	applyAuthAdvertisements(long, ipc.HelperRoleAssist, longAuth)
+	if n := len([]rune(long.RendererVersion())); n != 32 {
+		// The API caps helperCapabilities.promptHost.rendererVersion at 32
+		// code points; anything longer drops the whole observation.
+		t.Fatalf("an over-long renderer version kept %d code points, want exactly 32: %q", n, long.RendererVersion())
+	}
 
 	many := make([]string, 0, 40)
 	for i := 0; i < 40; i++ {

@@ -21,7 +21,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   id: 'row-list', stepId: 'list', itemIndex: null, attempt: 1, tool: 'query_devices', toolSource: 'core', tier: 1,
   status: 'running', outputTruncated: false, bodiesPruned: false, errorCode: null, error: null,
   startedAt: '2026-10-20T02:00:00.000Z', finishedAt: null, durationMs: null,
-  approvalMode: 'none', actionIntentId: null, approvedByUserId: null, ...over,
+  approvalMode: 'none', actionIntentId: null, approvedByUserId: null, aiUsage: null, ...over,
 }) as never;
 
 const body = (output: unknown) => ({ ...(row() as object), renderedInput: {}, output });

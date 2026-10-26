@@ -120,4 +120,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g91', prompt: 'Is the print server at the Main Office reachable right now? Check it now.', expect: [{ tool: 'probe_network_asset' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset_reachability' }] },
   { id: 'g92', prompt: 'Show me the inbound and outbound traffic on the Main Office core switch uplink for the last 24 hours.', expect: [{ tool: 'get_snmp_metrics', action: 'history' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset' }] },
   { id: 'g93', prompt: 'Sync UniFi now and tell me whether the last sync worked.', expect: [{ tool: 'trigger_unifi_sync' }, { tool: 'get_unifi_status', action: 'sync_runs' }, { tool: 'get_unifi_status', action: 'status' }] },
+  // Full-control W10 (#6780): AI-agent read tools reach chat.
+  { id: 'g94', prompt: 'What has the AI done on the front desk PC in the last week?', expect: [{ tool: 'get_device_ai_activity' }, { tool: 'query_devices' }, { tool: 'resolve_device_context' }] },
+  { id: 'g95', prompt: 'Show me my operator tasks that are waiting on an approval.', expect: [{ tool: 'list_operator_tasks' }, { tool: 'get_operator_task' }] },
+  { id: 'g96', prompt: 'List the fleet designs the designer agent has produced.', expect: [{ tool: 'list_fleet_designs' }, { tool: 'get_fleet_design' }] },
 ];

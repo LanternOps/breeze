@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { fetchWithAuthMock, createPasskeyCredentialMock, mintStepUpGrantMock } = vi.hoisted(() => ({
+const { fetchWithAuthMock, createPasskeyCredentialMock, mintStepUpGrantMock, commitMfaEnrollmentIfCurrentMock } = vi.hoisted(() => ({
   fetchWithAuthMock: vi.fn(),
   createPasskeyCredentialMock: vi.fn(),
   mintStepUpGrantMock: vi.fn(),
+  commitMfaEnrollmentIfCurrentMock: vi.fn(() => true),
 }));
 
 vi.mock('../../stores/auth', () => ({
@@ -12,7 +13,7 @@ vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: createPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitMfaEnrollmentIfCurrent: commitMfaEnrollmentIfCurrentMock, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 
@@ -71,6 +72,7 @@ const REAL_LOCATION = window.location;
 describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commitMfaEnrollmentIfCurrentMock.mockReturnValue(true);
     Object.defineProperty(window, 'location', { configurable: true, value: REAL_LOCATION });
     sessionStorage.clear();
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
@@ -164,6 +166,77 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(callsTo('/auth/passkeys/register/options')).toHaveLength(2);
     expect(callsTo('/auth/passkeys/register/verify')).toHaveLength(1);
     expect(screen.queryByText(/existing_factor_step_up_required/i)).toBeNull();
+  });
+
+  it('uses the authenticator just enrolled for passkey step-up in the same session', async () => {
+    const replacementTokens = { accessToken: 'replacement-totp', expiresInSeconds: 900 };
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (u === '/auth/mfa/setup') return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      if (u === '/auth/mfa/enable') return makeJsonResponse({ recoveryCodes: ['AAAA-BBBB'], tokens: replacementTokens });
+      if (u === '/auth/passkeys/register/options') {
+        return makeJsonResponse({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, false, 403);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: false,
+      mfaMethod: null,
+      hasPassword: true,
+    }} />);
+
+    fireEvent.click(await screen.findByTestId('mfa-setup-start'));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#mfa-confirm-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+    await screen.findByText(/Set up authenticator/i);
+
+    const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    expect(digits).toHaveLength(6);
+    digits.forEach((input, index) => fireEvent.change(input, { target: { value: String(index + 1) } }));
+    fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
+    await screen.findByText(/Multi-factor authentication enabled successfully/i);
+    expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', replacementTokens);
+
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-add'));
+
+    expect(await screen.findByTestId('passkey-stepup-code')).toBeTruthy();
+  });
+
+  it('preserves the enrolled TOTP method when a profile update omits it', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (u === '/users/me') return makeJsonResponse({ id: 'user-1', name: 'Casey Updated', email: 'casey@example.com', mfaEnabled: true });
+      if (u === '/auth/passkeys/register/options') {
+        return makeJsonResponse({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, false, 403);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<ProfilePage initialUser={mfaProtectedUser} />);
+    await screen.findByText(/No passkeys are registered/i);
+    fireEvent.change(screen.getByLabelText(/^Name$/i), { target: { value: 'Casey Updated' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+    await screen.findByText(/Profile updated successfully/i);
+
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-add'));
+
+    expect(await screen.findByTestId('passkey-stepup-code')).toBeTruthy();
   });
 
   it('never sends the passkey registration request without first resolving the step-up when required', async () => {

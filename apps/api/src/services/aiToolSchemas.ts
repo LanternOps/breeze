@@ -58,6 +58,7 @@ import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
 import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
+import { aiReadToolSchemas } from './aiToolSchemasAiReads';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -590,6 +591,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...topologyOpsToolSchemas,
   // Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
   ...networkMonitoringToolSchemas,
+  // Full-control W10 (#6780): AI-agent read tools.
+  ...aiReadToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

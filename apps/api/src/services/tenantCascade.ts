@@ -703,9 +703,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // deletes action_intents before flow_runs whatever the position here.
   // flow_versions is org XOR partner like flows: partner-wide publications
   // (org_id NULL) are untouched by an org erasure.
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_usage_counters and
+  // flow_webhook_deliveries both cascade from flows and carry org_id (nullable:
+  // partner-wide flows). flow_webhook_deliveries(run_id, org_id) -> flow_runs is
+  // a composite FK; the runtime order is computed topologically.
   'flow_run_steps',
   'flow_runs',
+  'flow_usage_counters',
   'flow_versions',
+  'flow_webhook_deliveries',
   // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
   // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
   // child-before-parent constraint of its own.
