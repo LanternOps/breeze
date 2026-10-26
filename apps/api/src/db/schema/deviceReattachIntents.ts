@@ -16,7 +16,7 @@ export type DeviceReattachEvidenceLevel = 'hint' | 'tpm_continuity';
  * source org's type and never written by callers. The authorized identity
  * columns are immutable and the end states are terminal (guard trigger). The
  * per-state shape CHECK (which staged columns a state may hold) lives in the
- * migration only — see migrations/2027-01-06-120100-device-reattach-intents.sql.
+ * migration only — see migrations/2027-01-07-120100-device-reattach-intents.sql.
  */
 export const deviceReattachIntents = pgTable('device_reattach_intents', {
   id: uuid('id').primaryKey().defaultRandom(),

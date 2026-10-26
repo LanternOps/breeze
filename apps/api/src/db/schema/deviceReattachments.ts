@@ -12,7 +12,7 @@ export type DeviceReattachmentInvalidationCounts = Record<string, Record<string,
  * a snapshot with NO FK, so the record outlives them. UPDATE is blocked by
  * trigger; writes are system-scope only and reads are narrowed by the intent
  * table's org-access branch over the snapshot org columns — see
- * migrations/2027-01-06-120200-device-reattachments.sql.
+ * migrations/2027-01-07-120200-device-reattachments.sql.
  */
 export const deviceReattachments = pgTable('device_reattachments', {
   id: uuid('id').primaryKey().defaultRandom(),

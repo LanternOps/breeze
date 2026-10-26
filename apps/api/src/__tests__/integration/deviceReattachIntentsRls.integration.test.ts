@@ -1,8 +1,8 @@
 /**
  * device_reattach_intents + device_reattachments — RLS as breeze_app (#8318
  * wave 1b, spec docs/superpowers/specs/installer-enrollment/2026-10-12-reinstall-reattach-design.md
- * §4.3, §4.4). Migrations under test: 2027-01-06-120100-device-reattach-intents.sql
- * and 2027-01-06-120200-device-reattachments.sql.
+ * §4.3, §4.4). Migrations under test: 2027-01-07-120100-device-reattach-intents.sql
+ * and 2027-01-07-120200-device-reattachments.sql.
  *
  * Both tables are partner-axis (shape 3) and narrowed by a RESTRICTIVE
  * org-access policy over (target_org_id, source_org_id, source_parked). The
