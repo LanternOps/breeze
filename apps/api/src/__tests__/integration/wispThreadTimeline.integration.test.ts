@@ -116,18 +116,34 @@ describe('listThreadTimeline (real Postgres)', () => {
     const m2 = await message(f.s1, same);
     const m3 = await message(f.s2, same);
     const pSame = await post(f, same);
+    const pSame2 = await post(f, same);
     const pLater = await post(f, '2026-10-24T10:00:00.000Z', { kind: 'digest', dedupeKey: `wisp.digest:${randomUUID()}` });
     await message(f.s1, '2026-10-24T09:45:00.000Z', 'system'); // never shown
     await message(f.sOut, '2026-10-24T09:50:00.000Z'); // outside the ceiling
 
     const sameMs = [m2, m3].sort().reverse(); // id DESC within (ms, 'message')
+    const samePosts = [pSame, pSame2].sort().reverse(); // id DESC within (ms, 'post')
     for (const timeZone of [undefined, 'America/New_York', 'Asia/Kolkata']) {
       const seen = await pageAll(ceilingOf(f, [f.orgA]), f.threadId, { timeZone });
-      expect(seen.map((s) => s.id), `TimeZone ${timeZone ?? 'default'}`).toEqual([pLater, pSame, ...sameMs, m1]);
+      expect(seen.map((s) => s.id), `TimeZone ${timeZone ?? 'default'}`).toEqual([pLater, ...samePosts, ...sameMs, m1]);
       expect(new Set(seen.map((s) => s.id)).size).toBe(seen.length);
       expect(seen.find((s) => s.id === m2)!.createdAt).toBe(same);
       expect(seen.find((s) => s.id === pSame)!.createdAt).toBe(same);
     }
+  }, 120_000);
+
+  it('a site-restricted org reads its sessions\' messages but not its org-level posts (the activity rule, in SQL)', async () => {
+    const f = await seed();
+    const m = await message(f.s1, '2026-10-24T09:00:00.000Z');
+    const orgPost = await post(f, '2026-10-24T09:01:00.000Z', { orgId: f.orgA, kind: 'nudge' });
+    const partnerLevel = await post(f, '2026-10-24T09:02:00.000Z');
+    const restricted: GrantCeiling = {
+      ...ceilingOf(f, [f.orgA]),
+      orgTerms: new Map([[f.orgA, { permissionKeys: new Set(), siteIds: new Set([randomUUID()]) }]]),
+    };
+    const page = await listThreadTimeline(restricted, f.threadId, { limit: 50 });
+    expect(page.items.map((i) => i.id)).toEqual([partnerLevel, m]);
+    expect(page.items.map((i) => i.id)).not.toContain(orgPost);
   }, 120_000);
 
   it('excludeSessionId leaves that session out; a bigger page agrees with one-at-a-time paging', async () => {

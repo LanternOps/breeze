@@ -11,8 +11,9 @@
  *                                    the derived, ceiling-filtered timeline + the live "checking…" line)
  *   GET   /:id/timeline?cursor=&limit=&excludeSessionId= → { data: { items: WispTimelineItem[], nextCursor } }
  *                                    (W02a #10212: every attached session's messages merged with the thread's
- *                                    posts, newest first; readable for a PAUSED grant from its stored revision,
- *                                    409 for revoked / expired)
+ *                                    posts, newest first; readable for a PAUSED grant from its stored revision;
+ *                                    409 grant_inactive for revoked / expired / Wisp off / no pinned revision,
+ *                                    500 grant_corrupt for a broken pin, 400 invalid_cursor)
  *   GET   /:id/sessions?limit=&cursor= → { data: [{ sessionId, orgId, attachedAt, title, status }], nextCursor }
  *   PATCH /:id/focus              { orgId: uuid | null } → { data: { focusOrgId, focusOrgName } }
  *   GET   /:id/attachments        → { data: ThreadAttachmentDto[] }   (live only, newest first)
@@ -395,7 +396,7 @@ wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchem
 // W02a (#10212): every attached session's messages merged with the thread's
 // posts (brief / nudge / digest), newest first. The bound session is left out
 // with excludeSessionId (the web store holds it). A paused grant still reads
-// its history; revoked / expired refuse (409).
+// its history; every other ceilingOf refusal applies (409 / 500).
 wispThreadRoutes.get('/:id/timeline', zValidator('query', wispTimelineQuerySchema), async (c) => {
   const { cursor, limit, excludeSessionId } = c.req.valid('query');
   const own = await loadOwnThread(c);

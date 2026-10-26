@@ -159,7 +159,18 @@ CREATE POLICY wisp_thread_posts_isolation ON wisp_thread_posts
 -- cascade and partner erasure, UPDATE by org merge.
 GRANT SELECT, INSERT, UPDATE, DELETE ON wisp_thread_posts TO breeze_app;
 
--- Backfill from the surviving notification rows (see the header).
+-- Backfill from the surviving notification rows (see the header). The
+-- inserted count goes to the Postgres log so an operator can compare it with
+-- the candidate count below.
+DO $$
+DECLARE
+  candidates bigint;
+  inserted bigint;
+BEGIN
+SELECT count(*) INTO candidates
+  FROM user_notifications n
+ WHERE n.dedupe_key LIKE 'wisp.brief:%' OR n.dedupe_key LIKE 'wisp.nudge:%' OR n.dedupe_key LIKE 'wisp.digest:%';
+
 INSERT INTO wisp_thread_posts (
   thread_id, partner_id, grant_id, org_id, kind, title, body, link, sections,
   concern_id, notification_id, dedupe_key, created_at
@@ -204,3 +215,10 @@ WHERE (n.dedupe_key LIKE 'wisp.brief:%' OR n.dedupe_key LIKE 'wisp.nudge:%' OR n
     OR EXISTS (SELECT 1 FROM organizations o WHERE o.id = n.org_id AND o.partner_id = t.partner_id)
   )
 ON CONFLICT (thread_id, dedupe_key) DO NOTHING;
+
+GET DIAGNOSTICS inserted = ROW_COUNT;
+IF candidates > 0 THEN
+  -- Skipped = no thread / not the grantor / org outside the partner / already a post.
+  RAISE NOTICE 'wisp_thread_posts backfill: % posts from % wisp brief/nudge/digest notifications', inserted, candidates;
+END IF;
+END $$;

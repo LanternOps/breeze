@@ -12,7 +12,8 @@
  *                               linked notification, null when unlinked
  *
  * Every read runs in ONE system context (like listActivity), pinned to the
- * ceiling's partner and grant and to the caller-owned thread. Isolation is the
+ * ceiling's partner and to the caller-owned thread (one thread per grant);
+ * posts are additionally pinned to the ceiling's grant. Isolation is the
  * ceiling's, applied twice: in SQL, then as an in-process belt on every row.
  * The ceiling may be a PAUSED grant's (the route reads history from the stored
  * revision), so the belt is plain set membership, never assertWithinCeiling

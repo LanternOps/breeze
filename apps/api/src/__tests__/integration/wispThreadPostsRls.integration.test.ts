@@ -31,6 +31,7 @@ import {
 } from '../../db/schema';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { deliverInApp } from '../../services/wisp/deliver';
 import { recordThreadPost } from '../../services/wisp/threadPosts';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -274,6 +275,28 @@ describe('recordThreadPost against real Postgres', () => {
       ...input, kind: 'nudge', concernId: foreignConcern, dedupeKey: `wisp.nudge:${foreignConcern}:${f.grantA}:first`,
     }))).rejects.toThrow(/concern/);
   });
+
+  it('deliverInApp: notification and post commit together, and a failing post write rolls the notification back', async () => {
+    const f = await seed();
+    const delivery = (orgId: string, dedupeKey: string) => ({
+      userId: f.userA, orgId, title: 'Ticket waiting', body: 'Three days', link: `/ai/wisp/thread/${f.threadA}`, dedupeKey,
+      threadId: f.threadA, grantId: f.grantA,
+      post: {
+        threadId: f.threadA, partnerId: f.partnerA, grantId: f.grantA, orgId, kind: 'nudge' as const,
+        title: 'Ticket waiting', body: 'Three days', link: `/ai/wisp/thread/${f.threadA}`, sections: null, concernId: null,
+      },
+    });
+    const ok = await deliverInApp(delivery(f.orgA1, `wisp.nudge:${randomUUID()}:${f.grantA}:first`));
+    expect(ok.created).toBe(true);
+    const [linked] = await asSystem(() => db.select().from(wispThreadPosts).where(eq(wispThreadPosts.notificationId, ok.id!)));
+    expect(linked).toMatchObject({ threadId: f.threadA, orgId: f.orgA1 });
+
+    // Partner B's org fails the post's composite org FK (23503) inside the same transaction.
+    const badKey = `wisp.nudge:${randomUUID()}:${f.grantA}:first`;
+    await expect(deliverInApp(delivery(f.orgB1, badKey))).rejects.toSatisfy((err: unknown) => pgErrorCode(err) === '23503');
+    const stray = await asSystem(() => db.select({ id: userNotifications.id }).from(userNotifications).where(eq(userNotifications.dedupeKey, badKey)));
+    expect(stray).toHaveLength(0);
+  });
 });
 
 describe('wisp_thread_posts through the org registries', () => {
@@ -311,6 +334,7 @@ describe('notification backfill (replayed migration)', () => {
   it('turns surviving brief / nudge / digest notifications into posts, keeps their timestamps, skips everything else, and is idempotent', async () => {
     const f = await seed();
     const concernId = await insertConcern(f.partnerA, f.orgA1);
+    const foreignConcern = await insertConcern(f.partnerB, f.orgB1);
     const sections = [{ heading: 'Needs you', lines: ['Greenwood: ticket waiting 3 days'] }];
     const meta = (extra: Record<string, unknown> = {}) => ({ wispThreadId: f.threadA, grantId: f.grantA, concernId: null, ...extra });
     const at = (iso: string) => new Date(iso);
@@ -322,10 +346,15 @@ describe('notification backfill (replayed migration)', () => {
         dedupeKey: `wisp.nudge:${concernId}:${f.grantA}:first`, metadata: meta({ concernId }), createdAt: at('2026-10-24T09:30:00.000Z') },
       { userId: f.userA, orgId: null, type: 'ai', title: 'Digest', message: null, link: null,
         dedupeKey: `wisp.digest:${f.threadA}:2026-10-24T10:00:00.000Z`, metadata: meta(), createdAt: at('2026-10-24T10:00:01.000Z') },
-      // Not posts: a budget notice, a nudge to someone who is not the grantor, a malformed thread id.
+      // A partner-level nudge naming another partner's concern: kept as a post, the foreign concern NOT linked.
+      { userId: f.userA, orgId: null, type: 'ai', title: 'Foreign concern', dedupeKey: `wisp.nudge:${foreignConcern}:${f.grantA}:first`,
+        metadata: meta({ concernId: foreignConcern }) },
+      // Not posts: a budget notice, a nudge to someone who is not the grantor, a malformed thread id,
+      // and an org that is not under the thread's partner.
       { userId: f.userA, orgId: null, type: 'ai', title: 'Budget', dedupeKey: `wisp-budget-${f.grantA}-2026-10-24`, metadata: meta() },
       { userId: f.userB, orgId: null, type: 'ai', title: 'Not yours', dedupeKey: `wisp.digest:${f.threadA}:x`, metadata: meta() },
       { userId: f.userA, orgId: null, type: 'ai', title: 'Malformed', dedupeKey: 'wisp.digest:broken', metadata: meta({ wispThreadId: 'not-a-uuid' }) },
+      { userId: f.userA, orgId: f.orgB1, type: 'ai', title: 'Foreign org', dedupeKey: `wisp.nudge:${randomUUID()}:${f.grantA}:first`, metadata: meta() },
     ]).returning({ id: userNotifications.id, dedupeKey: userNotifications.dedupeKey }));
     const noteId = (prefix: string) => notes.find((n) => n.dedupeKey!.startsWith(prefix))!.id;
 
@@ -333,8 +362,10 @@ describe('notification backfill (replayed migration)', () => {
     await replayMigration(MIGRATION);
 
     const posts = await asSystem(() => db.select().from(wispThreadPosts).where(eq(wispThreadPosts.threadId, f.threadA)));
-    expect(posts).toHaveLength(3);
-    const byKind = new Map(posts.map((p) => [p.kind, p]));
+    expect(posts).toHaveLength(4);
+    const foreign = posts.find((p) => p.dedupeKey.startsWith(`wisp.nudge:${foreignConcern}:`));
+    expect(foreign).toMatchObject({ kind: 'nudge', orgId: null, concernId: null, title: 'Foreign concern' });
+    const byKind = new Map(posts.filter((p) => p !== foreign).map((p) => [p.kind, p]));
     expect(byKind.get('brief')).toMatchObject({
       partnerId: f.partnerA, grantId: f.grantA, orgId: null, title: 'Morning brief', body: 'Two things',
       sections, concernId: null, notificationId: noteId('wisp.brief:'),

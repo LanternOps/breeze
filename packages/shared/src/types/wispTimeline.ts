@@ -9,8 +9,13 @@ export const WISP_TIMELINE_DEFAULT_LIMIT = 50;
 /** Largest page size the timeline accepts. */
 export const WISP_TIMELINE_MAX_LIMIT = 100;
 
-/** What kind of proactive output a post carries. */
-export type WispTimelinePostKind = 'brief' | 'nudge' | 'digest';
+/**
+ * What kind of proactive output a post carries. Mirrored by the
+ * `wisp_thread_posts_kind_chk` CHECK (migration and Drizzle schema); change
+ * all together (pinned by apps/api threadPostKinds.contract.test.ts).
+ */
+export const WISP_TIMELINE_POST_KINDS = ['brief', 'nudge', 'digest'] as const;
+export type WispTimelinePostKind = (typeof WISP_TIMELINE_POST_KINDS)[number];
 
 /** An ai_messages row from one of the thread's sessions. */
 export type WispTimelineMessage = {

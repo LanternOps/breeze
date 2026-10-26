@@ -11,14 +11,15 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import type { BriefSection } from '@breeze/shared';
+import type { BriefSection, WispTimelinePostKind } from '@breeze/shared';
 import { userNotifications } from './notifications';
 import { organizations, partners } from './orgs';
 import { wispGrants } from './wisp';
 import { wispConcerns } from './wispConcerns';
 import { wispThreads } from './wispThreads';
 
-export type WispThreadPostKind = 'brief' | 'nudge' | 'digest';
+/** WISP_TIMELINE_POST_KINDS (@breeze/shared); the CHECK below lists the same kinds. */
+export type WispThreadPostKind = WispTimelinePostKind;
 
 /**
  * Wisp companion W02a (#10212) — proactive Wisp output (morning brief, concern
