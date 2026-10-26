@@ -579,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Wisp'i aç",
-      "turningOn": "Wisp açılıyor…"
-    },
     "locked": {
-      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir."
+      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir.",
+      "server": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
     },
     "modal": {
       "title": "Wisp'i aç",
@@ -601,7 +598,8 @@
       "cancel": "İptal",
       "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
       "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
-      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin."
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin.",
+      "turningOn": "Wisp açılıyor…"
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
@@ -769,7 +767,8 @@
       "linking": "Bağlanıyor…"
     },
     "sidebar": {
-      "openHome": "Wisp’te aç"
+      "openHome": "Wisp’te aç",
+      "meetWisp": "Wisp ile tanışın"
     },
     "partnerSwitch": {
       "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",

@@ -101,12 +101,24 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   };
 }
 
+/**
+ * `GET /wisp/thread` did not yield a thread. `status` is the HTTP status: 404
+ * is the ordinary "no active grant for this scope" (`no_active_grant`); a 200
+ * here means the body was unreadable.
+ */
+export class WispThreadReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'WispThreadReadError';
+  }
+}
+
 /** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
   const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread');
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(extractApiError(body, 'Could not open the Wisp thread.'));
+  if (!res.ok) throw new WispThreadReadError(extractApiError(body, 'Could not open the Wisp thread.'), res.status);
   const state = wispStateFromThread(body);
-  if (!state) throw new Error('Could not open the Wisp thread.');
+  if (!state) throw new WispThreadReadError('Could not open the Wisp thread.', res.status);
   return state;
 }

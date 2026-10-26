@@ -2,10 +2,12 @@ import { test, expect } from '../fixtures';
 import { waitForAppReady } from '../pages/hydration';
 
 /**
- * Wisp home (/wisp) and the multi-tab chat that moved to /wisp/chat (#9921, W08).
+ * Breeze AI, the multi-tab chat at /ai/chat (moved from /wisp/chat, which moved
+ * from /workspace), and Wisp home (/wisp).
  *
- * Legs (a) and (b) run on any stack: /workspace permanently redirects to
- * /wisp/chat, which works with Wisp off exactly as the old page did.
+ * Legs (a) and (b) run on any stack: /workspace and /wisp/chat permanently
+ * redirect to /ai/chat, which works with Wisp off. /wisp itself shows a lock
+ * when the server has Wisp off instead of forwarding to the chat.
  *
  * Leg (c) needs BREEZE_WISP_ENABLED on the stack, a partner-scoped signed-in
  * user, a Wisp entitlement and a seeded ACTIVE Wisp grant, so it is opt-in:
@@ -14,17 +16,26 @@ import { waitForAppReady } from '../pages/hydration';
  * SELECTORS: data-testid only.
  */
 
-test.describe('Wisp chats (/wisp/chat)', () => {
-  test('/workspace redirects to /wisp/chat', async ({ authedPage: page }) => {
+test.describe('Breeze AI (/ai/chat)', () => {
+  test('/workspace redirects to /ai/chat', async ({ authedPage: page }) => {
     await page.goto('/workspace');
-    await page.waitForURL('**/wisp/chat');
+    await page.waitForURL('**/ai/chat');
     await expect(page.getByTestId('workspace-page')).toBeVisible({ timeout: 60_000 });
   });
 
-  test('/wisp/chat renders the multi-tab chat page', async ({ authedPage: page }) => {
+  test('/wisp/chat#session=x redirects to /ai/chat keeping the fragment', async ({ authedPage: page }) => {
+    // Checked at commit: once hydrated, the page rewrites the fragment to the
+    // tab it opens (sessionHash.writeSessionHash), and `x` is not a session id.
+    await page.goto('/wisp/chat#session=x', { waitUntil: 'commit' });
+    await page.waitForURL('**/ai/chat#session=x', { waitUntil: 'commit' });
+    await page.goto('/workspace#session=x', { waitUntil: 'commit' });
+    await page.waitForURL('**/ai/chat#session=x', { waitUntil: 'commit' });
+  });
+
+  test('/ai/chat renders the multi-tab chat page', async ({ authedPage: page }) => {
     // Persisted-tab behaviour (breeze-workspace) is covered in ai-move-conversation.spec.ts;
     // this leg only asserts the page itself renders at its new address.
-    await page.goto('/wisp/chat');
+    await page.goto('/ai/chat');
     await waitForAppReady(page, 'workspace-page');
     await expect(page.getByTestId('workspace-page')).toBeVisible();
   });

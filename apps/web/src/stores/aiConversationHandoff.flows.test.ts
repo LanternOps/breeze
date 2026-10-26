@@ -123,9 +123,9 @@ describe('moveToAssistant (panel → workspace)', () => {
     await expect(result).resolves.toBe('moved');
   });
 
-  it('from another page → navigate(/wisp/chat#session=<id>) with the draft on the pending hand-off; nothing released yet', async () => {
+  it('from another page → navigate(/ai/chat#session=<id>) with the draft on the pending hand-off; nothing released yet', async () => {
     const result = moveToAssistant(S, { draft: 'half a thought' });
-    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/wisp/chat#session=${S}`));
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/ai/chat#session=${S}`));
     expect(useHandoffStore.getState().pending).toMatchObject({ sessionId: S, origin: 'panel', draft: 'half a thought' });
     expect(useAiStore.getState().sessionId).toBe(S);
     expect(useAiStore.getState().isOpen).toBe(true);
@@ -133,8 +133,8 @@ describe('moveToAssistant (panel → workspace)', () => {
     await result;
   });
 
-  it('on /wisp/chat → a real hash change, no navigate', async () => {
-    window.history.replaceState(null, '', '/wisp/chat');
+  it('on /ai/chat → a real hash change, no navigate', async () => {
+    window.history.replaceState(null, '', '/ai/chat');
     const onHash = vi.fn();
     window.addEventListener('hashchange', onHash);
     const result = moveToAssistant(S, {});

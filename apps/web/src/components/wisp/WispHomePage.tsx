@@ -4,8 +4,8 @@ import { useJwtClaims } from '@/lib/authScope';
 import { useWispServerState } from '@/lib/wispVisibility';
 import WispHomeContent from './WispHomeContent';
 
-/** Where /wisp hands over when Wisp cannot run here: the multi-tab chat (was /workspace). */
-export const WISP_CHAT_PATH = '/wisp/chat';
+/** The full-page Breeze AI chat (multi-tab; was /workspace, then /wisp/chat — both redirect here, W05 #10136). */
+export const WISP_CHAT_PATH = '/ai/chat';
 
 /**
  * `/wisp` (W08 #9921, spec §17.2). The Wisp home only where Wisp can run:

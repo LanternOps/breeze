@@ -48,7 +48,7 @@ describe('parseSessionHash', () => {
 
 describe('writeSessionHash', () => {
   beforeEach(() => {
-    window.history.replaceState({ astro: 'router-data' }, '', '/workspace?x=1');
+    window.history.replaceState({ astro: 'router-data' }, '', '/ai/chat?x=1');
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -57,7 +57,7 @@ describe('writeSessionHash', () => {
     const push = vi.spyOn(window.history, 'pushState');
     const length = window.history.length;
     writeSessionHash(ID);
-    expect(replace).toHaveBeenCalledWith({ astro: 'router-data' }, '', `/workspace?x=1#session=${ID}`);
+    expect(replace).toHaveBeenCalledWith({ astro: 'router-data' }, '', `/ai/chat?x=1#session=${ID}`);
     expect(push).not.toHaveBeenCalled();
     expect(window.location.hash).toBe(`#session=${ID}`);
     expect(window.history.length).toBe(length);
@@ -68,7 +68,7 @@ describe('writeSessionHash', () => {
     writeSessionHash(ID);
     const replace = vi.spyOn(window.history, 'replaceState');
     writeSessionHash(null);
-    expect(replace).toHaveBeenCalledWith({ astro: 'router-data' }, '', '/workspace?x=1');
+    expect(replace).toHaveBeenCalledWith({ astro: 'router-data' }, '', '/ai/chat?x=1');
     expect(window.location.hash).toBe('');
   });
 

@@ -579,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Turn on Wisp",
-      "turningOn": "Turning on Wisp…"
-    },
     "locked": {
-      "why": "Wisp is available on Pro and higher plans."
+      "why": "Wisp is available on Pro and higher plans.",
+      "server": "Wisp runs on Breeze Cloud. It is not available on this server."
     },
     "modal": {
       "title": "Turn on Wisp",
@@ -601,7 +598,8 @@
       "cancel": "Cancel",
       "stepUpUnavailable": "Could not verify your factor. Try again.",
       "reverify": "Your access changed while you were confirming. Enter a new code to continue.",
-      "invalidCode": "That code was not accepted. Try again."
+      "invalidCode": "That code was not accepted. Try again.",
+      "turningOn": "Turning on Wisp…"
     },
     "header": {
       "scopeAll": "All organizations",
@@ -769,7 +767,8 @@
       "linking": "Linking…"
     },
     "sidebar": {
-      "openHome": "Open in Wisp"
+      "openHome": "Open in Wisp",
+      "meetWisp": "Meet Wisp"
     },
     "partnerSwitch": {
       "description": "Let technicians delegate work to Wisp. Turning it off pauses every running delegation at its next check and blocks new ones; nothing is deleted, and turning it back on resumes what it paused.",

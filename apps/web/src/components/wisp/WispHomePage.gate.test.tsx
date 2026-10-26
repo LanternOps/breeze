@@ -44,7 +44,7 @@ describe('WispHomePage gate (W08 Task 8)', () => {
   it('server flag off → the chat page, keeping the fragment (old #session= links)', () => {
     h.server = 'off';
     render(<WispHomePage />);
-    expect(replace).toHaveBeenCalledWith('/wisp/chat#session=abc');
+    expect(replace).toHaveBeenCalledWith('/ai/chat#session=abc');
     expect(screen.queryByTestId('wisp-home-content-mock')).toBeNull();
   });
 
@@ -52,7 +52,7 @@ describe('WispHomePage gate (W08 Task 8)', () => {
     h.server = 'on';
     h.claims = { status: 'resolved', claims: { scope: 'organization', partnerId: 'p-1', orgId: 'org-1' } };
     render(<WispHomePage />);
-    expect(replace).toHaveBeenCalledWith('/wisp/chat#session=abc');
+    expect(replace).toHaveBeenCalledWith('/ai/chat#session=abc');
   });
 
   it('flag on + partner scope → the home', () => {

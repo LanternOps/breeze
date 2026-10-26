@@ -268,6 +268,17 @@ const SWITCHED_TURN_STATE = {
  * or an API that predates W04) drops the Wisp header rather than showing a
  * ceiling the server is not applying.
  */
+/**
+ * W05 (#10136, spec §7): only an active grant gives the panel the Wisp voice.
+ * A paused grant (A29 — the user's "not now") or an ended one (revoked,
+ * expired) leaves it Breeze AI. The server's status is the authority, expiry
+ * included (`GET /wisp/thread` answers only grants live by its own clock), so
+ * no client clock is consulted here.
+ */
+export function isActiveGrant(w: WispState): boolean {
+  return w?.status === 'active';
+}
+
 function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> | undefined): WispState {
   if (!wisp) return null;
   return session?.wispGrantId === wisp.grantId ? wisp : null;
@@ -290,7 +301,7 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
     // An org grant is keyed by the session's org; a partner-wide one by none.
     for (const scope of orgId ? [orgId, null] : [null]) {
       const state = await fetchWispThread(scope).catch(() => null);
-      if (state?.grantId === grantId) {
+      if (state?.grantId === grantId && isActiveGrant(state)) {
         if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
         return;
       }

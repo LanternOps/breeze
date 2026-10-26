@@ -579,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Activer Wisp",
-      "turningOn": "Activation de Wisp…"
-    },
     "locked": {
-      "why": "Wisp est disponible avec les offres Pro et supérieures."
+      "why": "Wisp est disponible avec les offres Pro et supérieures.",
+      "server": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
     },
     "modal": {
       "title": "Activer Wisp",
@@ -601,7 +598,8 @@
       "cancel": "Annuler",
       "stepUpUnavailable": "Impossible de vérifier votre facteur. Veuillez réessayer.",
       "reverify": "Votre accès a changé pendant la confirmation. Saisissez un nouveau code pour continuer.",
-      "invalidCode": "Ce code n’a pas été accepté. Réessayez."
+      "invalidCode": "Ce code n’a pas été accepté. Réessayez.",
+      "turningOn": "Activation de Wisp…"
     },
     "header": {
       "scopeAll": "Toutes les organisations",
@@ -769,7 +767,8 @@
       "linking": "Liaison en cours…"
     },
     "sidebar": {
-      "openHome": "Ouvrir dans Wisp"
+      "openHome": "Ouvrir dans Wisp",
+      "meetWisp": "Découvrir Wisp"
     },
     "partnerSwitch": {
       "description": "Permettre aux techniciens de déléguer du travail à Wisp. La désactivation met en pause chaque autorisation en cours à sa prochaine vérification et bloque les nouvelles ; rien n’est supprimé, et la réactivation reprend ce qui avait été mis en pause.",

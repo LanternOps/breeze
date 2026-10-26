@@ -579,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Wisp aktivieren",
-      "turningOn": "Wisp wird aktiviert…"
-    },
     "locked": {
-      "why": "Wisp ist in Pro und höheren Tarifen verfügbar."
+      "why": "Wisp ist in Pro und höheren Tarifen verfügbar.",
+      "server": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
     },
     "modal": {
       "title": "Wisp aktivieren",
@@ -601,7 +598,8 @@
       "cancel": "Abbrechen",
       "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut.",
       "reverify": "Ihre Zugriffsrechte haben sich während der Bestätigung geändert. Geben Sie einen neuen Code ein, um fortzufahren.",
-      "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut."
+      "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut.",
+      "turningOn": "Wisp wird aktiviert…"
     },
     "header": {
       "scopeAll": "Alle Organisationen",
@@ -769,7 +767,8 @@
       "linking": "Wird verknüpft…"
     },
     "sidebar": {
-      "openHome": "In Wisp öffnen"
+      "openHome": "In Wisp öffnen",
+      "meetWisp": "Wisp kennenlernen"
     },
     "partnerSwitch": {
       "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",

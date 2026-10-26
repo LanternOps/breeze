@@ -25,7 +25,6 @@ vi.mock('./useAiConversationSource', () => ({
   MIN_SEARCH_CHARS: 2,
   useAiConversationSource: () => ({ items: [], query: '', setQuery: () => undefined, isLoading: false, isSearching: false, error: null }),
 }));
-vi.mock('./WispToggle', () => ({ default: () => null }));
 vi.mock('./WispThreadHeader', () => ({ default: () => null }));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => null }));

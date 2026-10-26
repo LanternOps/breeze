@@ -9,7 +9,7 @@ vi.mock('@/lib/runAction', async (importOriginal) => {
 });
 
 import { fetchWithAuth } from './auth';
-import { useAiStore, type WispState } from './aiStore';
+import { isActiveGrant, useAiStore, type WispState } from './aiStore';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 
@@ -196,6 +196,22 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().wisp).toBeNull();
   });
 
+  it('a Wisp session whose grant thread reports it paused stays plain (W05: only an active grant gives the panel its voice)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: null, wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread') {
+        const body = threadBody('grant-pw', null);
+        return response({ data: { ...body.data, grant: { ...body.data.grant, status: 'paused' } } });
+      }
+      return response({ data: [] });
+    });
+    await useAiStore.getState().loadSession('sess-w');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread');
+    expect(useAiStore.getState().wisp).toBeNull();
+  });
+
   it('loadSession of a plain session leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
@@ -238,5 +254,15 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
     await useAiStore.getState().switchSession('sess-w2');
     expect(useAiStore.getState().wisp?.grantId).toBe('grant-1');
+  });
+});
+
+describe('isActiveGrant (W05 #10136)', () => {
+  it('is true only for a grant the server reports active', () => {
+    expect(isActiveGrant(wisp())).toBe(true);
+    expect(isActiveGrant(wisp({ status: 'paused' }))).toBe(false);
+    expect(isActiveGrant(wisp({ status: 'revoked' }))).toBe(false);
+    expect(isActiveGrant(wisp({ status: 'expired' }))).toBe(false);
+    expect(isActiveGrant(null)).toBe(false);
   });
 });

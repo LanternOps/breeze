@@ -579,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Attiva Wisp",
-      "turningOn": "Attivazione di Wisp…"
-    },
     "locked": {
-      "why": "Wisp è disponibile con i piani Pro e superiori."
+      "why": "Wisp è disponibile con i piani Pro e superiori.",
+      "server": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
     },
     "modal": {
       "title": "Attiva Wisp",
@@ -601,7 +598,8 @@
       "cancel": "Annulla",
       "stepUpUnavailable": "Impossibile verificare il tuo fattore. Riprova.",
       "reverify": "Il tuo accesso è cambiato durante la conferma. Inserisci un nuovo codice per continuare.",
-      "invalidCode": "Il codice non è stato accettato. Riprova."
+      "invalidCode": "Il codice non è stato accettato. Riprova.",
+      "turningOn": "Attivazione di Wisp…"
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
@@ -769,7 +767,8 @@
       "linking": "Collegamento in corso…"
     },
     "sidebar": {
-      "openHome": "Apri in Wisp"
+      "openHome": "Apri in Wisp",
+      "meetWisp": "Scopri Wisp"
     },
     "partnerSwitch": {
       "description": "Consenti ai tecnici di delegare lavoro a Wisp. Disattivandolo, ogni autorizzazione in corso viene messa in pausa al controllo successivo e le nuove vengono bloccate; non viene eliminato nulla e, riattivandolo, ciò che era in pausa riprende.",

@@ -176,8 +176,9 @@ describe('AiChatSidebar keyboard shortcut (#9613)', () => {
 });
 
 // Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
-// suites cover them; this pins where the sidebar mounts them.
-vi.mock('./WispToggle', () => ({ default: () => <button data-testid="wisp-toggle-stub" /> }));
+// suites cover them; this pins where the sidebar mounts them. W05 (#10136)
+// removed the "Turn on Wisp" toggle: the grant decides the voice
+// (AiChatSidebar.wispHome.test.tsx covers the lookup).
 vi.mock('./WispThreadHeader', () => ({
   default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
     <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
@@ -191,18 +192,13 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
   };
 
-  it('renders WispToggle in the header when wisp is null', () => {
+  it('without Wisp mode the header says Breeze AI and offers no Wisp toggle', () => {
     vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
     render(<AiChatSidebar />);
-    expect(screen.getByTestId('wisp-toggle-stub')).toBeInTheDocument();
     expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
     expect(screen.getByText('Breeze AI')).toBeInTheDocument();
-  });
-
-  it('hides WispToggle while the history panel is open', () => {
-    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null, showHistory: true });
-    render(<AiChatSidebar />);
-    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+    expect(screen.queryByTestId('wisp-toggle')).toBeNull();
+    expect(screen.queryByText('Turn on Wisp')).toBeNull();
   });
 
   it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
@@ -210,7 +206,6 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     render(<AiChatSidebar />);
     expect(screen.getByText('Wisp')).toBeInTheDocument();
     expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
-    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
   });
 
   it('shows the thread attachments behind a disclosure', () => {
