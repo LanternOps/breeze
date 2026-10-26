@@ -16,6 +16,7 @@ import { db } from '../db';
 import { auditLogs } from '../db/schema';
 import type { AiTool } from './aiTools';
 import { aiOriginAuditActor } from './aiOriginColumns';
+import { markRequestAuditWritten } from './auditRequestTracking';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import {
@@ -139,6 +140,8 @@ export function registerSecurityRecommendationTools(aiTools: Map<string, AiTool>
           result: 'success',
           initiatedBy: actor.initiatedBy,
         });
+        // This row is the request's audit event (as in the route); tell the generic fallback not to add another.
+        markRequestAuditWritten();
         return json({ id: recommendationId, orgId: targetOrgId, status: action === 'complete' ? 'completed' : 'dismissed' });
       } catch (error) {
         return thrown(TOOL, error);

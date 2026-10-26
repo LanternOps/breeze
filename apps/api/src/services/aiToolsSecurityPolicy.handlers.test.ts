@@ -211,6 +211,17 @@ describe('manage_security_recommendations', () => {
       actorType: 'user', actorId: 'user-1', initiatedBy: 'ai',
     });
   });
+
+  it('marks the request as audited, so the generic fallback adds no second row', async () => {
+    h.buildRecs.mockResolvedValue({ recommendations: [{ id: 'rec-enable-av' }] });
+    h.insert.mockImplementation(() => chain([]));
+    const { runWithAuditRequestTracking } = await import('./auditRequestTracking');
+    const written = await runWithAuditRequestTracking(async () => {
+      await run('manage_security_recommendations', { action: 'complete', recommendationId: 'rec-enable-av' });
+    });
+    expect(h.insert).toHaveBeenCalledOnce();
+    expect(written).toBe(true);
+  });
 });
 
 describe('manage_compliance_policies (W11-D4)', () => {
