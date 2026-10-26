@@ -223,6 +223,13 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_known_guests: { limit: 30, windowSeconds: 300 },
   get_unifi_status: { limit: 30, windowSeconds: 300 },
   trigger_unifi_sync: { limit: 6, windowSeconds: 300 },
+  // Full-control W10 (#6780): read-only replays of stored rows; the detail reads assemble several queries.
+  get_device_ai_activity: { limit: 60, windowSeconds: 300 },
+  list_operator_tasks: { limit: 60, windowSeconds: 300 },
+  get_operator_task: { limit: 40, windowSeconds: 300 },
+  list_ai_agent_schedules: { limit: 40, windowSeconds: 300 },
+  list_fleet_designs: { limit: 40, windowSeconds: 300 },
+  get_fleet_design: { limit: 30, windowSeconds: 300 },
 };
 
 /**
