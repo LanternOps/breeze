@@ -140,6 +140,12 @@ describe('AiChatInput composer keys', () => {
     expect(slot.compareDocumentPosition(textbox()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('the textarea draws no border of its own (the rounded field is the border)', () => {
+    render(<AiChatInput onSend={vi.fn()} />);
+    expect(textbox().className).toMatch(/(^|\s)border-0(\s|$)/);
+    expect(textbox().className).toContain('focus:ring-0');
+  });
+
   it('no shortcut hint text is rendered', () => {
     const { container, rerender } = render(<AiChatInput onSend={vi.fn()} />);
     expect(container.textContent).not.toMatch(/Cmd\+Enter|to send/);

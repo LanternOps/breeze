@@ -19,9 +19,11 @@ export const WISP_RAIL_WIDE_QUERY = '(min-width: 1024px)';
  * mounting both would fetch every rail panel twice and put the `#needs-you`,
  * `#links` and `#activity` ids on the page twice.
  *
- * `h-full` fills the dashboard `<main>`'s content box (as /ai/chat does); the
- * negative bottom margin gives back main's bottom padding so the domain-accent
- * strip above does not push the composer a few pixels below the fold.
+ * Height: `data-wisp-shell` turns the dashboard `<main>` into a flex column
+ * (globals.css), so `flex-1` takes exactly the space left under the accent
+ * strip and any banner (MFA, trust) instead of a fixed height they would push
+ * below the fold. The negative bottom margin gives back main's bottom padding
+ * so the composer sits near the bottom edge.
  */
 export default function WispCompanionShell({
   testId,
@@ -49,7 +51,8 @@ export default function WispCompanionShell({
   return (
     <div
       data-testid={testId}
-      className={`-mb-4 flex h-full min-h-[28rem] w-full gap-6 md:-mb-6${panelOpen ? ' lg:pr-[400px]' : ''}`}
+      data-wisp-shell=""
+      className={`-mb-4 flex min-h-[28rem] w-full flex-1 gap-6 md:-mb-6${panelOpen ? ' lg:pr-[400px]' : ''}`}
     >
       <div className="mx-auto flex min-w-0 max-w-[60rem] flex-1 flex-col gap-3">
         {banners}

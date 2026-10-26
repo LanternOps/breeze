@@ -105,7 +105,7 @@ describe('WispRail', () => {
     expect(within(identity).getByTestId('wisp-thread-header')).toBeTruthy();
     expect(screen.getByTestId('wisp-state-line').textContent).toContain('Greenwood');
     expect(h.headerProps).toMatchObject({
-      wisp: props.wisp, orgName: 'Acme', wideningAvailable: true, showFocus: false, currentActivity: null,
+      wisp: props.wisp, orgName: 'Acme', wideningAvailable: true, showFocus: false, showIdentity: false, currentActivity: null,
       onWispChange: props.onWispChange, onRevoked: props.onRevoked,
     });
 

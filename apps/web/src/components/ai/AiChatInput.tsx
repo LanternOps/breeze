@@ -90,7 +90,7 @@ export default function AiChatInput({
           disabled={disabled || isStreaming}
           rows={1}
           data-testid="ai-chat-input"
-          className="max-h-[200px] min-h-8 flex-1 resize-none bg-transparent py-1.5 text-sm text-foreground placeholder-muted-foreground focus:outline-hidden disabled:opacity-50"
+          className="max-h-[200px] min-h-8 flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm text-foreground placeholder-muted-foreground focus:outline-hidden focus:ring-0 disabled:opacity-50"
         />
         {isStreaming ? (
           <button

@@ -63,6 +63,15 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(screen.getByTestId('wisp-scope').textContent).toBe('Alpha');
   });
 
+  it('showIdentity=false drops the scope and status (the Wisp rail identity card carries them) and keeps the controls', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} showIdentity={false} />);
+    expect(screen.queryByTestId('wisp-scope')).toBeNull();
+    expect(screen.queryByTestId('wisp-grant-status')).toBeNull();
+    expect(screen.getByTestId('wisp-refresh-grant')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-settings')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-revoke')).toBeInTheDocument();
+  });
+
   it.each([
     ['active', 'Active'],
     ['paused', 'Paused'],

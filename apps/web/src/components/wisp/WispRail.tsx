@@ -76,6 +76,7 @@ export default function WispRail({
               orgName={orgName}
               wideningAvailable={wisp.wideningAvailable}
               showFocus={false}
+              showIdentity={false}
               currentActivity={null}
               onWispChange={onWispChange}
               onRevoked={onRevoked}
