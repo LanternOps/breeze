@@ -666,7 +666,9 @@ async function transitionIntentAndPublish(
   return withSystemDbAccessContext(async () => {
     const won = await transitionIntent(intentId, 'executing', to, patch);
     if (won) {
-      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null }, event);
+      // Chat intents are never flow-originated (this path only transitions
+      // intents its own session minted), so there is no run to wake.
+      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null, requestingFlowRunId: null }, event);
     }
     return won;
   });

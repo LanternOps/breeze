@@ -2,6 +2,7 @@
   "aiInitiator": {
     "assistant": "Breeze AI",
     "agent": "KI-Agent",
+    "flow": "Ablauf",
     "originUnavailable": "Ursprung nicht verfügbar",
     "openSession": "Unterhaltung öffnen",
     "openAgentRun": "Agentenlauf öffnen",

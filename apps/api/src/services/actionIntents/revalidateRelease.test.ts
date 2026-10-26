@@ -1186,3 +1186,94 @@ describe('revalidateApprovedIntentForRelease Wisp delegation ceiling (W04a)', ()
     expect(loadPinnedCallerBackend).not.toHaveBeenCalled();
   });
 });
+
+// Tool catalog W04 (#5219), plan Task A5: a flow-origin intent has no user
+// RBAC behind it. Branch (c) rebuilds the run's flow principal
+// (checkFlowReleaseAuthority) and branch (e) takes the STRUCTURAL flow branch:
+// checkToolPermission — which denies every machine principal — is never asked.
+const { checkFlowReleaseAuthorityMock } = vi.hoisted(() => ({ checkFlowReleaseAuthorityMock: vi.fn() }));
+vi.mock('../flows/releaseAuthority', () => ({ checkFlowReleaseAuthority: checkFlowReleaseAuthorityMock }));
+
+describe('revalidateApprovedIntentForRelease — flow-origin intents', () => {
+  const RUN_ID = '77777777-7777-4777-8777-777777777777';
+  const FLOW_ID = '66666666-6666-4666-8666-666666666666';
+  const args = { scriptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', deviceIds: ['dev-1'] };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const flowAuth = {
+    principal: { kind: 'flow', flowId: FLOW_ID, runId: RUN_ID },
+    aiOrigin: { kind: 'flow', flowRunId: RUN_ID },
+    user: { id: FLOW_ID },
+    token: null,
+    orgId: 'org-1',
+    accessibleOrgIds: ['org-1'],
+  };
+  function flowIntent(over: Record<string, unknown> = {}) {
+    return intentFixture({
+      requestedByUserId: null,
+      requestingFlowRunId: RUN_ID,
+      originPrincipalKind: 'flow',
+      originPrincipalId: FLOW_ID,
+      source: 'flow',
+      actionName: 'run_script',
+      arguments: args,
+      argumentDigest: digest,
+      approvalScope: 'supervised',
+      ...over,
+    });
+  }
+
+  beforeEach(() => {
+    checkFlowReleaseAuthorityMock.mockReset();
+    checkFlowReleaseAuthorityMock.mockResolvedValue({ ok: true, auth: flowAuth });
+  });
+
+  it('a flow intent takes the flow-authority branch and never calls checkToolPermission', async () => {
+    const result = await revalidateApprovedIntentForRelease(flowIntent(), { boundArgumentDigest: digest });
+    expect(result).toEqual({ ok: true, auth: flowAuth });
+    expect(checkFlowReleaseAuthorityMock).toHaveBeenCalledTimes(1);
+    expect(checkToolPermission).not.toHaveBeenCalled();
+    expect(checkPermissionRequirements).not.toHaveBeenCalled();
+    expect(buildAuthContextForIntent).not.toHaveBeenCalled();
+    expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+  });
+
+  it('a refused flow rebuild fails the release actor_invalid with the reason', async () => {
+    checkFlowReleaseAuthorityMock.mockResolvedValue({ ok: false, code: 'ownership_mismatch' });
+    const result = await revalidateApprovedIntentForRelease(flowIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'actor_invalid', details: { reason: 'ownership_mismatch' } });
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('a flow intent still needs its human approval row (digest-bound)', async () => {
+    const result = await revalidateApprovedIntentForRelease(flowIntent(), null);
+    expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
+    expect(checkFlowReleaseAuthorityMock).not.toHaveBeenCalled();
+  });
+
+  it('a rebuild that is not this run\'s flow principal is refused (structural consistency)', async () => {
+    checkFlowReleaseAuthorityMock.mockResolvedValue({
+      ok: true, auth: { ...flowAuth, principal: { kind: 'flow', flowId: FLOW_ID, runId: '77777777-7777-4777-8777-000000000000' } },
+    });
+    const result = await revalidateApprovedIntentForRelease(flowIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'actor_invalid' });
+  });
+
+  it('an external-tool flow step reloads its descriptor under the flow principal, with no external_tools RBAC check', async () => {
+    const descriptor = { id: 'tool-1', qualifiedName: 'acme__restart' };
+    vi.mocked(loadTenantToolBindingState).mockResolvedValueOnce({
+      tool: { id: 'tool-1', enabled: true, removedAt: null, revision: 'rev-1', tier: 3 },
+      source: { id: 'src-1', status: 'active' },
+    } as never);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValueOnce({ descriptor } as never);
+    const ext = { a: 1 };
+    const extDigest = computeArgumentDigest(canonicalizeArguments(ext));
+    const result = await revalidateApprovedIntentForRelease(
+      flowIntent({ actionName: 'acme__restart', arguments: ext, argumentDigest: extDigest, toolSourceToolId: 'tool-1', toolRevision: 'rev-1' }),
+      { boundArgumentDigest: extDigest },
+    );
+    expect(result).toEqual({ ok: true, auth: flowAuth, tenantTool: descriptor });
+    expect(loadTenantToolForExecution).toHaveBeenCalledWith('tool-1', flowAuth);
+    expect(checkPermissionRequirements).not.toHaveBeenCalled();
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+});

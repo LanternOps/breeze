@@ -197,6 +197,7 @@ export * from './monitorEpisodes';
 export * from './monitorConversions';
 export * from './toolSources';
 export * from './flows';
+export * from './flowRuns';
 export * from './topology';
 
 export * from "./topologyCollections";

@@ -8,6 +8,7 @@ import {
 } from '@breeze/shared';
 import { db, withDbTransaction } from '../../db';
 import { hasSatisfiedMfa } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import {
   topologySiteState,
   topologyProbeTargets,
@@ -111,7 +112,7 @@ async function mutate(
   remove = false,
 ) {
   return withDbTransaction(async () => {
-    if (ctx.auth.principal?.kind === 'ai_agent' || !hasSatisfiedMfa(ctx.auth))
+    if (isAutomationPrincipal(ctx.auth) || !hasSatisfiedMfa(ctx.auth))
       throw new TopologyOperationError('mfa_required', 403);
     await requireTopologySiteAccess(
       ctx.auth,

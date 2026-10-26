@@ -18,7 +18,8 @@ import {
   automationPolicyCompliance,
 } from '../db/schema';
 import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
-import { hasSatisfiedMfa, isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { bumpApprovalGeneration } from './approvalGeneration';
@@ -87,12 +88,12 @@ async function assertAiCallerMayManageExecutableRules(
 ): Promise<string | null> {
   if (!willChangePamGovernedExecutableRules(stored, patch)) return null;
 
-  // An autonomous ai_agent run has no role and no pam.manage_policy grant of
+  // An autonomous ai_agent or flow run has no role and no pam.manage_policy grant of
   // its own; today it also fails the lookup below because its synthetic
   // principal id is never a row in organization_users, but that is
   // incidental to how getUserPermissions is implemented, not a guarantee.
   // Deny explicitly, matching requireOrgAccess / checkPermissionRequirements.
-  if (isAiAgentPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;
+  if (isAutomationPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;
 
   const perms = await getUserPermissions(auth.user.id, {
     partnerId: auth.partnerId || undefined,

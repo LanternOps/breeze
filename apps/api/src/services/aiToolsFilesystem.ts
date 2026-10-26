@@ -57,6 +57,7 @@ import {
 } from './systemCleanup';
 import { CommandTypes } from './commandTypes';
 import { createAuditLogAsync } from './auditService';
+import { aiOriginAuditActor } from './aiOriginColumns';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { CLEANUP_PREVIEW_TTL_HOURS } from '../routes/devices/filesystem';
@@ -997,16 +998,26 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // result handler owns completion (the measured
       // device.filesystem.system_cleanup.run row with bytes and per-action
       // status) for every path, AI or human.
+      // Tool catalog W04 (#5219), Decision 16: a flow is system automation
+      // carrying its run — never 'ai_agent' (the fallback below for a
+      // non-users actor) and never its synthetic attribution id.
+      const flowActor = aiOrigin.kind === 'flow'
+        ? aiOriginAuditActor(aiOrigin, { agentActorId: null, humanActorId: null })
+        : null;
       void createAuditLogAsync({
         orgId: device.orgId,
-        actorType: requestedBy ? 'user' : 'ai_agent',
-        actorId: auth.user.id,
-        actorEmail: auth.user.email,
+        ...(flowActor
+          ? { actorType: flowActor.actorType, actorId: flowActor.actorId, initiatedBy: flowActor.initiatedBy }
+          : {
+            actorType: requestedBy ? 'user' : 'ai_agent',
+            actorId: auth.user.id,
+            actorEmail: auth.user.email,
+            initiatedBy: 'ai',
+          }),
         action: 'device.filesystem.system_cleanup.run',
         resourceType: 'device',
         resourceId: device.id,
         resourceName: access.device.hostname,
-        initiatedBy: 'ai',
         details: {
           cleanupRunId: started.cleanupRunId,
           commandId: started.commandId,
@@ -1014,6 +1025,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           surface: 'ai_tool',
           status: 'running',
           deadlineAt: started.deadlineAt,
+          ...(flowActor ? flowActor.originDetails : {}),
         },
         result: 'success',
       }).catch((auditError: unknown) => {

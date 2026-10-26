@@ -151,6 +151,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'validate_flow', description: 'Check a flow document without saving it', category: 'Scripts & Automation' },
       { name: 'get_flow', description: 'Read a flow and re-validate it', category: 'Scripts & Automation' },
       { name: 'list_flows', description: 'List flows and drafts', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): flow run reads.
+      { name: 'list_flow_runs', description: 'List flow runs and their status', category: 'Scripts & Automation' },
+      { name: 'get_flow_run', description: 'Read one flow run step by step', category: 'Scripts & Automation' },
       // Configuration Policies
       { name: 'list_configuration_policies', description: 'List config policies', category: 'Configuration Policies' },
       { name: 'get_configuration_policy', description: 'Get config policy details', category: 'Configuration Policies' },
@@ -259,6 +262,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     tools: [
       // Tool Catalog W03 (#5218, behind FLOWS_ENABLED): saves a draft; nothing runs.
       { name: 'draft_flow', description: 'Save a flow as a reviewable draft', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): stop a flow run.
+      { name: 'cancel_flow_run', description: 'Cancel a flow run that has not finished', category: 'Scripts & Automation' },
       // Security & Compliance — EDR provider framework (#8167 W03)
       { name: 'edr_endpoint_action (scan)', description: 'EDR scan of a device through its linked vendor', category: 'Security & Compliance' },
       { name: 'sync_edr_data', description: 'Queue an immediate EDR vendor sync', category: 'Security & Compliance' },
@@ -399,6 +404,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'diagnose_connectivity', description: 'One approved topology connectivity check (fresh MFA)', category: 'Network & DNS' },
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): starting a flow needs your approval; its sensitive steps still wait for a human.
+      { name: 'run_flow', description: 'Start an enabled flow (each sensitive step still waits for approval)', category: 'Scripts & Automation' },
       // Backup & Recovery
       // Full-control W03 (#6757): triggers and Hyper-V power are approved by the
       // requester; restores, instant boot and DR execution need a second approver.
@@ -746,6 +753,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   validate_flow: 'automations.read',
   get_flow: 'automations.read',
   list_flows: 'automations.read',
+  run_flow: 'automations.write',
+  list_flow_runs: 'automations.read',
+  get_flow_run: 'automations.read',
+  cancel_flow_run: 'automations.write',
   // #8973 W4: business-hours calendars (read-only)
   list_business_calendars: 'tickets.read',
   // #8883 W5: ticket routing rules

@@ -5744,3 +5744,216 @@ describe('releaseApprovedIntent — Wisp delegation ceiling at durable release (
     expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth, expect.anything());
   });
 });
+
+// ============================================================================
+// Tool catalog W04 (#5219), plan Task A5 — flow-origin releases.
+//
+// A flow intent takes the flow-aware dispatch claim (never the plain CAS),
+// revalidates through the structural flow branch (real
+// revalidateApprovedIntentForRelease; only its flow-authority collaborator is
+// mocked), executes under the run's flow principal INSIDE the run's
+// flowExecutionContext frame, and never notifies a requester — the run
+// timeline is the outcome surface.
+// ============================================================================
+const { flowClaimMock, flowAuthorityMock } = vi.hoisted(() => ({
+  flowClaimMock: { claimFlowLinkedIntentForDispatch: vi.fn() },
+  flowAuthorityMock: { checkFlowReleaseAuthority: vi.fn() },
+}));
+vi.mock('../services/flows/intentClaim', () => flowClaimMock);
+vi.mock('../services/flows/releaseAuthority', () => flowAuthorityMock);
+
+describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
+  const RUN_ID = '77777777-7777-4777-8777-777777777777';
+  const FLOW_ID = '66666666-6666-4666-8666-666666666666';
+  const flowAuth = {
+    principal: { kind: 'flow', flowId: FLOW_ID, runId: RUN_ID },
+    aiOrigin: { kind: 'flow', flowRunId: RUN_ID },
+    user: { id: FLOW_ID, email: `flow+${FLOW_ID}@breeze.internal`, name: 'Disk cleanup', isPlatformAdmin: false },
+    token: null,
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    scope: 'organization' as const,
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: (id: string) => id === 'org-1',
+  };
+
+  function flowIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+    return baseIntent({
+      requestedByUserId: null,
+      requestingFlowRunId: RUN_ID,
+      originPrincipalKind: 'flow',
+      originPrincipalId: FLOW_ID,
+      source: 'flow',
+      approvalScope: 'supervised',
+      ...overrides,
+    } as Partial<ActionIntent>);
+  }
+
+  function primeFlow(intent: ActionIntent, claim: unknown = { claimed: true, runId: RUN_ID, chainDepth: 2 }) {
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockResolvedValueOnce(claim);
+    flowAuthorityMock.checkFlowReleaseAuthority.mockResolvedValue({ ok: true, auth: flowAuth });
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    flowAuthorityMock.checkFlowReleaseAuthority.mockReset();
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockReset();
+    intentServiceMock.transitionIntent.mockReset();
+    aiToolsMock.executeTool.mockReset();
+  });
+
+  it('goes through the flow claim, executes with the flow principal auth inside the run frame, and never checks user RBAC', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let frameDuringExecute: unknown;
+    const { currentFlowExecutionFrame } = await import('../services/flows/flowExecutionContext');
+    aiToolsMock.executeTool.mockImplementationOnce(async () => {
+      frameDuringExecute = currentFlowExecutionFrame();
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(flowClaimMock.claimFlowLinkedIntentForDispatch).toHaveBeenCalledWith(intent.id);
+    // The plain approved -> executing CAS is NOT taken for a flow intent.
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+      intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+    );
+    expect(dispatchClaimMock.claimTaskLinkedIntentForDispatch).not.toHaveBeenCalled();
+    expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, flowAuth, expect.anything());
+    expect(frameDuringExecute).toEqual({ runId: RUN_ID, chainDepth: 2 });
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+    );
+  });
+
+  // aiDispatch.requireAiOrigin (the device-dispatch gate) reads exactly
+  // `auth.aiOrigin` and throws MissingAiOriginError without it; the flow
+  // principal passing it is pinned in flowAuthContext.test.ts. Here: the auth
+  // the RELEASE hands the tool carries it.
+  it('released flow run_script reaches aiDispatch with aiOrigin kind flow', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let origin: unknown;
+    aiToolsMock.executeTool.mockImplementationOnce(async (_name: string, _args: unknown, auth: { aiOrigin?: unknown }) => {
+      if (!auth.aiOrigin) throw new Error('MissingAiOriginError');
+      origin = auth.aiOrigin;
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(origin).toEqual({ kind: 'flow', flowRunId: RUN_ID });
+  });
+
+  it('a tenant-tool flow release passes actor { kind: flow, id: runId }', async () => {
+    const TOOL_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const descriptor = { id: TOOL_ID, qualifiedName: 'acme__restart' };
+    const args = { name: 'svc' };
+    const intent = flowIntent({
+      actionName: 'acme__restart',
+      arguments: args,
+      argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-7',
+    } as Partial<ActionIntent>);
+    primeFlow(intent);
+    aiToolsMock.getToolTier.mockReturnValue(undefined);
+    aiToolsMock.requiresLiveSession.mockReturnValue(false);
+    toolSourcesMock.loadTenantToolBindingState.mockResolvedValue({
+      tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3 },
+      source: { id: 'src-1', status: 'active' },
+    });
+    toolSourcesMock.loadTenantToolForExecution.mockResolvedValue({ descriptor, source: {} });
+    toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: JSON.stringify({ ok: 1 }) });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
+      descriptor, args, flowAuth, { surface: 'flow', orgId: intent.orgId, actor: { kind: 'flow', id: RUN_ID } },
+    );
+    expect(aiGuardrailsMock.checkPermissionRequirements).not.toHaveBeenCalled();
+  });
+
+  it('a terminal transition publishes the terminal outbox once, carrying the run id (the run wake)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    const { publishIntentTerminalOutbox } = await import('../services/aiOperator/taskOutbox');
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(publishIntentTerminalOutbox).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(publishIntentTerminalOutbox).mock.calls[0]![1]).toMatchObject({
+      id: intent.id, orgId: intent.orgId, requestingFlowRunId: RUN_ID,
+    });
+  });
+
+  it('lost_race returns without writing anything', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'lost_race' });
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(flowAuthorityMock.checkFlowReleaseAuthority).not.toHaveBeenCalled();
+  });
+
+  it.each(['run_terminal', 'run_not_waiting', 'flow_not_enabled', 'publication_moved', 'tool_revision_changed', 'approval_scope_changed', 'delegator_inactive', 'run_cancel_requested'])(
+    'a %s refusal (the claim already wrote its outcome) executes nothing and writes nothing more',
+    async (reason) => {
+      const intent = flowIntent();
+      primeFlow(intent, { claimed: false, reason });
+      await releaseApprovedIntent(intent.id);
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('run_leased throws a retryable error so BullMQ redelivers the release (nothing written)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'run_leased' });
+    await expect(releaseApprovedIntent(intent.id)).rejects.toThrow(/flow run .* is leased/);
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('notifyRequesterOfOutcome is a no-op for a flow intent (approve and every terminal event)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    // The notifier re-reads the intent.
+    dbState.selectActionIntentsResults.push([{ ...intent, status: 'completed' }]);
+
+    await processIntentReleaseJob({ intentId: intent.id, eventType: 'intent_approved' });
+
+    for (const eventType of ['intent_rejected', 'intent_expired', 'intent_cancelled'] as const) {
+      dbState.selectActionIntentsResults.push([{ ...intent, status: eventType.replace('intent_', '') }]);
+      await processIntentReleaseJob({ intentId: intent.id, eventType });
+    }
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
+  });
+});

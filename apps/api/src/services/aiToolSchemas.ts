@@ -1982,6 +1982,21 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
+  // Tool Catalog W04 (#5219, Task A11): flow runs.
+  run_flow: z.object({
+    flowId: uuid,
+    orgId: uuid.optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  }),
+  list_flow_runs: z.object({
+    flowId: uuid.optional(),
+    orgId: uuid.optional(),
+    status: z.enum(['queued', 'running', 'waiting', 'awaiting_approval', 'succeeded', 'failed', 'cancelled', 'timed_out']).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_flow_run: z.object({ runId: uuid }),
+  cancel_flow_run: z.object({ runId: uuid }),
   // #8973 W4: read-only business-hours calendars (spec §5.7).
   list_business_calendars: z.object({
     orgId: uuid.optional(),
