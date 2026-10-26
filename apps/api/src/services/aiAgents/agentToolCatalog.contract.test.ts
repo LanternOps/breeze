@@ -348,3 +348,18 @@ describe('W07 alert correlation and signal triage in the agent catalog (#6777)',
     }
   });
 });
+
+/** Spec 2026-09-23 W08 (#6778, W08-D1): the topology tools resolve their caller through user permissions, which an
+ * agent principal does not have, so all six are human-only. They keep a capability row (the catalog maps every
+ * registered tool) but are never offered to an agent. */
+describe('W08 network topology in the agent catalog (#6778)', () => {
+  it.each([
+    'get_topology_graph', 'run_topology_diagnostic', 'manage_topology_manual',
+    'manage_topology_monitoring', 'manage_topology_templates', 'apply_topology_template',
+  ])('%s is mapped to the network capability but never offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('network');
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});

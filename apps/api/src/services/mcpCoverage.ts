@@ -762,15 +762,15 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // NOT covered, deliberately (no implicit parity): collector selection and
   // cancel have no tool, and the tool path is not the public POST — it starts
   // only an approved, digest-pinned proposal from a site-pinned session.
-  'topology/diagnostics.ts': { tools: ['get_diagnostic_run', 'diagnose_connectivity'] },
+  'topology/diagnostics.ts': { tools: ['get_diagnostic_run', 'diagnose_connectivity', 'run_topology_diagnostic'] }, // W08 (#6778): collectors, start, get, cancel
   'topology/exclusions.ts': { exempt: 'internal_plumbing', note: 'Per-view presentation state (hide/restore one connection in one topology view), the same class as topology/layouts.ts; no canonical graph, evidence, alert or monitor effect. Topology tool surface is tracked in #6778.' },
   // M4-D5 (#6000): the graph/evidence/link-health reads are the M4 tools; layout,
   // exclusion and manual writes live in their own route modules.
-  'topology/graphs.ts': { tools: ['get_topology', 'get_link_evidence', 'get_link_health'] },
+  'topology/graphs.ts': { tools: ['get_topology', 'get_link_evidence', 'get_link_health', 'get_topology_graph'] }, // W08 (#6778): graph, nodes, node, relationship, evidence, group members, expansion, health
   'topology/history.ts': { tools: ['get_interface_history', 'get_link_health'] },
   'topology/investigation.ts': { tools: ['get_topology_impact', 'get_recent_network_changes'] },
   'topology/layouts.ts': { exempt: 'internal_plumbing' },
-  'topology/manual.ts': { gap: '#6778' },
+  'topology/manual.ts': { tools: ['manage_topology_manual'] }, // W08 (#6778)
   'topology/monitoringArms.ts': { exempt: 'human_only_arming' },
   'topology/monitoringStatus.ts': { tools: ['get_topology_monitoring_status'] },
   'topology/middleware.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -779,15 +779,15 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/operations.ts': { exempt: 'internal_plumbing' },
   'topology/interfaceRole.ts': { exempt: 'internal_plumbing', note: 'WAN role mutation on a topology interface (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   // Topology monitoring policy CRUD has no registered AI tool.
-  'topology/policies.ts': { gap: '#6778' },
+  'topology/policies.ts': { tools: ['manage_topology_monitoring'] }, // W08 (#6778): policy list / upsert / delete; arming stays human-only
   'topology/presence.ts': { exempt: 'internal_plumbing', note: 'Site-gated presentation read of observed device location (site location W2, #7886). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP topology evidence unchanged, and aiPresenceIsolation.test.ts pins that no AI module reads presence.' },
-  'topology/settings.ts': { gap: '#6778' },
+  'topology/settings.ts': { tools: ['manage_topology_monitoring'] }, // W08 (#6778): settings get / patch
   // Topology probe target CRUD has no registered AI tool.
-  'topology/targets.ts': { gap: '#6778' },
+  'topology/targets.ts': { tools: ['manage_topology_monitoring'] }, // W08 (#6778): probe target list / upsert / delete
   // Template application preview, execution and status have no registered AI tool.
-  'topology/templateApplications.ts': { gap: '#6778' },
+  'topology/templateApplications.ts': { tools: ['apply_topology_template'] }, // W08 (#6778): preview, apply (supervised), status
   // The topology template library and version publishing have no registered AI tool.
-  'topology/templates.ts': { gap: '#6778' },
+  'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
   'flows.ts': { tools: ['list_flows', 'get_flow'] }, // Tool Catalog W03 (#5218): read-only list/detail; drafts are written via draft_flow.
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },

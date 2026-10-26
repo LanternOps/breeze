@@ -158,7 +158,7 @@ vi.mock('drizzle-orm', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor } from './actorContext';
+import { buildApproverAuthContextForIntent, buildAuthContextForIntent, originPrincipalFor, releaseCarriesSessionEpochs } from './actorContext';
 import { IntentScopeLostError } from './intentTargetScope';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
@@ -1113,5 +1113,66 @@ describe('buildAuthContextForIntent — mcp_api origin intents', () => {
       await buildAuthContextForIntent(baseIntent(overrides as never));
     }
     expect(mcpOrigin.rebuild).not.toHaveBeenCalled();
+  });
+});
+
+// Full-control W08 (#6778, quorum QW4/QW5): the ONE release that carries the requester's live session epochs.
+describe('buildAuthContextForIntent — apply_topology_template session epochs (W08-D2)', () => {
+  const applyIntent = (overrides: Partial<ActionIntent> = {}) => baseIntent({
+    actionName: 'apply_topology_template', arguments: { action: 'apply', token: 't' },
+    originPrincipalKind: 'user_session', partnerId: 'partner-1', ...overrides,
+  } as never);
+  const withEpochs = { ...activeUser, authEpoch: 7, mfaEpoch: 3 };
+  const orgPerms = { scope: 'organization', partnerId: null, orgId: 'org-1', roleId: 'role-1' };
+  const partnerPerms = { scope: 'partner', partnerId: 'partner-1', orgId: null, roleId: 'role-1', orgAccess: 'all' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+  });
+
+  it("carries the requester's current epochs for apply, on a user_session origin", async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
+    const result = await buildAuthContextForIntent(applyIntent({ partnerId: null }));
+    expect(result?.token).toMatchObject({ aep: 7, mep: 3 });
+    expect(result?.principal).toEqual({ kind: 'user_session' });
+    expect(result?.scope).toBe('organization');
+  });
+
+  it('a partner-axis requester keeps the partner axis (an organization-scoped actor is revalidated against users.orgId)', async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(partnerPerms);
+    const result = await buildAuthContextForIntent(applyIntent());
+    expect(result?.scope).toBe('partner');
+    expect(result?.partnerId).toBe('partner-1');
+    expect(result?.accessibleOrgIds).toEqual(['org-1']);
+    expect(result?.token).toMatchObject({ aep: 7, mep: 3 });
+  });
+
+  it('a partner-axis requester of ANOTHER partner is not widened to partner scope', async () => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce({ ...partnerPerms, partnerId: 'partner-2' });
+    const result = await buildAuthContextForIntent(applyIntent());
+    expect(result?.scope).toBe('organization');
+  });
+
+  it.each([
+    ['another action of the same tool', { arguments: { action: 'preview' } }],
+    ['another tool', { actionName: 'manage_topology_templates', arguments: { action: 'apply' } }],
+    ['an agent origin', { originPrincipalKind: 'ai_agent' }],
+  ])('%s never carries epochs', async (_label, overrides) => {
+    dbState.selectUsersResults.push([withEpochs]);
+    permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
+    const result = await buildAuthContextForIntent(applyIntent(overrides as never)).catch(() => null);
+    const token = result?.token as Record<string, unknown> | null | undefined;
+    expect(token?.aep).toBeUndefined();
+    expect(token?.mep).toBeUndefined();
+  });
+
+  it('the policy is one entry and pinned', () => {
+    expect(releaseCarriesSessionEpochs({ actionName: 'apply_topology_template', arguments: { action: 'apply' } }, { kind: 'user_session' })).toBe(true);
+    expect(releaseCarriesSessionEpochs({ actionName: 'apply_topology_template', arguments: { action: 'apply' } }, { kind: 'api_key' } as never)).toBe(false);
+    expect(releaseCarriesSessionEpochs({ actionName: 'run_script', arguments: { action: 'apply' } }, { kind: 'user_session' })).toBe(false);
   });
 });

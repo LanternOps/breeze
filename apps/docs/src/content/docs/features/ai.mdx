@@ -699,6 +699,25 @@ These tools read how alerts group together and what is behind a device's unusual
 
 A dry run of an alert rule is not available: the old per-rule test was retired with the previous alerting model.
 
+#### Network topology
+
+These tools read a site's network map and manage its manual entries, recurring checks and monitoring templates. They are available in AI chat and over MCP for people with the topology permissions; AI agents do not get them (an agent keeps the read-only topology investigation tools). Every call names a site and is limited to the sites you can already see.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_topology_graph (graph/nodes/node/relationship/evidence/group_members/expansion/health)` | 1 | Read a site's network map: devices and links, one device or link in detail, the evidence behind a link, the members of a group, and health. Addresses and raw collector data are not returned, and names collected from the network are treated as untrusted text |
+| `run_topology_diagnostic (collectors/get)` | 1 | See which devices can run a connectivity check, and read a check's result |
+| `run_topology_diagnostic (start/cancel)` | 2 | Start a fixed gateway, DNS, internet or trace-route check from a device at the site, or stop one. Runs in your own signed-in session and is rate limited per user, site and organization |
+| `manage_topology_manual` | 2 | Add, change or remove a hand-drawn switch, router, access point or link. A stale revision is refused. Nothing here binds a device or moves one between sites |
+| `manage_topology_monitoring (list_policies/list_targets/get_settings)` | 1 | View a site's recurring checks, probe targets and effective topology settings |
+| `manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)` | 2 | Change a site's recurring checks, probe targets or settings. Arming a recurring check stays a person's action in the topology page, and changing a check that is already armed disarms it |
+| `manage_topology_templates (list_templates/list_versions/site_options)` | 1 | View monitoring templates (partner-wide or one organization's), their versions, and the published versions a site can apply |
+| `manage_topology_templates (create_template/update_template/create_version)` | 2 | Draft a template or a new version. Nothing takes effect until a version is published. Partner-wide templates need full partner access |
+| `manage_topology_templates (publish_version/revoke_template)` | 3 | Publish a version so sites can apply it, or revoke a template permanently (this disables every check that uses it). Needs approval |
+| `apply_topology_template (preview)` | 2 | Preview what applying a template would change on named sites. Changes nothing |
+| `apply_topology_template (apply)` | 3 | Apply a previewed template to its sites, replacing their monitoring configuration. Needs approval. Sites outside the approving session's organization report their own outcome |
+| `apply_topology_template (status)` | 1 | See how an application is progressing, site by site |
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.

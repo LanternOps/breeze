@@ -55,6 +55,7 @@ import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
 import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
+import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -583,6 +584,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...ticketOpsToolSchemas,
   // Full-control W07 (#6777): alert correlation + signal triage.
   ...alertTriageToolSchemas,
+  // Full-control W08 (#6778): network topology tools.
+  ...topologyOpsToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

@@ -56,6 +56,17 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
   // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
   'manage_alert_correlations',
+  // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
+  // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
+  // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the
+  // topology template and diagnostic services also refuse an ai_agent principal by name. An agent keeps the
+  // pinned-session investigation reads (topology/aiToolGate.ts). Follow-up: a principal-aware resolver.
+  'get_topology_graph',
+  'run_topology_diagnostic',
+  'manage_topology_manual',
+  'manage_topology_monitoring',
+  'manage_topology_templates',
+  'apply_topology_template',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one

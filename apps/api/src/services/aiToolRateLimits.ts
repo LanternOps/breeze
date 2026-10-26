@@ -208,6 +208,14 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_alert_correlations: { limit: 30, windowSeconds: 300 },
   manage_device_anomalies: { limit: 40, windowSeconds: 300 },
   reliability_feedback: { limit: 30, windowSeconds: 300 },
+  // Full-control W08 (#6778): network topology. Graph reads page through bounded projections; the diagnostic
+  // start is also capped by the service's own per-user / site / org budget (429 + Retry-After).
+  get_topology_graph: { limit: 60, windowSeconds: 300 },
+  run_topology_diagnostic: { limit: 20, windowSeconds: 300 },
+  manage_topology_manual: { limit: 30, windowSeconds: 300 },
+  manage_topology_monitoring: { limit: 40, windowSeconds: 300 },
+  manage_topology_templates: { limit: 30, windowSeconds: 300 },
+  apply_topology_template: { limit: 20, windowSeconds: 300 },
 };
 
 /**
