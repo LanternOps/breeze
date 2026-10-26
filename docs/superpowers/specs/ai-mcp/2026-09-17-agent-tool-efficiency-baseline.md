@@ -661,4 +661,4 @@ Harness and reading as §14 (`tool-capture.ts --proxy`, `claude-sonnet-5-5`, def
 - **agent-full** gains five: a full-profile run with an empty allowlist exposes only tools with a read-only action (`fullRunToolExposure`). `get_security_compliance`, `manage_security_recommendations`, `manage_audit_baselines`, `manage_security_policies` and `manage_recovery_keys` have one; `manage_compliance_policies` (deactivate only) does not, and `manage_access_reviews` / `manage_pam_rules` are `AGENT_HUMAN_ONLY_TOOLS`.
 - **Chat tool index (W19 bounds):** always-on 2,494 B on both. The security block grows 1,268 → 1,644 B (B2 < 2,048 B; still the largest block). The worst page turn stays at 4,731 B (alert; security is not a page-context domain; B3 < 7,040 B).
 - None of the eight is `alwaysLoad`.
-- **Golden eval:** not run (the three new cases g82–g84 are pinned by the count test; the live first-call eval is left for the release sweep).
+- **Golden eval:** not run (the three new cases g97–g99 are pinned by the count test; the live first-call eval is left for the release sweep).

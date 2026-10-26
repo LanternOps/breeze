@@ -22,7 +22,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 96 unique ids', () => {
+  it('has 99 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -32,8 +32,12 @@ describe('GOLDEN_CASES', () => {
     // g88-g90 (full-control W08, #6778): topology node relationships, diagnostic start, template preview.
     // g91-g93 (full-control W09, #6779): asset probe, SNMP metric history, UniFi sync + status.
     // g94-g96 (full-control W10, #6780): device AI activity, operator task list, fleet design list.
-    expect(GOLDEN_CASES).toHaveLength(96);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(96);
+    // g97-g99 (full-control W11, #6781): security score trend, dismiss a recommendation, rotate a recovery key (supervised).
+    expect(GOLDEN_CASES).toHaveLength(99);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(99);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g97')?.expect[0]).toEqual({ tool: 'get_security_compliance' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g98')?.expect[0]).toEqual({ tool: 'manage_security_recommendations', action: 'dismiss' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g99')?.expect[0]).toEqual({ tool: 'manage_recovery_keys', action: 'rotate' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g94')?.expect[0]).toEqual({ tool: 'get_device_ai_activity' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g95')?.expect[0]).toEqual({ tool: 'list_operator_tasks' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g96')?.expect[0]).toEqual({ tool: 'list_fleet_designs' });

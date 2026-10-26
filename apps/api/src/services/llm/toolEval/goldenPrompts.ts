@@ -124,4 +124,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g94', prompt: 'What has the AI done on the front desk PC in the last week?', expect: [{ tool: 'get_device_ai_activity' }, { tool: 'query_devices' }, { tool: 'resolve_device_context' }] },
   { id: 'g95', prompt: 'Show me my operator tasks that are waiting on an approval.', expect: [{ tool: 'list_operator_tasks' }, { tool: 'get_operator_task' }] },
   { id: 'g96', prompt: 'List the fleet designs the designer agent has produced.', expect: [{ tool: 'list_fleet_designs' }, { tool: 'get_fleet_design' }] },
+  // Full-control W11 (#6781): security policy tools reach chat.
+  { id: 'g97', prompt: 'How has our security score trended over the last 90 days?', expect: [{ tool: 'get_security_compliance' }, { tool: 'get_security_posture' }] },
+  { id: 'g98', prompt: 'Dismiss the "enable firewall" security recommendation for Contoso, we use a third-party firewall.', expect: [{ tool: 'manage_security_recommendations', action: 'dismiss' }, { tool: 'manage_security_recommendations', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g99', prompt: 'Rotate the BitLocker recovery key on FIN-LAPTOP-07.', expect: [{ tool: 'manage_recovery_keys', action: 'rotate' }, { tool: 'manage_recovery_keys', action: 'list' }, { tool: 'resolve_device_context' }] },
 ];
