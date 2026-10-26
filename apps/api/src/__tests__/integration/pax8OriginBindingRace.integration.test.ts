@@ -151,6 +151,7 @@ describe('Pax8 credential receiver tuple races', () => {
       lineType: 'manual',
       description: 'Pax8 race seats',
       unitPrice: '1.00',
+      manualQuantity: '1.00', // contract_lines_manual_quantity_chk (#9664)
     }).returning();
     const originalObservedAt = new Date('2026-09-01T01:02:03.000Z');
     const [link] = await getTestDb().insert(pax8ContractLineLinks).values({

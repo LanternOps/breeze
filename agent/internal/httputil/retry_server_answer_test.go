@@ -15,7 +15,15 @@ import (
 // caller used to get a bare context.DeadlineExceeded — indistinguishable from
 // a dead network. The server's answer must survive in the error chain, and
 // the context error must stay matchable for existing callers.
+//
+// W09 (#8148): with loop-level Retry-After on (the default) Do now returns the
+// answer at once instead of sleeping into the deadline
+// (TestDoReturnsRetryAtWhenHintOutlivesContext). This test pins the D10
+// off-switch path, which keeps the #8934 behaviour exactly.
 func TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter(t *testing.T) {
+	SetLoopRetryAfter(false)
+	t.Cleanup(func() { SetLoopRetryAfter(true) })
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
 		w.WriteHeader(http.StatusServiceUnavailable)

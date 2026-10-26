@@ -15,7 +15,8 @@ vi.mock('@/lib/authScope', () => ({
   getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' }),
 }));
 // Renders whatever start-of-toolbar control the entry hands it, so a test sees where the site select lives.
-vi.mock('./TopologyExplorer', () => ({ default: ({ toolbarStart }: { toolbarStart?: ReactNode }) => <div data-testid="topology-explorer">{toolbarStart}</div> }));
+vi.mock('./TopologyExplorer', () => ({ default: ({ toolbarStart, maximized, onToggleMaximized }: { toolbarStart?: ReactNode; maximized?: boolean; onToggleMaximized?: () => void }) => <div data-testid="topology-explorer">{toolbarStart}
+  <button type="button" data-testid="fake-maximize" aria-pressed={!!maximized} onClick={onToggleMaximized}>maximize</button><input data-testid="fake-input" /></div> }));
 
 const uiOff = (reason: string | null) => {
   const settings = topologySettingsFixture();
@@ -295,4 +296,25 @@ describe('an org switch after a site link has been applied (#8113)', () => {
     await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith(ORG_B));
     expect(window.location.hash).toBe(`#topology/site/${OTHER}/view/overview`);
   });
+});
+
+it('the expand-map toggle turns the whole entry (site select, toolbar, map) into a full-window view; Escape restores it', async () => {
+  vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+  render(<TopologyEntry sites={[{ id: SITE, name: 'Main Office' }]} />);
+  const entry = screen.getByTestId('topology-entry');
+  fireEvent.click(await screen.findByTestId('fake-maximize'));
+  expect(entry).toHaveAttribute('data-topology-maximized', 'true');
+  expect(entry.className).toContain('fixed');
+  expect(entry).toContainElement(screen.getByTestId('topology-site'));
+  expect(screen.getByTestId('fake-maximize')).toHaveAttribute('aria-pressed', 'true');
+  // Escape typed into a field belongs to that field (a search box clears itself), not to the view.
+  fireEvent.keyDown(screen.getByTestId('fake-input'), { key: 'Escape' });
+  expect(entry).toHaveAttribute('data-topology-maximized', 'true');
+  // Escape a panel already handled (the inspector closing) does not also leave the view.
+  const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }); handled.preventDefault();
+  document.body.dispatchEvent(handled);
+  expect(entry).toHaveAttribute('data-topology-maximized', 'true');
+  fireEvent.keyDown(document.body, { key: 'Escape' });
+  expect(entry).not.toHaveAttribute('data-topology-maximized');
+  expect(entry.className).not.toContain('fixed');
 });

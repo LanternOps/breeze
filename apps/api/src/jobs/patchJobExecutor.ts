@@ -26,6 +26,7 @@ import {
   type PolicyAppRule,
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
+import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
 // W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
 // below and its behaviour are unchanged (golden-fixture parity test there).
 import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
@@ -107,6 +108,22 @@ export function parseJobAppRules(
     return undefined;
   }
   return rules;
+}
+
+/**
+ * Parse the ring's Windows feature-release policy from a job snapshot
+ * (`ringFeatureUpdates`). Absent → block: a job frozen before the control
+ * existed never offered feature releases, so block is what it meant. Present
+ * but malformed → block, loudly (never widen to allow).
+ */
+export function parseJobFeatureUpdates(value: unknown, patchJobId: string): RingFeatureUpdates {
+  if (value === undefined) return DEFAULT_RING_FEATURE_UPDATES;
+  const parsed = ringFeatureUpdatesSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.ringFeatureUpdates; treating Windows feature updates as blocked`;
+  console.warn(`${message}:`, JSON.stringify(value));
+  captureException(new Error(message));
+  return DEFAULT_RING_FEATURE_UPDATES;
 }
 
 const { db } = dbModule;
@@ -1134,6 +1151,7 @@ async function prepareDeviceExecution(
     // consulted by the evaluator and is not read (#8188).
     apps?: unknown;
     ringAppRules?: unknown;
+    ringFeatureUpdates?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string; offlineBehavior?: string };
@@ -1257,6 +1275,7 @@ async function prepareDeviceExecution(
     sources: jobSources,
     apps: jobApps,
     ringAppRules: jobRingAppRules,
+    featureUpdates: parseJobFeatureUpdates(patchesConfig?.ringFeatureUpdates, patchJobId),
   };
 
   // If we have a ringId, load deferralDays and partnerId from the ring.

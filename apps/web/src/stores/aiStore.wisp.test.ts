@@ -192,7 +192,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     await useAiStore.getState().switchSession('sess-w');
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
-    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread?orgId=org-a');
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread?orgId=org-a', { skipOrgIdInjection: true });
     expect(useAiStore.getState().wisp).toBeNull();
   });
 
@@ -208,7 +208,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     await useAiStore.getState().loadSession('sess-w');
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
-    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread');
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true });
     expect(useAiStore.getState().wisp).toBeNull();
   });
 
@@ -221,7 +221,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
       return response({ data: [] });
     });
     await useAiStore.getState().loadSession('sess-w');
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/wisp/thread'));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true }));
     await new Promise((r) => setTimeout(r, 0));
     expect(useAiStore.getState().wisp).toBeNull();
     const wispWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes('Wisp'));

@@ -471,6 +471,9 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // /agreements/public/* routes need no entry: they carry no auth middleware,
   // so no ambient transaction is ever opened there.
   { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/[^/]+\/send\/?$/ },
+  // #9075 W3b — remind re-mails the same link: identical shape to send (a short
+  // auth transaction for the counter bump, the deferred email after it commits).
+  { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/[^/]+\/remind\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,

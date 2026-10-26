@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 
 // Public agreement signing link (#9075 W2b; spec §3.2, §3.3, §5). The DB is a
 // FIFO chain (only the GET's branding reads touch it directly); the resolver's
@@ -37,6 +38,7 @@ vi.mock('../services/agreementRequestAcceptService', () => ({
   declineAgreementRequest: vi.fn(),
   markAgreementRequestViewed: vi.fn(),
 }));
+vi.mock('../services/agreementEvents', () => ({ emitAgreementEvent: vi.fn() }));
 vi.mock('../services/agreementOutcomeNotify', () => ({ notifyAgreementOutcome: vi.fn() }));
 vi.mock('../services/agreementSignedCopyEmail', () => ({ sendSignedAgreementCopy: vi.fn() }));
 vi.mock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
@@ -51,8 +53,12 @@ import { resolveMergedOrgIds } from '../services/orgMergeProvenance';
 import { resolveAgreementRequestLinkOrgGate } from '../services/publicLinkOrgGate';
 import { loadTemplateVersionRenderData, type TemplateVersionRenderData } from '../services/contractTemplateRender';
 import { markAgreementRequestViewed } from '../services/agreementRequestAcceptService';
+import { emitAgreementEvent } from '../services/agreementEvents';
 import { captureException } from '../services/sentry';
 import { agreementsPublicRoutes } from './agreementsPublic';
+import { bySameOriginFramePath, isSameOriginFramePath } from '../middleware/sameOriginFrame';
+import { routeReferrerPolicyWins } from '../middleware/routeReferrerPolicy';
+import { securityMiddleware } from '../middleware/security';
 
 export const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 export const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -268,6 +274,8 @@ describe('GET /:token — view', () => {
     expect(data.parties).toEqual({ partnerName: 'Acme MSP', orgName: 'Example Clinic' });
     expect(data.branding.logoUrl).toBe('https://cdn.example.com/org-logo.png');
     expect(markAgreementRequestViewed).toHaveBeenCalledWith(REQUEST_ID, ORG_ID, expect.any(Date));
+    // First view only: the bus hears sent → viewed exactly once.
+    expect(emitAgreementEvent).toHaveBeenCalledWith({ type: 'agreement.viewed', requestId: REQUEST_ID, orgId: ORG_ID, partnerId: PARTNER_ID });
     // No internal ids beyond the request id.
     const text = JSON.stringify(data);
     for (const leak of [ORG_ID, PARTNER_ID, VERSION_ID, JTI, 'tpl']) expect(text).not.toContain(leak);
@@ -279,11 +287,13 @@ describe('GET /:token — view', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data.request.status).toBe('viewed');
     expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+    expect(emitAgreementEvent).not.toHaveBeenCalled();
   });
 
   it('a lost stamp race (0 rows) still presents the row status it read', async () => {
     vi.mocked(markAgreementRequestViewed).mockResolvedValue(false);
     expect((await (await get()).json()).data.request.status).toBe('sent');
+    expect(emitAgreementEvent).not.toHaveBeenCalled(); // the racing winner emitted it
   });
 
   it('a failing viewed stamp is logged + captured and never fails the view', async () => {
@@ -291,6 +301,7 @@ describe('GET /:token — view', () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect(captureException).toHaveBeenCalled();
+    expect(emitAgreementEvent).not.toHaveBeenCalled();
   });
 
   it.each(['signed', 'declined'])('a %s request renders read-only (no stamp) even past its expiry', async (status) => {
@@ -341,5 +352,41 @@ describe('GET /:token/file', () => {
     const res = await get('/file');
     expect(res.status).toBe(410);
     expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:token/file — framing under the app-wide header stack (#10192)', () => {
+  // index.ts wraps every router in secureHeaders (X-Frame-Options) + securityMiddleware (CSP), both path-selected.
+  // Mount this router at its real /api/v1 path so a drift between the route and the frame list fails here.
+  function appWithHeaders() {
+    const OPTIONS = { strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload', xFrameOptions: 'DENY', referrerPolicy: 'strict-origin-when-cross-origin' } as const;
+    const a = new Hono();
+    a.use('*', routeReferrerPolicyWins(bySameOriginFramePath(
+      secureHeaders({ ...OPTIONS }),
+      secureHeaders({ ...OPTIONS, xFrameOptions: 'SAMEORIGIN' }),
+    )));
+    a.use('*', securityMiddleware({ nodeEnv: 'production', sameOriginFrameWhen: isSameOriginFramePath }));
+    a.route('/api/v1/agreements/public', agreementsPublicRoutes);
+    return a;
+  }
+
+  it('the PDF can be framed by the signing page (same origin) and keeps every capability-URL header', async () => {
+    vi.mocked(loadTemplateVersionRenderData).mockResolvedValue(renderData({ sourceType: 'uploaded', bodyHtml: null, fileData: Buffer.from('%PDF-1.7 bytes') }));
+    const res = await appWithHeaders().request(`/api/v1/agreements/public/${TOKEN}/file`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    const csp = res.headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+    expectPublicHeaders(res);
+    expect(res.headers.get('content-disposition')?.startsWith('inline;')).toBe(true);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('the JSON view on the same token stays unframeable', async () => {
+    const res = await appWithHeaders().request(`/api/v1/agreements/public/${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 });

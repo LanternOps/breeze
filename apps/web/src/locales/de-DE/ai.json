@@ -52,14 +52,15 @@
     "waiting": "Antwort wird erwartet…",
     "placeholder": "Fragen zu Ihren Geräten stellen…",
     "stopResponse": "Antwort stoppen",
-    "thinking": "KI denkt nach… Zum Abbrechen auf Stopp klicken",
-    "sendShortcut": "Mit Cmd+Enter senden"
+    "send": "Nachricht senden"
   },
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
+    "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben.",
+    "openScriptProposal": "Vorschlag öffnen, um die Ausführungen zu sehen oder ihn in der Bibliothek zu speichern",
     "pauseAi": "KI pausieren",
     "quickActions": {
       "serverHealth": {
@@ -87,8 +88,22 @@
         "prompt": "Zeige die neuesten Einträge im Audit-Protokoll an – welche Aktionen wurden in den letzten Stunden ausgeführt?"
       }
     },
-    "unattendedRelease": "Vom KI-Skriptprüfer geprüft und ohne Genehmigungskarte freigegeben.",
-    "openScriptProposal": "Vorschlag öffnen, um die Ausführungen zu sehen oder ihn in der Bibliothek zu speichern"
+    "toolGroup": {
+      "done": "{{count}} erledigt",
+      "failed_one": "{{count}} fehlgeschlagen",
+      "failed_other": "{{count}} fehlgeschlagen",
+      "expand": "Details anzeigen",
+      "collapse": "Details ausblenden"
+    },
+    "divider": {
+      "today": "Heute {{time}}",
+      "yesterday": "Gestern {{time}}"
+    },
+    "specialists": {
+      "heading_one": "An {{count}} Spezialisten übergeben",
+      "heading_other": "An {{count}} Spezialisten übergeben"
+    },
+    "loadEarlier": "Ältere laden"
   },
   "aiChatSidebar": {
     "history": "Verlauf",
@@ -607,7 +622,8 @@
         "active": "Aktiv",
         "paused": "Pausiert",
         "revoked": "Widerrufen",
-        "expired": "Abgelaufen"
+        "expired": "Abgelaufen",
+        "budgetReached": "Budget erreicht"
       },
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
@@ -669,16 +685,14 @@
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",
     "paused": {
-      "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen."
+      "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
+      "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten."
     },
     "live": {
       "checking": "{{org}} wird geprüft…",
       "checkingUnnamed": "Ein Kunde wird geprüft…"
     },
     "thread": {
-      "title": "Wisp-Thread",
-      "openChat": "Im Chat öffnen",
-      "openChatInactive": "Wisp muss aktiv sein, um in diesem Thread zu chatten.",
       "notFound": "Dieser Wisp-Thread existiert nicht oder gehört Ihnen nicht.",
       "loadFailed": "Dieser Wisp-Thread konnte nicht geladen werden.",
       "retry": "Erneut versuchen",
@@ -698,11 +712,13 @@
         "memory": "Gedächtnis",
         "nudge": "Hinweis",
         "brief": "Briefing"
-      }
+      },
+      "show": "Anzeigen",
+      "hide": "Ausblenden",
+      "count_one": "{{count}} aktuell",
+      "count_other": "{{count}} aktuell"
     },
     "home": {
-      "briefTitle": "Brief von heute Morgen",
-      "briefEmpty": "Noch kein Brief. Wisp schickt jeden Morgen einen, sobald es sich umgesehen hat.",
       "briefSentAt": "Gesendet {{time}}",
       "briefStale": "Von einem früheren Tag",
       "needsYouTitle": "Braucht Ihre Aufmerksamkeit",
@@ -710,7 +726,6 @@
       "needsYouCount_other": "{{count}} Einträge",
       "needsYouApprovals_one": "{{count}} wartet auf Ihre Genehmigung",
       "needsYouApprovals_other": "{{count}} warten auf Ihre Genehmigung",
-      "threadTitle": "Mit Wisp sprechen",
       "threadPaused": "Wisp ist pausiert. Setzen Sie es oben in der Kopfzeile fort, um weiterzusprechen.",
       "threadEnded": "Diese Berechtigung ist beendet. Starten Sie eine neue, um mit Wisp zu sprechen.",
       "threadOpening": "Unterhaltung wird geöffnet…",
@@ -724,7 +739,11 @@
       "disabledTitle": "Wisp ist ausgeschaltet",
       "disabledBody": "Ein Partner-Administrator hat Wisp unter Einstellungen → KI-Agenten ausgeschaltet. Ihre Chats funktionieren weiterhin.",
       "disabledSettings": "KI-Agenten-Einstellungen öffnen",
-      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden."
+      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden.",
+      "noAccess": "Sie haben keinen Zugriff auf Wisp",
+      "historyFailed": "Diese Unterhaltung konnte nicht geladen werden.",
+      "refreshFailed": "Neue Beiträge konnten nicht abgerufen werden.",
+      "earlierFailed": "Ältere Nachrichten konnten nicht geladen werden."
     },
     "links": {
       "title": "Verknüpfte Einträge",
@@ -778,6 +797,46 @@
       "saveFailed": "Die Wisp-Einstellung konnte nicht geändert werden.",
       "adminOnly": "Nur Partner-Administratoren können das ändern.",
       "loadFailed": "Die Wisp-Einstellung konnte nicht geladen werden."
+    },
+    "post": {
+      "brief": "Morgenbericht",
+      "nudge": "Hinweis",
+      "digest": "Übersicht",
+      "summary": "Zusammenfassung",
+      "open": "Öffnen",
+      "unread": "Ungelesen"
+    },
+    "welcome": {
+      "title": "Ich sehe mich in {{scope}} um.",
+      "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "suggestions": {
+        "needsMe": {
+          "label": "Was braucht mich heute?",
+          "prompt": "Was braucht heute meine Aufmerksamkeit? Fasse dich kurz."
+        },
+        "offline": {
+          "label": "Welche Geräte sind offline?",
+          "prompt": "Welche meiner Geräte sind gerade offline?"
+        },
+        "sweep": {
+          "label": "Zustandsprüfung starten",
+          "prompt": "Starte jetzt eine Zustandsprüfung für {{scope}}."
+        },
+        "overnight": {
+          "label": "Was ist über Nacht passiert?",
+          "prompt": "Was ist bei meinen Kunden über Nacht passiert?"
+        }
+      }
+    },
+    "rail": {
+      "workersTitle": "Worker",
+      "workersEmpty": "Keine Spezialisten aktiv.",
+      "allRuns": "Alle Läufe",
+      "details": "Einzelheiten"
+    },
+    "composer": {
+      "placeholder": "Nachricht an Wisp",
+      "link": "Element verknüpfen"
     }
   },
   "wispConcerns": {
@@ -821,6 +880,7 @@
       "site": "Standort"
     },
     "reviewApproval": "Genehmigung prüfen",
+    "openLink": "Öffnen",
     "useful": "Nützlich",
     "notUseful": "Nicht nützlich",
     "feedbackNotePlaceholder": "Was wäre besser gewesen? (optional)",

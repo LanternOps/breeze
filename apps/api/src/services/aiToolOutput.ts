@@ -1014,6 +1014,22 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_fleet_health: new Set(['label', 'detail']),
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
+  // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
+  // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
+  // are fenced here as data, never instructions.
+  get_topology_graph: new Set(['label', 'role', 'vendor', 'model', 'os', 'type']),
+  manage_topology_manual: new Set(['label', 'notes']),
+  manage_topology_monitoring: new Set(['label', 'hostname', 'host', 'provider', 'independenceLabel']),
+  manage_topology_templates: new Set(['name', 'description', 'label', 'hostname', 'host']),
+  // Full-control W09 (#6779). Template / OID names and descriptions, known-guest labels and notes are
+  // operator-authored; UniFi console / site / device / client names, SSIDs, hostnames and error strings come from
+  // the vendor or the network. All are fenced as data, never instructions.
+  manage_snmp_templates: new Set(['name', 'description', 'vendor', 'deviceClass', 'label', 'unit', 'templateName']),
+  get_snmp_metrics: new Set(['name', 'deviceName']),
+  manage_known_guests: new Set(['label', 'notes']),
+  get_unifi_status: new Set(['accountLabel', 'name', 'hostname', 'ssid', 'unifiHostName', 'unifiSiteName', 'lastPollError', 'lastSyncError', 'error', 'model']),
+  probe_network_asset: new Set(['error']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

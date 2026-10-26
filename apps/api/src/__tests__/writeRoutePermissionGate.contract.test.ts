@@ -102,6 +102,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/renew-cert/challenge': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
   'POST /api/v1/agents/renew-cert': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
   'POST /api/v1/agents/renew-cert/confirm': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
+  // routes/agents/rebind.ts (#8318 wave 1b — reinstall reattach)
+  'POST /api/v1/agents/:id/rebind': 'device credential: agentAuthMiddleware (the SOURCE agent bearer token, main role), acts only on an intent naming this device and install as its source',
+  'POST /api/v1/agents/:id/rebind-confirm': 'confirm-only credential: the brz_rbc_ bearer compared in constant time with the intent\'s (or ledger\'s) confirmation hash for the source agent `:id`, rate-limited per id and per IP, mTLS-bound in enforce mode (outside agentAuthMiddleware by design)',
   // routes/agents/pamObservations.ts
   'POST /api/v1/agents/:id/commands/:commandId/pam-observations': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamReconciliation.ts
@@ -334,6 +337,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/quotes/:id/accept': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/decline': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/pay': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/agreements.ts (#9075 W3a)
+  'POST /api/v1/portal/agreements/:id/accept': 'portal session: portal session auth (portalAuthMiddleware) + portalFinancialMutationGuard; recipient-email match re-checked under the row lock by acceptAgreementRequest',
+  'POST /api/v1/portal/agreements/:id/decline': 'portal session: portal session auth (portalAuthMiddleware) + portalFinancialMutationGuard; recipient-email match re-checked under the row lock by declineAgreementRequest',
   // routes/portal/reports.ts
   'POST /api/v1/portal/reports/generate': 'portal session: portal session auth (portalAuthMiddleware)',
   // routes/portal/tickets.ts

@@ -23,10 +23,13 @@ export function FlowStepList({
   steps,
   summaries,
   compact = false,
+  preApprovedStepIds = [],
 }: {
   steps: FlowDocumentV1['steps'];
   summaries: FlowStepSummary[];
   compact?: boolean;
+  /** Steps pre-approved on the live publication (#5219). */
+  preApprovedStepIds?: string[];
 }) {
   const { t } = useTranslation('flows');
   const [hashSelected, setSelected] = useHashState<string | null>(null, parseStepHash);
@@ -77,6 +80,14 @@ export function FlowStepList({
                   className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium"
                 >
                   {t('step.tier', { tier })}
+                </span>
+              )}
+              {preApprovedStepIds.includes(step.id) && (
+                <span
+                  data-testid={`flow-step-${step.id}-preapproved`}
+                  className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+                >
+                  {t('step.preApprovedBadge')}
                 </span>
               )}
               <span className="text-xs text-muted-foreground" data-testid={`flow-step-${step.id}-approval`}>

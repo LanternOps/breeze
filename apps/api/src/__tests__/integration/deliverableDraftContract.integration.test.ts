@@ -56,7 +56,7 @@ async function seedContract(t: Tenant, over: Partial<typeof contracts.$inferInse
     intervalMonths: 1, startDate: '2026-10-01', currencyCode: 'USD', ...over,
   }).returning({ id: contracts.id });
   await getTestDb().insert(contractLines).values({
-    contractId: c!.id, orgId: t.orgId, lineType: 'manual', description: 'Seats', unitPrice: '1.00',
+    contractId: c!.id, orgId: t.orgId, lineType: 'manual', description: 'Seats', unitPrice: '1.00', manualQuantity: '1.00',
   });
   return c!.id;
 }

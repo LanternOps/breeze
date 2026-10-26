@@ -28,6 +28,7 @@ export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
+export * from './ringFeatureUpdates';
 export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
 export * from './securityAgents';

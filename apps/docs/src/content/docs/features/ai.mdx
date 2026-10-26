@@ -699,6 +699,42 @@ These tools read how alerts group together and what is behind a device's unusual
 
 A dry run of an alert rule is not available: the old per-rule test was retired with the previous alerting model.
 
+#### Network topology
+
+These tools read a site's network map and manage its manual entries, recurring checks and monitoring templates. They are available in AI chat and over MCP for people with the topology permissions; AI agents do not get them (an agent keeps the read-only topology investigation tools). Every call names a site and is limited to the sites you can already see.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_topology_graph (graph/nodes/node/relationship/evidence/group_members/expansion/health)` | 1 | Read a site's network map: devices and links, one device or link in detail, the evidence behind a link, the members of a group, and health. Addresses and raw collector data are not returned, and names collected from the network are treated as untrusted text |
+| `run_topology_diagnostic (collectors/get)` | 1 | See which devices can run a connectivity check, and read a check's result |
+| `run_topology_diagnostic (start/cancel)` | 2 | Start a fixed gateway, DNS, internet or trace-route check from a device at the site, or stop one. Runs in your own signed-in session and is rate limited per user, site and organization |
+| `manage_topology_manual` | 2 | Add, change or remove a hand-drawn switch, router, access point or link. A stale revision is refused. Nothing here binds a device or moves one between sites |
+| `manage_topology_monitoring (list_policies/list_targets/get_settings)` | 1 | View a site's recurring checks, probe targets and effective topology settings |
+| `manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)` | 2 | Change a site's recurring checks, probe targets or settings. Arming a recurring check stays a person's action in the topology page, and changing a check that is already armed disarms it |
+| `manage_topology_templates (list_templates/list_versions/site_options)` | 1 | View monitoring templates (partner-wide or one organization's), their versions, and the published versions a site can apply |
+| `manage_topology_templates (create_template/update_template/create_version)` | 2 | Draft a template or a new version. Nothing takes effect until a version is published. Partner-wide templates need full partner access |
+| `manage_topology_templates (publish_version/revoke_template)` | 3 | Publish a version so sites can apply it, or revoke a template permanently (this disables every check that uses it). Needs approval |
+| `apply_topology_template (preview)` | 2 | Preview what applying a template would change on named sites. Changes nothing |
+| `apply_topology_template (apply)` | 3 | Apply a previewed template to its sites, replacing their monitoring configuration. Needs approval. Sites outside the approving session's organization report their own outcome |
+| `apply_topology_template (status)` | 1 | See how an application is progressing, site by site |
+
+#### SNMP and network monitoring
+
+These tools read and manage SNMP monitoring templates, read SNMP metric history, check a discovered asset on demand, keep the shared known-guest list, and read or sync the partner's UniFi integration. Template, metric and asset-check tools follow your organization and site access and are also available to AI agents. The known-guest and UniFi tools act on partner-wide state, so they need full partner access and are available in AI chat and over MCP only. Every write needs a signed-in session that has satisfied MFA, the same as the matching page.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_snmp_templates (list/get/browse_oids/validate_oids)` | 1 | View SNMP templates (the OIDs polled per device class), search known OIDs, and check an OID list. Names and descriptions are treated as untrusted text |
+| `manage_snmp_templates (create/update/delete)` | 2 | Create, change or delete a custom template. Built-in templates are read-only, a template still used by a device cannot be deleted, and the delete result keeps the old row so it can be recreated. A session limited to some sites or devices cannot change a template, because every site in the organization reads it |
+| `get_snmp_metrics (history/dashboard)` | 1 | Bucketed SNMP history (interface traffic, uptime and other OIDs) for one discovered asset, with a capped number of series, or the SNMP dashboard |
+| `probe_network_asset` | 2 | Check now: ping a discovered asset from an online agent in the same site and report reachable or not. One probe per asset at a time; waits a few seconds, otherwise reports pending |
+| `manage_known_guests (list)` | 1 | View the partner-wide list of known guest MAC addresses that discovery does not flag |
+| `manage_known_guests (add/delete)` | 2 | Add or remove a known guest MAC address for every organization of the partner |
+| `get_unifi_status (status/hosts/collectors/mappings/telemetry/sync_runs/controller_sites)` | 1 | Read the partner's UniFi integration: connection, consoles and sites (a read-only call to the vendor), collectors, site mappings, device and client telemetry for one site, and the last 20 sync runs. Vendor payloads, keys and error bodies are not returned |
+| `trigger_unifi_sync` | 2 | Queue a manual sync of the UniFi integration, then read the outcome with `get_unifi_status` `sync_runs` |
+
+Connecting or disconnecting UniFi, editing site mappings and collectors, and the retired per-device SNMP polling, test and threshold pages are not available as tools. The old SNMP device and threshold endpoints are deprecated; per-asset SNMP settings and network-monitor alert rules replace them.
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.

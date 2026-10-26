@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "grupo eliminado",
         "siteDeleted": "sitio eliminado",
-        "siteDeletedNamed": "sitio eliminado: {{name}}"
+        "siteDeletedNamed": "sitio eliminado: {{name}}",
+        "manualQuantityMissing": "falta la cantidad"
       },
       "lineScope": {
         "site": "Sitio: {{name}}"
@@ -826,7 +827,20 @@
         "label": "Eliminar borrador",
         "success": "Borrador eliminado.",
         "error": "No se pudo eliminar el borrador."
-      }
+      },
+      "remind": {
+        "label": "Recordar",
+        "success_one": "Recordatorio enviado a {{count}} destinatario",
+        "success_other": "Recordatorio enviado a {{count}} destinatarios",
+        "error": "No se pudo enviar el recordatorio.",
+        "notEmailed": {
+          "no_email_service": "Recordatorio registrado, pero el correo no está configurado. Copia el enlace de firma y compártelo.",
+          "no_recipients": "Recordatorio registrado, pero no había destinatarios a quienes enviar el correo. Copia el enlace de firma y compártelo.",
+          "send_failed": "Recordatorio registrado, pero el correo no se pudo entregar. Copia el enlace de firma y compártelo."
+        }
+      },
+      "remindedCount_one": "Recordado {{count}} vez",
+      "remindedCount_other": "Recordado {{count}} veces"
     },
     "send": {
       "title": "Enviar para firma",

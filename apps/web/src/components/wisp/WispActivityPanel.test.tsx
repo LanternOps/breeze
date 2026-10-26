@@ -82,6 +82,38 @@ describe('WispActivityPanel', () => {
     expect(h.fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('collapsible starts closed with the count and opens on toggle', async () => {
+    h.fetch.mockResolvedValue({ items: [mk('a'), mk('b'), mk('c')], nextCursor: null });
+    render(<WispActivityPanel threadId="t1" collapsible />);
+    const toggle = await screen.findByTestId('wisp-activity-toggle');
+    await waitFor(() => expect(toggle.textContent).toContain('3 recent'));
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('Show');
+    expect(screen.queryAllByTestId('wisp-activity-row')).toHaveLength(0);
+    expect(h.fetch).toHaveBeenCalledWith('t1', null);
+    fireEvent.click(toggle);
+    expect(screen.getAllByTestId('wisp-activity-row')).toHaveLength(3);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toContain('Hide');
+  });
+
+  it('collapsible: a failed load shows the error in the closed header instead of a count', async () => {
+    h.fetch.mockRejectedValue(new Error('boom'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<WispActivityPanel threadId="t1" collapsible />);
+    const toggle = await screen.findByTestId('wisp-activity-toggle');
+    await waitFor(() => expect(screen.getByTestId('wisp-activity-load-error')).toBeInTheDocument());
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).not.toMatch(/recent/);
+  });
+
+  it('non-collapsible renders as before', async () => {
+    h.fetch.mockResolvedValue({ items: [mk('a')], nextCursor: null });
+    render(<WispActivityPanel threadId="t1" />);
+    await screen.findAllByTestId('wisp-activity-row');
+    expect(screen.queryByTestId('wisp-activity-toggle')).toBeNull();
+  });
+
   it('ignores a stale response from an older load', async () => {
     let resolveOld!: (v: unknown) => void;
     h.fetch.mockImplementationOnce(() => new Promise((r) => { resolveOld = r; }));

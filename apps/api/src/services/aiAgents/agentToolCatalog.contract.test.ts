@@ -348,3 +348,41 @@ describe('W07 alert correlation and signal triage in the agent catalog (#6777)',
     }
   });
 });
+
+/** Spec 2026-09-23 W08 (#6778, W08-D1): the topology tools resolve their caller through user permissions, which an
+ * agent principal does not have, so all six are human-only. They keep a capability row (the catalog maps every
+ * registered tool) but are never offered to an agent. */
+describe('W08 network topology in the agent catalog (#6778)', () => {
+  it.each([
+    'get_topology_graph', 'run_topology_diagnostic', 'manage_topology_manual',
+    'manage_topology_monitoring', 'manage_topology_templates', 'apply_topology_template',
+  ])('%s is mapped to the network capability but never offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('network');
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W09 (#6779, W09-D2): the SNMP and probe tools run on the caller's org / site scope, so an agent can use
+ * them; known guests and both UniFi tools are partner-wide (canManagePartnerWidePolicies), which an agent context never
+ * carries, so they keep a capability row but are never offered to an agent. */
+describe('W09 SNMP and network monitoring in the agent catalog (#6779)', () => {
+  it.each([
+    'manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset',
+    'manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync',
+  ])('%s is mapped to the network capability', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('network');
+  });
+
+  it.each(['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset'])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});

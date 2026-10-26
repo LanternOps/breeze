@@ -271,6 +271,14 @@ export const devices = pgTable('devices', {
   installIncarnation: integer('install_incarnation').notNull().default(1),
   incarnationStartedAt: timestamp('incarnation_started_at', { withTimezone: true }),
   lastReattachedAt: timestamp('last_reattached_at', { withTimezone: true }),
+  // Reinstall reattach W1b (#8318 §4.1, §6.2): the agent's declared rebind
+  // capability. 1 = the agent follows the bounded rebind (verifies the signed
+  // `rebind` directive, stages agent-generated credentials, confirms with the
+  // confirm-only token); only such a device can be the SOURCE of a reattach,
+  // and only it is sent the directive. Written by enroll and NON-STICKY on
+  // every main and parked heartbeat. Not reset at the install boundary: the
+  // new install reports its own at enroll.
+  rebindProtocolVersion: integer('rebind_protocol_version').notNull().default(0),
   // Revocation-lease capability. 1 = this agent build renews a per-session
   // revocation lease over the command WebSocket and stops the desktop stream
   // when the lease is revoked or expires past its grace window. 0 (default,

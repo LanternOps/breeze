@@ -55,7 +55,8 @@
         "auto": "otomatik",
         "groupDeleted": "grup silindi",
         "siteDeleted": "konum silindi",
-        "siteDeletedNamed": "konum silindi: {{name}}"
+        "siteDeletedNamed": "konum silindi: {{name}}",
+        "manualQuantityMissing": "miktar eksik"
       },
       "lineScope": {
         "site": "Konum: {{name}}"
@@ -826,7 +827,20 @@
         "label": "Taslağı sil",
         "success": "Taslak silindi.",
         "error": "Taslak silinemedi."
-      }
+      },
+      "remind": {
+        "label": "Hatırlat",
+        "success_one": "Hatırlatma {{count}} alıcıya gönderildi",
+        "success_other": "Hatırlatma {{count}} alıcıya gönderildi",
+        "error": "Hatırlatma gönderilemedi.",
+        "notEmailed": {
+          "no_email_service": "Hatırlatma kaydedildi ancak e-posta yapılandırılmamış. İmza bağlantısını kopyalayıp paylaşın.",
+          "no_recipients": "Hatırlatma kaydedildi ancak e-posta gönderilecek alıcı yoktu. İmza bağlantısını kopyalayıp paylaşın.",
+          "send_failed": "Hatırlatma kaydedildi ancak e-posta teslim edilemedi. İmza bağlantısını kopyalayıp paylaşın."
+        }
+      },
+      "remindedCount_one": "{{count}} kez hatırlatıldı",
+      "remindedCount_other": "{{count}} kez hatırlatıldı"
     },
     "send": {
       "title": "İmzaya gönder",

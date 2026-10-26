@@ -185,6 +185,22 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_alert_correlations: 'alerts_monitoring',
   manage_device_anomalies: 'alerts_monitoring',
   reliability_feedback: 'automations_reports',
+  // Full-control W08 (#6778): network topology. All six are AGENT_HUMAN_ONLY_TOOLS (W08-D1): they keep a
+  // capability row (the catalog maps every registered tool) but are never offered to an agent.
+  get_topology_graph: 'network',
+  run_topology_diagnostic: 'network',
+  manage_topology_manual: 'network',
+  manage_topology_monitoring: 'network',
+  manage_topology_templates: 'network',
+  apply_topology_template: 'network',
+  // Full-control W09 (#6779): SNMP + network monitoring. Known guests and both UniFi tools are AGENT_HUMAN_ONLY
+  // (partner-wide); they keep a capability row but are never offered to an agent.
+  manage_snmp_templates: 'network',
+  get_snmp_metrics: 'network',
+  probe_network_asset: 'network',
+  manage_known_guests: 'network',
+  get_unifi_status: 'network',
+  trigger_unifi_sync: 'network',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',

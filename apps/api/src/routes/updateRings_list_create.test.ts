@@ -49,6 +49,7 @@ vi.mock('../db/schema', () => ({
     autoApprove: 'autoApprove',
     categoryRules: 'categoryRules',
     appRules: 'appRules',
+    featureUpdates: 'featureUpdates',
     targets: 'targets',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
@@ -294,6 +295,27 @@ describe('updateRings routes', () => {
       const body = await res.json();
       expect(body.data[0].appRules).toEqual(rules);
     });
+
+    it('returns each ring\'s featureUpdates policy', async () => {
+      const pin = { mode: 'pin', product: 'windows-11', targetVersion: '25H2' };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([makeRing({ featureUpdates: pin })])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      expect(projection.featureUpdates).toBe('featureUpdates');
+      expect((await res.json()).data[0].featureUpdates).toEqual(pin);
+    });
   });
 
   // ----------------------------------------------------------------
@@ -356,6 +378,50 @@ describe('updateRings routes', () => {
 
       expect(res.status).toBe(201);
       expect((valuesMock.mock.calls[0]![0] as Record<string, unknown>).appRules).toEqual([]);
+    });
+
+    it('defaults featureUpdates to block on create when omitted', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'No Feature Policy' })
+      });
+
+      expect(res.status).toBe(201);
+      expect((valuesMock.mock.calls[0]![0] as Record<string, unknown>).featureUpdates).toEqual({ mode: 'block' });
+    });
+
+    it('persists a feature-update pin on create, upper-casing the release', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing({ featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' } })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Pinned', featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25h2' } })
+      });
+
+      expect(res.status).toBe(201);
+      expect((valuesMock.mock.calls[0]![0] as Record<string, unknown>).featureUpdates)
+        .toEqual({ mode: 'pin', product: 'windows-11', targetVersion: '25H2' });
+    });
+
+    it('rejects a feature-update pin without a release with 400', async () => {
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Bad Pin', featureUpdates: { mode: 'pin', product: 'windows-11' } })
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('rejects duplicate appRules (same canonical key) on create with 400 (#8184)', async () => {

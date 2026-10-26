@@ -250,6 +250,10 @@ it('frames the overview as networks within one site and says when a second netwo
   expect(header).toHaveTextContent('Harbor Dental — Main Office');
   expect(header).toHaveTextContent('2 networks · 3 devices');
   expect(screen.getByTestId('topology-unlinked-note')).toHaveTextContent('No observed link between 10.1.5.0/24 and 10.1.2.0/24');
+  // Said plainly, one click away: the sentence sits in the status row's notes, not in a row of its own above the map.
+  expect(screen.getByTestId('topology-site-notes-panel')).toContainElement(screen.getByTestId('topology-unlinked-note'));
+  // This site declares no networks either, so the declare hint is the second note.
+  expect(screen.getByTestId('topology-site-notes')).toHaveTextContent('2 notes');
 });
 
 it('compacts the header: one status row, a secondary control group with accessible names, and the toolbar in the entry\'s row beside the site control', async () => {
@@ -296,9 +300,13 @@ it('moves undeclared networks to the roster, offers the toggle, and keeps its st
     { prefix: '10.1.2.0/24', declaration: 'declared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]))));
   render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-site-intro')).toHaveTextContent('Devices assigned to Main Office, grouped by the network each one reports');
+  // The explanation is legend material: it lives with the legend on the map, not in a row above it.
+  expect(screen.getByTestId('topology-legend')).toContainElement(screen.getByTestId('topology-site-intro'));
   expect(screen.queryByTestId('topology-declare-hint')).toBeNull();
   const roster = screen.getByTestId('topology-site-roster');
   expect(roster).toHaveTextContent("Devices not on this site's networks (2)");
+  // The roster opens from the status row as a popover; it never pushes the map down.
+  expect(screen.getByTestId('topology-status')).toContainElement(roster);
   const toggle = screen.getByTestId('topology-show-other-networks');
   expect(toggle).not.toBeChecked();
   fireEvent.click(toggle);
@@ -314,6 +322,18 @@ it('hints at declaring networks, and offers no toggle, when the site declares no
   const hint = await screen.findByTestId('topology-declare-hint');
   expect(hint).toHaveTextContent('No networks are declared for Main Office.');
   expect(hint.querySelector('a')).toHaveAttribute('href', '/discovery#profiles');
+  // One status row: the hint opens from the notes button in it and closes with Escape, focus back on the button.
+  const notes = screen.getByTestId('topology-site-notes');
+  const panel = screen.getByTestId('topology-site-notes-panel');
+  expect(screen.getByTestId('topology-status')).toContainElement(notes);
+  expect(panel).toContainElement(hint);
+  expect(panel).not.toBeVisible();
+  fireEvent.click(notes);
+  expect(notes).toHaveAttribute('aria-expanded', 'true');
+  expect(panel).toBeVisible();
+  fireEvent.keyDown(panel, { key: 'Escape' });
+  expect(panel).not.toBeVisible();
+  expect(notes).toHaveFocus();
   expect(screen.queryByTestId('topology-show-other-networks')).toBeNull();
   expect(screen.queryByTestId('topology-site-roster')).toBeNull();
 });
@@ -322,4 +342,41 @@ it('falls back to "this site" when no site name is known', async () => {
   vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'undeclared', members: 3 }]))));
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-declare-hint')).toHaveTextContent('No networks are declared for this site.');
+});
+
+it('keeps everything on the map: the legend and the expand controls sit inside the map region, nothing renders below it', async () => {
+  const initial = topologyGraphFixture();
+  initial.frontier = [{ token: 'next', label: 'More nodes', memberCount: 1 }];
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(initial)));
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  const region = await screen.findByTestId('topology-map-region');
+  expect(region).toContainElement(screen.getByTestId('topology-legend'));
+  expect(screen.getByTestId('topology-layout-actions')).toContainElement(screen.getByTestId('topology-frontier'));
+  expect(region.nextElementSibling).toBeNull();
+});
+
+it('offers an expand-map toggle when the entry can maximize it, and says which state it is in', async () => {
+  const toggle = vi.fn();
+  const { rerender } = render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} onToggleMaximized={toggle} />);
+  const button = await screen.findByRole('button', { name: 'Expand map' });
+  expect(button).toHaveAttribute('aria-pressed', 'false');
+  fireEvent.click(button);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  rerender(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} maximized onToggleMaximized={toggle} />);
+  // A toggle keeps its name; the pressed state says it is on (the tooltip says how to leave).
+  expect(screen.getByRole('button', { name: 'Expand map' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByTestId('topology-maximize')).toHaveAttribute('title', 'Exit expanded map (Esc)');
+  cleanup();
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await screen.findByTestId('topology-toolbar');
+  expect(screen.queryByTestId('topology-maximize')).toBeNull();
+});
+
+it('a map focused on one device offers "Show full site" in the status row, not on a row of its own above the map', async () => {
+  render(<TopologyExplorer siteId={SITE} focusNodeId={NODE} settings={topologySettingsFixture()} />);
+  const status = await screen.findByTestId('topology-status');
+  const full = screen.getByRole('button', { name: 'Show full site' });
+  expect(status).toContainElement(full);
+  fireEvent.click(full);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Show full site' })).toBeNull());
 });

@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "group deleted",
         "siteDeleted": "site deleted",
-        "siteDeletedNamed": "site deleted: {{name}}"
+        "siteDeletedNamed": "site deleted: {{name}}",
+        "manualQuantityMissing": "quantity missing"
       },
       "lineScope": {
         "site": "Site: {{name}}"
@@ -826,7 +827,20 @@
         "label": "Delete draft",
         "success": "Draft deleted.",
         "error": "Couldn’t delete the draft."
-      }
+      },
+      "remind": {
+        "label": "Remind",
+        "success_one": "Reminder sent to {{count}} recipient",
+        "success_other": "Reminder sent to {{count}} recipients",
+        "error": "Couldn’t send the reminder.",
+        "notEmailed": {
+          "no_email_service": "Reminder recorded, but email isn’t configured. Copy the signing link and share it.",
+          "no_recipients": "Reminder recorded, but there were no recipients to email. Copy the signing link and share it.",
+          "send_failed": "Reminder recorded, but the email failed to deliver. Copy the signing link and share it."
+        }
+      },
+      "remindedCount_one": "Reminded {{count}} time",
+      "remindedCount_other": "Reminded {{count}} times"
     },
     "send": {
       "title": "Send for signature",

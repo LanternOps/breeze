@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
@@ -62,6 +64,14 @@ type CollectorDeps struct {
 
 	// schedule overrides the fetch cadence; nil means defaultFetchSchedule.
 	schedule *fetchSchedule
+
+	// Test seams (W09, #8148). now is the clock for Retry-After deferral
+	// (nil = time.Now); rnd feeds the Retry-After jitter (nil = rand.Float64);
+	// waitHook sees every wait the loop computes after a fetch and returns the
+	// wait actually used (nil = unchanged).
+	now      func() time.Time
+	rnd      func() float64
+	waitHook func(time.Duration) time.Duration
 }
 
 // agentBase builds the per-agent endpoint prefix the API mounts under
@@ -259,7 +269,7 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("telemetry upload: status %d", resp.StatusCode)
+		return deps.statusError("telemetry upload", resp)
 	}
 	var sentSeq string
 	sent := map[string]string{}
@@ -431,6 +441,14 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 		timer := time.NewTimer(sched.first)
 		defer timer.Stop()
 		lastRun := map[string]time.Time{}
+		// notBefore: collectors whose telemetry POST was told to back off
+		// (429/503 + Retry-After). They are skipped (not run, not polled)
+		// until the clock passes the mark; the config fetch keeps its own
+		// cadence.
+		notBefore := map[string]time.Time{}
+		// fetchRetryAt: the config route asked us to hold off until then. A
+		// Wake must not fetch before it.
+		var fetchRetryAt time.Time
 		// idle: the last successful fetch returned no collectors. A failed
 		// fetch keeps the current cadence, as the fixed ticker did.
 		idle := false
@@ -445,30 +463,56 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 				if !idle || time.Since(lastFetch) < sched.wakeGap {
 					continue
 				}
+				if deps.clock().Before(fetchRetryAt) {
+					continue
+				}
 				timer.Stop()
 			case <-timer.C:
 			}
 			configs, err := fetchConfigs(ctx, deps)
 			lastFetch = time.Now()
+			fetchRetryAt = time.Time{}
 			if err != nil {
 				deps.logf("[unifi] fetch configs: %v", err)
+				if at, ok := httputil.RetryAtFrom(err); ok {
+					fetchRetryAt = at
+				}
 			} else {
 				idle = len(configs) == 0
-				now := time.Now()
+				now := deps.clock()
 				for _, cfg := range configs {
 					interval := time.Duration(maxInt(cfg.PollIntervalSeconds, 15)) * time.Second
 					if last, ok := lastRun[cfg.CollectorID]; ok && now.Sub(last) < interval {
 						continue
 					}
+					if until, ok := notBefore[cfg.CollectorID]; ok {
+						if now.Before(until) {
+							continue
+						}
+						delete(notBefore, cfg.CollectorID)
+					}
 					lastRun[cfg.CollectorID] = now
 					if err := RunOnce(ctx, deps, cfg, nil); err != nil {
 						deps.logf("[unifi] collector %s: %v", cfg.CollectorID, err)
+						if at, ok := httputil.RetryAtFrom(err); ok {
+							notBefore[cfg.CollectorID] = at
+							deps.logf("[unifi] collector %s deferred by server Retry-After until %s", cfg.CollectorID, at.UTC().Format(time.RFC3339))
+						}
 					}
 				}
 			}
 			next := sched.active
 			if idle {
 				next = sched.idle()
+			}
+			if !fetchRetryAt.IsZero() {
+				if d := fetchRetryAt.Sub(deps.clock()); d > next {
+					next = d
+					deps.logf("[unifi] fetch deferred by server Retry-After until %s", fetchRetryAt.UTC().Format(time.RFC3339))
+				}
+			}
+			if deps.waitHook != nil {
+				next = deps.waitHook(next)
 			}
 			timer.Reset(next)
 		}
@@ -491,7 +535,7 @@ func fetchConfigs(ctx context.Context, deps CollectorDeps) ([]CollectorConfig, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch configs: status %d", resp.StatusCode)
+		return nil, deps.statusError("fetch configs", resp)
 	}
 	var out struct {
 		Collectors []CollectorConfig `json:"collectors"`
@@ -507,4 +551,68 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (d CollectorDeps) clock() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
+}
+
+func (d CollectorDeps) random() float64 {
+	if d.rnd != nil {
+		return d.rnd()
+	}
+	return rand.Float64()
+}
+
+// retryAfterMaxCap mirrors httputil's ceiling on a server-provided Retry-After
+// (ParseRetryAfter already clamps the header; jitter must not push past it).
+const retryAfterMaxCap = 300 * time.Second
+
+// retryAfterJitterFraction spreads a fleet that was shed together across a
+// window: RetryAt = now + RA x (1 + 0.3*U), matching httputil's default
+// JitterFrac.
+const retryAfterJitterFraction = 0.3
+
+// jitterRetryAfter returns ra x (1 + 0.3*rnd), never less than ra and never
+// more than retryAfterMaxCap.
+func jitterRetryAfter(ra time.Duration, rnd float64) time.Duration {
+	if ra <= 0 {
+		return ra
+	}
+	out := time.Duration(float64(ra) * (1 + retryAfterJitterFraction*rnd))
+	if out > retryAfterMaxCap {
+		return retryAfterMaxCap
+	}
+	return out
+}
+
+// statusError builds the error for a non-success response. For a 429/503 that
+// carries a usable Retry-After (and loop-level Retry-After is enabled) it wraps
+// a *httputil.RetryableStatusError whose RetryAt tells the loop when to call
+// this route again; otherwise it is the plain status error, as before.
+func (d CollectorDeps) statusError(what string, resp *http.Response) error {
+	base := fmt.Errorf("%s: status %d", what, resp.StatusCode)
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+		return base
+	}
+	if !httputil.LoopRetryAfterEnabled() {
+		return base
+	}
+	now := d.clock()
+	ra := httputil.ParseRetryAfter(resp.Header, now)
+	if ra <= 0 {
+		return base
+	}
+	url := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		url = resp.Request.URL.String()
+	}
+	return fmt.Errorf("%w: %w", base, &httputil.RetryableStatusError{
+		StatusCode: resp.StatusCode,
+		URL:        url,
+		RetryAt:    now.Add(jitterRetryAfter(ra, d.random())),
+	})
 }

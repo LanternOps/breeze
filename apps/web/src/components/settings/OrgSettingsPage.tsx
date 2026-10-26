@@ -933,7 +933,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   };
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {propOrgId && (
         <>
           <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
@@ -951,7 +951,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       )}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('orgSettingsPage.description', { organization: displayOrg.name })}
           </p>
@@ -1033,6 +1033,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           activeKey={activeTab}
           onNavigate={key => switchTab(key as TabKey)}
           selectId="org-settings-section"
+          testIdPrefix="org-settings"
         />
 
         <div className="min-w-0 space-y-6">{renderContent()}</div>

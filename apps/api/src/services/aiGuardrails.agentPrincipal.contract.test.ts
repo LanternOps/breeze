@@ -271,6 +271,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // W01 (#6755)
   'get_sla_breaches',
   'get_sla_compliance_report',
+  'get_snmp_metrics',
   'get_software_compliance',
   'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read

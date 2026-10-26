@@ -1349,6 +1349,10 @@
             "description": "Acionado quando um dispositivo conecta.",
             "label": "Dispositivo online"
           },
+          "deviceReinstalled": {
+            "description": "Acionado quando uma máquina reinstalada é vinculada novamente ao registro de dispositivo existente.",
+            "label": "Dispositivo reinstalado"
+          },
           "scriptCompleted": {
             "description": "Acionado quando um script termina.",
             "label": "Script concluído"

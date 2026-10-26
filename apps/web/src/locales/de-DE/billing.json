@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "Gruppe gelöscht",
         "siteDeleted": "Standort gelöscht",
-        "siteDeletedNamed": "Standort gelöscht: {{name}}"
+        "siteDeletedNamed": "Standort gelöscht: {{name}}",
+        "manualQuantityMissing": "Menge fehlt"
       },
       "lineScope": {
         "site": "Standort: {{name}}"
@@ -826,7 +827,20 @@
         "label": "Entwurf löschen",
         "success": "Entwurf gelöscht.",
         "error": "Der Entwurf konnte nicht gelöscht werden."
-      }
+      },
+      "remind": {
+        "label": "Erinnern",
+        "success_one": "Erinnerung an {{count}} Empfänger gesendet",
+        "success_other": "Erinnerung an {{count}} Empfänger gesendet",
+        "error": "Die Erinnerung konnte nicht gesendet werden.",
+        "notEmailed": {
+          "no_email_service": "Erinnerung vermerkt, aber E-Mail ist nicht eingerichtet. Kopieren Sie den Signaturlink und geben Sie ihn weiter.",
+          "no_recipients": "Erinnerung vermerkt, aber es gab keine Empfänger für die E-Mail. Kopieren Sie den Signaturlink und geben Sie ihn weiter.",
+          "send_failed": "Erinnerung vermerkt, aber die E-Mail konnte nicht zugestellt werden. Kopieren Sie den Signaturlink und geben Sie ihn weiter."
+        }
+      },
+      "remindedCount_one": "{{count}} Mal erinnert",
+      "remindedCount_other": "{{count}} Mal erinnert"
     },
     "send": {
       "title": "Zur Unterschrift senden",

@@ -260,8 +260,22 @@ test.describe('standalone agreement signing', () => {
     await expect(page.getByTestId('agreements-status-pending')).toHaveAttribute('aria-pressed', 'true');
     const voidBtn = page.getByTestId(`agreement-request-void-${draft.id}`);
     await voidBtn.waitFor({ timeout: 20_000 });
-    // Remind ships in W3b — nothing is rendered for it.
-    await expect(page.locator('[data-testid^="agreement-request-remind-"]')).toHaveCount(0);
+    // Remind (W3b): re-sends the SAME link. The stack may have no mail transport,
+    // in which case the reminder is still recorded (200, emailed:false).
+    const remindBtn = page.getByTestId(`agreement-request-remind-${draft.id}`);
+    await expect(remindBtn).toBeVisible();
+    const [reminded] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith(`/agreement-requests/${draft.id}/remind`)),
+      remindBtn.click(),
+    ]);
+    expect(reminded.status()).toBe(200);
+    const remindBody = (await reminded.json()) as { data: { request: { reminderCount: number }; link?: string } };
+    expect(remindBody.data.request.reminderCount).toBe(1);
+    expect(remindBody.data.link).toBeUndefined(); // the credential is never echoed
+    // The link emailed at send time still works after the reminder (same jti).
+    const stillLive = await page.request.fetch(`${s.origin}/api/v1/agreements/public/${encodeURIComponent(token)}`);
+    expect(stillLive.status()).toBe(200);
+    await expect(page.getByTestId(`agreement-request-remind-${draft.id}`)).toBeEnabled();
     await voidBtn.click();
     await page.getByTestId('agreement-request-void-dialog').waitFor();
     await page.getByTestId('agreement-request-void-reason').fill('Sent to the wrong contact');

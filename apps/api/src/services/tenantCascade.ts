@@ -1182,6 +1182,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // references wisp_threads, users and organizations ON DELETE CASCADE and
   // wisp_grants ON DELETE SET NULL (added_by_grant_id).
   'wisp_thread_links',
+  // Wisp companion W02a (#10212). Same partner-anchored / org-optional shape:
+  // this pass deletes its org posts only; a partner-level post (brief, digest,
+  // org-less concern) leaves with its thread / partner. It references
+  // wisp_threads and wisp_grants ON DELETE CASCADE, and wisp_concerns and
+  // user_notifications ON DELETE SET NULL; topologicalCascadeOrder() puts it
+  // before its parents.
+  'wisp_thread_posts',
   'wisp_thread_sessions',
   'wisp_watches',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
@@ -1466,6 +1473,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_invocations_append_only() (2026-11-14-100300, #7600 W02), so erasure has
   // to run as breeze_audit_admin with breeze.allow_audit_retention=1.
   'ai_invocations',
+  // Signed agreements (#9075 W4b): REVOKE UPDATE/DELETE from breeze_app (only
+  // column UPDATE on contract_id/org_id stays) plus
+  // contract_documents_append_only() (2027-01-06-150000), so erasure has to
+  // run as breeze_audit_admin with breeze.allow_audit_retention=1.
+  'contract_documents',
 ]);
 
 interface FkEdge {

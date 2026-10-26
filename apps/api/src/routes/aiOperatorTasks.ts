@@ -1093,10 +1093,21 @@ aiOperatorTasksRoutes.post(
       .filter((tool) => !(tool === 'm365_remove_license' && input.keepMailbox))
       .filter((tool) => IDENTITY_OFFBOARDING_EFFECT_TOOLS.includes(tool as never));
     const label = person.resolved?.name ?? person.resolved?.email ?? input.personHint ?? 'the departing person';
+    // Device items name the host, not the id (QA sweep 2026-10-24): the same
+    // org-scoped lookup POST /tasks uses, read-only, unknown ids fall back to the id.
+    const deviceLabels: Record<string, string> = {};
+    if (input.deviceIds.length > 0) {
+      const rows = await db.select({ id: devices.id, hostname: devices.hostname, siteId: devices.siteId }).from(devices)
+        .where(and(eq(devices.orgId, body.orgId), inArray(devices.id, input.deviceIds)));
+      for (const d of rows) {
+        if (auth.canAccessSite && !auth.canAccessSite(d.siteId)) continue;
+        if (d.hostname) deviceLabels[d.id] = d.hostname;
+      }
+    }
     const manualWork = buildIdentityOffboardingManualWork(input, {
       google: { present: readiness.capabilityReadiness['google.workspace.connection'] === true },
       m365: { present: readiness.capabilityReadiness['m365.connection'] === true },
-      targets: { contactTargetId: 'draft', contactLabel: label },
+      targets: { contactTargetId: 'draft', contactLabel: label, deviceLabels },
       degradedTools: [...degraded],
     }, readiness.capabilityReadiness, []).map((i) => ({ key: i.key, label: i.label, detail: i.detail, origin: i.origin }));
 

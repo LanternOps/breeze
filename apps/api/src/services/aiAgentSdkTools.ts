@@ -656,6 +656,24 @@ export const TOOL_TIERS = {
   manage_alert_correlations: 2,
   manage_device_anomalies: 1,
   reliability_feedback: 2,
+  // Spec 2026-09-23 W08 (#6778): network topology. Reads are tier 1; the multiplexers keep tier 1 as
+  // their base with per-action tier 2 / supervised classes in aiGuardrails; manage_topology_manual is
+  // tier 2 throughout (a manual assertion is a tenant-internal row).
+  get_topology_graph: 1,
+  run_topology_diagnostic: 1,
+  manage_topology_manual: 2,
+  manage_topology_monitoring: 1,
+  manage_topology_templates: 1,
+  apply_topology_template: 1,
+  // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. The multiplexers keep tier 1 as their base with
+  // per-action tier 2 writes in aiGuardrails; the probe (dispatches a ping from a site agent) and the UniFi sync
+  // (queues a vendor pull) are tier 2 throughout.
+  manage_snmp_templates: 1,
+  get_snmp_metrics: 1,
+  probe_network_asset: 2,
+  manage_known_guests: 1,
+  get_unifi_status: 1,
+  trigger_unifi_sync: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3402,6 +3420,13 @@ export function buildBreezeSdkTools(
         })).max(200).optional().describe(
           'Per-app block/pin rules on the ring; pin requires pinnedVersion. Overrides manual approvals in patch jobs. Update replaces the list.'
         ),
+        featureUpdates: z.object({
+          mode: z.enum(['block', 'allow', 'pin']),
+          product: z.enum(['windows-11', 'windows-10']).optional(),
+          targetVersion: z.string().min(4).max(4).optional(),
+        }).optional().describe(
+          'Windows feature releases: block (default), allow newest, or pin (product + targetVersion like "25H2"; sets the WUfB target-release policy).'
+        ),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
@@ -3570,6 +3595,92 @@ export function buildBreezeSdkTools(
       registryDescription('reliability_feedback'),
       inputShape('reliability_feedback'),
       makeHandler('reliability_feedback', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W08 (#6778): network topology. Classes live in aiGuardrails.
+    tool(
+      'get_topology_graph',
+      registryDescription('get_topology_graph'),
+      inputShape('get_topology_graph'),
+      makeHandler('get_topology_graph', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'run_topology_diagnostic',
+      registryDescription('run_topology_diagnostic'),
+      inputShape('run_topology_diagnostic'),
+      makeHandler('run_topology_diagnostic', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_manual',
+      registryDescription('manage_topology_manual'),
+      inputShape('manage_topology_manual'),
+      makeHandler('manage_topology_manual', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_monitoring',
+      registryDescription('manage_topology_monitoring'),
+      inputShape('manage_topology_monitoring'),
+      makeHandler('manage_topology_monitoring', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_templates',
+      registryDescription('manage_topology_templates'),
+      inputShape('manage_topology_templates'),
+      makeHandler('manage_topology_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'apply_topology_template',
+      registryDescription('apply_topology_template'),
+      inputShape('apply_topology_template'),
+      makeHandler('apply_topology_template', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. Classes live in aiGuardrails.
+    tool(
+      'manage_snmp_templates',
+      registryDescription('manage_snmp_templates'),
+      inputShape('manage_snmp_templates'),
+      makeHandler('manage_snmp_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_snmp_metrics',
+      registryDescription('get_snmp_metrics'),
+      inputShape('get_snmp_metrics'),
+      makeHandler('get_snmp_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'probe_network_asset',
+      registryDescription('probe_network_asset'),
+      inputShape('probe_network_asset'),
+      makeHandler('probe_network_asset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_known_guests',
+      registryDescription('manage_known_guests'),
+      inputShape('manage_known_guests'),
+      makeHandler('manage_known_guests', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_unifi_status',
+      registryDescription('get_unifi_status'),
+      inputShape('get_unifi_status'),
+      makeHandler('get_unifi_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_unifi_sync',
+      registryDescription('trigger_unifi_sync'),
+      inputShape('trigger_unifi_sync'),
+      makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

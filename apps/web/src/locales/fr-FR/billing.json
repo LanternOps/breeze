@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "groupe supprimé",
         "siteDeleted": "site supprimé",
-        "siteDeletedNamed": "site supprimé : {{name}}"
+        "siteDeletedNamed": "site supprimé : {{name}}",
+        "manualQuantityMissing": "quantité manquante"
       },
       "lineScope": {
         "site": "Site : {{name}}"
@@ -826,7 +827,20 @@
         "label": "Supprimer le brouillon",
         "success": "Brouillon supprimé.",
         "error": "Impossible de supprimer le brouillon."
-      }
+      },
+      "remind": {
+        "label": "Relancer",
+        "success_one": "Rappel envoyé à {{count}} destinataire",
+        "success_other": "Rappel envoyé à {{count}} destinataires",
+        "error": "Impossible d’envoyer le rappel.",
+        "notEmailed": {
+          "no_email_service": "Rappel enregistré, mais l’e-mail n’est pas configuré. Copiez le lien de signature et transmettez-le.",
+          "no_recipients": "Rappel enregistré, mais il n’y avait aucun destinataire à joindre par e-mail. Copiez le lien de signature et transmettez-le.",
+          "send_failed": "Rappel enregistré, mais l’e-mail n’a pas pu être remis. Copiez le lien de signature et transmettez-le."
+        }
+      },
+      "remindedCount_one": "Relancé {{count}} fois",
+      "remindedCount_other": "Relancé {{count}} fois"
     },
     "send": {
       "title": "Envoyer pour signature",

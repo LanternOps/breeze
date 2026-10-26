@@ -224,6 +224,35 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  // Full-control W09 (#6779): the SNMP / probe / known-guest / UniFi tools bind to the route a technician uses for the same act.
+  { tool: 'manage_snmp_templates', action: 'list', routeFile: 'snmp.ts', method: 'get', path: '/templates' },
+  { tool: 'manage_snmp_templates', action: 'get', routeFile: 'snmp.ts', method: 'get', path: '/templates/:id' },
+  { tool: 'manage_snmp_templates', action: 'browse_oids', routeFile: 'snmp.ts', method: 'get', path: '/oids/browse' },
+  { tool: 'manage_snmp_templates', action: 'validate_oids', routeFile: 'snmp.ts', method: 'post', path: '/oids/validate' },
+  { tool: 'manage_snmp_templates', action: 'create', routeFile: 'snmp.ts', method: 'post', path: '/templates' },
+  { tool: 'manage_snmp_templates', action: 'update', routeFile: 'snmp.ts', method: 'patch', path: '/templates/:id' },
+  { tool: 'manage_snmp_templates', action: 'delete', routeFile: 'snmp.ts', method: 'delete', path: '/templates/:id' },
+  {
+    tool: 'get_snmp_metrics', action: 'history', routeFile: 'monitoringAssetMetrics.ts', method: 'get', path: '/assets/:id/metrics',
+    toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices; the route applies no device gate.' },
+  },
+  { tool: 'get_snmp_metrics', action: 'dashboard', routeFile: 'snmp.ts', method: 'get', path: '/dashboard' },
+  {
+    tool: 'probe_network_asset', routeFile: 'discoveryAssetProbe.ts', method: 'post', path: '/assets/:id/probe',
+    toolOnly: { extra: [], reason: 'Exact-device callers only probe assets linked to allowed devices, and the MFA claim is re-checked in the handler.' },
+  },
+  { tool: 'manage_known_guests', action: 'list', routeFile: 'networkKnownGuests.ts', method: 'get', path: '/' },
+  { tool: 'manage_known_guests', action: 'add', routeFile: 'networkKnownGuests.ts', method: 'post', path: '/' },
+  { tool: 'manage_known_guests', action: 'delete', routeFile: 'networkKnownGuests.ts', method: 'delete', path: '/:id' },
+  // UniFi reads AND the sync need billing:manage (not a reasonable-looking read grant): the tool floor is the route's.
+  { tool: 'get_unifi_status', action: 'status', routeFile: 'unifi/index.ts', method: 'get', path: '/' },
+  { tool: 'get_unifi_status', action: 'hosts', routeFile: 'unifi/index.ts', method: 'get', path: '/hosts' },
+  { tool: 'get_unifi_status', action: 'collectors', routeFile: 'unifi/index.ts', method: 'get', path: '/collectors' },
+  { tool: 'get_unifi_status', action: 'mappings', routeFile: 'unifi/index.ts', method: 'get', path: '/mappings' },
+  { tool: 'get_unifi_status', action: 'telemetry', routeFile: 'unifi/index.ts', method: 'get', path: '/telemetry' },
+  { tool: 'get_unifi_status', action: 'sync_runs', routeFile: 'unifi/index.ts', method: 'get', path: '/sync-runs' },
+  { tool: 'get_unifi_status', action: 'controller_sites', routeFile: 'unifi/index.ts', method: 'get', path: '/controller-sites' },
+  { tool: 'trigger_unifi_sync', routeFile: 'unifi/index.ts', method: 'post', path: '/sync' },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -365,6 +394,9 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
+  // Upload and move also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
+  { tool: 'file_operations', action: 'write', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/upload', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'rename', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/move', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
   // Live device reads outside /system-tools. The live request is bound to the
   // route that sends the same command; the stored-data read to the route that
