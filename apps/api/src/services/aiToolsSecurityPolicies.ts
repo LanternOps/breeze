@@ -83,7 +83,7 @@ function registerSecurityPolicyTool(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_security_policies',
       description:
-        'Antivirus/EDR security policy templates. Actions: list, create (name; ownerScope partner = every organization), update (policyId). There is no delete. Writes need approval; partner-wide create needs a second approver.',
+        'Antivirus/EDR security policy templates. Actions: list, create (name, ownerScope partner for every organization), update (policyId). There is no delete. Writes need approval, and a partner-wide create needs a second approver.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -203,7 +203,7 @@ function registerCompliancePolicyTool(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_compliance_policies',
       description:
-        "Deactivate a compliance policy (find it with query_compliance_policies). Permanent: nothing re-enables it. Closes its alerts. ownerScope must match the policy: 'organization', or 'partner' for a partner-wide one (needs a second approver).",
+        "Turns off a compliance policy found with query_compliance_policies. Actions: deactivate (policyId, ownerScope). Permanent: nothing re-enables it, and its alerts close. ownerScope must match the policy: 'organization', or 'partner' for a partner-wide one (needs a second approver).",
       input_schema: {
         type: 'object' as const,
         properties: {

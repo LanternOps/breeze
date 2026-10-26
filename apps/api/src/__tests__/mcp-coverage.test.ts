@@ -27,9 +27,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Gap entries as of this wave. This list only SHRINKS. Adding a route module with no tool means writing the tool or a real exemption. */
 const FROZEN_GAPS: ReadonlySet<string> = new Set([
-  'accessReviews.ts',
   'accounting/index.ts',
-  'auditBaselines.ts',
   'backup/bmrRecoveries.ts',
   'backup/health.ts',
   'backup/verification.ts',
@@ -66,16 +64,9 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'patchPlan.ts',
   'pax8.ts',
   'pax8Orders.ts',
-  'policyManagement/actions.ts',
   'remote/supportSessions.ts',
   'reports/recipients.ts',
   'roles.ts',
-  'security/compliance.ts',
-  'security/dashboard.ts',
-  'security/policies.ts',
-  'security/recommendations.ts',
-  'security/recoveryKeys.ts',
-  'security/status.ts',
   'software.ts',
   'softwareInstallMethods.ts',
   'softwareInventory.ts',

@@ -267,7 +267,7 @@ export function registerSecurityComplianceTools(aiTools: Map<string, AiTool>): v
           filter: {
             type: 'string',
             enum: [...new Set(Object.values(SECURITY_COMPLIANCE_FILTERS).flat())],
-            description: 'status: protected|at_risk|unprotected|offline; firewall: enabled|disabled; encryption: encrypted|partial|unencrypted; password_policy: compliant|non_compliant; admin_audit: default_account|weak_password|stale_account|no_issues',
+            description: 'Filter for the status, firewall, encryption, password_policy or admin_audit view (a value of that view)',
           },
           os: { type: 'string', enum: ['windows', 'macos', 'linux'], description: 'Device-list views: only this OS' },
           search: { type: 'string', description: 'Device-list views: device name contains (admin_audit also matches account names)' },

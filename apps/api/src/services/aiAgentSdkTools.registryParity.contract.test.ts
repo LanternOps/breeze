@@ -411,6 +411,36 @@ describe('W03 write wiring (#6757)', () => {
   });
 });
 
+/** Spec 2026-09-23 W11 (#6781): security policy tools. Pinned so a later wave cannot silently un-wire one. */
+const W11_TOOLS = [
+  'get_security_compliance', 'manage_security_recommendations', 'manage_access_reviews', 'manage_audit_baselines',
+  'manage_compliance_policies', 'manage_security_policies', 'manage_recovery_keys', 'manage_pam_rules',
+] as const;
+
+describe('W11 security policy wiring (#6781)', () => {
+  it.each(W11_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('manage_compliance_policies is registry tier 3 (W11-D4: deactivation is permanent)', () => {
+    expect(TOOL_TIERS.manage_compliance_policies).toBe(3);
+  });
+
+  it('none of the W11 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W11_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
+
 describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
   const configurations = [
     { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: '' },

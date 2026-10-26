@@ -1040,6 +1040,23 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
     'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
   ]),
   get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
+  // Full-control W11 (#6781, quorum QW10): every free-text field the security policy tools return, nested included.
+  // Device-reported (hostnames, local admin usernames, password-policy rule text, encryption volume labels, audit
+  // deviations), staff-authored (policy, review, rule and signer-group names, descriptions, notes, exclusions,
+  // match patterns) or identity data (member names and emails): data for the model, never instructions.
+  get_security_compliance: new Set([
+    'deviceName', 'username', 'rule', 'drive', 'method', 'status', 'providerVersion', 'definitionsVersion', 'name', 'title',
+  ]),
+  manage_security_recommendations: new Set(['title', 'description']),
+  manage_access_reviews: new Set(['name', 'description', 'notes', 'userName', 'userEmail', 'reviewerName', 'roleName']),
+  manage_audit_baselines: new Set(['name', 'baselineName', 'hostname', 'setting', 'actual', 'reason']),
+  manage_security_policies: new Set(['name', 'description', 'providerId', 'exclusions']),
+  manage_compliance_policies: new Set(['name']),
+  manage_recovery_keys: new Set(['hostname', 'volumeMount', 'protectorId', 'keyType']),
+  manage_pam_rules: new Set([
+    'name', 'description', 'matchSigner', 'matchPathGlob', 'matchParentImage', 'matchCommandLine', 'matchUser',
+    'matchAdGroup', 'matchToolName', 'subjectCn', 'signers',
+  ]),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

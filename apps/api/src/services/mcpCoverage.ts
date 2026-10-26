@@ -220,7 +220,7 @@ export type McpExemptReason =
   | 'tool_in_later_wave';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
-  'accessReviews.ts': { gap: '#6781' },
+  'accessReviews.ts': { tools: ['manage_access_reviews'] }, // W11 (#6781): list/get/create/decide items; completing a review (revokes members) stays human-only
   'accounting/connectionSetupRoutes.ts': { exempt: 'vendor_console_admin', note: 'Xero organisation picker, cancel, and settings-option pickers -- post-consent steps of the interactive OAuth connect flow for the partner\'s accounting connection (Xero W02); no agent-driven equivalent.' },
   'accounting/index.ts': { gap: '#6784' },
   'actionIntents.ts': { exempt: 'identity' }, // reveal-secret + GET /:id/status are human-session-only UI; the MCP surface is get_action_status/cancel_action
@@ -317,7 +317,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'analytics.ts': { tools: ['query_analytics', 'get_executive_summary'] },
   'apiKeys.ts': { exempt: 'identity' },
   'approvals.ts': { exempt: 'human_only_approval', note: 'The human decision gate itself (passkey assertion-challenge, approve/deny/report-suspicious). An AI that could decide approvals defeats four-eyes.' },
-  'auditBaselines.ts': { gap: '#6781' },
+  'auditBaselines.ts': { tools: ['manage_audit_baselines'] }, // W11 (#6781): list/create/compliance/device results/apply request; the request decision and /apply stay human-only
   'auditLogs.ts': { tools: ['query_audit_log'] },
   'auth/accountDeletion.ts': { exempt: 'identity' },
   'auth/authTransitionTestControl.ts': { exempt: 'identity' },
@@ -592,7 +592,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
   'packageSearch.ts': { gap: '#6782' },
-  'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history'] },
+  'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history', 'manage_pam_rules'] }, // W11 (#6781): rules, org config, signer groups (#6141 gap)
   'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
   'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
@@ -629,7 +629,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'permissionsCatalog.ts': { exempt: 'identity' },
   'playbooks.ts': { tools: ['list_playbooks', 'execute_playbook', 'get_playbook_history'] },
   'plugins.ts': { exempt: 'human_only_trust_material', note: "Installing a plugin puts code into the tenant: supply-chain class risk, low demand. From #6805." },
-  'policyManagement/actions.ts': { gap: '#6781' },
+  'policyManagement/actions.ts': { tools: ['manage_compliance_policies'] }, // W11 (#6781): deactivate (permanent)
   'policyManagement/compliance.ts': { tools: ['get_compliance_status'] },
   'policyManagement/crud.ts': { tools: ['query_compliance_policies'] },
   'portal/assets.ts': { exempt: 'portal' },
@@ -688,16 +688,16 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'scriptLibrary.ts': { tools: ['search_script_library'] },
   'scripts.ts': { tools: ['list_scripts', 'get_script_details', 'run_script', 'cancel_script_execution', 'get_script_execution_history', 'get_script_execution', 'list_script_templates'] },
   'search.ts': { exempt: 'internal_plumbing' },
-  'security/compliance.ts': { gap: '#6781' },
-  'security/dashboard.ts': { gap: '#6781' },
+  'security/compliance.ts': { tools: ['get_security_compliance'] }, // W11 (#6781): trends, firewall, encryption, password policy, admin audit
+  'security/dashboard.ts': { tools: ['get_security_compliance'] }, // W11 (#6781): dashboard and score breakdown
   'security/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
-  'security/policies.ts': { gap: '#6781' },
+  'security/policies.ts': { tools: ['manage_security_policies'] }, // W11 (#6781)
   'security/posture.ts': { tools: ['get_security_posture'] },
   'security/readAuthorization.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
-  'security/recommendations.ts': { gap: '#6781' },
-  'security/recoveryKeys.ts': { gap: '#6781' },
+  'security/recommendations.ts': { tools: ['manage_security_recommendations'] }, // W11 (#6781): list/complete/dismiss
+  'security/recoveryKeys.ts': { tools: ['manage_recovery_keys'] }, // W11 (#6781): list/rotate/collect; reveal (plaintext key) stays human-only
   'security/scans.ts': { tools: ['security_scan'] },
-  'security/status.ts': { gap: '#6781' },
+  'security/status.ts': { tools: ['get_security_compliance'] }, // W11 (#6781): fleet and device status
   'security/sweeps.ts': { tools: ['ioc_hunt'] },
   'security/threats.ts': { tools: ['security_scan'] },
   // Reads covered by ioc_hunt list_rule_sets; rule-set and rule CRUD stay UI-only (#6268 Gate B 7).

@@ -47,7 +47,7 @@ export function registerRecoveryKeyTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_recovery_keys',
       description:
-        'Disk-encryption recovery keys for one device. Actions: list (escrow metadata, never the key), rotate (Windows; volumeMount), collect (re-escrow current keys). Rotate and collect need approval. The key itself is only shown in the Breeze web app.',
+        'Disk-encryption recovery keys for one device. Actions: list (escrow metadata, never the key), rotate (Windows volumeMount), collect (re-escrow current keys). Rotate and collect need approval. The key itself is only shown in the Breeze web app.',
       input_schema: {
         type: 'object' as const,
         properties: {

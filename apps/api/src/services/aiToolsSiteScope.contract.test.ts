@@ -195,6 +195,14 @@ const AI_TOOLS_SOURCES = aiToolsSources();
  * write one, it is a gap, not an exception.
  */
 const SITE_TABLE_EXCEPTIONS: readonly string[] = [
+  // Full-control W11 (#6781). `manage_access_reviews` `isScopeMember`: an existence check that a create's
+  // `reviewerId` is a member of the review's own partner or org (W11-D7). Only reached after `reviewOwner`, which
+  // refuses every site- or device-restricted session; it selects no member data.
+  'aiToolsAccessReviews.ts:organizationUsers#0',
+  // `manage_pam_rules` `otherAutoApproveRule`: the W11-D3 safety count of the org's auto-approving rules,
+  // deliberately across EVERY site (a stricter answer than the caller's own view), run inside the write's
+  // transaction after the target rule passed `ruleSiteDenied`. Returns a boolean; selects no rule content.
+  'aiToolsPamRules.ts:pamRules#0',
   // `markBackupJobDispatchFailed` / `markRestoreJobFailed`: internal status
   // writes keyed by a job id the SAME handler just created — no caller input,
   // nothing to attribute to a site.

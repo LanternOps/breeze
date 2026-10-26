@@ -73,7 +73,7 @@ export function registerAuditBaselineTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_audit_baselines',
       description:
-        'OS audit-policy baselines. Actions: list, create (name, osType, profile), compliance, device_results (deviceId), request_apply (baselineId, deviceIds; Windows). A request only waits for a different person to approve it; applying is done in the web app.',
+        'OS audit-policy baselines. Actions: list, create (name, osType, profile), compliance, device_results (deviceId), request_apply (baselineId, Windows deviceIds). A request only waits for a different person to approve it, and applying is done in the web app.',
       input_schema: {
         type: 'object' as const,
         properties: {

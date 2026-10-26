@@ -681,6 +681,16 @@ export const TOOL_TIERS = {
   list_ai_agent_schedules: 1,
   list_fleet_designs: 1,
   get_fleet_design: 1,
+  // Spec 2026-09-23 W11 (#6781): security policy. Per-action classes live in aiGuardrails (W11 class review);
+  // access-review complete, apply-request decision and recovery-key reveal are human-only and absent from the tools.
+  get_security_compliance: 1,
+  manage_security_recommendations: 1,
+  manage_access_reviews: 1,
+  manage_audit_baselines: 1,
+  manage_compliance_policies: 3,
+  manage_security_policies: 1,
+  manage_recovery_keys: 1,
+  manage_pam_rules: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3731,6 +3741,64 @@ export function buildBreezeSdkTools(
       registryDescription('get_fleet_design'),
       inputShape('get_fleet_design'),
       makeHandler('get_fleet_design', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W11 (#6781): security policy tools. Reads are tier 1; writes are classed in aiGuardrails; access
+    // reviews and PAM rules are agent-human-only.
+    tool(
+      'get_security_compliance',
+      registryDescription('get_security_compliance'),
+      inputShape('get_security_compliance'),
+      makeHandler('get_security_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_security_recommendations',
+      registryDescription('manage_security_recommendations'),
+      inputShape('manage_security_recommendations'),
+      makeHandler('manage_security_recommendations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_access_reviews',
+      registryDescription('manage_access_reviews'),
+      inputShape('manage_access_reviews'),
+      makeHandler('manage_access_reviews', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_audit_baselines',
+      registryDescription('manage_audit_baselines'),
+      inputShape('manage_audit_baselines'),
+      makeHandler('manage_audit_baselines', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_compliance_policies',
+      registryDescription('manage_compliance_policies'),
+      inputShape('manage_compliance_policies'),
+      makeHandler('manage_compliance_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_security_policies',
+      registryDescription('manage_security_policies'),
+      inputShape('manage_security_policies'),
+      makeHandler('manage_security_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_recovery_keys',
+      registryDescription('manage_recovery_keys'),
+      inputShape('manage_recovery_keys'),
+      makeHandler('manage_recovery_keys', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_pam_rules',
+      registryDescription('manage_pam_rules'),
+      inputShape('manage_pam_rules'),
+      makeHandler('manage_pam_rules', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

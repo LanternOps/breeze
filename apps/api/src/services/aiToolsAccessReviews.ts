@@ -29,6 +29,7 @@ import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { canSelfDecideAccessReviewItem, type AccessReviewOwner } from './accessReviewSelfDecision';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { isRestrictedCaller } from './aiToolsNetworkMonitoringShared';
 import { ACCESS_REVIEW_ACTIONS, ACCESS_REVIEW_DECISIONS } from './aiToolSchemasSecurityPolicy';
@@ -41,7 +42,8 @@ const PAGE = { defaultLimit: 50, maxLimit: 200 } as const;
 
 /** The router's gate plus `getScopeContext`, as one answer: the review owner, or an error result. */
 function reviewOwner(auth: AuthContext): AccessReviewOwner | string {
-  if (isRestrictedCaller(auth)) {
+  // Site- or device-restricted (and, for an org user, the governance ceiling): a review enumerates every member.
+  if (isRestrictedCaller(auth) || !canMutateOrgWideGovernance(auth)) {
     return jsonError('Access reviews cover every member of the organization; a site- or device-restricted session cannot use them', 'ACCESS_DENIED');
   }
   if (auth.scope === 'partner') {
@@ -75,7 +77,7 @@ export function registerAccessReviewTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_access_reviews',
       description:
-        'User access reviews. Actions: list, get (reviewId), create (name; snapshots every member), decide_item (reviewId, itemId, decision approved|revoked|pending). Decisions are only recorded; completing a review, which removes revoked users, is done by a person in the web app.',
+        'User access reviews. Actions: list, get (reviewId), create (name, snapshots every member), decide_item (reviewId, itemId, decision approved, revoked or pending). Decisions are only recorded: completing a review, which removes revoked users, is done by a person in the web app.',
       input_schema: {
         type: 'object' as const,
         properties: {

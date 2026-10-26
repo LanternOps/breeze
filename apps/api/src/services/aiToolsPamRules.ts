@@ -20,7 +20,7 @@
  * bound to specific devices gets nothing, and a rule may reference only a signer
  * group of its own organization.
  */
-import { and, asc, eq, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { pamOrgConfig, pamRules, pamSignerGroups } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -28,7 +28,9 @@ import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
-import { siteAllowlistOf } from './aiToolsSiteScope';
+import { siteScopeCondition } from './aiToolsSiteScope';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { normalizeSiteAllowlist } from './siteAllowlist';
 import { isHoldingOrg } from './unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from './unassignedPool/orgType';
 import { describePamRuleTierDrift } from './pamRuleTierDrift';
@@ -39,7 +41,7 @@ import {
 import { parseData } from './aiToolsTicketOpsShared';
 import { PAM_RULE_ACTIONS, PAM_TOOL_VERDICTS } from './aiToolSchemasSecurityPolicy';
 import {
-  auditToolWrite, bounded, defined, deviceBoundDenied, json, jsonError, notFound, orgWideWriteDenied, requireFields, str, thrown,
+  auditToolWrite, bounded, defined, deviceBoundDenied, json, jsonError, notFound, requireFields, str, thrown,
 } from './aiToolsSecurityPolicyShared';
 
 type Action = (typeof PAM_RULE_ACTIONS)[number];
@@ -100,7 +102,8 @@ function projectGroup(row: typeof pamSignerGroups.$inferSelect) {
 
 /** Site gate of the rule handlers: a site-restricted caller reaches only rules of its sites (never an org-wide one). */
 function ruleSiteDenied(auth: AuthContext, siteId: string | null | undefined): boolean {
-  const allowed = siteAllowlistOf(auth);
+  // The route's canAccessSite(perms, siteId ?? ''): an org-wide rule (null site) is never a restricted caller's.
+  const allowed = normalizeSiteAllowlist(auth.allowedSiteIds);
   return allowed !== undefined && !(typeof siteId === 'string' && allowed.includes(siteId));
 }
 
@@ -141,7 +144,7 @@ export function registerPamRuleTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_pam_rules',
       description:
-        'PAM (privileged access) rules, the org default verdict and signer groups. Reads: list_rules, get_config, list_signer_groups. Writes need approval and never create auto-approval; in an org with an auto-approve rule only additive or cosmetic changes are allowed.',
+        'PAM elevation rules. Actions: list_rules, create_rule, update_rule, delete_rule, get_config, set_config, list_signer_groups, create_signer_group, update_signer_group, delete_signer_group. Writes need approval and never auto-approve. If the org has an auto-approve rule, edits are additive only.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -209,10 +212,10 @@ async function reads(action: Action, input: Record<string, unknown>, auth: AuthC
     return bounded({ signerGroups: rows.slice(0, LIST_CAP).map(projectGroup), truncated: rows.length > LIST_CAP });
   }
   // list_rules: the route's site narrowing (a restricted caller sees only its sites' rules, never an org-wide one).
-  const allowed = siteAllowlistOf(auth);
+  // siteScopeCondition: inArray(site_id, allowlist), so an org-wide rule (NULL site) is hidden from a restricted caller.
   const conditions = [
     orgId ? eq(pamRules.orgId, orgId) : auth.orgCondition(pamRules.orgId),
-    allowed === undefined ? undefined : allowed.length === 0 ? sql`false` : inArray(pamRules.siteId, [...allowed]),
+    siteScopeCondition(auth, pamRules.siteId),
   ].filter((c): c is SQL => c !== undefined);
   const rows = await db.select().from(pamRules).where(conditions.length ? and(...conditions) : undefined)
     .orderBy(asc(pamRules.priority), asc(pamRules.createdAt)).limit(LIST_CAP + 1);
@@ -294,9 +297,8 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
     }
   }
 
-  // Org config and signer groups are org-wide governance (route: canMutateOrgWideGovernance).
-  const denied = orgWideWriteDenied(auth, 'PAM configuration');
-  if (denied) return denied;
+  // Org config and signer groups are org-wide governance (the route's canMutateOrgWideGovernance ceiling).
+  if (!canMutateOrgWideGovernance(auth)) return jsonError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'ACCESS_DENIED');
 
   if (action === 'set_config') {
     const parsed = parseData(updateConfigSchema, defined({ defaultUnmatchedVerdict: input.defaultUnmatchedVerdict }));
