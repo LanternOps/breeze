@@ -17,6 +17,8 @@ import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from
 import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
 import { alertInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
+import { normalizeSiteAllowlist } from '../../services/siteAllowlist';
+import { resolveSiteAllowedDeviceIds } from '../../services/aiToolsSiteScope';
 
 export const alertCorrelationRoutes = new Hono();
 
@@ -760,6 +762,9 @@ export async function mutateCorrelationGroup(
   action: 'acknowledge' | 'resolve',
 ): Promise<CorrelationGroupMutation | null> {
   const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
+  // A restricted caller who can see none of a persisted group's members gets the same answer as for a
+  // group that does not exist, not a quiet 0/0 success (no existence oracle).
+  if (persistedGroupAlerts !== null && persistedGroupAlerts.length === 0 && isSiteRestricted(auth)) return null;
   const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
   const group = groups.find((candidate) => candidate.id === groupId);
   if (persistedGroupAlerts === null && !group) return null;
@@ -838,14 +843,47 @@ export async function acknowledgeAlertWithRelated(auth: AuthContext, alertId: st
   return { alert, relatedAlerts, result };
 }
 
-/** Record a correlation-quality label. Null when the group is not visible to the caller. */
+/** A site-restricted caller (RLS does NOT enforce the site axis). */
+function isSiteRestricted(auth: AuthContext): boolean {
+  return normalizeSiteAllowlist(auth.allowedSiteIds) !== undefined;
+}
+
+/**
+ * A group is visible to a site-restricted caller only when at least one member
+ * alert is on a site they can reach. The org-only group lookup alone let a
+ * site-A caller label (or probe) a site-B group by UUID (quorum QW4).
+ */
+async function groupHasVisibleMember(auth: AuthContext, group: CorrelationGroupRow): Promise<boolean> {
+  if (!isSiteRestricted(auth)) return true;
+  const visible = await getPersistedGroupAlerts(group.id, auth);
+  return !!visible && visible.length > 0;
+}
+
+/** True when every id is an alert of `orgId` the (restricted) caller can see. */
+async function allAlertsVisible(auth: AuthContext, orgId: string, alertIds: readonly string[]): Promise<boolean> {
+  const unique = [...new Set(alertIds)];
+  if (unique.length === 0) return true;
+  const rows = await db.select().from(alerts).where(and(eq(alerts.orgId, orgId), inArray(alerts.id, unique)));
+  const visible = await filterAlertsBySiteScope(auth, rows);
+  return visible.length === unique.length;
+}
+
+/** Record a correlation-quality label. Null when the group (or a referenced alert / target group) is not visible to the caller. */
 export async function recordCorrelationFeedback(
   auth: AuthContext,
   groupId: string,
   body: z.infer<typeof correlationFeedbackSchema>,
 ): Promise<CorrelationGroupRow | null> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
-  if (!group) return null;
+  if (!group || !(await groupHasVisibleMember(auth, group))) return null;
+  if (isSiteRestricted(auth)) {
+    // A restricted caller may only reference alerts and a merge target they can see.
+    if (!(await allAlertsVisible(auth, group.orgId, body.alertIds))) return null;
+    if (body.targetGroupId) {
+      const target = await getAccessiblePersistedGroup(body.targetGroupId, auth);
+      if (!target || !(await groupHasVisibleMember(auth, target))) return null;
+    }
+  }
   await emitCorrelationFeedback({
     orgId: group.orgId,
     correlationId: group.id,
@@ -872,7 +910,7 @@ export async function recordRcaFeedback(
   body: z.infer<typeof rcaFeedbackSchema>,
 ): Promise<CorrelationGroupRow | null> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
-  if (!group) return null;
+  if (!group || !(await groupHasVisibleMember(auth, group))) return null;
   await emitRcaFeedback({
     orgId: group.orgId,
     rcaId: group.id,
@@ -901,11 +939,26 @@ export async function explainCorrelationGroup(
   body: z.infer<typeof explainGroupSchema>,
 ): Promise<ExplainGroupOutcome> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
-  if (!group) return { status: 'not_found' };
+  // Visibility first: a feature-flag answer for a group the caller cannot see would be an existence oracle.
+  if (!group || !(await groupHasVisibleMember(auth, group))) return { status: 'not_found' };
   if (!(await shouldProduceMlOutput(group.orgId, 'ml.rca.enabled'))) return { status: 'disabled' };
 
-  const groupAlerts = await getPersistedGroupAlerts(groupId, auth);
-  if (groupAlerts === null) return { status: 'not_found' };
+  const memberAlerts = await getPersistedGroupAlerts(groupId, auth);
+  if (memberAlerts === null) return { status: 'not_found' };
+
+  // Site axis (quorum QW6): an alert's visibility can follow its owning TOPOLOGY site while its device
+  // has since moved elsewhere, and the evidence queries below read that device's logs. A restricted caller
+  // therefore gets evidence only for alerts whose device is on a site they can reach NOW; a group with
+  // nothing left is not found (no existence oracle).
+  let groupAlerts = memberAlerts;
+  if (isSiteRestricted(auth)) {
+    const allowedDevices = await resolveSiteAllowedDeviceIds(group.orgId, auth);
+    if (allowedDevices) {
+      const allowed = new Set(allowedDevices);
+      groupAlerts = memberAlerts.filter((alert) => allowed.has(alert.deviceId));
+    }
+    if (groupAlerts.length === 0) return { status: 'not_found' };
+  }
 
   const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
   const rca = await buildAlertCorrelationRca({
@@ -998,6 +1051,10 @@ export async function getCorrelationGroupDetail(auth: AuthContext, groupId: stri
   if (!group) return null;
   // Detail-only: NOT added to the list mapping, which would N+1 a
   // `latestVerdictForGroup` call per row of `GET /correlations`.
+  // The verdict was reasoned over the WHOLE group. A site-restricted caller who sees only part of it
+  // does not get the rationale (quorum QW5): it can name alerts and devices on sites they cannot reach.
+  const partialView = isSiteRestricted(auth) && group.memberCount !== undefined && group.alerts.length < group.memberCount;
+  if (partialView) return { ...group, aiVerdict: null, aiVerdictWithheld: true };
   const verdict = await latestVerdictForGroup(group.orgId, group.id);
   return { ...group, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
 }

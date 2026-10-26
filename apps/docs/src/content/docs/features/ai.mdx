@@ -682,6 +682,23 @@ These tools configure the ticketing side of the platform. They are available in 
 
 AI agents can use the read actions. A write an agent attempts becomes a proposal that waits for a person to approve it. Most of these write actions refuse to run under an agent identity, because the record they create or change needs a signed-in person as its author; creating a ticket form and converting an inbound email are the two that run as the approver once approved. Make the other changes in chat or in the web app. Writing the same settings from the web app is unchanged.
 
+#### Alert correlation and signal triage
+
+These tools read how alerts group together and what is behind a device's unusual behaviour, and record the outcome. They are available in AI chat; AI agents get the read actions and can propose the device-level writes.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_alert_correlations (groups/get/by_alert/links/analyze/evaluation/explain)` | 1 | See groups of correlated alerts, the correlations around one alert, how well grouping is working, and root-cause evidence for a group (built from the group's alerts and logs, with no AI model call). Log text comes from the device and is treated as untrusted. Not available to a run that is limited to specific devices |
+| `manage_alert_correlations (acknowledge_group/resolve_group/acknowledge_related)` | 2 | Acknowledge or resolve every alert in a correlation group you can see, or an alert and its related alerts. Chat and MCP only: an AI agent cannot act on a whole group |
+| `manage_alert_correlations (feedback/rca_feedback)` | 2 | Tell Breeze a correlation was split, merged or dismissed, or that a root-cause analysis was helpful, not helpful, edited or used in a ticket |
+| `manage_device_anomalies (list)` | 1 | List unusual metric behaviour detected on a device |
+| `manage_device_anomalies (dismiss/resolve)` | 2 | Set an anomaly's status. There is no way back to open |
+| `manage_device_anomalies (promote)` | 3 | Raise a real alert from an anomaly. The alert notifies your alert channels, so it needs approval |
+| `get_fleet_health (history/offenders/evaluation/org_summary)` | 1 | A device's reliability score over time, the services and components behind its score, how well the scores predict real failures, and an organization rollup with its worst devices |
+| `reliability_feedback` | 2 | Label a device's reliability score as a confirmed failure, a replaced device, or a false alarm. Changes nothing on the device |
+
+A dry run of an alert rule is not available: the old per-rule test was retired with the previous alerting model.
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.

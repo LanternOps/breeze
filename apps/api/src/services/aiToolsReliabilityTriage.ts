@@ -22,7 +22,6 @@
 import { z } from 'zod';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { verifyDeviceAccess } from './aiTools';
 import { RELIABILITY_FEEDBACK_OUTCOMES } from './aiToolSchemasAlertTriage';
 import { agentRefusal, isAgentPrincipal, json, jsonError } from './aiToolsTicketOpsShared';
 import { approverReleaseMismatch } from './aiToolReleaseGuards';
@@ -83,6 +82,8 @@ export async function runFleetHealthAction(input: Record<string, unknown>, auth:
     if (action === 'history' || action === 'offenders') {
       const deviceId = guid.safeParse(input.deviceId);
       if (!deviceId.success) return jsonError(`deviceId (device UUID) is required for ${action}`, 'VALIDATION_ERROR');
+      // Lazy: aiTools.ts imports this module (through aiToolsUserRisk), so a static value import would be a cycle.
+      const { verifyDeviceAccess } = await import('./aiTools');
       const access = await verifyDeviceAccess(deviceId.data, auth);
       if ('error' in access) return jsonError(access.error, 'NOT_FOUND');
 
@@ -182,6 +183,7 @@ export function registerReliabilityTriageTools(aiTools: Map<string, AiTool>): vo
 
       try {
         // org + site + exact-device axes, the route's getDeviceWithOrgAndSiteCheck.
+        const { verifyDeviceAccess } = await import('./aiTools');
         const access = await verifyDeviceAccess(deviceId.data, auth);
         if ('error' in access) return jsonError(access.error, 'NOT_FOUND');
         const outcome = await recordDeviceReliabilityFeedback({

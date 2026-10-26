@@ -177,9 +177,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_ticket_forms: 'tickets',
   manage_ticket_response_templates: 'tickets',
   manage_time_suggestions: 'tickets',
-  // Full-control W07 (#6777): alert correlation + signal triage. The reads are agent-reachable; the
-  // classes (aiGuardrails) make every write a proposal released as the approver
-  // (USER_OWNED_RELEASE_ACTIONS), and a direct agent call never writes.
+  // Full-control W07 (#6777): alert correlation + signal triage. The reads are agent-reachable;
+  // manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS (group writes span devices, QW3): it keeps a
+  // capability row (the catalog maps every registered tool) but is never offered. Anomaly dismiss/resolve
+  // and the reliability label are proposals released as the approver (USER_OWNED_RELEASE_ACTIONS).
   get_alert_correlations: 'alerts_monitoring',
   manage_alert_correlations: 'alerts_monitoring',
   manage_device_anomalies: 'alerts_monitoring',

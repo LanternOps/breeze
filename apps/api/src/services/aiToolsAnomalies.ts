@@ -19,7 +19,6 @@
  * `approverReleaseMismatch(auth, context)`.
  */
 import type { AiTool } from './aiTools';
-import { verifyDeviceAccess } from './aiTools';
 import { ANOMALY_LIST_STATUSES, DEVICE_ANOMALY_ACTIONS } from './aiToolSchemasAlertTriage';
 import { agentRefusal, isAgentPrincipal, json, jsonError } from './aiToolsTicketOpsShared';
 import { approverReleaseMismatch } from './aiToolReleaseGuards';
@@ -39,7 +38,7 @@ export function registerAnomalyTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_device_anomalies', {
     tier: 1,
     domain: 'monitoring',
-    searchHint: 'metric anomalies on a device: list unusual CPU, memory, disk or network behaviour, dismiss or resolve one, promote one to an alert',
+    searchHint: 'unusual CPU, memory, disk or network metrics on a device: list, dismiss, resolve, promote to alert',
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_device_anomalies',
@@ -52,7 +51,7 @@ export function registerAnomalyTools(aiTools: Map<string, AiTool>): void {
           deviceId: { type: 'string', description: 'Device UUID' },
           anomalyId: { type: 'string', description: 'Anomaly UUID from list (dismiss/resolve/promote)' },
           status: { type: 'string', enum: [...ANOMALY_LIST_STATUSES], description: 'list: status filter (default open)' },
-          limit: { type: 'number', description: 'list: max rows (default 25, max 100)' },
+          limit: { type: 'number', description: 'Max rows for list (default 25, max 100)' },
           note: { type: 'string', description: 'Optional note recorded with the feedback (max 500 chars)' },
         },
         required: ['action', 'deviceId'],
@@ -74,6 +73,8 @@ export function registerAnomalyTools(aiTools: Map<string, AiTool>): void {
 
       try {
         // org + site + exact-device axes, the route's getDeviceWithOrgAndSiteCheck.
+        // Lazy: aiTools.ts imports this module, so a static value import would be a cycle.
+        const { verifyDeviceAccess } = await import('./aiTools');
         const access = await verifyDeviceAccess(deviceId.data, auth);
         if ('error' in access) return jsonError(access.error, 'NOT_FOUND');
         const orgId = access.device.orgId;

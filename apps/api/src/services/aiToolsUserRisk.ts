@@ -70,7 +70,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_fleet_health',
-      description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics; the summary covers every matching device, not just the page. Per-device topIssues are opt-in (includeTopIssues). Other actions: history, offenders (deviceId), evaluation, org_summary (orgId).',
+      description: 'Device reliability scores, worst first, with uptime, crash and failure metrics; the summary covers every matching device. topIssues are opt-in. Actions: list (default),history,offenders (deviceId),evaluation,org_summary (orgId).',
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -472,6 +472,11 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `manage_ticket_forms` | 1/3 | Customer-visible intake forms. `list`/`available` are Tier 1; `create` and `update` are Tier 3; `delete` is four-eyes. |
 | `manage_ticket_response_templates` | 1/3 | Partner-wide canned replies. `list` is Tier 1; `create` and `update` are Tier 3; `delete` is four-eyes. Requires full partner access. |
 | `manage_time_suggestions` | 1/2 | The caller's own time-entry suggestions. `list` is Tier 1; `confirm`, `dismiss` and `undo` are Tier 2. Requires partner or system scope. |
+| `get_alert_correlations` | 1 | Read alert correlation: `groups`, `get`, `by_alert`, `links`, `analyze`, `evaluation` and `explain` (root-cause evidence from the group's alerts and logs; no AI model call). Requires `alerts:read`. |
+| `manage_alert_correlations` | 2 | Acknowledge or resolve a correlation group (or an alert and its related alerts), and record correlation or root-cause feedback. Requires `alerts:acknowledge` (acknowledge), `alerts:write` (resolve) or `alerts:read` (the two feedback actions). |
+| `manage_device_anomalies` | 1/2/3 | Metric anomalies on one device. `list` is Tier 1; `dismiss` and `resolve` are Tier 2; `promote` raises a real alert and is Tier 3 (not callable over MCP unless the principal is listed in `MCP_UNATTENDED_TIER3_PRINCIPALS`). |
+| `reliability_feedback` | 2 | Label a device's reliability score (`failure_confirmed`, `replaced`, `false_alarm`). Requires `devices:read`. |
+| `get_fleet_health` | 1 | Also takes `action`: `history` and `offenders` (a `deviceId`), `evaluation`, and `org_summary` (an `orgId`), alongside the default fleet list. |
 | `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
 | `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |
 | `get_ticket_approval_status` | 1 | Read a ticket's budget and customer-approval status: consumed and held time, approved extensions and requests. Read-only; there is no tool to decide, record consent, write off or set a budget. Requires partner or system scope. |

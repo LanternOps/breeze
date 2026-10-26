@@ -20,11 +20,13 @@
  *  - The group/alert views span the devices of an organization and the routes
  *    have no exact-device axis, so a device-bound run (`auth.allowedDeviceIds`)
  *    is refused whole rather than shown a sibling's alerts (fail closed).
- *  - Every write stamps `auth.user.id` into a users FK (`alerts.acknowledged_by`,
- *    `alerts.resolved_by`, `ml_feedback_events.actor_user_id`), so an agent
- *    proposal is released AS THE APPROVER (`USER_OWNED_RELEASE_ACTIONS`) and
- *    each write branch checks `approverReleaseMismatch(auth, context)`. A direct
- *    `ai_agent` call never writes.
+ *  - `manage_alert_correlations` is `AGENT_HUMAN_ONLY_TOOLS`: an agent reads
+ *    correlations but never proposes a group write. A group spans devices, and a
+ *    supervised release rebuilds the APPROVER's auth, which drops the
+ *    originating run's exact-device ceiling (`allowedDeviceIds`); the per-alert
+ *    `manage_alerts` acknowledge / resolve stay available to agents because
+ *    their alert id is gated against that ceiling at mint time (quorum QW3).
+ *    A direct `ai_agent` call never writes either way.
  */
 import { z } from 'zod';
 import type { AuthContext } from '../middleware/auth';
@@ -37,9 +39,7 @@ import {
   RCA_FEEDBACK_OUTCOMES,
 } from './aiToolSchemasAlertTriage';
 import { agentRefusal, isAgentPrincipal, json, jsonError, parseData } from './aiToolsTicketOpsShared';
-import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   acknowledgeAlertWithRelated,
   buildAlertCorrelationView,
@@ -100,6 +100,7 @@ function slimGroup(group: CorrelationGroupForUi, detail: boolean) {
     alerts: shown,
     alertsTruncated: shown.length < group.alerts.length,
     ...(detail && 'aiVerdict' in group ? { aiVerdict: (group as { aiVerdict: unknown }).aiVerdict } : {}),
+    ...(detail && 'aiVerdictWithheld' in group ? { aiVerdictWithheld: true } : {}),
   };
 }
 
@@ -299,15 +300,14 @@ export function registerAlertCorrelationTools(aiTools: Map<string, AiTool>): voi
       },
     },
 
-    handler: async (input, auth, context?: ToolExecutionContext) => {
+    handler: async (input, auth) => {
       const action = input.action as WriteAction;
       if (!ALERT_CORRELATION_WRITE_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
       const denied = deviceBoundDenied(auth);
       if (denied) return denied;
-      // Every write stamps auth.user.id into a users FK. A supervised agent proposal is released AS THE
-      // APPROVER (USER_OWNED_RELEASE_ACTIONS, jobs/intentReleaseWorker.ts); a direct agent call never writes.
-      if (isAgentPrincipal(auth) && !context?.approverRelease) return agentRefusal(action);
-      if (approverReleaseMismatch(auth, context)) return jsonError('Approver release mismatch', 'APPROVER_RELEASE_MISMATCH');
+      // Every write stamps auth.user.id into a users FK, and the tool is AGENT_HUMAN_ONLY_TOOLS: no agent
+      // proposal is ever released, so an ai_agent principal here is refused outright.
+      if (isAgentPrincipal(auth)) return agentRefusal(action);
 
       try {
         if (action === 'acknowledge_group' || action === 'resolve_group') {

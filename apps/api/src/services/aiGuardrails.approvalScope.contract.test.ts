@@ -14,7 +14,7 @@ import {
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   TOOL_ACTION_INPUT_KEYS,
-  checkGuardrails, resolveApprovalScope, isInputAwareTier3,
+  checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
@@ -1193,5 +1193,69 @@ describe('W06 class rows (#6776)', () => {
       'manage_ticket_checklist_templates:delete', 'manage_ticket_config:delete_domain',
       'manage_ticket_forms:delete', 'manage_ticket_response_templates:delete',
     ]);
+  });
+});
+
+// ── W07 class rows (#6777, spec checklist item 3) ──────────────────────────
+// Copied from the W07 plan's "Final per-action classes" table, NOT derived from the guardrail tables.
+// Every action-enum member of the W07 multiplexers has a row, so a new action reds here until someone
+// classifies it. reliability_feedback has no action enum: it is a single-purpose tier-2 tool.
+const W07_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_alert_correlations: {
+    groups: 't1', get: 't1', by_alert: 't1', links: 't1', analyze: 't1', evaluation: 't1', explain: 't1',
+  },
+  manage_alert_correlations: {
+    acknowledge_group: 't2', resolve_group: 't2', acknowledge_related: 't2', feedback: 't2', rca_feedback: 't2',
+  },
+  // promote raises a real alert and publishes alert.triggered (reaches notification channels): supervised.
+  manage_device_anomalies: { list: 't1', dismiss: 't2', resolve: 't2', promote: 'supervised' },
+  get_fleet_health: { list: 't1', history: 't1', offenders: 't1', evaluation: 't1', org_summary: 't1' },
+};
+
+describe('W07 class rows (#6777)', () => {
+  it('covers the four W07 multiplexers exactly once', () => {
+    expect(Object.keys(W07_EXPECTED).sort()).toEqual([
+      'get_alert_correlations', 'get_fleet_health', 'manage_alert_correlations', 'manage_device_anomalies',
+    ]);
+  });
+
+  it.each(Object.keys(W07_EXPECTED))('%s: W07_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W07_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('get_fleet_health with no action is still the tier-1 fleet list', () => {
+    expect(classOf('get_fleet_health', {})).toBe('t1');
+  });
+
+  it('reliability_feedback is a single-purpose tier-2 write (a label; nothing on the device changes)', () => {
+    expect(getToolTier('reliability_feedback')).toBe(2);
+    expect(classOf('reliability_feedback', {})).toBe('t2');
+  });
+
+  it('registry tiers: reads and the anomaly multiplexer are 1, the correlation writes and the label are 2', () => {
+    expect(getToolTier('get_alert_correlations')).toBe(1);
+    expect(getToolTier('get_fleet_health')).toBe(1);
+    expect(getToolTier('manage_device_anomalies')).toBe(1);
+    expect(getToolTier('manage_alert_correlations')).toBe(2);
+  });
+
+  it('exactly one W07 action is supervised (promote) and none is four-eyes', () => {
+    const rows = Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k)).toEqual(['manage_device_anomalies:promote']);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('the group-level correlation writes are agent-human-only: an agent reads correlations but never proposes a group write (QW3)', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_alert_correlations')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('get_alert_correlations')).toBe(false);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_device_anomalies')).toBe(false);
   });
 });

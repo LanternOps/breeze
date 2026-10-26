@@ -895,18 +895,12 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // approverReleaseMismatch(auth, context) before the write.
   'manage_ticket_forms:create',
   'manage_ticket_inbox:convert',
-  // Full-control W07 (#6777). Every write below stamps `auth.user.id` into a users FK:
-  // alerts.acknowledged_by / alerts.resolved_by (group and related-alert ack/resolve, through
-  // mutateAlerts) and ml_feedback_events.actor_user_id (correlation / RCA / anomaly / reliability
-  // labels). `manage_device_anomalies:promote` is tier 3 supervised; the rest resolve to tier 2,
-  // which an alert-triage agent mints through the agentTier2 lane exactly as it does for
-  // manage_alerts. Each handler branch checks approverReleaseMismatch(auth, context) before the
-  // write and refuses a direct ai_agent call that carries no approver release.
-  'manage_alert_correlations:acknowledge_group',
-  'manage_alert_correlations:resolve_group',
-  'manage_alert_correlations:acknowledge_related',
-  'manage_alert_correlations:feedback',
-  'manage_alert_correlations:rca_feedback',
+  // Full-control W07 (#6777). Both tools below stamp `auth.user.id` into ml_feedback_events.actor_user_id
+  // (a users FK) through the shared route functions. `manage_device_anomalies:promote` is tier 3
+  // supervised; dismiss / resolve and reliability_feedback resolve to tier 2, which an alert-triage
+  // agent mints through the agentTier2 lane exactly as it does for manage_alerts. Each handler branch
+  // checks approverReleaseMismatch(auth, context) before the write and refuses a direct ai_agent call that
+  // carries no approver release. (manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS: never released.)
   'manage_device_anomalies:dismiss',
   'manage_device_anomalies:resolve',
   'manage_device_anomalies:promote',

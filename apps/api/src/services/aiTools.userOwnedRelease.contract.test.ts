@@ -119,6 +119,12 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // guard: the action flows straight into the dispatch. The model is offered
   // isolate/unisolate/scan, the whole input_schema enum (proven below).
   ['services/aiToolsEdr.ts:239', ['isolate', 'unisolate', 'scan']],
+  // aiToolsAnomalies.ts (W07, #6777): manage_device_anomalies has ONE write site, the
+  // `actorUserId` handed to applyAnomalyStatus (-> ml_feedback_events.actor_user_id, a users FK).
+  // It sits after the `action === 'list'` early return rather than inside an `if (action === …)`
+  // guard, and `STATUS_FOR_ACTION` maps exactly the three write actions of the input_schema enum
+  // (dismiss -> dismissed, resolve -> resolved, promote -> promoted).
+  ['services/aiToolsAnomalies.ts:98', ['dismiss', 'resolve', 'promote']],
 ]);
 
 /**
@@ -185,7 +191,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.
-  ['services/aiToolsUserRisk.ts:341', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
+  ['services/aiToolsUserRisk.ts:354', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
 ]);
 
 function usersFkPropertyNames(): ReadonlySet<string> {

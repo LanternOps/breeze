@@ -613,6 +613,31 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_time_suggestions', action: 'dismiss', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/dismiss' },
   { tool: 'manage_time_suggestions', action: 'undo', routeFile: 'timeEntries/suggestions.ts', method: 'delete', path: '/dismiss' },
   { tool: 'manage_tickets', action: 'bulk_update', routeFile: 'tickets/bulk.ts', method: 'post', path: '/bulk' },
+  // Full-control W07 (#6777): alert correlation + signal triage. Each action binds to the route a technician uses for the same act.
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/evaluation' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/:groupId' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/explain' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/:alertId/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'post', path: '/correlations/analyze' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/acknowledge' },
+  { tool: 'manage_alert_correlations', action: 'resolve_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/resolve' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_related', routeFile: 'alerts/correlations.ts', method: 'post', path: '/:alertId/correlations/acknowledge' },
+  // Both feedback routes are gated on alerts:read (not a write grant); the tool mirrors them exactly.
+  { tool: 'manage_alert_correlations', action: 'feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/feedback' },
+  { tool: 'manage_alert_correlations', action: 'rca_feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/rca-feedback' },
+  { tool: 'manage_device_anomalies', action: 'list', routeFile: 'devices/anomalies.ts', method: 'get', path: '/:id/anomalies' },
+  { tool: 'manage_device_anomalies', action: 'dismiss', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'resolve', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'promote', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  // The reliability label route is gated on devices:read (requireReliabilityRead), like the reads.
+  { tool: 'reliability_feedback', routeFile: 'reliability.ts', method: 'post', path: '/:deviceId/feedback' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/evaluation' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/org/:orgId/summary' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/history' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/offenders' },
 ];
 
 /**

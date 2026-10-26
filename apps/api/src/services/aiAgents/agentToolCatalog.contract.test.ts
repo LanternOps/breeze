@@ -307,3 +307,44 @@ describe('W03 backup/DR writes in the agent catalog (#6757)', () => {
     expect(decidable).toEqual([]);
   });
 });
+
+/** Spec 2026-09-23 W07 (#6777): the alert-triage tools in the agent catalog. An agent reads correlations
+ * and anomalies and can propose the anomaly / reliability writes (released as the approver). The
+ * correlation GROUP writes are human-only: a supervised release rebuilds the approver's auth and drops
+ * the originating run's exact-device ceiling, and a group spans devices (quorum QW3). */
+describe('W07 alert correlation and signal triage in the agent catalog (#6777)', () => {
+  it.each([
+    ['get_alert_correlations', 'alerts_monitoring'],
+    ['manage_device_anomalies', 'alerts_monitoring'],
+    ['reliability_feedback', 'automations_reports'],
+  ] as const)('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('manage_alert_correlations is never offered to an agent (human-only), though the catalog still maps it', () => {
+    expect(listAgentReachableTools()).not.toContain('manage_alert_correlations');
+    expect(listUnreachableRegisteredTools()).toContain('manage_alert_correlations');
+    expect(TOOL_CAPABILITY['manage_alert_correlations']).toBe('alerts_monitoring');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain('manage_alert_correlations');
+  });
+
+  it('manage_device_anomalies:promote is tier 3 and not pre-authorisable (every promotion is a proposal)', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const op = (action: string) => tools.find((t) => t.name === 'manage_device_anomalies')!.operations.find((o) => o.key === `manage_device_anomalies:${action}`)!;
+    expect(op('list')).toMatchObject({ tier: 1, readOnly: true });
+    expect(op('dismiss')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('resolve')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('promote').tier).toBe(3);
+    expect(POLICY_DECIDABLE_TIER3.map((e) => e.key)).not.toContain('manage_device_anomalies:promote');
+  });
+
+  it('the extra get_fleet_health actions are read-only operations', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const ops = tools.find((t) => t.name === 'get_fleet_health')!.operations;
+    for (const action of ['history', 'offenders', 'evaluation', 'org_summary']) {
+      expect(ops.find((o) => o.key === `get_fleet_health:${action}`), action).toMatchObject({ tier: 1, readOnly: true });
+    }
+  });
+});

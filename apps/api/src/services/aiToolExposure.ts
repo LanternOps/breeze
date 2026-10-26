@@ -51,6 +51,11 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.
   'send_endpoint_message',
+  // Full-control W07 (#6777, quorum QW3): acknowledging / resolving a correlation GROUP spans devices,
+  // and a supervised release rebuilds the approver's auth, which drops the originating run's exact-device
+  // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
+  // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
+  'manage_alert_correlations',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one

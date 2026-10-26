@@ -107,4 +107,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g82', prompt: 'Add a "Printer" ticket category with a 4 hour response target.', expect: [{ tool: 'manage_ticket_config', action: 'create_category' }, { tool: 'manage_ticket_config', action: 'list_categories' }] },
   { id: 'g83', prompt: 'Create a checklist template called "New hire setup" with steps for the account, laptop and MFA.', expect: [{ tool: 'manage_ticket_checklist_templates', action: 'create' }, { tool: 'manage_ticket_checklist_templates', action: 'list' }] },
   { id: 'g84', prompt: 'Log yesterday\'s remote session on FS-01 as time on the printer ticket.', expect: [{ tool: 'manage_time_suggestions', action: 'confirm' }, { tool: 'manage_time_suggestions', action: 'list' }] },
+  // Full-control W07 (#6777): alert correlation and signal triage reach chat.
+  { id: 'g85', prompt: 'Why did those correlated disk and service alerts on FS-01 all fire together?', expect: [{ tool: 'get_alert_correlations', action: 'explain' }, { tool: 'get_alert_correlations', action: 'groups' }, { tool: 'resolve_device_context' }] },
+  { id: 'g86', prompt: 'Is there any unusual CPU or disk behaviour on WS-042 I should look at?', expect: [{ tool: 'manage_device_anomalies', action: 'list' }, { tool: 'resolve_device_context' }] },
+  { id: 'g87', prompt: 'What services keep failing on FS-01 and dragging its reliability score down?', expect: [{ tool: 'get_fleet_health', action: 'offenders' }, { tool: 'resolve_device_context' }] },
 ];

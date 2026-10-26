@@ -15,6 +15,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "m365_query_signins",
   "m365_query_users",
   "manage_ai_agents",
+  "manage_alert_correlations",
   "operator_plan",
   "query_c2c_jobs",
   "request_diagnostic_access",

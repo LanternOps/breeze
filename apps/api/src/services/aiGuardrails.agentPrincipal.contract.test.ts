@@ -194,6 +194,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'generate_incident_report',
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
+  'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
