@@ -37,6 +37,7 @@ vi.mock('../services/agreementRequestAcceptService', () => ({
   declineAgreementRequest: vi.fn(),
   markAgreementRequestViewed: vi.fn(),
 }));
+vi.mock('../services/agreementEvents', () => ({ emitAgreementEvent: vi.fn() }));
 vi.mock('../services/agreementOutcomeNotify', () => ({ notifyAgreementOutcome: vi.fn() }));
 vi.mock('../services/agreementSignedCopyEmail', () => ({ sendSignedAgreementCopy: vi.fn() }));
 vi.mock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
@@ -51,6 +52,7 @@ import { resolveMergedOrgIds } from '../services/orgMergeProvenance';
 import { resolveAgreementRequestLinkOrgGate } from '../services/publicLinkOrgGate';
 import { loadTemplateVersionRenderData, type TemplateVersionRenderData } from '../services/contractTemplateRender';
 import { markAgreementRequestViewed } from '../services/agreementRequestAcceptService';
+import { emitAgreementEvent } from '../services/agreementEvents';
 import { captureException } from '../services/sentry';
 import { agreementsPublicRoutes } from './agreementsPublic';
 
@@ -268,6 +270,8 @@ describe('GET /:token — view', () => {
     expect(data.parties).toEqual({ partnerName: 'Acme MSP', orgName: 'Example Clinic' });
     expect(data.branding.logoUrl).toBe('https://cdn.example.com/org-logo.png');
     expect(markAgreementRequestViewed).toHaveBeenCalledWith(REQUEST_ID, ORG_ID, expect.any(Date));
+    // First view only: the bus hears sent → viewed exactly once.
+    expect(emitAgreementEvent).toHaveBeenCalledWith({ type: 'agreement.viewed', requestId: REQUEST_ID, orgId: ORG_ID, partnerId: PARTNER_ID });
     // No internal ids beyond the request id.
     const text = JSON.stringify(data);
     for (const leak of [ORG_ID, PARTNER_ID, VERSION_ID, JTI, 'tpl']) expect(text).not.toContain(leak);
@@ -279,11 +283,13 @@ describe('GET /:token — view', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data.request.status).toBe('viewed');
     expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+    expect(emitAgreementEvent).not.toHaveBeenCalled();
   });
 
   it('a lost stamp race (0 rows) still presents the row status it read', async () => {
     vi.mocked(markAgreementRequestViewed).mockResolvedValue(false);
     expect((await (await get()).json()).data.request.status).toBe('sent');
+    expect(emitAgreementEvent).not.toHaveBeenCalled(); // the racing winner emitted it
   });
 
   it('a failing viewed stamp is logged + captured and never fails the view', async () => {
@@ -291,6 +297,7 @@ describe('GET /:token — view', () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect(captureException).toHaveBeenCalled();
+    expect(emitAgreementEvent).not.toHaveBeenCalled();
   });
 
   it.each(['signed', 'declined'])('a %s request renders read-only (no stamp) even past its expiry', async (status) => {

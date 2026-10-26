@@ -2408,6 +2408,13 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     // unrelated invoice edits are not raised to contract-read authority.
     add_contract_line: [{ resource: 'contracts', action: 'read' }],
   },
+  file_operations: {
+    // write/rename put files on the device with the agent's own privileges:
+    // the same grant as script execution. Mirrors requireScriptsExecute on POST
+    // /system-tools/devices/:id/files/upload and /files/move (fileBrowser.ts).
+    write: [{ resource: 'scripts', action: 'execute' }],
+    rename: [{ resource: 'scripts', action: 'execute' }],
+  },
 };
 
 // Per-tool rate limits live in services/aiToolRateLimits.ts (a leaf module, so

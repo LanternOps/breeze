@@ -10,6 +10,10 @@ import {
   getAgreementRequestLink,
   voidAgreementRequest,
   deleteAgreementRequest,
+  remindAgreementRequest,
+  AGREEMENT_EMAIL_REASONS,
+  type AgreementEmailReason,
+  type RemindAgreementRequestResult,
   type AgreementRequestRow,
   type AgreementRequestStatus,
 } from '../../lib/api/agreementRequests';
@@ -59,6 +63,9 @@ export default function AgreementRequestsTable({
   const [voiding, setVoiding] = useState<AgreementRequestRow | null>(null);
   const [voidReason, setVoidReason] = useState('');
   const [voidBusy, setVoidBusy] = useState(false);
+  // Ids with a reminder in flight: a second click must not mail the recipients twice.
+  const [reminding, setReminding] = useState<ReadonlySet<string>>(new Set());
+  const remindingRef = useRef<Set<string>>(new Set());
   const [tick, setTick] = useState(0);
 
   // Latest-wins: a slow earlier response (chip switch, reloadKey bump) must not
@@ -111,6 +118,39 @@ export default function AgreementRequestsTable({
       showToast({ type: 'success', message: t('agreements.requests.copyLink.success') });
     } catch {
       showToast({ type: 'error', message: t('agreements.requests.copyLink.error') });
+    }
+  };
+
+  const remind = async (row: AgreementRequestRow) => {
+    if (remindingRef.current.has(row.id)) return;
+    remindingRef.current.add(row.id);
+    setReminding(new Set(remindingRef.current));
+    try {
+      const result = await runAction<RemindAgreementRequestResult>({
+        request: () => remindAgreementRequest(row.id),
+        errorFallback: t('agreements.requests.remind.error'),
+        parseSuccess: (data) => (data as { data: RemindAgreementRequestResult }).data,
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (result.emailed) {
+        showToast({ type: 'success', message: t('agreements.requests.remind.success', { count: result.recipients.length }) });
+      } else {
+        // The API's enum can grow ahead of this bundle; never build a missing key.
+        const reason: AgreementEmailReason =
+          result.emailReason && AGREEMENT_EMAIL_REASONS.includes(result.emailReason) ? result.emailReason : 'send_failed';
+        showToast({
+          type: 'warning',
+          // i18n-dynamic: key built from the API's emailReason enum.
+          message: t(/* i18n-dynamic */ `agreements.requests.remind.notEmailed.${reason}`),
+        });
+      }
+      reload();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('agreements.requests.remind.error') });
+    } finally {
+      remindingRef.current.delete(row.id);
+      setReminding(new Set(remindingRef.current));
     }
   };
 
@@ -226,7 +266,14 @@ export default function AgreementRequestsTable({
                     {shown.join(', ') || '—'}
                     {more > 0 && <span className="ml-1">{t('agreements.requests.recipientsMore', { count: more })}</span>}
                   </td>
-                  <td className="px-3 py-2">{row.sentAt ? formatDate(row.sentAt) : t('agreements.requests.notSent')}</td>
+                  <td className="px-3 py-2">
+                    {row.sentAt ? formatDate(row.sentAt) : t('agreements.requests.notSent')}
+                    {live && row.reminderCount > 0 && (
+                      <div className="text-xs text-muted-foreground" data-testid="agreement-request-reminded">
+                        {t('agreements.requests.remindedCount', { count: row.reminderCount })}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 py-2">{row.expiresAt ? formatDate(row.expiresAt) : '—'}</td>
                   <td className="px-3 py-2">
                     <span
@@ -241,6 +288,15 @@ export default function AgreementRequestsTable({
                     <div className="flex items-center justify-end gap-2">
                       {canSend && live && (
                         <>
+                          <button
+                            type="button"
+                            onClick={() => void remind(row)}
+                            disabled={reminding.has(row.id)}
+                            data-testid={`agreement-request-remind-${row.id}`}
+                            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                          >
+                            {t('agreements.requests.remind.label')}
+                          </button>
                           <button
                             type="button"
                             onClick={() => void copyLink(row)}

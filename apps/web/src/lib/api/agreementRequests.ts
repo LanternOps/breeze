@@ -167,6 +167,21 @@ export function sendAgreementRequest(id: string): Promise<Response> {
   return fetchWithAuth(`${BASE}/${id}/send`, { method: 'POST' });
 }
 
+export interface RemindAgreementRequestResult {
+  request: AgreementRequestRow;
+  emailed: boolean;
+  emailReason?: AgreementEmailReason;
+  recipients: string[];
+}
+
+/** Re-sends the SAME signing link to the recipients (never a new link).
+ *  `{ data: { request, emailed, emailReason?, recipients } }`; 409 unless
+ *  sent/viewed, 410 once past expires_at. The link itself is not echoed — Copy
+ *  link is the audited dispenser. Wrap in `runAction`. */
+export function remindAgreementRequest(id: string): Promise<Response> {
+  return fetchWithAuth(`${BASE}/${id}/remind`, { method: 'POST' });
+}
+
 /** `{ data: { link, reissued } }`; 409 unless sent/viewed. */
 export function getAgreementRequestLink(id: string): Promise<Response> {
   return fetchWithAuth(`${BASE}/${id}/link`);
