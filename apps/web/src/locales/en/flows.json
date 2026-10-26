@@ -145,6 +145,7 @@
   },
   "runs": {
     "empty": "No runs yet.",
+    "emptyFiltered": "No runs match this filter.",
     "status": {
       "queued": "Queued",
       "running": "Running",

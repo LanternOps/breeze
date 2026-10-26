@@ -145,6 +145,7 @@
   },
   "runs": {
     "empty": "Noch keine Ausführungen.",
+    "emptyFiltered": "Keine Ausführungen entsprechen diesem Filter.",
     "status": {
       "queued": "In der Warteschlange",
       "running": "Läuft",

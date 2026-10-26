@@ -145,6 +145,7 @@
   },
   "runs": {
     "empty": "Henüz çalıştırma yok.",
+    "emptyFiltered": "Bu filtreyle eşleşen çalıştırma yok.",
     "status": {
       "queued": "Sırada",
       "running": "Çalışıyor",
