@@ -103,6 +103,9 @@ export function registerAuditBaselineTools(aiTools: Map<string, AiTool>): void {
   });
 }
 
+const asText = (value: unknown, max: number) =>
+  value === null || value === undefined ? null : clip(typeof value === 'string' ? value : JSON.stringify(value), max);
+
 async function handle(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const action = input.action as Action;
   if (!AUDIT_BASELINE_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
@@ -122,8 +125,9 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
     return bounded({
       baselines: rows.slice(0, LIST_CAP).map((row) => ({
         id: row.id, orgId: row.orgId, name: row.name, osType: row.osType, profile: row.profile, isActive: row.isActive,
+        // The setting map (up to 16 KB each) is left out so a partner-wide list fits; device_results shows each setting.
         settingCount: Object.keys((row.settings ?? {}) as Record<string, unknown>).length,
-        settings: row.settings, updatedAt: row.updatedAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
       })),
       truncated: rows.length > LIST_CAP,
     });
@@ -182,11 +186,9 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
       device: { id: access.device.id, orgId: access.device.orgId, hostname: access.device.hostname },
       baselines: latest.map((row) => ({
         baselineId: row.baselineId, baselineName: row.baselineName, osType: row.osType, compliant: row.compliant, score: row.score,
-        // `actual` is what the device reported: a string for the model to read, never an instruction.
+        // Device-written JSON: every field is a bounded string for the model to read, never an instruction.
         deviations: (Array.isArray(row.deviations) ? row.deviations : []).slice(0, 100).map((d: Record<string, unknown>) => ({
-          setting: clip(d.setting, 200), expected: d.expected ?? null,
-          actual: d.actual === null || d.actual === undefined ? null : clip(typeof d.actual === 'string' ? d.actual : JSON.stringify(d.actual), 500),
-          reason: d.reason ?? null,
+          setting: clip(d.setting, 200), expected: asText(d.expected, 500), actual: asText(d.actual, 500), reason: asText(d.reason, 500),
         })),
         checkedAt: row.checkedAt.toISOString(), remediatedAt: row.remediatedAt?.toISOString() ?? null,
       })),
@@ -235,14 +237,22 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
       orgId: created.orgId, action: 'audit.baseline.create', resourceType: 'audit_baseline', resourceId: created.id, resourceName: created.name,
       details: { osType: created.osType, profile: created.profile, isActive: created.isActive },
     });
+    let driftEvaluation: 'queued' | 'not_queued' | 'inactive' = 'inactive';
     if (created.isActive) {
       try {
         await enqueueAuditDriftEvaluation(created.orgId);
+        driftEvaluation = 'queued';
       } catch (err) {
+        driftEvaluation = 'not_queued';
         console.error(`[${TOOL}] failed to enqueue drift evaluation for org ${created.orgId}:`, err);
       }
     }
-    return json({ created: true, baseline: { id: created.id, orgId: created.orgId, name: created.name, osType: created.osType, profile: created.profile, isActive: created.isActive } });
+    return json({
+      created: true,
+      baseline: { id: created.id, orgId: created.orgId, name: created.name, osType: created.osType, profile: created.profile, isActive: created.isActive },
+      driftEvaluation,
+      ...(driftEvaluation === 'not_queued' ? { note: 'The baseline is saved; the first compliance check could not be queued now and runs with the next scheduled drift evaluation.' } : {}),
+    });
   }
 
   if (action === 'request_apply') {

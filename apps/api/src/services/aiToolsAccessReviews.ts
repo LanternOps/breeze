@@ -226,29 +226,38 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
     if (missing) return missing;
     const decision = input.decision as Decision;
     if (!ACCESS_REVIEW_DECISIONS.includes(decision)) return jsonError("decision must be 'approved', 'revoked' or 'pending'", 'VALIDATION_ERROR');
-    const [review] = await db.select({ id: accessReviews.id, status: accessReviews.status }).from(accessReviews)
-      .where(and(eq(accessReviews.id, String(input.reviewId)), ownerCondition(owner))).limit(1);
-    if (!review) return notFound('Access review');
-    if (review.status === 'completed') return jsonError('Cannot modify a completed review', 'INVALID_STATE');
-    const [item] = await db.select({ id: accessReviewItems.id, userId: accessReviewItems.userId }).from(accessReviewItems)
-      .where(and(eq(accessReviewItems.id, String(input.itemId)), eq(accessReviewItems.reviewId, review.id))).limit(1);
-    if (!item) return notFound('Review item');
-    const isOwnItem = item.userId === auth.user.id;
-    if (isOwnItem && !(await canSelfDecideAccessReviewItem(owner, auth.user.id))) {
-      return jsonError('You cannot decide on your own access. Another administrator must review this item.', 'ACCESS_REVIEW_SELF_DECISION');
-    }
-    const [updated] = await db.update(accessReviewItems).set({
-      decision,
-      notes: str(input.notes) ?? null,
-      reviewedAt: new Date(),
-      reviewedBy: auth.user.id,
-      selfDecided: isOwnItem && decision !== 'pending',
-    }).where(and(eq(accessReviewItems.id, item.id), eq(accessReviewItems.reviewId, review.id)))
-      .returning({ id: accessReviewItems.id, decision: accessReviewItems.decision, notes: accessReviewItems.notes, reviewedAt: accessReviewItems.reviewedAt, selfDecided: accessReviewItems.selfDecided });
-    if (!updated) return notFound('Review item');
-    if (review.status === 'pending') {
-      await db.update(accessReviews).set({ status: 'in_progress' }).where(and(eq(accessReviews.id, review.id), eq(accessReviews.status, 'pending')));
-    }
+    const notes = str(input.notes);
+    // One transaction: the review row is locked so a completion cannot interleave with the decision,
+    // and the item write and the pending → in_progress flip land together.
+    const outcome = await db.transaction(async (tx) => {
+      const [review] = await tx.select({ id: accessReviews.id, status: accessReviews.status }).from(accessReviews)
+        .where(and(eq(accessReviews.id, String(input.reviewId)), ownerCondition(owner))).limit(1).for('update');
+      if (!review) return { error: notFound('Access review') };
+      if (review.status === 'completed') return { error: jsonError('Cannot modify a completed review', 'INVALID_STATE') };
+      const [item] = await tx.select({ id: accessReviewItems.id, userId: accessReviewItems.userId }).from(accessReviewItems)
+        .where(and(eq(accessReviewItems.id, String(input.itemId)), eq(accessReviewItems.reviewId, review.id))).limit(1);
+      if (!item) return { error: notFound('Review item') };
+      const isOwnItem = item.userId === auth.user.id;
+      if (isOwnItem && !(await canSelfDecideAccessReviewItem(owner, auth.user.id))) {
+        return { error: jsonError('You cannot decide on your own access. Another administrator must review this item.', 'ACCESS_REVIEW_SELF_DECISION') };
+      }
+      const [updated] = await tx.update(accessReviewItems).set({
+        decision,
+        // As REST: omitted notes leave the stored notes unchanged.
+        ...(notes !== undefined ? { notes } : {}),
+        reviewedAt: new Date(),
+        reviewedBy: auth.user.id,
+        selfDecided: isOwnItem && decision !== 'pending',
+      }).where(and(eq(accessReviewItems.id, item.id), eq(accessReviewItems.reviewId, review.id)))
+        .returning({ id: accessReviewItems.id, decision: accessReviewItems.decision, notes: accessReviewItems.notes, reviewedAt: accessReviewItems.reviewedAt, selfDecided: accessReviewItems.selfDecided });
+      if (!updated) throw new Error('access review item update matched no row after the locked read');
+      if (review.status === 'pending') {
+        await tx.update(accessReviews).set({ status: 'in_progress', updatedAt: new Date() }).where(eq(accessReviews.id, review.id));
+      }
+      return { review, item, updated };
+    });
+    if ('error' in outcome) return outcome.error as string;
+    const { review, item, updated } = outcome;
     auditToolWrite(auth, {
       orgId: owner.scope === 'organization' ? owner.orgId : null,
       partnerId: owner.scope === 'partner' ? owner.partnerId : null,

@@ -18,9 +18,17 @@ import type { AuthContext } from '../middleware/auth';
 import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import { aiOriginAuditActor } from './aiOriginColumns';
 import { createAuditLogAsync } from './auditService';
-import { bounded, clip, defined, json, jsonError, requireFields, thrown } from './aiToolsNetworkMonitoringShared';
+import { NETWORK_TOOL_MAX_BYTES, clip, defined, json, jsonError, requireFields, thrown } from './aiToolsNetworkMonitoringShared';
 
-export { bounded, clip, defined, json, jsonError, requireFields, thrown };
+export { clip, defined, json, jsonError, requireFields, thrown };
+
+/** No single result may flood the model's context; the refusal says how to narrow a security-policy read. */
+export function bounded(value: unknown): string {
+  const text = JSON.stringify(value);
+  return text.length > NETWORK_TOOL_MAX_BYTES
+    ? jsonError('Result too large; narrow the request (pass orgId, a filter, or a smaller limit).', 'result_too_large')
+    : text;
+}
 
 /**
  * The route-style audit row for a W11 write, attributed by AI origin: a person's

@@ -46,6 +46,8 @@ import { bounded, deviceBoundDenied, jsonError, notFound, str, thrown } from './
 type View = (typeof SECURITY_COMPLIANCE_VIEWS)[number];
 const TOOL = 'get_security_compliance';
 const PAGE = { defaultLimit: 25, maxLimit: 100 } as const;
+/** The REST dashboard's posture sample size; a fuller org is summarised over the newest rows and says so. */
+const POSTURE_LIMIT = 2000;
 
 const grade = (score: number) => (score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F');
 const mean = (xs: number[]) => (xs.length === 0 ? 0 : Math.round(xs.reduce((a, b) => a + b, 0) / xs.length));
@@ -70,6 +72,9 @@ async function aggregateView(view: 'dashboard' | 'score_breakdown' | 'trends', i
     const period = input.period === '7d' || input.period === '90d' ? input.period : '30d';
     const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
     const dataPoints = await getSecurityPostureTrend({ orgIds: scope.orgIds, siteIds, days });
+    if (dataPoints.length === 0) {
+      return bounded({ view, period, dataPoints, summary: { trend: 'no_data', note: 'No security posture snapshots in this period.' } });
+    }
     const previous = Number(dataPoints[0]?.overall ?? 0);
     const current = Number(dataPoints[dataPoints.length - 1]?.overall ?? 0);
     return bounded({
@@ -78,7 +83,8 @@ async function aggregateView(view: 'dashboard' | 'score_breakdown' | 'trends', i
     });
   }
 
-  const posture = await listLatestSecurityPosture({ orgIds: scope.orgIds, siteIds, limit: 2000 });
+  const posture = await listLatestSecurityPosture({ orgIds: scope.orgIds, siteIds, limit: POSTURE_LIMIT });
+  const postureCapped = posture.length >= POSTURE_LIMIT ? { postureSampleCapped: POSTURE_LIMIT } : {};
   if (view === 'score_breakdown') {
     const total = posture.length;
     const overallScore = mean(posture.map((item) => item.overallScore));
@@ -87,6 +93,7 @@ async function aggregateView(view: 'dashboard' | 'score_breakdown' | 'trends', i
       overallScore,
       grade: grade(overallScore),
       devicesAudited: total,
+      ...postureCapped,
       components: postureComponentModel.map((component) => {
         const score = averageFactorScore(posture, component.category);
         return {
@@ -123,6 +130,7 @@ async function aggregateView(view: 'dashboard' | 'score_breakdown' | 'trends', i
     unprotectedDevices: usePosture ? posture.filter((p) => p.riskLevel === 'critical').length : statuses.filter((s) => s.status === 'unprotected').length,
     offlineDevices: usePosture ? posture.filter((p) => p.deviceStatus !== 'online').length : statuses.filter((s) => s.status === 'offline').length,
     securityScore: usePosture ? mean(posture.map((p) => p.overallScore)) : computeSecurityScore(statuses, threats),
+    ...postureCapped,
     threats: {
       total: threats.length,
       active: threats.filter((t) => t.status === 'active').length,

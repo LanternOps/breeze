@@ -46,7 +46,8 @@ import {
 
 type Action = (typeof PAM_RULE_ACTIONS)[number];
 const TOOL = 'manage_pam_rules';
-const LIST_CAP = 500;
+// A full rule row is ~1 KB of match criteria; 100 rules (in priority order) stay inside the result budget.
+const LIST_CAP = 100;
 const RULE_FIELDS = [
   'siteId', 'name', 'description', 'enabled', 'priority', 'verdict', 'approvalDurationMinutes',
   'matchSigner', 'matchSignerThumbprint', 'matchSignerGroupId', 'matchHash', 'matchPathGlob', 'matchParentImage',
@@ -128,6 +129,15 @@ async function writeOrg(auth: AuthContext, orgId: string | undefined, forRead = 
   if (!resolved.orgId) return jsonError(resolved.error ?? 'orgId is required', 'VALIDATION_ERROR');
   if (await isHoldingOrg(resolved.orgId)) return jsonError(PROTECTED_ORG_ERROR.error, PROTECTED_ORG_ERROR.code);
   return { orgId: resolved.orgId };
+}
+
+/** The Postgres error code of a caught driver error, however postgres.js wrapped it. */
+function pgErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const direct = (error as { code?: unknown }).code;
+  if (typeof direct === 'string') return direct;
+  const cause = (error as { cause?: { code?: unknown } }).cause;
+  return typeof cause?.code === 'string' ? cause.code : null;
 }
 
 class Refusal extends Error {
@@ -222,7 +232,9 @@ async function reads(action: Action, input: Record<string, unknown>, auth: AuthC
   return bounded({
     rules: rows.slice(0, LIST_CAP).map(projectRule),
     truncated: rows.length > LIST_CAP,
-    note: 'Rules are evaluated in priority order; the first enabled match decides. Auto-approve rules can only be authored in the Breeze web app.',
+    note: rows.length > LIST_CAP
+      ? `Showing the first ${LIST_CAP} rules by priority; pass orgId to narrow. Rules are evaluated in priority order; the first enabled match decides.`
+      : 'Rules are evaluated in priority order; the first enabled match decides. Auto-approve rules can only be authored in the Breeze web app.',
   });
 }
 
@@ -283,6 +295,7 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
         if (drift) throw new Refusal(jsonError(drift.error, drift.code));
         if (update.matchSignerGroupId && !(await signerGroupInOrg(tx, update.matchSignerGroupId, existing.orgId))) throw new Refusal(notFound('Signer group'));
         const [row] = await tx.update(pamRules).set(pamRuleUpdateSet(update, existing, auth.user.id)).where(eq(pamRules.id, existing.id)).returning();
+        if (!row) throw new Error('PAM rule update matched no row after the locked read');
         if (update.enabled === false && existing.enabled) await cleanupPamRuleActuations(tx, { ruleId: existing.id, orgId: existing.orgId });
         return { deleted: false as const, existing, row };
       });
@@ -290,7 +303,7 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
         orgId: result.existing.orgId, action: result.deleted ? 'pam.rule.delete' : 'pam.rule.update', resourceType: 'pam_rule',
         resourceId: result.existing.id, resourceName: result.existing.name, details: result.deleted ? {} : { changed },
       });
-      return result.deleted ? json({ deleted: true, ruleId: result.existing.id }) : json({ updated: true, rule: result.row ? projectRule(result.row) : null });
+      return result.deleted ? json({ deleted: true, ruleId: result.existing.id }) : json({ updated: true, rule: projectRule(result.row) });
     } catch (error) {
       if (error instanceof Refusal) return error.result;
       throw error;
@@ -365,10 +378,11 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
           ...(patch.signers !== undefined ? { signers: patch.signers } : {}),
           updatedAt: new Date(),
         }).where(eq(pamSignerGroups.id, existing.id)).returning();
+        if (!row) throw new Error('signer group update matched no row after the locked read');
         return { existing, row };
       });
       auditToolWrite(auth, { orgId: result.existing.orgId, action: 'pam.signer_group.update', resourceType: 'pam_signer_group', resourceId: result.existing.id, resourceName: result.existing.name, details: { changed: Object.keys(patch) } });
-      return json({ updated: true, signerGroup: result.row ? projectGroup(result.row) : null });
+      return json({ updated: true, signerGroup: projectGroup(result.row) });
     } catch (error) {
       if (error instanceof Refusal) return error.result;
       throw error;
@@ -376,11 +390,22 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
   }
 
   // delete_signer_group: refused while any rule references it (route parity), so matching never changes.
-  const [existing] = await db.select().from(pamSignerGroups).where(eq(pamSignerGroups.id, groupId)).limit(1);
-  if (!existing || !auth.canAccessOrg(existing.orgId)) return notFound('Signer group');
-  const [{ refs } = { refs: 0 }] = await db.select({ refs: sql<number>`count(*)::int` }).from(pamRules).where(eq(pamRules.matchSignerGroupId, existing.id));
-  if (refs > 0) return jsonError(`Signer group is used by ${refs} rule(s); remove those references first`, 'IN_USE');
-  await db.delete(pamSignerGroups).where(eq(pamSignerGroups.id, existing.id));
-  auditToolWrite(auth, { orgId: existing.orgId, action: 'pam.signer_group.delete', resourceType: 'pam_signer_group', resourceId: existing.id, resourceName: existing.name });
-  return json({ deleted: true, signerGroupId: existing.id });
+  // The group row is locked FOR UPDATE, so a rule insert referencing it (FK KEY SHARE) waits for this
+  // transaction and the reference count is current; the FK is RESTRICT, so a lost race is a 23503, not a dangling rule.
+  try {
+    const removed = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(pamSignerGroups).where(eq(pamSignerGroups.id, groupId)).limit(1).for('update');
+      if (!existing || !auth.canAccessOrg(existing.orgId)) throw new Refusal(notFound('Signer group'));
+      const [{ refs } = { refs: 0 }] = await tx.select({ refs: sql<number>`count(*)::int` }).from(pamRules).where(eq(pamRules.matchSignerGroupId, existing.id));
+      if (refs > 0) throw new Refusal(jsonError(`Signer group is used by ${refs} rule(s); remove those references first`, 'IN_USE'));
+      await tx.delete(pamSignerGroups).where(eq(pamSignerGroups.id, existing.id));
+      return existing;
+    });
+    auditToolWrite(auth, { orgId: removed.orgId, action: 'pam.signer_group.delete', resourceType: 'pam_signer_group', resourceId: removed.id, resourceName: removed.name });
+    return json({ deleted: true, signerGroupId: removed.id });
+  } catch (error) {
+    if (error instanceof Refusal) return error.result;
+    if (pgErrorCode(error) === '23503') return jsonError('Signer group is used by a rule; remove that reference first', 'IN_USE');
+    throw error;
+  }
 }

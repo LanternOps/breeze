@@ -17,9 +17,9 @@ import { auditLogs } from '../db/schema';
 import type { AiTool } from './aiTools';
 import { aiOriginAuditActor } from './aiOriginColumns';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
+import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import {
   buildBe9Recommendations,
-  getPolicyOrgId,
   getRecommendationStatusMap,
   resolveOrgRecommendationBreakdown,
   resolveRecommendationStatus,
@@ -113,8 +113,10 @@ export function registerSecurityRecommendationTools(aiTools: Map<string, AiTool>
         if (denied) return denied;
         const missing = requireFields(input, ['recommendationId'], action);
         if (missing) return missing;
-        const targetOrgId = orgId ?? getPolicyOrgId(auth);
-        if (!targetOrgId) return jsonError('orgId is required: choose an organization to act on this recommendation', 'VALIDATION_ERROR');
+        // The shared write-org resolver: explicit orgId, else the chat's device-page anchor, else the caller's only org.
+        const resolved = resolveWritableToolOrgId(auth, orgId);
+        if (!resolved.orgId) return jsonError(resolved.error ?? 'orgId is required: choose an organization to act on this recommendation', 'VALIDATION_ERROR');
+        const targetOrgId = resolved.orgId;
         const recommendationId = String(input.recommendationId);
         const built = await buildBe9Recommendations(auth, targetOrgId);
         if (built.error) return jsonError(built.error.message, built.error.status === 403 ? 'ACCESS_DENIED' : 'VALIDATION_ERROR');
