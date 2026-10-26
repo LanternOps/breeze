@@ -248,14 +248,6 @@ describe('legacy reconcile device- and family-scoped writer fence', () => {
     collectorId, polledAt: new Date().toISOString(), firmwareOk: true, clients: [], deviceId: undefined,
     devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', txBytes: 5, rxBytes: 6, raw: {} }], ...over,
   });
-  const seed = async (f: Awaited<ReturnType<typeof fixture>>) => {
-    await f.adapt(await f.report([
-      f.resource('device_list', [apRow('ap-1')]), f.resource('client_list', [clientRow('c1', 'ap-1')]),
-      f.resource('statistics', [statRow('ap-1', { uptimeSeconds: 777, cpuUtilizationPct: 9, memoryUtilizationPct: 55 })]),
-    ], -30_000));
-    expect((await f.rows()).get('ap-1')).toMatchObject({ num_clients: 1 });
-  };
-
   const rowsAfter = async (f: Awaited<ReturnType<typeof fixture>>, id = 'ap-1') => (await f.rows()).get(id)!;
   const legacy = (f: Awaited<ReturnType<typeof fixture>>, over: Record<string, unknown> = {}) =>
     sys(() => reconcileTelemetry(db as never, legacyPayload(f.collectorId, over) as never));
@@ -340,7 +332,7 @@ describe('legacy reconcile device- and family-scoped writer fence', () => {
     expect((await rowsAfter(f)).cpu_pct).toBeNull();
   });
 
-  it('ambiguous v2 (both companions) does not suppress unrelated legacy rows', async () => {
+  it('a legacy poll with no v2 ownership writes its values (ambiguous v2 itself is covered by the route unit test)', async () => {
     const f = await fixture();
     await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 12, numClients: 3, raw: {} }] });
     expect(await rowsAfter(f)).toMatchObject({ num_clients: 3 });

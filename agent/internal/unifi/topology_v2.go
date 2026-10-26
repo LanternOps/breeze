@@ -128,12 +128,15 @@ func (r ResourceV2) MarshalJSON() ([]byte, error) {
 	case ResourceClientList:
 		rows, err = rowsJSON(r.ClientList)
 	case ResourceDeviceDetails:
-		for i := range r.DeviceDetails {
-			if r.DeviceDetails[i].Ports == nil {
-				r.DeviceDetails[i].Ports = []TopologyPort{}
+		// Copy before normalizing nil Ports: the caller's slice is shared.
+		details := make([]TopologyDeviceDetailRowV2, len(r.DeviceDetails))
+		copy(details, r.DeviceDetails)
+		for i := range details {
+			if details[i].Ports == nil {
+				details[i].Ports = []TopologyPort{}
 			}
 		}
-		rows, err = rowsJSON(r.DeviceDetails)
+		rows, err = rowsJSON(details)
 	case ResourceStatistics:
 		rows, err = rowsJSON(r.Statistics)
 	default:

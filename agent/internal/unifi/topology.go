@@ -329,7 +329,7 @@ func (c *APIClient) collectDetailWindow(ctx context.Context, sites []SiteRef, si
 			case topologycanon.Complete:
 				tallies[t.site].rows = append(tallies[t.site].rows, row)
 				if opts.Wifi {
-					extras[detailKey{t.site, t.id}] = extra
+					extras[detailKey(t)] = extra
 				}
 			case topologycanon.Unsupported:
 				tallies[t.site].unsupported++
