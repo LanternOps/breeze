@@ -1386,6 +1386,11 @@ const REPOINT_TABLES: readonly string[] = [
   // has no org_id in it, so a repoint cannot collide. The thread is
   // partner-axis and not a merge participant.
   "wisp_thread_links",
+  // Wisp companion W02a (#10212). Same shape: partner-level posts (org_id
+  // NULL) never match the repoint, and the only unique key is
+  // (thread_id, dedupe_key), which has no org_id in it, so a repoint cannot
+  // collide.
+  "wisp_thread_posts",
   "wisp_watches",
   // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
   // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns

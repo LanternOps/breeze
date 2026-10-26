@@ -1119,6 +1119,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // text display cache; entity_id is a soft reference. No json columns.
   // Partner-level links (org_id NULL) never enter an org export.
   "wisp_thread_links": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","entity_kind","entity_id","label","added_by_user_id","added_by_grant_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // wisp_thread_posts (#10212): `sections` is the brief's jsonb section list,
+  // an open container, so excludedOpen; dedupe_key is a plain delivery key
+  // (wisp.brief: / wisp.nudge: / wisp.digest:), included as on
+  // user_notifications. Partner-level posts (org_id NULL) never enter an org
+  // export.
+  "wisp_thread_posts": tablePolicy("org_id", {"included":["id","thread_id","partner_id","grant_id","org_id","kind","title","body","link","concern_id","notification_id","dedupe_key","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["sections"]}),
   "wisp_thread_sessions": tablePolicy("org_id", {"included":["thread_id","session_id","partner_id","org_id","attached_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "wisp_watches": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","owner_user_id","kind","cadence_minutes","status","stopped_reason","last_ran_at","next_due_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["params"]}),
   // #6263 W03a. published_bundle is the served rule bundle (bytea); meta is open jsonb.

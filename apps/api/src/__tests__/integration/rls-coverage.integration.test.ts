@@ -712,6 +712,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // read branch. Functional forge proof:
   // wispThreadLinksRls.integration.test.ts.
   'wisp_thread_links',
+  // Wisp companion W02a (#10212): wisp_thread_posts is the same shape —
+  // partner_id always set, org_id NULL for a partner-level post (brief,
+  // digest, org-less concern), no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispThreadPostsRls.integration.test.ts.
+  'wisp_thread_posts',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
