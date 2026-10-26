@@ -7,210 +7,14 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { db } from '../db';
 import { discoveredAssets, snmpTemplates, snmpDevices, snmpMetrics, snmpAlertThresholds } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
-import { buildTopInterfaces } from '../services/snmpDashboardTopInterfaces';
+import { loadSnmpDashboard } from '../services/snmpDashboard';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 
-// --- Helpers ---
+import {
+  browseOidRows, canMutateTemplate, createTemplateSchema, dashboardQuerySchema, browseOidsSchema, escapeLikePattern,
+  listTemplatesSchema, resolveOrgId, templateVisibilityCondition, updateTemplateSchema, validateOidRows, validateOidsSchema,
+} from '../services/snmpTemplates';
 
-function escapeLikePattern(input: string): string {
-  return input.replace(/[%_\\]/g, (ch) => `\\${ch}`);
-}
-
-function resolveOrgId(
-  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
-  requestedOrgId?: string,
-  requireForNonOrg = false
-) {
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
-    if (requestedOrgId && requestedOrgId !== auth.orgId) return { error: 'Access denied', status: 403 } as const;
-    return { orgId: auth.orgId } as const;
-  }
-
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access denied', status: 403 } as const;
-    }
-    return { orgId: requestedOrgId } as const;
-  }
-
-  if (auth.scope === 'partner') {
-    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
-    if (!requireForNonOrg && accessibleOrgIds.length === 1) {
-      return { orgId: accessibleOrgIds[0] } as const;
-    }
-    return { error: 'orgId is required when partner has multiple organizations', status: 400 } as const;
-  }
-
-  if (auth.scope === 'system' && !requestedOrgId) {
-    return { error: 'orgId is required for system scope', status: 400 } as const;
-  }
-
-  if (requireForNonOrg && !requestedOrgId) return { error: 'orgId is required', status: 400 } as const;
-  return { orgId: requestedOrgId ?? auth.orgId ?? null } as const;
-}
-
-// --- Zod Schemas ---
-
-const listTemplatesSchema = z.object({
-  orgId: z.string().guid().optional(),
-  source: z.enum(['builtin', 'custom']).optional(),
-  search: z.string().optional()
-});
-
-const dashboardQuerySchema = z.object({
-  orgId: z.string().guid().optional(),
-});
-
-const oidSchema = z.object({
-  oid: z.string().min(1),
-  name: z.string().min(1),
-  label: z.string().optional(),
-  unit: z.string().optional(),
-  type: z.string().optional(),
-  // Acquisition hints consumed by services/snmpOidSpecs.ts (W02). Optional:
-  // omitted entries fall back to the `.0` => get / else walk default and
-  // `fast`. Without these fields the non-strict z.object SILENTLY STRIPPED
-  // them from custom templates.
-  mode: z.enum(['get', 'walk']).optional(),
-  cadence: z.enum(['fast', 'slow']).optional(),
-  description: z.string().optional()
-});
-
-const createTemplateSchema = z.object({
-  orgId: z.string().guid().optional(),
-  name: z.string().min(1),
-  description: z.string().optional(),
-  vendor: z.string().optional(),
-  deviceType: z.string().optional(),
-  oids: z.array(oidSchema)
-});
-
-const updateTemplateSchema = createTemplateSchema.partial();
-
-const browseOidsSchema = z.object({
-  query: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional()
-});
-
-const validateOidsSchema = z.object({
-  oids: z.array(
-    z.object({
-      id: z.string().optional(),
-      oid: z.string().min(1),
-      name: z.string().optional(),
-      type: z.string().optional(),
-      description: z.string().optional()
-    })
-  ).min(1)
-});
-
-type OidCatalogEntry = {
-  oid: string;
-  name: string;
-  type: string;
-  description: string;
-};
-
-const oidCatalog: OidCatalogEntry[] = [
-  {
-    oid: '1.3.6.1.2.1.1.1.0',
-    name: 'sysDescr',
-    type: 'OctetString',
-    description: 'System description'
-  },
-  {
-    oid: '1.3.6.1.2.1.1.3.0',
-    name: 'sysUpTime',
-    type: 'TimeTicks',
-    description: 'Time since network management system was last initialized'
-  },
-  {
-    oid: '1.3.6.1.2.1.1.5.0',
-    name: 'sysName',
-    type: 'OctetString',
-    description: 'Device hostname'
-  },
-  {
-    oid: '1.3.6.1.2.1.2.2.1.10',
-    name: 'ifInOctets',
-    type: 'Counter64',
-    description: 'Inbound octets per interface'
-  },
-  {
-    oid: '1.3.6.1.2.1.2.2.1.16',
-    name: 'ifOutOctets',
-    type: 'Counter64',
-    description: 'Outbound octets per interface'
-  },
-  {
-    oid: '1.3.6.1.2.1.25.3.3.1.2',
-    name: 'hrProcessorLoad',
-    type: 'Gauge',
-    description: 'Host processor load'
-  },
-  {
-    oid: '1.3.6.1.4.1.2021.4.6.0',
-    name: 'memAvailableReal',
-    type: 'Gauge',
-    description: 'Available physical memory'
-  },
-  {
-    oid: '1.3.6.1.4.1.2021.9.1.9',
-    name: 'dskPercent',
-    type: 'Gauge',
-    description: 'Disk utilization percentage'
-  }
-];
-
-function normalizeOidString(value: string): string {
-  return value.trim().replace(/^\.+/, '');
-}
-
-function isNumericOid(value: string): boolean {
-  return /^\d+(?:\.\d+)+$/.test(value);
-}
-
-function templateVisibilityCondition(
-  auth: { scope: string; orgId: string | null; canAccessOrg: (orgId: string) => boolean; accessibleOrgIds: string[] | null },
-  requestedOrgId?: string
-): { condition?: SQL; error?: string; status?: 400 | 403 } {
-  if (auth.scope === 'system' && !requestedOrgId) {
-    return {};
-  }
-
-  if (requestedOrgId) {
-    const orgResult = resolveOrgId(auth, requestedOrgId);
-    if ('error' in orgResult) return { error: orgResult.error, status: orgResult.status };
-    return {
-      condition: or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, orgResult.orgId!))!,
-    };
-  }
-
-  if (auth.scope === 'organization') {
-    if (!auth.orgId) return { error: 'Organization context required', status: 403 };
-    return {
-      condition: or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, auth.orgId))!,
-    };
-  }
-
-  const orgIds = auth.accessibleOrgIds ?? [];
-  if (orgIds.length === 0) {
-    return { condition: eq(snmpTemplates.isBuiltIn, true) };
-  }
-  return {
-    condition: or(eq(snmpTemplates.isBuiltIn, true), inArray(snmpTemplates.orgId, orgIds))!,
-  };
-}
-
-function canMutateTemplate(
-  auth: { scope: string; canAccessOrg: (orgId: string) => boolean },
-  template: Pick<typeof snmpTemplates.$inferSelect, 'isBuiltIn' | 'orgId'>
-): boolean {
-  if (template.isBuiltIn) return false;
-  if (template.orgId) return auth.canAccessOrg(template.orgId);
-  return auth.scope === 'system';
-}
 
 // --- Router ---
 
@@ -470,64 +274,12 @@ snmpRoutes.get(
     const { query = '', limit = 25 } = c.req.valid('query');
     const visibility = templateVisibilityCondition(auth);
     if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
-    const normalizedQuery = query.trim().toLowerCase();
-    const candidates = new Map<string, {
-      oid: string;
-      name: string;
-      type: string;
-      description: string;
-      source: 'catalog' | 'template';
-      templateName?: string;
-    }>();
-
-    for (const entry of oidCatalog) {
-      const normalizedOid = normalizeOidString(entry.oid);
-      candidates.set(normalizedOid, {
-        ...entry,
-        oid: normalizedOid,
-        source: 'catalog'
-      });
-    }
-
     const templates = await db.select({
       name: snmpTemplates.name,
       oids: snmpTemplates.oids
     }).from(snmpTemplates).where(visibility.condition);
 
-    for (const template of templates) {
-      if (!Array.isArray(template.oids)) continue;
-
-      for (const rawOid of template.oids as Array<Record<string, unknown>>) {
-        const oid = normalizeOidString(String(rawOid.oid ?? ''));
-        if (!oid) continue;
-
-        const existing = candidates.get(oid);
-        const mapped = {
-          oid,
-          name: String(rawOid.name ?? rawOid.label ?? existing?.name ?? 'Unnamed OID'),
-          type: String(rawOid.type ?? existing?.type ?? 'Gauge'),
-          description: String(rawOid.description ?? existing?.description ?? ''),
-          source: existing?.source ?? 'template',
-          templateName: existing?.templateName ?? template.name ?? undefined
-        } as const;
-
-        candidates.set(oid, mapped);
-      }
-    }
-
-    const filtered = Array.from(candidates.values()).filter((entry) => {
-      if (!normalizedQuery) return true;
-
-      const haystack = `${entry.oid} ${entry.name} ${entry.description}`.toLowerCase();
-      return haystack.includes(normalizedQuery);
-    });
-
-    return c.json({
-      data: {
-        total: filtered.length,
-        results: filtered.slice(0, limit)
-      }
-    });
+    return c.json({ data: browseOidRows(templates, query, limit) });
   }
 );
 
@@ -541,55 +293,11 @@ snmpRoutes.post(
     const payload = c.req.valid('json');
     const visibility = templateVisibilityCondition(auth);
     if (visibility.error) return c.json({ error: visibility.error }, visibility.status ?? 403);
-    const knownOids = new Set(oidCatalog.map((entry) => normalizeOidString(entry.oid)));
     const templates = await db.select({
       oids: snmpTemplates.oids
     }).from(snmpTemplates).where(visibility.condition);
 
-    for (const template of templates) {
-      if (!Array.isArray(template.oids)) continue;
-      for (const rawOid of template.oids as Array<Record<string, unknown>>) {
-        knownOids.add(normalizeOidString(String(rawOid.oid ?? '')));
-      }
-    }
-
-    const seen = new Set<string>();
-    const results = payload.oids.map((item, index) => {
-      const normalizedOid = normalizeOidString(item.oid);
-      const errors: string[] = [];
-      const warnings: string[] = [];
-
-      if (!isNumericOid(normalizedOid)) {
-        errors.push('OID must use dotted numeric format (e.g. 1.3.6.1.2.1.1.3.0).');
-      }
-
-      if (seen.has(normalizedOid)) {
-        errors.push('Duplicate OID in template payload.');
-      } else {
-        seen.add(normalizedOid);
-      }
-
-      if (isNumericOid(normalizedOid) && !knownOids.has(normalizedOid)) {
-        warnings.push('OID not found in catalog/templates. Verify this path exists on the target device.');
-      }
-
-      return {
-        index,
-        id: item.id,
-        oid: item.oid,
-        normalizedOid,
-        valid: errors.length === 0,
-        errors,
-        warnings
-      };
-    });
-
-    return c.json({
-      data: {
-        valid: results.every((result) => result.valid),
-        results
-      }
-    });
+    return c.json({ data: validateOidRows(templates, payload.oids) });
   }
 );
 
@@ -632,144 +340,12 @@ snmpRoutes.get(
     const templateVisibility = templateVisibilityCondition(auth, orgResult.orgId ?? undefined);
     if (templateVisibility.error) return c.json({ error: templateVisibility.error }, templateVisibility.status ?? 403);
 
-    const orgFilter = orgResult.orgId ? eq(snmpDevices.orgId, orgResult.orgId) : undefined;
-    const siteFilter = perms?.allowedSiteIds ? inArray(discoveredAssets.siteId, perms.allowedSiteIds) : undefined;
-    const snmpDeviceConditions = [orgFilter, siteFilter].filter((condition): condition is SQL => Boolean(condition));
-    const snmpDeviceFilter = snmpDeviceConditions.length > 0 ? and(...snmpDeviceConditions) : undefined;
-
-    // Device count
-    const deviceCountQuery = db
-      .select({ count: sql<number>`count(*)` })
-      .from(snmpDevices);
-    const [deviceCount] = await (siteFilter
-      ? deviceCountQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
-      : deviceCountQuery.where(orgFilter));
-
-    // Template count
-    const [templateCount] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(snmpTemplates)
-      .where(templateVisibility.condition);
-
-    // Threshold count
-    const thresholdCountBase = db
-      .select({ count: sql<number>`count(*)` })
-      .from(snmpAlertThresholds);
-    const thresholdCountQuery = siteFilter
-      ? thresholdCountBase
-          .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-          .innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id))
-          .where(snmpDeviceFilter)
-      : orgFilter
-        ? thresholdCountBase
-            .innerJoin(snmpDevices, eq(snmpAlertThresholds.deviceId, snmpDevices.id))
-            .where(orgFilter)
-        : thresholdCountBase;
-    const [thresholdCount] = await thresholdCountQuery;
-
-    // Status counts
-    const statusCountsQuery = db
-      .select({
-        status: snmpDevices.lastStatus,
-        count: sql<number>`count(*)`
-      })
-      .from(snmpDevices);
-    const statusCounts = await (siteFilter
-      ? statusCountsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
-      : statusCountsQuery.where(orgFilter))
-      .groupBy(snmpDevices.lastStatus);
-
-    const status: Record<string, number> = {};
-    for (const row of statusCounts) {
-      status[row.status ?? 'unknown'] = Number(row.count);
-    }
-
-    // Template usage
-    const templateUsageQuery = db
-      .select({
-        templateId: snmpDevices.templateId,
-        name: snmpTemplates.name,
-        deviceCount: sql<number>`count(*)`
-      })
-      .from(snmpDevices)
-      .leftJoin(snmpTemplates, eq(snmpDevices.templateId, snmpTemplates.id));
-    const templateUsage = await (siteFilter
-      ? templateUsageQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
-      : templateUsageQuery.where(orgFilter))
-      .groupBy(snmpDevices.templateId, snmpTemplates.name);
-
-    // Recent polls
-    const recentPollsQuery = db
-      .select({
-        deviceId: snmpDevices.id,
-        name: snmpDevices.name,
-        lastPolledAt: snmpDevices.lastPolled,
-        status: snmpDevices.lastStatus
-      })
-      .from(snmpDevices);
-    const recentPolls = await (siteFilter
-      ? recentPollsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(snmpDeviceFilter)
-      : recentPollsQuery.where(orgFilter))
-      .orderBy(desc(snmpDevices.lastPolled))
-      .limit(5);
-
-    const interfaceWindowStart = new Date(Date.now() - 30 * 60 * 1000);
-    const interfaceOidFilter = or(
-      like(snmpMetrics.oid, '1.3.6.1.2.1.2.2.1.10%'),
-      like(snmpMetrics.oid, '1.3.6.1.2.1.2.2.1.16%'),
-      like(snmpMetrics.name, '%ifInOctets%'),
-      like(snmpMetrics.name, '%ifOutOctets%')
-    )!;
-    const interfaceMetricFilter = and(
-      ...[
-        orgFilter,
-        siteFilter,
-        gte(snmpMetrics.timestamp, interfaceWindowStart),
-        interfaceOidFilter
-      ].filter((condition): condition is SQL => Boolean(condition))
-    );
-
-    const recentInterfaceMetricsQuery = db
-      .select({
-        deviceId: snmpMetrics.deviceId,
-        deviceName: snmpDevices.name,
-        oid: snmpMetrics.oid,
-        name: snmpMetrics.name,
-        value: snmpMetrics.value,
-        timestamp: snmpMetrics.timestamp
-      })
-      .from(snmpMetrics)
-      .innerJoin(snmpDevices, eq(snmpMetrics.deviceId, snmpDevices.id));
-    const recentInterfaceMetrics = await (siteFilter
-      ? recentInterfaceMetricsQuery.innerJoin(discoveredAssets, eq(snmpDevices.assetId, discoveredAssets.id)).where(interfaceMetricFilter)
-      : recentInterfaceMetricsQuery.where(interfaceMetricFilter))
-      .orderBy(desc(snmpMetrics.timestamp))
-      .limit(3000);
-
-    const topInterfaces = buildTopInterfaces(recentInterfaceMetrics, 5);
-
-    return c.json({
-      data: {
-        totals: {
-          devices: Number(deviceCount?.count ?? 0),
-          templates: Number(templateCount?.count ?? 0),
-          thresholds: Number(thresholdCount?.count ?? 0)
-        },
-        status,
-        templateUsage: templateUsage.map((t) => ({
-          templateId: t.templateId,
-          name: t.name ?? 'Unassigned',
-          deviceCount: Number(t.deviceCount)
-        })),
-        topInterfaces,
-        recentPolls: recentPolls.map((p) => ({
-          deviceId: p.deviceId,
-          name: p.name,
-          lastPolledAt: p.lastPolledAt?.toISOString() ?? null,
-          status: p.status ?? 'offline'
-        }))
-      }
+    const dashboard = await loadSnmpDashboard({
+      orgId: orgResult.orgId,
+      templateCondition: templateVisibility.condition,
+      allowedSiteIds: perms?.allowedSiteIds,
     });
+    return c.json(dashboard);
   }
 );
 
