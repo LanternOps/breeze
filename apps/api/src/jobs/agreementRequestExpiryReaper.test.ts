@@ -20,7 +20,11 @@ vi.mock('../db', () => {
   for (const m of ['select', 'from', 'limit', 'orderBy']) chain[m] = vi.fn(() => chain);
   (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
     Promise.resolve(queued.shift() ?? []).then(resolve, reject);
-  return { db: chain, withSystemDbAccessContext: (fn: () => unknown) => fn() };
+  return {
+    db: chain,
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
+  };
 });
 
 vi.mock('bullmq', () => ({ Queue: vi.fn(), Worker: vi.fn() }));

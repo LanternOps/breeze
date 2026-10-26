@@ -46,17 +46,32 @@ function getAgreementEventsQueue(): Queue {
 
 // Fire-and-forget by design (quoteEvents.ts pattern): a Redis outage must never
 // fail the customer-facing response or staff mutation that emitted the event.
+// BullMQ's connection retries forever (maxRetriesPerRequest: null), so during a
+// Redis outage `add` would wait for the reconnect instead of failing. Bound the
+// wait: the event is best-effort, the caller's response is not.
+const EMIT_TIMEOUT_MS = 2000;
+
 export async function emitAgreementEvent(event: AgreementEvent): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await getAgreementEventsQueue().add(event.type, event, {
+    const add = getAgreementEventsQueue().add(event.type, event, {
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 500 },
       attempts: 3,
       backoff: { type: 'exponential', delay: 2000 },
     });
+    add.catch(() => {}); // a late rejection after the timeout is already reported below
+    await Promise.race([
+      add,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`enqueue timed out after ${EMIT_TIMEOUT_MS}ms`)), EMIT_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
     console.error('[AgreementEvents] failed to enqueue', event.type, `requestId=${event.requestId}`, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -77,7 +92,10 @@ export async function emitAgreementEventForOrg(
         .limit(1);
       return org?.partnerId ?? null;
     }));
-    if (!partnerId) return;
+    if (!partnerId) {
+      console.warn('[AgreementEvents] no owning partner for org — event dropped', event.type, `requestId=${event.requestId}`, `orgId=${event.orgId}`);
+      return;
+    }
     await emitAgreementEvent({ ...event, partnerId });
   } catch (err) {
     console.error('[AgreementEvents] partner lookup failed', event.type, `requestId=${event.requestId}`, err instanceof Error ? err.message : err);

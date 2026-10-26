@@ -167,6 +167,13 @@ agreementRequestRoutes.post(
         ),
       );
 
+      // Post-commit bus event (before the audit write, which could throw): an integration must see an MSP-recorded
+      // signature too, tagged on_behalf (the customer path emits from
+      // notifyAgreementOutcome). Never rejects.
+      await emitAgreementEventForOrg({
+        type: 'agreement.signed', requestId: res.request.id, orgId: input.orgId, origin: 'on_behalf', actorUserId: auth.user?.id ?? null,
+      });
+
       writeRouteAudit(
         c,
         recordedOnBehalfAuditEvent({
@@ -183,13 +190,6 @@ agreementRequestRoutes.post(
           external: file !== null,
         }),
       );
-
-      // Post-commit bus event: an integration must see an MSP-recorded
-      // signature too, tagged on_behalf (the customer path emits from
-      // notifyAgreementOutcome). Never rejects.
-      await emitAgreementEventForOrg({
-        type: 'agreement.signed', requestId: res.request.id, orgId: input.orgId, origin: 'on_behalf', actorUserId: auth.user?.id ?? null,
-      });
 
       return c.json(
         { data: { request: serializeRequest(res.request), signedAgreementId: res.signedAgreementId, contentSha256: res.contentSha256 } },
@@ -313,6 +313,9 @@ agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', i
     const { id } = c.req.valid('param');
     const auth = authFrom(c);
     const res = await withAuthDbAccessContext(auth, () => sendAgreementRequest(auth, id, new Date()));
+    // Announce right after the commit, before the audit/mail steps that could
+    // throw (a lost event cannot be replayed: a retry hits a 409). Never rejects.
+    await emitAgreementEventForOrg({ type: 'agreement.sent', requestId: id, orgId: res.request.orgId, actorUserId: auth.user?.id ?? null });
     // Post-commit. Never rejects (every failure is an emailReason).
     const delivery = await res.deliverEmail();
     writeRouteAudit(c, {
@@ -329,8 +332,6 @@ agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', i
         ...(delivery.emailReason ? { emailReason: delivery.emailReason } : {}),
       },
     });
-    // Post-commit bus event; never rejects (a Redis outage costs the event, not the send).
-    await emitAgreementEventForOrg({ type: 'agreement.sent', requestId: id, orgId: res.request.orgId, actorUserId: auth.user?.id ?? null });
     return c.json({ data: {
       request: res.request,
       emailed: delivery.emailed,

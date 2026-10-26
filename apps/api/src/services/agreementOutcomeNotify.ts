@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { agreementRequests, contractTemplates } from '../db/schema/contractDocuments';
 import { organizations, partners } from '../db/schema/orgs';
 import { users } from '../db/schema/users';
@@ -52,13 +52,15 @@ export async function notifyAgreementOutcome(input: {
 
       // The bus event fires for BOTH sources (an integration must see an
       // MSP-recorded signature too); only a customer outcome emails (#9075 W3b).
-      await emitAgreementEvent({
+      // Deferred to the context's exit so a Redis round-trip never pins this
+      // pooled connection (and never delays the email below).
+      runAfterDbContextCommit('agreement-outcome.emit', () => emitAgreementEvent({
         type: input.outcome === 'signed' ? 'agreement.signed' : 'agreement.declined',
         requestId: input.requestId,
         orgId: req.orgId,
         partnerId: req.partnerId,
         origin: input.source === 'customer' ? 'customer' : 'on_behalf',
-      });
+      }));
       if (input.source !== 'customer') return null; // no email for an MSP-recorded outcome
 
       // Creator first; partner billing inbox as the fallback so the news lands

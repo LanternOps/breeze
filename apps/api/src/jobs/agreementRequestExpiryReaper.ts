@@ -115,6 +115,7 @@ export async function expireAgreementRequests(now: Date = new Date()): Promise<n
 
   // Bus events need the owning partner; one lookup for the batch's orgs.
   try {
+    const events: Array<Parameters<typeof emitAgreementEvent>[0]> = [];
     const orgIds = [...new Set(flipped.map((r) => r.orgId))];
     const orgs = await db
       .select({ id: organizations.id, partnerId: organizations.partnerId })
@@ -124,8 +125,11 @@ export async function expireAgreementRequests(now: Date = new Date()): Promise<n
     for (const row of flipped) {
       const partnerId = partnerByOrg.get(row.orgId);
       if (!partnerId) continue;
-      await emitAgreementEvent({ type: 'agreement.expired', requestId: row.id, orgId: row.orgId, partnerId });
+      events.push({ type: 'agreement.expired', requestId: row.id, orgId: row.orgId, partnerId });
     }
+    // Only once the sweep's transaction (and its row locks) has COMMITTED: a
+    // rolled-back flip must not announce, and a slow bus must not hold 500 locks.
+    dbModule.runAfterDbContextCommit('agreement-request.expired.emit', () => Promise.all(events.map((e) => emitAgreementEvent(e))));
   } catch (err) {
     console.error('[AgreementRequestExpiryReaper] Failed to publish agreement.expired events:', err);
     captureException(err instanceof Error ? err : new Error(String(err)));

@@ -10,6 +10,7 @@ vi.mock('../db', () => {
   return {
     db: chain,
     runOutsideDbContext: (fn: () => unknown) => fn(),
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
     withSystemDbAccessContext: async (fn: () => Promise<unknown>) => {
       contexts.open += 1;
       try { return await fn(); } finally { contexts.open -= 1; }

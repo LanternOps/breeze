@@ -59,6 +59,23 @@ describe('emitAgreementEvent', () => {
   });
 });
 
+describe('emitAgreementEvent outage behaviour', () => {
+  it('a Redis outage that never answers is abandoned after the bound, not awaited forever', async () => {
+    vi.useFakeTimers();
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      addMock.mockReturnValueOnce(new Promise(() => {})); // enqueue that never settles
+      const p = emitAgreementEvent({ type: 'agreement.viewed', requestId: 'r1', orgId: 'o1', partnerId: 'p1' });
+      await vi.advanceTimersByTimeAsync(2500);
+      await expect(p).resolves.toBeUndefined();
+      expect(captureException).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      err.mockRestore();
+    }
+  });
+});
+
 describe('emitAgreementEventForOrg', () => {
   it('resolves the owning partner under system scope, then enqueues', async () => {
     partnerRows.push([{ partnerId: 'p9' }]);
