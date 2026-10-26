@@ -5,7 +5,16 @@ import type { FlowDetailDto, FlowValidationResult } from '@breeze/shared';
 import { useFlowsGate } from '../../stores/featuresStore';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { getFlow } from './api';
+import { ActionError } from '@/lib/runAction';
+import { usePermissions } from '@/lib/permissions';
+import { useHashTab } from '@/lib/useHashState';
+import { cn } from '@/lib/utils';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
+import { disableFlow, getFlow } from './api';
+import { FlowEnableDialog } from './FlowEnableDialog';
+import { FlowRunDialog } from './FlowRunDialog';
+import { FlowRunsTab } from './FlowRunsTab';
 import { FlowStepList } from './FlowStepList';
 import { FlowIssuesPanel } from './FlowIssuesPanel';
 import { TriggerSummary } from './TriggerSummary';
@@ -16,14 +25,42 @@ type LoadState =
   | { kind: 'not_found' }
   | { kind: 'error' };
 
+const TABS = ['overview', 'runs'] as const;
+
 /**
- * Read-only flow detail (#5218 W3 PR B). No enable / edit / delete controls:
- * flows are drafted in AI chat and only reviewed here.
+ * Flow detail (#5218 W3 PR B review surface; #5219 W4 adds enable / disable /
+ * run-now). Flows are still drafted in AI chat; this page reviews and operates
+ * them. Actions need `automations.write` (UX only: the API re-checks).
  */
 export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const { t } = useTranslation('flows');
   const { enabled, loaded } = useFlowsGate();
+  const { can } = usePermissions();
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [tab, setTab] = useHashTab(TABS, 'overview');
+  const [enableOpen, setEnableOpen] = useState(false);
+  const [runOpen, setRunOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disabling, setDisabling] = useState(false);
+
+  const reload = () => setReloadSeq((n) => n + 1);
+
+  const confirmDisable = async () => {
+    if (disabling) return;
+    setDisabling(true);
+    try {
+      await disableFlow(flowId);
+      setDisableOpen(false);
+      reload();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('errors.disableFailed') }); // ActionError already toasted
+      setDisableOpen(false);
+    } finally {
+      setDisabling(false);
+    }
+  };
 
   useEffect(() => {
     if (!enabled) return;
@@ -40,7 +77,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [enabled, flowId]);
+  }, [enabled, flowId, reloadSeq]);
 
   const notFound = (
     <p className="p-4 text-sm text-muted-foreground" data-testid="flow-not-found">{t('errors.notFound')}</p>
@@ -55,6 +92,10 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
 
   const { flow, validation } = state;
   const { definition } = flow;
+  const canWrite = can('automations', 'write');
+  const canEnable = canWrite && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
+  const canDisable = canWrite && flow.status === 'enabled';
+  const canRun = canDisable && definition.trigger.type === 'manual';
 
   return (
     <div className="space-y-6 p-4" data-testid="flow-detail">
@@ -74,14 +115,55 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
           <span>{formatDateTime(flow.updatedAt)}</span>
           {flow.aiSessionId && <span>{t('detail.createdInChat')}</span>}
         </div>
+        {flow.status === 'paused' && flow.pausedReason && (
+          <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="flow-paused-reason">
+            {t(/* i18n-dynamic */ `status.pausedReason.${flow.pausedReason}`)}
+          </p>
+        )}
+        {(canEnable || canDisable) && (
+          <div className="flex flex-wrap gap-2 pt-2" data-testid="flow-actions">
+            {canEnable && (
+              <button type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground" data-testid="flow-enable" onClick={() => setEnableOpen(true)}>
+                {t('actions.enable')}
+              </button>
+            )}
+            {canRun && (
+              <button type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground" data-testid="flow-run-now" onClick={() => setRunOpen(true)}>
+                {t('actions.runNow')}
+              </button>
+            )}
+            {canDisable && (
+              <button type="button" className="rounded border px-3 py-1.5 text-sm" data-testid="flow-disable" onClick={() => setDisableOpen(true)}>
+                {t('actions.disable')}
+              </button>
+            )}
+          </div>
+        )}
       </header>
 
-      <p
-        className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
-        data-testid="flow-preview-notice"
-      >
-        {t('previewNotice')}
-      </p>
+      <div role="tablist" className="flex gap-4 border-b" data-testid="flow-tabs">
+        {TABS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            data-testid={`flow-tab-${id}`}
+            className={cn('-mb-px border-b-2 px-1 pb-2 text-sm', tab === id ? 'border-primary font-medium' : 'border-transparent text-muted-foreground')}
+            onClick={() => {
+              window.location.hash = id;
+              setTab(id);
+            }}
+          >
+            {t(/* i18n-dynamic */ `tabs.${id}`)}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'runs' ? (
+        <FlowRunsTab flowId={flowId} ownerScope={flow.ownerScope} />
+      ) : (
+        <>
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">{t('detail.trigger')}</h2>
@@ -111,8 +193,34 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">{t('detail.steps')}</h2>
-        <FlowStepList steps={definition.steps} summaries={validation.steps} />
+        <FlowStepList steps={definition.steps} summaries={validation.steps} preApprovedStepIds={flow.preApprovedStepIds ?? []} />
       </section>
+        </>
+      )}
+
+      {enableOpen && (
+        <FlowEnableDialog
+          open
+          flow={flow}
+          validation={validation}
+          onClose={() => setEnableOpen(false)}
+          onEnabled={() => {
+            setEnableOpen(false);
+            reload();
+          }}
+        />
+      )}
+      {runOpen && <FlowRunDialog open flow={flow} onClose={() => setRunOpen(false)} />}
+      <ConfirmDialog
+        open={disableOpen}
+        onClose={() => setDisableOpen(false)}
+        onConfirm={confirmDisable}
+        title={t('disable.title')}
+        message={t('disable.message')}
+        confirmLabel={t('actions.disable')}
+        isLoading={disabling}
+        confirmTestId="flow-disable-confirm"
+      />
     </div>
   );
 }

@@ -25,6 +25,7 @@
     "aiAgentsFixMemory": "Fix memory",
     "flows": "Flows",
     "flowDetail": "Flow",
+    "flowRun": "Flow run",
     "aiAgentsRunsDetail": "Run Detail",
     "aiAgentsRuns": "Agent Runs",
     "aiForOffice": "Breeze AI for Office",

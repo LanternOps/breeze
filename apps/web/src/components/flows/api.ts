@@ -1,16 +1,41 @@
-// Typed GET-only fetch wrappers for the Flows API (tool catalog W3, #5218),
-// mounted at `/flows`. The surface is read-only in this release, so nothing
-// here mutates and nothing goes through `runAction`.
+// Typed fetch wrappers for the Flows API (tool catalog W3 #5218 reads, W4 #5219
+// enable/disable/run/cancel), mounted at `/flows`. Reads throw `ActionError` on a
+// non-2xx; every mutation goes through `runAction` with a success toast, so the
+// caller only applies the catch pattern from CLAUDE.md (401 => return, non-
+// ActionError => toast).
 //
 // Unlike the tool-sources routes, these answer bare bodies (`{ flows, total }`,
 // `{ flow, validation }`) rather than a `{ data }` envelope.
 
-import type { FlowDetailDto, FlowSummaryDto, FlowStatus, FlowValidationResult } from '@breeze/shared';
+import type {
+  FlowDetailDto,
+  FlowEnableRequest,
+  FlowManualRunRequest,
+  FlowRunDetailDto,
+  FlowRunStatus,
+  FlowRunStepDetailDto,
+  FlowRunSummaryDto,
+  FlowSummaryDto,
+  FlowStatus,
+  FlowValidationResult,
+} from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
-import { ActionError } from '../../lib/runAction';
+import { ActionError, runAction } from '../../lib/runAction';
+import { i18n } from '../../lib/i18n';
 
-export type { FlowDetailDto, FlowSummaryDto, FlowStatus, FlowValidationResult };
+export type {
+  FlowDetailDto,
+  FlowEnableRequest,
+  FlowManualRunRequest,
+  FlowRunDetailDto,
+  FlowRunStatus,
+  FlowRunStepDetailDto,
+  FlowRunSummaryDto,
+  FlowSummaryDto,
+  FlowStatus,
+  FlowValidationResult,
+};
 
 const BASE = '/flows';
 
@@ -66,4 +91,140 @@ export async function getFlow(
     throw new ActionError('Unexpected response shape: missing flow', 200);
   }
   return { flow: body.flow, validation: body.validation };
+}
+
+export interface ListFlowRunsParams {
+  status?: FlowRunStatus;
+  orgId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listFlowRuns(
+  flowId: string,
+  params: ListFlowRunsParams = {},
+): Promise<{ runs: FlowRunSummaryDto[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set('status', params.status);
+  if (params.orgId) qs.set('orgId', params.orgId);
+  if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.offset !== undefined) qs.set('offset', String(params.offset));
+  const query = qs.toString();
+  const path = `${BASE}/${encodeURIComponent(flowId)}/runs`;
+  const body = await readJson<{ runs?: FlowRunSummaryDto[]; total?: number }>(
+    await fetchWithAuth(query ? `${path}?${query}` : path),
+  );
+  if (!Array.isArray(body?.runs)) {
+    throw new ActionError('Unexpected response shape: missing runs', 200);
+  }
+  return { runs: body.runs, total: typeof body.total === 'number' ? body.total : body.runs.length };
+}
+
+/** The polled endpoint: step bodies (`renderedInput` / `output`) are omitted. */
+export async function getFlowRun(runId: string): Promise<FlowRunDetailDto> {
+  const body = await readJson<FlowRunDetailDto | null>(
+    await fetchWithAuth(`${BASE}/runs/${encodeURIComponent(runId)}`),
+  );
+  if (!body || typeof body !== 'object' || typeof body.id !== 'string') {
+    throw new ActionError('Unexpected response shape: missing run', 200);
+  }
+  return body;
+}
+
+/** One step row with its (redacted, possibly pruned) bodies; loaded lazily on expand. */
+export async function getFlowRunStep(runId: string, stepRowId: string): Promise<FlowRunStepDetailDto> {
+  const body = await readJson<FlowRunStepDetailDto | null>(
+    await fetchWithAuth(`${BASE}/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepRowId)}`),
+  );
+  if (!body || typeof body !== 'object' || typeof body.id !== 'string') {
+    throw new ActionError('Unexpected response shape: missing step', 200);
+  }
+  return body;
+}
+
+// ---- Mutations -------------------------------------------------------------
+
+/** POST init; the `fetchWithAuth` call itself stays lexically inside each `runAction` (no-silent-mutations guard). */
+function postInit(body?: unknown): RequestInit {
+  return {
+    method: 'POST',
+    ...(body === undefined
+      ? {}
+      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  };
+}
+
+/**
+ * Route error tokens (`{ error: 'delegation_scope_restricted' }`) -> localized
+ * toast copy, so a refused write never toasts the raw token. MFA_REQUIRED is
+ * not listed: runAction already localizes it from `errors:MFA_REQUIRED`.
+ */
+const FLOW_ERROR_KEYS: Record<string, string> = {
+  delegation_scope_restricted: 'flows:run.delegationScopeRestricted',
+  interactive_user_required: 'flows:run.interactiveUserRequired',
+  org_forbidden: 'flows:run.orgForbidden',
+  org_required: 'flows:run.orgRequired',
+  not_manual: 'flows:run.notManual',
+  not_enabled: 'flows:run.notEnabled',
+  flow_queue_full: 'flows:run.queueFull',
+  flow_not_found: 'flows:errors.notFound',
+  run_not_found: 'flows:runDetail.notFound',
+  partner_wide_forbidden: 'flows:enable.partnerWideForbidden',
+  interactive_session_required: 'flows:enable.interactiveRequired',
+};
+
+function flowFriendly(code: string): string | undefined {
+  const key = FLOW_ERROR_KEYS[code];
+  return key ? i18n.t(/* i18n-dynamic */ key) : undefined;
+}
+
+export interface EnableFlowResult {
+  ok: true;
+  [key: string]: unknown;
+}
+
+/**
+ * Enable the flow's current version. A 422 (validation / missing permissions /
+ * ineligible pre-approval) carries `validation`, `missing`, `stepId`, `reason`
+ * and `error` in the body; it is NOT toasted here, so the enable dialog can
+ * render it inline. Read it from the thrown `ActionError.body`.
+ */
+export function enableFlow(flowId: string, body: FlowEnableRequest): Promise<EnableFlowResult> {
+  return runAction<EnableFlowResult>({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/enable`, postInit(body)),
+    errorFallback: i18n.t('flows:errors.enableFailed'),
+    successMessage: i18n.t('flows:toast.enabled'),
+    suppressErrorToast: (status) => status === 422,
+    friendly: flowFriendly,
+  });
+}
+
+export function disableFlow(flowId: string): Promise<{ ok: boolean; cancelledRuns: number }> {
+  return runAction({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/disable`, postInit()),
+    errorFallback: i18n.t('flows:errors.disableFailed'),
+    friendly: flowFriendly,
+    successMessage: i18n.t('flows:toast.disabled'),
+  });
+}
+
+export function startFlowRun(
+  flowId: string,
+  body: Partial<FlowManualRunRequest>,
+): Promise<{ runId: string; duplicate: boolean }> {
+  return runAction({
+    request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/runs`, postInit(body)),
+    errorFallback: i18n.t('flows:errors.runFailed'),
+    friendly: flowFriendly,
+    successMessage: i18n.t('flows:toast.runStarted'),
+  });
+}
+
+export function cancelFlowRun(runId: string): Promise<{ status: FlowRunStatus }> {
+  return runAction({
+    request: () => fetchWithAuth(`${BASE}/runs/${encodeURIComponent(runId)}/cancel`, postInit()),
+    errorFallback: i18n.t('flows:errors.cancelFailed'),
+    friendly: flowFriendly,
+    successMessage: i18n.t('flows:toast.runCancelled'),
+  });
 }
