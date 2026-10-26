@@ -64,6 +64,15 @@ type Session struct {
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
 
+	// Prompt host advertisement (#10190), set once at auth by
+	// applyAuthAdvertisements and never changed afterwards: the clamped
+	// prompt protocol, the granted "<kind>@<n>" entries, and the renderer
+	// build version. Read through PromptProtocol / PromptKindAds /
+	// PromptKindVersion / RendererVersion.
+	promptProtocol  int
+	promptKinds     []string
+	rendererVersion string
+
 	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
 	helperLogOnce sync.Once
 	helperLog     *ipc.HelperLogCap

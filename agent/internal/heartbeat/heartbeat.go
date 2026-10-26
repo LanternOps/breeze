@@ -52,6 +52,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
+	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -554,6 +555,7 @@ type Heartbeat struct {
 	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu   sync.RWMutex
 	sessionBroker   *sessionbroker.Broker
+	promptHost      *prompthost.Host // on-device prompts (#10190); dormant in W02 (no kind registered or enabled)
 	helperLifecycle helperLifecycleController
 	lifecycleCancel context.CancelFunc
 	shutdownTimeout time.Duration
@@ -1345,6 +1347,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
+		h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(h.sessionBroker)})
+		h.sessionBroker.SetPromptSink(h.promptHost)
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
 		h.setHelperToken(h.config.HelperAuthToken)
@@ -2202,6 +2206,11 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
+	}
+	if h.promptHost != nil {
+		promptCtx, promptCancel := context.WithCancel(context.Background())
+		go func() { <-h.stopChan; promptCancel() }()
+		go h.promptHost.Run(promptCtx)
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
