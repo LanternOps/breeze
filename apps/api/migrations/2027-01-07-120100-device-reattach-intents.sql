@@ -19,23 +19,32 @@
 --   * step_up_grant_ref — the wave 2 step-up grant id, stored only.
 --   Agent ids are varchar(64), like devices.agent_id.
 --
--- Tenancy: shape 3 (partner-axis), narrowed by org access. Both policies are
--- here, in the creating migration:
+-- Tenancy: shape 3 (partner-axis), narrowed by org access. All policies are
+-- here, in the creating migration (the device_reattachments shape):
 --   (a) permissive FOR ALL `system OR breeze_has_partner_access(partner_id)`,
 --       registered in PARTNER_TENANT_TABLES;
---   (b) RESTRICTIVE FOR ALL, USING and WITH CHECK
+--   (b) RESTRICTIVE reads (FOR SELECT)
 --       `system OR (breeze_has_org_access(target_org_id)
 --                   AND (source_parked OR breeze_has_org_access(source_org_id)))`
---       — a technician limited to selected orgs reads or writes only intents
---       whose target org, and real source org, are theirs. A parked source
---       passes on source_parked (the holding org is in no user's accessible
---       orgs); whether a technician may act on one is the service's check.
--- The agent side (directive lookup, phase 1, confirm, expiry sweep) and the
--- service's conflict checks run in system scope.
+--       — a technician limited to selected orgs reads only intents whose
+--       target org, and real source org, are theirs. A parked source passes
+--       on source_parked (the holding org is in no user's accessible orgs);
+--       whether a technician may act on one is the service's check.
+--   (c) RESTRICTIVE writes: INSERT, UPDATE and DELETE are system-scope only.
+--       Every writer — request/cancel (the service elects system scope after
+--       its own access check), the agent side (directive lookup, phase 1,
+--       confirm), the expiry sweep and parked housekeeping — runs in system
+--       scope, so no request-path write can plant the staged hashes that
+--       confirm then installs on the target device.
 --
 -- No org_id column: the device FKs cascade, so org erasure reaches the table
 -- through its devices; no org cascade / merge / export registration. The
 -- users FK is ON DELETE SET NULL (orgCascadeFkOnDelete contract).
+--
+-- Org merge: source_org_id / target_org_id are NOT repointed. Revalidation
+-- cancels any open intent whose orgs moved, and an ended intent naming a
+-- merged-away org is then readable only in system scope (the org-access read
+-- floor matches no user) until the 30-day prune removes it.
 --
 -- Triggers:
 --   * device_reattach_intents_derive_source_parked (BEFORE INSERT OR UPDATE OF
@@ -172,24 +181,40 @@ CREATE POLICY device_reattach_intents_partner_access ON public.device_reattach_i
     OR public.breeze_has_partner_access(partner_id)
   );
 
+-- An earlier draft of this unshipped migration had one FOR ALL org-access
+-- policy; drop it so a dev database that applied that draft converges.
 DROP POLICY IF EXISTS device_reattach_intents_org_access ON public.device_reattach_intents;
-CREATE POLICY device_reattach_intents_org_access ON public.device_reattach_intents
+
+DROP POLICY IF EXISTS device_reattach_intents_org_access_read ON public.device_reattach_intents;
+CREATE POLICY device_reattach_intents_org_access_read ON public.device_reattach_intents
   AS RESTRICTIVE
-  FOR ALL
+  FOR SELECT
   USING (
     public.breeze_current_scope() = 'system'
     OR (
       public.breeze_has_org_access(target_org_id)
       AND (source_parked OR public.breeze_has_org_access(source_org_id))
     )
-  )
-  WITH CHECK (
-    public.breeze_current_scope() = 'system'
-    OR (
-      public.breeze_has_org_access(target_org_id)
-      AND (source_parked OR public.breeze_has_org_access(source_org_id))
-    )
   );
+
+DROP POLICY IF EXISTS device_reattach_intents_system_insert ON public.device_reattach_intents;
+CREATE POLICY device_reattach_intents_system_insert ON public.device_reattach_intents
+  AS RESTRICTIVE
+  FOR INSERT
+  WITH CHECK (public.breeze_current_scope() = 'system');
+
+DROP POLICY IF EXISTS device_reattach_intents_system_update ON public.device_reattach_intents;
+CREATE POLICY device_reattach_intents_system_update ON public.device_reattach_intents
+  AS RESTRICTIVE
+  FOR UPDATE
+  USING (public.breeze_current_scope() = 'system')
+  WITH CHECK (public.breeze_current_scope() = 'system');
+
+DROP POLICY IF EXISTS device_reattach_intents_system_delete ON public.device_reattach_intents;
+CREATE POLICY device_reattach_intents_system_delete ON public.device_reattach_intents
+  AS RESTRICTIVE
+  FOR DELETE
+  USING (public.breeze_current_scope() = 'system');
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.device_reattach_intents TO breeze_app;
 

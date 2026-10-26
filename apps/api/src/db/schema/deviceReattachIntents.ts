@@ -11,8 +11,8 @@ export type DeviceReattachEvidenceLevel = 'hint' | 'tpm_continuity';
  * A human-authorized reattach of a newly enrolled install (the source device)
  * onto an existing record (the target), #8318 wave 1b (spec §4.3, §6).
  *
- * Partner-axis (shape 3), narrowed by a RESTRICTIVE org-access policy over
- * target_org_id / source_org_id; source_parked is derived by trigger from the
+ * Partner-axis (shape 3); reads narrowed by a RESTRICTIVE org-access policy
+ * over target_org_id / source_org_id, writes system-scope only; source_parked is derived by trigger from the
  * source org's type and never written by callers. The authorized identity
  * columns are immutable and the end states are terminal (guard trigger). The
  * per-state shape CHECK (which staged columns a state may hold) lives in the

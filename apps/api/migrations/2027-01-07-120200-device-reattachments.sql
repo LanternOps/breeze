@@ -33,6 +33,10 @@
 --     snapshot org columns, so a technician limited to selected orgs reads
 --     only the reattaches that touch their orgs (§4.4).
 --
+-- Org merge: the snapshot org columns are NOT repointed (they record what
+-- was confirmed). A row naming a merged-away org is then readable only in
+-- system scope: the org-access read floor matches no user for that org.
+--
 -- Indexes: source_device_id serves the "never target a retired source" check
 -- (§6.5); source_agent_id serves confirm replay after the intent is pruned
 -- (the route's `:id`; the token hash is then compared in constant time);

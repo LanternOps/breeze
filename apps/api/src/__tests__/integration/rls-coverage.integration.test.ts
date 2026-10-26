@@ -468,11 +468,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // no org_id column — source/target org ids are authorization snapshots, not
   // tenancy keys — so no cascade / export / merge registration; the intents'
   // device FKs cascade, the ledger's device ids are FK-less snapshots.
-  // device_reattach_intents: a RESTRICTIVE org-access policy narrows every
-  // command to rows whose target org (and real source org) the caller can
-  // access; source_parked is derived by a SECURITY DEFINER trigger.
-  // device_reattachments: append-only (UPDATE trigger), RESTRICTIVE writes
-  // system-only, RESTRICTIVE reads by the same org-access branch.
+  // Both: RESTRICTIVE writes system-only (every writer runs in system scope),
+  // RESTRICTIVE reads narrowed to rows whose target org (and real source org)
+  // the caller can access. device_reattach_intents: source_parked is derived
+  // by a SECURITY DEFINER trigger. device_reattachments: append-only (UPDATE
+  // trigger).
   // Functional proof: deviceReattachIntentsRls.integration.test.ts.
   ['device_reattach_intents', 'partner_id'],
   ['device_reattachments', 'partner_id'],

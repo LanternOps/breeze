@@ -4,8 +4,9 @@
  * §4.3, §4.4). Migrations under test: 2027-01-07-120100-device-reattach-intents.sql
  * and 2027-01-07-120200-device-reattachments.sql.
  *
- * Both tables are partner-axis (shape 3) and narrowed by a RESTRICTIVE
- * org-access policy over (target_org_id, source_org_id, source_parked). The
+ * Both tables are partner-axis (shape 3), reads narrowed by a RESTRICTIVE
+ * org-access policy over (target_org_id, source_org_id, source_parked), and
+ * every write is system-scope only (every writer runs in system scope). The
  * four checks §4.3 asks for:
  *   1. a technician limited to selected orgs reads 0 rows of an intent whose
  *      target org, or real source org, they lack (and reads the ones they
@@ -165,15 +166,15 @@ describe('device_reattach_intents RLS (breeze_app)', () => {
     const c = await cause(() => withDbAccessContext(s.techA, () => db.insert(deviceReattachIntents)
       .values(intentValues({ partnerId: s.partner.id, ...pair, sourceOrgId: s.orgA.id, targetOrgId: s.orgB.id }))));
     expect(c?.code).toBe('42501');
-    expect(c?.message).toMatch(/row-level security policy "device_reattach_intents_org_access"/);
+    expect(c?.message).toMatch(/row-level security policy "device_reattach_intents_system_insert"/);
   });
 
   it('(3) source_parked = true written for a real org is overwritten by the trigger, then refused', async () => {
     const s = await seedPartnerWithOrgs();
     const pair = await devicePair({ orgId: s.orgB.id, siteId: s.siteB.id }, { orgId: s.orgA.id, siteId: s.siteA.id });
     const values = intentValues({ partnerId: s.partner.id, ...pair, sourceOrgId: s.orgB.id, targetOrgId: s.orgA.id, sourceParked: true });
-    // The technician has the target org but not the real source org: the
-    // forged flag would have passed the floor; the trigger resets it first.
+    // Outside system scope the write is refused outright (system-only writes);
+    // the trigger resets the forged flag before the policies run either way.
     const c = await cause(() => withDbAccessContext(s.techA, () => db.insert(deviceReattachIntents).values(values)));
     expect(c?.code).toBe('42501');
 
@@ -188,13 +189,47 @@ describe('device_reattach_intents RLS (breeze_app)', () => {
     expect(after?.sourceParked).toBe(false);
   });
 
-  it('a technician may create an intent whose target org and real source org are theirs', async () => {
+  it('writes are system-scope only: a partner admin, an org-limited technician and an org session read an intent but cannot insert, update or delete one', async () => {
     const s = await seedPartnerWithOrgs();
-    const pair = await devicePair({ orgId: s.orgA.id, siteId: s.siteA.id }, { orgId: s.orgA.id, siteId: s.siteA.id });
-    const rows = await withDbAccessContext(s.techA, () => db.insert(deviceReattachIntents)
-      .values(intentValues({ partnerId: s.partner.id, ...pair, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }))
+    const intents = await seedIntents(s);
+    const orgSession: DbAccessContext = {
+      scope: 'organization', orgId: s.orgA.id, accessibleOrgIds: [s.orgA.id], accessiblePartnerIds: [s.partner.id],
+    };
+    for (const ctx of [s.admin, s.techA, orgSession]) {
+      // SELECT still works: the intent whose orgs are all theirs is visible.
+      expect(await visibleIntentIds(ctx, [intents.ownBoth.id])).toEqual([intents.ownBoth.id]);
+
+      const pair = await devicePair({ orgId: s.orgA.id, siteId: s.siteA.id }, { orgId: s.orgA.id, siteId: s.siteA.id });
+      const inserted = await cause(() => withDbAccessContext(ctx, () => db.insert(deviceReattachIntents)
+        .values(intentValues({ partnerId: s.partner.id, ...pair, sourceOrgId: s.orgA.id, targetOrgId: s.orgA.id }))));
+      expect(inserted?.code).toBe('42501');
+      expect(inserted?.message).toMatch(/row-level security policy "device_reattach_intents_system_insert"/);
+
+      // Planting a staged set on a visible intent matches no row.
+      const updated = await withDbAccessContext(ctx, () => db.update(deviceReattachIntents)
+        .set({ state: 'cancelled', cancelReason: 'admin' })
+        .where(eq(deviceReattachIntents.id, intents.ownBoth.id))
+        .returning({ id: deviceReattachIntents.id }));
+      expect(updated).toEqual([]);
+      const deleted = await withDbAccessContext(ctx, () => db.delete(deviceReattachIntents)
+        .where(eq(deviceReattachIntents.id, intents.ownBoth.id))
+        .returning({ id: deviceReattachIntents.id }));
+      expect(deleted).toEqual([]);
+    }
+    const [still] = await getTestDb().select({ state: deviceReattachIntents.state }).from(deviceReattachIntents)
+      .where(eq(deviceReattachIntents.id, intents.ownBoth.id));
+    expect(still?.state).toBe('requested');
+
+    // System scope writes all three.
+    const updated = await withSystemDbAccessContext(() => db.update(deviceReattachIntents)
+      .set({ state: 'cancelled', cancelReason: 'admin' })
+      .where(eq(deviceReattachIntents.id, intents.ownBoth.id))
       .returning({ id: deviceReattachIntents.id }));
-    expect(rows).toHaveLength(1);
+    expect(updated).toEqual([{ id: intents.ownBoth.id }]);
+    const deleted = await withSystemDbAccessContext(() => db.delete(deviceReattachIntents)
+      .where(eq(deviceReattachIntents.id, intents.ownBoth.id))
+      .returning({ id: deviceReattachIntents.id }));
+    expect(deleted).toEqual([{ id: intents.ownBoth.id }]);
   });
 
   it('(4) refuses a cross-partner row: another partner\'s id (42501), and orgs of another partner even in system scope (23514)', async () => {
