@@ -158,10 +158,34 @@ func (h *Heartbeat) rebindInProgress() bool {
 }
 
 // rebindOwnsIdentity reports whether the identity on disk is the reattached
-// one. Every SaveTo(h.config) path checks it under h.mu: h.config still holds
-// the source's agent id, device id and certificate, and SaveTo writes those.
+// one. From then on h.config is the retired source's: its agent id, device id
+// and certificate. Every SaveTo(h.config) goes through saveConfigLocked,
+// which checks this.
 func (h *Heartbeat) rebindOwnsIdentity() bool {
 	return h != nil && h.rebind.swapped.Load()
+}
+
+// errRebindOwnsIdentity is saveConfigLocked's refusal: the reattached identity
+// is on disk, so this process's config must not be written over it.
+var errRebindOwnsIdentity = errors.New("the reattached identity owns the config file; this process's config is the retired source's")
+
+// saveConfigLocked persists h.config with config.SaveTo unless a reattach has
+// swapped the identity on disk. SaveTo writes mtls_* from h.config, so an mTLS
+// renewal still in flight across the swap would otherwise write the source's
+// certificate over the target's. The caller holds h.mu: rebindSwap sets the
+// flag under h.mu, so this check and the write cannot interleave with it. On
+// errRebindOwnsIdentity the caller restores what it changed, logs (no
+// secrets) and stops: no retry, the process is restarting into the target.
+func (h *Heartbeat) saveConfigLocked() error {
+	if h.rebindOwnsIdentity() {
+		return errRebindOwnsIdentity
+	}
+	return config.SaveTo(h.config, config.ActiveConfigFile())
+}
+
+// logSkippedStaleSave logs a save saveConfigLocked refused.
+func logSkippedStaleSave(what string) {
+	log.Info("skipped a config save: this install was reattached and is restarting into the new identity", "save", what)
 }
 
 func newRebindSecret(prefix string) (string, error) {

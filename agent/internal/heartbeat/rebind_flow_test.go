@@ -605,11 +605,11 @@ func TestRebindProbesAsTheTargetWhenTheSourceIsRefused(t *testing.T) {
 	r.assertSwapped(set)
 }
 
-// #8318 review fix 12: after the swap, the old process's SaveTo(h.config)
-// (its mTLS paths; h.config still holds the source's ids) cannot write the
-// source's agent or device id back: SaveTo keeps them from disk while
-// agent.yaml records a reattach. A certificate such a save writes back is a
-// revert the next start re-applies (the staged set is still on disk).
+// #8318 review fix 12 + maintainer review: after the swap, the old process's
+// SaveTo(h.config) paths (its mTLS renewal; h.config still holds the source's
+// ids and certificate) write nothing: saveConfigLocked refuses them, so an
+// in-flight renewal cannot write the source's certificate over the target's,
+// and none of them arms a retry.
 func TestRebindStaleConfigSavesCannotRevertTheSwap(t *testing.T) {
 	r := newRebindHarness(t)
 	r.drive(r.directive(rebindGoldenIntent))
@@ -618,21 +618,35 @@ func TestRebindStaleConfigSavesCannotRevertTheSwap(t *testing.T) {
 	if r.h.config.AgentID != rebindGoldenSource {
 		t.Fatal("the test needs the old process's stale config")
 	}
+	before := r.onDisk()
 
+	cert := newRebindTestCert(t, "source-renewed")
 	r.h.config.PendingMTLSCertificate, r.h.config.PendingMTLSPrivateKey = "P", "K"
 	r.h.clearPendingMTLSCert()
-	cert := newRebindTestCert(t, "source-renewed")
 	r.h.promoteLegacyCertImmediately(&api.MtlsCertData{Certificate: cert.Certificate, PrivateKey: cert.PrivateKey, ExpiresAt: cert.ExpiresAt})
+	r.h.stagePendingMTLSCert(&api.RenewCertV2Response{
+		ProtocolVersion: 2, CertificateID: "cert-source-renewed",
+		ActivationExpiresAt: time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
+		Mtls:                &api.MtlsCertData{Certificate: cert.Certificate, PrivateKey: cert.PrivateKey, ExpiresAt: cert.ExpiresAt},
+	})
+	r.h.promotePendingMTLSCert(cert.Certificate, cert.PrivateKey)
 
 	after := r.onDisk()
-	if after.AgentID != rebindTestStagedAgentID || after.DeviceID != rebindGoldenDevice {
-		t.Fatalf("a stale SaveTo wrote the source identity back: %s/%s", after.AgentID, after.DeviceID)
+	if after.MtlsCertPEM == cert.Certificate || after.PendingMTLSCertificate == cert.Certificate {
+		t.Fatal("a stale save wrote the source's renewed certificate over the target's")
 	}
-	if after.MtlsCertPEM != cert.Certificate {
-		t.Fatal("the test expected the stale save to write its certificate")
+	if after.MtlsCertPEM != before.MtlsCertPEM || after.PendingMTLSCertificateID != before.PendingMTLSCertificateID {
+		t.Fatal("a stale save changed the mTLS state on disk")
 	}
-	if !r.startProcess() {
-		t.Fatal("start-up did not re-apply the reverted certificate")
+	if r.h.pendingMTLSCertOnDisk.Load() {
+		t.Fatal("a refused stale save armed a renewal retry")
+	}
+	if r.h.config.MtlsCertPEM == cert.Certificate {
+		t.Fatal("a refused save left the unsaved certificate in memory")
+	}
+	r.assertSwapped(set)
+	if r.startProcess() {
+		t.Fatal("start-up had to re-apply the swap: a stale save reverted it")
 	}
 	r.assertSwapped(set)
 }

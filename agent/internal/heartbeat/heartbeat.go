@@ -6346,18 +6346,25 @@ func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	prevCertPEM, prevKeyPEM, prevExpires := h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires
 	h.config.MtlsCertPEM = m.Certificate
 	h.config.MtlsKeyPEM = m.PrivateKey
 	h.config.MtlsCertExpires = m.ExpiresAt
 	h.config.AuthToken = token
-	err = config.SaveTo(h.config, config.ActiveConfigFile())
+	err = h.saveConfigLocked()
 	h.config.AuthToken = ""
-	if err != nil {
+	if errors.Is(err, errRebindOwnsIdentity) {
+		h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires = prevCertPEM, prevKeyPEM, prevExpires
+	} else if err != nil {
 		// Clear expires so the next heartbeat re-triggers renewal.
 		h.config.MtlsCertExpires = ""
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a renewed mTLS certificate (legacy server)")
+		return
+	}
 	if err != nil {
 		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
 		return
@@ -6393,7 +6400,7 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	h.config.PendingMTLSCertificateID = renewResp.CertificateID
 	h.config.PendingMTLSExpiresAt = activationExpiresAt
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.PendingMTLSCertificate = ""
@@ -6403,6 +6410,10 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a pending mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		log.Error("mTLS renewal aborted — pending certificate could not be durably persisted; continuing on the existing certificate",
 			"error", saveErr.Error())
@@ -6608,7 +6619,7 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.MtlsCertPEM = prevCertPEM
@@ -6621,6 +6632,10 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a confirmed mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		// The server has ALREADY confirmed/promoted this certificate — only
 		// our local disk write failed. Both in-memory and on-disk state have
@@ -6664,7 +6679,7 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	err := config.SaveTo(h.config, config.ActiveConfigFile())
+	err := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if err != nil {
 		h.config.PendingMTLSCertificate = prevPendingCert
@@ -6674,6 +6689,10 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a discarded pending mTLS certificate")
+		return
+	}
 	if err != nil {
 		log.Error("failed to clear expired pending mTLS certificate from disk; will retry on the next tick", "error", err.Error())
 		h.pendingMTLSCertOnDisk.Store(true)
