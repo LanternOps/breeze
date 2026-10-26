@@ -204,7 +204,8 @@ flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('p
 // Caller context: RLS (the conditional connection_health_incidents policy)
 // shows an org token only its org's rows, never a partner-level one. A flow
 // the caller cannot see is a 404; a site-limited or device-bound caller gets
-// the rows without the envelope values (the run-body read ceiling).
+// the rows without the sender-supplied identifiers (delivery id, resolver
+// value): the run-body read ceiling.
 const deliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
   before: z.string().datetime({ offset: true }).optional(),

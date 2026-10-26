@@ -73,7 +73,7 @@ describe('flow webhook delivery log', () => {
     expect(h.calls[1]!.ops.find((o) => o.op === 'limit')!.args[0]).toBe(100);
   });
 
-  describe('read ceiling: the run-body rule (runBodiesRestricted) applies to the envelope values', () => {
+  describe('read ceiling: the run-body rule (runBodiesRestricted) applies to the sender-supplied identifiers', () => {
     const ROW = {
       id: 'd2', receivedAt: new Date('2027-03-02T09:00:00Z'), lastAttemptAt: new Date('2027-03-02T09:00:30Z'), status: 'accepted',
       refusalCode: null, orgId: ORG, runId: 'r2', deliveryId: 'evt_secret_42', authMode: 'hmac', bodyBytes: 321, attempts: 1,
@@ -93,7 +93,7 @@ describe('flow webhook delivery log', () => {
       expect(await list({ scope: 'organization', orgId: ORG })).toEqual([FULL]);
     });
 
-    it('a partner or system reader (no ceiling can apply) gets the full row', async () => {
+    it('a partner or system reader (neither carries a site ceiling or allowedDeviceIds) gets the full row', async () => {
       expect(await list({ scope: 'partner', partnerId: PARTNER })).toEqual([FULL]);
       expect(await list({ scope: 'system' })).toEqual([FULL]);
     });

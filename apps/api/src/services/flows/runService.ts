@@ -605,6 +605,7 @@ export async function cancelFlowRun(auth: AuthContext, runId: string): Promise<C
 
 // ── reads ──────────────────────────────────────────────────────────────────
 
+// ── run-body redaction (getFlowRun, getFlowRunStep) ──
 // Run BODIES (trigger payload, inputs, rendered step inputs and outputs) are
 // hidden from a site-limited or device-bound caller: `runBodiesRestricted`
 // (./runBodyAccess, shared with the webhook delivery log). The shared DTO has
@@ -612,6 +613,7 @@ export async function cancelFlowRun(auth: AuthContext, runId: string): Promise<C
 // semantics: run `triggerPayload` / `inputs` are null, each step reports
 // `bodiesPruned: true` and carries no `output`, and the step-body read is not
 // found. Site-limited users cannot START a run either (startManualRun).
+// ──
 
 const iso = (d: Date | string | null | undefined): string | null => (d == null ? null : new Date(d).toISOString());
 

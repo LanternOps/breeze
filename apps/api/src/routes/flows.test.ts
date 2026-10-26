@@ -438,7 +438,7 @@ describe('flows routes', () => {
 
   // The real listWebhookDeliveries over the fake SQL boundary above: the
   // run-body read ceiling (runBodiesRestricted) is applied to the delivery
-  // log's envelope values. The RLS reach itself (which rows and flows a token
+  // log's sender-supplied identifiers (delivery id, resolver value). The RLS reach itself (which rows and flows a token
   // can see) is proven on real Postgres in flowWebhooksRls.integration.test.ts;
   // here an empty flows read stands in for "RLS hides this flow".
   describe('W05 webhook deliveries read ceiling (#5220) through the real service', () => {
@@ -491,7 +491,7 @@ describe('flows routes', () => {
       expect(await res.json()).toEqual({ deliveries: [REDACTED] });
     });
 
-    it('a cross-org caller (the flow is not visible in its context) gets 404 and the delivery log is never read', async () => {
+    it('a flow hidden from the caller (an empty visibility read, as RLS gives another org) gets 404 and the delivery log is never read', async () => {
       setAuth({ scope: 'organization', orgId: '12121212-1212-4121-8121-121212121212', principal: { kind: 'user_session' } } as never);
       dbh.results.push([], [ROW]);
       const res = await list();

@@ -206,7 +206,7 @@ describe('flow_webhook_deliveries RLS + constraints (real Postgres)', () => {
     expect(await visibleDeliveryIds(partnerContext(other.partnerId, [other.orgA]), all)).toEqual([]);
   });
 
-  runDb('listWebhookDeliveries (#5220 read ceiling): another org\'s flow is null; a site-limited or device-bound reader gets its rows without the envelope values', async () => {
+  runDb('listWebhookDeliveries (#5220 read ceiling): another org\'s flow is null; a site-limited or device-bound reader gets its rows without the delivery id and resolver value', async () => {
     const t = await tenant();
     const flowA = await seedFlow(t, 'org', t.orgA);
     const pw = await seedFlow(t, 'partner');
@@ -227,7 +227,7 @@ describe('flow_webhook_deliveries RLS + constraints (real Postgres)', () => {
     // Org B CAN see the partner-wide flow (SELECT branch) but none of org A's rows on it.
     expect(await asOrg(t.orgB, () => listWebhookDeliveries(authB, pw.flowId))).toEqual([]);
 
-    // Site-limited and device-bound readers of org A: the row, minus the envelope values.
+    // Site-limited and device-bound readers of org A: the row, minus the delivery id and resolver value.
     for (const restricted of [
       { ...authA, allowedSiteIds: [randomUUID()] },
       { ...authA, allowedSiteIds: [] },

@@ -3,7 +3,8 @@
  * log: writes for the ingress (system context, explicit predicates) and the
  * read for `GET /api/v1/flows/:id/webhook-deliveries` (CALLER context: RLS —
  * the conditional connection_health_incidents policy — is the reach, so an
- * org token sees only its org's rows and never a partner-level one).
+ * org token sees only its org's rows and never a partner-level one; a
+ * site-limited or device-bound reader also gets the run-body read ceiling).
  *
  * Rows never carry a body: only its sha256 and size. Accepted rows are
  * unique per (flow, signature digest) and per (flow, delivery id) — the
@@ -165,12 +166,14 @@ export async function markWebhookAuthFailure(flowId: string, reason: FlowWebhook
  * received_at. Null when the flow itself is not visible to the caller (the
  * route's 404), so another org's flow id reads like an unknown one.
  *
- * Read ceiling: the run-body rule (`runBodiesRestricted`). The sender's
- * delivery id and the resolver value are envelope values — the same ones the
- * run's `triggerPayload` carries, which a site-limited or device-bound caller
- * gets as null — so that caller gets them as null here too. Status, refusal
- * code, timestamps, run id, auth mode, size and attempts stay: the ledger's
- * shape, as the run summaries keep it.
+ * Read ceiling: the run-body rule (`runBodiesRestricted`). The delivery id and
+ * the resolver value are sender-supplied identifiers from the request: the
+ * delivery id is kept in the run's `triggerPayload.webhook`, and the resolver
+ * value is read out of the request body, which `triggerPayload.body` holds.
+ * A site-limited or device-bound caller never sees run bodies, so it gets
+ * both as null here too (refused and unresolved rows, which have no run,
+ * included). Status, refusal code, received-at time, org id, run id, auth
+ * mode, size and attempts stay: the ledger's shape, as the run summaries keep it.
  */
 export async function listWebhookDeliveries(
   auth: AuthContext,
