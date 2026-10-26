@@ -37,10 +37,13 @@ export default function WispRailStrip({
   rail: ReactNode;
 }) {
   const { t } = useTranslation('ai');
-  const [open, setOpen] = useState(railHash);
+  // Closed on the first render (the server never sees the hash, #2421); the
+  // effect adopts a rail hash on mount and on every later hash change.
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     const onHash = () => { if (railHash()) setOpen(true); };
+    onHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);

@@ -24,7 +24,7 @@ export default function WispBriefPost({
         {stale && (
           <span
             data-testid="wisp-brief-stale"
-            className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+            className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
           >
             {t('wisp.home.briefStale')}
           </span>
