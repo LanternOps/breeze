@@ -25,9 +25,10 @@
     "aiAgentsFixMemory": "Memoria de correcciones",
     "flows": "Flujos",
     "flowDetail": "Flujo",
+    "flowRun": "Ejecución de flujo",
     "aiAgentsRunsDetail": "Detalle de ejecución",
     "aiAgentsRuns": "Ejecuciones de agentes",
-    "aiForOffice": "AI para Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Motor de riesgo de IA",
     "alertsDelivery": "Alertas – Entrega",
     "alertsCorrelations": "Correlaciones de alertas",
@@ -72,7 +73,7 @@
     "dnsSecurity": "DNS Seguridad",
     "dr": "Recuperación ante desastres",
     "extensionsNamePath": "Extensión",
-    "fleet": "Orquestación de flota",
+    "fleet": "Hallazgos",
     "forgotPassword": "Olvidé mi contraseña",
     "incidentsDetail": "Detalle del incidente",
     "incidents": "Incidentes de seguridad",
@@ -186,7 +187,10 @@
     "settingsWispMemory": "Memoria de Wisp",
     "wispThread": "Hilo de Wisp",
     "wisp": "Wisp",
-    "wispChat": "Wisp — conversaciones"
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tareas de IA",
+    "aiTask": "Tarea de IA",
+    "settingsAi": "Configuración de IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -240,7 +244,7 @@
       },
       "connectedApps": {
         "title": "Aplicaciones conectadas",
-        "description": "Revisa y revoca asistentes de IA y clientes MCP autorizados a acceder a tu organización."
+        "description": "Revisa y revoca los clientes de IA autorizados para acceder a tu tenant."
       },
       "officeAddinBindings": {
         "title": "Vínculos del complemento de Outlook",
@@ -299,7 +303,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Aplicaciones conectadas",
-    "description": "Asistentes de IA y otros clientes MCP autorizados a acceder a tu organización mediante OAuth. Revoca el acceso en cualquier momento — el token de la aplicación será rechazado en un plazo de 10 minutos."
+    "description": "Clientes de IA que han sido autorizados para acceder a tu tenant mediante OAuth. Revoca el acceso en cualquier momento: el token de la aplicación será rechazado en un plazo de 10 minutos."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Configuración de la organización",

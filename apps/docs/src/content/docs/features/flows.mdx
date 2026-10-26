@@ -1,0 +1,125 @@
+---
+title: Flows
+description: Build multi-step workflows that run on a schedule, on a platform event, or on demand, with approvals for sensitive steps and clear limits on what they can do.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+A flow is a saved, multi-step workflow. Each step runs one Breeze tool (for example, running a script on a device), and steps can wait, set values, or repeat over a list of items. A flow runs under its own automation identity rather than a person's login, so enabling a flow is a delegation decision.
+
+<Aside type="note">
+Flows are off by default. An administrator of your Breeze deployment turns them on with `FLOWS_ENABLED=true`.
+</Aside>
+
+## Enabling a flow and what it delegates
+
+A flow is a draft until someone enables it. Enabling publishes an immutable version of the flow and makes you its **delegator**: the flow acts with authority you are lending it.
+
+To enable a flow you must:
+
+- Hold the permission for **every step** in the flow. If any step needs a permission you lack, enabling is refused.
+- Have unrestricted access in the flow's scope. A user limited to specific sites cannot enable a flow, because a flow acts across the whole organization. For a partner-wide flow you need access to all organizations of the partner, with no site restriction.
+
+A flow that is enabled cannot be edited. Edit it while it is a draft, paused, or disabled, then enable it again to publish a new version.
+
+**The delegator must stay valid.** If the delegator is deactivated, deleted, removed from the flow's scope, or loses access below the requirements above, the flow pauses. This also applies to runs that are already waiting for an approval. An administrator can re-enable the flow under a new delegator.
+
+## Pre-approving a step
+
+By default, any step that Breeze classifies as sensitive (Tier 3) stops the run and waits in the Approvals inbox. At enable time you can pre-approve certain steps so scheduled and event-driven runs do not wait for a person.
+
+A step can be pre-approved only when it is a **Run script** step and all of these hold:
+
+- The script is chosen directly (not looked up from a variable) and its parameters are fixed values.
+- It targets exactly one device.
+- The script's approval scope is supervised (not four-eyes).
+- The script uses no tenant variables.
+- The step is not inside a for-each loop.
+
+The pre-approval is **bound to the script's content**. If the script is edited after you enable the flow, the next run detects the change, the flow pauses with the reason `binding_drift`, and you must review and enable it again.
+
+**Runs started by an AI never use pre-approvals.** When someone starts a flow from Breeze AI with `run_flow`, or a run is started with an API key, every sensitive step waits for a human approval. A manual run started from the web interface honors pre-approvals only when the person starting it could run every step themselves (and, for a partner-wide flow, has access to all of the partner's organizations).
+
+**Who can start a run.** Starting a run uses the flow's delegation, which is organization-wide, so Breeze refuses to start a run for anyone limited to specific sites. This includes a person whose membership is site-limited, a token with a site ceiling, and an API key whose creator is site-limited. The start is rejected with `delegation_scope_restricted`; it does not start without pre-approvals. A run started with an API key is also clamped to the key's scopes: the key must be allowed to do everything the flow's steps do.
+
+Enabling, disabling, starting and cancelling a flow all require a session that has completed multi-factor authentication. Without it the request is refused with `MFA_REQUIRED`.
+
+<Aside type="caution">
+Event flows react to platform events whatever caused them. An alert resolved by an AI action, for example, can trigger an event flow that has a pre-approved script. The script and its parameters are fixed, so the event can only choose which single device in the organization it runs on. Enable event flows with that in mind.
+</Aside>
+
+## Approvals
+
+Sensitive steps that are not pre-approved park the run in **awaiting approval** and appear in the Approvals inbox. The card shows the flow name and the step, for example "Flow Disk cleanup" and "Step cleanup: run_script".
+
+- Supervised steps can be approved by an eligible approver, including the flow's delegator.
+- Four-eyes steps exclude the delegator and, for manual runs, the person who started the run. If the only eligible approver is one of those people, the run fails with `no_eligible_approvers` instead of approving itself.
+- Approvals expire after `FLOW_APPROVAL_TTL_HOURS` (default 24 hours).
+
+## Triggers
+
+| Trigger | Behavior |
+|---|---|
+| Manual | Start from the flow page, or from Breeze AI with `run_flow`. |
+| Schedule | Runs at each scheduled time. If runs were missed (for example during an outage), only the latest occurrence runs; there is no backfill. |
+| Event | Runs when a matching platform event occurs. |
+
+### Event trigger prerequisites
+
+Event flows need durable event delivery. Your deployment must set:
+
+- `EVENT_DISPATCH_MODE=enforce`
+- `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` including `flow-event-trigger`
+
+Without both, enabling an event flow is refused, and event flows that are already enabled are paused when the deployment stops delivering events durably. Event delivery is at-least-once after publication, but an event that fails to be queued at the moment it is published is dropped before any flow sees it.
+
+Flows that are triggered by other flows are limited to a chain depth of 3 to prevent loops.
+
+## Run statuses
+
+| Status | Meaning |
+|---|---|
+| Queued | Waiting for a free slot. |
+| Running | Executing steps. |
+| Waiting | Parked on a wait step; it resumes by itself. |
+| Awaiting approval | Parked on a sensitive step until someone decides. |
+| Completed / Failed / Cancelled | Finished. |
+| Expired | An approval the run was waiting on expired before anyone decided. |
+
+A step can also end **unknown outcome**: a step that changes things timed out or lost its executor, so Breeze cannot tell whether it took effect. The run fails; check the target before re-running.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Steps per flow | 50 |
+| For-each items | 500, processed one at a time |
+| Active time per run | 1 hour (time spent waiting or awaiting approval does not count) |
+| Active runs per owner | 1,000 |
+| Running runs per owner | 20 by default (`FLOW_MAX_RUNNING_PER_OWNER`) |
+| Running runs per flow per organization | 1 |
+| Flow-triggers-flow chain depth | 3 |
+| Run detail retention | Inputs, outputs and payloads are cleared after 90 days by default (`FLOW_RUN_RETENTION_DAYS`); the run record and step history remain |
+
+## Using flows from Breeze AI
+
+Four AI tools work with flows:
+
+- `run_flow` starts a flow. It always requires a human approval tap, and it is not available to MCP clients.
+- `list_flow_runs` and `get_flow_run` read run history and the step ledger.
+- `cancel_flow_run` cancels an active run. People using Breeze AI can call it directly; autonomous AI agents cannot use it.
+
+There is no AI tool for enabling a flow. Enabling is the delegation decision and stays a person's action in the web interface.
+
+## Settings for administrators
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `FLOWS_ENABLED` | off | Turns the Flows feature on. |
+| `FLOW_APPROVAL_TTL_HOURS` | 24 | How long a parked step waits for approval. |
+| `FLOW_MAX_RUNNING_PER_OWNER` | 20 | Concurrent running runs per owner. |
+| `FLOW_RUN_RETENTION_DAYS` | 90 | Age at which run bodies are cleared. |
+| `FLOW_WEBHOOK_RATE_PER_MINUTE` | 120 | Inbound webhook deliveries accepted per flow per minute (1-6000); over it the request gets a 429. |
+| `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS` | 30 | Days a webhook delivery that was not accepted (refused, org unresolved, invalid body) is kept (1-365); accepted deliveries live as long as their run. |
+| `FLOW_FOREACH_MAX_PARALLEL` | 5 | Most for-each items one flow step runs at once (1-10); a step's own `forEach.concurrency` is capped by this. |
+| `EVENT_DISPATCH_MODE` / `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` | see above | Required for event triggers. |

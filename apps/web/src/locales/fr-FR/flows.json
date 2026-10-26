@@ -1,10 +1,9 @@
 {
   "title": "Flux",
   "subtitle": "Automatisations en plusieurs étapes qui enchaînent des outils.",
-  "previewNotice": "Les flux sont en lecture seule dans cette version. Rédigez-les dans le chat IA ; l’activation et les exécutions arriveront dans une version ultérieure.",
   "empty": {
     "title": "Aucun flux pour le moment",
-    "body": "Demandez à l’assistant IA de rédiger un flux, puis examinez-le ici."
+    "body": "Demandez à Breeze AI de rédiger un flux, puis examinez-le ici."
   },
   "list": {
     "name": "Nom",
@@ -19,7 +18,14 @@
     "draft": "Brouillon",
     "enabled": "Activé",
     "paused": "En pause",
-    "disabled": "Désactivé"
+    "disabled": "Désactivé",
+    "pausedReason": {
+      "drift": "En pause car le flux a changé après son activation.",
+      "binding_drift": "En pause car un script ou une cible préapprouvé a changé.",
+      "delegator_inactive": "En pause car la personne au nom de qui il s'exécute n'est plus active.",
+      "org_merged": "En pause car l'organisation a été fusionnée.",
+      "event_dispatch_not_durable": "En pause car la remise des événements n'est pas durable sur ce serveur."
+    }
   },
   "trigger": {
     "schedule": "Planification",
@@ -33,7 +39,7 @@
     "inputs": "Entrées",
     "steps": "Étapes",
     "version": "Version {{version}}",
-    "createdInChat": "Créé dans le chat IA"
+    "createdInChat": "Créé dans Breeze AI"
   },
   "step": {
     "tool": "Outil",
@@ -50,7 +56,8 @@
       "core": "Outil de base",
       "tenant": "Source d’outils",
       "builtin": "Intégré"
-    }
+    },
+    "preApprovedBadge": "Préapprouvé"
   },
   "issues": {
     "title": "Validation",
@@ -65,6 +72,202 @@
   },
   "errors": {
     "loadFailed": "Impossible de charger les flux.",
-    "notFound": "Flux introuvable."
+    "notFound": "Flux introuvable.",
+    "enableFailed": "Impossible d'activer le flux.",
+    "disableFailed": "Impossible de désactiver le flux.",
+    "runFailed": "Impossible de démarrer l'exécution.",
+    "cancelFailed": "Impossible d'annuler l'exécution."
+  },
+  "tabs": {
+    "overview": "Vue d'ensemble",
+    "runs": "Exécutions"
+  },
+  "actions": {
+    "enable": "Activer",
+    "disable": "Désactiver",
+    "runNow": "Exécuter maintenant",
+    "cancelRun": "Annuler l'exécution",
+    "cancel": "Annuler"
+  },
+  "enable": {
+    "title": "Activer le flux",
+    "body": "L'activation publie cette version du flux, qui s'exécute ensuite selon son déclencheur. Les étapes qui demandent une approbation continuent de la demander, sauf si vous les préapprouvez ci-dessous.",
+    "preApprove": "Préapprouver cette étape",
+    "preApproveHelp": "Les exécutions de cette version ignorent la demande d'approbation pour cette étape. La préapprobation couvre exactement le script et la cible affichés ici, et cesse de s'appliquer si le flux change.",
+    "notEligible": {
+      "not_tier3": "Seules les étapes qui demandent une approbation peuvent être préapprouvées.",
+      "tool_not_supported": "Cet outil ne peut pas être préapprouvé.",
+      "script_not_literal": "Le script est choisi à l'exécution, il ne peut donc pas être préapprouvé.",
+      "run_context_not_literal": "Le compte d'exécution est choisi à l'exécution, il ne peut donc pas être préapprouvé.",
+      "group_target": "Cette étape cible un groupe d'appareils, dont la composition peut changer. La préapprobation exige des appareils fixes.",
+      "variable_dependent": "Cette étape dépend de valeurs qui ne sont connues qu'à l'exécution.",
+      "script_not_found": "Le script utilisé par cette étape est introuvable.",
+      "four_eyes": "Cette action exige toujours l'approbation d'une seconde personne.",
+      "tenant_tool": "Les sources d'outils personnalisées ne peuvent pas être préapprouvées."
+    },
+    "eventScope": "Les flux par événement réagissent aux événements de la plateforme, quelle qu'en soit la cause : actions de personnes, d'autres flux ou d'automatisations. Vérifiez le filtre du déclencheur avant d'activer.",
+    "missingPermissions": "Il vous manque des autorisations dont les étapes de ce flux ont besoin :",
+    "eventNotDurable": "La remise des événements n'est pas durable sur ce serveur : les flux par événement ne peuvent pas être activés pour le moment.",
+    "forEachConcurrency": "Les étapes répétées pour chaque élément traitent un élément à la fois.",
+    "confirm": "Activer le flux",
+    "tier3Heading": "Étapes qui nécessitent une approbation",
+    "noTier3": "Aucune étape de ce flux ne nécessite d’approbation.",
+    "validationFailed": "Le flux contient des erreurs de validation. Corrigez-les avant de l’activer :",
+    "versionConflict": "Le flux a changé depuis l’ouverture de cette page. Rechargez-la et vérifiez les modifications avant de l’activer.",
+    "alreadyEnabled": "Ce flux est déjà activé.",
+    "preApprovalNotEligible": "L’étape {{stepId}} ne peut pas être préapprouvée. {{reason}}",
+    "foreachConcurrencyNotAvailable": "Ce flux répète une étape pour chaque élément en parallèle, ce que ce serveur ne prend pas encore en charge.",
+    "delegationScopeRestricted": "Votre accès est limité à certains sites, vous ne pouvez donc pas activer un flux qui s’exécute dans toute l’organisation.",
+    "partnerWideForbidden": "Vous n’avez pas l’autorisation d’activer des flux pour toutes les organisations.",
+    "interactiveRequired": "Les flux ne peuvent être activés que depuis une session de navigateur ouverte.",
+    "slugUnavailable": "Un autre flux de cette portée utilise déjà cet identifiant.",
+    "generic": "Impossible d’activer le flux."
+  },
+  "run": {
+    "title": "Exécuter le flux",
+    "org": "Organisation",
+    "inputs": "Entrées",
+    "submit": "Démarrer l'exécution",
+    "queueFull": "Ce flux a trop d'exécutions en attente. Réessayez quand certaines seront terminées.",
+    "permissionMissing": "Vous n'avez pas l'autorisation d'exécuter les étapes de ce flux : {{permissions}}",
+    "preApprovalsNotHonored": "Cette exécution a été lancée par une personne sans droit d'approbation : les préapprobations n'ont pas été appliquées et chaque étape demande une approbation.",
+    "selectOrg": "Sélectionnez une organisation",
+    "orgRequired": "Choisissez l’organisation dans laquelle exécuter ce flux.",
+    "requiredInput": "{{name}} est obligatoire.",
+    "invalidNumber": "{{name}} doit être un nombre.",
+    "invalidUuid": "{{name}} doit être un identifiant valide.",
+    "inputsInvalid": "Certaines entrées ne sont pas valides :",
+    "notEnabled": "Ce flux n’est pas activé et ne peut donc pas être exécuté.",
+    "delegationScopeRestricted": "Votre accès est limité à certains sites ; vous ne pouvez donc pas exécuter un flux qui s’applique à toute l’organisation.",
+    "interactiveUserRequired": "Seule une personne connectée peut lancer une exécution manuelle. Connectez-vous à l’application web et réessayez.",
+    "orgForbidden": "Vous n’avez pas accès à cette organisation.",
+    "notManual": "Ce flux ne s’exécute pas manuellement. Il démarre à partir de son déclencheur."
+  },
+  "runs": {
+    "empty": "Aucune exécution pour l'instant.",
+    "status": {
+      "queued": "En file d'attente",
+      "running": "En cours",
+      "waiting": "En attente",
+      "awaiting_approval": "En attente d'approbation",
+      "completed": "Terminée",
+      "failed": "Échouée",
+      "cancelled": "Annulée",
+      "expired": "Expirée"
+    },
+    "trigger": {
+      "manual": "Manuel",
+      "schedule": "Planification",
+      "event": "Événement",
+      "webhook": "Appel de webhook",
+      "tool": "Appel d'outil"
+    },
+    "via": {
+      "ui": "Depuis l'application web",
+      "api": "Depuis l'API",
+      "ai_tool": "Depuis Breeze AI",
+      "scheduler": "Par le planificateur",
+      "event": "Par un événement",
+      "webhook": "Par webhook",
+      "mcp": "Par MCP",
+      "ai_agent": "Par un agent IA"
+    },
+    "columns": {
+      "started": "Début",
+      "status": "Statut",
+      "trigger": "Déclencheur",
+      "duration": "Durée",
+      "org": "Organisation"
+    },
+    "filter": {
+      "label": "Statut",
+      "all": "Tous les statuts"
+    },
+    "loadFailed": "Impossible de charger les exécutions."
+  },
+  "runDetail": {
+    "title": "Exécution du flux",
+    "back": "Retour aux exécutions",
+    "awaitingApproval": "Cette exécution est suspendue jusqu'à ce que quelqu'un approuve une étape.",
+    "openApprovals": "Ouvrir les approbations",
+    "error": {
+      "step_failed": "Une étape a échoué.",
+      "rejected": "Un approbateur a rejeté une étape.",
+      "drift": "Le flux a changé après son activation, l'exécution a donc été arrêtée.",
+      "binding_drift": "Un script ou une cible préapprouvé a changé, l'exécution a donc été arrêtée.",
+      "unknown_outcome": "Le résultat d'une étape est inconnu. L'étape a peut-être été exécutée. Vérifiez l'appareil à la main avant de relancer le flux.",
+      "step_timeout": "Une étape a pris trop de temps et a été arrêtée.",
+      "input_invalid": "Une étape a reçu une entrée inutilisable.",
+      "reference_not_owned": "Une étape a fait référence à un élément appartenant à une autre organisation.",
+      "tool_unavailable": "Un outil utilisé par ce flux n'est plus disponible.",
+      "tool_blocked": "Un outil utilisé par ce flux est bloqué.",
+      "too_many_items": "Une étape aurait répété plus d'éléments que la limite autorisée.",
+      "render_failed": "L'entrée d'une étape n'a pas pu être construite à partir des résultats précédents.",
+      "no_eligible_approvers": "Personne ne peut approuver une étape qui demande une approbation.",
+      "worker_lost": "L'exécution a été interrompue et n'a pas pu continuer.",
+      "cancelled": "L'exécution a été annulée.",
+      "run_timeout": "L'exécution a dépassé la limite d'une heure et a été arrêtée.",
+      "flow_disabled": "Le flux a été désactivé pendant que cette exécution était active.",
+      "flows_disabled": "Les flux sont désactivés sur ce serveur.",
+      "delegator_inactive": "La personne au nom de qui cette exécution agit n'est plus active.",
+      "org_merged": "L'organisation a été fusionnée avec une autre.",
+      "egress_blocked": "La requête sortante a été bloquée par la politique de sortie.",
+      "http_status": "L'API externe a répondu avec un statut d'erreur.",
+      "notify_failed": "La notification n'a pas pu être envoyée.",
+      "ai_budget_exhausted": "Le budget d'IA de l'organisation est épuisé.",
+      "ai_output_invalid": "Le résultat de l'IA ne correspondait pas au format attendu.",
+      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA."
+    },
+    "step": {
+      "status": {
+        "running": "En cours",
+        "awaiting_approval": "En attente d'approbation",
+        "completed": "Terminée",
+        "failed": "Échouée",
+        "skipped": "Ignorée",
+        "unknown_outcome": "Résultat inconnu, à vérifier à la main",
+        "cancelled": "Annulée"
+      },
+      "approval": {
+        "none": "Aucune approbation requise",
+        "intent": "Nécessite l'approbation d'une personne",
+        "pre_approved": "Préapprouvée"
+      },
+      "input": "Entrée",
+      "output": "Sortie",
+      "truncated": "La sortie a été raccourcie car elle était trop volumineuse.",
+      "notReached": "Non atteinte",
+      "pending": "En attente",
+      "item": "Élément {{index}}",
+      "approver": "Approbateur : {{id}}",
+      "attempt": "Tentative {{n}}",
+      "show": "Afficher les détails",
+      "hide": "Masquer les détails",
+      "loading": "Chargement...",
+      "loadFailed": "Impossible de charger les détails de l’étape.",
+      "pruned": "Les détails ont été supprimés par la politique de rétention.",
+      "redacted": "Les détails de l’étape ne sont pas disponibles avec votre niveau d’accès."
+    },
+    "notFound": "Exécution introuvable.",
+    "alreadyTerminal": "Cette exécution est déjà terminée.",
+    "loadFailed": "Impossible de charger cette exécution.",
+    "retry": "Réessayer",
+    "version": "Version {{version}}, publication n° {{seq}}",
+    "org": "Organisation : {{org}}",
+    "waitingUntil": "En attente jusqu’à {{time}}",
+    "queuedNote": "En file d’attente. En attente d’un emplacement d’exécution libre.",
+    "paused": "Mises à jour en direct suspendues.",
+    "lastUpdated": "Dernière mise à jour {{time}}",
+    "timeline": "Étapes"
+  },
+  "toast": {
+    "enabled": "Flux activé",
+    "disabled": "Flux désactivé",
+    "runStarted": "Exécution démarrée",
+    "runCancelled": "Exécution annulée"
+  },
+  "disable": {
+    "title": "Désactiver le flux",
+    "message": "La désactivation arrête les nouvelles exécutions et annule celles en cours. Vous pourrez réactiver le flux plus tard."
   }
 }

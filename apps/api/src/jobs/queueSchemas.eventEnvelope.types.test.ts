@@ -64,6 +64,35 @@ const schemaStart = queueSchemasSrc.indexOf(SCHEMA_START_MARKER);
 const schemaEnd = queueSchemasSrc.indexOf('}).strict();', schemaStart);
 const envelopeSchemaBlock = queueSchemasSrc.slice(schemaStart, schemaEnd);
 
+/**
+ * Tool catalog W04 (#5219): the same drift guard one level down —
+ * `BreezeEvent.metadata`'s inline shape ⟺ `breezeEventMetadataJobSchema`
+ * (also `.strict()`). A metadata key the publisher sets but the schema does
+ * not know (flowRunId / flowChainDepth, Decision 14) drops every such event
+ * at dequeue in 'enforce' mode.
+ */
+function metadataBlockOf(block: string): string {
+  const start = block.indexOf('metadata: {');
+  return start === -1 ? '' : block.slice(start + 'metadata: '.length, block.indexOf('}', start) + 1);
+}
+
+const METADATA_SCHEMA_START = 'const breezeEventMetadataJobSchema = z.object({';
+const metadataSchemaStart = queueSchemasSrc.indexOf(METADATA_SCHEMA_START);
+const metadataSchemaEnd = queueSchemasSrc.indexOf('}).strict();', metadataSchemaStart);
+const metadataSchemaBlock = queueSchemasSrc.slice(metadataSchemaStart + METADATA_SCHEMA_START.length - 1, metadataSchemaEnd + 1);
+
+describe('BreezeEvent.metadata keys ⟺ breezeEventMetadataJobSchema keys', () => {
+  it('both key sets are found, equal, and carry the flow ancestry keys', () => {
+    expect(metadataSchemaStart).toBeGreaterThan(-1);
+    const eventMetadataKeys = extractTopLevelKeys(metadataBlockOf(breezeEventBlock));
+    const schemaKeys = extractTopLevelKeys(metadataSchemaBlock);
+    expect(eventMetadataKeys.size).toBeGreaterThanOrEqual(4);
+    expect([...eventMetadataKeys].sort()).toEqual([...schemaKeys].sort());
+    expect(eventMetadataKeys.has('flowRunId')).toBe(true);
+    expect(eventMetadataKeys.has('flowChainDepth')).toBe(true);
+  });
+});
+
 describe('breezeEventEnvelopeSchema keys ⟺ BreezeEvent keys', () => {
   it('both blocks were actually found and parsed (guards the markers/regex themselves)', () => {
     // Without this, a rename of either symbol leaves both key sets empty and

@@ -42,16 +42,30 @@ vi.mock('../../db', () => {
   };
 });
 
-vi.mock('../flowValidator', () => ({ validateFlowDocument: vi.fn() }));
+vi.mock('../flowValidator', async (importOriginal) => {
+  const { flowPreApprovalBindingSchema, FlowStepPinError } = await importOriginal<typeof import('../flowValidator')>();
+  return { validateFlowDocument: vi.fn(), stepPinsFor: vi.fn(), flowPreApprovalBindingSchema, FlowStepPinError };
+});
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./preApproval', () => ({ assessPreApprovals: vi.fn() }));
 vi.mock('./owner', () => ({ resolveFlowOwnerForCaller: vi.fn() }));
 vi.mock('./repository', () => ({ takenFlowSlugs: vi.fn(), ownerForFlowRow: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
+vi.mock('./budgets', () => ({ readFlowUsage: vi.fn() }));
+vi.mock('./flowLimits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./flowLimits')>()),
+  resolveFlowLimits: vi.fn(),
+}));
 
-import { validateFlowDocument } from '../flowValidator';
+import { FlowStepPinError, stepPinsFor, validateFlowDocument } from '../flowValidator';
+import { captureException } from '../sentry';
+import { assessPreApprovals } from './preApproval';
 import { resolveFlowOwnerForCaller } from './owner';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 import { writeAuditEvent } from '../auditEvents';
-import { getFlow, saveDraftFlow } from './service';
+import { assertFlowSlugAvailable, getFlow, saveDraftFlow } from './service';
+import { readFlowUsage } from './budgets';
+import { computeFlowLimits, resolveFlowLimits } from './flowLimits';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -85,6 +99,20 @@ const partnerAuth = (orgAccess: 'all' | 'selected') =>
 
 const callsOf = (kind: string) => calls.filter((c) => c.kind === kind);
 
+/** The bound values (drizzle Param objects) inside a where clause — what a CAS predicate actually compares against. */
+function paramValues(v: unknown, seen = new WeakSet<object>(), out: unknown[] = []): unknown[] {
+  if (!v || typeof v !== 'object' || seen.has(v as object)) return out;
+  seen.add(v as object);
+  if ((v as { constructor?: { name?: string } }).constructor?.name === 'Param') {
+    out.push((v as { value: unknown }).value);
+    return out;
+  }
+  for (const child of Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)) paramValues(child, seen, out);
+  return out;
+}
+const whereValues = (rec: { ops: Array<{ op: string; args: unknown[] }> }) => paramValues(rec.ops.find((o) => o.op === 'where')!.args[0]).flat();
+
+
 beforeEach(() => {
   for (const q of Object.values(queues)) q.length = 0;
   calls.length = 0;
@@ -93,6 +121,8 @@ beforeEach(() => {
   vi.mocked(takenFlowSlugs).mockReset().mockResolvedValue(new Set());
   vi.mocked(ownerForFlowRow).mockReset().mockResolvedValue({ orgId: ORG, partnerId: PARTNER });
   vi.mocked(writeAuditEvent).mockReset();
+  vi.mocked(stepPinsFor).mockReset().mockResolvedValue([]);
+  vi.mocked(assessPreApprovals).mockReset().mockResolvedValue({ eligibility: {}, bindings: {} });
 });
 
 describe('saveDraftFlow — create', () => {
@@ -167,6 +197,19 @@ describe('saveDraftFlow — create', () => {
     expect(callsOf('insert')).toHaveLength(0);
   });
 
+  it('an audit write failure is captured with the flow tags and a bounded fingerprint', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queues.insert.push([row()]);
+    vi.mocked(writeAuditEvent).mockImplementationOnce(() => { throw new Error('audit down'); });
+    expect((await saveDraftFlow(auth(), { document: DOC })).saved).toBe(true);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error), undefined,
+      { org_id: ORG, flow_id: FLOW_ID, flow_site: 'service.draft_audit' },
+      { fingerprint: ['flow', 'service.draft_audit'] },
+    );
+    err.mockRestore();
+  });
+
   it('audit details never contain the definition', async () => {
     queues.insert.push([row()]);
     await saveDraftFlow(auth(), { document: DOC });
@@ -198,9 +241,25 @@ describe('saveDraftFlow — update', () => {
     expect(callsOf('update')).toHaveLength(0);
   });
 
-  it('non-draft ⇒ flow_not_draft', async () => {
-    queues.select.push([row({ status: 'enabled' })]);
+  it('enabled flow edit is flow_not_draft', async () => {
+    queues.select.push([row({ status: 'enabled', enabledPublicationSeq: 1 })]);
     expect(await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID })).toEqual({ saved: false, error: 'flow_not_draft' });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it.each(['disabled', 'paused'])('%s flow can be edited and keeps its status', async (status) => {
+    const extra = status === 'paused' ? { pausedReason: 'drift', enabledPublicationSeq: 2 } : {};
+    queues.select.push([row({ status, definitionVersion: 4, ...extra })]);
+    queues.update.push([row({ status, definitionVersion: 5, ...extra })]);
+    const r = await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 4 });
+    expect(r.saved).toBe(true);
+    if (r.saved) expect(r.flow.status).toBe(status);
+    const set = callsOf('update')[0]!.ops.find((o) => o.op === 'set')!.args[0] as Record<string, unknown>;
+    expect(set).not.toHaveProperty('status');
+    expect(set).not.toHaveProperty('enabledPublicationSeq');
+    expect(set).toHaveProperty('definitionVersion');
+    // The CAS pins the status it read, so a concurrent enable cannot be overwritten.
+    expect(whereValues(callsOf('update')[0]!)).toEqual([FLOW_ID, 4, status]);
   });
 
   it('stale expectedVersion ⇒ version_conflict', async () => {
@@ -230,6 +289,59 @@ describe('saveDraftFlow — update', () => {
   });
 });
 
+describe('getFlow — W5 webhook block and usage (#5220 A5)', () => {
+  const WEBHOOK_DOC = { ...DOC, trigger: { type: 'webhook', auth: 'token' } };
+  beforeEach(() => {
+    vi.stubEnv('PUBLIC_API_URL', 'https://api.example.com/');
+    vi.mocked(resolveFlowLimits).mockReset().mockResolvedValue(computeFlowLimits({ flows: { monthlyRunsPerFlow: 50 } }, {}));
+    vi.mocked(readFlowUsage).mockReset().mockResolvedValue({ flowRuns: 4, ownerRuns: 9 });
+    vi.mocked(validateFlowDocument).mockResolvedValue({ valid: false, effectiveTier: null, steps: [], issues: [] } as never);
+  });
+
+  it('a webhook flow carries its url, auth mode and fingerprint — never the ciphertext', async () => {
+    queues.select.push([row({
+      definition: WEBHOOK_DOC, webhookSecretEncrypted: 'enc:v3:k:SECRETCIPHER', webhookSecretFingerprint: 'fp1:k:abc',
+      webhookSecretRotatedAt: new Date('2027-03-01T10:00:00Z'), webhookLastAuthFailureAt: new Date('2027-03-02T10:00:00Z'),
+      webhookLastAuthFailureReason: 'bad_signature',
+    })]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.webhook).toEqual({
+      url: `https://api.example.com/api/v1/webhooks/flows/${FLOW_ID}`, authMode: 'token', secretFingerprint: 'fp1:k:abc',
+      secretRotatedAt: '2027-03-01T10:00:00.000Z', lastAuthFailureAt: '2027-03-02T10:00:00.000Z', lastAuthFailureReason: 'bad_signature',
+    });
+    expect(JSON.stringify(r)).not.toContain('SECRETCIPHER');
+  });
+
+  it('a non-webhook flow has no webhook block', async () => {
+    queues.select.push([row()]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.webhook).toBeNull();
+  });
+
+  it("usage reports this month's runs against the effective caps", async () => {
+    queues.select.push([row({ definition: { ...DOC, limits: { monthlyRuns: 20 } } })]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.usage).toMatchObject({ flowRuns: 4, flowCap: 20, ownerRuns: 9, ownerCap: 100_000 });
+    expect(r?.flow.usage?.periodKey).toMatch(/^\d{4}-\d{2}$/);
+  });
+
+  it('an org caller reading a partner-wide flow gets no usage (its counters are partner-private)', async () => {
+    queues.select.push([row({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(ownerForFlowRow).mockResolvedValueOnce({ orgId: null, partnerId: PARTNER });
+    expect((await getFlow(auth(), FLOW_ID))?.flow.usage).toBeNull();
+    expect(readFlowUsage).not.toHaveBeenCalled();
+    // A partner caller reads them.
+    queues.select.push([row({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(ownerForFlowRow).mockResolvedValueOnce({ orgId: null, partnerId: PARTNER });
+    expect((await getFlow(partnerAuth('all'), FLOW_ID))?.flow.usage).toMatchObject({ flowRuns: 4, ownerRuns: 9 });
+    expect(readFlowUsage).toHaveBeenCalledWith(FLOW_ID, { orgId: null, partnerId: PARTNER }, expect.any(Date));
+  });
+
+  it('the last admission refusal is reported for the banner', async () => {
+    queues.select.push([row({ lastAdmissionRefusalAt: new Date('2027-03-03T00:00:00Z'), lastAdmissionRefusalCode: 'flow_monthly_cap_reached' })]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.lastAdmissionRefusal).toEqual({ at: '2027-03-03T00:00:00.000Z', code: 'flow_monthly_cap_reached' });
+  });
+});
+
 describe('getFlow', () => {
   it('returns null for an invisible row', async () => {
     queues.select.push([]);
@@ -243,5 +355,72 @@ describe('getFlow', () => {
     const r = await getFlow(auth(), FLOW_ID);
     expect(r?.validation).toEqual(live);
     expect(r?.flow).toMatchObject({ id: FLOW_ID, ownerScope: 'organization', triggerType: 'manual', status: 'draft' });
+  });
+});
+
+describe('getFlow — pre-approval eligibility', () => {
+  const T3_DOC = { ...DOC, steps: [{ id: 'run', tool: 'run_script', input: { scriptId: FLOW_ID, deviceIds: ['{{trigger.device.id}}'] }, approval: 'default', onFailure: 'stop', timeoutSec: 300 }] };
+  const T3_VALID = { valid: true, effectiveTier: 3, steps: [{ id: 'run', tool: 'run_script', source: 'core', tier: 3, approval: 'default' }], issues: [], document: T3_DOC };
+  const PIN = { stepId: 'run', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' };
+
+  it('getFlow reports pre-approval eligibility per tier-3 step and the live publication bindings', async () => {
+    queues.select.push(
+      [row({ definition: T3_DOC, status: 'enabled', enabledPublicationSeq: 2, effectiveTier: 3 })],
+      [{ preApprovals: [{ stepId: 'run', lane: 'act_asset', assetKind: 'script', scriptId: FLOW_ID, contentDigest: 'a'.repeat(64) }] }],
+    );
+    vi.mocked(validateFlowDocument).mockResolvedValue(T3_VALID as never);
+    vi.mocked(stepPinsFor).mockResolvedValue([PIN] as never);
+    vi.mocked(assessPreApprovals).mockResolvedValue({ eligibility: { run: { eligible: true } }, bindings: {} } as never);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.preApprovalEligibility).toEqual({ run: { eligible: true } });
+    expect(r?.flow.preApprovedStepIds).toEqual(['run']);
+    expect(assessPreApprovals).toHaveBeenCalledWith(T3_DOC, [PIN], { orgId: ORG, partnerId: PARTNER });
+  });
+
+  it('a step that stopped resolving between the two catalog reads reports no eligibility', async () => {
+    queues.select.push([row({ definition: T3_DOC })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(T3_VALID as never);
+    vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.preApprovalEligibility).toEqual({});
+    expect(assessPreApprovals).not.toHaveBeenCalled();
+  });
+
+  it('a DB or catalog failure while pinning propagates (never read as "nothing eligible")', async () => {
+    queues.select.push([row({ definition: T3_DOC })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(T3_VALID as never);
+    vi.mocked(stepPinsFor).mockRejectedValue(new Error('connection terminated'));
+    await expect(getFlow(auth(), FLOW_ID)).rejects.toThrow('connection terminated');
+  });
+
+  it('an invalid document reports no eligibility (enable would refuse it anyway)', async () => {
+    queues.select.push([row()]);
+    vi.mocked(validateFlowDocument).mockResolvedValue({ valid: false, effectiveTier: null, steps: [], issues: [{ code: 'tool_not_found', severity: 'error', message: 'x' }] } as never);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.preApprovalEligibility).toEqual({});
+    expect(r?.flow.preApprovedStepIds).toEqual([]);
+    expect(assessPreApprovals).not.toHaveBeenCalled();
+  });
+
+  it('a stored binding that does not parse is not reported as pre-approved', async () => {
+    queues.select.push(
+      [row({ status: 'paused', pausedReason: 'drift', enabledPublicationSeq: 1 })],
+      [{ preApprovals: [{ stepId: 'run', lane: 'other' }] }],
+    );
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.preApprovedStepIds).toEqual([]);
+  });
+});
+
+describe('assertFlowSlugAvailable', () => {
+  it('the flow\'s own slug does not block it when excludeFlowId is passed', async () => {
+    vi.mocked(takenFlowSlugs).mockResolvedValue(new Set());
+    expect(await assertFlowSlugAvailable({ orgId: ORG, partnerId: PARTNER }, 'disk_cleanup', { excludeFlowId: FLOW_ID })).toBe(true);
+    expect(takenFlowSlugs).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER }, 'disk_cleanup', { excludeFlowId: FLOW_ID });
+  });
+
+  it('a taken slug is unavailable', async () => {
+    vi.mocked(takenFlowSlugs).mockResolvedValue(new Set(['disk_cleanup']));
+    expect(await assertFlowSlugAvailable({ orgId: ORG, partnerId: PARTNER }, 'disk_cleanup')).toBe(false);
   });
 });

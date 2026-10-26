@@ -5,8 +5,8 @@
  *  - `handler`: rows bound to the OLD install (work in flight, a grant, an
  *    authorization, a session, a secret, or install-specific cached state)
  *    that a boundary handler cancels, revokes, resets or clears. `handler`
- *    names it; `rebind_confirm` marks the one table wave 1b's confirm owns
- *    (credentials, §6.4 effect 2).
+ *    names it; `rebind_confirm` marks the tables wave 1b's confirm owns
+ *    (credentials, §6.4 effect 2, and the reattach intents themselves).
  *  - `configuration`: configuration or membership that survives and applies
  *    to the new install.
  *  - `history`: telemetry, inventory, evidence and finished records.
@@ -41,6 +41,8 @@ export const FK_LESS_DEVICE_REFERENCES: ReadonlyArray<{ table: string; column: s
   { table: 'device_ownership_epoch_closures', column: 'device_id' },
   { table: 'device_ownership_epochs', column: 'device_id' },
   { table: 'device_pool_assignment_events', column: 'device_id' },
+  { table: 'device_reattachments', column: 'source_device_id' },
+  { table: 'device_reattachments', column: 'target_device_id' },
   { table: 'elevation_requests', column: 'device_id' },
   { table: 'fix_outcomes', column: 'device_id' },
   { table: 'fleet_finding_devices', column: 'device_id' },
@@ -171,6 +173,8 @@ export const INSTALL_BOUNDARY_CLASSIFICATION: Readonly<Record<string, InstallBou
   device_ownership_epochs: history('PAM ownership lineage, immutable'),
   device_patches: handled('install_state', 'patch inventory of the old OS is cleared'),
   device_pool_assignment_events: history('holding-area ledger, append-only'),
+  device_reattach_intents: handled('rebind_confirm', 'the confirm settles the intent naming the target; no other intent can be open on a device (§4.3, wave 1b)'),
+  device_reattachments: history('reattach ledger, append-only (§4.4)'),
   device_process_samples: history('process telemetry'),
   device_recovery_keys: history('BitLocker escrow; the new install’s escrow supersedes'),
   device_registry_state: history('registry observations, fully replaced by each report'),

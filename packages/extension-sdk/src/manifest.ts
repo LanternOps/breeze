@@ -28,7 +28,7 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
  */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
-  'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
+  'agents', 'agreements', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'approvals', 'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations', 'autopay',
   'backup', 'billing', 'billing-profiles', 'browser-security', 'business-calendars', 'c2c', 'catalog', 'changes',
   'circuits', 'cis',

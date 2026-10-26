@@ -2,10 +2,12 @@ import { test, expect } from '../fixtures';
 import { waitForAppReady } from '../pages/hydration';
 
 /**
- * Wisp home (/wisp) and the multi-tab chat that moved to /wisp/chat (#9921, W08).
+ * Breeze AI, the multi-tab chat at /ai/chat (moved from /wisp/chat, which moved
+ * from /workspace), and Wisp home (/wisp).
  *
- * Legs (a) and (b) run on any stack: /workspace permanently redirects to
- * /wisp/chat, which works with Wisp off exactly as the old page did.
+ * Legs (a) and (b) run on any stack: /workspace and /wisp/chat permanently
+ * redirect to /ai/chat, which works with Wisp off. /wisp itself shows a lock
+ * when the server has Wisp off instead of forwarding to the chat.
  *
  * Leg (c) needs BREEZE_WISP_ENABLED on the stack, a partner-scoped signed-in
  * user, a Wisp entitlement and a seeded ACTIVE Wisp grant, so it is opt-in:
@@ -14,17 +16,26 @@ import { waitForAppReady } from '../pages/hydration';
  * SELECTORS: data-testid only.
  */
 
-test.describe('Wisp chats (/wisp/chat)', () => {
-  test('/workspace redirects to /wisp/chat', async ({ authedPage: page }) => {
+test.describe('Breeze AI (/ai/chat)', () => {
+  test('/workspace redirects to /ai/chat', async ({ authedPage: page }) => {
     await page.goto('/workspace');
-    await page.waitForURL('**/wisp/chat');
+    await page.waitForURL('**/ai/chat');
     await expect(page.getByTestId('workspace-page')).toBeVisible({ timeout: 60_000 });
   });
 
-  test('/wisp/chat renders the multi-tab chat page', async ({ authedPage: page }) => {
+  test('/wisp/chat#session=x redirects to /ai/chat keeping the fragment', async ({ authedPage: page }) => {
+    // Checked at commit: once hydrated, the page rewrites the fragment to the
+    // tab it opens (sessionHash.writeSessionHash), and `x` is not a session id.
+    await page.goto('/wisp/chat#session=x', { waitUntil: 'commit' });
+    await page.waitForURL('**/ai/chat#session=x', { waitUntil: 'commit' });
+    await page.goto('/workspace#session=x', { waitUntil: 'commit' });
+    await page.waitForURL('**/ai/chat#session=x', { waitUntil: 'commit' });
+  });
+
+  test('/ai/chat renders the multi-tab chat page', async ({ authedPage: page }) => {
     // Persisted-tab behaviour (breeze-workspace) is covered in ai-move-conversation.spec.ts;
     // this leg only asserts the page itself renders at its new address.
-    await page.goto('/wisp/chat');
+    await page.goto('/ai/chat');
     await waitForAppReady(page, 'workspace-page');
     await expect(page.getByTestId('workspace-page')).toBeVisible();
   });
@@ -36,12 +47,25 @@ test.describe('Wisp home (/wisp)', () => {
     'needs BREEZE_WISP_ENABLED and a seeded active Wisp grant (set E2E_WISP_ENABLED=1)',
   );
 
-  test('shows the home sections', async ({ authedPage: page }) => {
+  test('shows the conversation column and the rail', async ({ authedPage: page }) => {
+    // W01 #10211: the conversation is the page. A fresh grant's empty thread
+    // shows Wisp's welcome (its chips stay when a brief exists); a grant whose
+    // last session is still live resumes that conversation instead.
     await page.goto('/wisp');
     await expect(page.getByTestId('wisp-home')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId('wisp-brief-card')).toBeVisible();
-    await expect(page.getByTestId('wisp-needs-you')).toBeVisible();
     await expect(page.getByTestId('wisp-home-thread')).toBeVisible();
+    await expect(
+      page.getByTestId('wisp-welcome').or(page.getByTestId('ai-msg-user').first()),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-input')).toBeVisible();
+    // W02b #10213: the column reads the thread timeline (older sessions and
+    // Wisp's posts); a fresh thread has no older page to load.
+    if (await page.getByTestId('wisp-welcome').isVisible()) {
+      await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-load-earlier')).toHaveCount(0);
+    }
+    // The default 1280 px viewport is wide enough for the rail beside the thread.
+    await expect(page.getByTestId('wisp-rail')).toBeVisible();
+    await expect(page.getByTestId('wisp-needs-you')).toBeVisible();
     await expect(page.getByTestId('wisp-links-panel')).toBeVisible();
   });
 

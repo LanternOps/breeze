@@ -78,3 +78,126 @@ export function recordSignedAgreementFromForm(fields: Record<string, unknown>): 
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// #9075 W2a — request lifecycle (spec §5): create / patch a draft, void, list.
+// ---------------------------------------------------------------------------
+
+/** Upper bound on recipients per request (the shared link goes to each). */
+export const AGREEMENT_REQUEST_MAX_RECIPIENTS = 50;
+/** Built-in lifetime of a request when the sender sets none and the partner
+ *  default is unreadable (also the partners column DEFAULT). The partner's own
+ *  default is resolved by services/agreementRequestDefaults.ts (#9075 W4a). */
+export const AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS = 30;
+
+// #9075 W4a (OD8 B): partner-level agreement defaults, edited under
+// Settings → Billing → Agreements. Bounds mirror the partners CHECKs in
+// migration 2027-01-07-130000-agreement-defaults.sql.
+export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN = 1;
+export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX = 365;
+/** Automatic reminders: "every N days since the last email"; null = off. */
+export const AGREEMENT_REMINDER_INTERVAL_DAYS_MIN = 1;
+export const AGREEMENT_REMINDER_INTERVAL_DAYS_MAX = 30;
+/** Automatic reminders stop once a request has had this many (manual ones count). */
+export const AGREEMENT_MAX_REMINDERS_MIN = 1;
+export const AGREEMENT_MAX_REMINDERS_MAX = 10;
+export const AGREEMENT_MAX_REMINDERS_DEFAULT = 3;
+
+/** The agreement fields of PATCH /partner/billing-settings. */
+export const agreementDefaultsSettingsFields = {
+  agreementDefaultExpiryDays: z.number().int()
+    .min(AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN).max(AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX).optional(),
+  agreementReminderIntervalDays: z.number().int()
+    .min(AGREEMENT_REMINDER_INTERVAL_DAYS_MIN).max(AGREEMENT_REMINDER_INTERVAL_DAYS_MAX).nullable().optional(),
+  agreementMaxReminders: z.number().int()
+    .min(AGREEMENT_MAX_REMINDERS_MIN).max(AGREEMENT_MAX_REMINDERS_MAX).optional(),
+};
+export const AGREEMENT_DEFAULTS_SETTINGS_KEYS = Object.keys(agreementDefaultsSettingsFields) as Array<
+  keyof typeof agreementDefaultsSettingsFields
+>;
+
+/** GET /contracts/agreement-requests/defaults — the resolved values the Send
+ *  dialog pre-fills from. `autoReminder` null = automatic reminders are off. */
+export interface AgreementRequestDefaultsDto {
+  defaultExpiryDays: number;
+  autoReminder: { intervalDays: number; maxReminders: number } | null;
+}
+
+export const agreementRequestDefaultsQuerySchema = z.object({ orgId: z.string().guid() });
+
+// Lower-cased and trimmed BEFORE the format check, so `Jane@Example.COM `
+// is stored as the one canonical address (agreement_request_recipients has a
+// lower/trim CHECK and a unique (request_id, email)).
+const recipientEmail = z.string().trim().toLowerCase().email().max(255);
+
+const draftFields = {
+  contractId: z.string().guid().nullable().optional(),
+  recipients: z.array(recipientEmail).max(AGREEMENT_REQUEST_MAX_RECIPIENTS),
+  coverMessage: z.string().trim().max(5000).nullable().optional(),
+  /** An instant; the service refuses one that is not in the future. */
+  expiresAt: z.coerce.date().nullable().optional(),
+  variableValues: z.record(z.string(), z.string().max(2000)),
+  label: z.string().trim().max(255).nullable().optional(),
+  effectiveDate: isoDate.nullable().optional(),
+};
+
+/** POST /contracts/agreement-requests — creates a `draft`. `templateId` pins
+ *  that template's latest PUBLISHED version. */
+export const createAgreementRequestSchema = z.object({
+  orgId: z.string().guid(),
+  templateId: z.string().guid(),
+  ...draftFields,
+  recipients: draftFields.recipients.default([]),
+  variableValues: draftFields.variableValues.default({}),
+});
+
+export type CreateAgreementRequestInput = z.infer<typeof createAgreementRequestSchema>;
+
+/** PATCH /contracts/agreement-requests/:id — draft only. Strict: the org is
+ *  fixed at create; `templateId` re-pins that template's latest published
+ *  version; `recipients` REPLACES the set. */
+export const updateAgreementRequestSchema = z
+  .object({
+    templateId: z.string().guid().optional(),
+    ...draftFields,
+    recipients: draftFields.recipients.optional(),
+    variableValues: draftFields.variableValues.optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, 'Provide at least one field to update');
+
+export type UpdateAgreementRequestInput = z.infer<typeof updateAgreementRequestSchema>;
+
+/** POST /contracts/agreement-requests/:id/void */
+export const voidAgreementRequestSchema = z.object({
+  reason: z.string().trim().max(1000).optional(),
+});
+
+export type VoidAgreementRequestInput = z.infer<typeof voidAgreementRequestSchema>;
+
+/** Status buckets for the list (spec §5): pending = draft|sent|viewed,
+ *  signed, closed = declined|voided|expired. */
+export const AGREEMENT_REQUEST_STATUS_BUCKETS = ['pending', 'signed', 'closed'] as const;
+export type AgreementRequestStatusBucket = (typeof AGREEMENT_REQUEST_STATUS_BUCKETS)[number];
+
+/** GET /contracts/agreement-requests query. */
+export const listAgreementRequestsQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+  contractId: z.string().guid().optional(),
+  status: z.enum(AGREEMENT_REQUEST_STATUS_BUCKETS).optional(),
+  templateId: z.string().guid().optional(),
+});
+
+export type ListAgreementRequestsQuery = z.infer<typeof listAgreementRequestsQuerySchema>;
+
+/** POST /agreements/public/:token/accept (#9075 W2b). The signer email is
+ *  REQUIRED here (spec §3.2): the link is shared by every recipient, so the
+ *  typed address is the only way to know where the signed copy goes. Spec §5's
+ *  "acceptQuoteSchema reused (signerEmail optional)" is superseded by §3.2.
+ *  Decline reuses declineQuoteSchema. */
+export const acceptPublicAgreementSchema = z.object({
+  signerName: z.string().trim().min(1).max(200),
+  signerEmail: recipientEmail,
+});
+
+export type AcceptPublicAgreementInput = z.infer<typeof acceptPublicAgreementSchema>;

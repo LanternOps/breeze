@@ -6,7 +6,7 @@
  * panel's width on `lg+` (below `lg` the panel has its backdrop and is an
  * overlay, so nothing is reserved there). Real workspaceStore + aiStore.
  */
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const perms = vi.hoisted(() => ({ allow: true }));
@@ -19,7 +19,13 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
-vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
+vi.mock('./WorkspaceTabBar', () => ({
+  default: ({ tabs }: { tabs: Array<{ id: string }> }) => (
+    <div data-testid="workspace-tab-bar">
+      {tabs.map((t) => <span key={t.id} data-testid={`mock-tab-${t.id}`} />)}
+    </div>
+  ),
+}));
 vi.mock('./WorkspaceChatPanel', () => ({ default: () => <div data-testid="workspace-chat-panel" /> }));
 vi.mock('./WorkspaceEmptyState', () => ({ default: () => <div data-testid="workspace-empty-state" /> }));
 
@@ -42,7 +48,7 @@ beforeEach(() => {
   useWorkspaceStore.getState().cleanupAllStreams();
   useWorkspaceStore.setState({ tabs: [], activeTabId: null });
   useAiStore.setState({ isOpen: false, sessionId: null, composerDraft: '', isStreaming: false });
-  window.history.replaceState(null, '', '/workspace');
+  window.history.replaceState(null, '', '/ai/chat');
 });
 
 afterEach(() => {
@@ -85,5 +91,35 @@ describe('workspace root while the side panel is open', () => {
     render(<WorkspacePage />);
     expect(screen.getByTestId('workspace-access-denied')).toBeInTheDocument();
     expect(screen.queryByTestId('workspace-page')).toBeNull();
+  });
+});
+
+describe('persisted workspace tabs', () => {
+  it('five persisted breeze-workspace tabs survive the move to /ai/chat', async () => {
+    const ids = ['t1', 't2', 't3', 't4', 't5'];
+    localStorage.setItem('breeze-workspace', JSON.stringify({
+      state: {
+        tabs: ids.map((id, i) => ({
+          id,
+          sessionId: null,
+          title: `Chat ${i + 1}`,
+          isTitleCustom: false,
+          contextLabel: null,
+          pageContext: null,
+        })),
+        activeTabId: 't3',
+      },
+      version: 0,
+    }));
+    window.history.replaceState(null, '', '/ai/chat');
+    await act(async () => {
+      await useWorkspaceStore.persist.rehydrate();
+    });
+    expect(useWorkspaceStore.getState().tabs).toHaveLength(5);
+
+    render(<WorkspacePage />);
+    await waitFor(() => expect(screen.getByTestId('workspace-tab-bar')).toBeInTheDocument());
+    for (const id of ids) expect(screen.getByTestId(`mock-tab-${id}`)).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().activeTabId).toBe('t3');
   });
 });

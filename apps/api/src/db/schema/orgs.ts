@@ -190,6 +190,20 @@ export const partners = pgTable('partners', {
   // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
   // which is a platform-granted entitlement).
   serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // Partner billing toggle (spec 2026-10-16-partner-billing-enabled-design.md §5.6):
+  // a dedicated column, not partners.settings, because gates and job predicates query it.
+  // Migration 2027-01-05-120000 backfills existing partners, then sets DEFAULT true + NOT NULL.
+  billingEnabled: boolean('billing_enabled').notNull().default(true),
+  // #9075 W4a (OD8 B): agreement-request defaults (Settings → Billing →
+  // Agreements). Partner level only — no org override. Dedicated columns for
+  // the billingEnabled reason: the reminder job's selector queries them.
+  // Never read directly — always through services/agreementRequestDefaults.ts.
+  // Expiry: days a new request lives when the sender sets none.
+  agreementDefaultExpiryDays: integer('agreement_default_expiry_days').notNull().default(30),
+  // Automatic reminders every N days since the last email; NULL = off (default).
+  agreementReminderIntervalDays: integer('agreement_reminder_interval_days'),
+  // Automatic reminders stop once reminder_count reaches this (manual ones count).
+  agreementMaxReminders: integer('agreement_max_reminders').notNull().default(3),
   // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
   // only: integrations.ts already imports orgs.ts, so a `.references()` here
   // would close an import cycle. Paired with the mode by
@@ -199,6 +213,10 @@ export const partners = pgTable('partners', {
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
 }, (table) => [
+  check('partners_agreement_default_expiry_days_check', sql`${table.agreementDefaultExpiryDays} BETWEEN 1 AND 365`),
+  check('partners_agreement_reminder_interval_days_check',
+    sql`${table.agreementReminderIntervalDays} IS NULL OR ${table.agreementReminderIntervalDays} BETWEEN 1 AND 30`),
+  check('partners_agreement_max_reminders_check', sql`${table.agreementMaxReminders} BETWEEN 1 AND 10`),
   check('partners_purchase_selection_valid', sql`${table.purchaseSelection} IS NULL OR COALESCE((
     jsonb_typeof(${table.purchaseSelection}) = 'object'
     AND ${table.purchaseSelection} ?& ARRAY['catalogVersion', 'capacity', 'billingPeriod']

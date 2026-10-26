@@ -9,12 +9,24 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const api = vi.hoisted(() => ({ listFlows: vi.fn(), getFlow: vi.fn() }));
+const api = vi.hoisted(() => ({ listFlowRuns: vi.fn().mockResolvedValue({ runs: [], total: 0 }), listFlows: vi.fn(), getFlow: vi.fn(), disableFlow: vi.fn(), enableFlow: vi.fn(), startFlowRun: vi.fn() }));
+const perms = vi.hoisted(() => ({ write: true }));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => r === 'automations' && a === 'write' && perms.write }),
+}));
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (sel?: (s: unknown) => unknown) => {
+    const st = { organizations: [], currentOrgId: null };
+    return sel ? sel(st) : st;
+  },
+}));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./api', () => api);
 const gate = vi.hoisted(() => ({ value: { enabled: true, loaded: true } }));
 vi.mock('../../stores/featuresStore', () => ({ useFlowsGate: () => gate.value }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
+import { ActionError } from '@/lib/runAction';
 import FlowDetailPage from './FlowDetailPage';
 
 const ID = '9f1c0f4e-0000-4000-8000-000000000001';
@@ -67,6 +79,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = '';
   gate.value = { enabled: true, loaded: true };
+  perms.write = true;
   api.getFlow.mockResolvedValue(detail());
 });
 
@@ -108,11 +121,67 @@ describe('FlowDetailPage', () => {
     expect(screen.getByTestId('flow-step-notify').getAttribute('aria-current')).toBeNull();
   });
 
-  it('has no enable, edit or delete controls', async () => {
+  it('shows Enable for a draft flow', async () => {
     render(<FlowDetailPage flowId={ID} />);
     await screen.findByTestId('flow-steps');
-    const names = screen.queryAllByRole('button').map((b) => (b.textContent ?? '').toLowerCase());
-    for (const n of names) expect(n).not.toMatch(/enable|delete|edit|disable|run|save/);
+    expect(screen.getByTestId('flow-enable')).toBeTruthy();
+    expect(screen.queryByTestId('flow-disable')).toBeNull();
+  });
+
+  it('hides every action without automations.write', async () => {
+    perms.write = false;
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.queryByTestId('flow-enable')).toBeNull();
+    expect(screen.queryByTestId('flow-disable')).toBeNull();
+    expect(screen.queryByTestId('flow-run-now')).toBeNull();
+  });
+
+  it('tab state follows #runs', async () => {
+    window.location.hash = '#runs';
+    render(<FlowDetailPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-runs-tab')).toBeTruthy();
+    expect(screen.queryByTestId('flow-steps')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('flow-tab-overview'));
+    expect(window.location.hash).toBe('#overview');
+    expect(await screen.findByTestId('flow-steps')).toBeTruthy();
+  });
+
+  it('enabled manual flow: Disable confirm calls disableFlow, Run now is offered, then refetches', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'enabled' });
+    d.flow.definition.trigger = { type: 'manual' } as never;
+    api.getFlow.mockResolvedValue(d);
+    api.disableFlow.mockResolvedValue({ ok: true, cancelledRuns: 0 });
+    const user = userEvent.setup();
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.getByTestId('flow-run-now')).toBeTruthy();
+    await user.click(screen.getByTestId('flow-disable'));
+    expect(api.disableFlow).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId('flow-disable-confirm'));
+    expect(api.disableFlow).toHaveBeenCalledWith(ID);
+    await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows the localized paused reason and an Enable action', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'paused', pausedReason: 'drift' });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    expect((await screen.findByTestId('flow-paused-reason')).textContent).toMatch(/changed after it was enabled/i);
+    expect(screen.getByTestId('flow-enable')).toBeTruthy();
+  });
+
+  it('badges pre-approved steps', async () => {
+    const d = detail();
+    Object.assign(d.flow, { preApprovedStepIds: ['list'] });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.getByTestId('flow-step-list-preapproved')).toBeTruthy();
+    expect(screen.queryByTestId('flow-step-notify-preapproved')).toBeNull();
   });
 
   it('shows the not-found state for a 404', async () => {
@@ -133,5 +202,40 @@ describe('FlowDetailPage', () => {
     render(<FlowDetailPage flowId={ID} />);
     expect(screen.getByTestId('flow-not-found')).toBeTruthy();
     expect(api.getFlow).not.toHaveBeenCalled();
+  });
+
+  it('offers Disable (and Enable) for a paused flow', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'paused', pausedReason: 'drift' });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.getByTestId('flow-disable')).toBeTruthy();
+    expect(screen.getByTestId('flow-enable')).toBeTruthy();
+    expect(screen.queryByTestId('flow-run-now')).toBeNull();
+  });
+
+  it('reloads the flow after a failed disable (state may have changed)', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'enabled' });
+    api.getFlow.mockResolvedValue(d);
+    api.disableFlow.mockRejectedValue(new ActionError('x', 409, undefined, { error: 'conflict' }));
+    const user = userEvent.setup();
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    await user.click(screen.getByTestId('flow-disable'));
+    await user.click(screen.getByTestId('flow-disable-confirm'));
+    await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+  });
+
+  it('reloads the flow when enabling hits a version conflict', async () => {
+    api.enableFlow.mockRejectedValue(new ActionError('x', 409, 'version_conflict', { error: 'version_conflict' }));
+    const user = userEvent.setup();
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    await user.click(screen.getByTestId('flow-enable'));
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    await screen.findByTestId('flow-enable-error-version_conflict');
+    await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
   });
 });

@@ -14,9 +14,10 @@ import {
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   TOOL_ACTION_INPUT_KEYS,
-  checkGuardrails, resolveApprovalScope, isInputAwareTier3,
+  checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
+import { AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -156,9 +157,14 @@ describe('tier-3 approval scope classification', () => {
     }
     expect(enumerated.sort()).toEqual([
       // edr_endpoint_action (#8167 W03): whole-tool four_eyes backstop; isolate/unisolate/scan classified.
-      'edr_endpoint_action', 'manage_ai_agents', 'manage_services', 'manage_startup_items',
+      'edr_endpoint_action', 'manage_ai_agents',
+      // W03 (#6757): whole-tool supervised backstop; all six power actions classified.
+      // W04 (#6758): whole-tool supervised backstops; every action classified.
+      'manage_browser_policy', 'manage_hyperv_vm', 'manage_peripheral_policy',
+      'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',
+      'remediate_sensitive_data',
       's1_threat_action', 'security_scan',
       'send_endpoint_message',
     ]);
@@ -503,6 +509,147 @@ describe('tier-3 approval scope classification', () => {
   });
 });
 
+// ── W04 (#6758): security, incident and device-operation write classes ─────
+// Class table: docs/superpowers/plans/ai-mcp/2026-10-25-ai-full-control-w04-
+// security-device-ops-writes.md, "Final per-action classes".
+describe('W04 static classes (#6758)', () => {
+  it.each([
+    // Whole-tool supervised: each touches a customer machine.
+    ['execute_containment', undefined, 3, 'supervised'],
+    ['trigger_agent_restart', undefined, 3, 'supervised'],
+    ['trigger_agent_upgrade', undefined, 3, 'supervised'],
+    ['remediate_software_violation', undefined, 3, 'supervised'],
+    // W04-D7: arms a recurring on-site discovery scan (network_discovery is supervised).
+    ['configure_network_baseline', undefined, 3, 'supervised'],
+    // Whole-tool four-eyes.
+    ['create_remote_session', undefined, 3, 'four_eyes'],
+    ['request_elevation', undefined, 3, 'four_eyes'],
+    // Whole-tool tier 2 (tenant-internal, reach nobody).
+    ['create_incident', undefined, 2, undefined],
+    ['revoke_elevation', undefined, 2, undefined],
+    ['assign_security_training', undefined, 2, undefined],
+    ['acknowledge_network_device', undefined, 2, undefined],
+    // System tools: live device reads stay tier 2; writes supervised.
+    ['manage_processes', 'list', 2, undefined],
+    ['manage_processes', 'kill', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'list', 2, undefined],
+    ['manage_scheduled_tasks', 'run', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'disable', 3, 'supervised'],
+    ['manage_scheduled_tasks', 'enable', 3, 'supervised'],
+    ['registry_operations', 'read_key', 2, undefined],
+    ['registry_operations', 'get_value', 2, undefined],
+    ['registry_operations', 'set_value', 3, 'supervised'],
+    ['registry_operations', 'create_key', 3, 'supervised'],
+    ['registry_operations', 'delete_key', 3, 'supervised'],
+    // W04-D2 loosenings: policy reads leave the tier-3 backstop.
+    ['manage_software_policy', 'list', 1, undefined],
+    ['manage_software_policy', 'get', 1, undefined],
+    ['manage_software_policy', 'create', 3, 'supervised'],
+    ['manage_software_policy', 'update', 3, 'supervised'],
+    ['manage_software_policy', 'delete', 3, 'supervised'],
+    ['manage_browser_policy', 'list', 1, undefined],
+    ['manage_browser_policy', 'create', 3, 'supervised'],
+    ['manage_browser_policy', 'update', 3, 'supervised'],
+    ['manage_browser_policy', 'apply', 3, 'supervised'],
+    ['manage_peripheral_policy', 'create', 3, 'supervised'],
+    ['manage_peripheral_policy', 'update', 3, 'supervised'],
+    ['manage_peripheral_policy', 'disable', 3, 'supervised'],
+    ['manage_peripheral_policy', 'add_exception', 3, 'supervised'],
+    ['manage_peripheral_policy', 'remove_exception', 3, 'supervised'],
+    ['remediate_sensitive_data', 'encrypt', 3, 'supervised'],
+    ['remediate_sensitive_data', 'quarantine', 3, 'supervised'],
+    ['remediate_sensitive_data', 'secure_delete', 3, 'supervised'],
+    ['remediate_sensitive_data', 'accept_risk', 3, 'supervised'],
+    ['remediate_sensitive_data', 'false_positive', 3, 'supervised'],
+    ['remediate_sensitive_data', 'mark_remediated', 3, 'supervised'],
+  ] as const)('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, action ? { action } : {});
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('the backstop tools classify every write per action (enumeration, not the whole-tool default)', () => {
+    expect(TIER3_SUPERVISED_ACTIONS.manage_software_policy?.sort()).toEqual(['create', 'delete', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.manage_browser_policy?.sort()).toEqual(['apply', 'create', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.manage_peripheral_policy?.sort()).toEqual(['add_exception', 'create', 'disable', 'remove_exception', 'update']);
+    expect(TIER3_SUPERVISED_ACTIONS.remediate_sensitive_data?.sort()).toEqual(
+      ['accept_risk', 'encrypt', 'false_positive', 'mark_remediated', 'quarantine', 'secure_delete'],
+    );
+    expect(TIER1_ACTIONS.manage_software_policy?.sort()).toEqual(['get', 'list']);
+    expect(TIER1_ACTIONS.manage_browser_policy).toEqual(['list']);
+  });
+
+  it('configure_network_baseline moved registry tier 2 → 3 with the whole-tool supervised class (D1)', () => {
+    expect(getToolTier('configure_network_baseline')).toBe(3);
+    expect(TIER3_SUPERVISED_TOOLS.has('configure_network_baseline')).toBe(true);
+  });
+});
+
+describe('collect_evidence input-aware escalation (W04, #6758)', () => {
+  const base = { incidentId: '11111111-1111-4111-8111-111111111111', deviceId: '22222222-2222-4222-8222-222222222222' };
+  it.each([
+    [{ evidenceTypes: ['logs', 'screenshot'] }, 3, 'supervised'],
+    [{ evidenceTypes: ['screenshot'] }, 3, 'supervised'],
+    [{ evidenceTypes: ['logs'] }, 2, undefined],
+    [{ evidenceTypes: ['processes', 'connections'] }, 2, undefined],
+    [{ evidenceTypes: 'screenshot' }, 3, 'supervised'],   // non-array: fail-safe
+    [{}, 3, 'supervised'],                                // missing: fail-safe
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = checkGuardrails('collect_evidence', { ...base, ...input });
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('is a whole-tool input-aware surface, absent from the static scope tables', () => {
+    expect(TIER3_INPUT_AWARE_TOOLS.has('collect_evidence')).toBe(true);
+    expect(TIER3_SUPERVISED_TOOLS.has('collect_evidence')).toBe(false);
+    expect(TIER3_FOUR_EYES_TOOLS.has('collect_evidence')).toBe(false);
+    expect(isInputAwareTier3('collect_evidence', undefined, { evidenceTypes: ['screenshot'] })).toBe(true);
+    expect(isInputAwareTier3('collect_evidence', undefined, { evidenceTypes: ['logs'] })).toBe(false);
+  });
+
+  it('the screenshot headline says a screenshot is captured', () => {
+    expect(checkGuardrails('collect_evidence', { ...base, evidenceTypes: ['logs', 'screenshot'] }).description).toMatch(/screenshot/i);
+  });
+});
+
+describe('W04 approval descriptions say what changes, where (#6758)', () => {
+  const DEV = '22222222-2222-4222-8222-222222222222';
+  const desc = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+  it('a kill names the PID and the process name, marked as unverified', () => {
+    const d = desc('manage_processes', { action: 'kill', deviceId: DEV, processId: '4412', processName: 'chrome.exe' });
+    expect(d).toContain('4412');
+    expect(d).toContain('chrome.exe');
+    expect(d).toMatch(/not verified|as given/i);
+    expect(d).toContain('22222222');
+  });
+
+  it('a registry write names the capped key path and value name, never the value data', () => {
+    const d = desc('registry_operations', {
+      action: 'set_value', deviceId: DEV, keyPath: `HKLM\\SOFTWARE\\${'K'.repeat(300)}`, valueName: 'Enabled', valueData: 'TOPSECRET-DATA',
+    });
+    expect(d).toContain('HKLM');
+    expect(d).toContain('Enabled');
+    expect(d).not.toContain('TOPSECRET');
+    expect(d).not.toContain('K'.repeat(81));
+  });
+
+  it('containment names the action type and the device', () => {
+    const d = desc('execute_containment', { incidentId: DEV, deviceId: DEV, actionType: 'network_isolation' });
+    expect(d).toMatch(/network.isolation/i);
+    expect(d).toContain('22222222');
+  });
+
+  it('an elevation request names the device', () => {
+    expect(desc('request_elevation', { deviceId: DEV, reason: 'install' })).toContain('22222222');
+  });
+
+  it('falls back to the humanized label without a device id', () => {
+    expect(desc('execute_containment', { actionType: 'usb_block' })).toBeTruthy();
+  });
+});
+
 // ── W02 (#6756): PSA + billing write classes ───────────────────────────────
 // Class table: docs/superpowers/plans/ai-mcp/2026-09-23-ai-full-control-w02-
 // psa-billing-writes.md, "Quorum amendments" → "Final per-action classes".
@@ -661,6 +808,70 @@ describe('W02 static classes (#6756)', () => {
   });
 });
 
+// ── W04 class rows (#6758, spec checklist item 3) ──────────────────────────
+// Copied from the W04 plan's "Final per-action classes" table, NOT derived
+// from the guardrail tables. Every action-enum member of the multiplexers has
+// a row, so a new action reds here until someone classifies it.
+// collect_evidence (no action enum) is pinned on both input branches.
+const W04_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_processes: { list: 't2', kill: 'supervised' },
+  manage_scheduled_tasks: { list: 't2', run: 'supervised', disable: 'supervised', enable: 'supervised' },
+  registry_operations: {
+    read_key: 't2', get_value: 't2', set_value: 'supervised', create_key: 'supervised', delete_key: 'supervised',
+  },
+  manage_software_policy: { list: 't1', get: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_browser_policy: { list: 't1', create: 'supervised', update: 'supervised', apply: 'supervised' },
+  manage_peripheral_policy: {
+    create: 'supervised', update: 'supervised', disable: 'supervised', add_exception: 'supervised', remove_exception: 'supervised',
+  },
+  remediate_sensitive_data: {
+    encrypt: 'supervised', quarantine: 'supervised', secure_delete: 'supervised',
+    accept_risk: 'supervised', false_positive: 'supervised', mark_remediated: 'supervised',
+  },
+};
+/** Single-purpose W04 tools (no action enum): the whole tool has one class. */
+const W04_WHOLE_TOOL: Record<string, W02Class> = {
+  execute_containment: 'supervised', trigger_agent_restart: 'supervised', trigger_agent_upgrade: 'supervised',
+  remediate_software_violation: 'supervised', configure_network_baseline: 'supervised',
+  create_remote_session: 'four_eyes', request_elevation: 'four_eyes',
+  create_incident: 't2', revoke_elevation: 't2', assign_security_training: 't2', acknowledge_network_device: 't2',
+};
+/** collect_evidence's two input branches (W04-D3). */
+const W04_COLLECT_EVIDENCE: ReadonlyArray<readonly [readonly string[], W02Class]> = [
+  [['logs', 'processes', 'connections'], 't2'],
+  [['processes', 'screenshot'], 'supervised'],
+];
+
+describe('W04 class rows (#6758)', () => {
+  it('covers all 19 W04 tools exactly once', () => {
+    const tools = [...Object.keys(W04_EXPECTED), ...Object.keys(W04_WHOLE_TOOL), 'collect_evidence'];
+    expect(new Set(tools).size).toBe(19);
+    expect(tools).toHaveLength(19);
+  });
+
+  it.each(Object.keys(W04_EXPECTED))('%s: W04_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W04_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W04_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W04_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+
+  it.each(W04_COLLECT_EVIDENCE)('collect_evidence evidenceTypes %j is %s', (evidenceTypes, cls) => {
+    expect(toolActionEnum('collect_evidence') ?? []).toEqual([]);
+    expect(classOf('collect_evidence', { evidenceTypes: [...evidenceTypes] })).toBe(cls);
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have
@@ -679,6 +890,8 @@ const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
     edit_comment: 'supervised', delete_comment: 'supervised',
     move_org: 'four_eyes',
     merge: 'supervised',
+    // W06 (#6776, W06-D4): assign/status/priority over <= 50 tickets of one org; never a delete.
+    bulk_update: 't2',
   },
   manage_quotes: {
     create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',
@@ -726,5 +939,502 @@ describe('W02 class rows (#6756)', () => {
   it.each(Object.entries(W02_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
     expect(toolActionEnum(tool) ?? []).toEqual([]);
     expect(classOf(tool, {})).toBe(cls);
+  });
+});
+
+// ── W03 (#6757): backup, DR and virtualization write classes ────────────────
+// Class table: docs/superpowers/plans/ai-mcp/2026-10-25-ai-full-control-w03-
+// backup-dr-writes.md, "Final per-action classes".
+describe('W03 static classes (#6757)', () => {
+  it.each([
+    // Triggers: every one touches a customer machine or a vendor → supervised.
+    ['trigger_backup', undefined, 3, 'supervised'],
+    ['trigger_hyperv_backup', undefined, 3, 'supervised'],
+    ['trigger_mssql_backup', undefined, 3, 'supervised'],
+    ['trigger_vault_sync', undefined, 3, 'supervised'],
+    ['trigger_c2c_sync', undefined, 3, 'supervised'],
+    ['verify_mssql_backup', undefined, 3, 'supervised'],
+    // Restores and DR execution overwrite or replace live state → four-eyes.
+    ['restore_snapshot', undefined, 3, 'four_eyes'],
+    ['restore_as_vm', undefined, 3, 'four_eyes'],
+    ['restore_hyperv_vm', undefined, 3, 'four_eyes'],
+    ['restore_mssql_database', undefined, 3, 'four_eyes'],
+    ['restore_c2c_items', undefined, 3, 'four_eyes'],
+    ['instant_boot_vm', undefined, 3, 'four_eyes'],
+    ['manage_hyperv_vm', 'start', 3, 'supervised'],
+    ['manage_hyperv_vm', 'stop', 3, 'supervised'],
+    ['manage_hyperv_vm', 'force_stop', 3, 'supervised'],
+    ['manage_hyperv_vm', 'pause', 3, 'supervised'],
+    ['manage_hyperv_vm', 'resume', 3, 'supervised'],
+    ['manage_hyperv_vm', 'save', 3, 'supervised'],
+    ['manage_hyperv_checkpoints', 'create', 3, 'supervised'],
+    ['manage_hyperv_checkpoints', 'delete', 3, 'four_eyes'],
+    ['manage_hyperv_checkpoints', 'apply', 3, 'four_eyes'],
+    ['manage_dr_plan', 'create_plan', 2, undefined],
+    ['manage_dr_plan', 'update_plan', 2, undefined],
+    ['manage_dr_plan', 'add_group', 2, undefined],
+    ['manage_dr_plan', 'update_group', 2, undefined],
+    ['manage_dr_plan', 'delete_group', 3, 'supervised'],
+    ['manage_backup_profiles', 'list', 1, undefined],
+    ['manage_backup_profiles', 'get', 1, undefined],
+    ['manage_backup_profiles', 'create', 2, undefined],
+    ['manage_backup_profiles', 'update', 3, 'supervised'],
+    ['manage_backup_profiles', 'delete', 3, 'supervised'],
+    ['configure_backup_sla', 'create', 2, undefined],
+    ['configure_backup_sla', 'update', 2, undefined],
+    ['configure_vault', 'create', 3, 'supervised'],
+    ['configure_vault', 'update', 3, 'supervised'],
+  ] as const)('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, action ? { action } : {});
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it.each(['rehearsal', 'failover', 'failback'])('execute_dr_plan executionType %s is four-eyes (W03-D3: no rehearsal loosening)', (executionType) => {
+    const r = checkGuardrails('execute_dr_plan', { planId: '11111111-1111-4111-8111-111111111111', executionType });
+    expect(r.tier).toBe(3);
+    expect(r.approvalScope).toBe('four_eyes');
+  });
+});
+
+describe('manage_backup_profiles input-aware escalation (W03, #6757)', () => {
+  const tier = (input: Record<string, unknown>) => checkGuardrails('manage_backup_profiles', input);
+  it.each([
+    [{ action: 'create', name: 'All orgs', ownerScope: 'partner' }, 3, 'supervised'],
+    [{ action: 'create', name: 'One org', ownerScope: 'organization' }, 2, undefined],
+    [{ action: 'create', name: 'One org' }, 2, undefined],                         // handler default is organization
+    [{ action: 'create', name: 'x', ownerScope: 'PARTNER' }, 2, undefined],        // the handler's own `=== 'partner'`
+    [{ action: 'list', ownerScope: 'partner' }, 1, undefined],                     // a read is never escalated
+    [{ action: 'get', profileId: '11111111-1111-4111-8111-111111111111', ownerScope: 'partner' }, 1, undefined],
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = tier(input);
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('create is input-aware, absent from the static scope tables, and mirrors the handler predicate', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_backup_profiles:create')).toBe(true);
+    expect(TIER3_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_backup_profiles ?? []).not.toContain('create');
+    expect(isInputAwareTier3('manage_backup_profiles', 'create', { ownerScope: 'partner' })).toBe(true);
+    expect(isInputAwareTier3('manage_backup_profiles', 'update', { ownerScope: 'partner' })).toBe(false);
+  });
+
+  it('the partner-wide create headline says it applies to every organization', () => {
+    expect(tier({ action: 'create', name: 'All orgs', ownerScope: 'partner' }).description).toMatch(/partner-wide.*every organization/i);
+  });
+});
+
+describe('W03 approval descriptions say what changes, where (#6757)', () => {
+  const SNAP = '11111111-1111-4111-8111-111111111111';
+  const DEV = '22222222-2222-4222-8222-222222222222';
+  const desc = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+  it('restore_snapshot names snapshot, device and the selected-path COUNT, never the paths', () => {
+    const d = desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV, selectedPaths: ['C:/Users/amy/SECRET-A', 'C:/Users/amy/SECRET-B'] });
+    expect(d).toContain('11111111');
+    expect(d).toContain('22222222');
+    expect(d).toMatch(/2 selected path/);
+    expect(d).not.toContain('SECRET');
+    expect(desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV })).toMatch(/full restore/i);
+  });
+
+  it('restore_snapshot caps a model-chosen target path', () => {
+    const d = desc('restore_snapshot', { snapshotId: SNAP, deviceId: DEV, targetPath: `C:/${'p'.repeat(300)}` });
+    expect(d).not.toContain('p'.repeat(81));
+  });
+
+  it('execute_dr_plan names the plan and the execution type', () => {
+    expect(desc('execute_dr_plan', { planId: SNAP, executionType: 'failover' })).toMatch(/failover.*DR plan 11111111/i);
+  });
+
+  it('Hyper-V actions name the action and the VM', () => {
+    expect(desc('manage_hyperv_vm', { action: 'force_stop', vmId: SNAP })).toMatch(/force.stop.*VM 11111111/i);
+    expect(desc('manage_hyperv_checkpoints', { action: 'apply', vmId: SNAP, checkpointName: 'pre-patch' })).toMatch(/apply.*checkpoint.*VM 11111111/i);
+  });
+
+  it('configure_vault names the destination type, a capped path and the retention', () => {
+    const d = desc('configure_vault', { action: 'update', vaultId: SNAP, vaultType: 'smb', vaultPath: `//files.example/${'v'.repeat(300)}`, retentionCount: 2 });
+    expect(d).toMatch(/smb/i);
+    expect(d).toContain('files.example');
+    expect(d).not.toContain('v'.repeat(81));
+    expect(d).toMatch(/keep 2/i);
+  });
+});
+
+// ── W03 class rows (#6757, spec checklist item 3) ──────────────────────────
+// Copied from the W03 plan's "Final per-action classes" table, NOT derived
+// from the guardrail tables. Every action-enum member of the multiplexers has
+// a row, so a new action reds here until someone classifies it. The
+// input-aware manage_backup_profiles:create is pinned on EMPTY input (its
+// partner-wide arm is covered by the input-aware suite above).
+const W03_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_hyperv_vm: {
+    start: 'supervised', stop: 'supervised', force_stop: 'supervised',
+    pause: 'supervised', resume: 'supervised', save: 'supervised',
+  },
+  manage_hyperv_checkpoints: { create: 'supervised', delete: 'four_eyes', apply: 'four_eyes' },
+  manage_dr_plan: {
+    create_plan: 't2', update_plan: 't2', add_group: 't2', update_group: 't2', delete_group: 'supervised',
+  },
+  manage_backup_profiles: { list: 't1', get: 't1', create: 't2', update: 'supervised', delete: 'supervised' },
+  configure_backup_sla: { create: 't2', update: 't2' },
+  configure_vault: { create: 'supervised', update: 'supervised' },
+};
+/** Single-purpose W03 tools (no action enum): the whole tool has one class. */
+const W03_WHOLE_TOOL: Record<string, W02Class> = {
+  trigger_backup: 'supervised', trigger_hyperv_backup: 'supervised', trigger_mssql_backup: 'supervised',
+  trigger_vault_sync: 'supervised', trigger_c2c_sync: 'supervised', verify_mssql_backup: 'supervised',
+  restore_snapshot: 'four_eyes', restore_as_vm: 'four_eyes', restore_hyperv_vm: 'four_eyes',
+  restore_mssql_database: 'four_eyes', restore_c2c_items: 'four_eyes', instant_boot_vm: 'four_eyes',
+  execute_dr_plan: 'four_eyes',
+};
+
+describe('W03 class rows (#6757)', () => {
+  it('covers all 19 W03 tools exactly once', () => {
+    expect([...Object.keys(W03_EXPECTED), ...Object.keys(W03_WHOLE_TOOL)].sort()).toHaveLength(19);
+  });
+
+  it.each(Object.keys(W03_EXPECTED))('%s: W03_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W03_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W03_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W03_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+});
+
+
+// ── W06 class rows (#6776, spec checklist item 3) ──────────────────────────
+// Copied from the W06 plan's "Final per-action classes" table, NOT derived from
+// the guardrail tables. Every action-enum member of the seven tools has a row,
+// so a new action reds here until someone classifies it. The input-aware
+// manage_ticket_checklist_templates:create is pinned on EMPTY input (its
+// org/partner arms are below).
+// manage_tickets:bulk_update is pinned in W02_EXPECTED (it is a manage_tickets action).
+const W06_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ticket_config: {
+    get_config: 't1', get_org_settings: 't1', list_categories: 't1', list_domains: 't1',
+    update_org_settings: 'supervised',
+    create_category: 'supervised', update_category: 'supervised', delete_category: 'supervised', reorder_categories: 'supervised',
+    create_status: 'supervised', update_status: 'supervised', reorder_statuses: 'supervised',
+    set_priorities: 'supervised',
+    create_domain: 'supervised', update_domain: 'supervised', delete_domain: 'four_eyes',
+  },
+  manage_ticket_checklist_templates: {
+    list: 't1', get: 't1',
+    create: 't2', // empty input = org-owned (the partner-wide arm is pinned below)
+    update: 'supervised', add_item: 'supervised', update_item: 'supervised', remove_item: 'supervised', reorder_items: 'supervised',
+    delete: 'four_eyes',
+  },
+  manage_ticket_inbox: { list: 't2', convert: 'supervised', dismiss: 'supervised' },
+  manage_ticket_attachments: { list: 't1', read_content: 't2', attach_from_artifact: 't2', delete: 'supervised' },
+  manage_ticket_forms: { list: 't1', available: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_ticket_response_templates: { list: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_time_suggestions: { list: 't1', confirm: 't2', dismiss: 't2', undo: 't2' },
+};
+
+describe('W06 class rows (#6776)', () => {
+  it('covers all seven W06 tools exactly once', () => {
+    expect(Object.keys(W06_EXPECTED).sort()).toEqual([
+      'manage_ticket_attachments', 'manage_ticket_checklist_templates', 'manage_ticket_config', 'manage_ticket_forms',
+      'manage_ticket_inbox', 'manage_ticket_response_templates', 'manage_time_suggestions',
+    ]);
+  });
+
+  it.each(Object.keys(W06_EXPECTED))('%s: W06_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W06_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('the registry tier of every W06 tool is 1 (the per-action maps carry the class)', () => {
+    for (const tool of Object.keys(W06_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  // manage_ticket_checklist_templates:create — W06-D2, precedent manage_backup_profiles:create.
+  it.each([
+    ['org-owned (ownerScope omitted)', { name: 'Onboarding', orgId: '11111111-1111-4111-8111-111111111111' }, 't2'],
+    ['org-owned (explicit organization)', { name: 'Onboarding', ownerScope: 'organization' }, 't2'],
+    ['partner-wide', { name: 'Onboarding', ownerScope: 'partner' }, 'supervised'],
+  ] as const)('checklist template create, %s → %s', (_label, data, cls) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe(cls);
+  });
+
+  // A non-object `data` is rejected by the handler's schema before any write, so it stays at the base tier.
+  it.each([[undefined], ['partner'], [['partner']], [null]])('checklist template create with unreadable data %j stays at the base tier 2', (data) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe('t2');
+  });
+
+  it('only create is input-aware; a partner ownerScope on another action does not change its class', () => {
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'create', { data: { ownerScope: 'partner' } })).toBe(true);
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'list', { data: { ownerScope: 'partner' } })).toBe(false);
+    expect(classOf('manage_ticket_checklist_templates', { action: 'list', data: { ownerScope: 'partner' } })).toBe('t1');
+  });
+
+  it('every W06 four-eyes row is an irreversible delete (spec Class rule: irreversible AND partner-wide)', () => {
+    const fourEyes = Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).filter(([, c]) => c === 'four_eyes').map(([a]) => `${tool}:${a}`));
+    expect(fourEyes.sort()).toEqual([
+      'manage_ticket_checklist_templates:delete', 'manage_ticket_config:delete_domain',
+      'manage_ticket_forms:delete', 'manage_ticket_response_templates:delete',
+    ]);
+  });
+});
+
+// ── W07 class rows (#6777, spec checklist item 3) ──────────────────────────
+// Copied from the W07 plan's "Final per-action classes" table, NOT derived from the guardrail tables.
+// Every action-enum member of the W07 multiplexers has a row, so a new action reds here until someone
+// classifies it. reliability_feedback has no action enum: it is a single-purpose tier-2 tool.
+const W07_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_alert_correlations: {
+    groups: 't1', get: 't1', by_alert: 't1', links: 't1', analyze: 't1', evaluation: 't1', explain: 't1',
+  },
+  manage_alert_correlations: {
+    acknowledge_group: 't2', resolve_group: 't2', acknowledge_related: 't2', feedback: 't2', rca_feedback: 't2',
+  },
+  // promote raises a real alert and publishes alert.triggered (reaches notification channels): supervised.
+  manage_device_anomalies: { list: 't1', dismiss: 't2', resolve: 't2', promote: 'supervised' },
+  get_fleet_health: { list: 't1', history: 't1', offenders: 't1', evaluation: 't1', org_summary: 't1' },
+};
+
+describe('W07 class rows (#6777)', () => {
+  it('covers the four W07 multiplexers exactly once', () => {
+    expect(Object.keys(W07_EXPECTED).sort()).toEqual([
+      'get_alert_correlations', 'get_fleet_health', 'manage_alert_correlations', 'manage_device_anomalies',
+    ]);
+  });
+
+  it.each(Object.keys(W07_EXPECTED))('%s: W07_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W07_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('get_fleet_health with no action is still the tier-1 fleet list', () => {
+    expect(classOf('get_fleet_health', {})).toBe('t1');
+  });
+
+  it('reliability_feedback is a single-purpose tier-2 write (a label; nothing on the device changes)', () => {
+    expect(getToolTier('reliability_feedback')).toBe(2);
+    expect(classOf('reliability_feedback', {})).toBe('t2');
+  });
+
+  it('registry tiers: reads and the anomaly multiplexer are 1, the correlation writes and the label are 2', () => {
+    expect(getToolTier('get_alert_correlations')).toBe(1);
+    expect(getToolTier('get_fleet_health')).toBe(1);
+    expect(getToolTier('manage_device_anomalies')).toBe(1);
+    expect(getToolTier('manage_alert_correlations')).toBe(2);
+  });
+
+  it('exactly one W07 action is supervised (promote) and none is four-eyes', () => {
+    const rows = Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k)).toEqual(['manage_device_anomalies:promote']);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('the group-level correlation writes are agent-human-only: an agent reads correlations but never proposes a group write (QW3)', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_alert_correlations')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('get_alert_correlations')).toBe(false);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_device_anomalies')).toBe(false);
+  });
+});
+
+// ── W08 class rows (#6778, spec checklist item 3) ──────────────────────────
+// Copied from the W08 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the six W08 tools has a row, so a new action reds here until someone classifies it.
+const W08_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_topology_graph: {
+    graph: 't1', nodes: 't1', node: 't1', relationship: 't1', evidence: 't1', group_members: 't1', expansion: 't1', health: 't1',
+  },
+  // start dispatches a bounded probe from a device (inline, in the person's own session): tier 2, never supervised (W08-D3).
+  run_topology_diagnostic: { collectors: 't1', get: 't1', start: 't2', cancel: 't2' },
+  manage_topology_manual: {
+    create_node: 't2', update_node: 't2', delete_node: 't2', create_relationship: 't2', delete_relationship: 't2',
+  },
+  manage_topology_monitoring: {
+    list_policies: 't1', list_targets: 't1', get_settings: 't1',
+    upsert_policy: 't2', delete_policy: 't2', upsert_target: 't2', delete_target: 't2', patch_settings: 't2',
+  },
+  // publish makes a version appliable partner/org-wide; revoke is terminal and disables every referencing policy.
+  manage_topology_templates: {
+    list_templates: 't1', list_versions: 't1', site_options: 't1',
+    create_template: 't2', update_template: 't2', create_version: 't2',
+    publish_version: 'supervised', revoke_template: 'supervised',
+  },
+  apply_topology_template: { preview: 't2', apply: 'supervised', status: 't1' },
+};
+
+describe('W08 class rows (#6778)', () => {
+  it('covers the six W08 tools exactly once', () => {
+    expect(Object.keys(W08_EXPECTED).sort()).toEqual([
+      'apply_topology_template', 'get_topology_graph', 'manage_topology_manual',
+      'manage_topology_monitoring', 'manage_topology_templates', 'run_topology_diagnostic',
+    ]);
+  });
+
+  it.each(Object.keys(W08_EXPECTED))('%s: W08_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W08_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('registry tiers: manual is 2, the other five multiplexers start at 1', () => {
+    expect(getToolTier('manage_topology_manual')).toBe(2);
+    for (const tool of ['get_topology_graph', 'run_topology_diagnostic', 'manage_topology_monitoring', 'manage_topology_templates', 'apply_topology_template']) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+  });
+
+  it('exactly three W08 actions are supervised (publish, revoke, apply) and none is four-eyes', () => {
+    const rows = Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k).sort()).toEqual([
+      'apply_topology_template:apply', 'manage_topology_templates:publish_version', 'manage_topology_templates:revoke_template',
+    ]);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('every W08 tool is agent-human-only (W08-D1): its callers are people, resolved through user permissions', () => {
+    for (const tool of Object.keys(W08_EXPECTED)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+  });
+});
+
+// ── W09 class rows (#6779, spec checklist item 3) ──────────────────────────
+// Copied from the W09 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the multiplexed W09 tools has a row, so a new action reds here until someone classifies it.
+const W09_EXPECTED: Record<string, Record<string, W02Class>> = {
+  // SNMP template rows are tenant-internal and reversible (an edit can be edited back); the OID rows are reads.
+  manage_snmp_templates: {
+    list: 't1', get: 't1', browse_oids: 't1', validate_oids: 't1',
+    create: 't2', update: 't2', delete: 't2',
+  },
+  get_snmp_metrics: { history: 't1', dashboard: 't1' },
+  manage_known_guests: { list: 't1', add: 't2', delete: 't2' },
+  get_unifi_status: {
+    status: 't1', hosts: 't1', collectors: 't1', mappings: 't1', telemetry: 't1', sync_runs: 't1', controller_sites: 't1',
+  },
+};
+// Single-purpose tools: no action enum, one class for the whole tool.
+const W09_WHOLE_TOOL: Record<string, W02Class> = {
+  probe_network_asset: 't2',
+  trigger_unifi_sync: 't2',
+};
+
+describe('W09 class rows (#6779)', () => {
+  it('covers the six W09 tools exactly once', () => {
+    expect([...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)].sort()).toEqual([
+      'get_snmp_metrics', 'get_unifi_status', 'manage_known_guests', 'manage_snmp_templates',
+      'probe_network_asset', 'trigger_unifi_sync',
+    ]);
+  });
+
+  it.each(Object.keys(W09_EXPECTED))('%s: W09_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W09_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W09_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W09_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+
+  it('registry tiers: the probe and the sync are 2, the four multiplexers start at 1', () => {
+    expect(getToolTier('probe_network_asset')).toBe(2);
+    expect(getToolTier('trigger_unifi_sync')).toBe(2);
+    for (const tool of Object.keys(W09_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  it('nothing in W09 is supervised or four-eyes (every action is reversible, tenant-internal or a read)', () => {
+    for (const tool of [...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)]) {
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('the partner-wide tools (known guests, UniFi) are agent-human-only: an agent has no partner-wide authority', () => {
+    for (const tool of ['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+    }
+    for (const tool of ['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
+// ── W10 class rows (#6780, spec checklist item 3) ──────────────────────────
+// Copied from the W10 plan's class review table, NOT derived from the guardrail tables. None of the six tools has an action
+// enum (each is one read), so each is a whole-tool tier-1 row.
+const W10_WHOLE_TOOL: Record<string, W02Class> = {
+  get_device_ai_activity: 't1',
+  list_operator_tasks: 't1',
+  get_operator_task: 't1',
+  list_ai_agent_schedules: 't1',
+  list_fleet_designs: 't1',
+  get_fleet_design: 't1',
+};
+
+describe('W10 class rows (#6780)', () => {
+  it('covers the six W10 tools exactly once', () => {
+    expect(Object.keys(W10_WHOLE_TOOL).sort()).toEqual([
+      'get_device_ai_activity', 'get_fleet_design', 'get_operator_task',
+      'list_ai_agent_schedules', 'list_fleet_designs', 'list_operator_tasks',
+    ]);
+  });
+
+  it.each(Object.entries(W10_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(getToolTier(tool)).toBe(1);
+  });
+
+  it('nothing in W10 is supervised or four-eyes (every tool is a read of stored rows)', () => {
+    for (const tool of Object.keys(W10_WHOLE_TOOL)) {
+      expect(TIER2_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('no W10 tool is agent-human-only (that set is for self-granted authority); the operator-task reads are denied-read tools instead', () => {
+    for (const tool of Object.keys(W10_WHOLE_TOOL)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    expect(AGENT_DENIED_READ_TOOLS.has('list_operator_tasks')).toBe(true);
+    expect(AGENT_DENIED_READ_TOOLS.has('get_operator_task')).toBe(true);
+    for (const tool of ['get_device_ai_activity', 'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+    }
   });
 });

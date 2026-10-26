@@ -96,4 +96,31 @@ describe('agreement surfaces gate on agreements:*, not contracts:* (W02)', () =>
     h.grants.add('contracts:read');
     expect((await contractRoutes.request(DOCUMENTS, { method: 'GET' })).status).toBe(403);
   });
+
+  // #9075 W2a (OD7 B): recording a client's signature is a send-class act.
+  // Body is deliberately JSON: a caller past the gate gets the route's own 400
+  // INVALID_MULTIPART, so any non-403 proves the permission check passed.
+  describe('POST /agreement-requests/record-signed gates on agreements:send', () => {
+    const RECORD = '/agreement-requests/record-signed';
+    const post = () => contractRoutes.request(RECORD, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    it('403s a caller holding agreements:read and agreements:write but not agreements:send', async () => {
+      h.grants.add('agreements:read');
+      h.grants.add('agreements:write');
+      const res = await post();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Permission denied' });
+    });
+
+    it('lets a caller holding agreements:send past the gate', async () => {
+      h.grants.add('agreements:send');
+      const res = await post();
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'INVALID_MULTIPART' });
+    });
+  });
 });

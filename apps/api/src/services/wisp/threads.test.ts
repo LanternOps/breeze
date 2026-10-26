@@ -10,7 +10,7 @@ import { getTableName } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
-  state: { inSystem: false },
+  state: { inSystem: false, ambientContext: undefined as { scope: string } | undefined },
   calls: [] as string[],
   threads: [] as Array<Record<string, unknown>>,
   rows: {} as Record<string, unknown[]>,
@@ -26,6 +26,13 @@ const h = vi.hoisted(() => ({
   attachmentSeedLines: vi.fn(),
   listLinks: vi.fn(),
   captureException: vi.fn(),
+  execute: vi.fn(async (q: unknown) => {
+    const { text, params } = sqlOf(q);
+    if (/current_setting/.test(text)) { h.events.push('read-scope'); return [{ scope: h.state.ambientContext?.scope ?? null }]; }
+    h.events.push('guc:' + String(params[0]));
+    return [];
+  }),
+  events: [] as string[],
 }));
 
 vi.mock('../../db', async () => {
@@ -52,6 +59,7 @@ vi.mock('../../db', async () => {
         const table = tableName(t);
         h.calls.push(`insert:${table}`);
         h.inserts.push({ table, values, target: opts?.target, system: h.state.inSystem });
+        h.events.push('insert:' + table);
         let created: Record<string, unknown> | null = null;
         if (table === 'wisp_threads' && !h.threads.some((r) => r.grantId === values.grantId)) {
           created = {
@@ -73,16 +81,21 @@ vi.mock('../../db', async () => {
         const table = tableName(t);
         h.calls.push(`update:${table}`);
         h.updates.push({ table, set, where, system: h.state.inSystem });
+        h.events.push('update:' + table);
         return Object.assign(Promise.resolve(undefined), { returning: async () => h.updateReturning.shift() ?? [] });
       },
     }),
   }));
   return {
-    db: { select, insert, update },
-    withDbTransaction: vi.fn((fn: () => unknown) => fn()),
+    db: { select, insert, update, execute: h.execute },
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => { h.events.push('savepoint'); try { return await fn(); } catch (e) { h.events.push('rollback'); throw e; } }),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-    withSystemDbAccessContext: vi.fn(),
-    getCurrentDbAccessContext: vi.fn(() => undefined),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+      h.calls.push('system-wrapper');
+      h.state.inSystem = true;
+      try { return await fn(); } finally { h.state.inSystem = false; }
+    }),
+    getCurrentDbAccessContext: vi.fn(() => h.state.ambientContext),
   };
 });
 vi.mock('./grantAuthority', async (importOriginal) => ({
@@ -106,7 +119,7 @@ vi.mock('./threadAttachments', () => ({
 
 import { CeilingViolationError, type GrantCeiling } from './grantAuthority';
 import {
-  attachSession, getOrCreateThread, seedContextForSession, setThreadFocus, updateThreadSummary,
+  attachSession, getOrCreateThread, seedContextForSession, setThreadFocus, updateThreadSummary, WISP_BEHAVIOUR_BLOCK,
 } from './threads';
 import { truncateSummary } from './threadSummary';
 
@@ -151,6 +164,9 @@ const sqlOf = (where: unknown) => {
 };
 
 beforeEach(() => {
+  h.state.ambientContext = undefined;
+  h.events.length = 0;
+  h.execute.mockClear();
   h.calls.length = 0;
   h.threads = [];
   h.rows = {};
@@ -211,6 +227,53 @@ function getTableColumnName(target: unknown): string | undefined {
 }
 
 describe('attachSession', () => {
+  // createSession INSERTs the ai_sessions row inside the request transaction and
+  // then attaches it; a fresh system connection cannot see that uncommitted row
+  // ("AI session … not found", 500 on POST /ai/sessions). The partner-access
+  // policies on wisp_threads / wisp_thread_sessions admit the grantor's own
+  // request, so the attach joins the caller's connection when one is open.
+  it('elevates the caller\'s own connection to system scope for the attach and restores the scope after', async () => {
+    h.state.ambientContext = { scope: 'organization' };
+    h.threads = [threadRow];
+    h.rows.ai_sessions = [{ orgId: ORG_A }];
+
+    await attachSession(THREAD, SESSION);
+
+    expect(h.calls).not.toContain('system');
+    expect(h.calls).not.toContain('system-wrapper');
+    expect(sqlOf(h.execute.mock.calls[1]![0]).text).toMatch(/set_config\('breeze\.scope', \$1, true\)/);
+    // The elevation wraps the writes: both statements ran between the two set_config calls.
+    expect(h.events).toEqual(['savepoint', 'read-scope', 'guc:system', 'insert:wisp_thread_sessions', 'update:wisp_threads', 'guc:organization']);
+    const ins = h.inserts.find((i) => i.table === 'wisp_thread_sessions')!;
+    expect(ins.values).toEqual({ threadId: THREAD, sessionId: SESSION, partnerId: PARTNER, orgId: ORG_A });
+  });
+
+  it('on a throw the savepoint rollback undoes the elevation; no restore statement runs on an aborted transaction', async () => {
+    h.state.ambientContext = { scope: 'partner' };
+    await expect(attachSession(THREAD, SESSION)).rejects.toThrow(/thread .*not found/i);
+    expect(h.events).toEqual(['savepoint', 'read-scope', 'guc:system', 'rollback']);
+  });
+
+  it('joins an ambient SYSTEM context without touching the GUC', async () => {
+    h.state.ambientContext = { scope: 'system' };
+    h.threads = [threadRow];
+    h.rows.ai_sessions = [{ orgId: ORG_A }];
+    await attachSession(THREAD, SESSION);
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.events).not.toContain('savepoint');
+    expect(h.calls).not.toContain('system-wrapper');
+  });
+
+  it('opens a system context when no context is ambient (background callers)', async () => {
+    h.state.ambientContext = undefined;
+    h.threads = [threadRow];
+    h.rows.ai_sessions = [{ orgId: ORG_A }];
+
+    await attachSession(THREAD, SESSION);
+
+    expect(h.calls).toContain('system-wrapper');
+  });
+
   it('attachSession writes partner_id from the thread and org_id from the session, and bumps last_session_id', async () => {
     h.threads = [threadRow];
     h.rows.ai_sessions = [{ orgId: ORG_A }];
@@ -260,9 +323,24 @@ describe('updateThreadSummary', () => {
 });
 
 describe('seedContextForSession', () => {
-  it('seedContextForSession returns "" when summary is empty and recall returns no blocks', async () => {
+  it('seedContextForSession with nothing to recall is only the Wisp behaviour block (#10143)', async () => {
     h.threads = [threadRow];
-    await expect(seedContextForSession(THREAD, ceiling)).resolves.toBe('');
+    const out = await seedContextForSession(THREAD, ceiling);
+    expect(out).toBe(WISP_BEHAVIOUR_BLOCK);
+    expect(out).not.toContain('## Wisp thread');
+  });
+
+  it('the seed carries the Wisp behaviour block after the thread context (#10143)', async () => {
+    threadRow.summary = 'Patched the Acme file server.';
+    h.threads = [threadRow];
+    const out = await seedContextForSession(THREAD, ceiling);
+    expect(out).toContain(WISP_BEHAVIOUR_BLOCK);
+    expect(out.indexOf('## Wisp thread')).toBeLessThan(out.indexOf(WISP_BEHAVIOUR_BLOCK));
+    for (const tool of ['remember', 'recall', 'raise_concern']) expect(WISP_BEHAVIOUR_BLOCK).toContain(`\`${tool}\``);
+    expect(WISP_BEHAVIOUR_BLOCK).toMatch(/never (claim|say)[^.]*remembered/i);
+    expect(WISP_BEHAVIOUR_BLOCK.split('\n').length).toBeLessThanOrEqual(40);
+    // Prompts never grant: the block says so and grants nothing itself.
+    expect(WISP_BEHAVIOUR_BLOCK).toMatch(/does not grant|never grants/i);
   });
 
   it('seedContextForSession wraps the summary as untrusted and appends renderMemoryForPrompt output', async () => {
@@ -336,7 +414,7 @@ describe('seedContextForSession', () => {
 
     const withNone = await seedContextForSession(THREAD, ceiling);
     expect(withNone).not.toContain('wisp_thread_attachments');
-    expect(withNone).toBe('');
+    expect(withNone).toBe(WISP_BEHAVIOUR_BLOCK);
   });
 
   describe('linked objects (W08 Task 5)', () => {

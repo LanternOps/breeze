@@ -8,8 +8,13 @@ import {
   Flag,
   Building2,
   ExternalLink,
+  Sparkles,
 } from "lucide-react";
-import { useAiStore } from "@/stores/aiStore";
+import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
+import { useJwtClaims } from "@/lib/authScope";
+import { useWispEnabled } from "@/lib/wispVisibility";
+import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
+import { useEntitlement } from "@/hooks/useEntitlement";
 import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
@@ -27,7 +32,6 @@ import { useAiConversationSource, type ConversationRow } from "./useAiConversati
 import { useContinueInPanel } from "../workspace/useContinueInPanel";
 import { showToast } from "../shared/Toast";
 import BuyCreditsLink from "./BuyCreditsLink";
-import WispToggle from "./WispToggle";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
 import { useTranslation } from "react-i18next";
@@ -35,6 +39,35 @@ import { useTranslation } from "react-i18next";
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+
+type GrantLookup =
+  | { kind: "idle" }
+  | { kind: "none" }
+  | { kind: "failed" }
+  | { kind: "active"; grant: NonNullable<WispState> };
+
+/**
+ * The caller's active Wisp grant the panel can speak under: the partner-wide
+ * grant first, then one scoped to the organization selected in the header
+ * (the order WispLinkButton uses). A 404 `no_active_grant` is the ordinary
+ * "no grant here"; any other failure is reported as `failed` and the panel
+ * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
+ * loudly (Review Focus 2).
+ */
+async function lookUpActiveGrant(orgId: string | null): Promise<GrantLookup> {
+  let failed = false;
+  for (const scope of orgId ? [null, orgId] : [null]) {
+    try {
+      const state = await fetchWispThread(scope);
+      if (isActiveGrant(state)) return { kind: "active", grant: state };
+    } catch (err) {
+      if (isNoActiveGrant(err)) continue;
+      console.warn("[AiChatSidebar] could not read the Wisp thread; staying Breeze AI", err);
+      failed = true;
+    }
+  }
+  return failed ? { kind: "failed" } : { kind: "none" };
+}
 
 export default function AiChatSidebar() {
   const { t } = useTranslation("ai");
@@ -84,6 +117,7 @@ export default function AiChatSidebar() {
     composerDraft,
     setComposerDraft,
     wisp,
+    enterWispMode,
     topologySiteId,
     joinedMidResponse,
   } = useAiStore();
@@ -153,14 +187,72 @@ export default function AiChatSidebar() {
     if (isOpen) loadM365Connections();
   }, [isOpen, loadM365Connections]);
 
+  // W05 (#10136, spec §7 + §11 decision 4): the grant decides the voice — no
+  // toggle. Asked only where a grant can exist: the server has Wisp on, the
+  // token is partner-scoped (grants are partner-staff only) and the plan
+  // carries `wisp`. Org tokens never ask the partner route at all.
+  const jwtClaims = useJwtClaims();
+  const partnerToken = jwtClaims.status === "resolved" && jwtClaims.claims.scope === "partner";
+  const wispServerOn = useWispEnabled({ enabled: partnerToken });
+  const wispEntitlement = useEntitlement("wisp");
+  const wispEligible = canUseAi && partnerToken && wispServerOn && wispEntitlement.state === "enabled";
+  const [grantLookup, setGrantLookup] = useState<GrantLookup>({ kind: "idle" });
+  // The selected org ("" = none) the panel last asked about; null = ask on the next open.
+  const grantLookupKeyRef = useRef<string | null>(null);
+
+  // Once per page and selected org, the first time the panel is open with
+  // every gate passed (a failed read is asked again on the next open). An
+  // active grant gives a panel with no conversation the Wisp voice at once.
+  // A conversation already open (a restored chat — its own Wisp state comes
+  // back through the store's rehydrate — or a device task being created) is
+  // never abandoned for it: the next new conversation starts on the grant.
+  useEffect(() => {
+    if (!isOpen || !wispEligible) return;
+    const key = selectedOrgId ?? "";
+    if (grantLookupKeyRef.current === key) return;
+    grantLookupKeyRef.current = key;
+    if (useAiStore.getState().wisp) return;
+    void lookUpActiveGrant(selectedOrgId).then((result) => {
+      // The org changed while this was in flight: the newer lookup owns the answer.
+      if (grantLookupKeyRef.current !== key) return;
+      if (result.kind === "failed") grantLookupKeyRef.current = null;
+      setGrantLookup(result);
+      if (result.kind !== "active") return;
+      const now = useAiStore.getState();
+      if (now.wisp || now.sessionId || now.isLoading) return;
+      void now.enterWispMode(result.grant);
+    });
+  }, [isOpen, wispEligible, selectedOrgId]);
+
+  // Wisp is on here but there is no active grant (none, paused, ended, or the
+  // plan lacks Wisp): point at the home, which explains and starts or resumes one.
+  const showMeetWisp =
+    !wisp &&
+    canUseAi &&
+    partnerToken &&
+    wispServerOn &&
+    (wispEntitlement.state === "locked" || (wispEntitlement.state === "enabled" && grantLookup.kind === "none"));
+
   const boundConnection = boundM365ConnectionId
     ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
     : null;
 
   const handleNewConversation = useCallback(async () => {
     await closeSession();
+    // Leaving a plain conversation where Wisp can run: the new one takes the
+    // grant as it is NOW. Re-read, never the lookup from when the panel
+    // opened — a grant revoked, paused or expired since then must start a
+    // plain chat (and offer Meet Wisp), not a session the server refuses.
+    if (!wisp && wispEligible) {
+      const result = await lookUpActiveGrant(selectedOrgId);
+      setGrantLookup(result);
+      if (result.kind === "active") {
+        await enterWispMode(result.grant);
+        return;
+      }
+    }
     await createSession();
-  }, [closeSession, createSession]);
+  }, [closeSession, createSession, enterWispMode, wisp, wispEligible, selectedOrgId]);
 
   if (!canUseAi) return null;
 
@@ -203,8 +295,6 @@ export default function AiChatSidebar() {
           </div>
 
           <div className="flex items-center gap-1">
-            {/* Wisp W04: renders nothing while the server has Wisp off or for an org-scoped token. */}
-            {!showHistory && !wisp && <WispToggle />}
             {!showHistory && (
               <button
                 onClick={toggleHistory}
@@ -391,6 +481,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              assistantLabel={wisp ? t("wisp.title") : undefined}
             />
 
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}
@@ -409,6 +500,19 @@ export default function AiChatSidebar() {
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
             />
+
+            {showMeetWisp && (
+              <div className="border-t px-4 py-2">
+                <a
+                  href="/wisp"
+                  data-testid="wisp-sidebar-meet"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                >
+                  <Sparkles className="h-3 w-3" aria-hidden="true" />
+                  {t("wisp.sidebar.meetWisp")}
+                </a>
+              </div>
+            )}
           </>
         )}
       </div>

@@ -20,6 +20,7 @@ package patching
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -486,7 +487,15 @@ func (r *RebootManager) ledgerPath() string {
 	return deferralLedgerPath()
 }
 
-// Cancel cancels a scheduled reboot.
+// ErrNoRebootScheduled is what Cancel returns when there was nothing to cancel:
+// no schedule and no OS countdown. The restart the caller wanted gone is gone,
+// so the cancel_reboot handler reports this as a successful no-op (#10186). It
+// must never be returned while a reboot may still happen — those refusals keep
+// their own errors so they stay failures.
+var ErrNoRebootScheduled = errors.New("no reboot scheduled")
+
+// Cancel cancels a scheduled reboot. It returns ErrNoRebootScheduled when
+// nothing was pending.
 //
 // The gate deliberately admits r.osInvoked as well as r.state.RebootScheduled.
 // runOSReboot clears RebootScheduled *before* it invokes the OS command, so for
@@ -505,9 +514,18 @@ func (r *RebootManager) Cancel() error {
 		r.mu.Unlock()
 		return fmt.Errorf("the restart command is being handed to the operating system and can no longer be cancelled")
 	}
+	// An earlier Cancel cleared the schedule and is aborting the OS countdown
+	// outside the lock. Nothing is left for this call to do, but that abort can
+	// still fail and leave the machine going down, so "nothing scheduled" —
+	// which the handler reports as success — would be premature. The first
+	// Cancel reports the outcome.
+	if r.osAborting {
+		r.mu.Unlock()
+		return fmt.Errorf("this restart is already being cancelled; the operating system countdown is still being aborted")
+	}
 	if !r.state.RebootScheduled && !r.osInvoked {
 		r.mu.Unlock()
-		return fmt.Errorf("no reboot scheduled")
+		return ErrNoRebootScheduled
 	}
 	r.cancelLocked()
 	r.state.RebootScheduled = false

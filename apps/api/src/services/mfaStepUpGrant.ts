@@ -265,9 +265,11 @@ export function maintenanceResourceDigest(input: {
 /**
  * Canonical digest for a `device_force_reboot` grant (#8729): the device id
  * alone, so a grant minted for one device can never force-reboot another.
+ * Lowercased so the mint and the route agree whatever case each was given
+ * the uuid in (#9380 review).
  */
 export function forceRebootResourceDigest(input: { deviceId: string }): `sha256:${string}` {
-  const canonical = JSON.stringify({ deviceId: input.deviceId });
+  const canonical = JSON.stringify({ deviceId: input.deviceId.toLowerCase() });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

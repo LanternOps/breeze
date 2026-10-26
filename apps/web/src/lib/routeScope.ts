@@ -164,7 +164,8 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/snmp(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/dns-security$/, kind: 'org-or-all' },
   { pattern: /^\/onedrive$/, kind: 'org-or-all' },
-  // The multi-tab chat (W08 #9921): /wisp/chat; /workspace only redirects to it.
+  // The multi-tab chat lives at /ai/chat; /wisp/chat and /workspace only redirect to it.
+  { pattern: /^\/ai\/chat$/, kind: 'org-or-all' },
   { pattern: /^\/wisp\/chat$/, kind: 'org-or-all' },
   { pattern: /^\/workspace$/, kind: 'org-or-all' },
 

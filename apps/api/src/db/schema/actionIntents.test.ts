@@ -30,10 +30,12 @@ describe('actionIntentStatusEnum', () => {
 });
 
 describe('actionIntentSourceEnum', () => {
-  it('has exactly chat, mcp_api, and ai_agent', () => {
+  it('has exactly chat, mcp_api, ai_agent, and flow', () => {
     // 'ai_agent' (wave 3) is the autonomous AI agent principal's source —
-    // NOT the same as 'agent', which is the Go device agent.
-    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent']);
+    // NOT the same as 'agent', which is the Go device agent. 'flow' (tool
+    // catalog W04, #5219) is a parked Tier-3 flow step; the SQL CHECK pin is
+    // in flowRuns.checkPins.test.ts.
+    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent', 'flow']);
   });
 });
 
@@ -301,6 +303,8 @@ describe('action_intents schema', () => {
         'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
+        // W04 (#5219): the flow run actor root.
+        'requestingFlowRunId',
         'scopeKind',
         'scopeDeviceId',
         'scopeTicketId',
@@ -348,6 +352,10 @@ describe('action_intents schema', () => {
         // Tool catalog W01 PR B (#5216): external Tier-3 tool binding.
         'toolSourceToolId',
         'toolRevision',
+        // Tool catalog W05 (#5220, Decision 8): the flow a chat Tier-3
+        // flow__<slug> call approved (2027-01-07-140000-flow-webhooks-tools-budgets.sql;
+        // exclusive with toolSourceToolId via action_intents_external_tool_chk).
+        'invokedFlowId',
         // Caller verification W05 (#6359): the pinned Entra target and the
         // committed dispatch marker (2026-12-30-220000-action-intents-caller-target.sql).
         'targetEntraTenantId',

@@ -62,6 +62,8 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  // --- flows W05 (#5220) ------------------------------------------------------
+  'services/flows/webhook/deliveries.ts': 'W05 (#5220) webhook delivery log (flow_webhook_deliveries): append-only ingress bookkeeping, not partner-wide config. Its only writer is services/flows/webhook/ingest.ts behind the router-auth-exempt POST /api/v1/webhooks/flows/:flowId; there is no AuthContext to gate — every write runs in system context AFTER HMAC/token verification against the flow\'s own secret, and a failed verification writes no row. The partner-wide authority is gated where it is granted: minting/rotating a partner-wide flow\'s secret (services/flows/webhook/secret.ts, partner_wide_forbidden; test secret.test.ts) and enabling a partner-wide flow (services/flows/versions.ts canManagePartnerWidePolicies).',
   'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
   // --- business calendars (#8973 W4) ------------------------------------------
   'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
@@ -74,6 +76,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // grant, not partner-wide configuration pushed into every org.
   'services/wisp/concerns.ts': 'Wisp W05a triage facts (wisp_concerns / wisp_concern_recipients): per-subject concerns and per-grant recipient state, not partner-wide config; every write runs in system context on ids the caller already authorised (grant-owner routes, chat tools under auth.wispGrant after assertWithinCeiling, the assessment finalizer)',
   'services/wisp/threadLinks.ts': 'Wisp W08 (#9914) thread links (wisp_thread_links): one grant\'s own thread context, not partner-wide config; every add resolves the entity first (caller permission, live ceiling, token scope — services/wisp/entityRefs.ts) and every query is pinned to (partner_id, thread_id) of a thread the caller owns (loadOwnThread / the chat tool\'s own grant)',
+  'services/wisp/threadPosts.ts': 'Wisp companion W02a (#10212) thread posts (wisp_thread_posts): one grant\'s own proactive output (brief / nudge / digest), not partner-wide config; the only caller is notifyUser, a worker path in system context that cross-checks thread, grant and grantor before it writes, and every row takes the thread\'s own partner and grant',
   'services/wisp/watches.ts': 'Wisp W05a standing checks (wisp_watches): one grant\'s own rows, not partner-wide config; createWatch runs assertWithinCeiling and stamps grant/owner from the ceiling, deleteWatch is keyed by the ceiling\'s grant, the scheduler functions run in system context',
   'services/wisp/threads.ts': 'per-grant conversation state (one row per wisp_grants id), not partner-wide config; writes run in system context on ids the caller already authorised (validateWispGrantForSession / the grant-owner thread routes), and setThreadFocus is keyed by the ceiling\'s own grant + partner after assertWithinCeiling',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
@@ -299,6 +302,15 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // full-partner-admin surfaces gated at the route.
   'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
   'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
+  // #8318 wave 1b — reinstall reattach. device_reattach_intents and
+  // device_reattachments are partner-axis tables, but no row is partner-wide
+  // config: each names two devices of one partner, and every write runs in
+  // system scope behind its own authorization.
+  'services/deviceReattach/requestIntent.ts': 'reattach intent creation and admin cancel (system scope): the §8 access rule (./access.ts canActorReattach) gates every request on canManagePartnerWidePolicies for full partner admins and on per-org access + devices:write/delete for technicians, re-read under the holding-area lock',
+  'services/deviceReattach/stage.ts': 'phase 1 of the rebind (POST /agents/:id/rebind): the SOURCE agent stages hashes on the ONE intent naming it as source, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule',
+  'services/deviceReattach/confirm.ts': 'rebind-confirm (confirm-only token): settles the ONE intent the token matches, writes its ledger row and the parked source\'s `reattached` exit, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule (canManagePartnerWidePolicies for full partner admins)',
+  'services/deviceReattach/expirySweep.ts': 'the per-minute system job (jobs/deviceReattachIntentSweep.ts): expires open intents past their deadline and prunes terminal ones after 30 days; no caller, no partner-wide config',
+  'services/deviceReattach/intentStore.ts': 'shared locked reads and state transitions of ONE intent (cancel/expire: discard the staged set, demote its pending certificate), called only by the reattach services and parked housekeeping, which hold the authorization',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------

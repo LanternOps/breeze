@@ -167,24 +167,35 @@ By default, when a technician starts a remote desktop session the person sitting
 | **Notify** *(default)* | A desktop notification appears — "*Jordan Lee connected to your computer*" — and the session begins immediately. No approval is required. |
 | **Consent** | A dialog asks the user to **Allow** or **Deny** before the technician can see the screen. The technician's view does not start until the user allows it. |
 
-When a session is active, a small indicator ("*Jordan Lee is connected*" with a live timer) is shown at the top of the user's screen for the duration of the session, and a "*Remote session ended*" notice appears when the technician disconnects. Both can be turned off per policy.
+When a session is active, a small indicator ("*Jordan Lee is connected*" with a live timer) is shown at the top of the user's screen for the duration of the session, and a "*Remote session ended*" notice appears when the technician disconnects. Both can be turned off per policy. The on-screen indicator is drawn on Windows, and by Breeze Assist on macOS and Linux; without Assist, macOS and Linux show the start and end notices only.
 
 **What the end user sees in Consent mode**
 
-The consent dialog asks the user to allow or deny the remote session, with **Deny selected by default** — a privacy prompt never grants access on a stray keypress. If the user doesn't respond before the prompt times out, Breeze applies the policy's fallback (see below). The countdown starts only once the prompt is confirmed on screen, and a prompt that expired while the session was locked or disconnected counts as "could not be shown", not as unanswered.
+The prompt asks the user to allow or deny the remote session, naming the technician (to the level set by *Technician identity shown*) and their organization. It is drawn by one of two renderers, and which one appears depends on whether Breeze Assist is running in the user's session:
+
+| Renderer | When it is used | What it looks like |
+|----------|-----------------|--------------------|
+| **Breeze Assist card** | Breeze Assist is running in the signed-in user's session. | A branded card with **Allow** and **Deny** buttons. |
+| **Native dialog** | Breeze Assist is not running, but the Breeze user helper in that session can draw a system dialog. | A **Remote Support Request** dialog: a system message box with **Yes** / **No** on Windows, an **Allow** / **Deny** dialog on macOS, a `zenity` dialog on Linux (requires `zenity` installed and a graphical display). |
+
+Consent mode therefore works without Breeze Assist. Both renderers show a **30-second countdown** (the API ships the length with the session start). The countdown starts only once the prompt is confirmed on screen, and the technician's view does not start until the user answers.
+
+**Deny is the default button on both renderers**, so a stray Enter keypress never grants access. (Native dialogs defaulted to Yes / Allow on agents released before this was changed in [#10187](https://github.com/LanternOps/breeze/issues/10187); update the agent to get the Deny default.) If the user doesn't answer in time, the dialog closes itself and Breeze applies the policy's fallback on Windows (see *When consent can't be asked* below); on macOS and Linux an unanswered prompt is refused, because they can't tell whether the screen was locked. A prompt that expired while the session was locked or disconnected counts as "could not be shown", not as unanswered.
+
+A session is refused most commonly when someone is signed in and **neither** renderer can reach them: Breeze Assist is not running and the user helper cannot draw a native dialog (for example a Linux session with no display or without `zenity`).
 
 **Settings (per Configuration Policy → Remote Access)**
 
 | Setting | Options | Default | Effect |
 |---------|---------|---------|--------|
 | Session prompt mode | Off / Notify / Consent | **Notify** | Whether the user is notified and/or must consent. |
-| When consent can't be asked | Proceed / Block | **Proceed** | What happens when **no one is signed in** to the session being viewed, or when the signed-in user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. With current agents, a session where someone **is** signed in but the prompt can't be shown to them (Breeze Assist not running or not responding) is always refused, whatever this is set to. |
+| When consent can't be asked | Proceed / Block | **Proceed** | What happens when **no one is signed in** to the session being viewed, or when the signed-in user doesn't respond in time. **Proceed** connects anyway; **Block** refuses the session. An explicit **Deny** always blocks regardless of this setting. With current agents, a session where someone **is** signed in but the prompt can't be shown to them (neither Breeze Assist nor the native dialog can reach them) is always refused, whatever this is set to. |
 | Notify on session end | On / Off | **On** | Whether the "session ended" notice is shown. |
 | Show active-session indicator | On / Off | **On** | Whether the top-of-screen indicator appears during the session. |
-| Technician identity shown | Name & email / Name only / Generic | **Name & email** | How much of the technician's identity is revealed to the end user. **Generic** shows "*A technician*" with no name or email. |
+| Technician identity shown | Name & email / Name only / Generic | **Name & email** | How much of the technician's identity is revealed to the end user, in the prompt and the notices. **Name & email** shows both, **Name only** omits the address, and **Generic** shows "*A technician*" with no name or email. |
 
 <Aside>
-  These surfaces are drawn by the **Breeze Helper** running in the signed-in user's desktop session. On an unattended machine (no user signed in), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out. If a user is signed in but the Helper can't show them the prompt, current agents refuse the session instead of connecting without asking. Only Windows reports whether the screen is locked, so on macOS and Linux a prompt that times out is refused.
+  These surfaces are drawn in the signed-in user's desktop session by Breeze Assist or, when Assist isn't running, by the Breeze user helper's native dialogs. On an unattended machine (no user signed in), there is no one to notify or ask — in **Consent** mode, Breeze then applies the *"When consent can't be asked"* fallback. With **Proceed** (the default), unattended and headless machines are never locked out. If a user is signed in but neither can show them the prompt, current agents refuse the session instead of connecting without asking. Only Windows reports whether the screen is locked, so on macOS and Linux a prompt that times out is refused.
 </Aside>
 
 <Aside type="note">

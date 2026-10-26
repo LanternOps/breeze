@@ -620,6 +620,57 @@ describe('deliverEventJobDataSchema', () => {
   });
 });
 
+// Tool catalog W04 (#5219), Decision 14: events published inside a flow frame
+// carry metadata.flowRunId / flowChainDepth. The metadata schema is .strict(),
+// so without these keys every such event would fail at dequeue in 'enforce'.
+describe('route/deliver event job schemas accept flow ancestry metadata', () => {
+  const RUN_ID = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+  const flowEvent = {
+    id: 'evt-1',
+    type: 'alert.resolved',
+    orgId: 'org-1',
+    source: 'unit-test',
+    priority: 'normal' as const,
+    payload: { alertId: 'a-1' },
+    metadata: { timestamp: '2026-08-26T00:00:00.000Z', flowRunId: RUN_ID, flowChainDepth: 2 },
+  };
+
+  it('both keys survive parse on a route-event job', () => {
+    const parsed = routeEventJobDataSchema.parse({
+      v: 1, mode: 'enforce', event: flowEvent, matchedSubscriberIds: [], queueSubscriberIds: [],
+    });
+    expect(parsed.event.metadata).toEqual(flowEvent.metadata);
+  });
+
+  it('both keys survive parse on a deliver-event job', () => {
+    const parsed = deliverEventJobDataSchema.parse({ v: 1, subscriberId: 'webhook-delivery', event: flowEvent });
+    expect(parsed.event.metadata.flowRunId).toBe(RUN_ID);
+    expect(parsed.event.metadata.flowChainDepth).toBe(2);
+  });
+
+  it.each([-1, 4, 1.5])('refuses flowChainDepth %s (0..3 integers only)', (depth) => {
+    expect(() => deliverEventJobDataSchema.parse({
+      v: 1, subscriberId: 'webhook-delivery', event: { ...flowEvent, metadata: { ...flowEvent.metadata, flowChainDepth: depth } },
+    })).toThrow();
+  });
+
+  it('refuses a non-uuid flowRunId', () => {
+    expect(() => deliverEventJobDataSchema.parse({
+      v: 1, subscriberId: 'webhook-delivery', event: { ...flowEvent, metadata: { ...flowEvent.metadata, flowRunId: 'run-1' } },
+    })).toThrow();
+  });
+});
+
+describe('flowRunJobDataSchema (flow-runs queue payload)', () => {
+  it('accepts { runId: uuid } and nothing else', async () => {
+    const { flowRunJobDataSchema } = await import('./queueSchemas');
+    const runId = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+    expect(flowRunJobDataSchema.parse({ runId })).toEqual({ runId });
+    expect(() => flowRunJobDataSchema.parse({ runId: 'x' })).toThrow();
+    expect(() => flowRunJobDataSchema.parse({ runId, extra: 1 })).toThrow();
+  });
+});
+
 describe('backupProcessResultSchema snapshot files (D12)', () => {
   it('accepts the originalPath a VSS-backed Windows agent sends alongside the shadow sourcePath', async () => {
     const { backupProcessResultSchema } = await import('./queueSchemas');

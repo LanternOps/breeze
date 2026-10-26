@@ -91,6 +91,7 @@ import {
   nextBackoff,
   recordNudge,
   resolveConcern,
+  resolveConcernBySignature,
   upsertConcern,
 } from './concerns';
 
@@ -242,6 +243,22 @@ describe('resolveConcern', () => {
     h.rememberForGrant.mockRejectedValueOnce(new Error('db down'));
     await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveConcernBySignature (#10143)', () => {
+  it('resolves the live concern holding the signature, without a memory write', async () => {
+    h.selectRows.push([{ id: C1 }]);
+    h.updateReturning.push([resolvedRow]);
+    await expect(resolveConcernBySignature('p1', 'sig-1', 'ai_agent_configured')).resolves.toEqual({ resolved: true });
+    expect(h.updates[0]!.set).toMatchObject({ status: 'resolved', outcome: 'ai_agent_configured' });
+    expect(h.rememberForGrant).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when nothing live holds the signature', async () => {
+    h.selectRows.push([]);
+    await expect(resolveConcernBySignature('p1', 'sig-1', 'x')).resolves.toEqual({ resolved: false });
+    expect(h.updates).toHaveLength(0);
   });
 });
 

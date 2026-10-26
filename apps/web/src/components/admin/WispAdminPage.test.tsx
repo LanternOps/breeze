@@ -162,11 +162,14 @@ describe('WispAdminPage', () => {
     spy.mockRestore();
   });
 
-  it('moves the whole page to the lock / disabled state when a grants fetch returns 403 / 404', async () => {
-    for (const [status, testId] of [[403, 'wisp-admin-locked'], [404, 'wisp-admin-disabled']] as const) {
+  it('moves the whole page to the lock / disabled state when a grants fetch returns 403 / 404 wisp_disabled', async () => {
+    for (const [status, body, testId] of [
+      [403, { error: 'x' }, 'wisp-admin-locked'],
+      [404, { error: 'wisp_disabled' }, 'wisp-admin-disabled'],
+    ] as const) {
       fetchWithAuth.mockReset();
       fetchWithAuth.mockImplementation((url: string) =>
-        Promise.resolve(url === '/admin/wisp/overview' ? jsonRes(overview) : jsonRes({ error: 'x' }, status)),
+        Promise.resolve(url === '/admin/wisp/overview' ? jsonRes(overview) : jsonRes(body, status)),
       );
       const { unmount } = render(<WispAdminPage />);
       fireEvent.click(await screen.findByTestId(`wisp-admin-partner-toggle-${P1}`));
@@ -181,11 +184,41 @@ describe('WispAdminPage', () => {
     await screen.findByTestId('wisp-admin-locked');
   });
 
-  it('shows the disabled notice on 404', async () => {
-    fetchWithAuth.mockResolvedValue(jsonRes({ error: 'not found' }, 404));
+  it('shows the disabled notice on a 404 whose body says wisp_disabled', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ error: 'wisp_disabled' }, 404));
     render(<WispAdminPage />);
     const notice = await screen.findByTestId('wisp-admin-disabled');
     expect(notice.textContent).toContain('BREEZE_WISP_ENABLED');
+  });
+
+  // #10141: the routes were missing and the router's generic 404 read as "not enabled".
+  it.each([
+    ['a generic route 404', { error: 'Not Found' }],
+    ['a 404 with a non-JSON body', null],
+  ])('shows the error state, not "disabled", on %s', async (_label, body) => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue(
+      body === null
+        ? ({ ok: false, status: 404, json: async () => { throw new SyntaxError('Unexpected token <'); } } as unknown as Response)
+        : jsonRes(body, 404),
+    );
+    render(<WispAdminPage />);
+    const error = await screen.findByTestId('wisp-admin-error');
+    expect(error.textContent).toContain('Failed to load the Wisp overview');
+    expect(screen.queryByTestId('wisp-admin-disabled')).toBeNull();
+    spy.mockRestore();
+  });
+
+  it('shows a per-partner grants error, not "disabled", when the grants fetch is a generic 404', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation((url: string) =>
+      Promise.resolve(url === '/admin/wisp/overview' ? jsonRes(overview) : jsonRes({ error: 'Not Found' }, 404)),
+    );
+    render(<WispAdminPage />);
+    fireEvent.click(await screen.findByTestId(`wisp-admin-partner-toggle-${P1}`));
+    await screen.findByTestId(`wisp-admin-grants-retry-${P1}`);
+    expect(screen.queryByTestId('wisp-admin-disabled')).toBeNull();
+    spy.mockRestore();
   });
 
   it('shows an error with retry', async () => {

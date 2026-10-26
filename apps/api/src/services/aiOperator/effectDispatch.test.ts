@@ -196,3 +196,139 @@ describe('classifyEffectIdempotency', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2a Task 6 (W07 Amendment B5 / G1 / G10; D-R2-4). Appended; every case above
+// is unchanged.
+//
+// PINS THE SHIPPED BRANCH; R2 DEPENDS ON IT. `dispatchPlannedEffect` already
+// hands off a `non_idempotent` effect whose pre-probe is anything but
+// `unsatisfied` (E4). Onboarding's `m365_create_user` relies on that: its
+// pre-probe is "a user with this UPN exists", so `satisfied` means either this
+// task created it on an earlier attempt or somebody else holds the UPN, and
+// only one reading is safe. These cases pin the branch (they are not reds);
+// the one wording case names the possible collision in the `satisfied`
+// summary.
+//
+// G10: `google_account_wipe_mobile_device` is ALREADY `non_idempotent` (it is
+// not in EFFECT_IDEMPOTENCY, so `classifyEffectIdempotency` defaults it) and
+// ALREADY runs under this shipped branch in the offboarding recipe; it is not
+// reclassified here. The catalog case below asserts the M365 half only.
+// ---------------------------------------------------------------------------
+describe('classifyEffectIdempotency — the Google provisioning writes (R2a)', () => {
+  // They mirror their M365 counterparts (m365.user.license.assign is
+  // idempotent_by_probe, m365.group.membership.add is idempotent), so a replay
+  // whose pre-probe is satisfied is a no-op, not a non_idempotent hand-off.
+  it('classifies google_assign_license / google_add_to_group / google_move_ou', () => {
+    expect(classifyEffectIdempotency('google_assign_license')).toBe('idempotent_by_probe');
+    expect(classifyEffectIdempotency('google_add_to_group')).toBe('idempotent');
+    expect(classifyEffectIdempotency('google_move_ou')).toBe('idempotent');
+  });
+});
+
+describe('dispatchPlannedEffect — the shipped non_idempotent pre-probe branch (R2a Task 6 PIN)', () => {
+  const createEffect: PlannedEffect = {
+    ordinal: 0, toolName: 'm365_create_user', provider: 'm365',
+    targetId: '00000000-0000-4000-8000-0000000000c1', accountExternalId: null,
+    canonicalArguments: { userPrincipalName: 'priya@customer.example', displayName: 'Priya', reason: 'onboarding' },
+  };
+  const dispatchCreate = () =>
+    dispatchPlannedEffect({ task, stepKey: 'create_accounts', approval, effect: createEffect, partnerId: null });
+
+  it('PIN: a non_idempotent create whose pre-probe is SATISFIED hands off — no mint, no noop row', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'non_idempotent', setSecrecy: 'all_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'satisfied', observedAt: new Date(), detail: 'user exists' });
+    const out = await dispatchCreate();
+    expect(out).toMatchObject({ kind: 'handoff', detail: 'pre-probe for m365_create_user was satisfied: user exists' });
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(buildTaskActorAuthContext).not.toHaveBeenCalled();
+    expect(dbState.inserted).toHaveLength(0);
+  });
+
+  it('the SATISFIED hand-off names the possible collision', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'non_idempotent', setSecrecy: 'all_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'satisfied', observedAt: new Date(), detail: 'user exists' });
+    const out = await dispatchCreate();
+    const summary = (out as { handoffSummary: string }).handoffSummary;
+    expect(summary).toContain('m365_create_user');
+    expect(summary).toMatch(/already exists/);
+    expect(summary).toMatch(/collision/);
+  });
+
+  it('the SATISFIED hand-off of a NON-create tool keeps the shipped wording (offboarding wipe unchanged)', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'non_idempotent', setSecrecy: 'none_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'satisfied', observedAt: new Date(), detail: 'all devices wiping' });
+    const wipe: PlannedEffect = { ...createEffect, toolName: 'google_account_wipe_mobile_device', provider: 'google',
+      canonicalArguments: { userEmail: 'dana@customer.example' } };
+    const out = await dispatchPlannedEffect({ task, stepKey: 'device_actions', approval, effect: wipe, partnerId: null });
+    expect(out).toEqual({
+      kind: 'handoff',
+      detail: 'pre-probe for google_account_wipe_mobile_device was satisfied: all devices wiping',
+      handoffSummary:
+        'Breeze did not run google_account_wipe_mobile_device because it cannot be safely repeated and its current state '
+        + 'could not be confirmed as not-yet-done (satisfied). Nothing was sent for this step. '
+        + 'Check the provider and complete it by hand if it is still needed.',
+    });
+  });
+
+  it('PIN: the UNKNOWN hand-off summary is unchanged, byte for byte', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'non_idempotent', setSecrecy: 'all_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'unknown', observedAt: new Date(), detail: 'API 503' });
+    const out = await dispatchCreate();
+    expect(out).toEqual({
+      kind: 'handoff',
+      detail: 'pre-probe for m365_create_user was unknown: API 503',
+      handoffSummary:
+        'Breeze did not run m365_create_user because it cannot be safely repeated and its current state '
+        + 'could not be confirmed as not-yet-done (unknown). Nothing was sent for this step. '
+        + 'Check the provider and complete it by hand if it is still needed.',
+    });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('PIN: a non_idempotent create whose pre-probe is UNSATISFIED dispatches (the only actionable pre-state)', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'non_idempotent', setSecrecy: 'all_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'unsatisfied', observedAt: new Date(), detail: 'no such user' });
+    await expect(dispatchCreate()).resolves.toMatchObject({ kind: 'dispatching', intentId: 'i1' });
+  });
+
+  it('PIN (unchanged): an IDEMPOTENT effect whose pre-probe is satisfied still settles a noop', async () => {
+    checkPlanEffectMembershipSystem.mockResolvedValue({
+      ...member, idempotencyClass: 'idempotent', setSecrecy: 'none_secret_bearing',
+    });
+    probeEffect.mockResolvedValue({ state: 'satisfied', observedAt: new Date(), detail: 'already not a member' });
+    await expect(dispatch()).resolves.toMatchObject({ kind: 'noop' });
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(dbState.inserted).toHaveLength(1);
+  });
+
+  it('G10: no M365 tool in the OFFBOARDING catalog is non_idempotent (the Google wipe already is, by default)', async () => {
+    // If a future wave adds a non_idempotent M365 tool to the offboarding
+    // catalog, this fails and that wave must re-read D-R2-4 before shipping.
+    const { IDENTITY_OFFBOARDING_EFFECT_TOOLS } = await import('./recipes/identityOffboarding');
+    const m365Tools = IDENTITY_OFFBOARDING_EFFECT_TOOLS.filter((t) => t in M365_HEADLESS_ACTIONS);
+    expect(m365Tools.length).toBeGreaterThan(0);
+    for (const tool of m365Tools) {
+      const actionId = (M365_HEADLESS_ACTIONS as Record<string, string>)[tool]!;
+      expect(
+        (M365_WRITE_ACTION_IDEMPOTENCY as Record<string, string>)[actionId],
+        `${tool} is non_idempotent and reaches the non_idempotent hand-off branch`,
+      ).not.toBe('non_idempotent');
+      expect(classifyEffectIdempotency(tool)).not.toBe('non_idempotent');
+    }
+    // Recorded, not changed: the Google wipe is non_idempotent by default and
+    // already runs under the shipped branch.
+    expect(IDENTITY_OFFBOARDING_EFFECT_TOOLS).toContain('google_account_wipe_mobile_device');
+    expect(classifyEffectIdempotency('google_account_wipe_mobile_device')).toBe('non_idempotent');
+  });
+});

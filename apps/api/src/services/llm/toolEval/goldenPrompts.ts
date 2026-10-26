@@ -95,4 +95,33 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g73', prompt: 'Is the Contoso Slack alert channel set up correctly? Test it.', expect: [{ tool: 'manage_notification_channels', action: 'test' }] },
   { id: 'g74', prompt: 'Fire a test delivery at our PSA webhook.', expect: [{ tool: 'test_webhook' }, { tool: 'query_webhooks' }] },
   { id: 'g75', prompt: 'Mark quote Q-2041 declined — the customer said no on the phone today.', expect: [{ tool: 'manage_quotes', action: 'decline' }, { tool: 'list_quotes' }] },
+  // Full-control W03 (#6757): backup, DR and virtualization writes.
+  { id: 'g76', prompt: "Restore last night's snapshot of C:\\Users\\amy\\Documents to AMY-PC.", expect: [{ tool: 'restore_snapshot' }, { tool: 'browse_snapshots' }] },
+  { id: 'g77', prompt: 'Run a rehearsal of the Contoso DR plan.', expect: [{ tool: 'execute_dr_plan' }, { tool: 'query_dr_plans' }] },
+  { id: 'g78', prompt: 'Start the SQL01 VM on HV-HOST-2.', expect: [{ tool: 'manage_hyperv_vm', action: 'start' }, { tool: 'query_hyperv_vms' }] },
+  // Full-control W04 (#6758): security, incident and device-operation writes reach chat.
+  { id: 'g79', prompt: 'Kill the runaway chrome.exe (PID 4412) on WS-042.', expect: [{ tool: 'manage_processes', action: 'kill' }, { tool: 'resolve_device_context' }] },
+  { id: 'g80', prompt: 'Isolate FIN-LAPTOP-07 from the network for incident INC-12.', expect: [{ tool: 'execute_containment' }, { tool: 'list_incidents' }, { tool: 'get_incident_timeline' }, { tool: 'resolve_device_context' }] },
+  { id: 'g81', prompt: 'Restart the Breeze agent on the three offline Contoso servers.', expect: [{ tool: 'trigger_agent_restart' }, { tool: 'query_devices' }] },
+  // Full-control W06 (#6776): PSA configuration and ticket-ops reach chat.
+  { id: 'g82', prompt: 'Add a "Printer" ticket category with a 4 hour response target.', expect: [{ tool: 'manage_ticket_config', action: 'create_category' }, { tool: 'manage_ticket_config', action: 'list_categories' }] },
+  { id: 'g83', prompt: 'Create a checklist template called "New hire setup" with steps for the account, laptop and MFA.', expect: [{ tool: 'manage_ticket_checklist_templates', action: 'create' }, { tool: 'manage_ticket_checklist_templates', action: 'list' }] },
+  { id: 'g84', prompt: 'Log yesterday\'s remote session on FS-01 as time on the printer ticket.', expect: [{ tool: 'manage_time_suggestions', action: 'confirm' }, { tool: 'manage_time_suggestions', action: 'list' }] },
+  // Full-control W07 (#6777): alert correlation and signal triage reach chat.
+  { id: 'g85', prompt: 'Why did those correlated disk and service alerts on FS-01 all fire together?', expect: [{ tool: 'get_alert_correlations', action: 'explain' }, { tool: 'get_alert_correlations', action: 'groups' }, { tool: 'resolve_device_context' }] },
+  { id: 'g86', prompt: 'Is there any unusual CPU or disk behaviour on WS-042 I should look at?', expect: [{ tool: 'manage_device_anomalies', action: 'list' }, { tool: 'resolve_device_context' }] },
+  { id: 'g87', prompt: 'What services keep failing on FS-01 and dragging its reliability score down?', expect: [{ tool: 'get_fleet_health', action: 'offenders' }, { tool: 'resolve_device_context' }] },
+  // Full-control W08 (#6778): network topology reaches chat.
+  { id: 'g88', prompt: 'What is the core switch at the Main Office site connected to?', expect: [{ tool: 'get_topology_graph', action: 'node' }, { tool: 'get_topology_graph', action: 'nodes' }, { tool: 'list_sites' }] },
+  { id: 'g89', prompt: 'Run a gateway connectivity check from WS-042 and tell me if the gateway is reachable.', expect: [{ tool: 'run_topology_diagnostic', action: 'start' }, { tool: 'run_topology_diagnostic', action: 'collectors' }, { tool: 'resolve_device_context' }] },
+  { id: 'g90', prompt: 'What would applying the Standard monitoring template to the Main Office site change?', expect: [{ tool: 'apply_topology_template', action: 'preview' }, { tool: 'manage_topology_templates', action: 'site_options' }, { tool: 'list_sites' }] },
+  // Full-control W09 (#6779): SNMP and network monitoring reach chat.
+  // (The plan's "SNMP device poll/test" prompt became an on-demand asset probe: the SNMP device poll/test routes are 410.)
+  { id: 'g91', prompt: 'Is the print server at the Main Office reachable right now? Check it now.', expect: [{ tool: 'probe_network_asset' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset_reachability' }] },
+  { id: 'g92', prompt: 'Show me the inbound and outbound traffic on the Main Office core switch uplink for the last 24 hours.', expect: [{ tool: 'get_snmp_metrics', action: 'history' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset' }] },
+  { id: 'g93', prompt: 'Sync UniFi now and tell me whether the last sync worked.', expect: [{ tool: 'trigger_unifi_sync' }, { tool: 'get_unifi_status', action: 'sync_runs' }, { tool: 'get_unifi_status', action: 'status' }] },
+  // Full-control W10 (#6780): AI-agent read tools reach chat.
+  { id: 'g94', prompt: 'What has the AI done on the front desk PC in the last week?', expect: [{ tool: 'get_device_ai_activity' }, { tool: 'query_devices' }, { tool: 'resolve_device_context' }] },
+  { id: 'g95', prompt: 'Show me my operator tasks that are waiting on an approval.', expect: [{ tool: 'list_operator_tasks' }, { tool: 'get_operator_task' }] },
+  { id: 'g96', prompt: 'List the fleet designs the designer agent has produced.', expect: [{ tool: 'list_fleet_designs' }, { tool: 'get_fleet_design' }] },
 ];

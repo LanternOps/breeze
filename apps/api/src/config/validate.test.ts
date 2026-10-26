@@ -3989,6 +3989,50 @@ describe('FLOWS_ENABLED boolean guard', () => {
   });
 });
 
+describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOW_APPROVAL_TTL_HOURS');
+    expect(buildEnvParseInput({ FLOW_APPROVAL_TTL_HOURS: 'sentinel' }).FLOW_APPROVAL_TTL_HOURS).toBe('sentinel');
+  });
+
+  it.each(['1', '24', '168', ' 72 ', ''])('accepts %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0', '169', '-1', '2.5', 'day'])('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168/);
+    });
+  });
+});
+
+describe.each([
+  ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, ['1', '20', '500', ' 64 ', ''], ['0', '501', '-1', '2.5', 'lots']],
+  ['FLOW_RUN_RETENTION_DAYS', 7, 3650, ['7', '90', '3650', ' 30 ', ''], ['6', '0', '3651', '-1', '1.5', 'forever']],
+  ['FLOW_WEBHOOK_RATE_PER_MINUTE', 1, 6000, ['1', '120', '6000', ' 60 ', ''], ['0', '6001', '-1', '2.5', 'fast']],
+  ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 1, 365, ['1', '30', '365', ' 7 ', ''], ['0', '366', '-1', '1.5', 'forever']],
+  ['FLOW_FOREACH_MAX_PARALLEL', 1, 10, ['1', '5', '10', ' 3 ', ''], ['0', '11', '-1', '2.5', 'many']],
+] as const)('%s range guard (#5219 A8)', (key, min, max, accepted, refused) => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  it.each(accepted)('accepts %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(refused)('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).toThrow(new RegExp(`${key} must be an integer between ${min} and ${max}`));
+    });
+  });
+});
+
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');

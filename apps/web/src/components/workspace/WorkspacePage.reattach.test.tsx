@@ -1,6 +1,6 @@
 /**
  * #9840 W5 (Task 17, RT3 component variant; plan T17 Step 3 (c)): leaving
- * /workspace mid-turn and coming back. WorkspacePage's unmount stops every
+ * /ai/chat mid-turn and coming back. WorkspacePage's unmount stops every
  * tab's attach; the next mount restores each session tab by hydrating and
  * attaching again, so a turn that is still running is re-joined (one /stream
  * per tab per mount). Real workspaceStore + aiStore, fetch mocked; the store
@@ -119,7 +119,7 @@ beforeEach(() => {
     activeTabId: 'ta',
   });
   useAiStore.setState({ isOpen: false, sessionId: null, composerDraft: '', isStreaming: false });
-  window.history.replaceState(null, '', '/workspace');
+  window.history.replaceState(null, '', '/ai/chat');
 });
 
 afterEach(() => {
@@ -127,7 +127,7 @@ afterEach(() => {
   abortAllAttaches();
 });
 
-describe('leaving /workspace mid-turn and returning', () => {
+describe('leaving /ai/chat mid-turn and returning', () => {
   it('unmount stops both attaches; the next mount re-joins each running turn with one /stream per tab', async () => {
     const first: Record<string, Live> = { [A]: liveSse(), [B]: liveSse() };
     const second: Record<string, Live> = { [A]: liveSse(), [B]: liveSse() };

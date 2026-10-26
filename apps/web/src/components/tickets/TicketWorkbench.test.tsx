@@ -3570,3 +3570,85 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
     expect(screen.queryByTestId('offboard-launcher-ticket')).not.toBeInTheDocument();
   });
 });
+
+// Operator Recipe Library W07 R2b (#6172, Task 18) — MOUNT proof for the
+// ticket "Onboard a person" launcher, through the real workbench. The ticket's
+// requester pre-fills the MANAGER (never the new hire), and no source is sent.
+describe('TicketWorkbench — Onboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const wf = (recipeKey: string, readiness: string) => ({
+    recipeKey, recipeVersion: 4, name: recipeKey, summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) {
+        return makeJsonResponse({ data: [wf('identity_offboarding', 'ready'), wf('identity_onboarding', opts.readiness ?? 'ready')] });
+      }
+      if (url.startsWith(`/orgs/organizations/${OP_ORG}/contacts`)) {
+        return makeJsonResponse({ data: [{ id: REQUESTER, name: 'Pat Requester', email: 'pat@customer.example', phone: null, siteId: null }], pagination: { total: 1 } });
+      }
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders beside the offboard launcher and opens the onboarding form with the requester as manager', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat Requester' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    expect(await screen.findByTestId('offboard-launcher-ticket')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('launch-onboard-person-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toHaveAttribute('data-recipe-key', 'identity_onboarding');
+    expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('its requester is set as the manager, not as the new person');
+    await waitFor(() => expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe(REQUESTER));
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['onboarding is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('launch-onboard-person-ticket')).not.toBeInTheDocument();
+  });
+
+  it('every page that hosts the workbench mounts it as a client:load island', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const pages = join(__dirname, '../../pages/tickets');
+    const detail = readFileSync(join(pages, '[id].astro'), 'utf8');
+    expect(detail).toMatch(/<TicketWorkbench[^>]*client:load/);
+    const queue = readFileSync(join(pages, 'index.astro'), 'utf8');
+    expect(queue).toMatch(/<TicketsPage[^>]*client:load/);
+    const workbench = readFileSync(join(__dirname, 'TicketWorkbench.tsx'), 'utf8');
+    expect(workbench).toContain('<OnboardPersonLauncher');
+  });
+});

@@ -16,14 +16,21 @@
  * (`flows/ownedReferences.ts`, `resolveTenantToolsForOwner`).
  *
  * Never throws for a bad document: every problem is a `FlowIssue`.
+ *
+ * W04 (#5219) adds the run-time half: `stepPinsFor` records, at enable, what
+ * each step resolved to (source, tier, approval scope, tenant revision), and
+ * `revalidateRenderedStep` re-checks one RENDERED step against those pins
+ * with nothing masked — schema, live catalog, live tier/scope and ownership
+ * of every referenced asset in the run's org.
  */
 import type { ErrorObject } from 'ajv';
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   checkFlowStructure,
   FLOW_BUILTIN_STEPS,
-  FLOW_LATER_BUILTINS,
+  flowBuiltinTierFor,
   FLOW_LIMITS,
+  FLOW_STEP_ID_RE,
   flowDocumentV1Schema,
   isFlowBuiltin,
   templateLeafKinds,
@@ -32,14 +39,16 @@ import {
   type FlowStepSummary,
   type FlowValidationResult,
 } from '@breeze/shared';
-import { eventDispatchMode } from '../config/env';
+import { eventDispatchMode, eventDispatchQueueSubscribers } from '../config/env';
 import { checkGuardrails, tierDecidingInputKeys } from './aiGuardrails';
 import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
+import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
 import { guardrailCheckForTenantTool } from './toolSources/guardrails';
 import type { ToolOwnerRef } from './toolSources/resolver';
+import type { FlowPreApprovalBinding } from './flows/preApproval';
 
 export interface FlowValidationContext {
   /** Only ever produced by resolveFlowOwnerForCaller or read from a stored flows row. */
@@ -93,7 +102,7 @@ function templateKindAt(pointer: string, kinds: LeafKinds): 'exact' | 'partial' 
   return null;
 }
 
-function containsTemplate(value: unknown): boolean {
+export function containsTemplate(value: unknown): boolean {
   const stack: unknown[] = [value];
   while (stack.length > 0) {
     const v = stack.pop();
@@ -294,6 +303,21 @@ function ajvInputIssues(entry: Extract<FlowCatalogEntry, { source: 'tenant' }>, 
 
 // ── rule 5: tiers ──────────────────────────────────────────────────────────
 
+/**
+ * The literal part of a step input, as the guardrails see it at save and
+ * enable. Tier-deciding keys are required to be literal (rule 5), so dropping
+ * templated top-level fields cannot change the tier. proposalId is refused
+ * separately (input_not_supported).
+ */
+export function literalGuardInput(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  const guardInput: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === 'proposalId' && name === 'run_script') continue;
+    if (!containsTemplate(v)) guardInput[k] = v;
+  }
+  return guardInput;
+}
+
 function coreStepTier(name: string, input: Record<string, unknown>, stepId: string, base: string): { tier: StepTier; issues: FlowIssue[] } {
   const issues: FlowIssue[] = [];
   const keys = tierDecidingInputKeys(name);
@@ -305,14 +329,7 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
   });
   if (issues.length > 0) return { tier: null, issues };
 
-  // Tier-deciding keys are literal, so dropping templated top-level fields
-  // cannot change the tier. proposalId is refused separately (input_not_supported).
-  const guardInput: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(input)) {
-    if (k === 'proposalId' && name === 'run_script') continue;
-    if (!containsTemplate(v)) guardInput[k] = v;
-  }
-  const check = checkGuardrails(name, guardInput);
+  const check = checkGuardrails(name, literalGuardInput(name, input));
   if (!check.allowed || check.tier === 4) {
     return { tier: null, issues: [issue('tool_blocked', `Tool '${name}' cannot run in a flow with this input.`, { stepId })] };
   }
@@ -322,7 +339,7 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
 // ── main ───────────────────────────────────────────────────────────────────
 
 function inferredSource(tool: string): FlowStepSummary['source'] {
-  if (isFlowBuiltin(tool) || (FLOW_LATER_BUILTINS as readonly string[]).includes(tool)) return 'builtin';
+  if (isFlowBuiltin(tool)) return 'builtin';
   return tool.includes('__') ? 'tenant' : 'core';
 }
 
@@ -350,6 +367,28 @@ function isValidTimeZone(tz: string): boolean {
 }
 
 const KNOWN_EVENTS: ReadonlySet<string> = new Set(Object.values(EVENT_TYPES) as string[]);
+
+/**
+ * The durable event subscriber that admits event-triggered flow runs
+ * (services/flows/eventTrigger.ts, registered in eventSubscribers.ts).
+ */
+export const FLOW_EVENT_TRIGGER_SUBSCRIBER_ID = 'flow-event-trigger' satisfies SubscriberId;
+
+const EVENT_NOT_DURABLE_MESSAGE =
+  'Events are not delivered durably on this deployment, so an event-triggered flow could silently miss events. '
+  + 'Enabling it will be refused until event dispatch runs in enforce mode with the flow event subscriber on the durable queue.';
+
+/**
+ * Open Decision 10: event flows need durable, at-least-once delivery. In
+ * `off` and `shadow`, and in `enforce` without membership, delivery is
+ * in-process and at-most-once and handler failures are swallowed
+ * (`eventBus.ts` `invokeLocalHandlers`). Enable refuses on false; the
+ * reconciler (A8) re-checks and pauses enabled event flows.
+ */
+export function isFlowEventDeliveryDurable(): boolean {
+  return eventDispatchMode() === 'enforce'
+    && eventDispatchQueueSubscribers().has(FLOW_EVENT_TRIGGER_SUBSCRIBER_ID);
+}
 
 export async function validateFlowDocument(doc: unknown, ctx: FlowValidationContext): Promise<FlowDocumentValidation> {
   // 0. Raw bound — the tool inputs are open records, so this runs before any schema.
@@ -379,10 +418,8 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   } else if (trigger.type === 'event') {
     if (!KNOWN_EVENTS.has(trigger.event)) {
       issues.push(issue('event_unknown', `Event '${trigger.event}' is not a known event type.`, { pointer: '/trigger/event' }));
-    } else if (eventDispatchMode() === 'off') {
-      issues.push(issue('trigger_not_available', 'Event delivery is off on this deployment; enabling this flow will be refused.', {
-        pointer: '/trigger/event', severity: 'warning',
-      }));
+    } else if (!isFlowEventDeliveryDurable()) {
+      issues.push(issue('event_dispatch_not_durable', EVENT_NOT_DURABLE_MESSAGE, { pointer: '/trigger/event', severity: 'warning' }));
     }
   } else if (trigger.type === 'schedule' && !isValidTimeZone(trigger.timezone)) {
     issues.push(issue('schema', `Unknown time zone '${trigger.timezone}'.`, { pointer: '/trigger/timezone' }));
@@ -406,7 +443,8 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
     let source: FlowStepSummary['source'] = inferredSource(step.tool);
 
     if (!entry) {
-      if ((FLOW_LATER_BUILTINS as readonly string[]).includes(step.tool)) {
+      if (isFlowBuiltin(step.tool)) {
+        // A shared built-in outside the API catalog (FLOW_EXECUTABLE_BUILTINS) — W5 PR B wires it.
         issues.push(issue('builtin_not_available', `Built-in step '${step.tool}' is not available yet.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
       } else if (!step.tool.includes('__') && isRegisteredCoreTool(step.tool)) {
         issues.push(issue('tool_not_allowed', `Tool '${step.tool}' cannot be used in a flow.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
@@ -417,7 +455,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
     } else if (entry.source === 'builtin') {
       source = 'builtin';
       issues.push(...zodInputIssues(FLOW_BUILTIN_STEPS[entry.name].inputSchema, input, step.id, base));
-      tier = FLOW_BUILTIN_STEPS[entry.name].tier;
+      tier = flowBuiltinTierFor(entry.name, input);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
       issues.push(...ajvInputIssues(entry, input, step.id, base));
@@ -499,4 +537,200 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   }
 
   return result(issues, summaries, document);
+}
+
+// ── W04: enable-time pins and run-time revalidation ────────────────────────
+
+/**
+ * What one step resolved to when its flow was enabled. Stored on the
+ * publication (`flow_versions.step_pins`); drift is measured against it.
+ */
+export type FlowStepPin =
+  | { stepId: string; tool: string; source: 'tenant'; tier: 1 | 2 | 3; approvalScope: 'supervised' | null; tenantToolId: string; tenantRevision: string }
+  | { stepId: string; tool: string; source: 'core' | 'builtin'; tier: 1 | 2 | 3; approvalScope: 'supervised' | 'four_eyes' | null };
+
+const pinTierSchema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+const pinStepIdSchema = z.string().regex(FLOW_STEP_ID_RE);
+const pinToolSchema = z.string().min(1).max(64);
+
+/**
+ * step_pins and pre_approvals come back from jsonb and decide unattended
+ * Tier-3 execution, so the runner and the dispatch claim parse them on every
+ * load; a parse failure fails the run 'drift' and pauses the flow.
+ */
+export const flowStepPinSchema: z.ZodType<FlowStepPin> = z.union([
+  z.object({
+    stepId: pinStepIdSchema,
+    tool: pinToolSchema,
+    source: z.literal('tenant'),
+    tier: pinTierSchema,
+    approvalScope: z.literal('supervised').nullable(),
+    tenantToolId: z.string().min(1),
+    tenantRevision: z.string().min(1),
+  }).strict(),
+  z.object({
+    stepId: pinStepIdSchema,
+    tool: pinToolSchema,
+    source: z.enum(['core', 'builtin']),
+    tier: pinTierSchema,
+    approvalScope: z.enum(['supervised', 'four_eyes']).nullable(),
+  }).strict(),
+]);
+
+export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.object({
+  stepId: pinStepIdSchema,
+  lane: z.literal('act_asset'),
+  assetKind: z.literal('script'),
+  scriptId: z.string().uuid(),
+  contentDigest: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
+/** Thrown by `stepPinsFor` for a step that does not resolve — only reachable for a document that is not valid. */
+export class FlowStepPinError extends Error {
+  constructor(readonly stepId: string) {
+    super(`Flow step '${stepId}' cannot be pinned: it does not resolve against the owner's catalog.`);
+    this.name = 'FlowStepPinError';
+  }
+}
+
+function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEntry | undefined): FlowStepPin {
+  if (!entry) throw new FlowStepPinError(step.id);
+  if (entry.source === 'builtin') {
+    return { stepId: step.id, tool: step.tool, source: 'builtin', tier: flowBuiltinTierFor(entry.name, step.input), approvalScope: null };
+  }
+  if (entry.source === 'tenant') {
+    const tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
+    return {
+      stepId: step.id, tool: step.tool, source: 'tenant', tier, approvalScope: tier === 3 ? 'supervised' : null,
+      tenantToolId: entry.descriptor.id, tenantRevision: entry.descriptor.revision,
+    };
+  }
+  const check = checkGuardrails(step.tool, literalGuardInput(step.tool, step.input));
+  if (!check.allowed || check.tier === 4) throw new FlowStepPinError(step.id);
+  return {
+    stepId: step.id, tool: step.tool, source: 'core', tier: check.tier,
+    approvalScope: check.tier === 3 ? check.approvalScope : null,
+  };
+}
+
+/**
+ * The enable-time pin of every step, resolved against the owner's catalog the
+ * same way `validateFlowDocument` resolves it (same catalog loader, same
+ * literal-input guardrail call). Call it only for a document that validated
+ * with zero errors; a step that no longer resolves throws `FlowStepPinError`.
+ */
+export async function stepPinsFor(doc: FlowDocumentV1, ctx: FlowValidationContext): Promise<FlowStepPin[]> {
+  const catalog = await loadFlowCatalog(ctx.owner);
+  return doc.steps.map((step) => pinForEntry(step, catalog.get(step.tool)));
+}
+
+export type RenderedStepCheck =
+  | { ok: true; tier: 1 | 2 | 3; approvalScope: 'supervised' | 'four_eyes' | null }
+  | { ok: false; code: 'input_invalid' | 'tool_unavailable' | 'tool_blocked' | 'drift' | 'reference_not_owned'; message: string };
+
+/** One text for foreign and nonexistent alike — the run's output must not be an existence oracle. */
+const REFERENCE_NOT_OWNED_MESSAGE = 'A script, device group or device this step names is not available to this flow run.';
+const TOOL_UNAVAILABLE_MESSAGE = 'This step\'s tool is no longer available to the flow\'s owner.';
+
+/** Every string in a string or string[] field — rendered, so nothing is templated any more. */
+function renderedStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  return [];
+}
+
+function zodMessage(error: z.ZodError): string {
+  const first = error.issues[0];
+  if (!first) return 'Rendered input is invalid.';
+  return `${toPointer(first.path) || '/'}: ${first.message}`;
+}
+
+/**
+ * Re-check ONE rendered step before it executes (spec §6.5, plan Task A6):
+ *  - the step's tool must still be in the owner's live catalog with the same
+ *    source (else tool_unavailable / drift) and, for a tenant tool, the same
+ *    tool id and revision (else drift);
+ *  - the rendered input is validated UNMASKED (Zod / the tenant Ajv schema);
+ *  - the live tier and approval scope are recomputed on the rendered input:
+ *    tier 4 / not allowed ⇒ tool_blocked, a tier above the pin or a scope
+ *    different from the pin ⇒ drift;
+ *  - every owned reference (FLOW_OWNED_REFERENCE_FIELDS and the tool's
+ *    deviceArgs) must belong to the owner (scripts) or to the RUN's org
+ *    (groups, devices) — a partner-wide flow included, since a run has one
+ *    org. Foreign and missing share one message.
+ */
+export async function revalidateRenderedStep(
+  pin: FlowStepPin,
+  rendered: Record<string, unknown>,
+  ctx: { owner: ToolOwnerRef; runOrgId: string },
+): Promise<RenderedStepCheck> {
+  const catalog = await loadFlowCatalog(ctx.owner);
+  const entry = catalog.get(pin.tool);
+  if (!entry) return { ok: false, code: 'tool_unavailable', message: TOOL_UNAVAILABLE_MESSAGE };
+  if (entry.source !== pin.source) {
+    return { ok: false, code: 'drift', message: 'This step\'s tool now resolves to a different source than when the flow was enabled.' };
+  }
+
+  let tier: 1 | 2 | 3;
+  let approvalScope: 'supervised' | 'four_eyes' | null;
+
+  if (entry.source === 'builtin') {
+    const parsed = FLOW_BUILTIN_STEPS[entry.name].inputSchema.safeParse(rendered);
+    if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
+    tier = flowBuiltinTierFor(entry.name, parsed.data);
+    approvalScope = null;
+  } else if (entry.source === 'tenant') {
+    if (pin.source !== 'tenant' || entry.descriptor.id !== pin.tenantToolId || entry.descriptor.revision !== pin.tenantRevision) {
+      return { ok: false, code: 'drift', message: 'This step\'s external tool changed since the flow was enabled.' };
+    }
+    if (!entry.validate(rendered)) {
+      const e = entry.validate.errors?.[0];
+      return { ok: false, code: 'input_invalid', message: e ? `${e.instancePath || '/'}: ${e.message ?? e.keyword}` : 'Rendered input is invalid.' };
+    }
+    tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
+    approvalScope = tier === 3 ? 'supervised' : null;
+  } else {
+    const schema = toolInputSchemas[pin.tool];
+    if (!schema) return { ok: false, code: 'tool_unavailable', message: TOOL_UNAVAILABLE_MESSAGE };
+    if (pin.tool === 'run_script' && Object.hasOwn(rendered, 'proposalId')) {
+      return { ok: false, code: 'input_invalid', message: 'Flows run library scripts only; use scriptId, not proposalId.' };
+    }
+    const parsed = schema.safeParse(rendered);
+    if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
+    const check = checkGuardrails(pin.tool, rendered);
+    if (!check.allowed || check.tier === 4) {
+      return { ok: false, code: 'tool_blocked', message: `Tool '${pin.tool}' cannot run in a flow with this input.` };
+    }
+    tier = check.tier;
+    approvalScope = check.tier === 3 ? check.approvalScope : null;
+  }
+
+  if (tier > pin.tier || approvalScope !== pin.approvalScope) {
+    return { ok: false, code: 'drift', message: 'This step\'s approval requirement changed since the flow was enabled.' };
+  }
+
+  if (entry.source === 'core') {
+    const scriptIds: string[] = [];
+    const groupIds: string[] = [];
+    const deviceIds: string[] = [];
+    for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
+      (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+    }
+    for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
+
+    const anyNotOwned = async (ids: string[], find: (ids: string[]) => Promise<Set<string>>): Promise<boolean> => {
+      if (ids.length === 0) return false;
+      const owned = await find(ids);
+      return ids.some((id) => !owned.has(id));
+    };
+    if (
+      await anyNotOwned(scriptIds, (ids) => findOwnedScriptIds(ctx.owner, ids))
+      || await anyNotOwned(groupIds, (ids) => findOwnedDeviceGroupIds(ctx.runOrgId, ids))
+      || await anyNotOwned(deviceIds, (ids) => findOwnedDeviceIds(ctx.runOrgId, ids))
+    ) {
+      return { ok: false, code: 'reference_not_owned', message: REFERENCE_NOT_OWNED_MESSAGE };
+    }
+  }
+
+  return { ok: true, tier, approvalScope };
 }

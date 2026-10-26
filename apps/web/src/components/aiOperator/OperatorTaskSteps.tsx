@@ -14,10 +14,13 @@ import { cn } from '@/lib/utils';
 type T = ReturnType<typeof useTranslation>['t'];
 
 export interface OperatorTaskStepsProps {
-  task: Pick<AiOperatorTaskDto, 'steps' | 'targets' | 'currentStepKey' | 'waitReason' | 'state'>;
+  /** `workflowKey` (optional) only names a recipe's own step where one key means different work per recipe. */
+  task: Pick<AiOperatorTaskDto, 'steps' | 'targets' | 'currentStepKey' | 'waitReason' | 'state'> & { workflowKey?: string };
 }
 
-function stepKeyLabel(t: T, key: string): string {
+function stepKeyLabel(t: T, key: string, workflowKey: string | undefined): string {
+  // identity_onboarding (W07 R2b): `manual_work` is the HANDOVER checklist (Amendment B1).
+  if (key === 'manual_work' && workflowKey === 'identity_onboarding') return t('taskPanels.steps.stepKey.handoverWork');
   switch (key) {
     case 'intake': return t('taskPanels.steps.stepKey.intake');
     case 'confirm_identity': return t('taskPanels.steps.stepKey.confirmIdentity');
@@ -27,6 +30,13 @@ function stepKeyLabel(t: T, key: string): string {
     case 'manual_work': return t('taskPanels.steps.stepKey.manualWork');
     case 'verify_outcome': return t('taskPanels.steps.stepKey.verifyOutcome');
     case 'document': return t('taskPanels.steps.stepKey.document');
+    // identity_onboarding (W07 R2b, Amendment B1's twelve keys; the others are shared above)
+    case 'confirm_details': return t('taskPanels.steps.stepKey.confirmDetails');
+    case 'create_accounts': return t('taskPanels.steps.stepKey.createAccounts');
+    case 'manual_create_google': return t('taskPanels.steps.stepKey.manualCreateGoogle');
+    case 'resolve_accounts': return t('taskPanels.steps.stepKey.resolveAccounts');
+    case 'provision_effects': return t('taskPanels.steps.stepKey.provisionEffects');
+    case 'wait_start': return t('taskPanels.steps.stepKey.waitStart');
     default: return key;
   }
 }
@@ -102,7 +112,7 @@ export default function OperatorTaskSteps({ task }: OperatorTaskStepsProps) {
             className={cn('rounded-md border p-3', current && 'border-primary bg-primary/5')}
           >
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">{stepKeyLabel(t, stepKey)}</span>
+              <span className="font-medium">{stepKeyLabel(t, stepKey, task.workflowKey)}</span>
               <span className="text-xs text-muted-foreground">{kindLabel(t, rows[0]!.stepKind)}</span>
               {current && <span className="text-xs font-medium text-primary">{t('taskPanels.steps.current')}</span>}
             </div>

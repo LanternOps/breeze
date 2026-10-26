@@ -224,3 +224,34 @@ describe('RecipeCard add_agent_tools', () => {
     expect(scope).toHaveTextContent('in every organization it serves');
   });
 });
+
+// W07 R2b: the onboarding card is R1's card over a third workflow (no new card).
+describe('RecipeCard — identity_onboarding (W07 R2b)', () => {
+  const onboarding = (overrides: Partial<AiOperatorWorkflowDto> = {}) => workflow({
+    recipeKey: 'identity_onboarding', name: 'server name', summary: 'server summary', ...overrides,
+  });
+
+  it('delta 7 / B.11 item 5: the helpdesk allowlist setup row names m365_create_user', async () => {
+    fetchMock.mockImplementation(async () => json({ data: { id: AGENT, name: 'Front desk', allOrgs: false, toolAllowlist: [] } }));
+    const allowlist = cap({
+      key: 'agent.helpdesk.tool_allowlist', kind: 'agent_tool', provider: 'breeze',
+      detail: 'The helpdesk agent must allow the onboarding tools.',
+      action: { kind: 'add_agent_tools', href: null, toolNames: ['m365_create_user', 'm365_assign_license', 'm365_add_to_group'], agentId: AGENT },
+    });
+    render(<RecipeCard workflow={onboarding({ readiness: 'setup_required', missingCapabilities: [allowlist] })} onStart={vi.fn()} />);
+    const row = screen.getByTestId('recipe-missing-agent.helpdesk.tool_allowlist');
+    expect(row).toHaveTextContent('m365_create_user');
+    await waitFor(() => expect(screen.getByTestId('recipe-missing-action-agent.helpdesk.tool_allowlist')).toHaveTextContent('Allow 3 tools'));
+  });
+
+  it('can be started from the Library, with its own localized name and summary', () => {
+    const onStart = vi.fn();
+    render(<RecipeCard workflow={onboarding({ readiness: 'setup_required' })} onStart={onStart} />);
+    const card = screen.getByTestId('recipe-card-identity_onboarding');
+    expect(card).toHaveTextContent('Onboard a person');
+    expect(card).not.toHaveTextContent('server name');
+    expect(card).not.toHaveTextContent('Start this recipe from a device or an alert.');
+    fireEvent.click(screen.getByTestId('recipe-start-identity_onboarding'));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ recipeKey: 'identity_onboarding' }));
+  });
+});

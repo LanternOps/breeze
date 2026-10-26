@@ -223,11 +223,24 @@ describe('globalRateLimit — isolated bmr recovery download bucket', () => {
 });
 
 describe('ISOLATED_BUCKETS pins', () => {
+  it('meters public agreement signing links in their own small per-IP bucket (#9075 W2b)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/agreements/public/', name: 'agreementpublic', limit: 60 });
+    // Only the public sub-path; nothing staff-facing shares it.
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/contracts/agreement-requests/x'.startsWith(b.prefix))).toBe(false);
+  });
+
   it('meters EDR vendor push deliveries in their own per-IP bucket (W03 PR-B)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 });
     // The org webhook CRUD router keeps the shared budget.
     expect(ISOLATED_BUCKETS.some((b) => '/api/v1/webhooks/abc'.startsWith(b.prefix))).toBe(false);
+  });
+
+  it('meters flow webhook deliveries in their own per-IP bucket (W05)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/webhooks/flows/', name: 'flowwebhook', limit: 1200 });
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/flows/abc'.startsWith(b.prefix))).toBe(false);
   });
 
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {

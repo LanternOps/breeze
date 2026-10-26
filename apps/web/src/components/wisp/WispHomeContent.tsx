@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Brain, MessagesSquare, Sparkles } from 'lucide-react';
-import type { CurrentActivity, WispHomePayload, WispThreadLink } from '@breeze/shared';
+import { LIVE_CONCERN_STATUSES, type CurrentActivity, type WispHomePayload, type WispThreadLink } from '@breeze/shared';
 import { FeatureLock } from '@/components/shared/FeatureLock';
 import { useEntitlement } from '@/hooks/useEntitlement';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
-import WispThreadHeader from '../ai/WispThreadHeader';
 import WispGrantStepUpModal from '../ai/WispGrantStepUpModal';
-import WispActivityPanel from './WispActivityPanel';
-import WispBriefCard from './WispBriefCard';
-import WispNeedsYou from './WispNeedsYou';
-import WispLinksPanel from './WispLinksPanel';
+import WispCompanionShell from './WispCompanionShell';
 import WispHomeThread from './WispHomeThread';
+import WispRail from './WispRail';
 import { fetchWispHome, fetchWispPartnerEnabled, homeSectionFromHash } from './wispHome';
 
 type Wisp = NonNullable<WispState>;
@@ -20,6 +17,7 @@ type View =
   | { kind: 'loading' }
   | { kind: 'error' }
   | { kind: 'locked' }
+  | { kind: 'forbidden' }
   /** No usable grant: `partnerEnabled` false shows why there is no start button. */
   | { kind: 'start'; partnerEnabled: boolean }
   | { kind: 'ready'; payload: WispHomePayload; wisp: Wisp; current: CurrentActivity; links: WispThreadLink[]; stale: boolean };
@@ -28,17 +26,26 @@ type View =
 const POLL_MS = 30_000;
 const STALE_AFTER_FAILED_POLLS = 2;
 
-const CHATS_HREF = '/wisp/chat';
+const CHATS_HREF = '/ai/chat';
 const MEMORY_HREF = '/settings/wisp-memory';
 const SETTINGS_HREF = '/settings/ai-agents';
 
+/** What the needs-you count shows: the same live rule `WispNeedsYou` lists by. */
+const LIVE_STATUSES: readonly string[] = LIVE_CONCERN_STATUSES;
+
 /**
- * The Wisp home's body (W08 Task 9, spec §17.2): one read (`GET /wisp/home`,
- * no model call) for first paint, then a quiet poll. Left: the grant header
- * (scope, spend, pause/resume, live line), the morning brief, what needs you,
- * the activity timeline. Right: the conversation and the linked items.
- * States: not entitled → FeatureLock; no grant → start card (or, with the
- * partner switch off, why not); a broken read → retry, never a guessed state.
+ * The Wisp home's body (W08 Task 9; W01 #10211, companion spec §4.1): one read
+ * (`GET /wisp/home`, no model call) for first paint, then a quiet poll.
+ * Ready: the conversation is the page. `WispCompanionShell` lays out the
+ * thread column at reading width (the thread's timeline with Wisp's posts:
+ * briefs, nudges, digests, W02b; the composer anchored at the bottom) and the rail at the right from `lg` up:
+ * identity and grant controls, what needs you, workers, linked items, the
+ * activity timeline, and the chats and memory links. Below `lg` the rail
+ * collapses to a status strip that opens it in a drawer. No page heading: the
+ * identity card carries the name.
+ * Other states keep the framed heading: not entitled → FeatureLock; no grant
+ * → start card (or, with the partner switch off, why not); a broken read →
+ * retry, never a guessed state.
  */
 export default function WispHomeContent() {
   const { t } = useTranslation('ai');
@@ -51,6 +58,7 @@ export default function WispHomeContent() {
   const [view, setView] = useState<View>({ kind: 'loading' });
   const [startOpen, setStartOpen] = useState(false);
   const [activityKey, setActivityKey] = useState(0);
+  const [threadKey, setThreadKey] = useState(0);
 
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -66,6 +74,12 @@ export default function WispHomeContent() {
       if (token !== loadToken.current) return;
       failedPolls.current = 0;
       if (home.kind === 'locked') { setView({ kind: 'locked' }); return; }
+      if (home.kind === 'forbidden') {
+        // A 403 on a background poll must not tear down a working page: treat it as a failed poll.
+        if (silent && viewRef.current.kind === 'ready') throw new Error('wisp home poll refused (403)');
+        setView({ kind: 'forbidden' });
+        return;
+      }
       if (home.kind === 'noGrant') {
         // A missing switch read must not hide the start card: the grant route refuses PARTNER_DISABLED itself.
         const partnerEnabled = await fetchWispPartnerEnabled().catch((err: unknown) => {
@@ -115,13 +129,29 @@ export default function WispHomeContent() {
     lastLiveKey.current = liveKey;
   }, [liveKey]);
 
+  // W02b: Wisp's posts reach the thread through its timeline. A check starting
+  // or finishing, a newer brief, or a change in the concerns is when a new post
+  // can exist: re-read the thread's newest page then, not on every poll.
+  const postsSignal = view.kind === 'ready'
+    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
+    : null;
+  const lastPostsSignal = useRef<string | null>(null);
+  useEffect(() => {
+    if (postsSignal === null) return;
+    if (lastPostsSignal.current !== null && lastPostsSignal.current !== postsSignal) setThreadKey((k) => k + 1);
+    lastPostsSignal.current = postsSignal;
+  }, [postsSignal]);
+
   // `#needs-you`, `#links`, `#concern=<id>` …: bring the section into view once it exists.
+  // Below `lg` the rail sections sit in the closed drawer, so a rail hash has nothing to scroll to there.
   const ready = view.kind === 'ready';
   useEffect(() => {
     if (!ready) return;
     const scroll = () => {
       const section = homeSectionFromHash(window.location.hash);
-      if (section) document.getElementById(section)?.scrollIntoView?.({ block: 'start' });
+      // Briefs are posts in the thread now, not a section of their own.
+      const id = section === 'brief' ? 'thread' : section;
+      if (id) document.getElementById(id)?.scrollIntoView?.({ block: 'start' });
     };
     scroll();
     window.addEventListener('hashchange', scroll);
@@ -148,6 +178,14 @@ export default function WispHomeContent() {
 
   if (entitlement.state === 'loading' || view.kind === 'loading') {
     return <HomeFrame><div className="p-6" data-testid="wisp-home-loading-body" aria-busy="true" /></HomeFrame>;
+  }
+
+  if (view.kind === 'forbidden') {
+    return (
+      <HomeFrame>
+        <p className="p-6 text-sm text-muted-foreground" data-testid="wisp-home-forbidden" role="status">{t('wisp.home.noAccess')}</p>
+      </HomeFrame>
+    );
   }
 
   if (view.kind === 'error') {
@@ -187,52 +225,56 @@ export default function WispHomeContent() {
     await load(false);
   };
 
-  return (
-    <HomeFrame>
-      {stale && (
-        <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-home-stale" role="status">
-          <span>{t('wisp.thread.stale')}</span>
-          <button type="button" onClick={() => void load(true)} className="font-medium underline underline-offset-2">{t('wisp.thread.retry')}</button>
-        </div>
-      )}
-      {!payload.partner.enabled && <DisabledCard />}
+  const onLinksChange = (next: WispThreadLink[]) => {
+    // Same as onWispChange: a poll already in flight read the links before this change.
+    loadToken.current++;
+    setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
+  };
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="min-w-0 space-y-4">
-          <section className="overflow-hidden rounded-lg border bg-card">
-            <WispThreadHeader
-              wisp={wisp}
-              orgName={orgName}
-              wideningAvailable={wisp.wideningAvailable}
-              showFocus={false}
-              currentActivity={current}
-              onWispChange={onWispChange}
-              onRevoked={onRevoked}
-            />
-          </section>
-          <WispBriefCard brief={payload.brief} />
-          <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={payload.needsYou} />
-          <section id="activity" className="overflow-hidden rounded-lg border bg-card">
-            <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} />
-          </section>
-        </div>
-        <div className="min-w-0 space-y-4">
-          <WispHomeThread wisp={wisp} lastSessionId={payload.thread.lastSessionId} />
-          <div className="overflow-hidden rounded-lg border bg-card">
-            <WispLinksPanel
-              threadId={wisp.threadId}
-              links={links}
-              canAdd={wisp.status === 'active'}
-              onLinksChange={(next) => {
-                // Same as onWispChange: a poll already in flight read the links before this change.
-                loadToken.current++;
-                setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
-              }}
-            />
-          </div>
-        </div>
-      </div>
-    </HomeFrame>
+  const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
+  const liveNeedsYouCount = payload.needsYou.filter((c) => LIVE_STATUSES.includes(c.status)).length;
+
+  return (
+    <WispCompanionShell
+      testId="wisp-home"
+      wisp={wisp}
+      current={current}
+      needsYouCount={liveNeedsYouCount}
+      banners={
+        <>
+          {stale && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-home-stale" role="status">
+              <span>{t('wisp.thread.stale')}</span>
+              <button type="button" onClick={() => void load(true)} className="font-medium underline underline-offset-2">{t('wisp.thread.retry')}</button>
+            </div>
+          )}
+          {!payload.partner.enabled && <DisabledCard />}
+        </>
+      }
+      column={
+        <WispHomeThread
+          wisp={wisp}
+          lastSessionId={payload.thread.lastSessionId}
+          scopeLabel={scopeLabel}
+          links={links}
+          onLinksChange={onLinksChange}
+          refreshKey={threadKey}
+        />
+      }
+      rail={
+        <WispRail
+          wisp={wisp}
+          orgName={orgName}
+          current={current}
+          needsYou={payload.needsYou}
+          links={links}
+          onLinksChange={onLinksChange}
+          onWispChange={onWispChange}
+          onRevoked={onRevoked}
+          activityKey={activityKey}
+        />
+      }
+    />
   );
 }
 

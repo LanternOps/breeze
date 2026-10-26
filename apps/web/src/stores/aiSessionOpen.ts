@@ -21,6 +21,8 @@ export interface AiSessionView {
   m365ConnectionId: string | null;
   pageContext: AiPageContext | null;
   topologySiteId: string | null;
+  /** The Wisp grant the session runs under (#10142); null for a plain chat. Immutable for the session. */
+  wispGrantId: string | null;
   /** The session object as served, for aiStore's topologyFieldsOf. */
   raw: Record<string, unknown>;
 }
@@ -72,6 +74,7 @@ export async function openAiSession(sessionId: string): Promise<OpenAiSessionRes
       m365ConnectionId: str(session.delegantM365ConnectionId),
       pageContext: pageContextFromSnapshot(session.contextSnapshot),
       topologySiteId: str(session.topologySiteId),
+      wispGrantId: str(session.wispGrantId),
       raw: session,
     };
     return { kind: 'ok', view, messages: mapMessagesFromApi(data.messages || []) };

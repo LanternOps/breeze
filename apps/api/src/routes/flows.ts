@@ -11,12 +11,17 @@
  * FLOWS_ENABLED is off (after auth, so an unauthenticated probe still gets
  * the uniform 401 every router returns).
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { FLOW_RUN_STATUSES, flowEnableRequestSchema, flowManualRunRequestSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { flowsEnabled } from '../config/env';
-import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { getFlow, listFlows } from '../services/flows/service';
+import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
+import { disableFlow, enableFlow } from '../services/flows/versions';
+import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
+import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 
 export const flowsRoutes = new Hono();
 
@@ -50,4 +55,168 @@ flowsRoutes.get('/:id', zValidator('param', idParamSchema), async (c) => {
   const found = await getFlow(auth, id);
   if (!found) return c.json({ error: 'Flow not found' }, 404);
   return c.json(found);
+});
+
+// ── W04 (#5219): enable / disable, manual runs, run ledger, cancel ─────────
+// No shadowing between `/runs/:runId…` and `/:id…`: Hono's `:id` matches ONE
+// path segment, so `GET /:id` never sees `/runs/<uuid>` (two segments), and a
+// literal `GET /runs` would 400 on the uuid param schema anyway. Declaration
+// order is not what keeps them apart.
+//
+// Every write is gated like the automations/scripts write routes: the
+// permission first, then `requireMfa()` (an MFA-unsatisfied session is 403
+// MFA_REQUIRED; an automation principal is refused by the same gate).
+
+const requireAutomationWrite = [requirePermission('automations', 'write'), requireMfa()] as const;
+const runIdParamSchema = z.object({ runId: z.string().uuid() });
+const stepParamSchema = z.object({ runId: z.string().uuid(), stepRowId: z.string().uuid() });
+const runsQuerySchema = z.object({
+  status: z.enum(FLOW_RUN_STATUSES).optional(),
+  orgId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+type Status = 403 | 404 | 409 | 422 | 429;
+
+const ENABLE_STATUS: Record<string, Status> = {
+  flow_not_found: 404,
+  version_conflict: 409,
+  already_enabled: 409,
+  slug_unavailable: 409,
+  partner_wide_forbidden: 403,
+  interactive_session_required: 403,
+  delegation_scope_restricted: 403,
+  event_dispatch_not_durable: 422,
+  foreach_concurrency_not_available: 422,
+  pre_approval_not_eligible: 422,
+  permission_missing: 422,
+  invalid: 422,
+  // W5 (#5220, Decision 3): a webhook flow needs a secret before it can go live.
+  webhook_secret_missing: 422,
+};
+const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
+const RUN_STATUS: Record<string, Status> = {
+  flow_not_found: 404,
+  not_enabled: 409,
+  not_manual: 409,
+  org_required: 422,
+  org_forbidden: 403,
+  interactive_user_required: 403,
+  delegation_scope_restricted: 403,
+  inputs_invalid: 422,
+  permission_missing: 422,
+  flow_queue_full: 429,
+  // W5 (#5220, Decision 15): monthly caps refuse visibly; the flow stays enabled.
+  flow_monthly_cap_reached: 429,
+  owner_monthly_cap_reached: 429,
+};
+
+/** `{ ok:false, error, ...details }` becomes `{ error, ...details }` with the mapped status (unmapped codes: 422). */
+function failure(c: Context, table: Record<string, Status>, result: { ok: false; error: string }) {
+  const { ok: _ok, ...body } = result;
+  return c.json(body, table[result.error] ?? 422);
+}
+
+flowsRoutes.get('/runs/:runId', zValidator('param', runIdParamSchema), async (c) => {
+  const { runId } = c.req.valid('param');
+  const run = await getFlowRun(c.get('auth'), runId, { stepBodies: 'none' });
+  if (!run) return c.json({ error: 'Run not found' }, 404);
+  return c.json(run);
+});
+
+flowsRoutes.get('/runs/:runId/steps/:stepRowId', zValidator('param', stepParamSchema), async (c) => {
+  const { runId, stepRowId } = c.req.valid('param');
+  const step = await getFlowRunStep(c.get('auth'), runId, stepRowId);
+  if (!step) return c.json({ error: 'Step not found' }, 404);
+  return c.json(step);
+});
+
+flowsRoutes.post('/runs/:runId/cancel', ...requireAutomationWrite, zValidator('param', runIdParamSchema), async (c) => {
+  const { runId } = c.req.valid('param');
+  const result = await cancelFlowRun(c.get('auth'), runId);
+  if (!result.ok) return c.json({ error: result.error }, result.error === 'run_not_found' ? 404 : 409);
+  return c.json({ status: result.status });
+});
+
+flowsRoutes.get('/:id/runs', zValidator('param', idParamSchema), zValidator('query', runsQuerySchema), async (c) => {
+  const { id } = c.req.valid('param');
+  const q = c.req.valid('query');
+  return c.json(await listFlowRuns(c.get('auth'), { flowId: id, orgId: q.orgId, status: q.status, limit: q.limit, offset: q.offset }));
+});
+
+flowsRoutes.post(
+  '/:id/runs',
+  ...requireAutomationWrite,
+  zValidator('param', idParamSchema),
+  zValidator('json', flowManualRunRequestSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const result = await startManualRun(auth, id, c.req.valid('json'), isInteractiveUserSession(auth) ? 'ui' : 'api');
+    if (!result.ok) return failure(c, RUN_STATUS, result);
+    return c.json({ runId: result.runId, duplicate: result.duplicate, preApprovalsHonored: result.preApprovalsHonored }, 202);
+  },
+);
+
+flowsRoutes.post(
+  '/:id/enable',
+  ...requireAutomationWrite,
+  zValidator('param', idParamSchema),
+  zValidator('json', flowEnableRequestSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const result = await enableFlow(c.get('auth'), id, c.req.valid('json'));
+    if (!result.ok) return failure(c, ENABLE_STATUS, result);
+    return c.json(result);
+  },
+);
+
+// ── W05 (#5220): the webhook secret, revealed once (Decision 3) ───────────
+// Create or rotate. The plaintext is in this response only (the
+// routes/apiKeys.ts reveal-once pattern); rotation cuts the old secret off at
+// once. `no-store` on every outcome so no cache keeps a reveal.
+const WEBHOOK_SECRET_STATUS: Record<string, Status> = {
+  flow_not_found: 404,
+  not_webhook: 409,
+  interactive_session_required: 403,
+  partner_wide_forbidden: 403,
+  delegation_scope_restricted: 403,
+  permission_missing: 422,
+  // #10270: the draft's steps no longer resolve, so the minter cannot be checked against them.
+  draft_unresolvable: 409,
+};
+
+flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
+  const { id } = c.req.valid('param');
+  c.header('Cache-Control', 'no-store');
+  const result = await createOrRotateWebhookSecret(c.get('auth'), id);
+  if (!result.ok) return failure(c, WEBHOOK_SECRET_STATUS, result);
+  return c.json({
+    secret: result.secret,
+    fingerprint: result.fingerprint,
+    rotatedAt: result.rotatedAt,
+    warning: 'Store this secret now. It will not be shown again.',
+  });
+});
+
+// ── W05 (#5220): the webhook delivery log (Decision 2) ─────────────────────
+// Caller context: RLS (the conditional connection_health_incidents policy)
+// shows an org token only its org's rows, never a partner-level one.
+const deliveriesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime({ offset: true }).optional(),
+});
+
+flowsRoutes.get('/:id/webhook-deliveries', zValidator('param', idParamSchema), zValidator('query', deliveriesQuerySchema), async (c) => {
+  const { id } = c.req.valid('param');
+  const q = c.req.valid('query');
+  return c.json({ deliveries: await listWebhookDeliveries(c.get('auth'), id, { limit: q.limit, before: q.before }) });
+});
+
+flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
+  const { id } = c.req.valid('param');
+  const result = await disableFlow(c.get('auth'), id);
+  if (!result.ok) return failure(c, DISABLE_STATUS, result);
+  return c.json(result);
 });

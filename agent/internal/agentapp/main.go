@@ -827,6 +827,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
 	cfg.AuthToken = "" // Clear plaintext from config struct
 
+	// W09 (#8148): loop-level Retry-After switch, before the log shipper and
+	// the heartbeat (the first users of httputil.Do / the shipper) start.
+	applyRetryAfterSettings(cfg)
+
 	// Shared auth-failure monitor — gates heartbeat and log shipper
 	// HTTP calls after 3 consecutive 401s so a deauthorized agent
 	// stops spamming the API (#401).
@@ -1049,6 +1053,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		AgentID:   cfg.AgentID,
 		AuthToken: secureToken,
 		TLSConfig: tlsCfg,
+
+		FirstReconnectWindow: wsReconnectConfig(cfg),
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)

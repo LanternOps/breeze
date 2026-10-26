@@ -1,10 +1,9 @@
 {
   "title": "Akışlar",
   "subtitle": "Araçları birbirine zincirleyen çok adımlı otomasyonlar.",
-  "previewNotice": "Akışlar bu sürümde salt okunurdur. Bunları yapay zekâ sohbetinde taslak olarak hazırlayın; etkinleştirme ve çalıştırmalar sonraki bir sürümde gelecek.",
   "empty": {
     "title": "Henüz akış yok",
-    "body": "Yapay zekâ asistanından bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
+    "body": "Breeze AI'dan bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
   },
   "list": {
     "name": "Ad",
@@ -19,7 +18,14 @@
     "draft": "Taslak",
     "enabled": "Etkin",
     "paused": "Duraklatıldı",
-    "disabled": "Devre dışı"
+    "disabled": "Devre dışı",
+    "pausedReason": {
+      "drift": "Akış etkinleştirildikten sonra değiştiği için duraklatıldı.",
+      "binding_drift": "Önceden onaylanmış bir betik veya hedef değiştiği için duraklatıldı.",
+      "delegator_inactive": "Adına çalıştığı kişi artık etkin olmadığı için duraklatıldı.",
+      "org_merged": "Kuruluş birleştirildiği için duraklatıldı.",
+      "event_dispatch_not_durable": "Bu sunucuda olay teslimi kalıcı olmadığı için duraklatıldı."
+    }
   },
   "trigger": {
     "schedule": "Zamanlama",
@@ -33,7 +39,7 @@
     "inputs": "Girdiler",
     "steps": "Adımlar",
     "version": "Sürüm {{version}}",
-    "createdInChat": "Yapay zekâ sohbetinde oluşturuldu"
+    "createdInChat": "Breeze AI'da oluşturuldu"
   },
   "step": {
     "tool": "Araç",
@@ -50,7 +56,8 @@
       "core": "Çekirdek araç",
       "tenant": "Araç kaynağı",
       "builtin": "Yerleşik"
-    }
+    },
+    "preApprovedBadge": "Önceden onaylı"
   },
   "issues": {
     "title": "Doğrulama",
@@ -65,6 +72,202 @@
   },
   "errors": {
     "loadFailed": "Akışlar yüklenemedi.",
-    "notFound": "Akış bulunamadı."
+    "notFound": "Akış bulunamadı.",
+    "enableFailed": "Akış etkinleştirilemedi.",
+    "disableFailed": "Akış devre dışı bırakılamadı.",
+    "runFailed": "Çalıştırma başlatılamadı.",
+    "cancelFailed": "Çalıştırma iptal edilemedi."
+  },
+  "tabs": {
+    "overview": "Genel bakış",
+    "runs": "Çalıştırmalar"
+  },
+  "actions": {
+    "enable": "Etkinleştir",
+    "disable": "Devre dışı bırak",
+    "runNow": "Şimdi çalıştır",
+    "cancelRun": "Çalıştırmayı iptal et",
+    "cancel": "Vazgeç"
+  },
+  "enable": {
+    "title": "Akışı etkinleştir",
+    "body": "Etkinleştirme, akışın bu sürümünü yayınlar; ardından akış tetikleyicisine göre çalışır. Onay gerektiren adımlar, aşağıda önceden onaylamadığınız sürece onay istemeye devam eder.",
+    "preApprove": "Bu adımı önceden onayla",
+    "preApproveHelp": "Bu sürümün çalıştırmaları, bu adım için onay istemini atlar. Ön onay yalnızca burada gösterilen betik ve hedefi kapsar; akış değişirse geçerliliğini yitirir.",
+    "notEligible": {
+      "not_tier3": "Yalnızca onay gerektiren adımlar önceden onaylanabilir.",
+      "tool_not_supported": "Bu araç önceden onaylanamaz.",
+      "script_not_literal": "Betik çalışma anında seçildiği için önceden onaylanamaz.",
+      "run_context_not_literal": "Çalıştırma hesabı çalışma anında seçildiği için önceden onaylanamaz.",
+      "group_target": "Bu adım, üyeleri değişebilen bir cihaz grubunu hedefler. Ön onay için sabit cihazlar gerekir.",
+      "variable_dependent": "Bu adım, yalnızca çalışma anında bilinen değerlere bağlıdır.",
+      "script_not_found": "Bu adımın kullandığı betik bulunamadı.",
+      "four_eyes": "Bu işlem her zaman ikinci bir kişinin onayını gerektirir.",
+      "tenant_tool": "Özel araç kaynakları önceden onaylanamaz."
+    },
+    "eventScope": "Olay akışları, nedeni ne olursa olsun platform olaylarına tepki verir; buna kişilerin, diğer akışların veya otomasyonların eylemleri de dahildir. Etkinleştirmeden önce tetikleyici filtresini kontrol edin.",
+    "missingPermissions": "Bu akışın adımlarının gerektirdiği bazı izinlere sahip değilsiniz:",
+    "eventNotDurable": "Bu sunucuda olay teslimi kalıcı değil, bu nedenle olay akışları şu anda etkinleştirilemez.",
+    "forEachConcurrency": "Her öğe için tekrarlanan adımlar öğeleri tek tek işler.",
+    "confirm": "Akışı etkinleştir",
+    "tier3Heading": "Onay gerektiren adımlar",
+    "noTier3": "Bu akıştaki hiçbir adım onay gerektirmiyor.",
+    "validationFailed": "Akışta doğrulama hataları var. Etkinleştirmeden önce bunları düzeltin:",
+    "versionConflict": "Akış, bu sayfayı açtığınızdan beri değişti. Etkinleştirmeden önce sayfayı yenileyip değişiklikleri gözden geçirin.",
+    "alreadyEnabled": "Bu akış zaten etkin.",
+    "preApprovalNotEligible": "{{stepId}} adımı önceden onaylanamaz. {{reason}}",
+    "foreachConcurrencyNotAvailable": "Bu akış bir adımı her öğe için paralel olarak tekrarlıyor; bu sunucu henüz bunu desteklemiyor.",
+    "delegationScopeRestricted": "Erişiminiz yalnızca bazı sitelerle sınırlı olduğundan tüm kuruluşta çalışan bir akışı etkinleştiremezsiniz.",
+    "partnerWideForbidden": "Tüm kuruluşlar için akış etkinleştirme izniniz yok.",
+    "interactiveRequired": "Akışlar yalnızca oturum açılmış bir tarayıcı oturumundan etkinleştirilebilir.",
+    "slugUnavailable": "Bu kapsamdaki başka bir akış zaten bu tanımlayıcıyı kullanıyor.",
+    "generic": "Akış etkinleştirilemedi."
+  },
+  "run": {
+    "title": "Akışı çalıştır",
+    "org": "Kuruluş",
+    "inputs": "Girdiler",
+    "submit": "Çalıştırmayı başlat",
+    "queueFull": "Bu akışın bekleyen çok fazla çalıştırması var. Bazıları bittiğinde yeniden deneyin.",
+    "permissionMissing": "Bu akışın adımlarını çalıştırma izniniz yok: {{permissions}}",
+    "preApprovalsNotHonored": "Bu çalıştırma onay yetkisi olmayan biri tarafından başlatıldığı için ön onaylar uygulanmadı ve her adım onay istiyor.",
+    "selectOrg": "Bir kuruluş seçin",
+    "orgRequired": "Bu akışın çalışacağı kuruluşu seçin.",
+    "requiredInput": "{{name}} gereklidir.",
+    "invalidNumber": "{{name}} bir sayı olmalıdır.",
+    "invalidUuid": "{{name}} geçerli bir kimlik olmalıdır.",
+    "inputsInvalid": "Bazı girdiler geçerli değil:",
+    "notEnabled": "Bu akış etkin olmadığı için çalıştırılamaz.",
+    "delegationScopeRestricted": "Erişiminiz yalnızca bazı sitelerle sınırlı olduğundan, tüm kuruluş genelinde çalışan bir akışı çalıştıramazsınız.",
+    "interactiveUserRequired": "Elle çalıştırmayı yalnızca oturum açmış bir kişi başlatabilir. Web uygulamasında oturum açıp yeniden deneyin.",
+    "orgForbidden": "Bu kuruluşa erişiminiz yok.",
+    "notManual": "Bu akış elle çalıştırılmaz. Tetikleyicisiyle başlar."
+  },
+  "runs": {
+    "empty": "Henüz çalıştırma yok.",
+    "status": {
+      "queued": "Sırada",
+      "running": "Çalışıyor",
+      "waiting": "Bekliyor",
+      "awaiting_approval": "Onay bekliyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
+    },
+    "trigger": {
+      "manual": "Elle",
+      "schedule": "Zamanlama",
+      "event": "Olay",
+      "webhook": "Webhook çağrısı",
+      "tool": "Araç çağrısı"
+    },
+    "via": {
+      "ui": "Web uygulamasından",
+      "api": "API üzerinden",
+      "ai_tool": "Breeze AI üzerinden",
+      "scheduler": "Zamanlayıcı tarafından",
+      "event": "Bir olay tarafından",
+      "webhook": "Webhook ile",
+      "mcp": "MCP ile",
+      "ai_agent": "Bir yapay zekâ aracısı tarafından"
+    },
+    "columns": {
+      "started": "Başlangıç",
+      "status": "Durum",
+      "trigger": "Tetikleyici",
+      "duration": "Süre",
+      "org": "Kuruluş"
+    },
+    "filter": {
+      "label": "Durum",
+      "all": "Tüm durumlar"
+    },
+    "loadFailed": "Çalıştırmalar yüklenemedi."
+  },
+  "runDetail": {
+    "title": "Akış çalıştırması",
+    "back": "Çalıştırmalara dön",
+    "awaitingApproval": "Bu çalıştırma, biri bir adımı onaylayana kadar duraklatıldı.",
+    "openApprovals": "Onayları aç",
+    "error": {
+      "step_failed": "Bir adım başarısız oldu.",
+      "rejected": "Bir onaylayıcı bir adımı reddetti.",
+      "drift": "Akış etkinleştirildikten sonra değiştiği için çalıştırma durduruldu.",
+      "binding_drift": "Önceden onaylanmış bir betik veya hedef değiştiği için çalıştırma durduruldu.",
+      "unknown_outcome": "Bir adımın sonucu bilinmiyor. Adım çalışmış olabilir. Akışı yeniden çalıştırmadan önce cihazı elle kontrol edin.",
+      "step_timeout": "Bir adım çok uzun sürdü ve durduruldu.",
+      "input_invalid": "Bir adım, kullanamadığı bir girdi aldı.",
+      "reference_not_owned": "Bir adım, başka bir kuruluşa ait bir öğeye başvurdu.",
+      "tool_unavailable": "Bu akışın kullandığı bir araç artık kullanılamıyor.",
+      "tool_blocked": "Bu akışın kullandığı bir araç engellenmiş.",
+      "too_many_items": "Bir adım izin verilenden fazla öğeyi tekrarlayacaktı.",
+      "render_failed": "Bir adımın girdisi önceki sonuçlardan oluşturulamadı.",
+      "no_eligible_approvers": "Onay gerektiren bir adımı onaylayabilecek kimse yok.",
+      "worker_lost": "Çalıştırma kesintiye uğradı ve devam edemedi.",
+      "cancelled": "Çalıştırma iptal edildi.",
+      "run_timeout": "Çalıştırma bir saatlik sınırı aştığı için durduruldu.",
+      "flow_disabled": "Bu çalıştırma etkinken akış devre dışı bırakıldı.",
+      "flows_disabled": "Akışlar bu sunucuda kapalı.",
+      "delegator_inactive": "Bu çalıştırmanın adına çalıştığı kişi artık etkin değil.",
+      "org_merged": "Kuruluş başka bir kuruluşla birleştirildi.",
+      "egress_blocked": "Giden istek, çıkış politikası tarafından engellendi.",
+      "http_status": "Dış API bir hata durumuyla yanıt verdi.",
+      "notify_failed": "Bildirim gönderilemedi.",
+      "ai_budget_exhausted": "Kuruluşun yapay zekâ bütçesi tükendi.",
+      "ai_output_invalid": "Yapay zekâ sonucu beklenen biçimle eşleşmedi.",
+      "ai_token_cap_reached": "Çalıştırma yapay zekâ jeton sınırına ulaştı."
+    },
+    "step": {
+      "status": {
+        "running": "Çalışıyor",
+        "awaiting_approval": "Onay bekliyor",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "skipped": "Atlandı",
+        "unknown_outcome": "Sonuç bilinmiyor, elle kontrol edin",
+        "cancelled": "İptal edildi"
+      },
+      "approval": {
+        "none": "Onay gerekmiyor",
+        "intent": "Bir kişinin onayını gerektirir",
+        "pre_approved": "Önceden onaylandı"
+      },
+      "input": "Girdi",
+      "output": "Çıktı",
+      "truncated": "Çıktı çok büyük olduğu için kısaltıldı.",
+      "notReached": "Ulaşılmadı",
+      "pending": "Beklemede",
+      "item": "Öğe {{index}}",
+      "approver": "Onaylayan: {{id}}",
+      "attempt": "Deneme {{n}}",
+      "show": "Ayrıntıları göster",
+      "hide": "Ayrıntıları gizle",
+      "loading": "Yükleniyor...",
+      "loadFailed": "Adım ayrıntıları yüklenemedi.",
+      "pruned": "Ayrıntılar saklama ilkesi nedeniyle kaldırıldı.",
+      "redacted": "Adım ayrıntıları erişiminizle görüntülenemiyor."
+    },
+    "notFound": "Çalıştırma bulunamadı.",
+    "alreadyTerminal": "Bu çalıştırma zaten sona erdi.",
+    "loadFailed": "Bu çalıştırma yüklenemedi.",
+    "retry": "Yeniden dene",
+    "version": "Sürüm {{version}} (yayın {{seq}})",
+    "org": "Kuruluş: {{org}}",
+    "waitingUntil": "{{time}} tarihine kadar bekliyor",
+    "queuedNote": "Sırada. Boş bir çalıştırma yuvası bekleniyor.",
+    "paused": "Canlı güncellemeler duraklatıldı.",
+    "lastUpdated": "Son güncelleme {{time}}",
+    "timeline": "Adımlar"
+  },
+  "toast": {
+    "enabled": "Akış etkinleştirildi",
+    "disabled": "Akış devre dışı bırakıldı",
+    "runStarted": "Çalıştırma başlatıldı",
+    "runCancelled": "Çalıştırma iptal edildi"
+  },
+  "disable": {
+    "title": "Akışı devre dışı bırak",
+    "message": "Devre dışı bırakmak yeni çalıştırmaları durdurur ve devam edenleri iptal eder. Akışı daha sonra yeniden etkinleştirebilirsiniz."
   }
 }

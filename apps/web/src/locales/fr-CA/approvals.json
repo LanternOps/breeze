@@ -132,7 +132,7 @@
     "durationValue": "{{minutes}} minutes après l'approbation",
     "purpose": "Objectif",
     "requestedBy": "Demandé par",
-    "principalUser": "Clavardage IA Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Clé d'API MCP",
     "principalOauth": "Connexion OAuth MCP",
     "paths": "Chemins",
@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan de la tâche de l’opérateur IA",
+    "title": "Plan de la tâche IA",
     "summary_one": "{{count}} effet, révision {{revision}} du plan",
     "summary_other": "{{count}} effets, révision {{revision}} du plan",
     "groupBreeze": "Appareils Breeze",
@@ -171,7 +171,7 @@
       "in_progress": "En cours",
       "completed": "Terminée",
       "failed": "Échec",
-      "rejected": "Rejetée",
+      "rejected": "Refusé",
       "expired": "Expirée",
       "cancelled": "Annulée"
     }

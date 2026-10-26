@@ -18,6 +18,11 @@ vi.mock('../db', () => ({
 vi.mock('./eventBus', () => ({
   publishEvent: vi.fn(),
 }));
+// W04-D10: revoke requests device cleanup (asserted in aiToolsPam.revokeCleanup.test.ts).
+vi.mock('./pamActuationLifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pamActuationLifecycle')>()),
+  requestPamCleanup: vi.fn(async () => ({})),
+}));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
@@ -385,7 +390,7 @@ describe('aiToolsPam handlers', () => {
     const auditChain = vi.mocked(db.insert).mock.results[0]!.value;
     const auditValues = auditChain.values.mock.calls[0]![0];
 
-    expect(parsed).toEqual({ elevationRequestId: REQUEST_ID, status: 'revoked' });
+    expect(parsed).toEqual({ elevationRequestId: REQUEST_ID, status: 'revoked', enforcementStatus: 'cleanup_pending' });
     expect(updateValues).toMatchObject({
       status: 'revoked',
       revokedByUserId: 'user-1',

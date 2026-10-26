@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Prochaine action",
-      "approveInInbox": "Approuver dans la boîte de réception",
+      "approveInInbox": "Approuver dans Approbations",
       "answerQuestion": "Répondre à une question",
       "waitingForDevice": "En attente de l'appareil",
       "waitingForMaintenanceWindow": "En attente de la fenêtre de maintenance",
@@ -114,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Chargement des tâches Operator...",
-    "loadFailed": "Échec du chargement des tâches Operator.",
-    "empty": "Aucune tâche Operator pour cet appareil.",
-    "emptyHint": "L'Opérateur IA examine et résout les problèmes d'un appareil lorsque vous lui déléguez une alerte. Les tâches déléguées pour cet appareil apparaîtront ici.",
-    "learnMore": "En savoir plus sur l'Opérateur IA"
+    "loading": "Chargement des tâches IA…",
+    "loadFailed": "Échec du chargement des tâches IA.",
+    "empty": "Aucune tâche IA pour cet appareil.",
+    "emptyHint": "Les travailleurs IA examinent et résolvent les problèmes d'un appareil lorsque vous lancez une tâche IA à partir d'une alerte. Les tâches IA de cet appareil apparaissent ici.",
+    "learnMore": "En savoir plus sur les tâches IA"
   },
   "delegate": {
-    "button": "Déléguer à l'Opérateur",
-    "dialogTitle": "Déléguer à l'Opérateur",
-    "dialogMessage": "L'Opérateur va enquêter et tenter de résoudre ce problème à l'aide du flux de travail ci-dessous.",
+    "button": "Lancer une tâche IA",
+    "dialogTitle": "Lancer une tâche IA",
+    "dialogMessage": "Les travailleurs IA vont enquêter et tenter de résoudre ce problème à l'aide de la recette ci-dessous.",
     "orgLabel": "Organisation",
     "deviceLabel": "Appareil",
     "serviceNameLabel": "Nom du service",
     "serviceNamePlaceholder": "p. ex. Spouleur",
-    "serviceNameError": "Saisissez le nom du service pour déléguer cette tâche.",
-    "workflowLabel": "Flux de travail",
+    "serviceNameError": "Saisissez le nom du service pour démarrer cette tâche IA.",
+    "workflowLabel": "Recette",
     "workflowName": "Récupération de service",
-    "confirmLabel": "Déléguer",
-    "queued": "Tâche déléguée à l'Opérateur.",
-    "failed": "Échec de la délégation à l'Opérateur."
-  },
-  "nav": {
-    "operator": "Opérateur"
+    "confirmLabel": "Démarrer",
+    "queued": "Tâche IA lancée.",
+    "failed": "Impossible de lancer la tâche IA."
   },
   "effectTool": {
     "googleSetVacation": "Définir la réponse automatique de Gmail",
@@ -152,11 +149,17 @@
     "m365RemoveLicense": "Retirer les licences Microsoft 365",
     "m365RetireIntuneDevice": "Retirer les téléphones gérés par Intune",
     "m365RevokeSessions": "Révoquer les sessions de connexion Microsoft 365",
-    "m365DisableUser": "Bloquer la connexion à Microsoft 365"
+    "m365DisableUser": "Bloquer la connexion à Microsoft 365",
+    "m365CreateUser": "Créer le compte Microsoft 365",
+    "m365AssignLicense": "Attribuer des licences Microsoft 365",
+    "m365AddToGroup": "Ajouter à un groupe Microsoft 365",
+    "googleMoveOu": "Déplacer vers l'unité d'organisation",
+    "googleAssignLicense": "Attribuer une licence Google Workspace",
+    "googleAddToGroup": "Ajouter à un groupe Google"
   },
   "workspace": {
     "tabs": {
-      "label": "Sections de l'Opérateur",
+      "label": "Sections de la tâche IA",
       "tasks": "Tâches",
       "library": "Bibliothèque"
     },
@@ -165,7 +168,7 @@
   "taskList": {
     "loading": "Chargement des tâches...",
     "loadFailed": "Échec du chargement des tâches.",
-    "empty": "Aucune tâche de l'Opérateur pour l'instant.",
+    "empty": "Aucune tâche IA pour l'instant.",
     "emptyHint": "Les tâches que vous lancez depuis la Bibliothèque, un ticket, un contact ou une alerte apparaissent ici.",
     "loadMore": "Charger plus",
     "loadMoreFailed": "Échec du chargement de tâches supplémentaires."
@@ -214,13 +217,16 @@
     "start": {
       "offboard": "Gérer le départ d'une personne",
       "notEnabled": "Cette recette n'est pas activée pour ce déploiement.",
-      "fromDeviceOrAlert": "Lancez cette recette depuis un appareil ou une alerte."
+      "fromDeviceOrAlert": "Lancez cette recette depuis un appareil ou une alerte.",
+      "onboard": "Intégrer une personne"
     },
     "recipe": {
       "identityOffboardingName": "Gérer le départ d'une personne",
       "identityOffboardingSummary": "Confirmez qui part, redirigez son courrier et retirez ses accès dans Microsoft 365 et Google Workspace dans un ordre sûr, avec une seule approbation. Le travail manuel est suivi dans le ticket.",
       "serviceRecoveryName": "Rétablir un service arrêté",
-      "serviceRecoverySummary": "Analysez un service Windows arrêté, redémarrez-le avec approbation et vérifiez qu'il reste en marche."
+      "serviceRecoverySummary": "Analysez un service Windows arrêté, redémarrez-le avec approbation et vérifiez qu'il reste en marche.",
+      "identityOnboardingName": "Intégrer une personne",
+      "identityOnboardingSummary": "Créez le compte Microsoft 365 d'une nouvelle personne avec une première approbation, puis attribuez les licences et les groupes de votre choix avec une seconde. Les comptes Google Workspace sont créés à la main à partir d'un élément de la liste de contrôle. Le mot de passe temporaire est révélé une seule fois, par la personne qui approuve."
     },
     "refreshFailed": "La bibliothèque de recettes n'a pas pu être actualisée ; l'affichage peut être obsolète."
   },
@@ -314,14 +320,88 @@
     "failed": "Impossible de lancer le départ.",
     "duplicate": "Un départ est déjà en cours pour cette personne.",
     "duplicateLink": "Ouvrir la tâche en cours",
-    "replayed": "Ce départ avait déjà été lancé ; ouverture en cours."
+    "replayed": "Ce départ avait déjà été lancé ; ouverture en cours.",
+    "onboarding": {
+      "title": "Intégrer une personne",
+      "personLabel": "Nouvelle personne",
+      "displayName": "Nom complet",
+      "personWillBeCreated": "Cette personne sera créée comme contact au lancement de la tâche.",
+      "jobTitle": "Intitulé du poste (facultatif)",
+      "site": "Site (facultatif)",
+      "noSite": "Aucun site",
+      "providersLabel": "Comptes à créer",
+      "upn": "Nom de connexion (UPN)",
+      "checkAvailability": "Vérifier la disponibilité",
+      "upnAvailable": "Disponible : aucun compte Microsoft 365 n'utilise ce nom de connexion.",
+      "upnTaken": "Déjà pris : un compte Microsoft 365 utilise déjà ce nom de connexion.",
+      "upnUnchecked": "Ce nom de connexion n'a pas pu être vérifié. Breeze ne créera pas de compte sous un nom que personne n'a vérifié.",
+      "mailNickname": "Alias de messagerie",
+      "usageLocation": "Pays d'utilisation (code pays à deux lettres)",
+      "usageLocationHelp": "Le pays où les licences seront utilisées, par exemple FR ou US. Obligatoire avant que Microsoft 365 n'attribue une licence.",
+      "skus": "Licences Microsoft 365 (ID de SKU)",
+      "skusHelp": "Une licence sans siège libre est conservée : la tâche la transforme en élément de la liste de contrôle.",
+      "groups": "Groupes Microsoft 365 (ID de groupe)",
+      "groupsHelp": "Les groupes dynamiques et les groupes de rôle d'administrateur ne sont jamais ajoutés automatiquement : la tâche les transforme en éléments de la liste de contrôle.",
+      "add": "Ajouter",
+      "invalidEntry": "Saisissez une valeur au format indiqué.",
+      "noSeats": "Aucun siège libre confirmé : devient un élément de la liste de contrôle",
+      "needsTechnician": "Un technicien l'ajoutera à la main",
+      "googleManual": "Breeze ne sait pas encore créer de comptes Google. La tâche ajoutera un élément à la liste de contrôle avec les informations exactes pour créer le compte à la main, puis poursuivra avec les licences et les groupes.",
+      "googlePrimaryEmail": "Adresse e-mail principale",
+      "givenName": "Prénom",
+      "familyName": "Nom",
+      "orgUnitPath": "Unité d'organisation (facultatif)",
+      "orgUnitPathHelp": "Commence par une barre oblique, par exemple /Staff/Sales.",
+      "googleLicenses": "Licences Google Workspace",
+      "googleProductId": "ID de produit",
+      "googleSkuId": "ID de SKU",
+      "googleGroups": "Groupes Google (adresses)",
+      "modelAfter": "Calquer sur (facultatif)",
+      "modelAfterHelp": "La tâche lit les groupes et les licences de cette personne et vous demande de les confirmer à sa première étape. Les groupes d'administration et les groupes dynamiques ne sont jamais copiés : la tâche les ajoute comme éléments de la liste de contrôle.",
+      "manager": "Responsable hiérarchique (facultatif)",
+      "managerHelp": "Enregistré sur le nouveau contact et mentionné dans la remise. Breeze ne modifie jamais les comptes du responsable.",
+      "managerPrefilled": "Prérempli à partir du ticket : la personne qui l'a ouvert est définie comme responsable hiérarchique, et non comme la nouvelle personne.",
+      "nobody": "Personne",
+      "startAt": "Date de début (facultatif)",
+      "startNow": "Laissez vide pour créer les comptes et effectuer la remise maintenant",
+      "startScheduled": "Les comptes sont créés maintenant ; la remise attend cette échéance.",
+      "startBeyondDeadline_one": "Cette tâche doit se terminer dans un délai de {{count}} jour. Choisissez une date de début dans ce délai de {{count}} jour, ou lancez l'intégration plus près de l'échéance.",
+      "startBeyondDeadline_other": "Cette tâche doit se terminer dans un délai de {{count}} jours. Choisissez une date de début dans ce délai de {{count}} jours, ou lancez l'intégration plus près de l'échéance.",
+      "invalid": "Certaines informations sont manquantes ou ne sont pas au bon format :",
+      "previewStage1": "Étape 1 : création des comptes (vous l'approuvez en premier)",
+      "previewStage1Empty": "Rien ne sera créé automatiquement.",
+      "previewStage2": "Étape 2 : licences, groupes et unité d'organisation (vous l'approuvez une fois le compte créé)",
+      "previewProvisional": "Provisoire : Breeze confirme ces éléments une fois le compte créé",
+      "flagsTitle": "Ce que les vérifications ont trouvé",
+      "previewNote": "La tâche ouvre son propre ticket pour les éléments de la liste de contrôle.",
+      "submit": "Lancer l'intégration",
+      "started": "Intégration lancée.",
+      "failed": "L'intégration n'a pas pu être lancée.",
+      "duplicate": "Une intégration est déjà en cours pour cette personne.",
+      "replayed": "Cette intégration avait déjà été lancée ; ouverture en cours.",
+      "existingContactLink": "Ouvrir les contacts de l'organisation",
+      "upnManual": "Les comptes Microsoft 365 de cette organisation sont créés à la main, donc Breeze n'a ni vérifié ni planifié celui-ci.",
+      "sitesFailed": "Les sites n'ont pas pu être chargés.",
+      "startAtIncomplete": "Saisissez une date et une heure de début complètes, ou videz le champ.",
+      "invalidNoProvider": "Activez au moins un compte à créer.",
+      "flagLabel": {
+        "upnCollision": "Nom de connexion déjà pris",
+        "emailCollision": "Adresse Google déjà prise",
+        "m365CollisionCheckFailed": "Vérification du nom de connexion",
+        "m365SeatsReadFailed": "Vérification des sièges de licence",
+        "googleCollisionCheckFailed": "Vérification de l'adresse Google",
+        "googleConnectionUnavailable": "Connexion à Google Workspace",
+        "other": "Vérification"
+      }
+    }
   },
   "taskPanels": {
     "tabsLabel": "Vues de la tâche",
     "tabs": {
       "steps": "Étapes",
       "plan": "Plan d'exécution",
-      "events": "Chronologie"
+      "events": "Chronologie",
+      "accounts": "Comptes"
     },
     "steps": {
       "empty": "Aucune étape n'a encore démarré.",
@@ -342,7 +422,14 @@
         "effects": "Approuver et effectuer les changements",
         "manualWork": "Travail de la liste de contrôle",
         "verifyOutcome": "Vérifier le résultat",
-        "document": "Rédiger le compte rendu"
+        "document": "Rédiger le compte rendu",
+        "confirmDetails": "Confirmer les informations de la nouvelle personne",
+        "createAccounts": "Approuver et créer les comptes",
+        "manualCreateGoogle": "Créer le compte Google à la main",
+        "resolveAccounts": "Retrouver les nouveaux comptes",
+        "provisionEffects": "Approuver et attribuer les licences et les groupes",
+        "waitStart": "Attendre la date de début",
+        "handoverWork": "Liste de contrôle de la remise"
       },
       "kind": {
         "reason": "Raisonnement",
@@ -377,7 +464,7 @@
       "state": {
         "pending": "En attente d'approbation",
         "approved": "Approuvé",
-        "rejected": "Rejeté",
+        "rejected": "Refusé",
         "expired": "Expiré",
         "superseded": "Remplacé"
       },
@@ -393,7 +480,10 @@
         "failed": "Échec",
         "unknown": "Résultat inconnu",
         "superseded": "Remplacée"
-      }
+      },
+      "stageCreation": "Création des comptes",
+      "stageProvision": "Licences, groupes et unité d'organisation",
+      "followedBy": "Approuvée et exécutée, puis suivie de l'approbation {{n}} pour l'étape suivante. Conservée ici comme trace de ce qui a été approuvé."
     },
     "events": {
       "empty": "Aucun événement enregistré pour l'instant.",
@@ -426,6 +516,24 @@
         "humanWorkUnticked": "Élément de la liste de contrôle décoché",
         "taskSettled": "Tâche terminée"
       }
-    }
+    },
+    "accounts": "Comptes créés",
+    "planStage": "Approbation {{n}}"
+  },
+  "credential": {
+    "availableTo": "Mot de passe temporaire disponible pour {{name}} jusqu'au {{date}}",
+    "availableToNoDate": "Mot de passe temporaire disponible pour {{name}}",
+    "askTo": "Demandez à {{name}} de transmettre le mot de passe temporaire : seule cette personne peut le révéler",
+    "reveal": "Le révéler dans l'activité de l'IA (Approbations)",
+    "revealed": "Mot de passe temporaire déjà révélé",
+    "expired": "Mot de passe temporaire expiré sans avoir été révélé",
+    "expiredRecovery": "Réinitialisez le mot de passe. Ne créez pas de second compte.",
+    "unretrievable": "Le mot de passe temporaire n'a jamais été enregistré : personne ne peut donc le révéler.",
+    "setByHand": "Mot de passe défini à la main pendant l'intégration",
+    "unknown": "État du mot de passe temporaire inconnu",
+    "theApprover": "la personne qui a approuvé la création du compte",
+    "whoReveals": "Seule la personne qui a approuvé la création du compte peut révéler un mot de passe temporaire, et une seule fois, et non le technicien qui a lancé cette tâche. Transmettez-le en personne ou par téléphone.",
+    "noRevealer": "Breeze n'a trouvé personne pouvant révéler ce mot de passe temporaire.",
+    "revealNeedsFeedAccess": "Vous seul pouvez le révéler, dans l'activité de l'IA (Approbations), mais votre rôle ne peut pas ouvrir cette page. Demandez à un administrateur l'accès à l'audit des sessions de l'IA."
   }
 }

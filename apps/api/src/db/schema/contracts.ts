@@ -67,6 +67,7 @@ export const contractLines = pgTable('contract_lines', {
   // catalog_item_id + site_id FKs created in SQL (ON DELETE SET NULL) to dodge import cycles.
   catalogItemId: uuid('catalog_item_id'),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+  // #9664: NOT NULL on a manual line — contract_lines_manual_quantity_chk (SQL-only).
   manualQuantity: numeric('manual_quantity', { precision: 12, scale: 2 }),
   siteId: uuid('site_id'),
   // #4693: the site's name at write time. Survives the FK's ON DELETE SET NULL
@@ -134,6 +135,34 @@ export const contractBillingPeriods = pgTable('contract_billing_periods', {
   // Composite-FK target for cbp_outcomes_period_org_fk (#3205 W07). Built
   // CONCURRENTLY by migration 2026-10-08-101100-billing-evidence-fk-targets.sql.
   uniqueIndex('contract_billing_periods_id_org_uq').on(t.id, t.orgId),
+]);
+
+/**
+ * Partner billing toggle (spec 2026-10-16-partner-billing-enabled-design.md §6.1, Q7): one row per
+ * billing period of an active contract skipped while the partner had Billing off. RLS Shape 1,
+ * org-owned operational history. Manual review only (resolved flag + note); a row never invoices,
+ * charges or triggers autopay.
+ *
+ * SQL-ONLY constraints (migration 2027-01-05-120100-contract-skipped-billing-periods.sql):
+ *   - (contract_id, org_id) -> contracts(id, org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE
+ * CHECKs: contract_skipped_billing_periods_period_chk (period_end > period_start, half-open),
+ * contract_skipped_billing_periods_reason_chk (reason IN ('billing_disabled'), no default),
+ * contract_skipped_billing_periods_note_chk (resolution_note <= 2000 chars).
+ */
+export const contractSkippedBillingPeriods = pgTable('contract_skipped_billing_periods', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  contractId: uuid('contract_id').notNull(),
+  // Half-open [periodStart, periodEnd).
+  periodStart: date('period_start').notNull(),
+  periodEnd: date('period_end').notNull(),
+  reason: text('reason').$type<'billing_disabled'>().notNull(),
+  resolved: boolean('resolved').notNull().default(false),
+  resolutionNote: text('resolution_note'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('contract_skipped_billing_periods_contract_period_uq').on(t.contractId, t.periodStart),
+  index('contract_skipped_billing_periods_org_idx').on(t.orgId),
 ]);
 
 /**

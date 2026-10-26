@@ -117,6 +117,7 @@ describe('getRouteScope', () => {
   it('classifies /flows (Tool Catalog W3) as org-or-all', () => {
     expect(getRouteScope('/flows')).toBe('org-or-all');
     expect(getRouteScope('/flows/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
+    expect(getRouteScope('/flows/runs/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
   });
 
   it('classifies the Wisp thread page (W06 #9918) as partner-settings — its subject is the grant, not the switcher', () => {
@@ -126,11 +127,12 @@ describe('getRouteScope', () => {
     expect(isGlobalScopeRoute('/ai/wisp/thread/abc')).toBe(false);
   });
 
-  it('classifies the Wisp home (W08 #9921) as partner-settings like the thread page, and /wisp/chat as org-or-all like /workspace was', () => {
+  it('classifies the Wisp home (W08 #9921) as partner-settings like the thread page, and the Breeze AI chat (/ai/chat) as org-or-all', () => {
     expect(getRouteScope('/wisp')).toBe('partner-settings');
     expect(isGlobalScopeRoute('/wisp')).toBe(false);
+    expect(getRouteScope('/ai/chat')).toBe('org-or-all');
+    // /wisp/chat and /workspace only redirect to /ai/chat now; keep classifying the redirect hop.
     expect(getRouteScope('/wisp/chat')).toBe('org-or-all');
-    // The old URL only redirects now; keep classifying it for the redirect hop.
     expect(getRouteScope('/workspace')).toBe('org-or-all');
   });
 

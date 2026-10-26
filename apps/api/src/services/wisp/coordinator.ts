@@ -40,6 +40,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
 import { aiWorkspaceEnabled, wispEnabled } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
@@ -58,7 +59,9 @@ import {
 } from './grantAuthority';
 import {
   SPECIALIST_LAUNCHERS,
+  SPECIALIST_PREREQUISITES,
   parseSpecialistParams,
+  specialistParamsError,
   type LaunchResult,
   type SpecialistRefusal,
 } from './specialistLaunchers';
@@ -128,6 +131,50 @@ async function humanHolds(auth: AuthContext, orgId: string, permissions: readonl
 
 const missingToRefusal = (key: string): SpecialistRefusal =>
   key === 'ai_workspace:execute' ? 'workspace_execute_required' : 'permission_missing';
+
+export type SpecialistPrecheckResult =
+  | { ok: true; orgName: string | null }
+  | { ok: false; refused: SpecialistRefusal; detail?: string };
+
+/**
+ * #10144 — the cheap, deterministic gates for a chat `launch_specialist` call,
+ * run by the chat gate (aiAgentSdk) BEFORE it raises an approval card, so a
+ * request the coordinator would refuse never asks the person first: a known
+ * kind (gate 6), params that parse (gate 6, with a detail the model can act
+ * on), the sandbox for analysis, and the kind's prerequisite (a sweep schedule,
+ * an effective agent, a device in the org — SPECIALIST_PREREQUISITES).
+ *
+ * Advisory only. The grant, entitlement, ceiling, budget and permission gates
+ * are not repeated here (the chat ceiling gate already ran), and
+ * `requestSpecialist` re-runs EVERY gate after the approval — a pass here never
+ * admits anything. Read-only. On a pass it returns the org's name for the
+ * approval card; the caller has already verified the org is inside the grant.
+ */
+export async function precheckSpecialistRequest(input: {
+  orgId: string;
+  partnerId: string;
+  kind: string;
+  params: Record<string, unknown>;
+}): Promise<SpecialistPrecheckResult> {
+  if (!isSpecialistKind(input.kind)) return { ok: false, refused: 'unknown_kind' };
+  const params = parseSpecialistParams(input.kind, input.params);
+  if (!params) {
+    const detail = specialistParamsError(input.kind, input.params);
+    return detail ? { ok: false, refused: 'invalid_params', detail } : { ok: false, refused: 'invalid_params' };
+  }
+  if (input.kind === 'analysis' && !aiWorkspaceEnabled()) {
+    return { ok: false, refused: 'admission_skipped', detail: 'analysis_not_available' };
+  }
+  const prerequisite = await SPECIALIST_PREREQUISITES[input.kind]({ orgId: input.orgId, partnerId: input.partnerId, params });
+  if (prerequisite) return { ok: false, ...prerequisite };
+
+  const [org] = await systemRead(() => db
+    .select({ name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, input.orgId))
+    .limit(1));
+  return { ok: true, orgName: org?.name ?? null };
+}
 
 export async function requestSpecialist(
   input: SpecialistRequestInput,

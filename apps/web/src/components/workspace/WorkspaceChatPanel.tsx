@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Sparkles } from "lucide-react";
 
 import AiChatMessages from "../ai/AiChatMessages";
 import AiChatInput from "../ai/AiChatInput";
@@ -84,7 +85,22 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex items-center justify-end gap-2 border-b border-gray-200/50 px-4 py-1.5 dark:border-gray-700/50">
-        <div className="mr-auto min-w-0">
+        <div className="mr-auto flex min-w-0 items-center gap-2">
+          {/* #10142: say which assistant this tab is — Wisp only when its
+              session runs (or will be created) under a grant. Nothing while
+              the tab is still finding out. */}
+          {tab.wisp && (
+            <span
+              data-testid="workspace-chat-mode"
+              data-mode={tab.wisp.kind}
+              className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold ${
+                tab.wisp.kind === "wisp" ? "text-primary" : "text-gray-600 dark:text-gray-300"
+              }`}
+            >
+              {tab.wisp.kind === "wisp" && <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}
+              {tab.wisp.kind === "wisp" ? t("wisp.title") : t("aiChatSidebar.title")}
+            </span>
+          )}
           <WorkspaceSessionChips
             orgId={tab.orgId}
             deviceLabel={tab.deviceLabel}
@@ -175,18 +191,22 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         onPauseAi={(paused) => pauseAi(tab.id, paused)}
         onSendQuickAction={(prompt) => sendMessage(tab.id, prompt)}
         onIntentDecided={() => clearPendingApproval(tab.id)}
+        layout="page"
+        showTimeDividers
       />
 
-      {/* Input */}
-      <AiChatInput
-        onSend={(content) => sendMessage(tab.id, content)}
-        value={tab.composerDraft}
-        onValueChange={(value) => setComposerDraft(tab.id, value)}
-        onInterrupt={() => interruptResponse(tab.id)}
-        disabled={tab.isLoading}
-        isStreaming={tab.isStreaming}
-        isInterrupting={tab.isInterrupting}
-      />
+      {/* Input, in the thread's reading-width column (W01 #10211) */}
+      <div className="mx-auto w-full max-w-3xl" data-testid="workspace-composer">
+        <AiChatInput
+          onSend={(content) => sendMessage(tab.id, content)}
+          value={tab.composerDraft}
+          onValueChange={(value) => setComposerDraft(tab.id, value)}
+          onInterrupt={() => interruptResponse(tab.id)}
+          disabled={tab.isLoading}
+          isStreaming={tab.isStreaming}
+          isInterrupting={tab.isInterrupting}
+        />
+      </div>
 
       {modalOpen && (
         <CreateTicketFromChatModal

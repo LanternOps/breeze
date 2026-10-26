@@ -653,4 +653,49 @@ describe('eventBus service', () => {
       expect((getRedisConnection as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeClose);
     });
   });
+
+  // Tool catalog W04 (#5219), Decision 14: an event published while a flow
+  // step executes carries the run's ancestry, stamped from the ALS frame.
+  describe('flow ancestry stamping (flowExecutionContext)', () => {
+    const RUN_ID = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+
+    function lastXaddEvent(): { metadata: Record<string, unknown> } {
+      const calls = vi.mocked(mockRedis.xadd!).mock.calls;
+      return JSON.parse(calls.at(-1)!.at(-1) as string);
+    }
+
+    it('an event published inside withFlowExecutionContext carries flowRunId and flowChainDepth', async () => {
+      const { withFlowExecutionContext } = await import('./flows/flowExecutionContext');
+      await withFlowExecutionContext({ runId: RUN_ID, chainDepth: 2 }, () =>
+        eventBusModule.publishEvent('alert.resolved', 'org-1', { alertId: 'a1' }, 'test'));
+      const event = lastXaddEvent();
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+      expect(event.metadata.flowChainDepth).toBe(2);
+    });
+
+    it('a caller-supplied flowChainDepth 0 inside a frame of depth 2 is overwritten by the frame', async () => {
+      const { withFlowExecutionContext } = await import('./flows/flowExecutionContext');
+      await withFlowExecutionContext({ runId: RUN_ID, chainDepth: 2 }, () =>
+        eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test', {
+          flowChainDepth: 0,
+          flowRunId: '0b5b3f0e-6a55-4a59-9d8e-3c2b1a0000ff',
+        }));
+      const event = lastXaddEvent();
+      expect(event.metadata.flowChainDepth).toBe(2);
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+    });
+
+    it('outside a frame nothing is added', async () => {
+      await eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test');
+      const event = lastXaddEvent();
+      expect(Object.keys(event.metadata).sort()).toEqual(['correlationId', 'timestamp']);
+    });
+
+    it('outside a frame an explicit ancestry option (the runner publishing flow.run.*) is carried', async () => {
+      await eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test', { flowRunId: RUN_ID, flowChainDepth: 1 });
+      const event = lastXaddEvent();
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+      expect(event.metadata.flowChainDepth).toBe(1);
+    });
+  });
 });

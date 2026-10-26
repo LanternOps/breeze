@@ -325,6 +325,16 @@ export function aiOperatorIdentityOffboardingEnabled(): boolean {
 }
 
 /**
+ * Recipe-level gate for `identity_onboarding` (Recipe Library W07 R2). Nests
+ * under AI_OPERATOR_TASKS_ENABLED exactly as the offboarding flag does, and is
+ * read at call time. Stays OFF until the R2c lab run passes; nothing in the
+ * repo enables it.
+ */
+export function aiOperatorIdentityOnboardingEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', false);
+}
+
+/**
  * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
  *
  * THREE conditions, all read at CALL time so a test can flip one without
@@ -435,6 +445,60 @@ export function positiveIntEnv(name: string, fallback: number, min: number, max:
   const parsed = Number.parseInt(raw.trim(), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.min(Math.max(parsed, min), max);
+}
+
+/**
+ * Tool catalog W04 (#5219): how long a parked Tier-3 flow step's action intent
+ * waits for a human (both approval scopes). Default 24 h, clamped 1..168.
+ */
+export function flowApprovalTtlHours(): number {
+  return positiveIntEnv('FLOW_APPROVAL_TTL_HOURS', 24, 1, 168);
+}
+
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 8: how many runs of one
+ * flow owner (an org, or a partner for its partner-wide flows) may be
+ * `running` at once, across every API replica. Parked runs do not count.
+ * Default 20, clamped 1..500.
+ */
+export function flowMaxRunningPerOwner(): number {
+  return positiveIntEnv('FLOW_MAX_RUNNING_PER_OWNER', 20, 1, 500);
+}
+
+/**
+ * Tool catalog W04 (#5219), plan Task A8 / Decision 9: days after a run
+ * finishes before its bodies (trigger payload, inputs, step inputs/outputs)
+ * are pruned. Rows are never deleted. Default 90, clamped 7..3650.
+ */
+export function flowRunRetentionDays(): number {
+  return positiveIntEnv('FLOW_RUN_RETENTION_DAYS', 90, 7, 3650);
+}
+
+/**
+ * Tool catalog W05 (#5220): inbound webhook deliveries accepted per minute for
+ * one flow (Redis limiter; over it the intake answers 429). Default 120,
+ * clamped 1..6000.
+ */
+export function flowWebhookRatePerMinute(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_RATE_PER_MINUTE', 120, 1, 6000);
+}
+
+/**
+ * Tool catalog W05 (#5220): days a non-accepted flow webhook delivery row
+ * (refused / org_unresolved / invalid_body) is kept; accepted rows live as
+ * long as their run. Default 30, clamped 1..365.
+ */
+export function flowWebhookDeliveryRetentionDays(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 30, 1, 365);
+}
+
+/**
+ * Tool catalog W05 (#5220): the most for-each items one flow step runs at
+ * once; the step's own `forEach.concurrency` is capped by this. Default 5,
+ * clamped 1..10.
+ */
+export function flowForEachMaxParallel(): number {
+  return positiveIntEnv('FLOW_FOREACH_MAX_PARALLEL', 5, 1, 10);
 }
 
 /** Per-API-instance `sync-domain` concurrency (spec §5.3). */

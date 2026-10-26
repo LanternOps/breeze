@@ -135,6 +135,7 @@ const REASON_KEYS: Record<string, string> = {
   requires_mdm_approval: "requiresMdmApproval",
   platform_not_selected: "platformNotSelected",
   var_missing: "varMissing",
+  var_secret: "varSecret",
   vendor_unavailable: "vendorUnavailable",
   install_failed: "installFailed",
   install_not_armed: "installNotArmed",

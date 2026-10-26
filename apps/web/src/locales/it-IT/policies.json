@@ -1171,7 +1171,13 @@
         "binaryMissing": "{{vendors}} non può essere attivato finché il pacchetto integrato non ha un programma di installazione distribuibile: un MSI Windows come versione più recente, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Correggilo nella scheda Versioni del pacchetto, quindi salva di nuovo.",
         "binaryMissingLink": "Apri la scheda Versioni",
         "platformMacosUnsupported": "macOS: non supportato.",
-        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente."
+        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente.",
+        "catalogMissingBuiltin": "{{vendors}} non è ancora nel catalogo software di questo partner. Aggiungilo da Software → Catalogo → Pacchetti integrati, poi salva di nuovo.",
+        "catalogMissingBuiltinLink": "Apri Pacchetti integrati",
+        "dnsBuiltinNote": "Aggiungi prima {{vendor}} al catalogo software di questo partner da Software → Catalogo → Pacchetti integrati; finché non è presente non può essere attivato.",
+        "dnsVariableNote": "Ogni organizzazione deve avere la variabile tenant {{variable}}, creata come variabile normale (non segreta). Le organizzazioni che non ce l'hanno vengono saltate e mostrate come non applicabili.",
+        "dnsVariableLink": "Apri Variabili",
+        "dnsCoverageNote": "Breeze non sincronizza la console di {{vendor}}, quindi la copertura mostra solo se ogni dispositivo può ricevere il client (in attesa o non applicabile). Lo stato di installazione e del servizio (mancante, non in esecuzione) compare nella conformità della policy software generata."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",

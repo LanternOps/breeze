@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Nivel 1 — Lecturas"
+      },
+      "tier2": {
+        "label": "Nivel 2 — Actúa y registra"
+      },
+      "tier3": {
+        "label": "Nivel 3 — Pregunta primero"
+      },
+      "tier4": {
+        "label": "Nivel 4 — Bloqueado"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "AI Motor de riesgos",
     "analytics": "Analítica",
@@ -2361,6 +2377,7 @@
       "requiresMdmApproval": "Requiere aprobación de MDM",
       "platformNotSelected": "Plataforma no seleccionada",
       "varMissing": "Falta la variable de implementación",
+      "varSecret": "La variable de implementación está marcada como secreta",
       "vendorUnavailable": "Proveedor no disponible",
       "installFailed": "Falló la instalación",
       "installNotArmed": "Instalación no habilitada",
@@ -2487,7 +2504,7 @@
       "origin": {
         "web": "Interfaz web",
         "api": "Acceso por API",
-        "ai_chat": "Chat de IA",
+        "ai_chat": "Breeze AI",
         "mcp": "Cliente MCP"
       },
       "scanType": {

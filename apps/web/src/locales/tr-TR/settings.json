@@ -79,6 +79,10 @@
         "categoryLabel": "Kategori",
         "categoryUnresolved": "Önerildi — bu görünümde ad kullanılamıyor"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Düzeltme belleği",
+      "fleetDesignReport": "Filo tasarımı"
     }
   },
   "aiDataPolicy": {
@@ -285,7 +289,7 @@
     "subtitle": "Sağlayıcıları bağlayın, hangi modellerin kullanılabilir olacağını seçin ve her yapay zeka özelliği için varsayılan modeli belirleyin.",
     "forbidden": "Yapay zeka sağlayıcılarını ve modellerini yönetme yetkiniz yok.",
     "loadFailed": "Yapay zeka sağlayıcıları ve modelleri yüklenemedi.",
-    "workspaceNote": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
+    "workspaceNote": "Bilgi dizinleme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
     "connections": {
       "title": "Bağlantılar",
       "subtitle": "Yapay zeka isteklerinizin nereye gönderildiği ve bedelini kimin ödediği.",
@@ -1096,7 +1100,7 @@
       },
       "aiApprovals": {
         "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
+        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
       },
       "callerVerification": {
         "label": "Arayan doğrulama",
@@ -1496,7 +1500,8 @@
       "approval_snapshot": "Onay rakamları",
       "approval_expires": "Onay son tarihi",
       "approval_status": "Onay durumu",
-      "merged_into_number": "Hedef bilet numarası"
+      "merged_into_number": "Hedef bilet numarası",
+      "agreement_name": "Sözleşme adı"
     },
     "billingPayments": "Faturalandırma ve ödemeler",
     "supportPortal": "Destek ve portal",
@@ -2401,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Yapay Zeka Kullanımı",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Breeze AI kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
     "enabled": "Etkin",
@@ -2455,7 +2460,7 @@
     "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
     "defaultValue": "Varsayılan ({{value}})",
     "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
-    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "monitorAIAssistantUsage": "Breeze AI kullanımını izleyin",
     "effectiveBudget": "Geçerli bütçe",
     "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
     "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
@@ -2564,7 +2569,9 @@
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
-      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "researchLink": "Düzeltme belleğini aç",
+      "designerLink": "Filo tasarımını aç"
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -2980,6 +2987,7 @@
           "held_by_deferral": "Erteleme penceresi tarafından tutuluyor",
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
+          "blocked_by_feature_update_policy": "Halkanın Windows özellik güncellemesi ilkesi tarafından dışlandı",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
           "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
@@ -3136,7 +3144,7 @@
         },
         "anomalyLink": "Açık cihaz anormallikleri",
         "budget": {
-          "title": "Maruziyet bütçesi",
+          "title": "Eylem bütçesi",
           "caption": "Kaydedilen maruziyet — son {{hours}} saat",
           "devices": "{{allowance}} cihazdan {{count}}",
           "decisionsToday": "Bugün {{max}} politika kararından {{count}}",
@@ -3364,7 +3372,7 @@
       "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
       "byOrgTruncated": "Ada göre ilk {{limit}} kuruluş gösteriliyor. Geri kalanını görmek için kuruluş seçiciden tek bir kuruluş seçin.",
       "thresholdPerOrgNote": "Her kuruluş kendi terfi eşiğini çözümler; bu nedenle doğrulanan çalışmalar burada hedefsiz gösterilir. Bir kuruluşun hedefini görmek için kuruluş seçiciden tek bir kuruluş seçin.",
-      "approvalsLink": "Bu isteği onay kutusunda izleyin",
+      "approvalsLink": "Bu isteği Onaylar bölümünde izleyin",
       "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
       "grantOnlyHint": "Bir kuruluş aracısındaki önceden yetkilendirilmiş anahtarlar yalnızca Kademeli Yetkilendirme panelinden ikinci bir onaylayan tarafından verilir ve iptalleri de orada yapılır.",
       "promote": "Yükselt",
@@ -3963,10 +3971,10 @@
       "runsPerHourCount_other": "saatte {{count}} çalıştırma",
       "minuteCount_one": "{{count}} dakika",
       "minuteCount_other": "{{count}} dakika",
-      "approvers_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
-      "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
-      "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
-      "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approvers_one": "Onaylar, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approvers_other": "Onaylar, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approversCount_one": "Onaylar, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approversCount_other": "Onaylar, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
       "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur.",
       "scriptsAuthorized_one": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi.",
       "scriptsAuthorized_other": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi."
@@ -5439,7 +5447,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -5499,7 +5507,7 @@
       "ticketing": "Biletleme",
       "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
       "ai": "Yapay Zeka",
-      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
+      "aiDescription": "Breeze AI bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -6728,7 +6736,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Betik yazımı",
-    "subtitle": "Asistanın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
+    "subtitle": "Breeze AI'ın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
     "partnerCard": {
       "title": "İş ortağı üst sınırı",
       "description": "Bu iş ortağına bağlı herhangi bir kuruluşun kullanabileceği en geniş ayar. Tek tek kuruluşlar bunu yalnızca daraltabilir.",
@@ -6896,13 +6904,13 @@
     "timeoutLabel": "Etkileşimli onay zaman aşımı",
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
-    "description": "Devam eden bir yapay zeka sohbet turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını ne kadar bekleyeceği.",
+    "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
     "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
-    "description": "Bir yapay zeka sohbetinin, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "description": "Breeze AI'ın, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "fieldLabel": "Etkileşimli onay zaman aşımı",
     "inherit": "Devral",
     "inheritLabel": "Devral ({{minutes}} dakika, {{source}})",

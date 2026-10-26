@@ -184,6 +184,52 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
+  // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the
+  // remaining device-touching W04 tools. Per tool, so reads share the budget
+  // (manage_browser_policy list) and the bound is set to leave room for them.
+  manage_browser_policy: { limit: 20, windowSeconds: 300 },     // apply queues one command per device
+  manage_peripheral_policy: { limit: 10, windowSeconds: 300 },  // every write queues a device sync
+  remediate_sensitive_data: { limit: 10, windowSeconds: 600 },  // mirrors apply_cis_remediation; encrypt/quarantine/secure_delete on devices
+  configure_network_baseline: { limit: 10, windowSeconds: 300 }, // arms recurring on-site discovery scans
+  // Full-control W06 (#6776): PSA configuration + ticket-ops. Per tool, so reads share the
+  // budget; the bounds leave room for a model that lists, edits and re-lists. None touches a
+  // device or a vendor — these cap a runaway loop of config writes and queue/attachment reads.
+  manage_ticket_config: { limit: 40, windowSeconds: 300 },
+  manage_ticket_checklist_templates: { limit: 40, windowSeconds: 300 },
+  manage_ticket_inbox: { limit: 30, windowSeconds: 300 },
+  manage_ticket_attachments: { limit: 30, windowSeconds: 60 },  // the route's own limiter: 30/60 s
+  manage_ticket_forms: { limit: 40, windowSeconds: 300 },
+  manage_ticket_response_templates: { limit: 40, windowSeconds: 300 },
+  manage_time_suggestions: { limit: 40, windowSeconds: 300 },
+  // Full-control W07 (#6777): alert correlation + signal triage. Per tool, so reads share the budget.
+  // explain builds an evidence timeline from alerts and event logs (a few queries per call), so it
+  // is the one read worth a tighter shared cap; the writes cap a runaway ack/resolve/label loop.
+  get_alert_correlations: { limit: 60, windowSeconds: 300 },
+  manage_alert_correlations: { limit: 30, windowSeconds: 300 },
+  manage_device_anomalies: { limit: 40, windowSeconds: 300 },
+  reliability_feedback: { limit: 30, windowSeconds: 300 },
+  // Full-control W08 (#6778): network topology. Graph reads page through bounded projections; the diagnostic
+  // start is also capped by the service's own per-user / site / org budget (429 + Retry-After).
+  get_topology_graph: { limit: 60, windowSeconds: 300 },
+  run_topology_diagnostic: { limit: 20, windowSeconds: 300 },
+  manage_topology_manual: { limit: 30, windowSeconds: 300 },
+  manage_topology_monitoring: { limit: 40, windowSeconds: 300 },
+  manage_topology_templates: { limit: 30, windowSeconds: 300 },
+  apply_topology_template: { limit: 20, windowSeconds: 300 },
+  // Full-control W09 (#6779): the probe dispatches to an agent and the sync queues a vendor pull; hosts calls the vendor cloud.
+  manage_snmp_templates: { limit: 30, windowSeconds: 300 },
+  get_snmp_metrics: { limit: 60, windowSeconds: 300 },
+  probe_network_asset: { limit: 20, windowSeconds: 300 },
+  manage_known_guests: { limit: 30, windowSeconds: 300 },
+  get_unifi_status: { limit: 30, windowSeconds: 300 },
+  trigger_unifi_sync: { limit: 6, windowSeconds: 300 },
+  // Full-control W10 (#6780): read-only replays of stored rows; the detail reads assemble several queries.
+  get_device_ai_activity: { limit: 60, windowSeconds: 300 },
+  list_operator_tasks: { limit: 60, windowSeconds: 300 },
+  get_operator_task: { limit: 40, windowSeconds: 300 },
+  list_ai_agent_schedules: { limit: 40, windowSeconds: 300 },
+  list_fleet_designs: { limit: 40, windowSeconds: 300 },
+  get_fleet_design: { limit: 30, windowSeconds: 300 },
 };
 
 /**

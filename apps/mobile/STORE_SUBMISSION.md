@@ -4,7 +4,7 @@
 
 - iOS bundle ID: `com.breeze.rmm`
 - Android application ID: `com.breeze.rmm`
-- Store version: `1.0.0`
+- Store version: `1.0.2` — bumped at every Breeze release cut (release skill Step 0.45); a train closes once App Review approves it, and Xcode Cloud uploads stamped with a closed train are rejected (ITMS-90186 / ITMS-90062).
 - Build numbers: Android `versionCode` in `app.json` — bump before every Play upload (Play rejects a reused `versionCode`). iOS: Xcode Cloud assigns its own build number and ignores `ios.buildNumber`; that value only matters for a local Product → Archive, where it must exceed the last uploaded number (see "iOS 27 — UIScene lifecycle" below).
 - The release path uses the local Xcode project; no Expo/EAS account is required. A committed `eas.json` exists so build-time config has a named home, but no EAS build has ever been run for this app.
 - Apple Team ID: `D8W6N2JYMA` (LanternOps LLC)

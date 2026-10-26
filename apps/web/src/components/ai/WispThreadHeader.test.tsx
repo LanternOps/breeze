@@ -8,6 +8,9 @@ const h = vi.hoisted(() => ({
   exitWispMode: vi.fn(),
   setWispFocus: vi.fn(),
   updateWisp: vi.fn(),
+  closeSession: vi.fn(),
+  enterWispMode: vi.fn(),
+  chat: { sessionId: null as string | null, wisp: null as null | { grantId: string } },
   limits: { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 20 } as unknown,
   modalProps: null as null | Record<string, unknown>,
   orgs: [
@@ -25,7 +28,10 @@ vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => ({ state: 'enab
 vi.mock('@/stores/orgStore', () => ({ useOrgStore: (sel: (s: unknown) => unknown) => sel({ organizations: h.orgs }) }));
 vi.mock('@/stores/aiStore', () => ({
   useAiStore: (sel: (s: unknown) => unknown) =>
-    sel({ exitWispMode: h.exitWispMode, setWispFocus: h.setWispFocus, updateWisp: h.updateWisp }),
+    sel({
+      exitWispMode: h.exitWispMode, setWispFocus: h.setWispFocus, updateWisp: h.updateWisp,
+      closeSession: h.closeSession, enterWispMode: h.enterWispMode, ...h.chat,
+    }),
 }));
 vi.mock('./WispGrantStepUpModal', () => ({
   default: (props: Record<string, unknown>) => {
@@ -48,6 +54,7 @@ describe('WispThreadHeader (W04 Task 8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
     h.limits = { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 20 };
     h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => {
       const r = await o.request();
@@ -61,6 +68,15 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(screen.getByTestId('wisp-scope').textContent).toBe('All organizations');
     rerender(<WispThreadHeader wisp={wisp({ scopeOrgId: 'org-a' })} orgName="Alpha" wideningAvailable={false} />);
     expect(screen.getByTestId('wisp-scope').textContent).toBe('Alpha');
+  });
+
+  it('showIdentity=false drops the scope and status (the Wisp rail identity card carries them) and keeps the controls', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} showIdentity={false} />);
+    expect(screen.queryByTestId('wisp-scope')).toBeNull();
+    expect(screen.queryByTestId('wisp-grant-status')).toBeNull();
+    expect(screen.getByTestId('wisp-refresh-grant')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-settings')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-revoke')).toBeInTheDocument();
   });
 
   it.each([
@@ -119,10 +135,10 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     fireEvent.click(screen.getByTestId('wisp-settings'));
     const budget = screen.getByTestId('wisp-settings-budget') as HTMLInputElement;
     const tick = screen.getByTestId('wisp-settings-tick') as HTMLInputElement;
-    expect(budget.max).toBe('1000');
+    expect(budget.max).toBe('10.00');
     expect(tick.min).toBe('20');
     expect(tick.max).toBe('240');
-    fireEvent.change(budget, { target: { value: '5000' } });
+    fireEvent.change(budget, { target: { value: '50.00' } });
     fireEvent.click(screen.getByTestId('wisp-settings-save'));
     await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
     const [url, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
@@ -130,6 +146,38 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(init).toMatchObject({ method: 'PATCH' });
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 1000 });
     expect(h.updateWisp).toHaveBeenCalledWith({ budgetCentsPerDay: 1000, floorTickMinutes: 30 });
+  });
+
+  it('the budget input shows dollars with two decimals and submits cents', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 250, floorTickMinutes: 30 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    const budget = screen.getByTestId('wisp-settings-budget') as HTMLInputElement;
+    expect(budget.value).toBe('2.00');
+    fireEvent.change(budget, { target: { value: '2.50' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 250 });
+  });
+
+  it('rounds typed dollars to whole cents (0.29 is 29, not 28.999…)', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 29, floorTickMinutes: 30 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '0.29' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 29 });
+  });
+
+  it('an unchanged dollars field sends no budget patch', async () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-settings-panel')).toBeNull());
+    expect(h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')).toBeUndefined();
   });
 
   it('settings tick below the plan minimum is raised to it', async () => {
@@ -183,7 +231,7 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     h.runAction.mockRejectedValueOnce(new Error('400 SETTINGS_OUT_OF_BOUNDS'));
     render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
     fireEvent.click(screen.getByTestId('wisp-settings'));
-    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '900' } });
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '9.00' } });
     fireEvent.click(screen.getByTestId('wisp-settings-save'));
     await waitFor(() => expect(h.runAction).toHaveBeenCalled());
     expect(h.updateWisp).not.toHaveBeenCalled();
@@ -219,6 +267,35 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
     );
     fireEvent.click(screen.getByTestId('wisp-spend-raise'));
     expect(screen.getByTestId('wisp-settings-panel')).toBeTruthy();
+  });
+
+  it('an active grant over budget reads "Budget reached", not "Active" (#10145)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Budget reached');
+  });
+
+  it('under budget the badge stays Active (#10145)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Active');
+  });
+
+  it('partner-disabled: no Resume and no "Raise today\'s budget", even when over budget (#10145)', () => {
+    render(
+      <WispThreadHeader
+        wisp={wisp({ status: 'paused', pausedReason: 'partner_disabled', spentTodayCents: 300, budgetResetsAt: '2099-01-01T00:00:00.000Z' })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.queryByTestId('wisp-resume')).toBeNull();
+    expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+    expect(screen.getByTestId('wisp-spend-meter')).toBeTruthy();
+    // a paused grant is Paused, never "Budget reached"
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Paused');
   });
 
   it('pause merges the server answer into the store by default', async () => {
@@ -257,5 +334,43 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
       />,
     );
     expect(screen.getByTestId('wisp-live-line').textContent).toContain('Greenwood');
+  });
+
+  // #10142: a session's grant revision is immutable, so a refresh never
+  // reaches the conversation already open — say so and offer a fresh one.
+  describe('after "Refresh grant"', () => {
+    const refreshTo = async (fresh: NonNullable<WispState>) => {
+      fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+      await act(async () => { (h.modalProps!.onGranted as (w: unknown) => void)(fresh); });
+    };
+
+    it('tells the user the open conversation keeps the previous terms and starts a new one on request', async () => {
+      h.chat = { sessionId: 's-open', wisp: { grantId: 'g-1' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      const fresh = wisp({ expiresAt: '2027-04-01T00:00:00.000Z' });
+      await refreshTo(fresh);
+      expect(screen.getByTestId('wisp-refresh-hint')).toHaveTextContent('This conversation keeps the previous grant terms');
+      fireEvent.click(screen.getByTestId('wisp-refresh-new-conversation'));
+      await waitFor(() => expect(h.enterWispMode).toHaveBeenCalledWith(fresh));
+      expect(h.closeSession).toHaveBeenCalledTimes(1);
+      expect(h.closeSession.mock.invocationCallOrder[0]).toBeLessThan(h.enterWispMode.mock.invocationCallOrder[0]);
+      await waitFor(() => expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull());
+    });
+
+    it('says nothing when no conversation is open under this grant', async () => {
+      h.chat = { sessionId: 's-other', wisp: { grantId: 'g-other' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      await refreshTo(wisp());
+      expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull();
+    });
+
+    it('the note can be dismissed without starting over', async () => {
+      h.chat = { sessionId: 's-open', wisp: { grantId: 'g-1' } };
+      render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable />);
+      await refreshTo(wisp());
+      fireEvent.click(screen.getByTestId('wisp-refresh-hint-dismiss'));
+      expect(screen.queryByTestId('wisp-refresh-hint')).toBeNull();
+      expect(h.enterWispMode).not.toHaveBeenCalled();
+    });
   });
 });

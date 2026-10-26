@@ -91,10 +91,24 @@ type Config struct {
 	// this field existed, whenever the org's binding mode requires one). This
 	// is a known, accepted gap for already-enrolled fleets at rollout, not a
 	// bug in agents enrolled after this field landed.
-	DeviceID                     string `mapstructure:"device_id"`
-	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
-	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
-	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
+	DeviceID string `mapstructure:"device_id"`
+	// WsFirstReconnectWindowSeconds bounds the random spread of the first
+	// WebSocket redial after a stable connection drops (W09, #8148). Default
+	// DefaultWsFirstReconnectWindowSeconds; 0..300 accepted. 0 (and anything
+	// <= 5) reproduces the 1-5 s spread shipped in #9145. An explicit 0 is
+	// meaningful, so the default is applied by Default() before the file is
+	// unmarshalled over it, never by "if zero" at the use site.
+	WsFirstReconnectWindowSeconds int `mapstructure:"ws_first_reconnect_window_seconds"`
+	// LoopRetryAfter makes the agent honour a server Retry-After at the loop
+	// level: httputil.Do returns it as RetryAt instead of sleeping into the
+	// caller's deadline, and the periodic heartbeat senders, the UniFi
+	// collector and the log shipper skip that route until then. Heartbeats
+	// and command results are never deferred. Default true; false restores
+	// per-request-only handling (W09, #8148).
+	LoopRetryAfter               bool `mapstructure:"loop_retry_after"`
+	HeartbeatIntervalSeconds     int  `mapstructure:"heartbeat_interval_seconds"`
+	MetricsIntervalSeconds       int  `mapstructure:"metrics_interval_seconds"`
+	ProcessSampleIntervalSeconds int  `mapstructure:"process_sample_interval_seconds"`
 	// PatchScanIntervalHours is the cadence of the (expensive) patch scan, in
 	// hours. Clamped to [1, 168] at the use site; defaults to DefaultPatchScanIntervalHours.
 	PatchScanIntervalHours int      `mapstructure:"patch_scan_interval_hours"`
@@ -376,6 +390,14 @@ const DefaultPatchScanIntervalHours = 24
 // and that invariant is only enforceable if both sides read one constant.
 const DefaultHeartbeatIntervalSeconds = 60
 
+// DefaultWsFirstReconnectWindowSeconds is the default spread of the first
+// WebSocket redial after a stable connection drops; MaxWsFirstReconnectWindowSeconds
+// is the accepted ceiling (W09, #8148).
+const (
+	DefaultWsFirstReconnectWindowSeconds = 30
+	MaxWsFirstReconnectWindowSeconds     = 300
+)
+
 func Default() *Config {
 	return &Config{
 		HeartbeatIntervalSeconds:     DefaultHeartbeatIntervalSeconds,
@@ -397,11 +419,19 @@ func Default() *Config {
 		AuditMaxSizeMB:               50,
 		AuditMaxBackups:              3,
 
+		// W09 (#8148): defaults live here, before the file is unmarshalled over
+		// them, so an absent key keeps them and an explicit 0/false is honoured.
+		WsFirstReconnectWindowSeconds: DefaultWsFirstReconnectWindowSeconds,
+		LoopRetryAfter:                true,
+
 		ECH:              true,
 		ECHServerEnabled: true,
 
-		AutoUpdate:                 true,
-		PatchExcludeFeatureUpdates: true,
+		AutoUpdate: true,
+		// Windows feature releases are decided by the device's update ring
+		// (heartbeat feature_update_settings); this key is only an operator kill
+		// switch that excludes them regardless of the ring.
+		PatchExcludeFeatureUpdates: false,
 		PatchMinDiskSpaceGB:        2.0,
 		PatchRequireACPower:        true,
 		PatchRebootMaxPerDay:       3,

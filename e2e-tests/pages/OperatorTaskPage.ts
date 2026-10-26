@@ -3,14 +3,14 @@ import { BasePage } from './BasePage';
 import { waitForAppReady, waitForHydration } from './hydration';
 
 /**
- * Page Objects for the AI Operator delegate flow (#5205 W08, #5246).
+ * Page Objects for the AI task start flow (#5205 W08, #5246).
  *
  * Two surfaces, kept in one file because the spec drives them as one flow:
- * the "Delegate to Operator" action that lives on the device detail page, and
+ * the "Start an AI task" action that lives on the device detail page, and
  * the task detail page it navigates to.
  */
 
-/** The "Delegate to Operator" action, wherever it is rendered. */
+/** The "Start an AI task" action, wherever it is rendered. */
 export class DelegateToOperatorAction extends BasePage {
   button = () => this.page.getByTestId('delegate-to-operator');
   serviceInput = () => this.page.getByTestId('delegate-to-operator-service');

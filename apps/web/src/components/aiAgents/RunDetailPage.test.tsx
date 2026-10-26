@@ -1053,7 +1053,7 @@ describe('RunDetailPage heading order', () => {
     const h1s = screen.getAllByRole('heading', { level: 1 });
     expect(h1s).toHaveLength(1);
 
-    const budgetHeading = screen.getByText('Exposure budget');
+    const budgetHeading = screen.getByText('Action budget');
     expect(budgetHeading.tagName).toBe('H2');
 
     const sweepHeading = screen.getByText('Sweep findings');

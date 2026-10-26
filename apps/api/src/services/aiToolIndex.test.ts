@@ -201,14 +201,22 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       const flagOn = renderToolIndexByDomain(listChatSurfaceToolNames());
-      for (const name of ['draft_flow', 'get_flow', 'list_flows', 'validate_flow']) expect(flagOn).toContain(name);
+      // Tool Catalog W04 (#5219, A11): +4 names (run_flow, list_flow_runs, get_flow_run,
+      // cancel_flow_run) on the Scripts line. Measured against the W19 bounds with
+      // FLOWS_ENABLED=true: always-on 2494 B (unchanged, < 2560), scripts block 363 -> 469 B
+      // (flag off -> on, all eight flow tools; < 2048), largest block security 1268 B,
+      // worst page turn 4423 B (alert page; device page 3999 -> 4105 B) < 7040.
+      for (const name of [
+        'draft_flow', 'get_flow', 'list_flows', 'validate_flow',
+        'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run',
+      ]) expect(flagOn).toContain(name);
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
   it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
-    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows)\b/);
+    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
   });
 });
 
@@ -333,12 +341,13 @@ function stubAllFlagsOn(): void {
 }
 
 /**
- * The 38 tools W03 (#6757) and W04 (#6758) will wire into chat. All are
- * registered today but not chat-declared, so `getToolDomain`/hints resolve
- * from the real registry: `[...chat, ...FIXTURE]` is the catalog after both
- * waves, with no synthetic registry.
+ * The 38 tools full-control W03 (#6757) and W04 (#6758) wired into chat. The
+ * simulated catalog `[...chat, ...FIXTURE_W03_W04]` was the post-wave catalog
+ * while they were registered but undeclared; both waves have landed, so the
+ * fixture is now EMPTY and `simulated` is the real chat catalog — the B1-B3
+ * bounds below are measured on it directly.
  */
-const FIXTURE_W03_W04 = [
+const W03_W04_WIRED = [
   // W03 (#6757)
   'manage_dr_plan', 'manage_hyperv_vm', 'manage_backup_profiles', 'manage_hyperv_checkpoints', 'configure_backup_sla',
   'configure_vault', 'restore_mssql_database', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'verify_mssql_backup',
@@ -351,6 +360,8 @@ const FIXTURE_W03_W04 = [
   'trigger_agent_restart', 'trigger_agent_upgrade', 'execute_containment', 'request_elevation', 'collect_evidence',
   'revoke_elevation', 'create_incident',
 ] as const;
+const FIXTURE_W03_W04: readonly string[] = [
+];
 
 const ALWAYS_ON_INDEX_BUDGET_BYTES = 2.5 * 1024;
 const DOMAIN_BLOCK_BUDGET_BYTES = 2 * 1024;
@@ -362,11 +373,12 @@ describe('W19 lazy chat tool index (#10065)', () => {
   const simulated = [...names, ...FIXTURE_W03_W04];
   const alwaysOn = renderAlwaysOnIndex(names);
 
-  it('the W03/W04 fixture is 38 registered tools that chat does not declare yet', () => {
-    expect(FIXTURE_W03_W04).toHaveLength(38);
-    expect(FIXTURE_W03_W04.filter((n) => !registered.has(n)), 'renamed or removed fixture tool').toEqual([]);
-    expect(FIXTURE_W03_W04.filter((n) => names.includes(n)), 'already chat-declared: drop it from the fixture').toEqual([]);
-    expect(listToolIndex(FIXTURE_W03_W04).map((e) => e.name).sort()).toEqual([...FIXTURE_W03_W04].sort());
+  it('the W03/W04 fixture is empty: all 38 W03/W04 tools are registered and chat-declared (#6757, #6758)', () => {
+    expect(FIXTURE_W03_W04).toHaveLength(0);
+    expect(W03_W04_WIRED).toHaveLength(38);
+    expect(W03_W04_WIRED.filter((n) => !registered.has(n)), 'renamed or removed tool').toEqual([]);
+    expect(W03_W04_WIRED.filter((n) => !names.includes(n)), 'not chat-declared').toEqual([]);
+    expect(listToolIndex(W03_W04_WIRED).map((e) => e.name).sort()).toEqual([...W03_W04_WIRED].sort());
   });
 
   // B1 is a ceiling on curated prose, not only on tool growth: a new
@@ -381,7 +393,7 @@ describe('W19 lazy chat tool index (#10065)', () => {
     }
   });
 
-  it('B1 invariance: 38 more tools change the always-on index by 0 bytes', () => {
+  it('B1 invariance: the (now empty) fixture changes the always-on index by 0 bytes', () => {
     expect(renderAlwaysOnIndex(simulated)).toBe(alwaysOn);
   });
 

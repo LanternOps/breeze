@@ -329,6 +329,13 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
+  // Partner billing toggle (spec 2026-10-16 §6.1/Q7): a skipped-period ledger row,
+  // so it is exported and erased with the org.
+  await db.execute(sql`
+    INSERT INTO contract_skipped_billing_periods (org_id, contract_id, period_start, period_end, reason, resolution_note)
+    VALUES (${orgA}, ${contractId}, '2026-09-01', '2026-10-01', 'billing_disabled', 'roundtrip')
+  `);
+
   // #3205 W05: quote_lines exports the complete device-set descriptor. Group
   // and site/role selectors are mutually exclusive under the CHECK, so the
   // group line carries the bill allowance and a companion line exercises the
@@ -491,6 +498,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(byName.get('contract_lines.json')?.rowCount).toBe(3);
     // #4547 W01: the block-hours ledger is exported (every column `included`).
     expect(byName.get('contract_hour_periods.json')?.rowCount).toBe(1);
+    expect(byName.get('contract_skipped_billing_periods.json')?.rowCount).toBe(1);
     expect(byName.get('device_groups.json')?.rowCount).toBe(3);
     expect(byName.get('quotes.json')?.rowCount).toBe(1);
     expect(byName.get('quote_lines.json')?.rowCount).toBe(2);
@@ -776,6 +784,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
     expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(1);
     expect(await rowCount(db, 'contract_hour_periods', orgA)).toBe(1);
+    expect(await rowCount(db, 'contract_skipped_billing_periods', orgA)).toBe(1);
 
     expect(await rowCount(db, 'restore_jobs', orgA)).toBe(1);
     expect(await rowCount(db, 'restore_jobs', orgB)).toBe(1);
@@ -809,6 +818,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(0);
     expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(0);
     expect(await rowCount(db, 'contract_hour_periods', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_skipped_billing_periods', orgA)).toBe(0);
     expect(await rowCount(db, 'portal_branding', orgB)).toBe(1);
     expect(stats.tablesDeleted.portal_branding).toBe(1);
     const orgARows = (await db.execute(
@@ -836,6 +846,7 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // Erased child-first: the RESTRICT FK from the ledger to the line means the
     // ledger rows must go before the block line, or the erasure would abort.
     expect(stats.tablesDeleted['contract_hour_periods']).toBe(1);
+    expect(stats.tablesDeleted['contract_skipped_billing_periods']).toBe(1);
     expect(stats.tablesDeleted['quotes']).toBe(1);
     expect(stats.tablesDeleted['quote_lines']).toBe(2);
     expect(stats.tablesDeleted['invoice_line_devices']).toBe(1);

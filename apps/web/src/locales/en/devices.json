@@ -977,8 +977,8 @@
     "strip": "strip",
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
-    "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "operatorTasks": "AI Tasks",
+    "operatorTasksForThisDevice": "AI tasks for this device",
     "tabGroups": {
       "monitoring": "Monitoring",
       "inventory": "Inventory",
@@ -1412,7 +1412,24 @@
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
+      "webview2Outdated": "Breeze Assist is installed but the agent does not start it (since {{since}}): this device's WebView2 Runtime is older than Breeze Assist needs. Prompts use the standard Windows dialogs until the WebView2 Runtime is updated. The agent log names the version it found.",
+      "crashLoop": "Breeze Assist kept closing right after it started (since {{since}}), so the agent stopped restarting it. It tries again after 6 hours, or as soon as a new Breeze Assist version is installed. The agent log has the exit codes.",
+      "unmanagedInstall": "Breeze Assist on this device was not installed by Breeze (since {{since}}). Deploy is off in this device's policy, so the agent leaves this copy alone: it does not start, update or remove it. Turn deploy on to have the agent manage it.",
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
+    },
+    "assistStatus": {
+      "label": "Breeze Assist",
+      "installed": "Installed",
+      "unavailable": "Unavailable: {{reason}}",
+      "notDeployed": "Not deployed",
+      "reason": {
+        "webview2Outdated": "WebView2 Runtime too old",
+        "crashLoop": "keeps closing",
+        "unmanagedInstall": "not installed by Breeze",
+        "awaitingServerOffer": "not installed yet",
+        "installAbandoned": "install failed",
+        "unknown": "see the agent log"
+      }
     },
     "watchdogInstall": {
       "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run <code>breeze-agent service install --watchdog</code> on the host to retry.",
@@ -1805,9 +1822,13 @@
     "updateStuckTooltip": "This device has been retrying its agent update to {{target}} for over an hour without converging.",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
     "helperNotInstalled": "Not installed",
+    "helperUnavailable": "Assist unavailable",
     "helperInstallIssueTooltip": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed: the server has offered no Breeze Assist version for this device to install.",
       "installAbandoned": "Breeze Assist is enabled but not installed: installing the offered version failed repeatedly and retries are paused.",
+      "webview2Outdated": "Breeze Assist is installed but not started: the device's WebView2 Runtime is too old.",
+      "crashLoop": "Breeze Assist kept closing right after it started; the agent tries again after 6 hours.",
+      "unmanagedInstall": "Breeze Assist was not installed by Breeze and deploy is off, so the agent leaves it alone.",
       "unknown": "Breeze Assist is enabled but not installed."
     },
     "agentVersionRelation": {
@@ -2096,6 +2117,7 @@
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedFeatureUpdateTitle": "Update ring {{ring}} blocks this Windows feature release (or pins devices to a different one), so scheduled patch runs skip it.",
       "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
@@ -2176,7 +2198,7 @@
   "devicePlaybookHistory": {
     "duration": "Duration: {{duration}}",
     "empty": "No playbook executions found for this device.",
-    "emptyHelp": "Playbooks can be triggered via the AI assistant to automate remediation tasks.",
+    "emptyHelp": "Playbooks can be triggered via Breeze AI to automate remediation tasks.",
     "loading": "Loading playbook history...",
     "noStepResults": "No step results recorded.",
     "rollbackExecuted": "Rollback was executed",

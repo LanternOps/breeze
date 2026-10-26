@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Hoisted with the vi.mock factories (they reference it), so it is declared as a
 // var-like class expression via vi.hoisted.
 /** Mutable actor so the reporting-totals cases can switch to an ORG-scoped token. */
-const { authState } = vi.hoisted(() => ({ authState: { value: {} as Record<string, unknown> } }));
+const { authState, permChecks } = vi.hoisted(() => ({ authState: { value: {} as Record<string, unknown> }, permChecks: [] as string[] }));
 
 // Mock the service layer — the settings routes are thin; we assert wiring,
 // validation, and error mapping (mirrors invoices.test.ts).
@@ -50,8 +50,10 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: (resource: string) => async (c: any, next: any) => {
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    permChecks.push(`${resource}:${action}`);
     if (resource === 'billing_profiles' && authState.value.profileWriteDenied) return c.json({ error: 'Permission denied' }, 403);
+    if (resource === 'agreements' && authState.value.agreementsSendDenied) return c.json({ error: 'Permission denied' }, 403);
     await next();
   },
   requireMfa: () => async (c: any, next: any) => {
@@ -107,6 +109,62 @@ describe('billing settings routes', () => {
       expect.objectContaining({ currencyCode: 'EUR', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14 }),
       expect.objectContaining({ partnerId: 'p1' })
     );
+  });
+
+  describe('#9075 W4a: agreement defaults ride the same PATCH, gated additionally on agreements:send', () => {
+    const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
+    const agreementFields = { agreementDefaultExpiryDays: 14, agreementReminderIntervalDays: 3, agreementMaxReminders: 2 };
+
+    it('writes the agreement fields for a caller holding agreements:send — and checks exactly that grant', async () => {
+      permChecks.length = 0;
+      (svc.updatePartnerBillingSettings as any).mockResolvedValue({ ...base, ...agreementFields });
+      const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({ ...base, ...agreementFields }));
+      expect(res.status).toBe(200);
+      expect(permChecks).toEqual(['invoices:write', 'agreements:send']);
+      expect(svc.updatePartnerBillingSettings).toHaveBeenCalledWith(
+        expect.objectContaining(agreementFields), expect.objectContaining({ partnerId: 'p1' }));
+    });
+
+    it('a null interval (reminders off) is a valid write', async () => {
+      (svc.updatePartnerBillingSettings as any).mockResolvedValue(base);
+      const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({ ...base, agreementReminderIntervalDays: null }));
+      expect(res.status).toBe(200);
+      expect(svc.updatePartnerBillingSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ agreementReminderIntervalDays: null }), expect.anything());
+    });
+
+    for (const [key, value] of Object.entries(agreementFields)) {
+      it(`any agreement field (${key}) without agreements:send → 403, nothing written`, async () => {
+        authState.value = { ...PARTNER_ACTOR, agreementsSendDenied: true };
+        const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({ ...base, [key]: value }));
+        expect(res.status).toBe(403);
+        expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+      });
+    }
+
+    it('switching reminders OFF (a null interval) is also gated — null is present, not absent', async () => {
+      authState.value = { ...PARTNER_ACTOR, agreementsSendDenied: true };
+      const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({ ...base, agreementReminderIntervalDays: null }));
+      expect(res.status).toBe(403);
+      expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+    });
+
+    it('a save with NO agreement fields needs no agreements:send (the rest of the page keeps working)', async () => {
+      permChecks.length = 0;
+      authState.value = { ...PARTNER_ACTOR, agreementsSendDenied: true };
+      (svc.updatePartnerBillingSettings as any).mockResolvedValue(base);
+      const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody(base));
+      expect(res.status).toBe(200);
+      expect(permChecks).toEqual(['invoices:write']);
+    });
+
+    it('out-of-range values → 400', async () => {
+      for (const bad of [{ agreementDefaultExpiryDays: 0 }, { agreementReminderIntervalDays: 31 }, { agreementMaxReminders: 11 }]) {
+        const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({ ...base, ...bad }));
+        expect(res.status).toBe(400);
+      }
+      expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+    });
   });
 
   // Sweep paper cut #4: a successful save must write an audit_logs row, the

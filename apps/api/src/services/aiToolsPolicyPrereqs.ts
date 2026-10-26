@@ -21,6 +21,8 @@ import { bumpApprovalGeneration } from './approvalGeneration';
 import {
   ringAutoApproveSchema,
   ringAppRulesSchema,
+  ringFeatureUpdatesSchema,
+  type RingFeatureUpdates,
   mergeRingAutoApproveWrite,
   backupProfileSelectionsSchema,
 } from '@breeze/shared/validators';
@@ -98,6 +100,19 @@ function validateRingAppRules(raw: unknown): { value: unknown[] } | { error: str
   const parsed = ringAppRulesSchema.safeParse(raw);
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? 'Invalid appRules configuration.' };
+  }
+  return { value: parsed.data };
+}
+
+/**
+ * Validate the ring's Windows feature-release policy through the shared schema
+ * the REST route uses: block | allow | pin (pin needs a known product and a
+ * release like 25H2). Returns the parsed value or an error string.
+ */
+function validateRingFeatureUpdates(raw: unknown): { value: RingFeatureUpdates } | { error: string } {
+  const parsed = ringFeatureUpdatesSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Invalid featureUpdates configuration.' };
   }
   return { value: parsed.data };
 }
@@ -249,6 +264,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
           appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
+          featureUpdates: { type: 'object', description: '{mode:"block"|"allow"|"pin", product:"windows-11"|"windows-10", targetVersion:"25H2"} (pin needs both). Default block. Pin sets WUfB target release.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
@@ -337,6 +353,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           appRules = validated.value;
         }
 
+        let featureUpdates: RingFeatureUpdates = { mode: 'block' };
+        if (input.featureUpdates != null) {
+          const validated = validateRingFeatureUpdates(input.featureUpdates);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          featureUpdates = validated.value;
+        }
+
         const rows = await db.insert(patchPolicies).values({
           partnerId,
           kind: 'ring',
@@ -349,6 +372,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           excludeCategories: (input.excludeCategories as string[]) ?? [],
           autoApprove,
           appRules,
+          featureUpdates,
           createdBy: auth.user.id,
         }).returning();
         const ring = rows[0];
@@ -393,6 +417,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const validated = validateRingAppRules(input.appRules);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           updates.appRules = validated.value;
+        }
+        if (input.featureUpdates != null) {
+          const validated = validateRingFeatureUpdates(input.featureUpdates);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          updates.featureUpdates = validated.value;
         }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
@@ -908,7 +937,18 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (!updated) {
           return JSON.stringify({ error: 'Backup profile not found or access denied' });
         }
-        return JSON.stringify({ success: true, profile: updated });
+        // W03 quorum QW6 (#6757): the approver saw only the new values, so
+        // return what was replaced — the change can be undone from here.
+        return JSON.stringify({
+          success: true,
+          profile: updated,
+          previous: {
+            name: existing.name,
+            description: existing.description,
+            selections: existing.selections,
+            isActive: existing.isActive,
+          },
+        });
       }
 
       if (action === 'delete') {

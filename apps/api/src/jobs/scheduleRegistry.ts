@@ -236,6 +236,11 @@ export const JOB_SCHEDULES = {
   // each integration's retentionDays (default DNS_SECURITY_RETENTION_DAYS_DEFAULT,
   // 90). :18 keeps the daily = 3 (mod 5) lane in hour 22.
   'dns-security-retention': '18 22 * * *',
+  // Tool catalog W04 (#5219, plan Task A8) — daily flow run body pruning
+  // (trigger payload, inputs, step inputs/outputs) past FLOW_RUN_RETENTION_DAYS;
+  // rows are never deleted. Hour 23 was free in the daily tier; :03 keeps the
+  // daily = 3 (mod 5) lane.
+  'flow-run-retention': '3 23 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -287,6 +292,11 @@ export const JOB_SCHEDULES = {
   // close-out and 13-month history delete. 4x/day keeps the expiry view within
   // ~6 h; minute 29 on hours 2,8,14,20 is unused in this lane.
   'endpoint-message-retention': '29 2,8,14,20 * * *',
+  // Agreement auto-reminders (#9084) — hourly tick. The effective tick is hourly;
+  // the per-request cadence (partner "remind every N days") is enforced in the
+  // job's due-set SQL, so the tick only bounds how late a due reminder can go
+  // out (<= 1 h). :44 is free in every hour and outside the ≡0 (mod 5) ticks.
+  'agreement-request-auto-reminder': '44 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

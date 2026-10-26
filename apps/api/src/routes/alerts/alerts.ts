@@ -19,6 +19,7 @@ import {
   ticketAlertLinks,
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
+import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import { setCooldown } from '../../services/alertCooldown';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
@@ -624,10 +625,10 @@ alertsRoutes.post(
 
     // ONE route-level permission lookup, after the body. Reproduces what
     // `requirePermission` middleware would have done on this route and would
-    // otherwise be lost: the ai_agent rejection, and `c.set('permissions')`,
+    // otherwise be lost: the automation-principal rejection, and `c.set('permissions')`,
     // which the list handler's comment notes is set ONLY by requirePermission.
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: isFlowPrincipal(auth) ? 'Flows cannot call HTTP routes' : 'AI agents cannot call HTTP routes' });
     }
     //
     const bulkPerms = await getUserPermissions(auth.user.id, {

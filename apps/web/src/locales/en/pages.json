@@ -25,9 +25,10 @@
     "aiAgentsFixMemory": "Fix memory",
     "flows": "Flows",
     "flowDetail": "Flow",
+    "flowRun": "Flow run",
     "aiAgentsRunsDetail": "Run Detail",
     "aiAgentsRuns": "Agent Runs",
-    "aiForOffice": "AI for Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "AI Risk Engine",
     "alertsDelivery": "Alerts – Delivery",
     "alertsCorrelations": "Alert Correlations",
@@ -72,7 +73,7 @@
     "dnsSecurity": "DNS Security",
     "dr": "Disaster Recovery",
     "extensionsNamePath": "Extension",
-    "fleet": "Fleet Orchestration",
+    "fleet": "Findings",
     "forgotPassword": "Forgot Password",
     "incidentsDetail": "Incident Detail",
     "incidents": "Security Incidents",
@@ -186,7 +187,10 @@
     "settingsWispMemory": "Wisp memory",
     "wispThread": "Wisp thread",
     "wisp": "Wisp",
-    "wispChat": "Wisp — chats"
+    "wispChat": "Breeze AI",
+    "aiTasks": "AI Tasks",
+    "aiTask": "AI task",
+    "settingsAi": "AI settings"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
@@ -240,7 +244,7 @@
       },
       "connectedApps": {
         "title": "Connected Apps",
-        "description": "Review and revoke AI assistants and MCP clients authorized to access your tenant."
+        "description": "Review and revoke AI clients authorized to access your tenant."
       },
       "officeAddinBindings": {
         "title": "Outlook Add-in Bindings",
@@ -299,7 +303,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Connected apps",
-    "description": "AI assistants and other MCP clients that have been authorized to access your tenant via OAuth. Revoke access at any time — the app's token will be rejected within 10 minutes."
+    "description": "AI clients that have been authorized to access your tenant via OAuth. Revoke access at any time — the app's token will be rejected within 10 minutes."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organization settings",

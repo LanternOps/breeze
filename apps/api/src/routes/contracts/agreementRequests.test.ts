@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   loadTemplateVersionRenderData: vi.fn(),
   assertTemplateVersionUsable: vi.fn(),
   writeRouteAudit: vi.fn(),
+  emitEvent: vi.fn(),
   // Which context each step ran in — pushed by the wrappers and the steps.
   trace: [] as string[],
   // Which scope / permission guards actually ran for the request.
@@ -61,6 +62,8 @@ vi.mock('../../services/contractTemplateService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/contractTemplateService')>()),
   assertTemplateVersionUsable: h.assertTemplateVersionUsable,
 }));
+
+vi.mock('../../services/agreementEvents', () => ({ emitAgreementEventForOrg: h.emitEvent }));
 
 vi.mock('../../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/auditEvents')>()),
@@ -154,10 +157,10 @@ beforeEach(() => {
 });
 
 describe('POST /contracts/agreement-requests/record-signed', () => {
-  it('is guarded by partner/organization/system scopes and agreements:write (W2 moves it to agreements:send)', async () => {
+  it('is guarded by partner/organization/system scopes and agreements:send (#9075 W2a, OD7 B)', async () => {
     const res = await contractRoutes.request(URL, multipart(fields()));
     expect(res.status).toBe(201);
-    expect(h.guards).toEqual(['scope:partner,organization,system', 'perm:agreements:write']);
+    expect(h.guards).toEqual(['scope:partner,organization,system', 'perm:agreements:send']);
   });
 
   it('JSON body instead of multipart → 400 INVALID_MULTIPART, service not called', async () => {
@@ -254,6 +257,11 @@ describe('POST /contracts/agreement-requests/record-signed', () => {
     expect(p.input).toMatchObject({ orgId: ORG_ID, method: 'signed_document', reference: 'DocuSign 4F2', variableValues: { 'custom.po': 'PO-1' } });
     expect(p.input.signedAt).toBeInstanceOf(Date);
     expect(p.now).toBeInstanceOf(Date);
+
+    // The MSP-recorded signature reaches the bus as agreement.signed / on_behalf.
+    expect(h.emitEvent).toHaveBeenCalledWith({
+      type: 'agreement.signed', requestId: 'req-1', orgId: ORG_ID, origin: 'on_behalf', actorUserId: 'u1',
+    });
 
     expect(h.writeRouteAudit).toHaveBeenCalledTimes(1);
     expect(h.writeRouteAudit.mock.calls[0]![1]).toMatchObject({

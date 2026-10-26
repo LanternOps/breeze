@@ -1,10 +1,9 @@
 {
   "title": "Flows",
   "subtitle": "Multi-step automations that chain tools together.",
-  "previewNotice": "Flows are read-only in this release. Draft them in AI chat; enabling and runs arrive in a later release.",
   "empty": {
     "title": "No flows yet",
-    "body": "Ask the AI assistant to draft a flow, then review it here."
+    "body": "Ask Breeze AI to draft a flow, then review it here."
   },
   "list": {
     "name": "Name",
@@ -19,7 +18,14 @@
     "draft": "Draft",
     "enabled": "Enabled",
     "paused": "Paused",
-    "disabled": "Disabled"
+    "disabled": "Disabled",
+    "pausedReason": {
+      "drift": "Paused because the flow changed after it was enabled.",
+      "binding_drift": "Paused because a pre-approved script or target changed.",
+      "delegator_inactive": "Paused because the person it runs on behalf of is no longer active.",
+      "org_merged": "Paused because the organization was merged.",
+      "event_dispatch_not_durable": "Paused because event delivery is not durable on this server."
+    }
   },
   "trigger": {
     "schedule": "Schedule",
@@ -33,7 +39,7 @@
     "inputs": "Inputs",
     "steps": "Steps",
     "version": "Version {{version}}",
-    "createdInChat": "Created in AI chat"
+    "createdInChat": "Created in Breeze AI"
   },
   "step": {
     "tool": "Tool",
@@ -50,7 +56,8 @@
       "core": "Core tool",
       "tenant": "Tool source",
       "builtin": "Built-in"
-    }
+    },
+    "preApprovedBadge": "Pre-approved"
   },
   "issues": {
     "title": "Validation",
@@ -65,6 +72,202 @@
   },
   "errors": {
     "loadFailed": "Could not load flows.",
-    "notFound": "Flow not found."
+    "notFound": "Flow not found.",
+    "enableFailed": "Could not enable the flow.",
+    "disableFailed": "Could not disable the flow.",
+    "runFailed": "Could not start the run.",
+    "cancelFailed": "Could not cancel the run."
+  },
+  "tabs": {
+    "overview": "Overview",
+    "runs": "Runs"
+  },
+  "actions": {
+    "enable": "Enable",
+    "disable": "Disable",
+    "runNow": "Run now",
+    "cancelRun": "Cancel run",
+    "cancel": "Cancel"
+  },
+  "enable": {
+    "title": "Enable flow",
+    "body": "Enabling publishes this version of the flow. It then runs on its trigger. Steps that need approval still ask for it unless you pre-approve them below.",
+    "preApprove": "Pre-approve this step",
+    "preApproveHelp": "Runs of this version skip the approval prompt for this step. Pre-approval covers exactly the script and target shown here and stops applying if the flow changes.",
+    "notEligible": {
+      "not_tier3": "Only steps that need approval can be pre-approved.",
+      "tool_not_supported": "This tool cannot be pre-approved.",
+      "script_not_literal": "The script is chosen at run time, so it cannot be pre-approved.",
+      "run_context_not_literal": "The run-as setting is chosen at run time, so it cannot be pre-approved.",
+      "group_target": "This step targets a device group, which can change. Pre-approval needs fixed devices.",
+      "variable_dependent": "This step depends on values that are only known at run time.",
+      "script_not_found": "The script this step uses could not be found.",
+      "four_eyes": "This action always needs a second person to approve it.",
+      "tenant_tool": "Custom tool sources cannot be pre-approved."
+    },
+    "eventScope": "Event flows react to platform events whatever caused them, including actions taken by people, other flows, or automations. Check the trigger filter before you enable it.",
+    "missingPermissions": "You are missing permissions that this flow's steps need:",
+    "eventNotDurable": "Event delivery is not durable on this server, so event flows cannot be enabled right now.",
+    "forEachConcurrency": "Steps that repeat for each item run one item at a time.",
+    "confirm": "Enable flow",
+    "tier3Heading": "Steps that need approval",
+    "noTier3": "No step in this flow needs approval.",
+    "validationFailed": "The flow has validation errors. Fix them before enabling:",
+    "versionConflict": "The flow changed since you opened this page. Reload it and review the changes before enabling.",
+    "alreadyEnabled": "This flow is already enabled.",
+    "preApprovalNotEligible": "Step {{stepId}} cannot be pre-approved. {{reason}}",
+    "foreachConcurrencyNotAvailable": "This flow repeats a step for each item in parallel, which this server does not support yet.",
+    "delegationScopeRestricted": "Your access is limited to some sites, so you cannot enable a flow that runs across the whole organization.",
+    "partnerWideForbidden": "You do not have permission to enable flows for all organizations.",
+    "interactiveRequired": "Flows can only be enabled from a signed-in browser session.",
+    "slugUnavailable": "Another flow in this scope already uses this identifier.",
+    "generic": "Could not enable the flow."
+  },
+  "run": {
+    "title": "Run flow",
+    "org": "Organization",
+    "inputs": "Inputs",
+    "submit": "Start run",
+    "queueFull": "This flow has too many runs waiting. Try again once some have finished.",
+    "permissionMissing": "You do not have permission to run the steps of this flow: {{permissions}}",
+    "preApprovalsNotHonored": "This run was started by someone without approval rights, so pre-approvals were not applied and each step asks for approval.",
+    "selectOrg": "Select an organization",
+    "orgRequired": "Choose the organization to run this flow in.",
+    "requiredInput": "{{name}} is required.",
+    "invalidNumber": "{{name}} must be a number.",
+    "invalidUuid": "{{name}} must be a valid ID.",
+    "inputsInvalid": "Some inputs are not valid:",
+    "notEnabled": "This flow is not enabled, so it cannot be run.",
+    "delegationScopeRestricted": "Your access is limited to some sites, so you cannot run a flow that works across the whole organization.",
+    "interactiveUserRequired": "Only a signed-in person can start a manual run. Sign in to the web app and try again.",
+    "orgForbidden": "You do not have access to that organization.",
+    "notManual": "This flow does not run manually. It starts from its trigger."
+  },
+  "runs": {
+    "empty": "No runs yet.",
+    "status": {
+      "queued": "Queued",
+      "running": "Running",
+      "waiting": "Waiting",
+      "awaiting_approval": "Awaiting approval",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
+    },
+    "trigger": {
+      "manual": "Manual",
+      "schedule": "Schedule",
+      "event": "Event",
+      "webhook": "Webhook",
+      "tool": "Tool call"
+    },
+    "via": {
+      "ui": "From the web app",
+      "api": "From the API",
+      "ai_tool": "From Breeze AI",
+      "scheduler": "By the scheduler",
+      "event": "By an event",
+      "webhook": "Webhook",
+      "mcp": "MCP",
+      "ai_agent": "AI agent"
+    },
+    "columns": {
+      "started": "Started",
+      "status": "Status",
+      "trigger": "Trigger",
+      "duration": "Duration",
+      "org": "Organization"
+    },
+    "filter": {
+      "label": "Status",
+      "all": "All statuses"
+    },
+    "loadFailed": "Could not load runs."
+  },
+  "runDetail": {
+    "title": "Flow run",
+    "back": "Back to runs",
+    "awaitingApproval": "This run is paused until someone approves a step.",
+    "openApprovals": "Open approvals",
+    "error": {
+      "step_failed": "A step failed.",
+      "rejected": "An approver rejected a step.",
+      "drift": "The flow changed after it was enabled, so the run was stopped.",
+      "binding_drift": "A pre-approved script or target changed, so the run was stopped.",
+      "unknown_outcome": "The result of a step is unknown. The step may have run. Check the device by hand before running the flow again.",
+      "step_timeout": "A step took too long and was stopped.",
+      "input_invalid": "A step received input it could not use.",
+      "reference_not_owned": "A step referred to something that belongs to another organization.",
+      "tool_unavailable": "A tool used by this flow is no longer available.",
+      "tool_blocked": "A tool used by this flow is blocked.",
+      "too_many_items": "A step would have repeated for more items than allowed.",
+      "render_failed": "A step's input could not be built from earlier results.",
+      "no_eligible_approvers": "No one is able to approve a step that needs approval.",
+      "worker_lost": "The run was interrupted and could not continue.",
+      "cancelled": "The run was cancelled.",
+      "run_timeout": "The run took longer than the one-hour limit and was stopped.",
+      "flow_disabled": "The flow was disabled while this run was active.",
+      "flows_disabled": "Flows are turned off on this server.",
+      "delegator_inactive": "The person this run acts for is no longer active.",
+      "org_merged": "The organization was merged into another one.",
+      "egress_blocked": "The outbound request was blocked by the egress policy.",
+      "http_status": "The outside API answered with an error status.",
+      "notify_failed": "The notice could not be sent.",
+      "ai_budget_exhausted": "The organization's AI budget is used up.",
+      "ai_output_invalid": "The AI result did not match the expected shape.",
+      "ai_token_cap_reached": "The run reached its AI token limit."
+    },
+    "step": {
+      "status": {
+        "running": "Running",
+        "awaiting_approval": "Awaiting approval",
+        "completed": "Completed",
+        "failed": "Failed",
+        "skipped": "Skipped",
+        "unknown_outcome": "Outcome unknown, check by hand",
+        "cancelled": "Cancelled"
+      },
+      "approval": {
+        "none": "No approval needed",
+        "intent": "Needs a person's approval",
+        "pre_approved": "Pre-approved"
+      },
+      "input": "Input",
+      "output": "Output",
+      "truncated": "Output was shortened because it was too large.",
+      "notReached": "Not reached",
+      "pending": "Pending",
+      "item": "Item {{index}}",
+      "approver": "Approver: {{id}}",
+      "attempt": "Attempt {{n}}",
+      "show": "Show details",
+      "hide": "Hide details",
+      "loading": "Loading...",
+      "loadFailed": "Could not load step details.",
+      "pruned": "Details were removed by the retention policy.",
+      "redacted": "Step details aren't available with your access."
+    },
+    "notFound": "Run not found.",
+    "alreadyTerminal": "This run has already finished.",
+    "loadFailed": "Could not load this run.",
+    "retry": "Retry",
+    "version": "Version {{version}} (publication {{seq}})",
+    "org": "Organization: {{org}}",
+    "waitingUntil": "Waiting until {{time}}",
+    "queuedNote": "Queued. Waiting for a free run slot.",
+    "paused": "Live updates paused.",
+    "lastUpdated": "Last updated {{time}}",
+    "timeline": "Steps"
+  },
+  "toast": {
+    "enabled": "Flow enabled",
+    "disabled": "Flow disabled",
+    "runStarted": "Run started",
+    "runCancelled": "Run cancelled"
+  },
+  "disable": {
+    "title": "Disable flow",
+    "message": "Disabling stops new runs and cancels runs that are in progress. You can enable the flow again later."
   }
 }

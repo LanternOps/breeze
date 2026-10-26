@@ -42,6 +42,7 @@ export type TierIconName = 'eye' | 'shield-check' | 'shield-alert' | 'shield-off
 
 export interface TierDefinition {
   tier: 1 | 2 | 3 | 4;
+  /** `security` locale key (aiRisk.tiers.<id>.label), resolved with t() at render. */
   label: string;
   description: string;
   iconName: TierIconName;
@@ -54,7 +55,7 @@ export interface TierDefinition {
 export const TIER_DEFINITIONS: TierDefinition[] = [
   {
     tier: 1,
-    label: 'Auto-Execute (Read-Only)',
+    label: 'aiRisk.tiers.tier1.label',
     description: 'Read-only operations that execute automatically without any approval or logging overhead.',
     iconName: 'eye',
     borderColor: 'border-l-green-500',
@@ -98,6 +99,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'ioc_hunt (list_rule_sets/preview_sweep/list_sweeps/sweep_status)', description: 'Detection rule sets, IOC sweep preview, list and status', category: 'Security & Compliance' },
+      // W04 (#6758): reads of staff-written policy config, no approval needed
+      { name: 'manage_software_policy (list/get)', description: 'List or read software policies', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
@@ -148,6 +151,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'validate_flow', description: 'Check a flow document without saving it', category: 'Scripts & Automation' },
       { name: 'get_flow', description: 'Read a flow and re-validate it', category: 'Scripts & Automation' },
       { name: 'list_flows', description: 'List flows and drafts', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): flow run reads.
+      { name: 'list_flow_runs', description: 'List flow runs and their status', category: 'Scripts & Automation' },
+      { name: 'get_flow_run', description: 'Read one flow run step by step', category: 'Scripts & Automation' },
       // Configuration Policies
       { name: 'list_configuration_policies', description: 'List config policies', category: 'Configuration Policies' },
       { name: 'get_configuration_policy', description: 'Get config policy details', category: 'Configuration Policies' },
@@ -182,6 +188,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_c2c_connections', description: 'Cloud-to-cloud backup connections', category: 'Backup & Recovery' },
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
+      // Full-control W03 (#6757)
+      { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
@@ -212,11 +220,41 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_ticket_routing_rules', description: 'List ticket routing rules applied to new tickets', category: 'Ticketing' },
       { name: 'test_ticket_routing_rule', description: 'Dry-run which routing rule would match a sample ticket', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration and ticket-ops reads.
+      { name: 'manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)', description: 'View ticket statuses, priorities, SLA overrides, categories and customer email domains', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (list/get)', description: 'View checklist templates and their steps', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (list)', description: 'List the files attached to a ticket', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (list/available)', description: 'View ticket intake forms and the ones an organization can use', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (list)', description: 'View the partner\'s canned ticket replies', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (list)', description: 'See your time-entry suggestions for a day', category: 'Ticketing' },
+      // Full-control W07 (#6777): alert correlation + signal triage reads.
+      { name: 'get_alert_correlations (groups/get/by_alert/links/analyze/evaluation/explain)', description: 'See which alerts are correlated, how well grouping is working, and root-cause evidence for a group (log text is untrusted)', category: 'Alerts & Notifications' },
+      { name: 'manage_device_anomalies (list)', description: 'List unusual metric behaviour detected on a device', category: 'Alerts & Notifications' },
+      // Full-control W08 (#6778): network topology reads. Chat and MCP only (not offered to AI agents).
+      { name: 'get_topology_graph (graph/nodes/node/relationship/evidence/group_members/expansion/health)', description: 'Read a site\'s network map: devices and links, one device or link in detail, the evidence behind a link, and health (names are untrusted text)', category: 'Network & DNS' },
+      { name: 'run_topology_diagnostic (collectors/get)', description: 'See which devices can run a connectivity check and read a check\'s result', category: 'Network & DNS' },
+      { name: 'manage_topology_monitoring (list_policies/list_targets/get_settings)', description: 'View a site\'s recurring network checks, probe targets and effective topology settings', category: 'Network & DNS' },
+      { name: 'manage_topology_templates (list_templates/list_versions/site_options)', description: 'View topology monitoring templates, their versions, and the published ones a site can apply', category: 'Network & DNS' },
+      { name: 'apply_topology_template (status)', description: 'See how a template application is progressing, site by site', category: 'Network & DNS' },
+      // Full-control W09 (#6779): SNMP, known-guest and UniFi reads. Known guests and UniFi are chat/MCP only (partner-wide; not offered to AI agents).
+      { name: 'manage_snmp_templates (list/get/browse_oids/validate_oids)', description: 'View SNMP monitoring templates (the OIDs polled per device class), search known OIDs and check an OID list (names are untrusted text)', category: 'Network & DNS' },
+      { name: 'get_snmp_metrics (history/dashboard)', description: 'Read bucketed SNMP history (interface traffic, uptime and other OIDs) for an asset, or the SNMP dashboard', category: 'Network & DNS' },
+      { name: 'manage_known_guests (list)', description: 'View the partner-wide list of known guest MAC addresses that discovery does not flag', category: 'Network & DNS' },
+      { name: 'get_unifi_status (status/hosts/collectors/mappings/telemetry/sync_runs/controller_sites)', description: 'Read the partner UniFi integration: connection, consoles, collectors, site mappings, device telemetry and sync history', category: 'Network & DNS' },
+      { name: 'get_fleet_health (history/offenders/evaluation/org_summary)', description: 'A device\'s reliability score over time, the services and components behind it, score quality, and an organization rollup', category: 'Devices & Hardware' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
       { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
       { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
+      // Full-control W10 (#6780): read-back of what the AI did and plans. The operator-task reads are chat/MCP only (free text from
+      // other runs; not offered to AI agents). Text in all of them is untrusted data.
+      { name: 'get_device_ai_activity', description: 'Count the scripts and commands the AI dispatched to a device, and show who started one action', category: 'AI Governance' },
+      { name: 'list_operator_tasks', description: 'List the multi-step tasks the AI operator is running or has finished (whole organization; not for site-restricted sessions)', category: 'AI Governance' },
+      { name: 'get_operator_task', description: 'Read one operator task: steps, timeline, proposed plan and linked runs (credential hand-over details are never shown)', category: 'AI Governance' },
+      { name: 'list_ai_agent_schedules', description: 'List when AI agents run on a schedule, with partner baselines and organization overrides', category: 'AI Governance' },
+      { name: 'list_fleet_designs', description: 'List completed Fleet Design reports (whole organization; not for site-restricted sessions)', category: 'AI Governance' },
+      { name: 'get_fleet_design', description: 'Read one Fleet Design report as markdown (applying it is a separate, approval-gated action)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -233,7 +271,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 2,
-    label: 'Auto-Execute + Audit',
+    label: 'aiRisk.tiers.tier2.label',
     description:
       'Low-risk mutations and audited reads, always logged to the audit trail. Read-only entries auto-execute in every approval mode; mutations auto-execute except under per-step approval, which asks a quick confirmation.',
     iconName: 'shield-check',
@@ -243,6 +281,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     tools: [
       // Tool Catalog W03 (#5218, behind FLOWS_ENABLED): saves a draft; nothing runs.
       { name: 'draft_flow', description: 'Save a flow as a reviewable draft', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): stop a flow run.
+      { name: 'cancel_flow_run', description: 'Cancel a flow run that has not finished', category: 'Scripts & Automation' },
       // Security & Compliance — EDR provider framework (#8167 W03)
       { name: 'edr_endpoint_action (scan)', description: 'EDR scan of a device through its linked vendor', category: 'Security & Compliance' },
       { name: 'sync_edr_data', description: 'Queue an immediate EDR vendor sync', category: 'Security & Compliance' },
@@ -251,6 +291,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
+      // Backup & Recovery (full-control W03, #6757)
+      { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
+      { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
       { name: 'get_monitor_activity', description: 'Per-device breach state and recent breach episodes for a monitor', category: 'Monitoring & Analytics' },
       { name: 'reset_monitor_escalation', description: 'Clear a monitor recurrence escalation for one device and resume its automatic responses', category: 'Monitoring & Analytics' },
@@ -265,7 +309,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Network & DNS
       { name: 'acknowledge_network_device', description: 'Acknowledge network device', category: 'Network & DNS' },
-      { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
       { name: 'manage_dns_policy', description: 'DNS policy management', category: 'Network & DNS' },
       // Remote Access & Control
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
@@ -307,6 +350,30 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
+      // Full-control W06 (#6776): ticket operations that stay at Tier 2. Creating a checklist
+      // template is Tier 2 for an organization template; a partner-wide one needs approval (input-aware).
+      { name: 'manage_tickets (bulk_update)', description: 'Assign, change the status of (not resolve) or set the priority of up to 50 tickets in one organization', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (create)', description: 'Create an organization checklist template (a partner-wide template needs approval)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (list)', description: 'Review inbound email the router could not place (sender text is untrusted)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (read_content/attach_from_artifact)', description: 'Read a text attachment, or stage a run artifact on a ticket (a person posts it)', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (confirm/dismiss/undo)', description: 'Log, dismiss or restore your own time-entry suggestions', category: 'Ticketing' },
+      // Full-control W07 (#6777): acknowledging or resolving a correlation group touches the members of
+      // one organization's group (the manage_alerts precedent); the rest are labels and a status on one row.
+      { name: 'manage_alert_correlations (acknowledge_group/resolve_group/acknowledge_related)', description: 'Acknowledge or resolve every alert in a correlation group, or an alert and its related alerts', category: 'Alerts & Notifications' },
+      { name: 'manage_alert_correlations (feedback/rca_feedback)', description: 'Tell Breeze a correlation was wrong, or a root-cause analysis was helpful', category: 'Alerts & Notifications' },
+      { name: 'manage_device_anomalies (dismiss/resolve)', description: 'Dismiss or resolve a detected metric anomaly', category: 'Alerts & Notifications' },
+      { name: 'reliability_feedback', description: 'Label a device\'s reliability score: failure confirmed, replaced, or false alarm', category: 'Devices & Hardware' },
+      // Full-control W08 (#6778): tenant-internal topology writes with a revision check; a diagnostic start probes from one device.
+      { name: 'run_topology_diagnostic (start/cancel)', description: 'Start a fixed gateway, DNS, internet or trace-route check from a device at a site, or stop one', category: 'Network & DNS' },
+      { name: 'manage_topology_manual (create_node/update_node/delete_node/create_relationship/delete_relationship)', description: 'Add, change or remove a hand-drawn switch, router, AP or link on a site\'s network map', category: 'Network & DNS' },
+      { name: 'manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)', description: 'Change a site\'s recurring network checks, probe targets or topology settings (arming a check stays in the topology page)', category: 'Network & DNS' },
+      { name: 'manage_topology_templates (create_template/update_template/create_version)', description: 'Draft a topology monitoring template or a new version of one (nothing applies until a version is published)', category: 'Network & DNS' },
+      { name: 'apply_topology_template (preview)', description: 'Preview what applying a template would change on named sites', category: 'Network & DNS' },
+      // Full-control W09 (#6779): tenant-internal rows (reversible), one agent ping, one queued vendor pull. Each write needs your MFA session.
+      { name: 'manage_snmp_templates (create/update/delete)', description: 'Create, change or delete a custom SNMP template (built-ins are read-only; the result keeps the old row so a delete can be undone)', category: 'Network & DNS' },
+      { name: 'probe_network_asset', description: 'Check now: ping a discovered asset from an online agent in its site and report reachable or not', category: 'Network & DNS' },
+      { name: 'manage_known_guests (add/delete)', description: 'Add or remove a known guest MAC address for every organization of the partner', category: 'Network & DNS' },
+      { name: 'trigger_unifi_sync', description: 'Queue a manual sync of the partner UniFi integration', category: 'Network & DNS' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -326,7 +393,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 3,
-    label: 'Requires Approval',
+    label: 'aiRisk.tiers.tier3.label',
     description: 'Destructive or mutating operations that require explicit user approval before execution.',
     iconName: 'shield-alert',
     borderColor: 'border-l-amber-500',
@@ -354,7 +421,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
-      { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
+      { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
@@ -363,12 +430,33 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
+      { name: 'configure_network_baseline', description: 'Configure a recurring network baseline scan (schedules on-site discovery)', category: 'Network & DNS' },
       { name: 'diagnose_connectivity', description: 'One approved topology connectivity check (fresh MFA)', category: 'Network & DNS' },
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
+      // Tool Catalog W04 (#5219, behind FLOWS_ENABLED): starting a flow needs your approval; its sensitive steps still wait for a human.
+      { name: 'run_flow', description: 'Start an enabled flow (each sensitive step still waits for approval)', category: 'Scripts & Automation' },
       // Backup & Recovery
+      // Full-control W03 (#6757): triggers and Hyper-V power are approved by the
+      // requester; restores, instant boot and DR execution need a second approver.
       { name: 'trigger_backup', description: 'Initiate on-demand backup', category: 'Backup & Recovery' },
-      { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
+      { name: 'trigger_hyperv_backup', description: 'Back up a Hyper-V VM now', category: 'Backup & Recovery' },
+      { name: 'trigger_mssql_backup', description: 'Back up a SQL Server database now', category: 'Backup & Recovery' },
+      { name: 'verify_mssql_backup', description: 'Verify a SQL Server backup on the device (RESTORE VERIFYONLY)', category: 'Backup & Recovery' },
+      { name: 'trigger_vault_sync', description: 'Copy a snapshot to the device\'s local vault', category: 'Backup & Recovery' },
+      { name: 'trigger_c2c_sync', description: 'Start a cloud-to-cloud backup sync', category: 'Backup & Recovery' },
+      { name: 'configure_vault (create/update)', description: 'Create or repoint a local vault (path, type, retention); the device is reconfigured', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
+      { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
+      { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
+      { name: 'instant_boot_vm', description: 'Boot a snapshot as a VM (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_hyperv_vm', description: 'Restore a Hyper-V VM from backup (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_mssql_database', description: 'Restore a SQL Server database (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_c2c_items', description: 'Restore cloud-to-cloud backup items (second approver)', category: 'Backup & Recovery' },
+      { name: 'execute_dr_plan', description: 'Run a DR rehearsal, failover or failback (second approver)', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (create/update/delete)', description: 'Create, repoint, or delete a notification channel (the approver sees the destination host)', category: 'Alerts & Notifications' },
@@ -403,14 +491,28 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
+      // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
+      // (email domain mapping, checklist template, ticket form, canned reply) need a second approver.
+      { name: 'manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain/delete_domain)', description: 'Change ticket categories, statuses, priorities, SLA overrides or customer email domain routing (removing a domain mapping needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (update/delete/add_item/update_item/remove_item/reorder_items)', description: 'Edit or delete a checklist template and its steps (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (convert/dismiss)', description: 'Turn an inbound email into a ticket in an organization, or dismiss it (neither can be undone)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (delete)', description: 'Permanently delete a ticket attachment', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (create/update/delete)', description: 'Create, change or delete a customer-visible ticket intake form (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (create/update/delete)', description: 'Create, change or delete a partner-wide canned reply (deleting needs a second approver)', category: 'Ticketing' },
+      // Full-control W07 (#6777): promoting an anomaly raises a real alert, which notifies people.
+      { name: 'manage_device_anomalies (promote)', description: 'Promote a detected anomaly to a real alert (notifies the alert channels)', category: 'Alerts & Notifications' },
+      // Full-control W08 (#6778): publishing and applying reach partner- or organization-wide monitoring.
+      { name: 'manage_topology_templates (publish_version/revoke_template)', description: 'Publish a template version so sites can apply it, or revoke a template for good (disables the checks that use it)', category: 'Network & DNS' },
+      { name: 'apply_topology_template (apply)', description: 'Apply a previewed template to sites, replacing their monitoring configuration', category: 'Network & DNS' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
-      { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      { name: 'operator_plan', description: 'Approve an AI task plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): every other kind asks first; an assessment's
       // request for one becomes the wisp_specialist_request approval card.
-      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an Operator task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
+      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an AI task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
       { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
@@ -419,7 +521,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 4,
-    label: 'Blocked',
+    label: 'aiRisk.tiers.tier4.label',
     description: 'Operations that are never allowed, such as cross-organization data access or unknown tools.',
     iconName: 'shield-off',
     borderColor: 'border-l-red-500',
@@ -448,6 +550,8 @@ export interface RateLimitConfig {
   category: ToolCategory;
 }
 
+// `tier` here is the tool's BASE (registry) tier; per-action escalations
+// (e.g. configure_vault create/update -> Tier 3) are listed in TIER_DEFINITIONS.
 export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
   { toolName: 'execute_command', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
@@ -502,7 +606,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Integrations
   { toolName: 'test_webhook', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
-  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.recover_agent', category: 'Integrations' },
   { toolName: 'manage_notification_channels', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   { toolName: 'manage_saved_filters', tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
@@ -528,18 +632,24 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
-  { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
-  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
+  { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'edr_endpoint_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_edr_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Full-control W04 (#6758, quorum QW11): device-touching tools that gained a rate limit.
+  { toolName: 'manage_browser_policy', tier: 3, permission: 'devices.write / devices.execute (apply)', category: 'Security & Compliance' },
+  { toolName: 'manage_peripheral_policy', tier: 3, permission: 'organizations.write', category: 'Devices & Hardware' },
+  { toolName: 'remediate_sensitive_data', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'configure_network_baseline', tier: 3, permission: 'devices.write', category: 'Network & DNS' },
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
-  { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
   { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
@@ -550,13 +660,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_hyperv_checkpoints', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'trigger_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_mssql_database', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'verify_mssql_backup', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'verify_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
   { toolName: 'query_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'manage_service_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'get_service_monitoring_status', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'trigger_c2c_sync', tier: 2, permission: 'organizations.write', category: 'Integrations' },
+  { toolName: 'trigger_c2c_sync', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'restore_c2c_items', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   // Alerts & Notifications
   { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
@@ -576,6 +686,40 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
   { toolName: 'send_endpoint_message', tier: 3, permission: 'endpoint_messages.send', category: 'Ticketing' },
+  // Full-control W06 (#6776): `tier` is the registry tier (1); the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_ticket_config', tier: 1, permission: 'tickets.read / tickets.write / organizations.write (org settings)', category: 'Ticketing' },
+  { toolName: 'manage_ticket_checklist_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_inbox', tier: 1, permission: 'tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_attachments', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_forms', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_response_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_time_suggestions', tier: 1, permission: 'time_entries.read / time_entries.write', category: 'Ticketing' },
+  // Full-control W07 (#6777): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'get_alert_correlations', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
+  { toolName: 'manage_alert_correlations', tier: 2, permission: 'alerts.read / alerts.acknowledge / alerts.write', category: 'Alerts & Notifications' },
+  { toolName: 'manage_device_anomalies', tier: 1, permission: 'devices.read / alerts.write', category: 'Alerts & Notifications' },
+  { toolName: 'reliability_feedback', tier: 2, permission: 'devices.read', category: 'Devices & Hardware' },
+  // Full-control W08 (#6778): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'get_topology_graph', tier: 1, permission: 'topology.read', category: 'Network & DNS' },
+  { toolName: 'run_topology_diagnostic', tier: 1, permission: 'topology.read / topology.execute', category: 'Network & DNS' },
+  { toolName: 'manage_topology_manual', tier: 2, permission: 'topology.write', category: 'Network & DNS' },
+  { toolName: 'manage_topology_monitoring', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  { toolName: 'manage_topology_templates', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  { toolName: 'apply_topology_template', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  // Full-control W09 (#6779): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_snmp_templates', tier: 1, permission: 'devices.read / devices.write', category: 'Network & DNS' },
+  { toolName: 'get_snmp_metrics', tier: 1, permission: 'devices.read', category: 'Network & DNS' },
+  { toolName: 'probe_network_asset', tier: 2, permission: 'devices.write', category: 'Network & DNS' },
+  { toolName: 'manage_known_guests', tier: 1, permission: 'organizations.read / organizations.write', category: 'Network & DNS' },
+  { toolName: 'get_unifi_status', tier: 1, permission: 'billing.manage', category: 'Network & DNS' },
+  { toolName: 'trigger_unifi_sync', tier: 2, permission: 'billing.manage', category: 'Network & DNS' },
+  // Full-control W10 (#6780): all tier 1.
+  { toolName: 'get_device_ai_activity', tier: 1, permission: 'devices.read', category: 'AI Governance' },
+  { toolName: 'list_operator_tasks', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'get_operator_task', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'list_ai_agent_schedules', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'list_fleet_designs', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  { toolName: 'get_fleet_design', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -595,6 +739,52 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_fleet_device_stats: 'devices.read',
   get_fleet_health: 'devices.read',
   get_fleet_findings: 'devices.read',
+  // Full-control W07 (#6777)
+  get_alert_correlations: 'alerts.read',
+  manage_alert_correlations: {
+    acknowledge_group: 'alerts.acknowledge',
+    resolve_group: 'alerts.write',
+    acknowledge_related: 'alerts.acknowledge',
+    feedback: 'alerts.read',
+    rca_feedback: 'alerts.read',
+  },
+  manage_device_anomalies: {
+    list: 'devices.read',
+    dismiss: 'alerts.write',
+    resolve: 'alerts.write',
+    promote: 'alerts.write',
+  },
+  reliability_feedback: 'devices.read',
+  // Full-control W08 (#6778): every topology action also needs the devices grant of its capability.
+  get_topology_graph: 'topology.read',
+  run_topology_diagnostic: { collectors: 'topology.read', get: 'topology.read', start: 'topology.execute', cancel: 'topology.execute' },
+  manage_topology_manual: 'topology.write',
+  manage_topology_monitoring: {
+    list_policies: 'topology.read', list_targets: 'topology.read', get_settings: 'topology.read',
+    upsert_policy: 'topology.write', delete_policy: 'topology.write', upsert_target: 'topology.write', delete_target: 'topology.write', patch_settings: 'topology.write',
+  },
+  manage_topology_templates: {
+    list_templates: 'topology.read', list_versions: 'topology.read', site_options: 'topology.read',
+    create_template: 'topology.write', update_template: 'topology.write', revoke_template: 'topology.write', create_version: 'topology.write', publish_version: 'topology.write',
+  },
+  apply_topology_template: { preview: 'topology.write', apply: 'topology.write', status: 'topology.read' },
+  // Full-control W09 (#6779): the permission each action needs (a write also needs your MFA session).
+  manage_snmp_templates: {
+    list: 'devices.read', get: 'devices.read', browse_oids: 'devices.read', validate_oids: 'devices.read',
+    create: 'devices.write', update: 'devices.write', delete: 'devices.write',
+  },
+  get_snmp_metrics: 'devices.read',
+  probe_network_asset: 'devices.write',
+  manage_known_guests: { list: 'organizations.read', add: 'organizations.write', delete: 'organizations.write' },
+  get_unifi_status: 'billing.manage',
+  trigger_unifi_sync: 'billing.manage',
+  // Full-control W10 (#6780).
+  get_device_ai_activity: 'devices.read',
+  list_operator_tasks: 'ai_agents.read',
+  get_operator_task: 'ai_agents.read',
+  list_ai_agent_schedules: 'ai_agents.read',
+  list_fleet_designs: 'ai_agents.read',
+  get_fleet_design: 'ai_agents.read',
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
@@ -647,6 +837,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   validate_flow: 'automations.read',
   get_flow: 'automations.read',
   list_flows: 'automations.read',
+  run_flow: 'automations.write',
+  list_flow_runs: 'automations.read',
+  get_flow_run: 'automations.read',
+  cancel_flow_run: 'automations.write',
   // #8973 W4: business-hours calendars (read-only)
   list_business_calendars: 'tickets.read',
   // #8883 W5: ticket routing rules

@@ -1,0 +1,56 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API members.get / members.insert (Member resource)",
+  "_notes": "The probe asserts membership, not role; the plan pins role MEMBER in the approved arguments (D-R2-9).",
+  "toolName": "google_add_to_group",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.members.get": {
+      "data": {
+        "kind": "admin#directory#member",
+        "email": "priya@customer.example",
+        "role": "MEMBER",
+        "type": "USER",
+        "status": "ACTIVE"
+      }
+    }
+  },
+  "preUnsatisfied": {
+    "directory.members.get": {
+      "error": {
+        "code": 404,
+        "message": "Resource Not Found: memberKey"
+      }
+    }
+  },
+  "writeOk": {
+    "directory.members.insert": {
+      "data": {
+        "kind": "admin#directory#member",
+        "email": "priya@customer.example",
+        "role": "MEMBER",
+        "type": "USER",
+        "status": "ACTIVE"
+      }
+    }
+  },
+  "postSatisfied": {
+    "directory.members.get": {
+      "data": {
+        "kind": "admin#directory#member",
+        "email": "priya@customer.example",
+        "role": "MEMBER",
+        "type": "USER",
+        "status": "ACTIVE"
+      }
+    }
+  },
+  "writeRefusal": {
+    "directory.members.insert": {
+      "error": {
+        "code": 403,
+        "message": "Not Authorized to access this resource/api"
+      }
+    }
+  }
+}

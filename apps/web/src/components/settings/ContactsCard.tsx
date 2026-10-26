@@ -9,6 +9,7 @@ import { useHashState } from '@/lib/useHashState';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
 import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
 import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
+import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
 import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
@@ -350,6 +351,12 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
             <p className="mt-1 text-sm text-muted-foreground">{t('contactsCard.description')}</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Page-level, not per row: there is no row for a person who does not exist yet. Renders nothing unless the Operator flag is on and onboarding is not unavailable. */}
+            <OnboardPersonLauncher
+              orgId={orgId}
+              source="org"
+              className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            />
             <button
               type="button"
               data-testid="org-contacts-import-button"

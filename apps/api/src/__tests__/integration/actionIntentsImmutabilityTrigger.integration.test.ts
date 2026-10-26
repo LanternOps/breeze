@@ -193,6 +193,11 @@ describe('action_intents immutability trigger (live DB)', () => {
     requested_by_user_id: { requestedByUserId: randomUUID() },
     requesting_api_key_id: { requestingApiKeyId: randomUUID() },
     requesting_agent_run_id: { requestingAgentRunId: randomUUID() },
+    // 2027-01-06-130000 (tool catalog W04, #5219): unconditional guard. The
+    // seeded intent starts with it NULL, so setting it is the blocked
+    // direction; the trigger raises before the one-actor / flow-origin CHECKs
+    // and the composite flow_runs FK get to complain.
+    requesting_flow_run_id: { requestingFlowRunId: randomUUID() },
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
@@ -252,6 +257,9 @@ describe('action_intents immutability trigger (live DB)', () => {
     // `action_intents_external_tool_chk` gets to complain about the pairing.
     tool_source_tool_id: { toolSourceToolId: randomUUID() },
     tool_revision: { toolRevision: 'rev-2' },
+    // 2027-01-06-160000 (tool catalog W05 PR A, #5220): the invoked-flow
+    // binding. Same single-column probe reasoning as tool_source_tool_id.
+    invoked_flow_id: { invokedFlowId: randomUUID() },
     script_reviewer_evidence: {
       scriptReviewerEvidence: {
         proposalId: randomUUID(), reviewId: randomUUID(), contentDigest: 'a'.repeat(64), scannerVersion: '2026-09-11.1',

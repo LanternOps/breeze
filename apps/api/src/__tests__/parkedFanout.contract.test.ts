@@ -197,6 +197,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/localVaultUpdate.ts': 'site-locked vault update (W03-D12, #6757; lifted from routes/backup/vault.ts): row-locks the ONE device that owns a vault the caller already resolved, inside the caller\'s sites, then updates that vault; selects no targets, and the follow-up vault_configure to a parked device is refused by command delivery',
   'services/securityScanStart.ts': 'single-device Scan now (#6263 W05-11, lifted from routes/security/scans.ts): reads the ONE device id the caller named under its own RLS; selects no targets. queueCommand refuses a parked device',
   'jobs/securityScanClaim.ts': 'IOC scan claim (#6263 W05-3): re-reads ONE already-queued scan and its device under the partner lock; selects no targets. The command goes through dispatchDeviceCommand, which refuses a parked device (device_pending_assignment); sweep targets come from services/securityScanSweepTargets.ts and the pump, both FANOUT_MODULES entries',
   'services/wisp/concernTools.ts': 'Wisp W05a raise_concern (#9911): one existence check (id, org_id) for a device the user named, AFTER assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs (notHiddenOrgType in grantAuthority), so a parked device never matches; selects no targets and runs nothing',
@@ -213,6 +214,7 @@ const EXEMPT: Record<string, string> = {
   'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
   'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',
   'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
+  'services/deviceReattach/rebindDirective.ts': 'reinstall reattach (#8318 §6.2): reads the ONE target device of the open intent whose source is the beating agent itself; selects no targets',
   'services/automationTargetValidation.ts': 'write-time validation of an automation target config: reads device_groups/devices ids only to check they sit in the owner org; selects no targets and dispatches nothing',
   'services/scriptRunTargets.ts': 'resolves saved device groups (org-owned; the holding org has none) via the shared resolver, which keeps eq(devices.orgId, groupOrgId) on every query; the resulting run goes through executeScriptOnDevices admission, and command delivery refuses parked devices',
   'services/assetPlacement.ts': 'resolves placement authority by joining the ONE device already linked to a discovered asset (by id, within the asset org); selects no targets',
@@ -295,6 +297,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiOperator/deviceCommandEvidence.ts': 'derived: device lookup by id and org from a task\'s own row',
   'services/aiOperator/identityDiscovery.ts': 'org-pinned: start-form device SUGGESTIONS by last_user, pinned to the task\'s own org; never an effect target',
   'services/aiOperator/requesterAccessGate.ts': 'request path: rechecks a human requester\'s live org/site access to a task\'s device',
+  'services/aiOperator/taskReadQueries.ts': 'request path: read-only operator task list/detail/plan queries (moved from routes/ai/operator); devices is joined only to apply the caller\'s site restriction, no device is selected as a target',
   'services/aiOperator/taskService.ts': 'request path: creates a task for a device named on the request, scoped to the request org',
   'services/aiOperator/verification.ts': 'derived: re-validates a task\'s own device is still in the task\'s org',
   'services/aiTimeEntryProposal.ts': 'derived: loads device site from an existing run row',
@@ -443,7 +446,10 @@ const EXEMPT: Record<string, string> = {
   'services/unassignedPool/visibility.ts': 'the hidden-org visibility helpers themselves; select nothing',
   'services/unassignedPool/assignParkedDevice.ts': 'lifecycle: the assignment operation itself; acts on the one parked device a full partner admin named',
   'services/unassignedPool/assignParkedDeviceSteps.ts': 'lifecycle: locked reads of the one named parked device and of its destination identity rows, for the assignment operation',
+  'services/deviceReattach/intentStore.ts': 'reinstall reattach (#8318): locked reads of the TWO devices one intent names (source and target, by id); selects no targets and dispatches nothing',
+  'services/deviceReattach/requestIntent.ts': 'reinstall reattach (#8318): eligibility of the ONE target a human named (a hidden-org target is refused); selects no targets and dispatches nothing',
   'services/unassignedPool/parkedDeviceReads.ts': 'the parked-device list itself, shown only to full partner admins through the pre-assignment routes; reads, never selects work',
+  'services/flows/triggerScope.ts': "org-pinned: enriches a flow trigger with the one device its event payload names, only when that device is in the run's own org (#5219); selects no targets and dispatches nothing",
   'services/devicePolicySet.ts': 'derived: every candidate policy assignment of the one device a heartbeat already identified (loaded in its org-scoped context); selects no work',
   'services/helperSettings.ts': 'derived: the effective Helper setting of the one device a heartbeat or Helper token already identified; selects no work',
   'services/userRiskScoring.ts': 'org-pinned: Devices queried by orgId from job data; upstream org scan requires organizationUsers rows, which holding orgs never have',

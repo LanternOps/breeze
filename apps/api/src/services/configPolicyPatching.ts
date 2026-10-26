@@ -3,6 +3,9 @@ import type { z } from 'zod';
 import {
   patchInlineSettingsSchema,
   rebootPromptTextSchemas,
+  ringFeatureUpdatesSchema,
+  DEFAULT_RING_FEATURE_UPDATES,
+  type RingFeatureUpdates,
 } from '@breeze/shared/validators';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
@@ -60,6 +63,12 @@ export interface PatchRingResolution {
    * `valid_ring`.
    */
   appRules: PolicyAppRule[];
+  /**
+   * The ring's Windows feature-release policy (`patch_policies.feature_updates`).
+   * Block for every classification other than `valid_ring`, and for a stored
+   * value that fails the schema (fail closed, reported).
+   */
+  featureUpdates: RingFeatureUpdates;
 }
 
 /** A resolution with no usable ring: no ring config of any kind. */
@@ -77,7 +86,22 @@ function noRingResolution(
     excludeCategories: [],
     autoApprove: {},
     appRules: [],
+    featureUpdates: DEFAULT_RING_FEATURE_UPDATES,
   };
+}
+
+/**
+ * Normalise a ring row's stored `feature_updates`. The column CHECK only
+ * guarantees an object, so a value that fails the shared schema (drift, or a
+ * writer that bypassed it) is reported and treated as block — never as allow.
+ */
+function coerceRingFeatureUpdates(raw: unknown, ringId: string): RingFeatureUpdates {
+  const parsed = ringFeatureUpdatesSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const message = `[configPolicyPatching] ring ${ringId} has malformed feature_updates; treating Windows feature updates as blocked`;
+  console.warn(`${message}:`, JSON.stringify(raw));
+  captureException(new Error(message));
+  return DEFAULT_RING_FEATURE_UPDATES;
 }
 
 /**
@@ -253,6 +277,7 @@ export async function resolvePatchPolicyReference(
         excludeCategories: patchPolicies.excludeCategories,
         autoApprove: patchPolicies.autoApprove,
         appRules: patchPolicies.appRules,
+        featureUpdates: patchPolicies.featureUpdates,
       })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, featurePolicyId), eq(patchPolicies.partnerId, partnerId)))
@@ -280,6 +305,7 @@ export async function resolvePatchPolicyReference(
         excludeCategories: coerceCategoryList(patchPolicy.excludeCategories),
         autoApprove: (patchPolicy.autoApprove ?? {}) as Record<string, unknown> | boolean,
         appRules: coerceRingAppRules(patchPolicy.appRules, patchPolicy.id),
+        featureUpdates: coerceRingFeatureUpdates(patchPolicy.featureUpdates, patchPolicy.id),
       };
     }
     return noRingResolution('legacy_patch_policy', false);

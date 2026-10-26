@@ -175,6 +175,22 @@ describe('POST /task-drafts', () => {
     expect(h.admitTask).not.toHaveBeenCalled();
   });
 
+  it('4b. names a selected device by its hostname in the draft checklist, not its id', async () => {
+    h.selectQueue = [
+      [{ id: CONTACT, name: 'Dana Ruiz', email: 'dana@customer.example' }],
+      [{ id: DEVICE, hostname: 'LAPTOP-DANA', siteId: null }],
+    ];
+    const res = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT, deviceIds: [DEVICE] } });
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: { manualWork: Array<{ key: string; label: string; detail: string }> } };
+    const item = data.manualWork.find((m) => m.key === `device_signout_${DEVICE}`);
+    expect(item).toBeDefined();
+    expect(item!.label).toContain('LAPTOP-DANA');
+    expect(item!.label).not.toContain(DEVICE);
+    expect(item!.detail).not.toContain(DEVICE);
+    expect(h.inserts).toBe(0);
+  });
+
   it('5. an unresolvable person returns the CANDIDATES, not an error', async () => {
     h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: null }, { id: 'x', name: 'Dana Smith', email: null }]];
     const res = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { personHint: 'Dana' } });
@@ -247,7 +263,7 @@ describe('POST /task-drafts', () => {
   it('an unknown key is a 400 naming both supported workflows; bad inputs are a 400', async () => {
     const unknown = await post('/task-drafts', { recipeKey: 'no_such_recipe', recipeVersion: 1, orgId: ORG, inputs: {} });
     expect(unknown.status).toBe(400);
-    expect(((await unknown.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'service_recovery']);
+    expect(((await unknown.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
     const bad = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT, personHint: 'x' } });
     expect(bad.status).toBe(400);
   });
@@ -325,7 +341,7 @@ describe('POST /tasks — identity_offboarding', () => {
     h.selectQueue = [[{ id: DEVICE, orgId: ORG, siteId: 's', hostname: 'WIN-1' }]];
     const res = await post('/tasks', body({ recipeKey: 'no_such_recipe', deviceId: DEVICE, inputs: { serviceName: 'spooler' } }));
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'service_recovery']);
+    expect(((await res.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
   });
 });
 

@@ -12,6 +12,10 @@ export interface UsePdfDownloadOptions {
   filename: string;
   /** Toast copy on failure — domain-specific so quotes/invoices read naturally. */
   errorMessage?: string;
+  /** Called after a 2xx response, before the blob is saved. A returned
+   *  `filename` overrides `filename` (e.g. the server fell back to a different
+   *  copy). Optional; billing callers don't use it. */
+  onResponse?: (res: Response) => { filename?: string } | void;
 }
 
 export interface UsePdfDownload {
@@ -27,7 +31,7 @@ export interface UsePdfDownload {
  * filename, 401 handling, or error copy. `downloading` guards double-submit and
  * drives the button's disabled/label state.
  */
-export function usePdfDownload({ path, filename, errorMessage = 'Could not download the PDF.' }: UsePdfDownloadOptions): UsePdfDownload {
+export function usePdfDownload({ path, filename, errorMessage = 'Could not download the PDF.', onResponse }: UsePdfDownloadOptions): UsePdfDownload {
   const [downloading, setDownloading] = useState(false);
 
   const download = useCallback(async () => {
@@ -37,11 +41,12 @@ export function usePdfDownload({ path, filename, errorMessage = 'Could not downl
       const res = await fetchWithAuth(path);
       if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
       if (!res.ok) { handleActionError(new Error('pdf'), errorMessage); return; }
+      const override = onResponse?.(res);
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename;
+      a.download = override?.filename ?? filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -51,7 +56,7 @@ export function usePdfDownload({ path, filename, errorMessage = 'Could not downl
     } finally {
       setDownloading(false);
     }
-  }, [downloading, path, filename, errorMessage]);
+  }, [downloading, path, filename, errorMessage, onResponse]);
 
   return { download, downloading };
 }

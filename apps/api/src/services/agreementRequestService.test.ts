@@ -41,6 +41,7 @@ import {
   recordSignedAgreement,
   loadOrgOwnerPartnerId,
   AgreementRequestServiceError,
+  isAgreementRequestExpired,
   type RecordSignedAgreementParams,
 } from './agreementRequestService';
 import { ContractTemplateServiceError } from './contractTemplateService';
@@ -427,5 +428,121 @@ describe('loadOrgOwnerPartnerId', () => {
   it('an org invisible to the caller → 404 ORG_NOT_FOUND', async () => {
     queue([]);
     await expect(loadOrgOwnerPartnerId(ORG)).rejects.toMatchObject({ status: 404, code: 'ORG_NOT_FOUND' });
+  });
+});
+
+// #9075 W2a: the request-side writer was lifted out of recordSignedAgreement
+// into prepareRequestFreeze + signAndFreezeRequest. This pins the COMPLETE
+// observable output (insert payload, freeze argument, return value) with
+// toEqual — not toMatchObject — so the extraction cannot drop or add a field.
+// Written and green against the pre-extraction code.
+describe('recordSignedAgreement — characterization across the signAndFreezeRequest extraction', () => {
+  it('rendered: full insert payload, freeze argument and result are unchanged', async () => {
+    queueHappy({ contract: [{ id: CONTRACT, orgId: ORG }] });
+    const res = await recordSignedAgreement(params({}, { contractId: CONTRACT, effectiveDate: '2026-11-01' }));
+    const signedAt = new Date('2026-10-01T15:00:00.000Z');
+    const freezeArg = freezeMock.mock.calls[0]![0];
+    const contentSha256 = computeAgreementSha256({
+      kind: 'rendered',
+      versionSha: 'vsha',
+      vars: {
+        'client.name': 'Acme',
+        'client.address': '1 Main St, Springfield, IL, 62701, US',
+        'seller.name': 'Best MSP',
+        'dates.effective': 'Nov 01, 2026',
+        'custom.po': 'PO-4471',
+      },
+      renderLocale: 'en',
+      effectiveDate: '2026-11-01',
+    });
+    const address = { line1: '1 Main St', line2: null, city: 'Springfield', region: 'IL', postalCode: '62701', country: 'US' };
+    expect(inserted).toEqual([{
+      orgId: ORG,
+      status: 'signed',
+      templateId: TEMPLATE,
+      templateVersionId: VERSION,
+      contractId: CONTRACT,
+      label: 'MSA 2026',
+      variableValues: { 'custom.po': 'PO-4471' },
+      clientNameSnapshot: 'Acme',
+      clientAddressSnapshot: expect.objectContaining(address),
+      sellerSnapshot: expect.objectContaining({ name: 'Best MSP' }),
+      renderLocale: 'en',
+      documentLocale: null,
+      effectiveDate: '2026-11-01',
+      signedAt,
+      expiresAt: signedAt,
+      createdBy: 'user-1',
+    }]);
+    expect(freezeArg).toEqual({
+      source: { kind: 'request', agreementRequestId: 'req-1', label: 'MSA 2026' },
+      orgId: ORG,
+      contractId: CONTRACT,
+      templateId: TEMPLATE,
+      templateVersionId: VERSION,
+      render: { sourceType: 'authored', bodyHtml: '<p>{{client.name}} PO {{custom.po}}</p>', fileData: null, templateName: 'MSA', versionSha256: 'vsha' },
+      ctx: {
+        clientName: 'Acme',
+        clientAddress: expect.objectContaining(address),
+        sellerName: 'Best MSP',
+        currencyCode: 'USD',
+        renderLocale: 'en',
+        effectiveDate: '2026-11-01',
+      },
+      manualValues: { 'custom.po': 'PO-4471' },
+      evidence: {
+        signerName: 'Jane Doe',
+        signerEmail: 'jane@example.com',
+        signedAt,
+        signerIp: '203.0.113.9',
+        signerUserAgent: 'UA/1.0',
+        acceptanceOrigin: 'on_behalf',
+        acceptanceMethod: 'email',
+        acceptanceReference: 'email from Jane 2026-10-01',
+        recordedByUserId: 'user-1',
+        contentSha256,
+        contentHashVersion: 1,
+        acceptanceRenderLocale: 'en',
+      },
+      externalBytes: undefined,
+      allowUnresolvedFallback: false,
+    });
+    expect(res).toEqual({ request: requestRow, signedAgreementId: 'sa-1', contentSha256 });
+  });
+
+  it('external: freeze argument and result are unchanged (bytes bound, variables not gated)', async () => {
+    queueHappy();
+    const res = await recordSignedAgreement(params(
+      {
+        file: { buffer: PNG, filename: 'scan.png' },
+        renderData: renderData({ declaredVariables: [{ name: 'totals.monthly', kind: 'auto' }] as TemplateVersionRenderData['declaredVariables'] }),
+      },
+      { variableValues: {} },
+    ));
+    const contentSha256 = computeAgreementSha256({
+      kind: 'external',
+      versionSha: 'vsha',
+      bytesSha256: createHash('sha256').update(PNG).digest('hex'),
+      mime: 'image/png',
+    });
+    const freezeArg = freezeMock.mock.calls[0]![0];
+    expect(freezeArg.externalBytes).toEqual({ data: PNG, mime: 'image/png' });
+    expect(freezeArg.manualValues).toEqual({});
+    expect(freezeArg.evidence.contentSha256).toBe(contentSha256);
+    expect(freezeArg.allowUnresolvedFallback).toBe(false);
+    expect(res).toEqual({ request: requestRow, signedAgreementId: 'sa-1', contentSha256 });
+  });
+});
+
+describe('isAgreementRequestExpired — the one instant boundary every path uses', () => {
+  const at = new Date('2026-11-01T12:00:00.000Z');
+  it('1 ms before expires_at is live', () => {
+    expect(isAgreementRequestExpired(at, new Date(at.getTime() - 1))).toBe(false);
+  });
+  it('exactly expires_at is expired (now >= expiresAt)', () => {
+    expect(isAgreementRequestExpired(at, new Date(at.getTime()))).toBe(true);
+  });
+  it('1 ms after expires_at is expired', () => {
+    expect(isAgreementRequestExpired(at, new Date(at.getTime() + 1))).toBe(true);
   });
 });

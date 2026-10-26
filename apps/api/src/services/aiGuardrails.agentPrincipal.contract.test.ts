@@ -194,6 +194,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'generate_incident_report',
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
+  'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
@@ -205,6 +206,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_compliance_status',
   'get_configuration_policy',
   'get_contract',
+  'get_device_ai_activity', // W10 (#6780) Tier-1 read, own device for a device-bound run
   'get_device_context',
   'get_device_details',
   'get_device_hardware_health',
@@ -222,10 +224,12 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_design', // W10 (#6780) Tier-1 read
   'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
+  'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -269,6 +273,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // W01 (#6755)
   'get_sla_breaches',
   'get_sla_compliance_report',
+  'get_snmp_metrics',
   'get_software_compliance',
   'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read
@@ -287,6 +292,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_lookup_user',
   'google_security_drift',
   'list_ai_agent_runs', // A-W06 Tier-1 read
+  'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
   'list_business_calendars', // #8973 W4 Tier-1 read
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
@@ -295,6 +301,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_fleet_designs', // W10 (#6780) Tier-1 read
+  'list_flow_runs', // Tool Catalog W04 (#5219) Tier-1 read
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
@@ -908,10 +916,12 @@ describe('Task 2 — act disposition matrix', () => {
  * as a literal so a membership change is a deliberate, reviewed edit.
  */
 const EXPECTED_AGENT_DENIED_READ_TOOLS = [
+  'get_operator_task', // W10 (#6780, QW5)
   'get_user_risk_detail',
   'get_sensitive_data_overview',
   'get_user_risk_scores',
   'm365_query_signins', // WQ1
+  'list_operator_tasks', // W10 (#6780, QW5)
   'm365_query_users', // WQ1
   'query_c2c_jobs', // WQ2
   'search_c2c_items',
@@ -989,8 +999,12 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove (tags feed run scope directly and via dynamic groups), each with a real reason', () => {
-    expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual(['manage_tags:add', 'manage_tags:remove']);
+  it('is exactly manage_tags add/remove and manage_groups add_devices/remove_devices (both feed run scope), each with a real reason', () => {
+    expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
+      // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
+      'manage_groups:add_devices', 'manage_groups:remove_devices',
+      'manage_tags:add', 'manage_tags:remove',
+    ]);
     for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
   });
 
@@ -1026,6 +1040,24 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
 
   it('control: manage_tags:list still reaches an agent', () => {
     const check = checkAgentGuardrails('manage_tags', { action: 'list', deviceId: 'dev-1' }, tagPolicy);
+    expect(check.disposition).toBe('allow');
+  });
+
+  // W04-D8 (#6758): membership is a live read at run admission and before
+  // tool use (runResourceScope.ts), so an allowlisted add puts a device inside
+  // any agent whose triggers.deviceGroupIds names the group.
+  const groupPolicy = policyWith({
+    mode: 'act', toolAllowlist: ['manage_groups', 'manage_groups:add_devices', 'manage_groups:remove_devices'],
+  });
+
+  it.each(['add_devices', 'remove_devices'])('denies an allowlisted manage_groups:%s (group membership feeds run scope)', (action) => {
+    const check = checkAgentGuardrails('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] }, groupPolicy);
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/never available to agents/);
+  });
+
+  it('control: manage_groups:list still reaches an agent', () => {
+    const check = checkAgentGuardrails('manage_groups', { action: 'list' }, groupPolicy);
     expect(check.disposition).toBe('allow');
   });
 });

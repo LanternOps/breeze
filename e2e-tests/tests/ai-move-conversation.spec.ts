@@ -14,14 +14,14 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * Move AI conversations between the side panel and the AI Assistant
- * (/wisp/chat, was /workspace) — #9840 W5, spec §3.3–§3.8, plan T17.
+ * (/ai/chat, was /workspace then /wisp/chat) — #9840 W5, spec §3.3–§3.8, plan T17.
  *
  * STACK: a wt-stack with the AI keys BLANKED. No turn can run there (a send
  * answers 503 ai_not_configured), so every attach answers
  * `attach_state{turn:'unavailable'}` and this spec covers the IDLE paths only:
  * all three entry points (panel header, panel History, workspace picker) in
  * both directions, the replace-confirm, the `#session=` deep link including the
- * other-org leg (plan T17 Step 3 (b)), leaving /wisp/chat and returning (the
+ * other-org leg (plan T17 Step 3 (b)), leaving /ai/chat and returning (the
  * re-attach wiring of Step 3 (c)), the five-tab cap, and logout. Moving a
  * RUNNING turn (Step 3 (a), the mid-turn half of (c)) is proven against the
  * real stores in apps/web/src/stores/aiConversationHandoff.runningTurn.test.tsx
@@ -129,7 +129,7 @@ async function startEmpty(page: Page) {
 const panelSessionId = (page: Page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('breeze-ai-chat') ?? '{}').state?.sessionId ?? null);
 const hashOf = (page: Page) => page.evaluate(() => window.location.hash);
-/** A link while already on /wisp/chat: a real hashchange, no reload. */
+/** A link while already on /ai/chat: a real hashchange, no reload. */
 const followLink = (page: Page, id: string) =>
   page.evaluate((sid) => { window.location.hash = `session=${sid}`; }, id);
 
@@ -162,7 +162,7 @@ test.describe('AI chat: move conversations between the side panel and the AI Ass
     await chat.composer().fill('draft one');
     await chat.openInAssistant().click();
 
-    await page.waitForURL(`**/wisp/chat#session=${seed.A}`);
+    await page.waitForURL(`**/ai/chat#session=${seed.A}`);
     await expect(ws.root()).toBeVisible();
     await expect(ws.tabs()).toHaveCount(1);
     await expect(ws.tabTitle(0)).toContainText(title('A'));
@@ -230,7 +230,7 @@ test.describe('AI chat: move conversations between the side panel and the AI Ass
     await expect(chat.conversationRow(seed.T)).toBeVisible();
     await expect(chat.conversationRow(seed.S)).toHaveCount(0);
     await expect(chat.conversationRow(seed.M)).toHaveCount(0);
-    await expect(chat.openElsewhereLabel(seed.B)).toContainText('Open in Wisp chats');
+    await expect(chat.openElsewhereLabel(seed.B)).toContainText('Open in Breeze AI');
     await expect(chat.openElsewhereLabel(seed.A)).toHaveCount(0);
 
     await chat.conversationRow(seed.B).click();
@@ -377,7 +377,7 @@ test.describe('AI chat: move conversations between the side panel and the AI Ass
     expect(deletes(reqs)).toEqual([]);
   });
 
-  test('6. leave /wisp/chat and return: each session tab re-hydrates and re-attaches once (idle wiring of plan Step 3 (c); the mid-turn half is on the real-key checklist)', async ({ authedPage: page }) => {
+  test('6. leave /ai/chat and return: each session tab re-hydrates and re-attaches once (idle wiring of plan Step 3 (c); the mid-turn half is on the real-key checklist)', async ({ authedPage: page }) => {
     await startEmpty(page);
     const reqs = recordSessionRequests(page);
     const ws = new AiWorkspacePage(page);

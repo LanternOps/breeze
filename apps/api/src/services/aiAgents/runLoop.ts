@@ -2157,9 +2157,10 @@ export function resolveRunToolExposure(
   // `profileAllowlist` itself is untouched — still `null` for `full` — so
   // authority for a full run is exactly what it was before this task.
   //
-  // #7427 — the floor walks the `aiTools` registry, which still carries tools
-  // the SDK server has no `tool()` declaration for (the
-  // KNOWN_MISSING_TOOL_TIERS set: manage_tags, manage_tickets, …). Handed to
+  // #7427 — the floor walks the `aiTools` registry, which can carry tools the
+  // SDK server has no `tool()` declaration for (historically the #3300
+  // KNOWN_MISSING_TOOL_TIERS set, emptied in full-control W04 #6758; a
+  // flag-gated or human-only registry tool still qualifies). Handed to
   // `createBreezeMcpServer` as `onlyTools`, those names throw outside
   // production and log an error on every full run in production. Intersect
   // with the names the server actually declares under the current env, ONCE,

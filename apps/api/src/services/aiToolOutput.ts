@@ -997,6 +997,49 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),
+  // Full-control W06 (#6776). The inbound-email review queue holds mail the router could not
+  // place: sender, recipient, subject and parse error are all attacker-authored. Attachment
+  // filenames come from the uploader (or a run artifact name) and `text` is decoded file
+  // content. Time suggestions echo a ticket subject (requester-authored) and a device hostname
+  // (self-reported at enrollment).
+  manage_ticket_inbox: new Set(['subject', 'fromAddress', 'toAddress', 'error']),
+  manage_ticket_attachments: new Set(['originalFilename', 'text']),
+  manage_time_suggestions: new Set(['subject', 'hostname']),
+  // Full-control W07 (#6777). Alert title/message come from a rule match against endpoint-reported
+  // data; the RCA evidence timeline carries event-log text (`title`, `summary`, `message`) and
+  // metadata authored on the endpoint; a group's `rootCause`/`alerts` echo alert titles.
+  get_alert_correlations: new Set(['title', 'message', 'summary', 'label']),
+  // Reliability offender labels are service, hardware-source and process names reported by the
+  // device (`get_fleet_health` also returns them under `offenders`).
+  get_fleet_health: new Set(['label', 'detail']),
+  // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
+  manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
+  // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
+  // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
+  // are fenced here as data, never instructions.
+  get_topology_graph: new Set(['label', 'role', 'vendor', 'model', 'os', 'type']),
+  manage_topology_manual: new Set(['label', 'notes']),
+  manage_topology_monitoring: new Set(['label', 'hostname', 'host', 'provider', 'independenceLabel']),
+  manage_topology_templates: new Set(['name', 'description', 'label', 'hostname', 'host']),
+  // Full-control W09 (#6779). Template / OID names and descriptions, known-guest labels and notes are
+  // operator-authored; UniFi console / site / device / client names, SSIDs, hostnames and error strings come from
+  // the vendor or the network. All are fenced as data, never instructions.
+  manage_snmp_templates: new Set(['name', 'description', 'vendor', 'deviceClass', 'label', 'unit', 'templateName']),
+  get_snmp_metrics: new Set(['name', 'deviceName']),
+  manage_known_guests: new Set(['label', 'notes']),
+  get_unifi_status: new Set(['accountLabel', 'name', 'hostname', 'ssid', 'unifiHostName', 'unifiSiteName', 'lastPollError', 'lastSyncError', 'error', 'model']),
+  probe_network_asset: new Set(['error']),
+  // Full-control W10 (#6780). Operator-task objectives / hand-offs / step and event text are written by humans and other agent
+  // runs; plan renderings and labels name provider accounts; the Fleet Design markdown is model-generated from device-reported
+  // data; origin labels are session titles or agent names. All are fenced as data, never instructions (quorum QW4).
+  get_device_ai_activity: new Set(['label']),
+  list_operator_tasks: new Set(['objective', 'label', 'name', 'outcomeDetail', 'handoffSummary']),
+  get_operator_task: new Set([
+    'objective', 'label', 'name', 'outcomeDetail', 'handoffSummary', 'targetLabel', 'principalLabel',
+    'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
+  ]),
+  get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

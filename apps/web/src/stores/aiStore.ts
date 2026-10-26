@@ -9,6 +9,7 @@ import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type Att
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
 import {
   attachAnchorMissing,
@@ -268,6 +269,17 @@ const SWITCHED_TURN_STATE = {
  * or an API that predates W04) drops the Wisp header rather than showing a
  * ceiling the server is not applying.
  */
+/**
+ * W05 (#10136, spec §7): only an active grant gives the panel the Wisp voice.
+ * A paused grant (A29 — the user's "not now") or an ended one (revoked,
+ * expired) leaves it Breeze AI. The server's status is the authority, expiry
+ * included (`GET /wisp/thread` answers only grants live by its own clock), so
+ * no client clock is consulted here.
+ */
+export function isActiveGrant(w: WispState): boolean {
+  return w?.status === 'active';
+}
+
 function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> | undefined): WispState {
   if (!wisp) return null;
   return session?.wispGrantId === wisp.grantId ? wisp : null;
@@ -286,11 +298,16 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   const orgId = typeof session?.orgId === 'string' ? session.orgId : null;
   try {
     // Lazy: the step-up/WebAuthn graph stays out of every page's chat bundle.
-    const { fetchWispThread } = await import('@/lib/wispGrant');
+    const { fetchWispThread, isNoActiveGrant } = await import('@/lib/wispGrant');
     // An org grant is keyed by the session's org; a partner-wide one by none.
     for (const scope of orgId ? [orgId, null] : [null]) {
-      const state = await fetchWispThread(scope).catch(() => null);
-      if (state?.grantId === grantId) {
+      const state = await fetchWispThread(scope).catch((err: unknown) => {
+        // "No grant for this scope" is the expected miss; anything else leaves
+        // the header off over a session the server still runs under a grant.
+        if (!isNoActiveGrant(err)) console.warn('[AiStore] Could not read the Wisp thread to restore the session header:', { sessionId, grantId, scope, err });
+        return null;
+      });
+      if (state?.grantId === grantId && isActiveGrant(state)) {
         if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
         return;
       }
@@ -300,8 +317,6 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   }
 }
 
-/** Session-create refusals that mean the grant cannot carry a session at all. */
-const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
@@ -759,7 +774,7 @@ export const useAiStore = create<AiState>()(
     // focus_mismatch) rather than re-anchoring silently.
     const wisp = get().wisp;
     const wispGrantId = opts?.wispGrantId ?? wisp?.grantId;
-    const wispOrgId = opts?.wispGrantId ? null : wisp ? (wisp.focusOrgId ?? wisp.scopeOrgId) : null;
+    const wispOrgId = opts?.wispGrantId ? null : wisp ? wispSessionOrgId(wisp) : null;
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
@@ -1443,7 +1458,7 @@ export const useAiStore = create<AiState>()(
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
     set({ wisp: w, ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined });
+    await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
   },
 
   setWispFocus: async (orgId, orgName) => {

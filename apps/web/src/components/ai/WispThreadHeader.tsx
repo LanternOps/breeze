@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { RefreshCw, Power, SlidersHorizontal } from 'lucide-react';
+import { RefreshCw, Power, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { showToast } from '@/components/shared/Toast';
@@ -11,6 +11,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from './WispGrantStepUpModal';
 import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
 import WispSpendMeter from '../wisp/WispSpendMeter';
+import { spendMeterState } from '../wisp/wispSpend';
 import type { CurrentActivity } from '@breeze/shared';
 
 export type WispThreadHeaderProps = {
@@ -29,6 +30,11 @@ export type WispThreadHeaderProps = {
   showFocus?: boolean;
   /** The running assessment, for the live "Checking …" line (w00 A31); the panel passes none. */
   currentActivity?: CurrentActivity;
+  /**
+   * Scope label and status badge (default on). The Wisp rail turns them off:
+   * its identity card already states both, so the header keeps only the controls.
+   */
+  showIdentity?: boolean;
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
@@ -48,6 +54,9 @@ function readLimits(raw: unknown): { budgetMax: number | null; tickMin: number }
   const minTick = typeof l.minFloorTickMinutes === 'number' ? l.minFloorTickMinutes : TICK_MIN;
   return { budgetMax, tickMin: Math.min(TICK_MAX, Math.max(TICK_MIN, minTick)) };
 }
+
+/** Daily budget is stored in cents; the input shows dollars with two decimals. */
+const centsToDollars = (cents: number) => (cents / 100).toFixed(2);
 
 const clamp = (n: number, lo: number, hi: number | null) => Math.min(hi ?? Number.POSITIVE_INFINITY, Math.max(lo, Math.round(n)));
 
@@ -69,12 +78,17 @@ export default function WispThreadHeader({
   onRevoked,
   showFocus = true,
   currentActivity = null,
+  showIdentity = true,
 }: WispThreadHeaderProps) {
   const { t } = useTranslation('ai');
   const exitWispMode = useAiStore((s) => s.exitWispMode);
   const setWispFocus = useAiStore((s) => s.setWispFocus);
   const storeUpdateWisp = useAiStore((s) => s.updateWisp);
   const updateWisp = onWispChange ?? storeUpdateWisp;
+  const chatSessionId = useAiStore((s) => s.sessionId);
+  const chatGrantId = useAiStore((s) => s.wisp?.grantId ?? null);
+  const closeSession = useAiStore((s) => s.closeSession);
+  const enterWispMode = useAiStore((s) => s.enterWispMode);
   const organizations = useOrgStore((s) => s.organizations);
   const { limits } = useEntitlement('wisp');
   const { budgetMax, tickMin } = readLimits(limits);
@@ -83,10 +97,31 @@ export default function WispThreadHeader({
   const [revoking, setRevoking] = useState(false);
   const [refreshOpen, setRefreshOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [budget, setBudget] = useState(String(wisp.budgetCentsPerDay));
+  const [budget, setBudget] = useState(centsToDollars(wisp.budgetCentsPerDay));
   const [tick, setTick] = useState(String(wisp.floorTickMinutes));
   const [saving, setSaving] = useState(false);
   const [focusPending, setFocusPending] = useState(false);
+  /**
+   * #10142: set by a refresh while a chat was open under this grant. A
+   * session's grant revision is immutable (the server refuses to move it), so
+   * that conversation keeps the previous terms; the note offers a fresh one.
+   */
+  const [refreshedUnder, setRefreshedUnder] = useState<{ sessionId: string; fresh: NonNullable<WispState> } | null>(null);
+  const showRefreshHint = refreshedUnder !== null && refreshedUnder.sessionId === chatSessionId;
+
+  const startNewConversation = async () => {
+    const fresh = refreshedUnder?.fresh ?? wisp;
+    setRefreshedUnder(null);
+    try {
+      // As the side panel's "New conversation": the old session's summary
+      // lands on the thread, then the new one runs on the refreshed grant.
+      if (chatSessionId) await closeSession();
+      await enterWispMode(fresh);
+    } catch (err) {
+      console.error('[wisp] starting a new conversation after a refresh failed', err);
+      showToast({ type: 'error', message: t('wisp.home.threadOpenFailed') });
+    }
+  };
 
   // One focus change at a time: two racing PATCHes could leave the header
   // showing a focus the server no longer holds.
@@ -130,7 +165,7 @@ export default function WispThreadHeader({
   };
 
   const openSettings = (force = false) => {
-    setBudget(String(wisp.budgetCentsPerDay));
+    setBudget(centsToDollars(wisp.budgetCentsPerDay));
     setTick(String(wisp.floorTickMinutes));
     setSettingsOpen((v) => force || !v);
   };
@@ -138,7 +173,9 @@ export default function WispThreadHeader({
   const saveSettings = async () => {
     // An emptied or non-numeric field means "leave as is" — never a budget of 0.
     const typed = (raw: string, current: number) => (raw.trim() === '' || !Number.isFinite(Number(raw)) ? current : Number(raw));
-    const nextBudget = clamp(typed(budget, wisp.budgetCentsPerDay), 0, budgetMax);
+    // The field shows dollars; the API stays in cents.
+    const typedBudgetCents = budget.trim() === '' || !Number.isFinite(Number(budget)) ? wisp.budgetCentsPerDay : Math.round(Number(budget) * 100);
+    const nextBudget = clamp(typedBudgetCents, 0, budgetMax);
     const nextTick = clamp(typed(tick, wisp.floorTickMinutes), tickMin, TICK_MAX);
     const patch: { budgetCentsPerDay?: number; floorTickMinutes?: number } = {};
     if (nextBudget !== wisp.budgetCentsPerDay) patch.budgetCentsPerDay = nextBudget;
@@ -167,16 +204,23 @@ export default function WispThreadHeader({
     }
   };
 
+  // The grant stays active when the day's budget is spent (w00: the digest keeps running), so say so here.
+  const budgetReached =
+    wisp.status === 'active' && typeof wisp.spentTodayCents === 'number' && spendMeterState(wisp.spentTodayCents, wisp.budgetCentsPerDay) === 'exhausted';
   const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
   const iconButton = 'rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground';
 
   return (
     <div className="space-y-2 border-b px-4 py-2 text-xs" data-testid="wisp-thread-header">
       <div className="flex items-center gap-2">
-        <span className="truncate font-medium text-foreground" data-testid="wisp-scope">{scopeLabel}</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[wisp.status]}`} data-testid="wisp-grant-status">
-          {t(/* i18n-dynamic */ `wisp.header.status.${wisp.status}`)}
-        </span>
+        {showIdentity && (
+          <>
+            <span className="truncate font-medium text-foreground" data-testid="wisp-scope">{scopeLabel}</span>
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[budgetReached ? 'paused' : wisp.status]}`} data-testid="wisp-grant-status">
+              {t(/* i18n-dynamic */ `wisp.header.status.${budgetReached ? 'budgetReached' : wisp.status}`)}
+            </span>
+          </>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -206,6 +250,30 @@ export default function WispThreadHeader({
         <p className="text-amber-600 dark:text-amber-400" data-testid="wisp-widening">{t('wisp.header.widening')}</p>
       )}
 
+      {showRefreshHint && (
+        <div className="flex items-start gap-2 rounded border border-primary/30 bg-primary/5 px-2 py-1.5" data-testid="wisp-refresh-hint" role="status">
+          <p className="flex-1 text-foreground">{t('wisp.header.refreshKeepsTerms')}</p>
+          <button
+            type="button"
+            data-testid="wisp-refresh-new-conversation"
+            onClick={() => void startNewConversation()}
+            className="shrink-0 font-medium text-primary hover:underline"
+          >
+            {t('wisp.header.startNewConversation')}
+          </button>
+          <button
+            type="button"
+            data-testid="wisp-refresh-hint-dismiss"
+            onClick={() => setRefreshedUnder(null)}
+            title={t('wisp.header.dismissNote')}
+            aria-label={t('wisp.header.dismissNote')}
+            className={iconButton}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {currentActivity && (
         <p className="flex items-center gap-1.5 text-muted-foreground" data-testid="wisp-live-line" aria-live="polite">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" aria-hidden="true" />
@@ -220,7 +288,7 @@ export default function WispThreadHeader({
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
           resetsAt={wisp.budgetResetsAt}
-          onRaise={() => openSettings(true)}
+          onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
       )}
 
@@ -252,7 +320,8 @@ export default function WispThreadHeader({
               type="number"
               data-testid="wisp-settings-budget"
               min={0}
-              max={budgetMax ?? undefined}
+              step="0.01"
+              max={budgetMax === null ? undefined : centsToDollars(budgetMax)}
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
               className="w-24 rounded border bg-background px-2 py-1"
@@ -304,6 +373,7 @@ export default function WispThreadHeader({
         onGranted={(fresh) => {
           setRefreshOpen(false);
           updateWisp(fresh);
+          setRefreshedUnder(chatSessionId && chatGrantId === wisp.grantId ? { sessionId: chatSessionId, fresh } : null);
         }}
       />
     </div>

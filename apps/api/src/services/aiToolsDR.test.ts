@@ -13,6 +13,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db } from '../db';
+import { drPlans } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
@@ -87,6 +88,7 @@ function createUpdateChain(rows: any[] = []) {
 function createDeleteChain(rows: any[] = []) {
   const chain: any = {};
   chain.where = vi.fn(() => chain);
+  chain.returning = vi.fn(() => Promise.resolve(rows));
   chain.then = (resolve: (value: any[]) => unknown, reject?: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
   return chain;
@@ -310,6 +312,8 @@ describe('aiToolsDR handlers', () => {
         [{ id: DEVICE_ID, siteId: null }], // group devices are all in the plan's org
       ]);
       mockInsertSequence([[{ id: GROUP_ID }]]);
+      // W03-D10: the plan revision bump must match the plan row.
+      vi.mocked(db.update).mockImplementation(() => createUpdateChain([{ id: PLAN_ID }]) as any);
       const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({
         action: 'add_group', planId: PLAN_ID, name: 'Tier 1', devices: [DEVICE_ID],
         restoreConfig: { commandType: 'BARE_METAL_REBUILD', rebuildHostDeviceId: HOST_ID },
@@ -494,6 +498,76 @@ describe('DR plan tools match the route', () => {
 
     expect(result.error).toBe('dependsOnGroupId must reference another group in the same DR plan');
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  // W03-D10 (#6757, quorum QW3): an approved or running execution re-reads the
+  // plan's groups, and the execute_dr_plan effect digest pins only the plan
+  // row. So a plan write must not land while an execution is pending/running,
+  // and every group write bumps the plan row (fail-safe: BEFORE the group write).
+  describe('a plan cannot change under an approved or running execution (W03-D10)', () => {
+    const group = { id: GROUP_ID, orgId: ORG_ID, devices: [DEVICE_ID] };
+    const running = [{ id: EXECUTION_ID }];
+    it.each([
+      ['update_plan', { action: 'update_plan', planId: PLAN_ID, name: 'x' }, [[planRow], running]],
+      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], running]],
+      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], running]],
+      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], running]],
+    ] as const)('%s is refused while an execution is pending or running', async (_name, input, selects) => {
+      mockSelectSequence(selects as unknown as any[][]);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
+      expect(result.error).toBe('dr_plan_execution_in_progress');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    // PR review (#10117): a zero-row write under forced RLS is a silent no-op,
+    // so neither the revision bump nor the group/plan write may report success
+    // when it matched nothing — a skipped bump would leave the digest unmoved.
+    it.each([
+      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], []]],
+      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], []]],
+      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], []]],
+    ] as const)('%s refuses, writing no group, when the plan revision bump matches no row', async (_name, input, selects) => {
+      mockSelectSequence(selects as unknown as any[][]);
+      vi.mocked(db.update).mockImplementation(((table: unknown) => createUpdateChain(table === drPlans ? [] : [{ id: GROUP_ID }])) as any);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
+      expect(result.error).toBe('Plan not found or access denied');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, 'Group not found or access denied'],
+      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, 'Group not found or access denied'],
+      ['update_plan', { action: 'update_plan', planId: PLAN_ID, name: 'x' }, 'Plan not found or access denied'],
+    ] as const)('%s reports an error when its write matches no row', async (name, input, error) => {
+      mockSelectSequence(name === 'update_plan' ? [[planRow], []] : [[group], []]);
+      vi.mocked(db.update).mockImplementation(((table: unknown) => createUpdateChain(table === drPlans && name !== 'update_plan' ? [{ id: PLAN_ID }] : [])) as any);
+      vi.mocked(db.delete).mockImplementation((() => createDeleteChain([])) as any);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
+      expect(result.error).toBe(error);
+    });
+
+    it.each([
+      ['add_group', { action: 'add_group', planId: PLAN_ID, name: 'g' }, [[planRow], []]],
+      ['update_group', { action: 'update_group', planId: PLAN_ID, groupId: GROUP_ID, name: 'x' }, [[group], []]],
+      ['delete_group', { action: 'delete_group', planId: PLAN_ID, groupId: GROUP_ID }, [[group], []]],
+    ] as const)('%s bumps dr_plans.updated_at before writing the group', async (_name, input, selects) => {
+      mockSelectSequence(selects as unknown as any[][]);
+      mockInsertSequence([[{ id: GROUP_ID }]]);
+      const order: string[] = [];
+      vi.mocked(db.update).mockImplementation(((table: unknown) => {
+        order.push(table === drPlans ? 'plan' : 'other-update');
+        return createUpdateChain([{ id: GROUP_ID }]);
+      }) as any);
+      vi.mocked(db.insert).mockImplementation((() => { order.push('group-write'); return createInsertChain([{ id: GROUP_ID }]); }) as any);
+      vi.mocked(db.delete).mockImplementation((() => { order.push('group-write'); return createDeleteChain([{ id: GROUP_ID }]); }) as any);
+      const result = JSON.parse(await toolMap.get('manage_dr_plan')!.handler({ ...input }, makeAuth()));
+      expect(result.error).toBeUndefined();
+      expect(order[0]).toBe('plan');
+      expect(order.length).toBeGreaterThan(1);
+    });
   });
 
   it('update_group refuses a group depending on itself and a device outside the plan org', async () => {

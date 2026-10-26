@@ -11,7 +11,9 @@
  *  2. INSIDE the admission transaction: `pinContact` re-reads an existing
  *     contact `FOR KEY SHARE` (so the target insert cannot hit a 23503 that
  *     would abort the transaction), `createContactForTask` creates a new one
- *     under the inbound-email per-address advisory lock, `lockContactForRecipe`
+ *     under the inbound-email per-address advisory lock (its refusing sibling
+ *     `createNewContactForTask` serves `identity_onboarding`, whose person
+ *     must not exist yet), `lockContactForRecipe`
  *     serializes admissions per (recipe, contact), and `findLiveTaskForContact`
  *     answers "one live task per (contact, recipe)" as a refusal — never as a
  *     caught constraint error.
@@ -29,6 +31,7 @@
 import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { contactExternalLinks, contacts } from '../../db/schema/contacts';
+import { sites } from '../../db/schema/orgs';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { m365Connections } from '../../db/schema/m365';
@@ -288,6 +291,82 @@ export async function createContactForTask(
     { userId: requesterUserId, destinationSource: 'ai_tool' },
   );
   return { ok: true, contactId: created.id, created: true };
+}
+
+/** The person `createNewContactForTask` creates (identity_onboarding, R2a G4). */
+export interface NewTaskContactInput {
+  displayName: string;
+  email: string;
+  title: string | null;
+  siteId: string | null;
+}
+
+export type CreateNewContactResult =
+  | { ok: true; contactId: string }
+  /** A contact already uses the address — one (named), or several (a shared mailbox, `existingContactId: null`). */
+  | { ok: false; reason: 'contact_already_exists'; existingContactId: string | null; detail: string }
+  /** The site is not this org's (non-enumerating), or the address cannot identify a contact. */
+  | { ok: false; reason: 'site_not_in_org' | 'unusable_address'; detail: string };
+
+/**
+ * Phase 2, `identity_onboarding` only: create the contact for a person who
+ * does not exist yet, REFUSING when one already does. The sibling of
+ * `createContactForTask`, which REUSES a match (an offboarding names someone
+ * who exists); here a match means this onboarding was already started or the
+ * address belongs to somebody else, and either needs a human.
+ *
+ * Same lock as `createContactForTask` (the inbound-email per-address advisory
+ * lock, so an inbound email and an admission cannot both create the address),
+ * same `matchContactByEmail`, same bare `db` joining the admission transaction.
+ * Only `no-match` creates.
+ *
+ * The site is checked FIRST, as a pre-check against the org-predicated row and
+ * pinned `FOR KEY SHARE`: `contacts (site_id, org_id)` is a composite FK, and
+ * a 23503 raised inside the admission transaction would abort it (a 500), so a
+ * cross-tenant or deleted site must be refused before anything is written.
+ */
+export async function createNewContactForTask(
+  orgId: string,
+  person: NewTaskContactInput,
+  requesterUserId: string | null,
+): Promise<CreateNewContactResult> {
+  const normalized = normalizeContactEmail(person.email);
+  if (!normalized) return { ok: false, reason: 'unusable_address', detail: 'the address cannot identify a contact' };
+  if (person.siteId !== null) {
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.orgId, orgId), eq(sites.id, person.siteId)))
+      .for('key share')
+      .limit(1);
+    // Non-enumerating: the same answer whether the site is another org's or nobody's.
+    if (!site) return { ok: false, reason: 'site_not_in_org', detail: 'site not found in this organization' };
+  }
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalized}`}))`,
+  );
+  const found = await matchContactByEmail(db, orgId, normalized);
+  if (found.kind === 'contact') {
+    return {
+      ok: false, reason: 'contact_already_exists', existingContactId: found.contactId,
+      detail: `a contact already uses ${normalized}: ${found.contactId}; this onboarding may already be started, or the address belongs to someone else`,
+    };
+  }
+  if (found.kind === 'none') {
+    if (found.reason === 'shared-mailbox') {
+      return {
+        ok: false, reason: 'contact_already_exists', existingContactId: null,
+        detail: `${normalized} is a shared mailbox (more than one contact uses it); choose a personal address for the new person`,
+      };
+    }
+    return { ok: false, reason: 'unusable_address', detail: `the address ${normalized} cannot be used for a new contact (${found.reason})` };
+  }
+  const created = await createContact(
+    db,
+    { orgId, email: normalized, name: person.displayName, title: person.title, siteId: person.siteId, roles: [] },
+    { userId: requesterUserId, destinationSource: 'ai_tool' },
+  );
+  return { ok: true, contactId: created.id };
 }
 
 /**

@@ -47,10 +47,35 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // Tool Catalog W03 (#5218, Decision 6): an operator agent authoring flows
   // needs the managed_by_agent_id story first, not a side door.
   'draft_flow',
+  // W04 (#5219): starting or cancelling a flow run is a human decision (run_flow
+  // is Tier 3 chat-only; a flow must not be started by an agent before W05).
+  'run_flow',
+  'cancel_flow_run',
   // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.
   'send_endpoint_message',
+  // Full-control W07 (#6777, quorum QW3): acknowledging / resolving a correlation GROUP spans devices,
+  // and a supervised release rebuilds the approver's auth, which drops the originating run's exact-device
+  // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
+  // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
+  'manage_alert_correlations',
+  // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
+  // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
+  // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the
+  // topology template and diagnostic services also refuse an ai_agent principal by name. An agent keeps the
+  // pinned-session investigation reads (topology/aiToolGate.ts). Follow-up: a principal-aware resolver.
+  'get_topology_graph',
+  'run_topology_diagnostic',
+  'manage_topology_manual',
+  'manage_topology_monitoring',
+  'manage_topology_templates',
+  'apply_topology_template',
+  // Full-control W09 (#6779): partner-wide state. The routes are gated on canManagePartnerWidePolicies, which reads
+  // partnerOrgAccess; an agent / helper / MCP-key context never carries one, so these would be offered and refused every time.
+  'manage_known_guests',
+  'get_unifi_status',
+  'trigger_unifi_sync',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one
@@ -137,6 +162,10 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
   // WQ2: errorLog can carry Graph error text naming user principal names and
   // item names sourced from the tenant's own directory/mail data.
   ['query_c2c_jobs', 'Returns job errorLog entries that can carry user principal names and item names from Graph error text.'],
+  // W10 (#6780, quorum QW5): objective, handoffSummary, outcomeDetail and step / event text are free text written by humans and by
+  // other agent runs, with no device axis to bound an autonomous run.
+  ['list_operator_tasks', 'Operator task objectives, hand-off summaries and outcome text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
+  ['get_operator_task', 'Task steps, events, plan renderings and hand-off text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
 ]);
 
 /**
@@ -150,6 +179,11 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
  * either. Entries are added only with Todd's sign-off.
  */
 export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<string, string>([
+  // Full-control W04 (#6758, W04-D8 — the W02 Task 16 follow-up): the group
+  // analogue of manage_tags. Membership is a live read at run admission and
+  // before tool use (runResourceScope.ts), so these are the same self-scope path.
+  ['manage_groups:add_devices', 'Group membership feeds agent run scope (triggers.deviceGroupIds, a live read in runResourceScope.ts): an allowlisted tier-2 add would let an agent put devices inside its own or another agent\'s future reach unattended.'],
+  ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
   ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
   ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
 ]);

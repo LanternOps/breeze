@@ -44,12 +44,16 @@ describe('action_intents origin principal', () => {
   });
 
   it('enumerates exactly the runtime kinds plus unknown — no extras', () => {
+    // 'flow' (tool catalog W04, #5219): the stored origin of a parked Tier-3
+    // flow step. PrincipalKind gains { kind: 'flow' } in Task A4; the SQL
+    // CHECK admits it from 2027-01-06-130000-flow-runs.sql.
     expect([...actionIntentOriginPrincipalKindEnum].sort()).toEqual(
       [
         'agent',
         'ai_agent',
         'api_key',
         'client_user',
+        'flow',
         'helper',
         'oauth_grant',
         'system',

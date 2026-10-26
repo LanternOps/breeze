@@ -27,6 +27,7 @@ const h = vi.hoisted(() => {
       try { return await fn(); } finally { ctx.open = false; }
     }),
     deliverInApp: vi.fn(),
+    recordThreadPost: vi.fn(),
     dispatchPushToTokens: vi.fn(),
     recipientState: vi.fn(),
     recordNudge: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: h.withSystemDbAccessContext,
 }));
 vi.mock('./deliver', () => ({ deliverInApp: h.deliverInApp }));
+vi.mock('./threadPosts', () => ({ recordThreadPost: h.recordThreadPost }));
 vi.mock('../expoPush', async (orig) => ({
   ...(await orig<typeof import('../expoPush')>()),
   dispatchPushToTokens: h.dispatchPushToTokens,
@@ -302,12 +304,98 @@ describe('notifyUser', () => {
     expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
-  it('both channels off → prefs, no row, no push; the nudge still counts', async () => {
+  it('both channels off → prefs, no notification, no push; the post is still written and the nudge still counts', async () => {
     queue([threadRow], [concernRow], deviceRows);
     h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: false } }));
     await expect(notifyUser(payload)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'prefs' });
     expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.recordThreadPost).toHaveBeenCalledTimes(1);
     expect(h.recordNudge).toHaveBeenCalledTimes(1);
+  });
+
+  describe('thread posts (W02a, quorum B)', () => {
+    const sections = [{ heading: 'Needs you', lines: ['Approve the patch'] }];
+    const brief: NudgePayload = {
+      ...payload, kind: 'brief', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1',
+      briefLocalDate: '2026-10-24', briefSections: sections,
+    };
+
+    it('Review Focus 1: a brief with both channels off writes a post (inside a system context) and no notification', async () => {
+      queue([threadRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: false } }));
+      let ctxOpen: boolean | null = null;
+      h.recordThreadPost.mockImplementation(async () => { ctxOpen = h.ctx.open; return { created: true, id: 'post1' }; });
+      await expect(notifyUser(brief)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'prefs' });
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+      expect(h.recordThreadPost).toHaveBeenCalledWith({
+        threadId: 't1', partnerId: 'p1', grantId: 'g1', orgId: null, kind: 'brief',
+        title: 'Ticket 4021 stale', body: '3 days, printer driver', link: '/ai/wisp/thread/t1',
+        sections, concernId: null, notificationId: null, dedupeKey: 'wisp.brief:t1:2026-10-24',
+      });
+      expect(ctxOpen).toBe(true);
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+
+    it('a nudge with in-app on hands the post to deliverInApp (one callback with the notification), never writing it separately', async () => {
+      queue([threadRow], [concernRow], deviceRows);
+      await notifyUser(payload);
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        dedupeKey: 'wisp.nudge:c1:g1:first',
+        post: {
+          threadId: 't1', partnerId: 'p1', grantId: 'g1', orgId: 'o1', kind: 'nudge',
+          title: 'Ticket 4021 stale', body: '3 days, printer driver', link: '/ai/wisp/thread/t1#concern=c1',
+          sections: null, concernId: 'c1',
+        },
+      }));
+      expect(h.recordThreadPost).not.toHaveBeenCalled();
+    });
+
+    it('a digest post is kind digest with no org and no sections', async () => {
+      queue([threadRow], deviceRows);
+      await notifyUser({ ...payload, kind: 'digest', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1' });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        post: expect.objectContaining({ kind: 'digest', orgId: null, sections: null, concernId: null, link: '/ai/wisp/thread/t1' }),
+      }));
+    });
+
+    it('a brief with in-app on carries its sections on the post too', async () => {
+      queue([threadRow], deviceRows);
+      await notifyUser(brief);
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        brief: sections,
+        post: expect.objectContaining({ kind: 'brief', sections, orgId: null }),
+      }));
+    });
+
+    it('Review Focus 2: a retry inside the same dedupe key (in-app on) writes nothing new and pushes nothing', async () => {
+      queue([threadRow], [concernRow], deviceRows);
+      h.deliverInApp.mockResolvedValue({ created: false, id: null });
+      await expect(notifyUser(payload)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
+      expect(h.deliverInApp).toHaveBeenCalledTimes(1);
+      expect(h.recordThreadPost).not.toHaveBeenCalled();
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+
+    it('in-app off, push on: the post is written inside a system context BEFORE the push, which runs after it closed', async () => {
+      queue([threadRow], [concernRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      const order: string[] = [];
+      h.recordThreadPost.mockImplementation(async () => { order.push(`post:ctx=${h.ctx.open}`); return { created: true, id: 'post1' }; });
+      h.recordNudge.mockImplementation(async () => { order.push('record'); return { nudgeCount: 1, nextEligibleNudgeAt: new Date() }; });
+      h.dispatchPushToTokens.mockImplementation(async () => { order.push(`push:ctx=${h.ctx.open}`); return { tokensFound: 2, dispatched: 2, errors: 0 }; });
+      await expect(notifyUser(payload)).resolves.toEqual({ inApp: false, pushed: 2, suppressed: null });
+      expect(order).toEqual(['post:ctx=true', 'record', 'push:ctx=false']);
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({ kind: 'nudge', notificationId: null, dedupeKey: 'wisp.nudge:c1:g1:first' }));
+    });
+
+    it('a failing post write with in-app off throws before anything is counted or pushed (the caller retries)', async () => {
+      queue([threadRow], [concernRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      h.recordThreadPost.mockRejectedValue(new Error('db blip'));
+      await expect(notifyUser(payload)).rejects.toThrow('db blip');
+      expect(h.recordNudge).not.toHaveBeenCalled();
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
   });
 
   it('digest payload (concernId null) skips recipientState, counts nothing and uses the digest key', async () => {

@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "grupo eliminado",
         "siteDeleted": "sitio eliminado",
-        "siteDeletedNamed": "sitio eliminado: {{name}}"
+        "siteDeletedNamed": "sitio eliminado: {{name}}",
+        "manualQuantityMissing": "falta la cantidad"
       },
       "lineScope": {
         "site": "Sitio: {{name}}"
@@ -718,7 +719,15 @@
       },
       "fileType": {
         "image": "copia escaneada"
-      }
+      },
+      "sendForSignature": "Enviar para firma",
+      "filter": {
+        "pending": "Pendiente de firma",
+        "signed": "Firmados",
+        "closed": "Rechazados / anulados / vencidos"
+      },
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "No se pudo generar la copia certificada de este acuerdo; en su lugar se descargó el archivo original."
     },
     "templateEditor": {
       "usage": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados",
@@ -764,6 +773,119 @@
       "submit": "Registrar acuerdo firmado",
       "success": "Acuerdo firmado registrado.",
       "error": "No se pudo registrar el acuerdo firmado."
+    },
+    "requests": {
+      "columns": {
+        "template": "Plantilla",
+        "organization": "Organización",
+        "recipients": "Destinatarios",
+        "sent": "Enviado",
+        "expires": "Vence",
+        "status": "Estado"
+      },
+      "status": {
+        "draft": "Borrador",
+        "sent": "Pendiente de firma",
+        "viewed": "Visto",
+        "signed": "Firmado",
+        "declined": "Rechazado",
+        "voided": "Anulado",
+        "expired": "Vencido"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nada pendiente de firma",
+          "description": "Los acuerdos que envíes para firma aparecen aquí hasta que el cliente firme."
+        },
+        "closed": {
+          "title": "No hay solicitudes rechazadas, anuladas ni vencidas",
+          "description": "Las solicitudes rechazadas, anuladas o vencidas aparecen aquí."
+        }
+      },
+      "loadError": "No se pudieron cargar las solicitudes de acuerdo.",
+      "recipientsMore": "+{{count}} más",
+      "notSent": "No enviado",
+      "declinedReason": "Rechazado: {{reason}}",
+      "voidedReason": "Anulado: {{reason}}",
+      "copyLink": {
+        "label": "Copiar enlace",
+        "success": "Enlace de firma copiado",
+        "error": "No se pudo copiar el enlace de firma.",
+        "clipboardError": "No se pudo copiar al portapapeles. Enlace de firma: {{link}}"
+      },
+      "void": {
+        "label": "Anular",
+        "title": "¿Anular esta solicitud de acuerdo?",
+        "description": "El enlace de firma deja de funcionar y los destinatarios ya no podrán firmar este acuerdo.",
+        "reasonLabel": "Motivo (opcional)",
+        "confirm": "Anular solicitud",
+        "confirming": "Anulando…",
+        "success": "Solicitud de acuerdo anulada.",
+        "error": "No se pudo anular la solicitud de acuerdo."
+      },
+      "deleteDraft": {
+        "label": "Eliminar borrador",
+        "success": "Borrador eliminado.",
+        "error": "No se pudo eliminar el borrador."
+      },
+      "remind": {
+        "label": "Recordar",
+        "success_one": "Recordatorio enviado a {{count}} destinatario",
+        "success_other": "Recordatorio enviado a {{count}} destinatarios",
+        "error": "No se pudo enviar el recordatorio.",
+        "notEmailed": {
+          "no_email_service": "Recordatorio registrado, pero el correo no está configurado. Copia el enlace de firma y compártelo.",
+          "no_recipients": "Recordatorio registrado, pero no había destinatarios a quienes enviar el correo. Copia el enlace de firma y compártelo.",
+          "send_failed": "Recordatorio registrado, pero el correo no se pudo entregar. Copia el enlace de firma y compártelo."
+        }
+      },
+      "remindedCount_one": "Recordado {{count}} vez",
+      "remindedCount_other": "Recordado {{count}} veces"
+    },
+    "send": {
+      "title": "Enviar para firma",
+      "contract": "Archivar en un contrato (opcional)",
+      "contractsError": "No se pudieron cargar los contratos de esta organización. Aún puedes enviar el acuerdo y vincularlo a un contrato más tarde.",
+      "recipients": "Destinatarios",
+      "recipientsHelp": "Direcciones de correo, separadas por comas o saltos de línea. Se rellenan con el contacto de facturación de la organización.",
+      "recipientsRequired": "Agrega al menos un correo de destinatario.",
+      "recipientsInvalid": "Estas no parecen direcciones de correo: {{emails}}",
+      "recipientsTooMany": "Máximo 50 destinatarios.",
+      "cover": "Mensaje de presentación (opcional)",
+      "expiry": "El enlace vence el",
+      "expiryPast": "Elige una fecha de vencimiento futura.",
+      "expiryDefaultHint_one": "Predeterminado: {{count}} día, desde Configuración de facturación → Acuerdos.",
+      "expiryDefaultHint_other": "Predeterminado: {{count}} días, desde Configuración de facturación → Acuerdos.",
+      "autoReminderHint_one": "Los recordatorios automáticos se envían todos los días, hasta un máximo de {{max}}.",
+      "autoReminderHint_other": "Los recordatorios automáticos se envían cada {{count}} días, hasta un máximo de {{max}}.",
+      "expiryDefaultUnavailable": "No se pudo cargar el vencimiento predeterminado de la Configuración de facturación; se muestra el valor predeterminado integrado.",
+      "label": "Etiqueta (opcional)",
+      "createDraft": "Crear borrador y vista previa",
+      "creating": "Creando…",
+      "preview": {
+        "title": "Vista previa",
+        "loading": "Cargando vista previa…",
+        "error": "No se pudo cargar la vista previa.",
+        "uploaded": "Esta plantilla es un documento subido. El archivo subido es lo que firma el cliente."
+      },
+      "unresolved": {
+        "title": "Completa los valores faltantes antes de enviar"
+      },
+      "updatePreview": "Actualizar vista previa",
+      "updating": "Actualizando…",
+      "submit": "Enviar",
+      "sending": "Enviando…",
+      "createError": "No se pudo crear el borrador.",
+      "updateError": "No se pudo actualizar el acuerdo.",
+      "sendError": "No se pudo enviar el acuerdo.",
+      "discardError": "No se pudo descartar el borrador; sigue en la lista de Pendiente de firma, donde puedes eliminarlo.",
+      "sent_one": "Acuerdo enviado a {{count}} destinatario",
+      "sent_other": "Acuerdo enviado a {{count}} destinatarios",
+      "notEmailed": {
+        "no_email_service": "Enviado, pero el correo no está configurado. Copia el enlace de firma desde «Pendiente de firma» y compártelo.",
+        "no_recipients": "Enviado, pero no había destinatarios a quienes escribir. Copia el enlace de firma desde «Pendiente de firma» y compártelo.",
+        "send_failed": "Enviado, pero el correo no se pudo entregar. Copia el enlace de firma desde «Pendiente de firma» y compártelo."
+      }
     }
   },
   "quotes": {
@@ -2358,6 +2480,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Acuerdos",
+      "description": "Valores predeterminados para los acuerdos que envías a firmar. Los remitentes aún pueden elegir otro vencimiento en cada solicitud.",
+      "expiryDays": "Vencimiento predeterminado del enlace (días)",
+      "expiryDaysHelp": "El enlace de firma de una nueva solicitud de acuerdo vence esta cantidad de días después de crearse, a menos que el remitente elija otra fecha.",
+      "expiryDaysInvalid": "Ingresa un número entero de días entre {{min}} y {{max}}.",
+      "remindersEnabled": "Enviar recordatorios automáticos",
+      "remindersHelp": "Vuelve a enviar por correo el mismo enlace de firma a los destinatarios hasta que el acuerdo se firme, se rechace, se anule o venza.",
+      "intervalDays": "Recordar cada (días)",
+      "intervalDaysInvalid": "Ingresa un número entero de días entre {{min}} y {{max}}.",
+      "maxReminders": "Detener después de (recordatorios)",
+      "maxRemindersHelp": "Cuenta todos los recordatorios de la solicitud, manuales o automáticos.",
+      "maxRemindersInvalid": "Ingresa un número entero entre {{min}} y {{max}}.",
+      "readOnlyNoSend": "Cambiar los valores predeterminados de los acuerdos requiere permiso para enviar acuerdos. Tienes acceso de solo lectura."
+    },
     "company": {
       "addressInherited": "Igual que en los detalles de la empresa",
       "addressLine1": "Dirección Línea 1",
@@ -2444,6 +2581,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
+    "agreements": "Acuerdos",
     "connections": "Conexiones",
     "rates": "Tarifas",
     "payments": "Pagos"
@@ -2520,7 +2658,7 @@
     "ai": {
       "column": "Uso de IA",
       "sectionTitle": "Uso de IA",
-      "sectionHelp": "Cómo se cobra el uso del asistente de IA de las organizaciones con este perfil de facturación. Cobre el costo de Breeze más un margen o fije un precio por modelo.",
+      "sectionHelp": "Cómo se cobra el uso de Breeze AI de las organizaciones en este perfil de facturación. Cobra el costo de Breeze más un margen, o define un precio por modelo.",
       "coverage": "Facturación del uso de IA",
       "coverageBillable": "Facturable",
       "coverageIncluded": "Incluido",
