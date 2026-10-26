@@ -135,6 +135,15 @@ describe('WispHomeThread (W08 Task 9)', () => {
     expect(h.state.switchSession).not.toHaveBeenCalled();
   });
 
+  it('a failed session check is logged before a fresh session starts', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response);
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[WispHomeThread]'), 500);
+    warn.mockRestore();
+  });
+
   it('a last session under another grant is not resumed', async () => {
     fetchMock.mockResolvedValue(sessionRes('active', 'g-rotated'));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);

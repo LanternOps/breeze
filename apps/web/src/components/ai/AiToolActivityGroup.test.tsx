@@ -100,6 +100,19 @@ describe('AiToolActivityGroup', () => {
     expect(screen.queryByTestId('rendered-call')).toBeNull();
   });
 
+  it('a new failure reopens a group the user had collapsed', () => {
+    const calls = [call('a', 'query_devices', { isError: true }), call('b', 'list_sites', { done: false })];
+    const { rerender } = render(<AiToolActivityGroup group={group(calls)} renderCall={renderCall} />);
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByTestId('rendered-call')).toBeNull();
+    // Same failure count on re-render: the user's choice holds.
+    rerender(<AiToolActivityGroup group={group(calls)} renderCall={renderCall} />);
+    expect(screen.queryByTestId('rendered-call')).toBeNull();
+    const twoFailed = [calls[0] as ToolCall, call('b', 'list_sites', { isError: true })];
+    rerender(<AiToolActivityGroup group={group(twoFailed)} renderCall={renderCall} />);
+    expect(screen.getAllByTestId('rendered-call')).toHaveLength(2);
+  });
+
   it('an approval handoff in the group starts expanded', () => {
     render(<AiToolActivityGroup group={group([call('a', 'restart_service')], { handoff: true })} renderCall={renderCall} />);
     expect(screen.getAllByTestId('rendered-call')).toHaveLength(1);

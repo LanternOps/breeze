@@ -717,7 +717,49 @@ describe('chat kit units (Wisp companion W01)', () => {
     expect(dividers[1]?.textContent).toMatch(/8:15/);
   });
 
+  it('a call that fails mid-stream opens its group in place, above the text that streams after it', () => {
+    const pending = [u('u1'), tu('t1', 'a'), tu('t2', 'b', 'list_sites')];
+    const { getByTestId, getAllByTestId, container, rerender } = view(pending);
+    const before = getByTestId('ai-tool-group');
+    expect(before.getAttribute('data-state')).toBe('executing');
+    expect(toolCallCards.props).toHaveLength(0);
+    rerender(<AiChatMessages {...baseProps} messages={[
+      ...pending,
+      tr('r1', 'a'),
+      tr('r2', 'b', 'list_sites', { isError: true, toolOutput: { error: 'Site lookup refused' } }),
+      a('after', 'One check failed', 0, { isStreaming: true }),
+    ] as never} />);
+    const after = getByTestId('ai-tool-group');
+    // Same element: the group kept its instance (and any user toggle) when the results arrived.
+    expect(after).toBe(before);
+    expect(after.getAttribute('data-state')).toBe('failed');
+    expect(after.textContent).toContain('1 failed');
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(expect.arrayContaining(['query_devices', 'list_sites']));
+    const order = Array.from(container.querySelectorAll('[data-testid="ai-tool-group"], [data-testid="ai-msg-assistant"]'))
+      .map((n) => n.getAttribute('data-testid'));
+    expect(order).toEqual(['ai-tool-group', 'ai-msg-assistant']);
+    expect(getAllByTestId('ai-msg-caret')).toHaveLength(1);
+  });
+
+  it('a failed run_script with a proposal keeps its proposal link visible without a click (#7918)', () => {
+    const PROPOSAL = '6f1c2a4e-8d3b-4c5a-9e7f-0a1b2c3d4e5f';
+    const { getByTestId, queryByTestId } = view([
+      tu('t1', 'r', 'run_script'),
+      tr('r1', 'r', 'run_script', { isError: true, toolOutput: { error: 'Device offline' } }),
+    ].map((m, i) => (i === 0 ? { ...m, toolInput: { proposalId: PROPOSAL } } : m)));
+    expect(queryByTestId('ai-tool-group')).toBeNull();
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('assistant prose breaks long unbroken words so a URL cannot widen the 400 px panel', () => {
+    const { getByTestId } = view([u('u1'), a('a1', 'see https://example.com/' + 'x'.repeat(200))]);
+    const prose = getByTestId('ai-msg-assistant').querySelector('.prose') as HTMLElement;
+    expect(prose.className).toContain('break-words');
+  });
+
   it('layout=panel has no max-w-3xl wrapper and no dividers', () => {
+    // Dividers are opt-in per surface (showTimeDividers); the docked panel never
+    // opts in (AiChatSidebar.wispHome.test pins that it passes no flag).
     const { container, queryAllByTestId } = view([u('u1', 0), u('u2', 90)]);
     expect(container.querySelector('.max-w-3xl')).toBeNull();
     expect(queryAllByTestId('ai-chat-divider')).toHaveLength(0);

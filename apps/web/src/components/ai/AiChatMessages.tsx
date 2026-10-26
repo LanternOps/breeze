@@ -518,7 +518,7 @@ export default function AiChatMessages({
 /** An assistant reply: prose, no avatar, no bubble (spec D2). */
 function AssistantMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   return (
-    <div className="prose prose-sm max-w-none text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
+    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

@@ -60,13 +60,18 @@ export default function WispActivityPanel({ threadId, refreshKey = 0, collapsibl
         >
           {open ? <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" /> : <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />}
           <span className="text-sm font-semibold">{t('wisp.activity.title')}</span>
-          {loaded && <span className="text-xs text-muted-foreground">{t('wisp.activity.count', { count: items.length })}</span>}
+          {/* A failed load must not read as "0 recent" while the panel is closed. */}
+          {failed ? (
+            <span data-testid="wisp-activity-load-error" className="text-xs text-destructive">{t('wisp.activity.loadFailed')}</span>
+          ) : (
+            loaded && <span className="text-xs text-muted-foreground">{t('wisp.activity.count', { count: items.length })}</span>
+          )}
           <span className="ml-auto text-xs text-muted-foreground">{open ? t('wisp.activity.hide') : t('wisp.activity.show')}</span>
         </button>
       ) : (
         <h3 className="text-sm font-semibold">{t('wisp.activity.title')}</h3>
       )}
-      {showBody && failed && (
+      {!collapsible && failed && (
         <p data-testid="wisp-activity-load-error" className="text-xs text-destructive">{t('wisp.activity.loadFailed')}</p>
       )}
       {showBody && loaded && !failed && items.length === 0 && (

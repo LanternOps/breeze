@@ -43,15 +43,15 @@ The home appears when Wisp is on for the deployment and you signed in at partner
 
 The page is the conversation. One thread sits in the center at reading width with the composer at the bottom, and a rail on the right holds everything else. There is no page heading; the identity card in the rail carries the name.
 
-The most recent morning brief from the last 36 hours is the first post in the thread, under a **Morning brief** eyebrow with the time it was sent ("Sent 2 hours ago"). A brief older than about 20 hours carries a **From an earlier day** badge. In this release nudges and the digest are not posts in the thread yet. They arrive as notifications and appear in **Activity**.
+The most recent morning brief from the last 36 hours is the first post in the thread, under a **Morning brief** eyebrow with the time it was sent ("Sent 2 hours ago"). A brief older than about 20 hours carries a **From an earlier day** badge. In this release nudges and the digest are not posts in the thread yet. They arrive as notifications, and a nudge also appears in **Activity**.
 
 How the thread reads:
 
-- Wisp's replies run full width as prose under a **Wisp** label. Your messages are right-aligned bubbles.
+- Wisp's replies run full width as prose, with **Wisp** shown above the first reply after each of your messages. Your messages are right-aligned bubbles.
 - Tool activity folds into one line per run of checks, for example "Searched devices · Listed sites · 4s". Click the line to see each call. A failed check or a handoff that needs your approval opens the line by itself.
 - When Wisp hands work to specialists, each one shows as a run card in the thread.
 - Time dividers separate the conversation by day and after gaps of more than 20 minutes.
-- An empty thread shows Wisp's welcome and four suggestions: **What needs me today?**, **Which devices are offline?**, **Run a health sweep** and **What happened overnight?**. Select one to send it.
+- An empty thread shows Wisp's welcome and four suggestions: **What needs me today?**, **Which devices are offline?**, **Run a health sweep** and **What happened overnight?**. Select one to send it. When a morning brief is already in the thread, only the suggestions show.
 
 The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Linked items](#linked-items). The thread resumes the last session instead of starting a new one on every visit. While the grant is paused or ended, the thread shows a notice instead of starting anything.
 
@@ -59,9 +59,9 @@ The rail, from the top:
 
 | Section | What it shows |
 |---|---|
-| Identity and grant controls | Wisp's name, its state ("Active" with the scope, or a live "Checking ..." line while an assessment runs), and the grant controls: status, refresh, settings, turn off, the spend meter, and pause and resume. |
+| Identity and grant controls | Wisp's name, its state ("Active" with the scope, or a live "Checking ..." line while an assessment runs), and the grant controls: refresh, settings, turn off, the spend meter, and pause and resume. |
 | **Needs your attention** | Open and snoozed concerns for your grant, approvals first and then by severity, with a count of items waiting for your approval. Snooze, dismiss and give feedback exactly as on the thread page. Approvals open in the Approvals page. |
-| **Workers** | The most recent specialist runs, with **All runs** linking to the full list. |
+| **Workers** | Up to five recent specialist runs, with **All runs** linking to the full list. |
 | **Linked items** | The tickets, devices and other items you pinned to Wisp; see [Linked items](#linked-items). |
 | **Activity** | A timeline of what Wisp did. It starts collapsed; select **Show** to expand it. |
 
@@ -69,7 +69,7 @@ At the bottom of the rail are links to **All chats** (`/ai/chat`) and **Memory**
 
 Below large screen widths the rail becomes a one-line strip under the page header: Wisp's state, how many items need you, and **Details**. **Details** opens the whole rail in a drawer. A link to a concern, such as `/wisp#concern=<id>`, opens the drawer by itself.
 
-You can link straight to a section: `/wisp#needs-you`, `#activity`, `#thread` and `#links`. `#brief` scrolls to the thread, where the brief now lives. `/wisp#concern=<id>` opens **Needs your attention** on that concern.
+You can link straight to a section: `/wisp#needs-you`, `#activity`, `#thread` and `#links`. `#brief` scrolls to the thread, where the brief now lives. `/wisp#concern=<id>` opens **Needs your attention** on that concern. Below large screen widths, `#needs-you`, `#links`, `#activity` and `#concern=<id>` open the drawer instead of scrolling.
 
 The thread page at `/ai/wisp/thread/<id>`, where nudges land, uses the same layout. The conversation is inline, the thread summary is its first post, and the old **Open in chat** button is gone.
 

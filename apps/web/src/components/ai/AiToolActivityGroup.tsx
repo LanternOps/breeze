@@ -8,7 +8,7 @@ type ToolsUnit = Extract<ChatUnit, { kind: "tools" }>;
 
 /**
  * Wisp companion W01 (#10211, spec §4.2): consecutive tool calls between two
- * messages fold into one quiet line ("Searched devices · Listed sites · 3 s").
+ * messages fold into one quiet line ("Searched devices · Listed sites · 3s").
  * Expanding shows each call's existing card (`renderCall`), so nothing about a
  * call is lost. A failure or an approval handoff opens the group by itself —
  * also when it arrives mid-stream — unless the user has toggled it.
@@ -25,6 +25,13 @@ export default function AiToolActivityGroup({
   const { t, i18n } = useTranslation("ai");
   // null = the user has not chosen; the group follows its own state.
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  // A failure arriving after the user collapsed the group reopens it: its
+  // reason (and any caller-verification step) must not stay behind a click.
+  const [seenFailed, setSeenFailed] = useState(group.failed);
+  if (group.failed !== seenFailed) {
+    setSeenFailed(group.failed);
+    if (group.failed > seenFailed) setUserExpanded(null);
+  }
   const expanded = userExpanded ?? (defaultExpanded || group.failed > 0 || group.handoff);
   const state = group.failed > 0 ? "failed" : group.executing ? "executing" : "done";
 

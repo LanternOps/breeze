@@ -108,6 +108,21 @@ describe('groupChatUnits', () => {
     expect((units[0] as Extract<ChatUnit, { kind: 'tools' }>).handoff).toBe(true);
   });
 
+  it('trusts a replayed handoff payload the way the card does (history rows carry no handoff or isError)', () => {
+    const replay = (status: string, isError?: boolean) =>
+      groupChatUnits(
+        [use('t1', 'a', 'restart_service'), result('r1', 'a', 'restart_service', 0, { toolOutput: { status, message: 'm' }, isError })],
+        noCards,
+      )[0] as Extract<ChatUnit, { kind: 'tools' }>;
+    expect(replay('approved_executing').handoff).toBe(true);
+    expect(replay('approved_completed').handoff).toBe(true);
+    // A failed outcome is trusted only when the server's own isError agrees.
+    expect(replay('approved_failed').handoff).toBe(false);
+    expect(replay('approved_failed', true).handoff).toBe(true);
+    expect(replay('approved_executing', true).handoff).toBe(false);
+    expect(replay('not_a_handoff').handoff).toBe(false);
+  });
+
   it('pairs id-less history rows by adjacency and keeps an orphan result inside the group', () => {
     const units = groupChatUnits(
       [

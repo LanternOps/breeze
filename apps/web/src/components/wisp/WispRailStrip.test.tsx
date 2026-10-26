@@ -4,6 +4,7 @@
  * rail in the shared Drawer.
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { WispState } from '@/stores/aiStore';
@@ -81,6 +82,13 @@ describe('WispRailStrip', () => {
       render(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} />);
       expect(screen.getByTestId('wisp-rail-drawer')).toBeInTheDocument();
       expect(screen.getByTestId('rail-node')).toBeInTheDocument();
+    });
+
+    it('server markup is closed even with a rail hash (the fragment never reaches the server, #2421)', () => {
+      window.history.replaceState(null, '', '/wisp#concern=c-1');
+      const html = renderToString(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} />);
+      expect(html).not.toContain('rail body');
+      expect(html).toContain('wisp-rail-details');
     });
 
     it('#thread does not, and a later hash change to a rail section does', () => {

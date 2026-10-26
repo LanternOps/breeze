@@ -4,6 +4,7 @@
  * folded tool-activity groups, and the cards that never fold (flow, run,
  * unattended note, specialist runs). Pure: no React, no i18n.
  */
+import { aiToolHandoffIsError, isAiToolHandoffOutput } from '@breeze/shared';
 import type { AiMessage } from '@/stores/processStreamEvent';
 
 /**
@@ -136,6 +137,18 @@ function sameLocalDay(a: Date, b: Date): boolean {
 
 const toolOutputOf = (row: ChatRow | null): unknown => row?.toolOutput ?? row?.content;
 
+/**
+ * An approval handoff on this call, by AiToolCallCard's trust order: the
+ * server-asserted `handoff` field first; for a row replayed from history
+ * (which carries neither `handoff` nor `isError`) the output's status, trusted
+ * only when the failure it claims matches the server's own `isError`.
+ */
+function hasHandoff(call: ToolCall): boolean {
+  if (call.result?.handoff || call.use?.handoff) return true;
+  const output = call.result?.toolOutput;
+  return isAiToolHandoffOutput(output) && aiToolHandoffIsError(output.status) === Boolean(call.result?.isError);
+}
+
 type ToolsUnit = Extract<ChatUnit, { kind: 'tools' }>;
 type SpecialistsUnit = Extract<ChatUnit, { kind: 'specialists' }>;
 
@@ -156,7 +169,7 @@ function finishToolsUnit(calls: ToolCall[]): ToolsUnit {
     calls,
     executing,
     failed: calls.filter((c) => c.result?.isError === true).length,
-    handoff: calls.some((c) => Boolean(c.result?.handoff ?? c.use?.handoff)),
+    handoff: calls.some(hasHandoff),
     startedAt: startedMs === null ? null : new Date(startedMs),
     finishedAt: finishedMs === null ? null : new Date(finishedMs),
   };

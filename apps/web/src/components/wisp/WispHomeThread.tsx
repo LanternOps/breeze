@@ -25,8 +25,14 @@ type Binding = 'binding' | 'live' | 'failed';
 async function resumable(sessionId: string, grantId: string): Promise<boolean> {
   try {
     const res = await fetchWithAuth(`/ai/sessions/${encodeURIComponent(sessionId)}`);
-    if (!res.ok) return false;
-    const body = (await res.json().catch(() => null)) as { session?: { status?: unknown; wispGrantId?: unknown } } | null;
+    if (!res.ok) {
+      console.warn('[WispHomeThread] checking the last Wisp session failed; starting a new one', res.status);
+      return false;
+    }
+    const body = (await res.json().catch((err: unknown) => {
+      console.warn('[WispHomeThread] the last Wisp session read was not JSON; starting a new one', err);
+      return null;
+    })) as { session?: { status?: unknown; wispGrantId?: unknown } } | null;
     return body?.session?.status === 'active' && body.session.wispGrantId === grantId;
   } catch (err) {
     console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
