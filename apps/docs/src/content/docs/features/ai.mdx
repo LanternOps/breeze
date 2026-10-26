@@ -577,6 +577,33 @@ These tools change security settings or act on devices. They are available in AI
 
 Three of these (user risk scores and detail, plus C2C item search from the backup table above) are available in chat but never to autonomous AI agents — see `AGENT_DENIED_READ_TOOLS` in the codebase for the current denylist, which also covers `query_c2c_jobs`, `get_sensitive_data_overview` and two M365 identity reads.
 
+### Security policy tools
+
+These tools read security status and compliance, and manage security recommendations, access reviews, audit-policy baselines, security and compliance policies, disk-encryption recovery keys and PAM elevation rules. They are available in AI chat and over MCP. Text they return that came from a device or a person (hostnames, local admin account names, audit deviations, policy and rule names, review notes) is shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_security_compliance` | 1 | Security dashboard, score breakdown, 7/30/90-day trend, and AV, firewall, encryption, password-policy and local-admin status by device (`view`). Only what agents reported: no estimated firewall rules or encryption volumes |
+| `manage_security_recommendations` (list) | 1 | List security recommendations with their status per organization |
+| `manage_security_recommendations` (complete/dismiss) | 2 | Mark a recommendation completed or dismissed for one organization. Nothing changes on devices; reopen it in the web app |
+| `manage_access_reviews` (list/get) | 1 | View access reviews: each member's role, permissions and recorded decision |
+| `manage_access_reviews` (decide_item) | 2 | Record keep (`approved`) or remove (`revoked`) on one member. Nothing changes until a person completes the review in the web app; you cannot decide on your own access |
+| `manage_access_reviews` (create) | 3 | Start an access review of every member of the partner or organization. A review cannot be deleted |
+| `manage_audit_baselines` (list/compliance/device_results) | 1 | View audit-policy baselines, compliance across the devices you can see, and one device's deviations |
+| `manage_audit_baselines` (request_apply) | 2 | Ask for a Windows audit baseline to be applied to devices. A different person approves the request in the web app, and applying it is also done there |
+| `manage_audit_baselines` (create) | 3 | Create a baseline. An active baseline replaces the current one for that OS and starts daily audit-policy collection on those devices |
+| `manage_compliance_policies` (deactivate) | 3 | Turn off a compliance policy and close its alerts. Permanent: nothing re-enables it. A partner-wide policy needs a second approver (four-eyes) |
+| `manage_security_policies` (list) | 1 | List antivirus/EDR security policy templates |
+| `manage_security_policies` (create/update) | 3 | Create or change a security policy template. There is no delete; a partner-wide create needs a second approver (four-eyes) |
+| `manage_recovery_keys` (list) | 1 | BitLocker or FileVault key escrow status for a device. Never the key itself, and never who revealed it |
+| `manage_recovery_keys` (rotate/collect) | 3 | Rotate a Windows BitLocker recovery key (the old key stops working), or re-collect a device's keys into escrow |
+| `manage_pam_rules` (list_rules/get_config/list_signer_groups) | 1 | View PAM elevation rules, the default verdict for unmatched requests, and signer groups |
+| `manage_pam_rules` (create_rule/update_rule/delete_rule/set_config/create_signer_group/update_signer_group/delete_signer_group) | 3 | Change PAM rules, the default verdict or signer groups. The assistant can never create an auto-approve rule, and in an organization that has one it can only add rules or rename them |
+
+Three actions are never available to the assistant or to MCP, by design: completing an access review (it removes members and ends their sessions), approving an audit-baseline apply request, and revealing a recovery key. Do these in the web app. Writes to access reviews, compliance policies and PAM rules need a session that has completed MFA.
+
+Access reviews and PAM rules are available in chat and over MCP only; AI agents are never offered them. AI agents can read the rest. Their recommendation, security-policy, compliance-policy and recovery-key writes become proposals that a person approves, and they cannot create audit baselines or apply requests. A session limited to some sites or devices cannot change organization-wide records (security policies, recommendation status, compliance policies, audit baselines) or use access reviews.
+
 ---
 
 ## Context-Aware Help Panel
