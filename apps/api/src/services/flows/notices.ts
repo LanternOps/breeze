@@ -40,7 +40,10 @@ export interface FlowNotice {
 
 export async function sendFlowNotice(flow: FlowNoticeTarget, _doc: FlowDocumentV1 | null, notice: FlowNotice): Promise<void> {
   const delegator = flow.enabledByUserId;
-  if (!delegator) return;
+  if (!delegator) {
+    console.warn(`[flows] ${notice.kind} notice for flow ${flow.id} has no delegator to notify`);
+    return;
+  }
   const label = `flows.notice.${notice.kind}`;
   runAfterDbContextCommit(label, async () => {
     try {

@@ -25,6 +25,8 @@ import { captureException } from '../services/sentry';
 
 export const flowWebhookRoutes = new Hono();
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 flowWebhookRoutes.post('/:flowId', async (c) => {
   c.header('Cache-Control', 'no-store');
   const flowId = c.req.param('flowId');
@@ -39,7 +41,8 @@ flowWebhookRoutes.post('/:flowId', async (c) => {
     // Never the headers or the body: either may carry the secret or tenant data.
     console.error(`[flows] webhook ingest failed (flow=${flowId}): ${err instanceof Error ? err.message : 'unknown error'}`);
     captureException(err instanceof Error ? err : new Error('flow webhook ingest failed'), undefined,
-      { flow_site: 'flows.webhook.ingest' }, { fingerprint: ['flow', 'flows.webhook.ingest'] });
+      { flow_site: 'flows.webhook.ingest', ...(UUID_RE.test(flowId) ? { flow_id: flowId.toLowerCase() } : {}) },
+      { fingerprint: ['flow', 'flows.webhook.ingest'] });
     c.header('Retry-After', '30');
     return c.json({ error: 'temporarily_unavailable' }, 503);
   }

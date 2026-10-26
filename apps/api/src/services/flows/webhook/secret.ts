@@ -24,7 +24,7 @@ import { flowVersions } from '../../../db/schema/flowRuns';
 import { isInteractiveUserSession, type AuthContext } from '../../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../../auditEvents';
 import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from '../../encryptedColumnRegistry';
-import { flowStepPinSchema } from '../../flowValidator';
+import { FlowStepPinError, flowStepPinSchema, stepPinsFor } from '../../flowValidator';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { getUserPermissions } from '../../permissions';
 import { decryptSecret, encryptSecret, hmacFingerprint, isEncryptedSecret } from '../../secretCrypto';
@@ -132,6 +132,20 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
     if (!live) return { ok: false, error: 'flow_not_found' };
     const missing = missingPermissionsFor(live.doc, live.pins, perms);
     if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  }
+  // A secret minted on the DRAFT stays valid after someone else enables it,
+  // so the minter must also hold what the draft's steps need now (PR review).
+  // A draft whose steps do not resolve yet cannot be enabled as it stands;
+  // its enabler is rule-7 checked at enable.
+  const draft = flowDocumentV1Schema.safeParse(row.definition);
+  if (draft.success) {
+    try {
+      const pins = await stepPinsFor(draft.data, { owner });
+      const missing = missingPermissionsFor(draft.data, pins, perms);
+      if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+    } catch (err) {
+      if (!(err instanceof FlowStepPinError)) throw err;
+    }
   }
 
   const secret = `${FLOW_WEBHOOK_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;

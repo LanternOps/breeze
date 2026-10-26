@@ -64,15 +64,34 @@ export async function runForEachItems(i: {
   const parallelism = Math.max(1, i.parallelism);
 
   let next = 0;
+  let launchError: unknown = null;
   while (next < pending.length && state.halted === null) {
     if (inFlight.size >= parallelism) {
       await Promise.race(inFlight);
       continue;
     }
-    const gate = await i.beforeLaunch();
-    if (gate !== 'ok') { halt(gate); break; }
-    if (state.halted !== null) break;
-    const release = await acquire();
+    // The process slot first, so the control check below is fresh at launch
+    // (a wait for a slot can be long under contention).
+    let release: () => void;
+    try {
+      release = await acquire();
+    } catch (err) {
+      launchError = err;
+      halt('stop');
+      break;
+    }
+    let gate: Awaited<ReturnType<typeof i.beforeLaunch>>;
+    try {
+      gate = await i.beforeLaunch();
+    } catch (err) {
+      // A control-check (DB) error: launch nothing more, but never abandon
+      // the items already running — they finish and write their rows first.
+      release();
+      launchError = err;
+      halt('stop');
+      break;
+    }
+    if (gate !== 'ok') { release(); halt(gate); break; }
     if (state.halted !== null) { release(); break; }
     const index = pending[next++]!;
     const unit = (async () => {
@@ -81,8 +100,10 @@ export async function runForEachItems(i: {
         results[index] = r;
         if (r.kind === 'stop') halt('stop');
         else if (r.kind === 'failed' && (i.stopOnFailure || r.terminal)) halt('failure');
-      } catch {
-        // An executor that throws never counts as a success.
+      } catch (err) {
+        // An executor that throws never counts as a success (the caller's
+        // executor catches step failures itself; this is a DB / fence error).
+        console.error(`[FlowRunner] parallel for-each item ${index} failed; the batch stops`, err);
         results[index] = { kind: 'stop' };
         halt('stop');
       } finally {
@@ -93,5 +114,6 @@ export async function runForEachItems(i: {
     inFlight.add(tracked);
   }
   await Promise.all(inFlight);
+  if (launchError !== null) throw launchError;
   return { results, halted: state.halted };
 }

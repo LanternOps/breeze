@@ -20,7 +20,9 @@ vi.mock('../../jobs/flowRunQueue', () => ({ enqueueFlowRunSlice: vi.fn(async () 
 
 import { flowUsagePeriodKey } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { flowRuns, flowUsageCounters, flowWebhookDeliveries, flows } from '../../db/schema';
+import { flowRuns, flowUsageCounters, flowVersions, flowWebhookDeliveries, flows, partners } from '../../db/schema';
+import { encryptFlowWebhookSecret } from '../../services/flows/webhook/secret';
+import { hmacFingerprint } from '../../services/secretCrypto';
 import { createFlowRun } from '../../services/flows/runService';
 import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS } from '../../services/orgMergeCustomExecutors';
 import { buildRepoint } from '../../services/orgMergeExecutors';
@@ -143,6 +145,141 @@ describe('flow monthly caps (real Postgres)', () => {
     expect(counters.every((c) => c.orgId === null)).toBe(true);
     expect(counters.find((c) => c.flowId === flowId)).toMatchObject({ runs: 2, periodKey: period() });
     expect(counters.find((c) => c.flowId === null)).toMatchObject({ runs: 2, periodKey: period() });
+  });
+});
+
+const setPartnerFlowLimits = (partnerId: string, flowsBlob: Record<string, number>) =>
+  withSystemDbAccessContext(() => db.update(partners).set({ settings: { flows: flowsBlob } }).where(eq(partners.id, partnerId)));
+
+describe('owner-total monthly cap exactness (real Postgres)', () => {
+  const seedTwo = async (t: Tenant) => {
+    const mk = () => seedEnabledFlow({ orgId: t.orgA, partnerId: t.partnerId, delegatorUserId: t.delegatorId, definition: eventDoc(), pins: [PIN] });
+    return [await mk(), await mk()] as const;
+  };
+  const ownerRuns = async (t: Tenant) => (await countersOf(t.partnerId)).find((c) => c.flowId === null)?.runs;
+
+  runDb('an owner cap of 3 across two flows: 2 + 1 admitted, the next on either flow is owner_monthly_cap_reached with the owner row left at 3 and no extra run', async () => {
+    const t = await tenant();
+    await setPartnerFlowLimits(t.partnerId, { monthlyRunsPerOwner: 3 });
+    const [a, b] = await seedTwo(t);
+
+    expect(await createFlowRun(eventRun(a.flowId, t.orgA, 'event:a1'))).toMatchObject({ created: true });
+    expect(await createFlowRun(eventRun(a.flowId, t.orgA, 'event:a2'))).toMatchObject({ created: true });
+    expect(await createFlowRun(eventRun(b.flowId, t.orgA, 'event:b1'))).toMatchObject({ created: true });
+    expect(await ownerRuns(t)).toBe(3);
+
+    expect(await createFlowRun(eventRun(a.flowId, t.orgA, 'event:a3'))).toEqual({ created: false, reason: 'owner_monthly_cap_reached' });
+    expect(await createFlowRun(eventRun(b.flowId, t.orgA, 'event:b2'))).toEqual({ created: false, reason: 'owner_monthly_cap_reached' });
+
+    const counters = await countersOf(t.partnerId);
+    expect(await ownerRuns(t)).toBe(3);
+    expect(counters.find((c) => c.flowId === a.flowId)?.runs).toBe(2);
+    expect(counters.find((c) => c.flowId === b.flowId)?.runs).toBe(1);
+    expect(await runsOf(a.flowId)).toHaveLength(2);
+    expect(await runsOf(b.flowId)).toHaveLength(1);
+  });
+
+  runDb('two creations racing on different flows at owner cap-1 admit exactly one', async () => {
+    const t = await tenant();
+    await setPartnerFlowLimits(t.partnerId, { monthlyRunsPerOwner: 3 });
+    const [a, b] = await seedTwo(t);
+    expect(await createFlowRun(eventRun(a.flowId, t.orgA, 'event:a1'))).toMatchObject({ created: true });
+    expect(await createFlowRun(eventRun(b.flowId, t.orgA, 'event:b1'))).toMatchObject({ created: true });
+
+    const results = await Promise.all([
+      createFlowRun(eventRun(a.flowId, t.orgA, 'event:a2')),
+      createFlowRun(eventRun(b.flowId, t.orgA, 'event:b2')),
+    ]);
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(results.filter((r) => !r.created)).toEqual([{ created: false, reason: 'owner_monthly_cap_reached' }]);
+    expect(await ownerRuns(t)).toBe(3);
+    expect((await runsOf(a.flowId)).length + (await runsOf(b.flowId)).length).toBe(3);
+  });
+});
+
+describe('webhook run bound to the verified secret generation and publication (real Postgres)', () => {
+  const saved = { id: process.env.APP_ENCRYPTION_KEY_ID, ring: process.env.APP_ENCRYPTION_KEYRING };
+  beforeAll(() => {
+    process.env.APP_ENCRYPTION_KEY_ID = 'flowbudgets-key';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ 'flowbudgets-key': 'flowbudgets-key-material-0123456789' });
+  });
+  afterAll(() => {
+    if (saved.id === undefined) delete process.env.APP_ENCRYPTION_KEY_ID; else process.env.APP_ENCRYPTION_KEY_ID = saved.id;
+    if (saved.ring === undefined) delete process.env.APP_ENCRYPTION_KEYRING; else process.env.APP_ENCRYPTION_KEYRING = saved.ring;
+  });
+
+  const webhookDoc = { ...eventDoc(), trigger: { type: 'webhook', auth: 'hmac' } };
+
+  /** What createOrRotateWebhookSecret writes: the three secret columns together (flows_webhook_secret_pair_chk). */
+  async function writeSecret(flowId: string, rotatedAt: Date): Promise<void> {
+    const secret = `bwh_${randomUUID()}`;
+    await withSystemDbAccessContext(() => db.update(flows).set({
+      webhookSecretEncrypted: encryptFlowWebhookSecret(flowId, secret),
+      webhookSecretFingerprint: hmacFingerprint(secret),
+      webhookSecretRotatedAt: rotatedAt,
+    }).where(eq(flows.id, flowId)));
+  }
+  const rotatedAtOf = async (flowId: string): Promise<Date> =>
+    (await withSystemDbAccessContext(() => db.select({ r: flows.webhookSecretRotatedAt }).from(flows).where(eq(flows.id, flowId))))[0]!.r!;
+  const deliveriesOf = (flowId: string) => withSystemDbAccessContext(() => db.select().from(flowWebhookDeliveries).where(eq(flowWebhookDeliveries.flowId, flowId)));
+
+  const webhookRun = (flowId: string, orgId: string, seq: number, rotatedAt: Date, onCreated: (runId: string) => Promise<void>) => ({
+    triggerKind: 'webhook' as const, flowId, orgId, scope: { firedAt: new Date().toISOString() }, inputs: {}, dedupeKey: `webhook:${randomUUID()}`,
+    expectedPublicationSeq: seq, expectedSecretRotatedAt: rotatedAt, onCreated,
+  });
+
+  runDb('a rotation after verification refuses the delivery (not_enabled, no run, no charge, no delivery); the NEW generation read back from the DB is admitted', async () => {
+    const t = await tenant();
+    const { flowId } = await seedEnabledFlow({ orgId: t.orgA, partnerId: t.partnerId, delegatorUserId: t.delegatorId, definition: webhookDoc, pins: [PIN] });
+    await writeSecret(flowId, new Date());
+    const verifiedWith = await rotatedAtOf(flowId); // what the ingress read before verifying
+
+    await new Promise((r) => setTimeout(r, 15));
+    await writeSecret(flowId, new Date()); // a rotation lands between verification and insert
+    const rotated = await rotatedAtOf(flowId);
+    expect(rotated.getTime()).toBeGreaterThan(verifiedWith.getTime());
+
+    const onCreated = vi.fn(async () => {});
+    expect(await createFlowRun(webhookRun(flowId, t.orgA, 1, verifiedWith, onCreated))).toEqual({ created: false, reason: 'not_enabled' });
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(await runsOf(flowId)).toHaveLength(0);
+    expect(await countersOf(t.partnerId)).toHaveLength(0);
+    expect(await deliveriesOf(flowId)).toHaveLength(0);
+
+    // JS Date ms equality with the stored timestamptz: the value read back is the generation the lock compares.
+    expect(await createFlowRun(webhookRun(flowId, t.orgA, 1, rotated, onCreated))).toMatchObject({ created: true });
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    expect(await runsOf(flowId)).toHaveLength(1);
+    expect((await countersOf(t.partnerId)).find((c) => c.flowId === flowId)?.runs).toBe(1);
+  });
+
+  runDb('a re-publish after verification refuses the delivery against the old seq (not_enabled, no run, no charge); the new seq is admitted', async () => {
+    const t = await tenant();
+    const { flowId } = await seedEnabledFlow({ orgId: t.orgA, partnerId: t.partnerId, delegatorUserId: t.delegatorId, definition: webhookDoc, pins: [PIN] });
+    await writeSecret(flowId, new Date());
+    const generation = await rotatedAtOf(flowId);
+
+    // Re-publish: a second immutable publication, made the live one.
+    await withSystemDbAccessContext(async () => {
+      await db.insert(flowVersions).values({
+        flowId, orgId: t.orgA, partnerId: null, publicationSeq: 2, definitionVersion: 1, definition: webhookDoc, effectiveTier: 1,
+        stepPins: [PIN as unknown as Record<string, unknown>], preApprovals: [], enabledByUserId: t.delegatorId,
+      });
+      await db.update(flows).set({ enabledPublicationSeq: 2 }).where(eq(flows.id, flowId));
+    });
+
+    const onCreated = vi.fn(async () => {});
+    expect(await createFlowRun(webhookRun(flowId, t.orgA, 1, generation, onCreated))).toEqual({ created: false, reason: 'not_enabled' });
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(await runsOf(flowId)).toHaveLength(0);
+    expect(await countersOf(t.partnerId)).toHaveLength(0);
+    expect(await deliveriesOf(flowId)).toHaveLength(0);
+
+    const ok = await createFlowRun(webhookRun(flowId, t.orgA, 2, generation, onCreated));
+    expect(ok).toMatchObject({ created: true });
+    const [run] = await runsOf(flowId);
+    const [pub2] = await withSystemDbAccessContext(() => db.select().from(flowVersions).where(and(eq(flowVersions.flowId, flowId), eq(flowVersions.publicationSeq, 2))));
+    expect(run!.flowVersionId).toBe(pub2!.id);
   });
 });
 

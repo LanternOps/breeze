@@ -802,28 +802,37 @@ async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, it
   s.activeMs += Math.max(0, Date.now() - t0);
 
   if (halted === 'stop') return 'stop';
+  // Every drift-class failure in the batch pauses the flow, whatever ended the
+  // batch (the sequential rule; PR review: a cancel or timeout halt must not
+  // swallow an in-flight item's drift).
+  const pauses = new Set([...ends.values()].flatMap((e) => (e.kind === 'failed' && PAUSE_FOR_CODE[e.code] ? [PAUSE_FOR_CODE[e.code]!] : [])));
+  const applyPauses = async () => {
+    for (const pause of pauses) await safePause(s.run, s.publication.publicationSeq, pause);
+  };
   const firstEnd = [...ends.entries()].sort(([a], [b]) => a - b);
   const unknown = firstEnd.find(([, e]) => e.kind === 'unknown_outcome');
   if (unknown) {
     await finish(s, { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${step.id} may or may not have taken effect.` }, undefined, {
       unknownStepId: step.id,
     });
+    await applyPauses();
     return 'stop';
   }
   if (halted === 'cancelled') {
     await finish(s, { status: 'cancelled', errorCode: 'cancelled', error: 'The run was cancelled.' });
+    await applyPauses();
     return 'stop';
   }
   if (halted === 'timeout') {
     await finish(s, { status: 'failed', errorCode: 'run_timeout', error: 'The run exceeded its active-time limit.' });
+    await applyPauses();
     return 'stop';
   }
   const ending = firstEnd.find(([, e]) => e.kind === 'failed' && (e.policy || step.onFailure === 'stop'));
   if (halted === 'failure' && ending) {
     const end = ending[1] as Extract<ItemEnd, { kind: 'failed' }>;
-    await finish(s, { status: 'failed', errorCode: end.code, error: `Step ${step.id}: ${end.message}` }, undefined, {
-      pause: PAUSE_FOR_CODE[end.code] ?? null,
-    });
+    await finish(s, { status: 'failed', errorCode: end.code, error: `Step ${step.id}: ${end.message}` });
+    await applyPauses();
     return 'stop';
   }
 
@@ -833,8 +842,7 @@ async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, it
   const ok = await checkpoint(s.runId, s.token, { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs });
   if (!ok) return 'stop';
   // A non-terminal drift-class failure under continue still pauses the flow (the sequential rule).
-  const pauses = new Set([...ends.values()].flatMap((e) => (e.kind === 'failed' && PAUSE_FOR_CODE[e.code] ? [PAUSE_FOR_CODE[e.code]!] : [])));
-  for (const pause of pauses) await safePause(s.run, s.publication.publicationSeq, pause);
+  await applyPauses();
   record(s, step.id, failed ? 'failed' : 'completed', outputs);
   if (failed) s.anyContinueFailure = true;
   return 'continue';

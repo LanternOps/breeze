@@ -953,6 +953,18 @@ describe('processFlowRunJob — W5 parallel for-each (#5220 A7)', () => {
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
   });
 
+  it('a drift failure finishing while a cancel halts the batch still pauses the flow (PR review)', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null }) => {
+      if (i.itemIndex === 0) { h.state.run!.cancelRequestedAt = new Date(); return completed(); }
+      await new Promise((r) => setTimeout(r, 5));
+      return { kind: 'failed', code: 'tool_unavailable', message: 'gone', policy: true, renderedInput: {} };
+    });
+    await run();
+    expect(h.state.run).toMatchObject({ status: 'cancelled' });
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', expect.anything());
+  });
+
   it('lost lease mid-batch launches nothing more and writes nothing', async () => {
     seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
     h.execute.mockImplementation(async (i: { itemIndex: number | null }) => {

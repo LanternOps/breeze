@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * Tool Catalog W05 (#5220) Task A6 / Decision 5 — the execution org of a
  * webhook delivery. The SQL boundary is a fake that records each query's
- * bound values; the real-DB proof (another partner's link, a suspended org)
- * is flowWebhooksRls.integration.test.ts.
+ * bound values; the real-DB proof (another partner's link or org uuid, a
+ * suspended or soft-deleted org, through the real ingestFlowWebhook) is the
+ * "webhook org resolution through the real ingress" describe in
+ * apps/api/src/__tests__/integration/flowWebhooksRls.integration.test.ts.
  */
 
 const { selects, calls } = vi.hoisted(() => ({ selects: [] as unknown[][], calls: [] as unknown[] }));

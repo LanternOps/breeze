@@ -15,6 +15,7 @@ import type { FlowWebhookAuthFailure, FlowWebhookAuthMode, FlowWebhookDeliveryDt
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import { flowWebhookDeliveries } from '../../../db/schema/flowWebhooks';
 import type { AuthContext } from '../../../middleware/auth';
+import { captureException } from '../../sentry';
 
 export interface DeliveryFacts {
   flowId: string;
@@ -150,7 +151,10 @@ export async function markWebhookAuthFailure(flowId: string, reason: FlowWebhook
         AND (webhook_last_auth_failure_at IS NULL OR webhook_last_auth_failure_at < now() - interval '1 minute')`),
     'flows.webhook.markAuthFailure');
   } catch (err) {
+    // Best effort, but reported: the marker is the operator's only view of a failing sender.
     console.error(`[flows] webhook auth-failure marker failed (flow=${flowId})`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_id: flowId, flow_site: 'flows.webhook.markAuthFailure' }, { fingerprint: ['flow', 'flows.webhook.markAuthFailure'] });
   }
 }
 

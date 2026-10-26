@@ -41,11 +41,16 @@ vi.mock('../../permissions', async (importOriginal) => ({
   getUserPermissions: vi.fn(),
 }));
 vi.mock('../repository', () => ({ ownerForFlowRow: vi.fn() }));
+vi.mock('../../flowValidator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../flowValidator')>()),
+  stepPinsFor: vi.fn(),
+}));
 
 import { writeAuditEvent } from '../../auditEvents';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { getUserPermissions, type UserPermissions } from '../../permissions';
 import { ownerForFlowRow } from '../repository';
+import { FlowStepPinError, stepPinsFor } from '../../flowValidator';
 import { createOrRotateWebhookSecret, decryptFlowWebhookSecret, encryptFlowWebhookSecret } from './secret';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -85,6 +90,7 @@ beforeEach(() => {
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(canManagePartnerWidePolicies).mockReset().mockReturnValue(true);
   vi.mocked(getUserPermissions).mockReset().mockResolvedValue(perms());
+  vi.mocked(stepPinsFor).mockReset().mockResolvedValue([]);
   vi.mocked(ownerForFlowRow).mockReset().mockImplementation(async (r: { orgId: string | null }) =>
     (r.orgId ? { orgId: r.orgId, partnerId: PARTNER } : { orgId: null, partnerId: PARTNER }));
 });
@@ -193,6 +199,25 @@ describe('createOrRotateWebhookSecret', () => {
 
     vi.mocked(getUserPermissions).mockResolvedValue(perms());
     selects.push([flowRow({ enabledPublicationSeq: 2 })], [{ definition: RUN_DOC, stepPins: RUN_PINS }]);
+    updates.push([{ id: FLOW_A }]);
+    expect((await createOrRotateWebhookSecret(auth(), FLOW_A)).ok).toBe(true);
+  });
+
+  // PR review (security): a secret minted on a DRAFT stays valid after someone
+  // broader enables it, so the minter must also hold the draft's step permissions.
+  it('minting on a draft requires rule 7 for the draft\'s steps', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'automations', action: 'write' }] }));
+    vi.mocked(stepPinsFor).mockResolvedValue(RUN_PINS as never);
+    selects.push([flowRow({ definition: RUN_DOC })]);
+    const r = await createOrRotateWebhookSecret(auth(), FLOW_A);
+    expect(r).toMatchObject({ ok: false, error: 'permission_missing' });
+    expect((r as { missing: Array<{ permission: string }> }).missing).toContainEqual({ stepId: 'run', permission: 'scripts.execute' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
+  });
+
+  it('a draft whose steps do not resolve yet can still get a secret (enable re-checks the enabler)', async () => {
+    vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
+    selects.push([flowRow({ definition: RUN_DOC })]);
     updates.push([{ id: FLOW_A }]);
     expect((await createOrRotateWebhookSecret(auth(), FLOW_A)).ok).toBe(true);
   });

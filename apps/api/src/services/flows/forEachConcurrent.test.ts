@@ -197,6 +197,41 @@ describe('runForEachItems', () => {
     expect(sem.inUse()).toBe(0);
   });
 
+  // PR review: a control-check (DB) error must never abandon in-flight items.
+  it('a beforeLaunch throw awaits in-flight items before failing', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const h = harness(4);
+    let checks = 0;
+    const done = runForEachItems({
+      ...base, count: 4, parallelism: 2, runItem: h.runItem,
+      beforeLaunch: async () => { if (++checks === 3) throw new Error('pool timeout'); return 'ok'; },
+    });
+    let rejected: unknown = null;
+    void done.catch((e) => { rejected = e; });
+    await tick();
+    await h.finish(0);
+    await tick();
+    // Item 1 is still in flight: the batch must not have settled yet.
+    expect(rejected).toBeNull();
+    await h.finish(1);
+    await expect(done).rejects.toThrow('pool timeout');
+    expect(h.started).toEqual([0, 1]);
+    err.mockRestore();
+  });
+
+  it('a process slot is taken before the control check, so the check is fresh at launch', async () => {
+    const order: string[] = [];
+    const sem = createUnitSemaphore(1);
+    const r = runForEachItems({
+      ...base, count: 1, parallelism: 1,
+      acquire: async () => { order.push('acquire'); return sem.acquire(); },
+      beforeLaunch: async () => { order.push('check'); return 'ok'; },
+      runItem: async () => { order.push('run'); return { kind: 'done', status: 'completed', output: null }; },
+    });
+    await r;
+    expect(order).toEqual(['acquire', 'check', 'run']);
+  });
+
   it('an item that throws is a stop (never an unrecorded success)', async () => {
     const r = await runForEachItems({ ...base, count: 2, parallelism: 1, runItem: async () => { throw new Error('boom'); } });
     expect(r.halted).toBe('stop');

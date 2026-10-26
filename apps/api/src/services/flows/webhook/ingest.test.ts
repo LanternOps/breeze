@@ -64,6 +64,7 @@ vi.mock('../../tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: PARTNER })),
 }));
 vi.mock('./orgResolver', () => ({ resolveWebhookOrg: vi.fn() }));
+vi.mock('../../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../triggerScope', () => ({
   buildTriggerScope: vi.fn(async (i: { kind: string; orgId: string; webhook?: { body: unknown } }) => ({
     kind: i.kind, orgId: i.orgId, firedAt: '2027-03-01T10:00:00.000Z', ...(i.webhook ? { body: i.webhook.body } : {}),
@@ -123,6 +124,8 @@ import { getActiveOrgTenant, getActivePartner } from '../../tenantStatus';
 import { resolveWebhookOrg } from './orgResolver';
 import { markWebhookAuthFailure } from './deliveries';
 import { encryptFlowWebhookSecret } from './secret';
+import { captureException } from '../../sentry';
+import { recordNonAcceptedDelivery } from './deliveries';
 import { ingestFlowWebhook } from './ingest';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -167,6 +170,7 @@ beforeEach(() => {
   h.rate.deny = null;
   h.rateKeys.length = 0;
   vi.mocked(markWebhookAuthFailure).mockClear();
+  vi.mocked(captureException).mockClear();
   vi.mocked(getActivePartner).mockClear().mockImplementation(async (id: string) => ({ id }));
   vi.mocked(getActiveOrgTenant).mockClear().mockImplementation(async (orgId: string) => ({ orgId, partnerId: PARTNER }));
   vi.mocked(resolveWebhookOrg).mockReset().mockImplementation(async (flow) => (flow.orgId ? { ok: true, orgId: flow.orgId, value: null } : { ok: true, orgId: ORG, value: 'C-77' }));
@@ -232,6 +236,31 @@ describe('ingestFlowWebhook — gates', () => {
     for (const r of [unknown, disabled, draftOnly]) expect(r).toEqual({ http: 401, body: { error: 'Unauthorized' } });
     expect(markWebhookAuthFailure).not.toHaveBeenCalled();
     expect(h.deliveries).toHaveLength(0);
+  });
+
+  it('a secret that does not decrypt is 401 to the sender and reported (review: silent failure)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Ciphertext bound to ANOTHER flow's row: the AAD check throws.
+    queueFlow(flowRow({ webhookSecretEncrypted: encryptFlowWebhookSecret('33333333-3333-4333-8333-444444444444', SECRET) }));
+    expect(await ingest(signed())).toEqual({ http: 401, body: { error: 'Unauthorized' } });
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ flow_id: FLOW, flow_site: 'flows.webhook.decrypt' });
+    expect(JSON.stringify(err.mock.calls)).not.toContain(SECRET);
+    err.mockRestore();
+  });
+
+  it('an enabled flow whose live publication is missing or unreadable is 401 and reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueFlow(flowRow(), { version: 99 });
+    expect(await ingest(signed())).toEqual({ http: 401, body: { error: 'Unauthorized' } });
+    queueFlow(flowRow(), null);
+    expect(await ingest(signed())).toEqual({ http: 401, body: { error: 'Unauthorized' } });
+    expect(captureException).toHaveBeenCalledTimes(2);
+    // A live publication that is simply not a webhook flow is not an error.
+    queueFlow(flowRow(), doc({ type: 'manual' }));
+    await ingest(signed());
+    expect(captureException).toHaveBeenCalledTimes(2);
+    err.mockRestore();
   });
 
   it('a flow without a secret is 401', async () => {
@@ -389,6 +418,17 @@ describe('ingestFlowWebhook — runs and replay protection', () => {
     queueFlow();
     expect(await ingest(signed(BODY, { 'x-breeze-delivery-id': 'evt_c' }))).toMatchObject({ http: 200, body: { status: 'duplicate' } });
     expect(h.runs.size).toBe(1);
+  });
+
+  it('a refused delivery whose log write fails still answers 429 (review: misleading status)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueFlow();
+    h.nextCreate = async () => ({ created: false, reason: 'owner_monthly_cap_reached' });
+    vi.mocked(recordNonAcceptedDelivery).mockRejectedValueOnce(new Error('insert failed'));
+    const r = await ingest(signed());
+    expect(r).toMatchObject({ http: 429, body: { status: 'refused', code: 'owner_monthly_cap_reached' } });
+    expect(captureException).toHaveBeenCalledTimes(1);
+    err.mockRestore();
   });
 
   it('secret rotated or flow re-published between verify and insert refuses the delivery', async () => {

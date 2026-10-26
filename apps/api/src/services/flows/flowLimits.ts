@@ -35,7 +35,12 @@ function fieldValue(settings: unknown, key: FlowLimitKey): number | undefined {
   if (!flowsBlob || typeof flowsBlob !== 'object' || Array.isArray(flowsBlob)) return undefined;
   if (!Object.hasOwn(flowsBlob, key)) return undefined;
   const parsed = flowLimitsSettingsSchema.shape[key].safeParse((flowsBlob as Record<string, unknown>)[key]);
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) {
+    // Visible, never fatal: this level falls back to the one above it.
+    console.warn(`[flows] ignoring an invalid flows.${key} setting (falls back to the level above)`);
+    return undefined;
+  }
+  return parsed.data;
 }
 
 /** Pure: the effective limits from the two settings blobs (org null ⇒ a partner owner). */

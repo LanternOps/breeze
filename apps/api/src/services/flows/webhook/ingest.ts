@@ -50,6 +50,7 @@ import { flowVersions } from '../../../db/schema/flowRuns';
 import { isPgUniqueViolation } from '../../../utils/pgErrors';
 import { redactPersistedToolInput } from '../../aiToolOutput';
 import { rateLimiter } from '../../rate-limit';
+import { captureException } from '../../sentry';
 import { getRedis } from '../../redis';
 import { getActiveOrgTenant, getActivePartner } from '../../tenantStatus';
 import { nullFlowInputs } from '../inputDefaults';
@@ -80,6 +81,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const UNAUTHORIZED = { http: 401, body: { error: 'Unauthorized' } } as const;
 /** What a stored trigger envelope may hold beyond the body (Decision 6). */
 const ENVELOPE_SLACK_BYTES = 4096;
+
+/** Reported, never shown to the sender (who always gets the uniform answer). */
+function report(err: unknown, site: string, flowId: string): void {
+  console.error(`[flows] ${site} (flow=${flowId}): ${err instanceof Error ? err.message : String(err)}`);
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, { flow_id: flowId, flow_site: site }, { fingerprint: ['flow', site] });
+}
 
 function inSystem<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
@@ -121,7 +128,13 @@ async function loadLiveWebhookFlow(flowId: string) {
       .where(and(eq(flowVersions.flowId, flow.id), eq(flowVersions.publicationSeq, seq)))
       .limit(1);
     const doc = pub ? flowDocumentV1Schema.safeParse(pub.definition) : null;
-    if (!doc?.success || doc.data.trigger.type !== 'webhook') return null;
+    if (!doc?.success) {
+      // An enabled flow whose live publication is gone or unreadable: the
+      // sender gets the uniform 401, the operator gets a report.
+      report(new Error(pub ? 'live publication does not parse' : 'live publication missing'), 'flows.webhook.publication', flow.id);
+      return null;
+    }
+    if (doc.data.trigger.type !== 'webhook') return null;
     return { flow: { ...flow, enabledPublicationSeq: seq }, doc: doc.data, trigger: doc.data.trigger };
   }, 'flows.webhook.loadFlow');
 }
@@ -160,8 +173,11 @@ export async function ingestFlowWebhook(i: {
   let secret: string | null;
   try {
     secret = decryptFlowWebhookSecret(flow);
-  } catch {
-    secret = null; // a ciphertext bound to another row, or a key that is gone: refuse
+  } catch (err) {
+    // A ciphertext bound to another row, or a key that is gone: refuse, and
+    // tell the operator (every sender of this flow is now failing).
+    report(err, 'flows.webhook.decrypt', flow.id);
+    secret = null;
   }
   if (!secret || !flow.webhookSecretRotatedAt) return UNAUTHORIZED;
 
@@ -255,11 +271,20 @@ export async function ingestFlowWebhook(i: {
     if (result.created) return { http: 202, body: { status: 'accepted', runId: result.runId, deliveryId: acceptedId ?? '' } };
     if (result.reason === 'duplicate') return { http: 200, body: { status: 'duplicate', runId: result.runId } };
     if (result.reason === 'not_enabled') return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
-    if (isFlowAdmissionRefusal(result.reason)) {
-      const id = await recordNonAcceptedDelivery({ ...facts, orgId, status: 'refused', refusalCode: result.reason, resolverValue: resolved.value });
-      return { http: 429, body: { status: 'refused', code: result.reason, deliveryId: id }, retryAfterSec: retryAfterFor(result.reason, new Date()) };
+    const code: FlowAdmissionRefusal = result.reason;
+    if (!isFlowAdmissionRefusal(code)) throw new Error(`flow webhook: unhandled createFlowRun refusal '${String(code)}'`);
+    // The refusal is the answer; a failed log write must not turn it into a 503.
+    let id: string | undefined;
+    try {
+      id = await recordNonAcceptedDelivery({ ...facts, orgId, status: 'refused', refusalCode: code, resolverValue: resolved.value });
+    } catch (err) {
+      report(err, 'flows.webhook.recordRefusal', flow.id);
     }
-    return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
+    return {
+      http: 429,
+      body: { status: 'refused', code, ...(id ? { deliveryId: id } : {}) },
+      retryAfterSec: retryAfterFor(code, new Date()),
+    };
   } catch (err) {
     // A replay that raced us to the accepted row: the run and our row rolled back together.
     if (!isPgUniqueViolation(err)) throw err;

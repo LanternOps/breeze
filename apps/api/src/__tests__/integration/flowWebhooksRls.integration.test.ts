@@ -21,7 +21,7 @@ vi.mock('../../jobs/flowRunQueue', () => ({ enqueueFlowRunSlice: vi.fn(async () 
 
 import { flowUsagePeriodKey } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { flowRuns, flowUsageCounters, flowWebhookDeliveries, flows } from '../../db/schema';
+import { flowRuns, flowUsageCounters, flowWebhookDeliveries, flows, organizationExternalLinks, organizations, partners } from '../../db/schema';
 import { encryptedColumnRegistry, reencryptRegisteredSecrets } from '../../services/encryptedColumnRegistry';
 import { ingestFlowWebhook } from '../../services/flows/webhook/ingest';
 import { decryptFlowWebhookSecret, encryptFlowWebhookSecret } from '../../services/flows/webhook/secret';
@@ -349,6 +349,210 @@ describe('ingestFlowWebhook against real Postgres', () => {
     expect(res.http).toBe(401);
     expect(await withSystemDbAccessContext(() => db.select().from(flowRuns).where(eq(flowRuns.flowId, flowId)))).toHaveLength(0);
     expect(await withSystemDbAccessContext(() => db.select().from(flowWebhookDeliveries).where(eq(flowWebhookDeliveries.flowId, flowId)))).toHaveLength(0);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Real-ingress gaps found in PR review (#10270)
+// ───────────────────────────────────────────────────────────────────────────
+
+const runsOfFlow = (flowId: string) => withSystemDbAccessContext(() => db.select().from(flowRuns).where(eq(flowRuns.flowId, flowId)));
+const deliveriesOf = (flowId: string) => withSystemDbAccessContext(() => db.select().from(flowWebhookDeliveries).where(eq(flowWebhookDeliveries.flowId, flowId)));
+const countersOfPartner = (partnerId: string) => withSystemDbAccessContext(() => db.select().from(flowUsageCounters).where(eq(flowUsageCounters.partnerId, partnerId)));
+const flowRow = (flowId: string) => withSystemDbAccessContext(async () => (await db.select().from(flows).where(eq(flows.id, flowId)))[0]!);
+
+type Resolver = { path: string; system: string } | { path: string; kind: 'breeze_org_id' };
+
+/** A partner-wide (or org) webhook flow with a stored secret; the doc may carry an orgResolver. */
+async function webhookFlow(t: Tenant, opts: { owner?: 'org' | 'partner'; resolver?: Resolver } = {}) {
+  const definition = {
+    ...WEBHOOK_DOC,
+    trigger: { ...WEBHOOK_DOC.trigger, ...(opts.resolver ? { orgResolver: opts.resolver } : {}) },
+  };
+  const owner = opts.owner ?? (opts.resolver ? 'partner' : 'org');
+  const seeded = await seedEnabledFlow({
+    partnerId: t.partnerId, orgId: t.orgA, owner, delegatorUserId: t.delegatorId, definition, pins: [PIN],
+  });
+  const secret = `bwh_${randomBytes(32).toString('base64url')}`;
+  await setSecret(seeded.flowId, secret);
+  return { ...seeded, secret };
+}
+
+const linkOrg = (partnerId: string, orgId: string, system: string, externalId: string) =>
+  withSystemDbAccessContext(() => db.insert(organizationExternalLinks).values({ partnerId, orgId, system, externalId }));
+
+const runsInOrg = (orgId: string) => withSystemDbAccessContext(() => db.select().from(flowRuns).where(eq(flowRuns.orgId, orgId)));
+
+describe('webhook org resolution through the real ingress (real Postgres)', () => {
+  runDb("another partner's external link, another partner's org uuid, a suspended org and a soft-deleted org all resolve to 422 org_unresolved with no run; a live own-partner link runs in that org", async () => {
+    const A = await tenant();
+    const B = await tenant();
+
+    // (a) system link: the id is linked only by partner B, for B's org.
+    const viaLink = await webhookFlow(A, { resolver: { path: 'body.customer.id', system: 'halo' } });
+    await linkOrg(B.partnerId, B.orgA, 'halo', 'C-1');
+    const crossLink = await ingestFlowWebhook(signedRequest(viaLink.flowId, viaLink.secret, JSON.stringify({ customer: { id: 'C-1' } })));
+    expect(crossLink).toMatchObject({ http: 422, body: { status: 'org_unresolved' } });
+    expect(await runsOfFlow(viaLink.flowId)).toHaveLength(0);
+    expect(await runsInOrg(B.orgA)).toHaveLength(0);
+    const rows = await deliveriesOf(viaLink.flowId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'org_unresolved', orgId: null, partnerId: A.partnerId, runId: null, resolverValue: 'C-1' });
+    expect((crossLink.body as { deliveryId: string }).deliveryId).toBe(rows[0]!.id);
+
+    // (b) breeze_org_id: B's org uuid in the body.
+    const viaUuid = await webhookFlow(A, { resolver: { path: 'body.org', kind: 'breeze_org_id' } });
+    const crossUuid = await ingestFlowWebhook(signedRequest(viaUuid.flowId, viaUuid.secret, JSON.stringify({ org: B.orgA })));
+    expect(crossUuid).toMatchObject({ http: 422, body: { status: 'org_unresolved' } });
+    expect(await runsOfFlow(viaUuid.flowId)).toHaveLength(0);
+    expect(await runsInOrg(B.orgA)).toHaveLength(0);
+    expect(await deliveriesOf(viaUuid.flowId)).toMatchObject([{ status: 'org_unresolved', orgId: null, partnerId: A.partnerId }]);
+
+    // (c) A's own link to A's org: suspended => 422, soft-deleted => 422, live => 202 in A's org.
+    await linkOrg(A.partnerId, A.orgB, 'halo', 'C-2');
+    const body2 = JSON.stringify({ customer: { id: 'C-2' } });
+    await withSystemDbAccessContext(() => db.update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, A.orgB)));
+    expect(await ingestFlowWebhook(signedRequest(viaLink.flowId, viaLink.secret, body2))).toMatchObject({ http: 422, body: { status: 'org_unresolved' } });
+    await withSystemDbAccessContext(() => db.update(organizations).set({ status: 'active', deletedAt: new Date() }).where(eq(organizations.id, A.orgB)));
+    expect(await ingestFlowWebhook(signedRequest(viaLink.flowId, viaLink.secret, body2))).toMatchObject({ http: 422, body: { status: 'org_unresolved' } });
+    expect(await runsOfFlow(viaLink.flowId)).toHaveLength(0);
+
+    // Control: the same link and body once the org is live again resolves and runs in A's org.
+    await withSystemDbAccessContext(() => db.update(organizations).set({ deletedAt: null }).where(eq(organizations.id, A.orgB)));
+    const live = await ingestFlowWebhook(signedRequest(viaLink.flowId, viaLink.secret, body2));
+    expect(live).toMatchObject({ http: 202, body: { status: 'accepted' } });
+    const runs = await runsOfFlow(viaLink.flowId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ orgId: A.orgB, triggerKind: 'webhook' });
+  });
+});
+
+describe('concurrent identical deliveries (real Postgres)', () => {
+  const ownerRow = async (t: Tenant) => (await countersOfPartner(t.partnerId)).find((c) => c.flowId === null);
+  const flowCounter = async (t: Tenant, flowId: string) => (await countersOfPartner(t.partnerId)).find((c) => c.flowId === flowId);
+
+  runDb('two byte-identical signed requests racing: exactly one 202, one 200 duplicate, one run, one accepted row, counters exactly 1', async () => {
+    const t = await tenant();
+    const f = await webhookFlow(t);
+    const req = signedRequest(f.flowId, f.secret, JSON.stringify({ event: 'race' }));
+    const results = await Promise.all([ingestFlowWebhook({ ...req }), ingestFlowWebhook({ ...req })]);
+
+    expect(results.map((r) => r.http).sort()).toEqual([200, 202]);
+    const runs = await runsOfFlow(f.flowId);
+    expect(runs).toHaveLength(1);
+    const accepted = results.find((r) => r.http === 202)!;
+    const dup = results.find((r) => r.http === 200)!;
+    expect(dup.body).toEqual({ status: 'duplicate', runId: runs[0]!.id });
+    expect((accepted.body as { runId: string }).runId).toBe(runs[0]!.id);
+    const rows = await deliveriesOf(f.flowId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('accepted');
+    expect((await flowCounter(t, f.flowId))?.runs).toBe(1);
+    expect((await ownerRow(t))?.runs).toBe(1);
+  });
+
+  runDb('one X-Breeze-Delivery-Id on two DIFFERENT signed bodies racing: one run, one accepted row, counters exactly 1', async () => {
+    const t = await tenant();
+    const f = await webhookFlow(t);
+    const deliveryId = `d-${randomUUID()}`;
+    const results = await Promise.all([
+      ingestFlowWebhook(signedRequest(f.flowId, f.secret, JSON.stringify({ n: 1 }), deliveryId)),
+      ingestFlowWebhook(signedRequest(f.flowId, f.secret, JSON.stringify({ n: 2 }), deliveryId)),
+    ]);
+    expect(results.map((r) => r.http).sort()).toEqual([200, 202]);
+    expect(await runsOfFlow(f.flowId)).toHaveLength(1);
+    expect((await deliveriesOf(f.flowId)).filter((r) => r.status === 'accepted')).toHaveLength(1);
+    expect((await flowCounter(t, f.flowId))?.runs).toBe(1);
+    expect((await ownerRow(t))?.runs).toBe(1);
+  });
+});
+
+const setPartnerFlowLimits = (partnerId: string, flowsBlob: Record<string, number>) =>
+  withSystemDbAccessContext(() => db.update(partners).set({ settings: { flows: flowsBlob } }).where(eq(partners.id, partnerId)));
+
+describe('a webhook at the monthly cap through the real ingress (real Postgres)', () => {
+  runDb('the second delivery is a 429 flow_monthly_cap_reached (flow stays enabled, marker set); after the cap is raised the IDENTICAL refused request is accepted and coexists with its refused row', async () => {
+    const t = await tenant();
+    // The per-flow cap comes from the partner default: a publication is immutable, so a doc limit could not be raised later.
+    await setPartnerFlowLimits(t.partnerId, { monthlyRunsPerFlow: 1 });
+    const f = await webhookFlow(t);
+
+    const first = await ingestFlowWebhook(signedRequest(f.flowId, f.secret, JSON.stringify({ n: 1 })));
+    expect(first.http).toBe(202);
+
+    const refusedReq = signedRequest(f.flowId, f.secret, JSON.stringify({ n: 2 }));
+    const refused = await ingestFlowWebhook({ ...refusedReq });
+    expect(refused).toMatchObject({ http: 429, body: { status: 'refused', code: 'flow_monthly_cap_reached' } });
+    expect((refused as { retryAfterSec: number }).retryAfterSec).toBeGreaterThan(0);
+
+    expect(await runsOfFlow(f.flowId)).toHaveLength(1);
+    expect((await countersOfPartner(t.partnerId)).find((c) => c.flowId === f.flowId)?.runs).toBe(1);
+    const afterRefusal = await deliveriesOf(f.flowId);
+    expect(afterRefusal.map((r) => r.status).sort()).toEqual(['accepted', 'refused']);
+    expect(afterRefusal.find((r) => r.status === 'refused')).toMatchObject({ refusalCode: 'flow_monthly_cap_reached', orgId: t.orgA, runId: null });
+    expect(await flowRow(f.flowId)).toMatchObject({ status: 'enabled', lastAdmissionRefusalCode: 'flow_monthly_cap_reached' });
+
+    await setPartnerFlowLimits(t.partnerId, { monthlyRunsPerFlow: 5 });
+    const retried = await ingestFlowWebhook({ ...refusedReq });
+    expect(retried).toMatchObject({ http: 202, body: { status: 'accepted' } });
+    expect(await runsOfFlow(f.flowId)).toHaveLength(2);
+    const rows = await deliveriesOf(f.flowId);
+    expect(rows.map((r) => r.status).sort()).toEqual(['accepted', 'accepted', 'refused']);
+    const refusedDigest = rows.find((r) => r.status === 'refused')!.signatureDigest;
+    expect(rows.filter((r) => r.signatureDigest === refusedDigest).map((r) => r.status).sort()).toEqual(['accepted', 'refused']);
+  });
+});
+
+describe('delivery coalescing and the auth-failure throttle (real Postgres)', () => {
+  runDb('identical refused deliveries inside 60 s are one row with attempts 2; a different body is a new row', async () => {
+    const t = await tenant();
+    await setPartnerFlowLimits(t.partnerId, { monthlyRunsPerFlow: 1 });
+    const f = await webhookFlow(t);
+    expect((await ingestFlowWebhook(signedRequest(f.flowId, f.secret, JSON.stringify({ n: 0 })))).http).toBe(202);
+
+    const req = signedRequest(f.flowId, f.secret, JSON.stringify({ n: 1 }));
+    const r1 = await ingestFlowWebhook({ ...req });
+    const r2 = await ingestFlowWebhook({ ...req });
+    expect(r1.http).toBe(429);
+    expect(r2.http).toBe(429);
+    expect((r2.body as { deliveryId?: string }).deliveryId).toBe((r1.body as { deliveryId?: string }).deliveryId);
+    let refused = (await deliveriesOf(f.flowId)).filter((r) => r.status === 'refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ attempts: 2, refusalCode: 'flow_monthly_cap_reached' });
+
+    const other = await ingestFlowWebhook(signedRequest(f.flowId, f.secret, JSON.stringify({ n: 2 })));
+    expect(other.http).toBe(429);
+    refused = (await deliveriesOf(f.flowId)).filter((r) => r.status === 'refused');
+    expect(refused).toHaveLength(2);
+    expect(refused.map((r) => r.attempts).sort()).toEqual([1, 2]);
+  });
+
+  runDb('an org_unresolved (org_id NULL) repeat coalesces into one row', async () => {
+    const t = await tenant();
+    const f = await webhookFlow(t, { resolver: { path: 'body.customer.id', system: 'halo' } });
+    const req = signedRequest(f.flowId, f.secret, JSON.stringify({ customer: { id: 'nobody' } }));
+    const r1 = await ingestFlowWebhook({ ...req });
+    const r2 = await ingestFlowWebhook({ ...req });
+    expect(r1.http).toBe(422);
+    expect(r2.http).toBe(422);
+    const rows = await deliveriesOf(f.flowId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'org_unresolved', orgId: null, attempts: 2 });
+    expect((r2.body as { deliveryId: string }).deliveryId).toBe(rows[0]!.id);
+  });
+
+  runDb('two bad signatures in a row write flows.webhook_last_auth_failure_at once; the second leaves it unchanged', async () => {
+    const t = await tenant();
+    const f = await webhookFlow(t);
+    expect((await flowRow(f.flowId)).webhookLastAuthFailureAt).toBeNull();
+    const body = JSON.stringify({ a: 1 });
+    expect((await ingestFlowWebhook(signedRequest(f.flowId, 'bwh_wrong-secret-one', body))).http).toBe(401);
+    const afterFirst = (await flowRow(f.flowId)).webhookLastAuthFailureAt;
+    expect(afterFirst).toBeInstanceOf(Date);
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await ingestFlowWebhook(signedRequest(f.flowId, 'bwh_wrong-secret-two', body))).http).toBe(401);
+    expect((await flowRow(f.flowId)).webhookLastAuthFailureAt!.getTime()).toBe(afterFirst!.getTime());
+    expect(await deliveriesOf(f.flowId)).toHaveLength(0);
   });
 });
 
