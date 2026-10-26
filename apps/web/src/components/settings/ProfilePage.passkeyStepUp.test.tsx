@@ -166,6 +166,48 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(screen.queryByText(/existing_factor_step_up_required/i)).toBeNull();
   });
 
+  it('uses the authenticator just enrolled for passkey step-up in the same session', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      const u = String(url);
+      if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (u === '/auth/mfa/setup') return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      if (u === '/auth/mfa/enable') return makeJsonResponse({ recoveryCodes: ['AAAA-BBBB'] });
+      if (u === '/auth/passkeys/register/options') {
+        return makeJsonResponse({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, false, 403);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: false,
+      mfaMethod: null,
+      hasPassword: true,
+    }} />);
+
+    fireEvent.click(await screen.findByTestId('mfa-setup-start'));
+    fireEvent.change(document.getElementById('mfa-confirm-password') as HTMLInputElement, {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
+    await screen.findByText(/Set up authenticator/i);
+
+    const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    digits.forEach((input, index) => fireEvent.change(input, { target: { value: String(index + 1) } }));
+    fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
+    await screen.findByText(/Multi-factor authentication enabled successfully/i);
+
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-add'));
+
+    expect(await screen.findByTestId('passkey-stepup-code')).toBeTruthy();
+  });
+
   it('never sends the passkey registration request without first resolving the step-up when required', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
       const u = String(url);
