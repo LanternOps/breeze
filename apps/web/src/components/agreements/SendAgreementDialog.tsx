@@ -15,6 +15,8 @@ import {
   deleteAgreementRequest,
   previewAgreementRequest,
   sendAgreementRequest,
+  AGREEMENT_EMAIL_REASONS,
+  type AgreementEmailReason,
   type AgreementRequestPreview,
   type SendAgreementRequestResult,
 } from '../../lib/api/agreementRequests';
@@ -197,6 +199,7 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
     void (async () => {
       try {
         const res = await fetchWithAuth(`/orgs/organizations/${orgId}`);
+        if (res.status === 401) return UNAUTHORIZED();
         if (!res.ok) return;
         const org = (await res.json()) as { billingContact?: { email?: string | null } | null };
         const email = org.billingContact?.email?.trim();
@@ -204,7 +207,10 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
         const previous = prefilled.current;
         prefilled.current = email ?? '';
         setRecipientsText((cur) => (cur === '' || cur === previous ? email ?? '' : cur));
-      } catch { /* leave Recipients empty; the tech types them */ }
+      } catch (err) {
+        // Leave Recipients empty; the tech types them.
+        console.warn('[SendAgreementDialog] billing-contact prefill failed', err);
+      }
     })();
     return () => { cancelled = true; };
   }, [open, orgId]);
@@ -254,7 +260,8 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
       }
       setPreviewError(null);
       setPreview(body.data);
-    } catch {
+    } catch (err) {
+      console.error('[SendAgreementDialog] preview failed', err);
       setPreviewError(t('agreements.send.preview.error'));
     } finally {
       setPreviewLoading(false);
@@ -323,7 +330,9 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
       if (result.emailed) {
         showToast({ type: 'success', message: t('agreements.send.sent', { count: result.recipients.length }) });
       } else {
-        const reason = result.emailReason ?? 'send_failed';
+        // The API's enum can grow ahead of this bundle; never build a missing key.
+        const reason: AgreementEmailReason =
+          result.emailReason && AGREEMENT_EMAIL_REASONS.includes(result.emailReason) ? result.emailReason : 'send_failed';
         showToast({
           type: 'warning',
           // i18n-dynamic: key built from the API's emailReason enum.
@@ -348,9 +357,12 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
           request: () => deleteAgreementRequest(draftId),
           errorFallback: t('agreements.send.discardError'),
           onUnauthorized: UNAUTHORIZED,
+          // 404: the draft is already gone, which is what closing wanted.
+          suppressErrorToast: (status) => status === 404,
         });
       } catch (err) {
-        fail(err, t('agreements.send.discardError'));
+        // 404 = already deleted elsewhere; closing wanted exactly that.
+        if (!(err instanceof ActionError && err.status === 404)) fail(err, t('agreements.send.discardError'));
       } finally {
         setBusy(false);
       }

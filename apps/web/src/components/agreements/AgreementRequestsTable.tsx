@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
 import '@/lib/i18n';
@@ -61,20 +61,29 @@ export default function AgreementRequestsTable({
   const [voidBusy, setVoidBusy] = useState(false);
   const [tick, setTick] = useState(0);
 
+  // Latest-wins: a slow earlier response (chip switch, reloadKey bump) must not
+  // overwrite the rows of the bucket now on screen.
+  const loadSeq = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const stale = () => seq !== loadSeq.current;
     try {
       setLoading(true);
       setError(undefined);
       const res = await listAgreementRequests({ status: bucket, orgId: lockedOrgId, contractId: lockedContractId });
+      if (stale()) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (!res.ok) throw new Error(stableT('agreements.requests.loadError'));
       const body = (await res.json().catch(() => null)) as { data?: AgreementRequestRow[] } | null;
+      if (stale()) return;
       if (!body) throw new Error(stableT('agreements.requests.loadError'));
       setRows(body.data ?? []);
     } catch (err) {
+      if (stale()) return;
       setError(err instanceof Error ? err.message : stableT('agreements.requests.loadError'));
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [bucket, lockedOrgId, lockedContractId, stableT]);
 
@@ -92,7 +101,13 @@ export default function AgreementRequestsTable({
         showToast({ type: 'error', message: (!res.ok && body?.error) || t('agreements.requests.copyLink.error') });
         return;
       }
-      await navigator.clipboard.writeText(link);
+      try {
+        await navigator.clipboard.writeText(link);
+      } catch {
+        // Clipboard unavailable/denied: hand the link over so it can be copied by hand.
+        showToast({ type: 'error', message: t('agreements.requests.copyLink.clipboardError', { link }) });
+        return;
+      }
       showToast({ type: 'success', message: t('agreements.requests.copyLink.success') });
     } catch {
       showToast({ type: 'error', message: t('agreements.requests.copyLink.error') });

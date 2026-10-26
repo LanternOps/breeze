@@ -725,7 +725,8 @@
         "signed": "Firmados",
         "closed": "Rechazados / anulados / vencidos"
       },
-      "downloadOriginal": "Original"
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "No se pudo generar la copia certificada de este acuerdo; en su lugar se descargó el archivo original."
     },
     "templateEditor": {
       "usage": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Copiar enlace",
         "success": "Enlace de firma copiado",
-        "error": "No se pudo copiar el enlace de firma."
+        "error": "No se pudo copiar el enlace de firma.",
+        "clipboardError": "No se pudo copiar al portapapeles. Enlace de firma: {{link}}"
       },
       "void": {
         "label": "Anular",
@@ -857,7 +859,7 @@
       "createError": "No se pudo crear el borrador.",
       "updateError": "No se pudo actualizar el acuerdo.",
       "sendError": "No se pudo enviar el acuerdo.",
-      "discardError": "No se pudo descartar el borrador del acuerdo.",
+      "discardError": "No se pudo descartar el borrador; sigue en la lista de Pendiente de firma, donde puedes eliminarlo.",
       "sent_one": "Acuerdo enviado a {{count}} destinatario",
       "sent_other": "Acuerdo enviado a {{count}} destinatarios",
       "notEmailed": {

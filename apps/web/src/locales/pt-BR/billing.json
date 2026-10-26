@@ -725,7 +725,8 @@
         "signed": "Assinados",
         "closed": "Recusados / anulados / expirados"
       },
-      "downloadOriginal": "Original"
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "Não foi possível gerar a cópia certificada deste acordo; o arquivo original foi baixado no lugar."
     },
     "templateEditor": {
       "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Copiar link",
         "success": "Link de assinatura copiado",
-        "error": "Não foi possível copiar o link de assinatura."
+        "error": "Não foi possível copiar o link de assinatura.",
+        "clipboardError": "Não foi possível copiar para a área de transferência. Link de assinatura: {{link}}"
       },
       "void": {
         "label": "Anular",
@@ -857,7 +859,7 @@
       "createError": "Não foi possível criar o rascunho.",
       "updateError": "Não foi possível atualizar o acordo.",
       "sendError": "Não foi possível enviar o acordo.",
-      "discardError": "Não foi possível descartar o rascunho do acordo.",
+      "discardError": "Não foi possível descartar o rascunho; ele continua listado em Aguardando assinatura, onde você pode excluí-lo.",
       "sent_one": "Acordo enviado a {{count}} destinatário",
       "sent_other": "Acordo enviado a {{count}} destinatários",
       "notEmailed": {

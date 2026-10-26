@@ -725,7 +725,8 @@
         "signed": "İmzalanan",
         "closed": "Reddedilen / iptal edilen / süresi dolan"
       },
-      "downloadOriginal": "Orijinal"
+      "downloadOriginal": "Orijinal",
+      "certifiedUnavailable": "Bu sözleşme için onaylı kopya oluşturulamadı; bunun yerine özgün dosya indirildi."
     },
     "templateEditor": {
       "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Bağlantıyı kopyala",
         "success": "İmza bağlantısı kopyalandı",
-        "error": "İmza bağlantısı kopyalanamadı."
+        "error": "İmza bağlantısı kopyalanamadı.",
+        "clipboardError": "Panoya kopyalanamadı. İmza bağlantısı: {{link}}"
       },
       "void": {
         "label": "İptal et",
@@ -857,7 +859,7 @@
       "createError": "Taslak oluşturulamadı.",
       "updateError": "Anlaşma güncellenemedi.",
       "sendError": "Anlaşma gönderilemedi.",
-      "discardError": "Anlaşma taslağı silinemedi.",
+      "discardError": "Taslak silinemedi; hâlâ İmza bekleyen altında listeleniyor, oradan silebilirsiniz.",
       "sent_one": "Anlaşma {{count}} alıcıya gönderildi",
       "sent_other": "Anlaşma {{count}} alıcıya gönderildi",
       "notEmailed": {

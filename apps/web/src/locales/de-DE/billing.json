@@ -725,7 +725,8 @@
         "signed": "Unterzeichnet",
         "closed": "Abgelehnt / annulliert / abgelaufen"
       },
-      "downloadOriginal": "Originaldatei"
+      "downloadOriginal": "Originaldatei",
+      "certifiedUnavailable": "Die beglaubigte Kopie konnte für diese Vereinbarung nicht erstellt werden – stattdessen wurde die Originaldatei heruntergeladen."
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Link kopieren",
         "success": "Signaturlink kopiert",
-        "error": "Der Signaturlink konnte nicht kopiert werden."
+        "error": "Der Signaturlink konnte nicht kopiert werden.",
+        "clipboardError": "Das Kopieren in die Zwischenablage ist fehlgeschlagen. Signierlink: {{link}}"
       },
       "void": {
         "label": "Annullieren",
@@ -857,7 +859,7 @@
       "createError": "Der Entwurf konnte nicht erstellt werden.",
       "updateError": "Die Vereinbarung konnte nicht aktualisiert werden.",
       "sendError": "Die Vereinbarung konnte nicht gesendet werden.",
-      "discardError": "Der Vereinbarungsentwurf konnte nicht verworfen werden.",
+      "discardError": "Der Entwurf konnte nicht verworfen werden – er steht weiterhin unter „Wartet auf Unterschrift“, wo Sie ihn löschen können.",
       "sent_one": "Vereinbarung an {{count}} Empfänger gesendet",
       "sent_other": "Vereinbarung an {{count}} Empfänger gesendet",
       "notEmailed": {

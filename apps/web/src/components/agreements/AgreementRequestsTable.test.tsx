@@ -147,4 +147,53 @@ describe('AgreementRequestsTable', () => {
     render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
     expect(await screen.findByTestId('agreement-requests-error')).toBeInTheDocument();
   });
+  it('clipboard failure shows a clipboardError toast that includes the signing link', async () => {
+    api.getAgreementRequestLink.mockResolvedValue(resp({ data: { link: 'https://app.test/sign/xyz', reissued: false } }));
+    (navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('denied'));
+    render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+    fireEvent.click(await screen.findByTestId('agreement-request-copy-link-r1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: expect.stringContaining('https://app.test/sign/xyz'),
+    })));
+  });
+
+  it('a failed void keeps the dialog open and the typed reason, and does not reload', async () => {
+    api.voidAgreementRequest.mockResolvedValue(resp({ error: 'Already signed' }, 409));
+    render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+    fireEvent.click(await screen.findByTestId('agreement-request-void-r1'));
+    await screen.findByTestId('agreement-request-void-dialog');
+    fireEvent.change(screen.getByTestId('agreement-request-void-reason'), { target: { value: 'Wrong template' } });
+    fireEvent.click(screen.getByTestId('agreement-request-void-confirm'));
+    await waitFor(() => expect(api.voidAgreementRequest).toHaveBeenCalled());
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.getByTestId('agreement-request-void-confirm')).toBeEnabled());
+    expect(screen.getByTestId('agreement-request-void-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('agreement-request-void-reason')).toHaveValue('Wrong template');
+    expect(api.listAgreementRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed draft delete does not reload the table', async () => {
+    api.listAgreementRequests.mockResolvedValue(resp({ data: [row({ status: 'draft', sentAt: null })] }));
+    api.deleteAgreementRequest.mockResolvedValue(resp({ error: 'nope' }, 500));
+    render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+    fireEvent.click(await screen.findByTestId('agreement-request-delete-r1'));
+    await waitFor(() => expect(api.deleteAgreementRequest).toHaveBeenCalled());
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(api.listAgreementRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a superseded slow response: the later load rows win', async () => {
+    let releaseFirst: (r: Response) => void = () => {};
+    api.listAgreementRequests
+      .mockImplementationOnce(() => new Promise<Response>((r) => { releaseFirst = r; }))
+      .mockResolvedValueOnce(resp({ data: [row({ id: 'closed-1', status: 'voided', voidReason: 'x' })] }));
+    const { rerender } = render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+    rerender(<AgreementRequestsTable bucket="closed" orgNames={{}} />);
+    await waitFor(() => expect(screen.getByTestId('agreement-request-row')).toHaveAttribute('data-request-id', 'closed-1'));
+    releaseFirst(resp({ data: [row({ id: 'pending-1' })] }));
+    await new Promise((r) => setTimeout(r, 20));
+    const rows = screen.getAllByTestId('agreement-request-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute('data-request-id', 'closed-1');
+  });
 });

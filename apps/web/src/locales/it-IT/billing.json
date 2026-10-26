@@ -725,7 +725,8 @@
         "signed": "Firmati",
         "closed": "Rifiutati / annullati / scaduti"
       },
-      "downloadOriginal": "Originale"
+      "downloadOriginal": "Originale",
+      "certifiedUnavailable": "Non è stato possibile generare la copia certificata di questo accordo: è stato scaricato il file originale."
     },
     "templateEditor": {
       "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Copia link",
         "success": "Link di firma copiato",
-        "error": "Impossibile copiare il link di firma."
+        "error": "Impossibile copiare il link di firma.",
+        "clipboardError": "Impossibile copiare negli appunti. Link di firma: {{link}}"
       },
       "void": {
         "label": "Annulla",
@@ -857,7 +859,7 @@
       "createError": "Impossibile creare la bozza.",
       "updateError": "Impossibile aggiornare l’accordo.",
       "sendError": "Impossibile inviare l’accordo.",
-      "discardError": "Impossibile scartare la bozza dell’accordo.",
+      "discardError": "Impossibile eliminare la bozza: è ancora elencata in In attesa di firma, dove puoi eliminarla.",
       "sent_one": "Accordo inviato a {{count}} destinatario",
       "sent_other": "Accordo inviato a {{count}} destinatari",
       "notEmailed": {

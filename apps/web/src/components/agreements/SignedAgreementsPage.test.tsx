@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // fetchWithAuth is called directly to load the org-name lookup (same idiom as TemplatesPage).
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
-vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const docsApi = vi.hoisted(() => ({
@@ -29,7 +30,7 @@ vi.mock('../../lib/api/agreementRequests', async (importOriginal) => {
 
 const download = vi.hoisted(() => vi.fn());
 vi.mock('../billing/shared/usePdfDownload', () => ({
-  usePdfDownload: (opts: { path: string; filename: string }) => ({
+  usePdfDownload: (opts: { path: string; filename: string; onResponse?: (res: Response) => { filename?: string } | void }) => ({
     download: () => download(opts),
     downloading: false,
   }),
@@ -294,6 +295,7 @@ describe('SignedAgreementsPage', () => {
         path: '/contracts/contract-documents/doc-1/pdf?copy=certified',
         filename: 'signed-agreement-doc-1.pdf',
         errorMessage: expect.any(String),
+        onResponse: expect.any(Function),
       });
       fireEvent.click(within(rows[0]).getByTestId('contract-document-download-original-doc-1'));
       expect(download).toHaveBeenLastCalledWith({
@@ -301,6 +303,33 @@ describe('SignedAgreementsPage', () => {
         filename: 'signed-agreement-doc-1-original.png',
         errorMessage: expect.any(String),
       });
+    });
+
+    async function certifiedOnResponse() {
+      docsApi.listContractDocuments.mockResolvedValue(resp({ data: [{ ...UNATTACHED_DOC, mime: 'image/png' }] }));
+      render(<SignedAgreementsPage />);
+      const rows = await screen.findAllByTestId('contract-document-row');
+      fireEvent.click(within(rows[0]).getByTestId('contract-document-download-doc-1'));
+      return download.mock.lastCall![0].onResponse as (res: Response) => { filename?: string } | void;
+    }
+
+    it('saves under the -original name and warns when the API fell back to the original copy', async () => {
+      const onResponse = await certifiedOnResponse();
+      showToast.mockClear();
+      const out = onResponse(new Response('x', { headers: { 'X-Agreement-Copy': 'original', 'Content-Type': 'image/png' } }));
+      expect(out).toEqual({ filename: 'signed-agreement-doc-1-original.png' });
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringMatching(/certified copy couldn.t be produced/i),
+      }));
+    });
+
+    it('keeps the .pdf name and shows no warning for a normal certified response', async () => {
+      const onResponse = await certifiedOnResponse();
+      showToast.mockClear();
+      const out = onResponse(new Response('x', { headers: { 'Content-Type': 'application/pdf' } }));
+      expect(out).toBeUndefined();
+      expect(showToast).not.toHaveBeenCalled();
     });
   });
 

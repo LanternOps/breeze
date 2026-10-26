@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const showToast = vi.hoisted(() => vi.fn());
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
-vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const navigateTo = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/navigation', () => ({ navigateTo: (...a: unknown[]) => navigateTo(...a) }));
 
 const fetchWithAuth = vi.hoisted(() => vi.fn());
 vi.mock('../../stores/auth', () => ({
@@ -36,6 +37,8 @@ vi.mock('../../lib/api/agreementRequests', async (importOriginal) => {
 });
 
 import SendAgreementDialog from './SendAgreementDialog';
+import { AGREEMENT_EMAIL_REASONS } from '../../lib/api/agreementRequests';
+import enBilling from '../../locales/en/billing.json';
 
 const resp = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, statusText: status < 400 ? 'OK' : 'Error', json: async () => payload }) as unknown as Response;
@@ -248,5 +251,106 @@ describe('SendAgreementDialog', () => {
     await fillAndCreate();
     expect(await screen.findByTestId('agreements-send-expiry-error')).toHaveTextContent(/future/i);
     expect(api.createAgreementRequest).not.toHaveBeenCalled();
+  });
+  async function toPreview() {
+    await waitFor(() => expect(screen.getByTestId('agreements-send-recipients')).toHaveValue('billing@acme.test'));
+    await fillAndCreate();
+    await screen.findByTestId('agreements-send-preview');
+  }
+
+  it.each([
+    ['a 422', () => api.sendAgreementRequest.mockResolvedValue(resp({ error: 'Template unpublished' }, 422))],
+    ['an HTTP 200 {success:false}', () => api.sendAgreementRequest.mockResolvedValue(resp({ success: false, error: 'nope' }))],
+  ])('a failed send (%s) keeps the dialog open, keeps the draft, and re-enables Send', async (_n, arrange) => {
+    arrange();
+    const { onSent, onClose } = renderDialog();
+    await toPreview();
+    fireEvent.click(screen.getByTestId('agreements-send-submit'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.getByTestId('agreements-send-submit')).toBeEnabled());
+    expect(onSent).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(api.deleteAgreementRequest).not.toHaveBeenCalled();
+    expect(screen.getByTestId('agreements-send-dialog')).toBeInTheDocument();
+  });
+
+  it('a second rapid click on Send calls sendAgreementRequest once', async () => {
+    let release: (r: Response) => void = () => {};
+    api.sendAgreementRequest.mockImplementation(() => new Promise<Response>((r) => { release = r; }));
+    const { onSent } = renderDialog();
+    await toPreview();
+    const btn = screen.getByTestId('agreements-send-submit');
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    expect(api.sendAgreementRequest).toHaveBeenCalledTimes(1);
+    release(resp({ data: sendResult() }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+  });
+
+  it('cancel when the draft DELETE fails (500) toasts the discard error and still closes', async () => {
+    api.deleteAgreementRequest.mockResolvedValue(resp({}, 500));
+    const { onClose } = renderDialog();
+    await toPreview();
+    fireEvent.click(screen.getByTestId('agreements-send-cancel'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: expect.stringMatching(/still listed under Awaiting signature/),
+    }));
+  });
+
+  it('cancel when the draft DELETE returns 404 (already gone) is a clean close with no error toast', async () => {
+    api.deleteAgreementRequest.mockResolvedValue(resp({ error: 'Not found' }, 404));
+    const { onClose } = renderDialog();
+    await toPreview();
+    fireEvent.click(screen.getByTestId('agreements-send-cancel'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('an unknown emailReason falls back to the send_failed copy', async () => {
+    api.sendAgreementRequest.mockResolvedValue(resp({ data: sendResult({ emailed: false, emailReason: 'smtp_exploded' }) }));
+    const { onSent } = renderDialog();
+    await toPreview();
+    fireEvent.click(screen.getByTestId('agreements-send-submit'));
+    await waitFor(() => expect(onSent).toHaveBeenCalled());
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning', message: enBilling.agreements.send.notEmailed.send_failed,
+    }));
+  });
+
+  it('every emailReason enum value has an agreements.send.notEmailed.<reason> key in en', () => {
+    expect(AGREEMENT_EMAIL_REASONS?.length).toBeGreaterThan(0);
+    for (const reason of AGREEMENT_EMAIL_REASONS) {
+      expect(enBilling.agreements.send.notEmailed, reason).toHaveProperty(reason);
+    }
+  });
+
+  it('a 401 on the billing-contact prefill redirects to login', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) =>
+      path === '/orgs/organizations/org-1' ? resp({}, 401) : resp({ data: [{ id: 'org-1', name: 'Acme' }] }));
+    renderDialog();
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
+  });
+
+  it('logs (console.warn) when the billing-contact prefill throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (path === '/orgs/organizations/org-1') throw new Error('network');
+      return resp({ data: [{ id: 'org-1', name: 'Acme' }] });
+    });
+    renderDialog();
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    warn.mockRestore();
+  });
+
+  it('logs (console.error) when the preview request throws and still shows the preview error', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    api.previewAgreementRequest.mockRejectedValue(new Error('network'));
+    renderDialog();
+    await waitFor(() => expect(screen.getByTestId('agreements-send-recipients')).toHaveValue('billing@acme.test'));
+    await fillAndCreate();
+    await screen.findByTestId('agreements-send-preview-error');
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
   });
 });

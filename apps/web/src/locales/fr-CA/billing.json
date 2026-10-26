@@ -725,7 +725,8 @@
         "signed": "Signées",
         "closed": "Refusées / annulées / expirées"
       },
-      "downloadOriginal": "Original"
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "La copie certifiée n’a pas pu être produite pour cette entente; le fichier original a été téléchargé à la place."
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Copier le lien",
         "success": "Lien de signature copié",
-        "error": "Impossible de copier le lien de signature."
+        "error": "Impossible de copier le lien de signature.",
+        "clipboardError": "Impossible de copier dans le presse-papiers. Lien de signature : {{link}}"
       },
       "void": {
         "label": "Annuler",
@@ -857,7 +859,7 @@
       "createError": "Impossible de créer le brouillon.",
       "updateError": "Impossible de mettre à jour la convention.",
       "sendError": "Impossible d’envoyer la convention.",
-      "discardError": "Impossible d’abandonner le brouillon de convention.",
+      "discardError": "Impossible de supprimer le brouillon; il figure toujours sous En attente de signature, où vous pouvez le supprimer.",
       "sent_one": "Convention envoyée à {{count}} destinataire",
       "sent_other": "Convention envoyée à {{count}} destinataires",
       "notEmailed": {

@@ -725,7 +725,8 @@
         "signed": "Signed",
         "closed": "Declined / voided / expired"
       },
-      "downloadOriginal": "Original"
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "The certified copy couldn’t be produced for this agreement — the original file was downloaded instead."
     },
     "templateEditor": {
       "usage": "Used on {{quotes}} quotes · {{signed}} signed agreements",
@@ -808,7 +809,8 @@
       "copyLink": {
         "label": "Copy link",
         "success": "Signing link copied",
-        "error": "Couldn’t copy the signing link."
+        "error": "Couldn’t copy the signing link.",
+        "clipboardError": "Couldn’t copy to the clipboard. Signing link: {{link}}"
       },
       "void": {
         "label": "Void",
@@ -857,7 +859,7 @@
       "createError": "Couldn’t create the draft.",
       "updateError": "Couldn’t update the agreement.",
       "sendError": "Couldn’t send the agreement.",
-      "discardError": "Couldn’t discard the draft agreement.",
+      "discardError": "Couldn’t discard the draft — it is still listed under Awaiting signature, where you can delete it.",
       "sent_one": "Agreement sent to {{count}} recipient",
       "sent_other": "Agreement sent to {{count}} recipients",
       "notEmailed": {

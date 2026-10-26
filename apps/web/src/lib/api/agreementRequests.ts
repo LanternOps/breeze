@@ -149,7 +149,10 @@ export function previewAgreementRequest(id: string): Promise<Response> {
   return fetchWithAuth(`${BASE}/${id}/preview`);
 }
 
-export type AgreementEmailReason = 'no_email_service' | 'no_recipients' | 'send_failed';
+/** Why a sent agreement's email did not go out. Each value needs an
+ *  `agreements.send.notEmailed.<reason>` key (guarded by a test). */
+export const AGREEMENT_EMAIL_REASONS = ['no_email_service', 'no_recipients', 'send_failed'] as const;
+export type AgreementEmailReason = (typeof AGREEMENT_EMAIL_REASONS)[number];
 
 export interface SendAgreementRequestResult {
   request: AgreementRequestRow;

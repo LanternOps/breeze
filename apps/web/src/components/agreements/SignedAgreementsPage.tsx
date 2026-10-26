@@ -14,6 +14,7 @@ import { usePdfDownload } from '../billing/shared/usePdfDownload';
 import { formatDate } from '../billing/invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePermissions } from '../../lib/permissions';
+import { showToast } from '../shared/Toast';
 import RecordSignedAgreementDialog from './RecordSignedAgreementDialog';
 import SendAgreementDialog from './SendAgreementDialog';
 import AgreementRequestsTable from './AgreementRequestsTable';
@@ -39,6 +40,15 @@ function DocumentDownloadButton({ doc, copy }: { doc: ContractDocument; copy: Si
     path: contractDocumentPdfPath(doc.id, copy),
     filename: signedAgreementFilename(doc, copy),
     errorMessage: t('contracts.contractDetail.documents.downloadError'),
+    // The API serves the original instead when the certificate can't be built
+    // and says so in X-Agreement-Copy; name the file for what it really is.
+    onResponse: copy === 'certified'
+      ? (res) => {
+          if (res.headers.get('X-Agreement-Copy') !== 'original') return;
+          showToast({ type: 'warning', message: t('agreements.signedPage.certifiedUnavailable') });
+          return { filename: signedAgreementFilename(doc, 'original') };
+        }
+      : undefined,
   });
   const original = copy === 'original';
   return (
