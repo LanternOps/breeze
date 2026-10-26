@@ -306,8 +306,56 @@ func TestPromptMessageWithScopeReachesSinkAndActionIsAnswered(t *testing.T) {
 	}
 }
 
-func TestPromptMessageWithNoSinkIsDropped(t *testing.T) {
-	b, session, _ := newPromptBroker(t, "assist-user-4242", ipc.HelperRoleAssist, "notice.info@1")
-	// No sink set: must not panic and must not reply.
-	b.dispatchHelperMessage(session, &ipc.Envelope{ID: "act-1", Type: ipc.TypePromptAction, Payload: json.RawMessage(`{}`)})
+func TestPromptActionWithNoSinkIsAnsweredStale(t *testing.T) {
+	b, session, client := newPromptBroker(t, "assist-user-4242", ipc.HelperRoleAssist, "notice.info@1")
+	b.dispatchHelperMessage(session, &ipc.Envelope{ID: "act-1", Type: ipc.TypePromptAction, Payload: json.RawMessage(`{"promptId":"notice:x:1","rev":3,"actionId":"ok"}`)})
+	env := recvPrompt(t, client)
+	var res ipc.PromptActionResult
+	if err := json.Unmarshal(env.Payload, &res); err != nil {
+		t.Fatal(err)
+	}
+	if env.ID != "act-1" || res.Result != ipc.PromptActionRejectedStale || res.PromptID != "notice:x:1" || res.Rev != 3 {
+		t.Fatalf("reply %s %+v", env.ID, res)
+	}
+}
+
+type observingSink struct {
+	recordingSink
+	connected, disconnected []string
+}
+
+func (o *observingSink) PromptRendererConnected(s *Session) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.connected = append(o.connected, s.SessionID)
+}
+
+func (o *observingSink) PromptRendererDisconnected(s *Session) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.disconnected = append(o.disconnected, s.SessionID)
+}
+
+func TestObserverNotifiedOnlyForPromptScopedSessions(t *testing.T) {
+	b, scoped, _ := newPromptBroker(t, "assist-scoped", ipc.HelperRoleAssist, "notice.info@1")
+	plain, _ := createTestSessionWith(t, "assist-plain", "S-1-5-21-2")
+	plain.HelperRole = ipc.HelperRoleAssist
+	plain.AllowedScopes = []string{ipc.ScopeAssist, ipc.ScopeConsentUI}
+	b.sessions[plain.SessionID] = plain
+	b.byIdentity[plain.IdentityKey] = []*Session{plain}
+
+	// No sink: nothing to notify, nothing panics.
+	b.notifyPromptRendererConnected(scoped)
+
+	obs := &observingSink{}
+	b.SetPromptSink(obs)
+	b.notifyPromptRendererConnected(scoped)
+	b.notifyPromptRendererConnected(plain)
+	_ = b.closeSession(scoped)
+	_ = b.closeSession(plain)
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if strings.Join(obs.connected, ",") != "assist-scoped" || strings.Join(obs.disconnected, ",") != "assist-scoped" {
+		t.Fatalf("connected %v disconnected %v; want only the prompt-scoped session, once each", obs.connected, obs.disconnected)
+	}
 }

@@ -21,8 +21,11 @@ func rendererServes(r RendererSession, o Owner) bool {
 //     lease; a copy on another renderer (the native fallback) is fenced first;
 //   - nothing is activated: every replay is no_activate, and all but the
 //     oldest pending decision are replayed list-only, so at most one decision
-//     surface comes back;
-//   - finished entries still in the notification list are replayed list-only.
+//     surface comes back. An indicator stays an indicator (it is a pill, not
+//     a card, and never a decision).
+//
+// Called with mu held; finished entries are replayed by
+// replayFinishedEntries, which reads the inbox outside the lock.
 func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 	type move struct {
 		rec *record
@@ -30,9 +33,7 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 		c   Choice
 	}
 	var moves []move
-	live := map[string]bool{}
 	for _, rec := range h.sortedRecords() {
-		live[rec.show.PromptID] = true
 		if !rec.lingerUntil.IsZero() {
 			continue
 		}
@@ -50,32 +51,40 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 	restored := false
 	for _, m := range moves {
 		h.fence(m.rec, m.pl, ob)
-		surface := !restored && ipc.IsPromptDecision(m.rec.show.State, m.rec.show.Presentation) && !m.pl.listOnly
-		if surface {
+		switch {
+		case m.rec.show.Presentation == ipc.PromptPresentationIndicator:
+		case !restored && ipc.IsPromptDecision(m.rec.show.State, m.rec.show.Presentation) && !m.pl.listOnly:
 			restored = true
-		} else {
+		default:
 			m.pl.listOnly = true
 		}
 		m.pl.rateChecked = true // a replay is not a new card
-		h.assign(m.rec, m.pl, m.c, now, ob)
+		h.assign(m.rec, m.pl, m.c, now, ob, false)
 		// assign queued the show last; make it non-activating.
-		if n := len(ob.sends); n > 0 {
-			if s, ok := ob.sends[n-1].payload.(ipc.PromptShow); ok {
+		if n := len(ob.steps); n > 0 && ob.steps[n-1].send != nil {
+			if s, ok := ob.steps[n-1].send.payload.(ipc.PromptShow); ok {
 				s.Focus = ipc.PromptFocusNoActivate
-				ob.sends[n-1].payload = s
+				ob.steps[n-1].send.payload = s
 			}
 		}
 	}
-	h.replayFinishedEntries(r, live, ob)
 }
 
-func (h *Host) replayFinishedEntries(r RendererSession, live map[string]bool, ob *outbox) {
+// replayFinishedEntries replays the renderer principal's finished entries
+// (outcomes still in the notification list) list-only and non-activating.
+func (h *Host) replayFinishedEntries(r RendererSession) {
 	if h.inbox == nil {
 		return
 	}
-	for _, e := range h.inbox.PromptEntries(r.Owner.Key()) {
-		if live[e.PromptID] {
-			continue
+	entries := h.inbox.PromptEntries(r.Owner.PrincipalKey())
+	if len(entries) == 0 {
+		return
+	}
+	ob := &outbox{}
+	h.mu.Lock()
+	for _, e := range entries {
+		if h.prompts[e.PromptID] != nil || !e.Show.State.Terminal() {
+			continue // live prompts were replayed with a lease of their own
 		}
 		if _, ok := negotiateVersion(e.Show.Kind, []int{e.Show.KindVersion}, r, h.enabled); !ok {
 			continue
@@ -86,4 +95,5 @@ func (h *Host) replayFinishedEntries(r RendererSession, live map[string]bool, ob
 		s.Focus = ipc.PromptFocusNoActivate
 		ob.send(r.Key, ipc.TypePromptShow, s.Kind, s.PromptID, nil, s)
 	}
+	h.unlockAndFlush(ob)
 }

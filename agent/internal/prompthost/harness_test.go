@@ -113,16 +113,18 @@ func (f *fakeInbox) PutPrompt(e ListEntry) error {
 	return nil
 }
 
-func (f *fakeInbox) RetractPrompt(id string) {
+func (f *fakeInbox) RetractPrompt(id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.entries, id)
+	return nil
 }
 
-func (f *fakeInbox) TombstonePrompt(promptID string) {
+func (f *fakeInbox) TombstonePrompt(promptID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tombstones[promptID] = true
+	return nil
 }
 
 func (f *fakeInbox) PromptTombstoned(promptID string) bool {

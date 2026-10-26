@@ -67,6 +67,17 @@ func (o Owner) Key() string {
 	return fmt.Sprintf("unix:%d:%s", o.UID, o.UnixSession)
 }
 
+// PrincipalKey identifies the user principal alone (Windows SID, Unix uid).
+// It owns notification-list entries: stable across sign-ins (an
+// after-the-fact entry reaches the same person in their next session) and
+// never shared between two users.
+func (o Owner) PrincipalKey() string {
+	if o.WinSessionID != 0 || o.UserSID != "" {
+		return "win:" + o.UserSID
+	}
+	return fmt.Sprintf("unix:%d", o.UID)
+}
+
 // Matches reports whether two owners are the same principal in the same
 // session; a logon id is compared only when both carry one.
 func (o Owner) Matches(other Owner) bool {
@@ -144,20 +155,21 @@ type RendererDirectory interface {
 
 // ListEntry is one notification-list entry: a prompt as shown to one owner.
 type ListEntry struct {
-	ID        string // promptId + "#" + owner key
+	ID        string // promptId + "#" + owner principal key
 	PromptID  string
-	OwnerKey  string
+	OwnerKey  string // Owner.PrincipalKey
 	ScopeID   string
 	ExpiresAt time.Time
 	Show      ipc.PromptShow
 }
 
 // PromptInbox persists list entries and prompt tombstones (implemented over
-// the agent's inbox store). Nil means nothing persists across restarts.
+// the agent's inbox store). Nil means nothing persists across restarts. The
+// host calls the writes after releasing its state lock, in order.
 type PromptInbox interface {
 	PutPrompt(e ListEntry) error
-	RetractPrompt(id string)
-	TombstonePrompt(promptID string)
+	RetractPrompt(id string) error
+	TombstonePrompt(promptID string) error
 	PromptTombstoned(promptID string) bool
 	PromptEntries(ownerKey string) []ListEntry
 }
@@ -178,4 +190,4 @@ const (
 	SessionUnlocked
 )
 
-func listEntryID(promptID string, o Owner) string { return promptID + "#" + o.Key() }
+func listEntryID(promptID string, o Owner) string { return promptID + "#" + o.PrincipalKey() }
