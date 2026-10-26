@@ -6,6 +6,7 @@ import { users } from '../db/schema/users';
 import { BODY_PARA, getEmailService, type EmailTemplate } from './email';
 import { escapeHtml, renderButton, renderLayout } from './emailLayout';
 import { captureException } from './sentry';
+import { emitAgreementEvent } from './agreementEvents';
 
 /**
  * Close the loop on an agreement-request outcome (#9075 W2b, spec §3.6):
@@ -13,7 +14,8 @@ import { captureException } from './sentry';
  * declines. Cloned from notifyQuoteOutcome (services/quoteOutcomeNotify.ts).
  *
  * `source` keeps attribution honest: only a 'customer' outcome emails; an
- * MSP-recorded one does not (the actor already knows).
+ * MSP-recorded one does not (the actor already knows). Both publish the
+ * `agreement.signed|declined` bus event (services/agreementEvents.ts).
  *
  * Recipient: the request creator's email; fallback the partner billing inbox;
  * neither → warn and skip. Callers dispatch this UNAWAITED, post-commit —
@@ -48,7 +50,15 @@ export async function notifyAgreementOutcome(input: {
         .limit(1);
       if (!req) return null;
 
-      // W3b: emit agreement.<outcome> on the events bus here (both sources).
+      // The bus event fires for BOTH sources (an integration must see an
+      // MSP-recorded signature too); only a customer outcome emails (#9075 W3b).
+      await emitAgreementEvent({
+        type: input.outcome === 'signed' ? 'agreement.signed' : 'agreement.declined',
+        requestId: input.requestId,
+        orgId: req.orgId,
+        partnerId: req.partnerId,
+        origin: input.source === 'customer' ? 'customer' : 'on_behalf',
+      });
       if (input.source !== 'customer') return null; // no email for an MSP-recorded outcome
 
       // Creator first; partner billing inbox as the fallback so the news lands

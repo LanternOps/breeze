@@ -1525,6 +1525,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'agreementRequestExpiryReaper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agreementRequestExpiryReaper');
+      return { init: m.initializeAgreementRequestExpiryReaper, shutdown: m.shutdownAgreementRequestExpiryReaper };
+    },
+  },
+  {
     name: 'suppressionExpiryReaper',
     placement: 'global',
     load: async () => {

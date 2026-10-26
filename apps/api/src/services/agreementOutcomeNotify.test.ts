@@ -23,6 +23,8 @@ vi.mock('./email', async (importOriginal) => ({
   getEmailService: getEmailServiceMock,
 }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+const { emitMock } = vi.hoisted(() => ({ emitMock: vi.fn() }));
+vi.mock('./agreementEvents', () => ({ emitAgreementEvent: emitMock }));
 
 import { notifyAgreementOutcome, buildAgreementOutcomeTemplate } from './agreementOutcomeNotify';
 import { MAIL_PURPOSES } from './emailDomains/mailPurposes';
@@ -90,10 +92,40 @@ describe('notifyAgreementOutcome', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it('emits agreement.signed / agreement.declined on the events bus for a customer outcome', async () => {
+    dbResults.push([requestRow()]);
+    dbResults.push([{ email: 'tech@example.com' }]);
+    await notifyAgreementOutcome({ requestId: REQUEST_ID, outcome: 'signed', source: 'customer' });
+    expect(emitMock).toHaveBeenCalledWith({ type: 'agreement.signed', requestId: REQUEST_ID, orgId: 'org-1', partnerId: 'p1', origin: 'customer' });
+
+    emitMock.mockClear();
+    dbResults.push([requestRow()]);
+    dbResults.push([{ email: 'tech@example.com' }]);
+    await notifyAgreementOutcome({ requestId: REQUEST_ID, outcome: 'declined', source: 'customer' });
+    expect(emitMock).toHaveBeenCalledWith({ type: 'agreement.declined', requestId: REQUEST_ID, orgId: 'org-1', partnerId: 'p1', origin: 'customer' });
+  });
+
+  it('still emits for an MSP-recorded outcome (event only, no email)', async () => {
+    dbResults.push([requestRow()]);
+    await notifyAgreementOutcome({ requestId: REQUEST_ID, outcome: 'signed', source: 'msp' });
+    expect(emitMock).toHaveBeenCalledWith({ type: 'agreement.signed', requestId: REQUEST_ID, orgId: 'org-1', partnerId: 'p1', origin: 'on_behalf' });
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('emits even when there is no email recipient', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dbResults.push([requestRow({ createdBy: null })]);
+    dbResults.push([{ billingEmail: null }]);
+    await notifyAgreementOutcome({ requestId: REQUEST_ID, outcome: 'signed', source: 'customer' });
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('a missing request is a quiet no-op', async () => {
     dbResults.push([]);
     await notifyAgreementOutcome({ requestId: REQUEST_ID, outcome: 'signed', source: 'customer' });
     expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('never throws: a transport failure is logged + captured', async () => {

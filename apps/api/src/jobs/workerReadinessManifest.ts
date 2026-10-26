@@ -212,6 +212,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeReconcileSweep'),
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
+  consumers('agreementRequestExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
   // Caller verification (#6354 W01) — post-commit effects publisher; one
