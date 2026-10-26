@@ -48,6 +48,10 @@ import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import type { TenantToolDescriptor } from './toolSources/resolver';
+// W5 PR C (#5220): the leaf name rule only; the flow gate and resolver are
+// loaded on first use so this module's import graph does not widen.
+import { isFlowToolName } from './flows/toolNames';
+import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
@@ -1073,10 +1077,27 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // every REAL session (streamingSessionManager.ts) always sets it, but
     // pre-existing test fixtures across this file's sibling suites build a
     // hand-rolled `as any` session and predate this field.
-    const tenant = session.tenantTools?.get(toolName);
+    //
+    // W5 PR C (#5220): a FLOW tool (`flow__<slug>`) is checked FIRST — a
+    // tenant map entry of that name is never consulted
+    // (`splitQualifiedToolName('flow__x')` parses as slug `flow`). The flow is
+    // re-resolved LIVE here (gated at its current invocation tier, Decision 8)
+    // and its input validated against its declarations; the resolved
+    // descriptor rides `verifiedToolContext.flowToolGate` to the SDK handler.
+    let flowTool: FlowToolDescriptor | undefined;
+    let flowCall: FlowToolCallInput | undefined;
+    if (isFlowToolName(toolName)) {
+      const { gateFlowToolCall } = await import('./flows/flowToolGate');
+      const gate = await gateFlowToolCall(session, toolName, input);
+      if (!gate.ok) return { allowed: false, error: gate.error };
+      flowTool = gate.descriptor;
+      flowCall = gate.call;
+      verifiedToolContext = { flowToolGate: { descriptor: gate.descriptor, call: gate.call } };
+    }
+    const tenant = flowTool || isFlowToolName(toolName) ? undefined : session.tenantTools?.get(toolName);
 
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
-    if (!TOOL_TIERS[toolName] && !tenant) {
+    if (!TOOL_TIERS[toolName] && !tenant && !flowTool) {
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
@@ -1137,7 +1158,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // refuse used to reach a human for approval and fail only afterwards, in
     // executeTool. Mirrors createMcpActionIntent (mcpIntentCreation.ts).
     // executeTool keeps its own check as the backstop.
-    const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined);
+    const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined || flowTool !== undefined);
     if (inputRefusal) return { allowed: false, error: inputRefusal };
 
     // Guardrails (tier check + action-based escalation). A proposal-backed
@@ -1145,7 +1166,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // four_eyes; every other tool call passes `undefined` and is unchanged. A
     // tenant (BYO MCP) tool has no proposal/action-escalation shape of its
     // own — it maps straight to guardrailCheckForTenantTool's tier.
-    const guardrailCheck = tenant
+    let guardrailCheck = flowTool
+      ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)
+      : tenant
       ? guardrailCheckForTenantTool(tenant)
       : checkGuardrails(
         toolName,
@@ -1157,6 +1180,25 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
     }
 
+    // W5 PR C (#5220, Decision 8): `run_flow` keeps static Tier 3 (contracts
+    // and listings read the upper bound), but the chat gate lowers it to the
+    // target flow's live invocation tier through the same resolver the flow
+    // tools use. Never raised above the static verdict; ANY failure keeps it.
+    if (toolName === 'run_flow' && guardrailCheck.tier === 3) {
+      let flowTier: 1 | 2 | 3 = 3;
+      try {
+        const { resolveRunFlowTier } = await import('./flows/flowTools');
+        flowTier = await resolveRunFlowTier(session.toolAuth ?? session.auth, input, session.orgId);
+      } catch (err) {
+        console.error('[AI-SDK] run_flow tier resolution failed; keeping tier 3', err);
+        flowTier = 3;
+      }
+      if (flowTier !== 3) {
+        const { approvalScope: _scope, ...rest } = guardrailCheck;
+        guardrailCheck = { ...rest, tier: flowTier, requiresApproval: flowTier >= 2, readOnly: flowTier === 1 };
+      }
+    }
+
     // #7906: a read-only event_logs_query was classified on a strictly-parsed
     // payload; carry those exact values to dispatch on every allowed exit.
     if (guardrailCheck.pinnedEventLogsQuery) {
@@ -1165,7 +1207,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
 
     // RBAC permission check
     try {
-      const permError = tenant
+      const permError = flowTool
+        // W5 PR C: Tier 1 ⇒ automations.read, Tier ≥ 2 ⇒ automations.write;
+        // rule 7 per step is startToolRun's (and the approver's, at release).
+        ? await checkPermissionRequirements(session.auth, [
+          (await import('./flows/flowToolGate')).flowToolPermissionRequirement(flowTool.tier),
+        ])
+        : tenant
         ? await checkPermissionRequirements(session.auth, [tenantToolPermissionRequirement(tenant.tier)])
         : await checkToolPermission(toolName, input, session.auth);
       if (permError) {
@@ -1181,8 +1229,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       const rateLimitErr = tenant
         ? await checkTenantToolRateLimit(tenant, session.auth.user.id)
         // #6476: the session's org picks the toolRateLimitMultiplier; the
-        // counter itself stays per user per tool across orgs.
-        : await checkToolRateLimit(toolName, session.auth.user.id, {
+        // counter itself stays per user per tool across orgs. W5 PR C: every
+        // flow tool shares run_flow's counter (a dynamic name has no limit of
+        // its own, and starting a flow is the same capability either way).
+        : await checkToolRateLimit(flowTool ? 'run_flow' : toolName, session.auth.user.id, {
           orgId: session.orgId,
           partnerId: session.auth.partnerId ?? null,
         });
@@ -1214,7 +1264,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     if (guardrailCheck.tier >= 2) {
       const refreshTier2Authority = async (error: string) => {
         try {
-          const live = await resolveLiveSessionToolAuthority(session, toolName, input);
+          // W5 PR C: a flow tool has no RBAC mapping of its own; starting a
+          // Tier ≥ 2 flow is run_flow's capability (automations.write).
+          const live = await resolveLiveSessionToolAuthority(session, flowTool ? 'run_flow' : toolName, flowTool ? {} : input);
           if (!live.ok) {
             if (session.auditSnapshot) {
               writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
@@ -1844,14 +1896,22 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // old direct approval_requests insert + dispatchApprovalPushToTokens
           // call: createActionIntent is now the single place that does both.
           let intent: Awaited<ReturnType<typeof createActionIntent>>;
+          // W5 PR C (#5220): a Tier-3 FLOW tool binds the intent to the flow +
+          // publication this gate resolved (immutable `invoked_flow_id` /
+          // `flowpub:<id>`); its arguments are the COERCED call and its org
+          // the run org. Released only by the durable worker (durableRelease).
+          const flowBinding = flowTool && flowCall
+            ? (await import('./flows/flowToolGate')).flowToolIntentBinding(flowTool, flowCall, session.orgId)
+            : null;
           try {
             intent = await createActionIntent(session.auth, {
               toolName,
-              input: input as Record<string, unknown>,
+              input: flowBinding ? flowBinding.input : input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
-              orgId: session.orgId,
+              orgId: flowBinding ? flowBinding.orgId : session.orgId,
+              ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
               // configured interactive approval window, not a fixed 5 min,
               // so the wait below is not cut short by the intent's own expiry.

@@ -64,6 +64,10 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
+import type { FlowToolDescriptor } from './flows/flowTools';
+import { flowsEnabled } from '../config/env';
+import { buildFlowSdkTools, flowMcpToolNames } from './flows/sdkFlowTools';
+import { sessionMayStartFlows } from './flows/flowToolGate';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 
@@ -662,6 +666,15 @@ export interface ActiveSession {
    * (script builder, client AI) — those surfaces don't resolve tenant tools.
    */
   tenantTools: ReadonlyMap<string, TenantToolDescriptor>;
+  /**
+   * W5 PR C (#5220): the `flow__<slug>` tools this session exposes, resolved
+   * at session CREATION (≤ `flowToolsPerSessionMax`). The map only says which
+   * flow tools the model was offered; every call re-resolves the flow live in
+   * `createSessionPreToolUse` (flowToolGate.ts `gateFlowToolCall`). Empty when
+   * flows are off and for every session that may not start flows
+   * (`sessionMayStartFlows`) or builds its own MCP server.
+   */
+  flowTools?: ReadonlyMap<string, FlowToolDescriptor>;
 }
 
 /**
@@ -1094,6 +1107,23 @@ export class StreamingSessionManager {
     }
     const tenantToolsByName = new Map(tenantDescriptors.map((d) => [d.qualifiedName, d]));
 
+    // W5 PR C (#5220): flow tools (`flow__<slug>`), same degrade-to-none rule
+    // as tenant tools. Never for a session that may not start flows (Wisp
+    // grant, helper, topology investigation) or builds its own MCP server.
+    let flowDescriptors: FlowToolDescriptor[] = [];
+    if (flowsEnabled() && !mcpServerFactory && sessionMayStartFlows({ auth: authWithOrigin, wispGrant, topologyInvestigation: options?.topologyInvestigation })) {
+      try {
+        // Loaded on first use: the flow resolver's import graph stays out of
+        // every chat session that never reaches this branch.
+        const { resolveFlowTools } = await import('./flows/flowTools');
+        flowDescriptors = await resolveFlowTools(toolAuth, dbSession.orgId);
+      } catch (err) {
+        captureException(err);
+        console.error('[StreamingSessionManager] Failed to resolve flow tools, degrading to none:', err);
+      }
+    }
+    const flowToolsByName = new Map(flowDescriptors.map((d) => [d.name, d]));
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
@@ -1158,6 +1188,7 @@ export class StreamingSessionManager {
       pendingCards: new Map(),
       pendingRunResults: [],
       tenantTools: tenantToolsByName,
+      flowTools: flowToolsByName,
     };
 
     // Create session-scoped callbacks (close over session object)
@@ -1190,7 +1221,11 @@ export class StreamingSessionManager {
         // (fresh every turn for a device-bound session) and fall back to
         // `session.orgId` only when `toolAuth` carries none (non-device
         // sessions, whose org doesn't drift the same way).
-        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+        [
+          ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
+          // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
+          ...buildFlowSdkTools(flowDescriptors, () => session),
+        ],
       );
     }
     session.mcpServer = mcpServer;
@@ -1306,7 +1341,7 @@ export class StreamingSessionManager {
             maxTurns,
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
-            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors)],
+            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
             includePartialMessages: true,
             abortController,

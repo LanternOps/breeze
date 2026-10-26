@@ -189,7 +189,7 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: [],
     definition: {
       name: 'run_flow',
-      description: "Start an enabled manual flow now. Starting a flow needs the user's approval, and its sensitive steps still wait for a human to approve each one. Returns the run id and the page to follow it.",
+      description: "Start an enabled manual flow now. The approval depends on the flow: a read-only flow starts at once, any other needs the user's approval, and its sensitive steps still wait for a human. Returns the run id and the page to follow it.",
       input_schema: {
         type: 'object' as const,
         properties: {

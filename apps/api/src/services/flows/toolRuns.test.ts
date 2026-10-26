@@ -99,7 +99,7 @@ beforeEach(() => {
   vi.mocked(clampToCallerCredential).mockReset().mockImplementation(async (_a, p) => p);
 });
 
-const lastCreate = () => vi.mocked(createFlowRun).mock.calls.at(-1)![0] as Record<string, unknown>;
+const lastCreate = () => vi.mocked(createFlowRun).mock.calls.at(-1)![0] as unknown as Record<string, unknown>;
 
 describe('startToolRun — human triggerers', () => {
   it('a chat user runs a flow: tool kind, ai_tool lane, the resolved publication pinned, session recorded', async () => {
