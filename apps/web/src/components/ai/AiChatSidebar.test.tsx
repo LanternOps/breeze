@@ -44,7 +44,7 @@ const baseState = {
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
-  // #9840 W3: the Open in Wisp chats control reads both.
+  // #9840 W3: the Open in Breeze AI control reads both.
   topologySiteId: null, wisp: null,
 };
 

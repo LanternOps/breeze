@@ -137,7 +137,7 @@ export async function moveToAssistant(
     }
   } catch (err) {
     // A failed chunk load or navigation: keep the panel as it is, now.
-    console.error('[AI] Open in Wisp chats failed:', err);
+    console.error('[AI] Open in Breeze AI failed:', err);
     abortHandoff(sessionId);
     showToast({ type: 'error', message: i18n.t('ai:aiConversationMove.notAvailable') });
     return 'aborted';
