@@ -63,7 +63,9 @@ export default function HelperTab({
   }));
   useEffect(() => {
     const link = existingLink ?? parentLink;
-    if (link?.inlineSettings) {
+    if (link) {
+      // Also for a link with no settings (it decides nothing, so the server
+      // resolves it as off), which may arrive after the first render.
       setSettings((prev) => ({
         ...prev,
         enabled: false,
