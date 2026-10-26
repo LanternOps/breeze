@@ -13,6 +13,7 @@ import { getEmailService } from '../services/email';
 import { buildPublicLinkLiveOrgPredicate } from '../services/publicLinkOrgGate';
 import { bullmqJobId } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 /**
  * Automatic agreement-request reminders (#9075 W4a, spec OD8 B).
@@ -50,7 +51,6 @@ import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'agreement-request-auto-reminder';
 const JOB_NAME = 'send-agreement-auto-reminders';
-const RUN_INTERVAL_MS = 60 * 60 * 1000; // hourly
 const MAX_PER_RUN = 200;
 const OPEN_STATUSES: Array<'sent' | 'viewed'> = ['sent', 'viewed'];
 
@@ -235,7 +235,7 @@ async function scheduleRepeatableJob(): Promise<void> {
     { type: JOB_NAME, queuedAt: new Date().toISOString() },
     {
       jobId: bullmqJobId(QUEUE_NAME),
-      repeat: { every: RUN_INTERVAL_MS },
+      repeat: { pattern: jobSchedule('agreement-request-auto-reminder') },
       removeOnComplete: { count: 20 },
       removeOnFail: { count: 200 },
     },
