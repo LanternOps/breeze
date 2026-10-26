@@ -1,6 +1,7 @@
 import '../../__tests__/integration/setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
+import { eq } from 'drizzle-orm';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   alerts,
@@ -19,6 +20,9 @@ import {
 } from '../../__tests__/integration/db-utils';
 import { getTestDb } from '../../__tests__/integration/setup';
 import { networkAssets, networkOverview, networkSites } from './networkVisibilityReadModel';
+import { assetPhysicalPlacements } from '../../db/schema';
+import { createDevice } from '../../__tests__/integration/db-utils';
+import { placementKey, readPlacement, readPlacements, resolvePlacementAuthority, resolvePlacementAuthorities } from '../assetPlacement';
 
 const NOW = new Date('2026-09-17T12:00:00.000Z');
 
@@ -890,6 +894,118 @@ describe('networkAssets alert/ticket enrichment (#5861 PR 3)', () => {
       activeAlertCount: 1,
       highestAlertSeverity: 'high',
       openTicketCount: 0,
+    });
+  });
+});
+
+describe('networkAssets physical placement (CPEV-W1)', () => {
+  const FORBIDDEN_KEYS = [
+    'id', 'orgId', 'org_id', 'deviceId', 'device_id', 'discoveredAssetId', 'discovered_asset_id',
+    'createdAt', 'created_at', 'updatedAt', 'updated_at', 'authority', 'linked', 'linkedDeviceId',
+  ];
+
+  async function seed() {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: orgA.id, name: 'Site A' });
+    const siteDevA = await createSite({ orgId: orgA.id, name: 'Device Site A' });
+    const siteB = await createSite({ orgId: orgB.id, name: 'Site B' });
+    const base = { source: 'manual' as const, assetType: 'switch' as const };
+
+    const [plain, linked, noPlacement] = await testDb.insert(discoveredAssets).values([
+      { ...base, orgId: orgA.id, siteId: siteA.id, ipAddress: '10.40.0.1', hostname: 'a-plain' },
+      { ...base, orgId: orgA.id, siteId: siteA.id, ipAddress: '10.40.0.2', hostname: 'a-linked' },
+      { ...base, orgId: orgA.id, siteId: siteA.id, ipAddress: '10.40.0.3', hostname: 'a-none' },
+    ]).returning();
+    const [assetB] = await testDb.insert(discoveredAssets).values([
+      { ...base, orgId: orgB.id, siteId: siteB.id, ipAddress: '10.40.1.1', hostname: 'b-plain' },
+    ]).returning();
+    const device = await createDevice({ orgId: orgA.id, siteId: siteDevA.id });
+    await testDb.update(discoveredAssets).set({ linkedDeviceId: device.id }).where(eq(discoveredAssets.id, linked!.id));
+
+    await testDb.insert(assetPhysicalPlacements).values([
+      { orgId: orgA.id, discoveredAssetId: plain!.id, room: 'Room 1', rack: 'R1', rackUnit: 4, heightU: 2 },
+      // Stale discovered-side row on a linked asset: the device row must win.
+      { orgId: orgA.id, discoveredAssetId: linked!.id, room: 'STALE', rack: 'STALE', rackUnit: 1, heightU: 1 },
+      { orgId: orgA.id, deviceId: device.id, room: 'Room D', rack: 'RD', rackUnit: null, heightU: 3 },
+      { orgId: orgB.id, discoveredAssetId: assetB!.id, room: 'B-SECRET-ROOM', rack: 'B-RACK', rackUnit: 9, heightU: 9 },
+    ]);
+    return { partner, orgA, orgB, siteA, plain: plain!, linked: linked!, noPlacement: noPlacement!, assetB: assetB!, device };
+  }
+
+  it('omits the block entirely when includePhysicalPlacement is false', async () => {
+    const { orgA, partner } = await seed();
+    const result = await withDbAccessContext(orgContext(orgA.id, partner.id), () =>
+      networkAssets(orgA.id, {}, NOW, false, false));
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('physicalPlacement');
+    expect(serialized).not.toContain('Room 1');
+    expect(serialized).not.toContain('Room D');
+  });
+
+  it('returns only the five allowlisted fields, the authority placement and live site, isolated per org', async () => {
+    const { orgA, partner } = await seed();
+    for (const filter of [{}, { status: 'unverified' as const }]) {
+      const result = await withDbAccessContext(orgContext(orgA.id, partner.id), () =>
+        networkAssets(orgA.id, filter, NOW, false, true));
+      expect(result.dataStatus).toBe('ok');
+      const byHost = new Map(result.data.map((r) => [r.hostname, r]));
+
+      expect(byHost.get('a-plain')?.physicalPlacement).toEqual({
+        siteName: 'Site A', room: 'Room 1', rack: 'R1', rackUnit: 4, heightU: 2,
+      });
+      // Linked: device placement + the DEVICE's live site, not the asset's.
+      expect(byHost.get('a-linked')?.physicalPlacement).toEqual({
+        siteName: 'Device Site A', room: 'Room D', rack: 'RD', rackUnit: null, heightU: 3,
+      });
+      expect(byHost.get('a-none')).toBeDefined();
+      expect(byHost.get('a-none')).not.toHaveProperty('physicalPlacement');
+
+      for (const row of result.data) {
+        if (!row.physicalPlacement) continue;
+        expect(Object.keys(row.physicalPlacement).sort()).toEqual(['heightU', 'rack', 'rackUnit', 'room', 'siteName']);
+        for (const key of FORBIDDEN_KEYS) expect(row.physicalPlacement).not.toHaveProperty(key);
+      }
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain('STALE');
+      expect(serialized).not.toContain('B-SECRET-ROOM');
+    }
+  });
+
+  it('org B never receives A placement and B sees only its own (A↛B, B↛A, B→B)', async () => {
+    const { siteA, orgB, partner } = await seed();
+    const asB = await withDbAccessContext(orgContext(orgB.id, partner.id), () =>
+      networkAssets(orgB.id, {}, NOW, false, true));
+    const serialized = JSON.stringify(asB);
+    expect(asB.data).toHaveLength(1);
+    expect(asB.data[0]?.physicalPlacement).toEqual({
+      siteName: 'Site B', room: 'B-SECRET-ROOM', rack: 'B-RACK', rackUnit: 9, heightU: 9,
+    });
+    for (const leaked of ['Room 1', 'Room D', 'Device Site A', 'Site A']) expect(serialized).not.toContain(leaked);
+
+    // Forged cross-org filter inputs resolve to nothing, never to A's data.
+    const forged = await withDbAccessContext(orgContext(orgB.id, partner.id), () =>
+      networkAssets(orgB.id, { siteId: siteA.id }, NOW, false, true));
+    expect(JSON.stringify(forged)).not.toContain('Room');
+  });
+
+  it('batch helpers return exactly what the per-subject functions return', async () => {
+    const { orgA, partner, plain, linked, noPlacement } = await seed();
+    await withDbAccessContext(orgContext(orgA.id, partner.id), async () => {
+      const subjects = [plain, linked, noPlacement].map((a) => ({
+        kind: 'discovered' as const, id: a.id, orgId: orgA.id, siteId: a.siteId,
+      }));
+      const batch = await resolvePlacementAuthorities(subjects);
+      for (const subject of subjects) {
+        expect(batch.get(placementKey('discovered', subject.id))).toEqual(await resolvePlacementAuthority(subject));
+      }
+      const refs = [...batch.values()].map((r) => ({ kind: r.authority.kind, id: r.authority.id }));
+      const placements = await readPlacements(refs);
+      for (const ref of refs) {
+        expect(placements.get(placementKey(ref.kind, ref.id)) ?? null).toEqual(await readPlacement(ref.kind, ref.id));
+      }
     });
   });
 });
