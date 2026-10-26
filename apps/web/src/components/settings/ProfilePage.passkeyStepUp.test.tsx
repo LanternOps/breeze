@@ -188,13 +188,14 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     }} />);
 
     fireEvent.click(await screen.findByTestId('mfa-setup-start'));
-    fireEvent.change(document.getElementById('mfa-confirm-password') as HTMLInputElement, {
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#mfa-confirm-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
     await screen.findByText(/Set up authenticator/i);
 
     const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    expect(digits).toHaveLength(6);
     digits.forEach((input, index) => fireEvent.change(input, { target: { value: String(index + 1) } }));
     fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
     await screen.findByText(/Multi-factor authentication enabled successfully/i);
