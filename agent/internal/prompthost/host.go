@@ -12,11 +12,12 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 var (
-	// ErrTombstoned: the prompt was decided or closed in the last 24 h; it
-	// is never drawn again.
+	// ErrTombstoned: the prompt was decided or closed in the last 24 h (or
+	// is in its terminal linger); it is never drawn again.
 	ErrTombstoned = errors.New("prompthost: prompt already decided")
 	// ErrUnknownPrompt: no open prompt has that id.
 	ErrUnknownPrompt = errors.New("prompthost: unknown prompt")
@@ -34,10 +35,16 @@ type Deps struct {
 
 // Host is the agent's prompt host. All methods are safe for concurrent use.
 //
-// Locking: mu guards all state and is never held across a send, a domain
-// callback or an inbox write (those are queued in an outbox and run after
-// unlock). actionMu serializes actions so OnAction runs outside mu yet two
-// concurrent answers apply exactly one decision.
+// Locking, in acquisition order:
+//   - actionMu serializes decisions (actions and expiry), so a domain
+//     callback runs outside mu yet two answers — or an answer and the
+//     deadline — apply exactly one decision.
+//   - mu guards all state. It is never held across a send, an inbox write
+//     or a domain callback: those are queued on an outbox.
+//   - flushMu is taken before mu is released and held while the outbox's
+//     sends and inbox writes run, so they leave in the order the state
+//     changed (a prompt_close never overtakes its prompt_show). Nothing
+//     holding flushMu ever waits for mu. Domain callbacks run after it.
 type Host struct {
 	dir   RendererDirectory
 	inbox PromptInbox
@@ -45,6 +52,7 @@ type Host struct {
 	log   *slog.Logger
 
 	actionMu sync.Mutex
+	flushMu  sync.Mutex
 
 	mu        sync.Mutex
 	enabled   EnabledKinds
@@ -95,6 +103,7 @@ type placement struct {
 	listOnly    bool // rate-limited or collapsed on replay: no window, no present budget
 	rateChecked bool
 	hidden      bool
+	sendFailed  bool // the last prompt_show never left; fall back at the next tick
 	legacyDone  bool
 	tried       map[string]bool
 }
@@ -164,7 +173,8 @@ func (h *Host) SessionStateChanged(winSession uint32, ev SessionEvent) {
 }
 
 // Show creates a prompt, or replaces the content of the open prompt with
-// the same id (it never draws a second window).
+// the same id (it never draws a second window, and a replacement never
+// takes focus).
 func (h *Host) Show(p Prompt) error {
 	if p.ID == "" {
 		p.ID = p.Show.PromptID
@@ -196,19 +206,26 @@ func (h *Host) Show(p Prompt) error {
 		return ErrTombstoned
 	}
 	if rec := h.prompts[p.ID]; rec != nil {
+		if !rec.lingerUntil.IsZero() {
+			// Decided: in its terminal linger. A re-asserted show must not
+			// redraw it as pending.
+			h.mu.Unlock()
+			return ErrTombstoned
+		}
 		rev := rec.show.Rev + 1
 		rec.p = p
 		rec.show = p.Show
 		rec.show.Rev = rev
 		for _, pl := range rec.placements {
 			if pl.path == PathPrompt && pl.renderer != "" {
-				ob.send(pl.renderer, ipc.TypePromptShow, rec.show.Kind, rec.show.PromptID, pl, h.wireShow(rec, pl))
+				s := h.wireShow(rec, pl)
+				s.Focus = ipc.PromptFocusNoActivate
+				ob.send(pl.renderer, ipc.TypePromptShow, rec.show.Kind, rec.show.PromptID, pl, s)
 			}
 		}
 		h.addMissingOwners(rec, now, ob)
 		h.persist(rec, now, ob)
-		h.mu.Unlock()
-		h.flush(ob)
+		h.unlockAndFlush(ob)
 		return nil
 	}
 	rec := &record{p: p, show: p.Show, createdAt: now, results: map[actionKey]ipc.PromptActionResult{}}
@@ -216,8 +233,7 @@ func (h *Host) Show(p Prompt) error {
 	h.prompts[p.ID] = rec
 	h.addMissingOwners(rec, now, ob)
 	h.persist(rec, now, ob)
-	h.mu.Unlock()
-	h.flush(ob)
+	h.unlockAndFlush(ob)
 	return nil
 }
 
@@ -235,7 +251,7 @@ func (h *Host) addMissingOwners(rec *record, now time.Time, ob *outbox) {
 		}
 		pl := &placement{owner: o, tried: map[string]bool{}}
 		rec.placements = append(rec.placements, pl)
-		h.place(rec, pl, now, ob)
+		h.place(rec, pl, now, ob, false)
 	}
 }
 
@@ -258,8 +274,7 @@ func (h *Host) Update(id string, patch Patch) error {
 		return fmt.Errorf("prompthost: %s is already in a terminal state", id)
 	}
 	err := h.applyPatch(rec, patch, now, ob)
-	h.mu.Unlock()
-	h.flush(ob)
+	h.unlockAndFlush(ob)
 	return err
 }
 
@@ -278,8 +293,7 @@ func (h *Host) Close(id string, reason ipc.PromptCloseReason) error {
 		return ErrUnknownPrompt
 	}
 	h.closeLocked(rec, reason, now, ob)
-	h.mu.Unlock()
-	h.flush(ob)
+	h.unlockAndFlush(ob)
 	return nil
 }
 
@@ -324,7 +338,7 @@ func (h *Host) openCount() int {
 }
 
 // place selects a path for one owner and delivers the prompt there.
-func (h *Host) place(rec *record, pl *placement, now time.Time, ob *outbox) {
+func (h *Host) place(rec *record, pl *placement, now time.Time, ob *outbox, fromFallback bool) {
 	ws := pl.owner.WinSessionID
 	switch {
 	case ws != 0 && h.locked[ws] && !rec.p.Kind.ShowWhileLocked:
@@ -335,7 +349,7 @@ func (h *Host) place(rec *record, pl *placement, now time.Time, ob *outbox) {
 		return
 	}
 	pl.deferred = deferNone
-	h.assign(rec, pl, h.choose(rec, pl), now, ob)
+	h.assign(rec, pl, h.choose(rec, pl), now, ob, fromFallback)
 }
 
 func (h *Host) choose(rec *record, pl *placement) Choice {
@@ -357,8 +371,9 @@ func (h *Host) modalBusy(rec *record, o Owner) bool {
 }
 
 // assign moves a placement onto the chosen path.
-func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *outbox) {
+func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *outbox, fromFallback bool) {
 	pl.path = c.Path
+	pl.sendFailed = false
 	switch c.Path {
 	case PathPrompt:
 		pl.epoch++ // a new lease for every assignment; older leases are stale
@@ -400,7 +415,13 @@ func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *o
 		}
 	default:
 		pl.renderer = ""
-		h.log.Info("prompt has no renderer", "promptId", rec.show.PromptID, "kind", rec.show.Kind, "owner", pl.owner.Key())
+		args := []any{"promptId", rec.show.PromptID, "kind", rec.show.Kind, "owner", pl.owner.Key()}
+		if fromFallback || ipc.IsPromptDecision(rec.show.State, rec.show.Presentation) {
+			// A decision nobody can draw only expires: say so loudly.
+			h.log.Warn("prompt has no renderer", args...)
+		} else {
+			h.log.Info("prompt has no renderer", args...)
+		}
 	}
 }
 
@@ -411,7 +432,9 @@ func presentWithin(rec *record) time.Duration {
 	return defaultPresentWithin
 }
 
-// wireShow is the prompt_show one placement's renderer receives.
+// wireShow is the prompt_show one placement's renderer receives. A
+// list-only placement keeps an indicator an indicator (a pill is not a
+// card and is never a decision).
 func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 	s := rec.show
 	s.Facts = append([]ipc.PromptFact(nil), rec.show.Facts...)
@@ -419,7 +442,7 @@ func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 	s.Lease = pl.lease()
 	s.KindVersion = pl.version
 	s.Timing = rec.wireTiming()
-	if pl.listOnly {
+	if pl.listOnly && s.Presentation != ipc.PromptPresentationIndicator {
 		s.Presentation = ipc.PromptPresentationListOnly
 		s.Focus = ipc.PromptFocusNoActivate
 	}
@@ -470,7 +493,7 @@ func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, w
 	h.log.Info("prompt falling back", "promptId", rec.show.PromptID, "owner", pl.owner.Key(), "from", pl.renderer, "reason", why)
 	h.fence(rec, pl, ob)
 	pl.graceUntil = time.Time{}
-	h.assign(rec, pl, h.choose(rec, pl), now, ob)
+	h.assign(rec, pl, h.choose(rec, pl), now, ob, true)
 }
 
 func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) error {
@@ -522,20 +545,37 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
-	h.tombs.add(rec.show.PromptID, now)
+	h.tombs.add(rec.show.PromptID, now, ob, h)
 	if h.inbox == nil || !rec.show.ListEntry.Persistent {
 		return
 	}
-	switch reason {
-	case ipc.PromptCloseWithdrawn, ipc.PromptCloseSuperseded, ipc.PromptCloseFenced:
+	// What stays in the list must be an outcome, never a decision whose
+	// actions no longer do anything.
+	final := rec.show
+	switch {
+	case final.State.Terminal():
+	case reason == ipc.PromptCloseExpired:
+		final.State = ipc.PromptStateExpired
+	default:
+		final.State = "" // withdrawn, superseded or closed undecided: nothing to show
+	}
+	if final.State == "" {
+		inbox := h.inbox
 		for _, pl := range rec.placements {
 			id := listEntryID(rec.show.PromptID, pl.owner)
-			ob.call(func() { h.inbox.RetractPrompt(id) })
+			ob.io(func() {
+				if err := inbox.RetractPrompt(id); err != nil {
+					h.log.Warn("prompt list entry not retracted", "id", id, "error", err.Error())
+				}
+			})
 		}
-	default:
-		// The outcome stays findable in the list until the entry expires.
-		h.persist(rec, now, ob)
+		return
 	}
+	final.Actions = []ipc.PromptAction{}
+	final.DefaultActionID = ""
+	final.Timing.Expiry = nil
+	rec.show = final
+	h.persist(rec, now, ob)
 }
 
 func (h *Host) persist(rec *record, now time.Time, ob *outbox) {
@@ -550,17 +590,23 @@ func (h *Host) persist(rec *record, now time.Time, ob *outbox) {
 	if rec.show.IdentityRef != nil {
 		scope = rec.show.IdentityRef.ScopeID
 	}
+	inbox := h.inbox
+	seen := map[string]bool{}
 	for _, pl := range rec.placements {
 		e := ListEntry{
 			ID:        listEntryID(rec.show.PromptID, pl.owner),
 			PromptID:  rec.show.PromptID,
-			OwnerKey:  pl.owner.Key(),
+			OwnerKey:  pl.owner.PrincipalKey(),
 			ScopeID:   scope,
 			ExpiresAt: expires,
 			Show:      rec.show,
 		}
-		ob.call(func() {
-			if err := h.inbox.PutPrompt(e); err != nil {
+		if seen[e.ID] {
+			continue // one principal in two sessions: one entry
+		}
+		seen[e.ID] = true
+		ob.io(func() {
+			if err := inbox.PutPrompt(e); err != nil {
 				h.log.Warn("prompt list entry not persisted", "promptId", e.PromptID, "error", err.Error())
 			}
 		})
@@ -603,24 +649,26 @@ func (h *Host) handleRendererMessage(fromKey, msgType string, raw json.RawMessag
 	case ipc.TypePromptPresented:
 		var m ipc.PromptPresented
 		if err := json.Unmarshal(raw, &m); err != nil {
-			h.log.Debug("malformed prompt_presented", "from", fromKey, "error", err.Error())
+			h.log.Warn("malformed prompt_presented from a renderer", "renderer", fromKey, "error", err.Error())
 			return "", nil
 		}
 		h.onPresented(fromKey, m)
 	case ipc.TypePromptClosed:
 		var m ipc.PromptClosed
 		if err := json.Unmarshal(raw, &m); err != nil {
-			h.log.Debug("malformed prompt_closed", "from", fromKey, "error", err.Error())
+			h.log.Warn("malformed prompt_closed from a renderer", "renderer", fromKey, "error", err.Error())
 			return "", nil
 		}
 		h.onClosed(fromKey, m)
 	case ipc.TypePromptAction:
 		var m ipc.PromptActionRequest
 		if err := json.Unmarshal(raw, &m); err != nil {
-			h.log.Debug("malformed prompt_action", "from", fromKey, "error", err.Error())
+			h.log.Warn("malformed prompt_action from a renderer", "renderer", fromKey, "error", err.Error())
 			return ipc.TypePromptActionResult, ipc.PromptActionResult{Result: ipc.PromptActionRejectedInvalid, Rev: 1}
 		}
 		return ipc.TypePromptActionResult, h.onAction(fromKey, m)
+	default:
+		h.log.Warn("unexpected prompt message type", "type", msgType, "renderer", fromKey)
 	}
 	return "", nil
 }
@@ -665,8 +713,7 @@ func (h *Host) onClosed(fromKey string, m ipc.PromptClosed) {
 	case ipc.PromptClosedHidden:
 		pl.hidden = true // hiding is never a domain action
 	}
-	h.mu.Unlock()
-	h.flush(ob)
+	h.unlockAndFlush(ob)
 }
 
 func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptActionResult {
@@ -677,55 +724,65 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 	if res.Rev == 0 {
 		res.Rev = 1
 	}
+	stale := func(msg string, args ...any) ipc.PromptActionResult {
+		res.Result = ipc.PromptActionRejectedStale
+		h.log.Debug(msg, append([]any{"promptId", m.PromptID, "action", m.ActionID, "from", fromKey}, args...)...)
+		return res
+	}
+	invalid := func(level slog.Level, msg string) ipc.PromptActionResult {
+		res.Result = ipc.PromptActionRejectedInvalid
+		h.log.Log(context.Background(), level, msg, "promptId", m.PromptID, "action", m.ActionID, "rev", m.Rev, "from", fromKey)
+		return res
+	}
+
 	h.mu.Lock()
+	now := h.clock.Now()
 	rec := h.prompts[m.PromptID]
 	if rec == nil {
 		h.mu.Unlock()
-		res.Result = ipc.PromptActionRejectedStale
-		h.log.Debug("action on a closed prompt", "promptId", m.PromptID, "action", m.ActionID)
-		return res
+		return stale("action on a closed prompt")
 	}
+	res.Rev = rec.show.Rev
 	pl := rec.placementFor(fromKey, m.Lease)
 	if pl == nil {
-		res.Rev = rec.show.Rev
 		h.mu.Unlock()
-		res.Result = ipc.PromptActionRejectedStale
-		h.log.Debug("action on a stale lease", "promptId", m.PromptID, "from", fromKey)
-		return res
+		return stale("action on a stale lease")
 	}
 	key := actionKey{m.ActionID, m.Rev}
 	if prior, ok := rec.results[key]; ok {
 		h.mu.Unlock()
 		return prior
 	}
-	res.Rev = rec.show.Rev
+	if d := rec.deadline(); rec.expiryFired || (!d.IsZero() && !now.Before(d)) {
+		h.mu.Unlock()
+		return stale("action after the deadline")
+	}
 	switch {
 	case m.Rev < rec.show.Rev, !rec.lingerUntil.IsZero(), rec.show.State.Terminal():
 		h.mu.Unlock()
-		res.Result = ipc.PromptActionRejectedStale
-		h.log.Debug("action on a superseded rev", "promptId", m.PromptID, "rev", m.Rev, "current", rec.show.Rev)
-		return res
+		return stale("action on a superseded rev", "current", rec.show.Rev)
 	case m.Rev > rec.show.Rev:
 		h.mu.Unlock()
-		res.Result = ipc.PromptActionRejectedInvalid
-		return res
+		return invalid(slog.LevelDebug, "action on a rev the agent never sent")
 	}
-	valid := false
+	offered := false
 	for _, a := range rec.show.Actions {
 		if a.ID == m.ActionID {
-			valid = true
+			offered = true
 		}
 	}
 	next, hasNext := ipc.PromptState(""), false
 	if t := rec.p.Kind.Transitions; t != nil {
 		next, hasNext = t[rec.show.State][m.ActionID]
-		valid = valid && hasNext
+		offered = offered && hasNext
 	}
 	onAction, owner := rec.p.OnAction, pl.owner
-	if !valid || onAction == nil {
+	if !offered || onAction == nil {
 		h.mu.Unlock()
-		res.Result = ipc.PromptActionRejectedInvalid
-		return res
+		if onAction == nil {
+			return invalid(slog.LevelWarn, "prompt has no action handler")
+		}
+		return invalid(slog.LevelWarn, "renderer sent an action the prompt does not offer in this state")
 	}
 	h.mu.Unlock()
 
@@ -733,18 +790,20 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 
 	ob := &outbox{}
 	h.mu.Lock()
-	now := h.clock.Now()
+	now = h.clock.Now()
 	cur := h.prompts[m.PromptID]
-	if err != nil || !outcome.Accepted {
-		if cur != nil {
-			res.Rev = cur.show.Rev
-		}
+	if cur != nil {
+		res.Rev = cur.show.Rev
+	}
+	if err != nil {
 		h.mu.Unlock()
 		res.Result = ipc.PromptActionRejectedInvalid
-		if err != nil {
-			h.log.Warn("prompt action failed", "promptId", m.PromptID, "action", m.ActionID, "error", err.Error())
-		}
+		h.log.Warn("prompt action failed", "promptId", m.PromptID, "action", m.ActionID, "error", err.Error())
 		return res
+	}
+	if !outcome.Accepted {
+		h.mu.Unlock()
+		return invalid(slog.LevelDebug, "the domain refused a prompt action")
 	}
 	if cur != nil {
 		patch := outcome.Patch
@@ -763,16 +822,21 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 	}
 	res.Result = ipc.PromptActionAccepted
 	rec.results[key] = res
-	h.mu.Unlock()
-	h.flush(ob)
+	h.unlockAndFlush(ob)
 	h.log.Info("prompt action accepted", "promptId", m.PromptID, "action", m.ActionID, "via", m.Via, "renderer", fromKey)
 	return res
 }
 
-// outbox collects sends and callbacks to run after mu is released.
+// outbox collects work to run after mu is released: sends and inbox writes
+// in order (under flushMu), then domain callbacks.
 type outbox struct {
-	sends []sendOp
+	steps []step
 	calls []func()
+}
+
+type step struct {
+	send *sendOp
+	io   func()
 }
 
 type sendOp struct {
@@ -783,35 +847,60 @@ type sendOp struct {
 }
 
 func (o *outbox) send(key, msgType, kind, promptID string, pl *placement, payload any) {
-	op := sendOp{key: key, msgType: msgType, kind: kind, promptID: promptID, pl: pl, payload: payload}
+	op := &sendOp{key: key, msgType: msgType, kind: kind, promptID: promptID, pl: pl, payload: payload}
 	if pl != nil {
 		op.epoch = pl.epoch
 	}
-	o.sends = append(o.sends, op)
+	o.steps = append(o.steps, step{send: op})
 }
+
+func (o *outbox) io(f func()) { o.steps = append(o.steps, step{io: f}) }
 
 func (o *outbox) call(f func()) { o.calls = append(o.calls, f) }
 
-func (h *Host) flush(ob *outbox) {
-	for _, s := range ob.sends {
+// unlockAndFlush hands the state lock over to the flush lock, so this
+// outbox's sends leave before any later state change's, then runs the
+// domain callbacks with no host lock held.
+func (h *Host) unlockAndFlush(ob *outbox) {
+	h.flushMu.Lock()
+	h.mu.Unlock()
+	var failed []*sendOp
+	for _, st := range ob.steps {
+		if st.io != nil {
+			st.io()
+			continue
+		}
+		s := st.send
 		if err := h.dir.Send(s.key, s.msgType, s.kind, s.payload); err != nil {
-			h.log.Debug("prompt send failed", "type", s.msgType, "promptId", s.promptID, "renderer", s.key, "error", err.Error())
+			h.logSendFailure(s, err)
 			if s.msgType == ipc.TypePromptShow && s.pl != nil {
-				h.sendFailed(s.promptID, s.pl, s.epoch)
+				failed = append(failed, s)
 			}
 		}
+	}
+	h.flushMu.Unlock()
+	if len(failed) > 0 {
+		h.mu.Lock()
+		for _, s := range failed {
+			if rec := h.prompts[s.promptID]; rec != nil && s.pl.epoch == s.epoch && s.pl.path == PathPrompt {
+				s.pl.sendFailed = true
+			}
+		}
+		h.mu.Unlock()
 	}
 	for _, c := range ob.calls {
 		c()
 	}
 }
 
-// sendFailed makes the next tick fall back a placement whose show never left.
-func (h *Host) sendFailed(promptID string, pl *placement, epoch uint32) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if rec := h.prompts[promptID]; rec != nil && pl.epoch == epoch && pl.path == PathPrompt {
-		pl.presentBy = time.Time{}
-		pl.listOnly = false
+func (h *Host) logSendFailure(s *sendOp, err error) {
+	args := []any{"type", s.msgType, "promptId", s.promptID, "renderer", s.key, "error", err.Error()}
+	switch {
+	case errors.Is(err, sessionbroker.ErrPromptBadMessage):
+		h.log.Error("prompt host built a message the broker refused", args...)
+	case s.msgType == ipc.TypePromptClose && (errors.Is(err, sessionbroker.ErrPromptSessionGone) || errors.Is(err, errRendererGone)):
+		h.log.Debug("prompt close to a renderer that is gone", args...)
+	default:
+		h.log.Warn("prompt send failed", args...)
 	}
 }

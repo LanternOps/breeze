@@ -482,15 +482,15 @@ func TestListEntryPersistedPerOwnerAndRetractedOnWithdraw(t *testing.T) {
 	hh := newHarness(t, assistRenderer("assist-1", "notice.info@1"))
 	calls := &promptCalls{}
 	_ = hh.h.Show(noticePrompt(t, "notice:test:1", calls))
-	entries := hh.inbox.PromptEntries(testOwner.Key())
+	entries := hh.inbox.PromptEntries(testOwner.PrincipalKey())
 	if len(entries) != 1 || entries[0].PromptID != "notice:test:1" || entries[0].ScopeID != "bad7313391508e4129c338752b2cc809" {
 		t.Fatalf("entries = %+v", entries)
 	}
-	if other := hh.inbox.PromptEntries(Owner{WinSessionID: 2, UserSID: "S-1-5-21-2002"}.Key()); len(other) != 0 {
+	if other := hh.inbox.PromptEntries(Owner{WinSessionID: 2, UserSID: "S-1-5-21-2002"}.PrincipalKey()); len(other) != 0 {
 		t.Fatal("an entry leaked to another owner")
 	}
 	_ = hh.h.Close("notice:test:1", ipc.PromptCloseWithdrawn)
-	if e := hh.inbox.PromptEntries(testOwner.Key()); len(e) != 0 {
+	if e := hh.inbox.PromptEntries(testOwner.PrincipalKey()); len(e) != 0 {
 		t.Fatalf("withdrawn entry kept: %+v", e)
 	}
 }

@@ -280,7 +280,20 @@ func (b *Broker) dispatchPromptMessage(s *Session, env *ipc.Envelope) {
 	}
 	sink := b.loadPromptSink()
 	if sink == nil {
-		log.Debug("dropping prompt message: no prompt host", "type", env.Type, "sessionId", s.SessionID)
+		log.Warn("prompt message with no prompt host", "type", env.Type, "sessionId", s.SessionID)
+		if env.Type == ipc.TypePromptAction {
+			// Never leave a click unanswered: the renderer would sit on "Working…".
+			var req ipc.PromptActionRequest
+			_ = json.Unmarshal(env.Payload, &req)
+			rev := req.Rev
+			if rev == 0 {
+				rev = 1
+			}
+			reply := ipc.PromptActionResult{PromptID: req.PromptID, ActionID: req.ActionID, Result: ipc.PromptActionRejectedStale, Rev: rev}
+			if err := s.SendNotify(env.ID, ipc.TypePromptActionResult, reply); err != nil {
+				log.Warn("failed to answer prompt action", "sessionId", s.SessionID, "error", err.Error())
+			}
+		}
 		return
 	}
 	replyType, reply := sink.HandleRendererMessage(s, env.Type, env.Payload)
