@@ -15,10 +15,10 @@ const LOWER = {
   device2: 'bcdef123-4567-4890-9bcd-ef0123456789',
   org: 'cdef1234-5678-4901-abcd-f01234567890',
   site: 'def12345-6789-4012-bcde-012345678901',
-  partner: 'ef123456-789a-4123-cdef-123456789012',
-  user: 'f1234567-89ab-4234-def0-234567890123',
-  invoice: 'a2345678-9abc-4345-ef01-345678901234',
-  snapshot: 'b3456789-abcd-4456-f012-456789012345',
+  partner: 'ef123456-789a-4123-8def-123456789012',
+  user: 'f1234567-89ab-4234-9ef0-234567890123',
+  invoice: 'a2345678-9abc-4345-af01-345678901234',
+  snapshot: 'b3456789-abcd-4456-b012-456789012345',
   passkey: 'c456789a-bcde-4567-8123-567890123456',
 } as const;
 
@@ -35,9 +35,9 @@ const up = (s: string) => s.toUpperCase();
  * and `entraTenantId` / `entraOid`, which are `z.string().min(1).max(64)` and
  * never uuid-validated.
  */
-type Fixture = readonly [lower: never, upper: never];
+type Fixture = readonly [lower: unknown, upper: unknown];
 
-const FIXTURES: Record<string, Fixture> = {
+const FIXTURES = {
   rollbackResourceDigest: [
     { deviceId: LOWER.device, currentVersion: '1.2.3', targetVersion: '1.2.2', reason: 'Bad Release' },
     { deviceId: up(LOWER.device), currentVersion: '1.2.3', targetVersion: '1.2.2', reason: 'Bad Release' },
@@ -73,17 +73,17 @@ const FIXTURES: Record<string, Fixture> = {
     { siteId: up(LOWER.site), action: 'arm_policy', subjectId: up(LOWER.device) },
   ],
   unattestedRestoreResourceDigest: [
-    { snapshotDbId: LOWER.snapshot, targetDeviceId: LOWER.device, commandType: 'restore_unattested' },
-    { snapshotDbId: up(LOWER.snapshot), targetDeviceId: up(LOWER.device), commandType: 'restore_unattested' },
+    { snapshotDbId: LOWER.snapshot, targetDeviceId: LOWER.device, commandType: 'backup_restore' },
+    { snapshotDbId: up(LOWER.snapshot), targetDeviceId: up(LOWER.device), commandType: 'backup_restore' },
   ],
   autopayChargeNowResourceDigest: [{ invoiceId: LOWER.invoice }, { invoiceId: up(LOWER.invoice) }],
   partnerPaymentSettingsResourceDigest: [
-    { partnerId: LOWER.partner, settings: { autopay: true } },
-    { partnerId: up(LOWER.partner), settings: { autopay: true } },
+    { partnerId: LOWER.partner, settings: { remindersEnabled: true } },
+    { partnerId: up(LOWER.partner), settings: { remindersEnabled: true } },
   ],
   orgPaymentSettingsResourceDigest: [
-    { orgId: LOWER.org, settings: { autopay: true } },
-    { orgId: up(LOWER.org), settings: { autopay: true } },
+    { orgId: LOWER.org, settings: { remindersEnabled: true } },
+    { orgId: up(LOWER.org), settings: { remindersEnabled: true } },
   ],
   migrationWindowOpenResourceDigest: [
     { partnerId: LOWER.partner, principalId: LOWER.user, orgIds: [LOWER.org], endsAt: '2026-10-26T00:00:00.000Z' },
@@ -102,9 +102,9 @@ const FIXTURES: Record<string, Fixture> = {
     { grantorUserId: up(LOWER.user), partnerId: up(LOWER.partner), orgId: up(LOWER.org), requestedCeilingHash: 'a'.repeat(64) },
   ],
   passkeyRemovalResourceDigest: [LOWER.passkey, up(LOWER.passkey)],
-} as unknown as Record<string, Fixture>;
+} as Record<string, Fixture>;
 
-type DigestFn = (arg: never) => string;
+type DigestFn = (arg: unknown) => string;
 
 /** The helpers, taken from the module's exports rather than a hand-written list. */
 const EXPORTED = Object.entries(stepUp)
@@ -123,17 +123,20 @@ describe('step-up resource digests fold uuid ids (#10119)', () => {
 
   for (const [name, fn] of EXPORTED) {
     it(`${name}: upper-case ids hash the same as canonical lower-case ids`, () => {
-      const [lower, upper] = FIXTURES[name];
+      const fixture = FIXTURES[name];
+      if (!fixture) throw new Error(`no FIXTURES entry for ${name}`);
+      const [lower, upper] = fixture;
       expect(fn(upper)).toBe(fn(lower));
     });
   }
 
   // The generic case above proves the two agree; it cannot prove WHICH way they
-  // fold, because an implementation that upper-cased would also make them
-  // agree. The literal below pins the direction: lowercase is what Postgres
-  // renders from a uuid column, and the routes hash `device.id` straight from
-  // there, so folding upward would break every grant minted against a
-  // canonical id while keeping this suite green.
+  // fold, because an implementation that upper-cased both sides would agree
+  // with itself and keep this suite green. The literal below pins the
+  // direction, and the reason direction matters is compatibility, not taste:
+  // lowercase is the historical digest form and what Postgres renders from a
+  // uuid column, which the routes hash `device.id` straight from. Folding
+  // upward would change the digest of every already-canonical binding.
   it('folds to lowercase, the spelling Postgres returns', () => {
     expect(
       stepUp.moveOrgResourceDigest({
@@ -151,6 +154,49 @@ describe('step-up resource digests fold uuid ids (#10119)', () => {
     const oneDeviceTwoSpellings = { deviceIds: [LOWER.device, up(LOWER.device)], reason: 'Planned Window', durationHours: 2 };
     const oneDeviceOnce = { deviceIds: [LOWER.device], reason: 'Planned Window', durationHours: 2 };
     expect(stepUp.maintenanceResourceDigest(oneDeviceTwoSpellings)).toBe(stepUp.maintenanceResourceDigest(oneDeviceOnce));
+  });
+
+  // The fixtures above hold every NON-folded field constant, so on their own
+  // they would not notice an implementation that also folded case-significant
+  // text — and that is the failure that would matter, because collapsing two
+  // genuinely different bindings onto one digest turns a fail-closed bug into
+  // an authorization one. Each case below changes ONE such field's case and
+  // requires the digest to change with it.
+  const ROLLBACK_BASE = { deviceId: LOWER.device, currentVersion: '1.2.3', targetVersion: '1.2.2', reason: 'Bad Release' };
+  const CASE_SIGNIFICANT = [
+    ['rollback reason', { deviceId: LOWER.device, currentVersion: '1.2.3', targetVersion: '1.2.2', reason: 'bad release' }],
+    ['rollback currentVersion', { deviceId: LOWER.device, currentVersion: '1.2.3-RC1', targetVersion: '1.2.2', reason: 'Bad Release' }],
+    ['rollback targetVersion', { deviceId: LOWER.device, currentVersion: '1.2.3', targetVersion: '1.2.2-RC1', reason: 'Bad Release' }],
+  ] as ReadonlyArray<readonly [string, typeof ROLLBACK_BASE]>;
+
+  for (const [label, mutated] of CASE_SIGNIFICANT) {
+    it(`rollbackResourceDigest keeps ${label} case-significant`, () => {
+      expect(stepUp.rollbackResourceDigest(mutated)).not.toBe(stepUp.rollbackResourceDigest(ROLLBACK_BASE));
+    });
+  }
+
+  it('maintenanceResourceDigest keeps the reason case-significant', () => {
+    const base = { deviceIds: [LOWER.device], reason: 'Planned Window', durationHours: 2 };
+    expect(stepUp.maintenanceResourceDigest({ ...base, reason: 'planned window' })).not.toBe(stepUp.maintenanceResourceDigest(base));
+  });
+
+  it('callerVerificationAdministrativeDigest keeps the Entra ids and reason case-significant', () => {
+    // entraTenantId / entraOid are `z.string().min(1).max(64)` and never
+    // uuid-validated, so they must be hashed exactly as given.
+    const base = { orgId: LOWER.org, entraTenantId: 'Tenant-ABC', entraOid: 'Oid-XYZ', reason: 'A sufficiently long reason.' };
+    expect(stepUp.callerVerificationAdministrativeDigest({ ...base, entraTenantId: 'tenant-abc' })).not.toBe(stepUp.callerVerificationAdministrativeDigest(base));
+    expect(stepUp.callerVerificationAdministrativeDigest({ ...base, entraOid: 'oid-xyz' })).not.toBe(stepUp.callerVerificationAdministrativeDigest(base));
+    expect(stepUp.callerVerificationAdministrativeDigest({ ...base, reason: 'a sufficiently long reason.' })).not.toBe(stepUp.callerVerificationAdministrativeDigest(base));
+  });
+
+  it('autopayRequestRecipientResourceDigest keeps recipientOverride case-significant', () => {
+    const base = { orgIds: [LOWER.org], recipientOverride: 'Billing@Example.com' };
+    expect(stepUp.autopayRequestRecipientResourceDigest({ ...base, recipientOverride: 'billing@example.com' })).not.toBe(stepUp.autopayRequestRecipientResourceDigest(base));
+  });
+
+  it('wispGrantResourceDigest keeps requestedCeilingHash byte-exact', () => {
+    const base = { grantorUserId: LOWER.user, partnerId: LOWER.partner, orgId: LOWER.org, requestedCeilingHash: 'a'.repeat(64) };
+    expect(stepUp.wispGrantResourceDigest({ ...base, requestedCeilingHash: 'A'.repeat(64) })).not.toBe(stepUp.wispGrantResourceDigest(base));
   });
 
   it('canonicalId trims and lowercases; canonicalIds dedups and sorts', () => {
