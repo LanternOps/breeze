@@ -216,6 +216,13 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_topology_monitoring: { limit: 40, windowSeconds: 300 },
   manage_topology_templates: { limit: 30, windowSeconds: 300 },
   apply_topology_template: { limit: 20, windowSeconds: 300 },
+  // Full-control W09 (#6779): the probe dispatches to an agent and the sync queues a vendor pull; hosts calls the vendor cloud.
+  manage_snmp_templates: { limit: 30, windowSeconds: 300 },
+  get_snmp_metrics: { limit: 60, windowSeconds: 300 },
+  probe_network_asset: { limit: 20, windowSeconds: 300 },
+  manage_known_guests: { limit: 30, windowSeconds: 300 },
+  get_unifi_status: { limit: 30, windowSeconds: 300 },
+  trigger_unifi_sync: { limit: 6, windowSeconds: 300 },
 };
 
 /**

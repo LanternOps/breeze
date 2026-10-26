@@ -665,6 +665,15 @@ export const TOOL_TIERS = {
   manage_topology_monitoring: 1,
   manage_topology_templates: 1,
   apply_topology_template: 1,
+  // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. The multiplexers keep tier 1 as their base with
+  // per-action tier 2 writes in aiGuardrails; the probe (dispatches a ping from a site agent) and the UniFi sync
+  // (queues a vendor pull) are tier 2 throughout.
+  manage_snmp_templates: 1,
+  get_snmp_metrics: 1,
+  probe_network_asset: 2,
+  manage_known_guests: 1,
+  get_unifi_status: 1,
+  trigger_unifi_sync: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3622,6 +3631,49 @@ export function buildBreezeSdkTools(
       registryDescription('apply_topology_template'),
       inputShape('apply_topology_template'),
       makeHandler('apply_topology_template', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. Classes live in aiGuardrails.
+    tool(
+      'manage_snmp_templates',
+      registryDescription('manage_snmp_templates'),
+      inputShape('manage_snmp_templates'),
+      makeHandler('manage_snmp_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_snmp_metrics',
+      registryDescription('get_snmp_metrics'),
+      inputShape('get_snmp_metrics'),
+      makeHandler('get_snmp_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'probe_network_asset',
+      registryDescription('probe_network_asset'),
+      inputShape('probe_network_asset'),
+      makeHandler('probe_network_asset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_known_guests',
+      registryDescription('manage_known_guests'),
+      inputShape('manage_known_guests'),
+      makeHandler('manage_known_guests', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_unifi_status',
+      registryDescription('get_unifi_status'),
+      inputShape('get_unifi_status'),
+      makeHandler('get_unifi_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_unifi_sync',
+      registryDescription('trigger_unifi_sync'),
+      inputShape('trigger_unifi_sync'),
+      makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

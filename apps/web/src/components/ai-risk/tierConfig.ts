@@ -236,6 +236,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_topology_monitoring (list_policies/list_targets/get_settings)', description: 'View a site\'s recurring network checks, probe targets and effective topology settings', category: 'Network & DNS' },
       { name: 'manage_topology_templates (list_templates/list_versions/site_options)', description: 'View topology monitoring templates, their versions, and the published ones a site can apply', category: 'Network & DNS' },
       { name: 'apply_topology_template (status)', description: 'See how a template application is progressing, site by site', category: 'Network & DNS' },
+      // Full-control W09 (#6779): SNMP, known-guest and UniFi reads. Known guests and UniFi are chat/MCP only (partner-wide; not offered to AI agents).
+      { name: 'manage_snmp_templates (list/get/browse_oids/validate_oids)', description: 'View SNMP monitoring templates (the OIDs polled per device class), search known OIDs and check an OID list (names are untrusted text)', category: 'Network & DNS' },
+      { name: 'get_snmp_metrics (history/dashboard)', description: 'Read bucketed SNMP history (interface traffic, uptime and other OIDs) for an asset, or the SNMP dashboard', category: 'Network & DNS' },
+      { name: 'manage_known_guests (list)', description: 'View the partner-wide list of known guest MAC addresses that discovery does not flag', category: 'Network & DNS' },
+      { name: 'get_unifi_status (status/hosts/collectors/mappings/telemetry/sync_runs/controller_sites)', description: 'Read the partner UniFi integration: connection, consoles, collectors, site mappings, device telemetry and sync history', category: 'Network & DNS' },
       { name: 'get_fleet_health (history/offenders/evaluation/org_summary)', description: 'A device\'s reliability score over time, the services and components behind it, score quality, and an organization rollup', category: 'Devices & Hardware' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
@@ -356,6 +361,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)', description: 'Change a site\'s recurring network checks, probe targets or topology settings (arming a check stays in the topology page)', category: 'Network & DNS' },
       { name: 'manage_topology_templates (create_template/update_template/create_version)', description: 'Draft a topology monitoring template or a new version of one (nothing applies until a version is published)', category: 'Network & DNS' },
       { name: 'apply_topology_template (preview)', description: 'Preview what applying a template would change on named sites', category: 'Network & DNS' },
+      // Full-control W09 (#6779): tenant-internal rows (reversible), one agent ping, one queued vendor pull. Each write needs your MFA session.
+      { name: 'manage_snmp_templates (create/update/delete)', description: 'Create, change or delete a custom SNMP template (built-ins are read-only; the result keeps the old row so a delete can be undone)', category: 'Network & DNS' },
+      { name: 'probe_network_asset', description: 'Check now: ping a discovered asset from an online agent in its site and report reachable or not', category: 'Network & DNS' },
+      { name: 'manage_known_guests (add/delete)', description: 'Add or remove a known guest MAC address for every organization of the partner', category: 'Network & DNS' },
+      { name: 'trigger_unifi_sync', description: 'Queue a manual sync of the partner UniFi integration', category: 'Network & DNS' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -688,6 +698,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_topology_monitoring', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
   { toolName: 'manage_topology_templates', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
   { toolName: 'apply_topology_template', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  // Full-control W09 (#6779): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_snmp_templates', tier: 1, permission: 'devices.read / devices.write', category: 'Network & DNS' },
+  { toolName: 'get_snmp_metrics', tier: 1, permission: 'devices.read', category: 'Network & DNS' },
+  { toolName: 'probe_network_asset', tier: 2, permission: 'devices.write', category: 'Network & DNS' },
+  { toolName: 'manage_known_guests', tier: 1, permission: 'organizations.read / organizations.write', category: 'Network & DNS' },
+  { toolName: 'get_unifi_status', tier: 1, permission: 'billing.manage', category: 'Network & DNS' },
+  { toolName: 'trigger_unifi_sync', tier: 2, permission: 'billing.manage', category: 'Network & DNS' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -736,6 +753,16 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     create_template: 'topology.write', update_template: 'topology.write', revoke_template: 'topology.write', create_version: 'topology.write', publish_version: 'topology.write',
   },
   apply_topology_template: { preview: 'topology.write', apply: 'topology.write', status: 'topology.read' },
+  // Full-control W09 (#6779): the permission each action needs (a write also needs your MFA session).
+  manage_snmp_templates: {
+    list: 'devices.read', get: 'devices.read', browse_oids: 'devices.read', validate_oids: 'devices.read',
+    create: 'devices.write', update: 'devices.write', delete: 'devices.write',
+  },
+  get_snmp_metrics: 'devices.read',
+  probe_network_asset: 'devices.write',
+  manage_known_guests: { list: 'organizations.read', add: 'organizations.write', delete: 'organizations.write' },
+  get_unifi_status: 'billing.manage',
+  trigger_unifi_sync: 'billing.manage',
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
