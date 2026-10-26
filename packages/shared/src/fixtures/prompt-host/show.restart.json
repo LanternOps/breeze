@@ -1,0 +1,30 @@
+{
+  "promptId": "restart:42",
+  "rev": 1,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "kind": "restart.prompt",
+  "kindVersion": 1,
+  "state": "pending",
+  "presentation": "card",
+  "copy": {
+    "title": "Restart to finish installing updates",
+    "body": "Updates were installed on this computer. Save your work before the restart.",
+    "consequence": "Your computer restarts at {time:1793019600000} whether or not you answer. Time left: {remaining}.",
+    "operatorNote": "Questions? Call the help desk."
+  },
+  "actions": [
+    { "id": "postpone", "label": "Postpone until {time:1793023200000}", "role": "safe" },
+    { "id": "restart_now", "label": "Restart now", "role": "proceed" }
+  ],
+  "defaultActionId": "postpone",
+  "timing": {
+    "presentWithinMs": 10000,
+    "deadlineUnixMs": 1793019600000,
+    "expiry": { "actionId": null, "text": "Your computer restarts at {time:1793019600000}." }
+  },
+  "focus": "no_activate",
+  "listEntry": { "persistent": true, "expiresAtUnixMs": 1793620800000 },
+  "locale": "en",
+  "direction": "ltr",
+  "identityRef": { "scopeId": "bad7313391508e4129c338752b2cc809" }
+}
