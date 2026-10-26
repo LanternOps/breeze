@@ -102,7 +102,8 @@
     "specialists": {
       "heading_one": "Handed to {{count}} specialist",
       "heading_other": "Handed to {{count}} specialists"
-    }
+    },
+    "loadEarlier": "Load earlier"
   },
   "aiChatSidebar": {
     "history": "History",
@@ -798,7 +799,9 @@
       "brief": "Morning brief",
       "nudge": "Nudge",
       "digest": "Digest",
-      "summary": "Summary"
+      "summary": "Summary",
+      "open": "Open",
+      "unread": "Unread"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",

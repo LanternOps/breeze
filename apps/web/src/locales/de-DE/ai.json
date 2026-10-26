@@ -102,7 +102,8 @@
     "specialists": {
       "heading_one": "An {{count}} Spezialisten übergeben",
       "heading_other": "An {{count}} Spezialisten übergeben"
-    }
+    },
+    "loadEarlier": "Ältere laden"
   },
   "aiChatSidebar": {
     "history": "Verlauf",
@@ -798,7 +799,9 @@
       "brief": "Morgenbericht",
       "nudge": "Hinweis",
       "digest": "Übersicht",
-      "summary": "Zusammenfassung"
+      "summary": "Zusammenfassung",
+      "open": "Öffnen",
+      "unread": "Ungelesen"
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",

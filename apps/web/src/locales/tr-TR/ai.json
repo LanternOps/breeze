@@ -102,7 +102,8 @@
     "specialists": {
       "heading_one": "{{count}} uzmana devredildi",
       "heading_other": "{{count}} uzmana devredildi"
-    }
+    },
+    "loadEarlier": "Öncekileri yükle"
   },
   "aiChatSidebar": {
     "history": "Geçmiş",
@@ -798,7 +799,9 @@
       "brief": "Sabah özeti",
       "nudge": "Hatırlatma",
       "digest": "Derleme",
-      "summary": "Özet"
+      "summary": "Özet",
+      "open": "Aç",
+      "unread": "Okunmamış"
     },
     "welcome": {
       "title": "{{scope}} kapsamına göz atıyorum.",

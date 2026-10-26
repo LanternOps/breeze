@@ -102,7 +102,8 @@
     "specialists": {
       "heading_one": "Confié à {{count}} spécialiste",
       "heading_other": "Confié à {{count}} spécialistes"
-    }
+    },
+    "loadEarlier": "Charger les précédents"
   },
   "aiChatSidebar": {
     "history": "Histoire",
@@ -798,7 +799,9 @@
       "brief": "Résumé du matin",
       "nudge": "Rappel",
       "digest": "Condensé",
-      "summary": "Récapitulatif"
+      "summary": "Récapitulatif",
+      "open": "Ouvrir",
+      "unread": "Non lu"
     },
     "welcome": {
       "title": "Je fais le tour de {{scope}}.",

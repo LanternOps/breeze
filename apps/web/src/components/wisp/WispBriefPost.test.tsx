@@ -36,6 +36,28 @@ describe('WispBriefPost', () => {
     expect(screen.queryByTestId('wisp-brief-stale')).toBeNull();
   });
 
+  it('showStale={false} hides the badge on a 30-hour-old brief', () => {
+    render(
+      <WispBriefPost
+        brief={{ sentAt: hoursAgo(30), sections: [{ heading: 'H', lines: ['l'] }] }}
+        now={NOW}
+        showStale={false}
+      />,
+    );
+    expect(screen.queryByTestId('wisp-brief-stale')).toBeNull();
+  });
+
+  it('renders the unread dot first in the eyebrow only when unread', () => {
+    const sections = [{ heading: 'H', lines: ['l'] }];
+    const { unmount } = render(<WispBriefPost brief={{ sentAt: hoursAgo(1), sections }} now={NOW} unread />);
+    const dot = screen.getByTestId('wisp-post-unread');
+    expect(dot.parentElement?.tagName).toBe('P');
+    expect(dot.parentElement?.firstElementChild).toBe(dot);
+    unmount();
+    render(<WispBriefPost brief={{ sentAt: hoursAgo(1), sections }} now={NOW} />);
+    expect(screen.queryByTestId('wisp-post-unread')).toBeNull();
+  });
+
   it('renders markup in a line as literal text', () => {
     render(<WispBriefPost brief={{ sentAt: hoursAgo(1), sections: [{ heading: 'H', lines: ['<b>x</b>'] }] }} now={NOW} />);
     const li = screen.getByText('<b>x</b>');

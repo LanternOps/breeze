@@ -6,16 +6,30 @@ import type { BriefSection } from '@breeze/shared';
 export default function WispBriefPost({
   brief,
   now,
+  showStale = true,
+  unread = false,
 }: {
   brief: { sentAt: string; sections: BriefSection[] };
   now?: number;
+  /** Render the "From an earlier day" badge for old briefs. Timelines pass false. */
+  showStale?: boolean;
+  /** Render the unread dot before the eyebrow label. */
+  unread?: boolean;
 }) {
   const { t } = useTranslation('ai');
-  const stale = briefAge(brief.sentAt, now) === 'stale';
+  const stale = showStale && briefAge(brief.sentAt, now) === 'stale';
 
   return (
     <article data-testid="wisp-brief-card" className="space-y-3">
       <p className="text-xs font-medium text-muted-foreground">
+        {unread && (
+          <span
+            data-testid="wisp-post-unread"
+            role="img"
+            aria-label={t('wisp.post.unread')}
+            className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle"
+          />
+        )}
         <span className="uppercase tracking-wide">{t('wisp.post.brief')}</span>
         {' · '}
         <span data-testid="wisp-brief-sent">
