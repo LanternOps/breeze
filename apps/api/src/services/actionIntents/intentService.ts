@@ -1310,6 +1310,20 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
  * The load is a plain read outside any transaction — this runs BEFORE the
  * creation transaction opens, so it cannot double-hold a pooled connection.
  */
+/**
+ * Tool catalog W05 (#5220), Decision 12: a flow built-in step has no core
+ * classification. Its tier is the built-in's own `tierFor` on the immutable
+ * input; at Tier 3 one supervised approver (the Tier-3-only gate below
+ * refuses anything lower for a flow principal).
+ */
+function builtinGuardrailCheck(toolName: string, input: Record<string, unknown>): GuardrailCheck {
+  const tier = flowBuiltinTierFor(toolName as Parameters<typeof flowBuiltinTierFor>[0], input);
+  const description = `${toolName} — flow built-in step`;
+  return tier === 3
+    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description }
+    : { tier, allowed: true, requiresApproval: false, readOnly: false, description };
+}
+
 export async function resolveGuardrailForIntent(
   toolName: string,
   input: Record<string, unknown>,
@@ -1628,17 +1642,7 @@ export async function createActionIntent(
     // (Tier 3 only reaches here — the gate below refuses lower), one
     // supervised approver, and it is cross-checked against the step row's
     // pinned tier once the run facts load.
-    ? {
-        check: {
-          tier: flowBuiltinTierFor(input.toolName as Parameters<typeof flowBuiltinTierFor>[0], input.input),
-          allowed: true,
-          requiresApproval: true,
-          readOnly: false,
-          approvalScope: 'supervised',
-          description: `${input.toolName} — flow built-in step`,
-        } satisfies GuardrailCheck,
-        context: undefined,
-      }
+    ? { check: builtinGuardrailCheck(input.toolName, input.input), context: undefined }
     : await resolveGuardrailForIntent(
         input.toolName,
         input.input,

@@ -52,7 +52,7 @@ describe('validateBuiltinStep', () => {
     vi.stubEnv('PUBLIC_API_URL', 'https://breeze.example.test');
     vi.stubEnv('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS', 'false');
     vi.mocked(findOwnedNotificationChannel).mockReset().mockImplementation(async (_owner, id) =>
-      (id === CHANNEL ? { id: CHANNEL, type: 'email', orgId: ORG, partnerId: null } : null));
+      (id === CHANNEL ? { id: CHANNEL, type: 'email', orgId: ORG, partnerId: null, enabled: true } : null));
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -77,13 +77,13 @@ describe('validateBuiltinStep', () => {
   });
   it('partner-wide flow with an org channel is notify_channel_not_owned', async () => {
     // The ownership lookup itself enforces "partner-wide flow ⇒ partner-wide channel"; the owner is passed through.
-    vi.mocked(findOwnedNotificationChannel).mockImplementation(async (owner) => (owner.orgId === null ? null : { id: CHANNEL, type: 'email', orgId: ORG, partnerId: null }));
+    vi.mocked(findOwnedNotificationChannel).mockImplementation(async (owner) => (owner.orgId === null ? null : { id: CHANNEL, type: 'email', orgId: ORG, partnerId: null, enabled: true }));
     expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' }, PARTNER_OWNER)).toEqual(['notify_channel_not_owned']);
     expect(vi.mocked(findOwnedNotificationChannel)).toHaveBeenCalledWith(PARTNER_OWNER, CHANNEL);
   });
   it('a webhook or pagerduty channel is channel_type_not_supported', async () => {
     for (const type of ['webhook', 'pagerduty']) {
-      vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type, orgId: ORG, partnerId: null });
+      vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type, orgId: ORG, partnerId: null, enabled: true });
       expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' })).toEqual(['channel_type_not_supported']);
     }
   });
@@ -192,9 +192,9 @@ describe('validateNoticesChannel', () => {
     vi.mocked(findOwnedNotificationChannel).mockReset();
   });
   it('checks the notice channel like a notify channel', async () => {
-    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'slack', orgId: ORG, partnerId: null });
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'slack', orgId: ORG, partnerId: null, enabled: true });
     expect(await validateNoticesChannel(CHANNEL, ORG_OWNER)).toEqual([]);
-    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'pagerduty', orgId: ORG, partnerId: null });
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'pagerduty', orgId: ORG, partnerId: null, enabled: true });
     expect((await validateNoticesChannel(CHANNEL, ORG_OWNER)).map((i) => [i.code, i.pointer])).toEqual([['channel_type_not_supported', '/notices/channelId']]);
     vi.mocked(findOwnedNotificationChannel).mockResolvedValue(null);
     expect((await validateNoticesChannel(CHANNEL, ORG_OWNER)).map((i) => i.code)).toEqual(['notify_channel_not_owned']);

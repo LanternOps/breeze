@@ -76,6 +76,8 @@ interface StepOutcomeMeta {
   renderedInput?: Record<string, FlowValue>;
   /** Set when the step ran through its enable-time pre-approval (approval_mode 'pre_approved'). */
   approvalMode?: 'pre_approved';
+  /** W5 (#5220): an `ai` step's model usage, written to `flow_run_steps.ai_*` (also on failures). */
+  aiUsage?: { inputTokens: number; outputTokens: number; costCents: number };
 }
 
 export type StepOutcome =

@@ -269,7 +269,7 @@ describe('executeFlowStep — W5 built-ins', () => {
   it('a tier-3 built-in is never pre-approved, even on an honouring run with a binding for its step', async () => {
     const out = await executeFlowStep(input({
       run: run({ preApprovalsHonored: true }),
-      version: version({ preApprovals: [binding('call')] }),
+      version: version({ preApprovals: [binding('call') as unknown as Record<string, unknown>] }),
       step: step('call', 'http_request', { method: 'DELETE', url: 'https://api.example.com/x' }),
       pin: HTTP_POST_PIN,
     }));
