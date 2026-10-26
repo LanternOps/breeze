@@ -28,7 +28,8 @@
     "./validators/topologyInvestigation": "./src/validators/topologyInvestigation.ts",
     "./validators/topologyMonitoring": "./src/validators/topologyMonitoring.ts",
     "./validators/topologyPresence": "./src/validators/topologyPresence.ts",
-    "./entitlements": "./src/entitlements/index.ts"
+    "./entitlements": "./src/entitlements/index.ts",
+    "./promptHost": "./src/promptHost/index.ts"
   },
   "scripts": {
     "test": "vitest",
