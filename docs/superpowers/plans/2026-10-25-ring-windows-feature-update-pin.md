@@ -104,7 +104,7 @@ Registry: key `SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`; values `Targe
 ### Task 4: API — schema, migration, shared validator, ring routes, AI tools
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-05-120200-patch-policies-feature-updates.sql`
+- Create: `apps/api/migrations/2027-01-06-140000-patch-policies-feature-updates.sql`
 - Modify: `apps/api/src/db/schema/patches.ts:175` (add `featureUpdates: jsonb('feature_updates').notNull().default({ mode: 'block' })`), `packages/shared/src/validators/index.ts` (after `ringAppRulesSchema`: `ringFeatureUpdatesSchema`, `RingFeatureUpdates`, `DEFAULT_RING_FEATURE_UPDATES`, `parseWindowsFeatureUpdateTitle`, `isWindowsFeatureUpdateCandidate`), `apps/api/src/routes/updateRings.ts` (create/update schemas, list projection, insert, update fields), `apps/api/src/services/aiToolsPolicyPrereqs.ts` (definition property + create/update handling via `ringFeatureUpdatesSchema.safeParse`), `apps/api/src/services/aiToolSchemas.ts:2417`, `apps/api/src/services/aiAgentSdkTools.ts:3386`
 - Test: `packages/shared/src/validators/__tests__/ringFeatureUpdates.test.ts` (new; check the directory's existing naming), `apps/api/src/routes/updateRings_list_create.test.ts`
 

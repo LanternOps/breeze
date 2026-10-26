@@ -264,7 +264,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
           appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
-          featureUpdates: { type: 'object', description: 'Windows feature releases for the ring\'s devices: {mode:"block"|"allow"|"pin", product:"windows-11"|"windows-10" (pin only), targetVersion:"25H2" (pin only)}. Default block. Pin also sets the WUfB target-release policy on each device.' },
+          featureUpdates: { type: 'object', description: '{mode:"block"|"allow"|"pin", product:"windows-11"|"windows-10", targetVersion:"25H2"} (pin needs both). Default block. Pin sets WUfB target release.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
