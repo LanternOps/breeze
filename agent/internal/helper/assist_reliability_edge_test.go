@@ -147,6 +147,29 @@ func TestRollbackRemarksTheRestoredBuild(t *testing.T) {
 	}
 }
 
+// msiexec can defer the file replacement to a reboot: the install attempt
+// fails, and after the reboot the target build is simply on disk. The marker
+// must follow it, or the version check disowns the agent's own install.
+func TestUpdateLandedOutsideTheInstallerRemarks(t *testing.T) {
+	h := newRollbackHarness(t, "1")
+	if err := writeOwnership(h.mgr.baseDir, ownershipMarker{InstalledBy: ownershipInstalledByAgent, Version: "0.108.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.mgr.binaryPath, []byte("0.114.0"), 0o755); err != nil { // the deferred replacement
+		t.Fatal(err)
+	}
+
+	h.mgr.CheckUpdate("0.114.0")
+	h.mgr.mu.Lock()
+	h.mgr.applyPendingUpdate() // "already at target"
+	h.mgr.mu.Unlock()
+
+	marker, ok := readOwnership(h.mgr.baseDir)
+	if !ok || marker.Version != "0.114.0" {
+		t.Fatalf("marker = %+v, %v; want it re-recorded at the on-disk 0.114.0", marker, ok)
+	}
+}
+
 // A device below the WebView2 minimum: the new build installs but the gate
 // refuses it. That is not a broken build, and rolling back cannot fix it.
 func TestUpdateKeepsTheNewBuildWhenWebView2Refuses(t *testing.T) {

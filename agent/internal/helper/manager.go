@@ -642,9 +642,8 @@ func (m *Manager) uninstallLocked() {
 	// never adopts it either. While the binary is still there (the package
 	// uninstall failed) the marker stays, so the next tick retries.
 	if !m.isInstalled() {
-		if err := clearOwnership(m.baseDir); err != nil {
-			log.Warn("uninstall: clear breeze assist ownership record failed", "error", err.Error())
-		}
+		m.pendingOwnershipMark = nil
+		m.resetOwnershipRecordLocked()
 	}
 
 	log.Info("breeze assist uninstalled")
@@ -1096,6 +1095,10 @@ func (m *Manager) applyPendingUpdate() {
 		log.Info("helper already at target version, clearing pending update", "version", installed)
 		m.pendingHelperVersion = ""
 		m.clearInstallFailuresLocked()
+		// The target build reached the disk without this install path
+		// recording it (msiexec deferred the replacement to a reboot, #6252):
+		// keep the agent's marker on the version now installed (#10185).
+		m.remarkInstalledLocked()
 		return
 	}
 
