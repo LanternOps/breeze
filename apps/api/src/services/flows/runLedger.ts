@@ -46,6 +46,10 @@ export type ToolResultClass =
 
 const RESULT_OK: ToolResultClass = { kind: 'ok' };
 const RESULT_ERROR: ToolResultClass = { kind: 'error' };
+/** Tools whose result the classifier reads per device: a stored result without them cannot be verified. */
+const PER_DEVICE_RESULT_TOOLS: ReadonlySet<string> = new Set(['run_script']);
+export const RESULT_TOO_LARGE_TEXT =
+  'The step ran, but its result was too large to store, so whether every device finished could not be verified. It may have taken effect.';
 export const MAY_STILL_RUN_TEXT =
   'The script did not report back before the server stopped waiting; it may still be running on the device.';
 
@@ -193,7 +197,18 @@ export function resolveParkedIntent(
       //                         executor);
       //   may_still_run       ⇒ `unknown_outcome` (the run fails regardless
       //                         of onFailure, Decision 5).
-      const verdict: ToolResultClass = ctx.toolSource === 'tenant' ? RESULT_OK : classifyToolResult(ctx.tool, intent.result);
+      // Round-2 review: the release worker stores a result over
+      // MAX_RESULT_BYTES as `{ truncated: true }`. For a tool read per device
+      // the verdict is gone with it (a timed-out device is invisible), so
+      // fail closed: may have taken effect.
+      const truncatedPerDevice = ctx.toolSource !== 'tenant'
+        && PER_DEVICE_RESULT_TOOLS.has(ctx.tool)
+        && intent.result?.truncated === true;
+      const verdict: ToolResultClass = ctx.toolSource === 'tenant'
+        ? RESULT_OK
+        : truncatedPerDevice
+          ? { kind: 'may_still_run', message: RESULT_TOO_LARGE_TEXT }
+          : classifyToolResult(ctx.tool, intent.result);
       if (verdict.kind === 'may_still_run') {
         return {
           kind: 'end',

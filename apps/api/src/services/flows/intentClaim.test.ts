@@ -178,7 +178,7 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     h.assertDelegatorAuthority.mockResolvedValue(false);
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'delegator_inactive' });
     expectIntentCancelledWithWake();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 2 });
   });
 
   it('an unreadable publication definition is pin_invalid (drift + pause), never a delegator check on garbage', async () => {
@@ -186,7 +186,7 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'pin_invalid' });
     expectIntentCancelledWithWake();
     expect(h.assertDelegatorAuthority).not.toHaveBeenCalled();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 2 });
   });
 
   // Review finding 2: with FLOWS_ENABLED off an approved flow step must never
@@ -300,7 +300,7 @@ describe('claimFlowLinkedIntentForDispatch', () => {
   it('claim refuses and pauses on an inactive delegator — the pause runs after the claim transaction', async () => {
     h.assertDelegatorAuthority.mockResolvedValue(false);
     await claimFlowLinkedIntentForDispatch(INTENT_ID);
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 2 });
     // flows-row lock taken outside the run/intent locks: no AB-BA with disableFlow.
     expect(h.order.indexOf('pauseFlow')).toBeGreaterThan(h.order.indexOf('tx:commit'));
   });
@@ -319,7 +319,7 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'tool_revision_changed' });
     expectIntentCancelledWithWake();
     expect(h.store.terminalizeRunForRefusal).toHaveBeenCalledWith(RUN_ID, expect.objectContaining({ status: 'failed', errorCode: 'drift' }));
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 2 });
   });
 
   it('a tenant step whose live revision still matches the pin is claimed', async () => {
@@ -336,14 +336,14 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'approval_scope_changed' });
     expectIntentCancelledWithWake();
     expect(h.checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 's', deviceIds: ['d'] });
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 2 });
   });
 
   it('unreadable pins on the publication are pin_invalid (drift + pause)', async () => {
     h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [{ stepId: 'cleanup', tool: 'run_script' }] }));
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'pin_invalid' });
     expectIntentCancelledWithWake();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 2 });
   });
 
   it('losing the final approved → executing CAS is lost_race (never a drift cancel)', async () => {

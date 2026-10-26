@@ -455,12 +455,25 @@ const PAUSE_REASON_TEXT: Readonly<Record<FlowPausedReason, string>> = {
  * own transaction, so never call it while holding a lock on this flows row
  * outside system scope.
  */
-export async function pauseFlow(flowId: string, reason: FlowPausedReason): Promise<void> {
+export async function pauseFlow(
+  flowId: string,
+  reason: FlowPausedReason,
+  opts: { expectedPublicationSeq?: number } = {},
+): Promise<void> {
   await inSystemContext(async () => {
+    // `expectedPublicationSeq` fences the pause to the publication the caller
+    // judged (round-2 review): a run of an OLD publication — whose delegator
+    // was demoted, whose tool drifted — must never pause a flow someone has
+    // since re-enabled on a new publication. Without it, any enabled flow is
+    // paused (the reconciler's flow-level pauses).
     const [row] = await db
       .update(flows)
       .set({ status: 'paused', pausedReason: reason, updatedAt: new Date() })
-      .where(and(eq(flows.id, flowId), eq(flows.status, 'enabled')))
+      .where(and(
+        eq(flows.id, flowId),
+        eq(flows.status, 'enabled'),
+        ...(opts.expectedPublicationSeq !== undefined ? [eq(flows.enabledPublicationSeq, opts.expectedPublicationSeq)] : []),
+      ))
       .returning();
     if (!row) return;
     audit('flow.pause', row, null, { reason, publicationSeq: row.enabledPublicationSeq });

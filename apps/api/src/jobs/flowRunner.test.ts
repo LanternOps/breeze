@@ -514,6 +514,28 @@ describe('processFlowRunJob — approvals', () => {
     expect(h.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: DELEGATOR }));
   });
 
+  // Round-2 review: the release worker stores a result over MAX_RESULT_BYTES
+  // as `{ truncated: true }` — the per-device verdict is gone, so fail closed.
+  it('a completed run_script intent whose stored result was truncated is unknown_outcome (cannot be verified)', async () => {
+    seed({ steps: [{ id: 'b', tool: 'run_script', onFailure: 'continue' }, { id: 'c' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', tool: 'run_script', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { truncated: true }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(stepRow('b')).toMatchObject({ status: 'unknown_outcome', errorCode: 'unknown_outcome', approvedByUserId: APPROVER });
+    expect(stepRow('b')!.error).toMatch(/too large/i);
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+  });
+
+  it('a truncated result of a tool without per-device results stays completed', async () => {
+    seed({ steps: [{ id: 'b' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { truncated: true }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('b')!.status).toBe('completed');
+    expect(h.state.run!.status).toBe('completed');
+  });
+
   it('a completed run_script intent where every device sat in a maintenance window fails the step', async () => {
     seed({ steps: [{ id: 'b', tool: 'run_script' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
     ledger({ stepId: 'b', tool: 'run_script', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
@@ -695,7 +717,7 @@ describe('processFlowRunJob — failures', () => {
     seed({ steps: [{ id: 'a' }], tiers: { a: 3 } });
     h.execute.mockResolvedValue({ kind: 'failed', code: 'binding_drift', message: 'changed', policy: true, approvalMode: 'pre_approved' });
     await run();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'binding_drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'binding_drift', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'binding_drift' });
     expect(stepRow('a')).toMatchObject({ status: 'failed', approvalMode: 'pre_approved' });
   });
@@ -704,7 +726,7 @@ describe('processFlowRunJob — failures', () => {
     seed({ steps: [{ id: 'a' }] });
     h.execute.mockResolvedValue({ kind: 'failed', code, message: 'moved', policy: true });
     await run();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: code });
     expect(h.createNotification).not.toHaveBeenCalled(); // pauseFlow notifies; the runner does not double up
   });
@@ -831,7 +853,7 @@ describe('processFlowRunJob — slice preconditions', () => {
     seed({ steps: [{ id: 'a' }] });
     await run();
     expect(h.execute).not.toHaveBeenCalled();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'delegator_inactive' });
   });
 
@@ -844,7 +866,7 @@ describe('processFlowRunJob — slice preconditions', () => {
       { orgId: ORG_ID, partnerId: PARTNER_ID },
       expect.anything(),
     );
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
   });
 
   it('a partner-wide flow checks the delegator in the partner scope', async () => {
@@ -860,7 +882,7 @@ describe('processFlowRunJob — slice preconditions', () => {
     ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
     h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { cleaned: 3 }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
     await run();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'delegator_inactive' });
     expect(h.execute).not.toHaveBeenCalled();
     // Review finding 3: the approved step EXECUTED - its row records that
@@ -883,7 +905,7 @@ describe('processFlowRunJob — slice preconditions', () => {
         pins: [expect.objectContaining({ stepId: 'a', tool: 'tool_a' })],
       },
     );
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'delegator_inactive' });
   });
 
@@ -925,7 +947,7 @@ describe('processFlowRunJob — slice preconditions', () => {
     await run();
     expect(stepRow('a')).toMatchObject({ status: 'unknown_outcome' });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
   });
 
   it('flag off + a completed parked intent: step completed, run failed flows_disabled', async () => {
@@ -960,6 +982,34 @@ describe('processFlowRunJob — slice preconditions', () => {
     expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
   });
 
+  // Round-2 review: Alice (delegator of publication 1) is demoted, F pauses;
+  // Bob re-enables F on publication 2. A leftover publication-1 run wakes —
+  // it must end as drift WITHOUT re-checking Alice or pausing Bob's flow.
+  it('a run on a stale publication with a demoted delegator ends drift and never pauses the re-enabled flow', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    seed({
+      steps: [{ id: 'a' }, { id: 'b' }], tiers: { a: 3 },
+      flow: { enabledPublicationSeq: 2 },
+      run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1 },
+    });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'rejected', result: null, errorCode: null, executedAt: null, decidedByUserId: APPROVER });
+    await run();
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'drift' });
+    expect(h.pauseFlow).not.toHaveBeenCalled();
+    expect(h.assertDelegatorAuthority).not.toHaveBeenCalled();
+    expect(h.state.flow).toMatchObject({ status: 'enabled', enabledPublicationSeq: 2 });
+  });
+
+  it('a run on a disabled flow ends flow_disabled without a delegator check or a pause', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    seed({ steps: [{ id: 'a' }], flow: { status: 'disabled', enabledPublicationSeq: null } });
+    await run();
+    expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'flow_disabled' });
+    expect(h.assertDelegatorAuthority).not.toHaveBeenCalled();
+    expect(h.pauseFlow).not.toHaveBeenCalled();
+  });
+
   it('disabled flow cancels a queued run', async () => {
     seed({ steps: [{ id: 'a' }], flow: { status: 'disabled', enabledPublicationSeq: null } });
     await run();
@@ -979,14 +1029,14 @@ describe('processFlowRunJob — slice preconditions', () => {
     seed({ steps: [{ id: 'a' }], publication: { stepPins: [{ stepId: 'a', tool: 'tool_a', source: 'core', tier: 9 }] } });
     await run();
     expect(h.execute).not.toHaveBeenCalled();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'drift' });
   });
 
   it('an unparseable pre-approval binding fails drift and pauses the flow', async () => {
     seed({ steps: [{ id: 'a' }], publication: { preApprovals: [{ stepId: 'a', lane: 'other' }] } });
     await run();
-    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift', { expectedPublicationSeq: 1 });
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'drift' });
   });
 

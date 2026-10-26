@@ -10,10 +10,14 @@
  *      BEFORE the flag, so no early end ever records a running step as not
  *      run. Flag off ⇒ failed `flows_disabled`; an early wake of a `waiting`
  *      run ⇒ return.
- *   2. pins / bindings / the document parse, else failed `drift` + pause
+ *   2. the flow is enabled on THIS run's publication, else cancelled
+ *      `flow_disabled` (disabled) / failed `drift` — checked before anything
+ *      that can pause the flow, so a stale run never pauses a re-enabled one
+ *      (every pause is also fenced to the run's publication seq).
+ *   3. pins / bindings / the document parse, else failed `drift` + pause
  *      `drift`; the delegator still holds what they delegated, rule 7
  *      included (every slice, resumes included) else pause
- *      `delegator_inactive`.
+ *      `delegator_inactive`; `cancel_requested_at` ⇒ cancelled.
  *   Every early end (1–3) records a parked step whose intent already
  *   executed from that intent (runLedger.parkedRowOnEarlyEnd): completed
  *   stays completed; may-have-run is `unknown_outcome` and ends the run so.
@@ -120,9 +124,17 @@ function captureFlow(err: unknown, site: string, ids: { orgId?: string; flowId?:
   }, { fingerprint: ['flow', site] });
 }
 
-async function safePause(run: Pick<FlowRunRow, 'id' | 'orgId' | 'flowId'>, reason: FlowPausedReason): Promise<void> {
+/**
+ * Pause the flow — fenced to THIS run's publication, so a run of an old
+ * publication can never pause a flow re-enabled since (round-2 review).
+ */
+async function safePause(
+  run: Pick<FlowRunRow, 'id' | 'orgId' | 'flowId'>,
+  publicationSeq: number,
+  reason: FlowPausedReason,
+): Promise<void> {
   try {
-    await pauseFlow(run.flowId, reason);
+    await pauseFlow(run.flowId, reason, { expectedPublicationSeq: publicationSeq });
   } catch (err) {
     // The run is already terminal; the next slice of any run of this flow
     // re-checks and pauses again.
@@ -172,7 +184,7 @@ async function finish(
     wakeAt: null,
     activeMs: s.activeMs,
   }, step);
-  if (after.pause) await safePause(s.run, after.pause);
+  if (after.pause) await safePause(s.run, s.publication.publicationSeq, after.pause);
   if (!ok) return false;
   if (after.unknownStepId) {
     await notifyFlowRunUnknownOutcome({
@@ -307,7 +319,21 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
     return DONE;
   }
 
-  // ── 2. delegator + publication ───────────────────────────────────────────
+  // ── 2. flow live on THIS publication ─────────────────────────────────────
+  // Before anything that can pause the flow (round-2 review): a run of an old
+  // publication (the flow was disabled, paused, or re-enabled on a newer
+  // publication by someone else) ends here, without judging its delegator or
+  // its pins — those belong to a publication that no longer governs the flow.
+  if (s.flow.status !== 'enabled') {
+    return s.flow.status === 'paused'
+      ? endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was paused.' })
+      : endEarly({ status: 'cancelled', errorCode: 'flow_disabled', error: 'The flow was disabled.' });
+  }
+  if (s.flow.enabledPublicationSeq !== s.publication.publicationSeq) {
+    return endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was re-published after this run started.' });
+  }
+
+  // ── 3. publication + delegator; cancel ───────────────────────────────────
   const owner = ownerOf(s.flow, snap.orgPartnerId);
   if (!owner) {
     return endEarly({ status: 'failed', errorCode: 'drift', error: "The flow's owner could not be resolved." });
@@ -327,15 +353,6 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
   s.doc = parsed.doc;
   s.pins = parsed.pins;
 
-  // ── 3. flow live on this publication; cancel ─────────────────────────────
-  if (s.flow.status !== 'enabled') {
-    return s.flow.status === 'paused'
-      ? endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was paused.' })
-      : endEarly({ status: 'cancelled', errorCode: 'flow_disabled', error: 'The flow was disabled.' });
-  }
-  if (s.flow.enabledPublicationSeq !== s.publication.publicationSeq) {
-    return endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was re-published after this run started.' });
-  }
   if (s.run.cancelRequestedAt) {
     return endEarly({ status: 'cancelled', errorCode: 'cancelled', error: 'The run was cancelled.' });
   }
@@ -690,7 +707,7 @@ async function applyOutcome(
         return STOP;
       }
       const ok = await checkpoint(s.runId, s.token, advance, stepWrite);
-      if (pause) await safePause(s.run, pause);
+      if (pause) await safePause(s.run, s.publication.publicationSeq, pause);
       return ok ? { flow: 'continue', status: 'failed', output: null } : STOP;
     }
     case 'unknown_outcome':

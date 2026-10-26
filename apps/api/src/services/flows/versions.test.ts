@@ -531,6 +531,17 @@ describe('pauseFlow', () => {
     expect(createNotification).not.toHaveBeenCalled();
   });
 
+  // Round-2 review: a run on an OLD publication must never pause a flow
+  // someone re-enabled since — the pause is fenced to the run's publication.
+  it('with expectedPublicationSeq the pause is fenced to that publication', async () => {
+    queues.update.push([]);
+    await pauseFlow(FLOW_ID, 'delegator_inactive', { expectedPublicationSeq: 1 });
+    expect(whereValues(callsOf('update')[0]!)).toEqual([FLOW_ID, 'enabled', 1]);
+    // Re-enabled on publication 2 ⇒ the fenced UPDATE matched nothing: no audit, no notification.
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(createNotification).not.toHaveBeenCalled();
+  });
+
   it('a notification failure does not fail the pause', async () => {
     queues.update.push([row({ status: 'paused', pausedReason: 'drift', enabledPublicationSeq: 1, enabledByUserId: USER })]);
     vi.mocked(createNotification).mockRejectedValue(new Error('boom'));

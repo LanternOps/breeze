@@ -183,7 +183,7 @@ type Decision =
   | {
       kind: 'refused';
       result: FlowClaimResult;
-      pause: { flowId: string; orgId: string; runId: string; reason: FlowPausedReason } | null;
+      pause: { flowId: string; orgId: string; runId: string; publicationSeq: number; reason: FlowPausedReason } | null;
       /** The run this refusal FAILED (not cancelled), when the terminal write actually landed. */
       failedRun: FlowRunEventRef | null;
     };
@@ -207,7 +207,7 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
 
     const refuse = async (
       reason: FlowClaimRefusalReason | 'run_terminal',
-      ctx: { stepRowId: string | null; flowId: string | null; flowStatus: string | null },
+      ctx: { stepRowId: string | null; flowId: string | null; flowStatus: string | null; publicationSeq?: number | null },
     ): Promise<Decision> => {
       const cancelled = await store.casIntentApprovedToCancelled(intent.id, FLOW_CLAIM_INTENT_ERROR_CODE, {
         flowClaimRefusal: reason,
@@ -237,7 +237,11 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
       return {
         kind: 'refused',
         result: { claimed: false, reason },
-        pause: outcome?.pause && ctx.flowId ? { flowId: ctx.flowId, orgId: intent.orgId, runId, reason: outcome.pause } : null,
+        // Only refusals judged against the LIVE publication pause, and the
+        // pause is fenced to it (a re-enable in between makes it a no-op).
+        pause: outcome?.pause && ctx.flowId && ctx.publicationSeq != null
+          ? { flowId: ctx.flowId, orgId: intent.orgId, runId, publicationSeq: ctx.publicationSeq, reason: outcome.pause }
+          : null,
         failedRun,
       };
     };
@@ -250,7 +254,12 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
     if (run.leaseLive) return { kind: 'result', result: { claimed: false, reason: 'run_leased' } };
 
     const step = await store.lockStepForIntent(run.id, intent.id);
-    const stepCtx = { stepRowId: step && (step.status === 'awaiting_approval' || step.status === 'running') ? step.id : null, flowId: run.flowId, flowStatus: null as string | null };
+    const stepCtx = {
+      stepRowId: step && (step.status === 'awaiting_approval' || step.status === 'running') ? step.id : null,
+      flowId: run.flowId,
+      flowStatus: null as string | null,
+      publicationSeq: null as number | null,
+    };
     if (run.cancelRequestedAt) return refuse('run_cancel_requested', stepCtx);
     if (run.status !== 'awaiting_approval' || !step || step.status !== 'awaiting_approval') {
       return refuse('run_not_waiting', stepCtx);
@@ -270,6 +279,7 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
     }
     const publication = await store.loadPublicationBySeq(flow.id, flow.enabledPublicationSeq);
     if (!publication || publication.id !== run.flowVersionId) return refuse('publication_moved', stepCtx);
+    stepCtx.publicationSeq = publication.publicationSeq;
     const parsed = parsePublication(publication.definition, publication.stepPins);
     if (!parsed) return refuse('pin_invalid', stepCtx);
 
@@ -305,7 +315,7 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
   }
   if (decision.kind === 'refused' && decision.pause) {
     try {
-      await pauseFlow(decision.pause.flowId, decision.pause.reason);
+      await pauseFlow(decision.pause.flowId, decision.pause.reason, { expectedPublicationSeq: decision.pause.publicationSeq });
     } catch (err) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined,
         { org_id: decision.pause.orgId, flow_id: decision.pause.flowId, flow_run_id: decision.pause.runId, flow_site: 'flows.intentClaim.pause' },
