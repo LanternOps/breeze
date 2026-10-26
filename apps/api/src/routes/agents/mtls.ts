@@ -9,6 +9,7 @@ import { lookup as dnsLookup } from 'dns/promises';
 import { db, withSystemDbAccessContext } from '../../db';
 import { isAgentTenantActive } from '../../services/tenantStatus';
 import { devices, organizations, deviceMtlsCertificates } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { authMiddleware, requireMfa, requirePermission, type AuthContext } from '../../middleware/auth';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -838,17 +839,16 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
     // "succeed" while leaving the device un-quarantined. Require exactly 1 row;
     // if none, fail closed (500) rather than tearing down / returning as if the
     // device were isolated.
+    //
+    // #8318 §6.4: bound to the bearer context's id + agent_id through
+    // updateOwnDeviceRow; a stale install cannot quarantine the row's new owner.
     const quarantined = await withSystemDbAccessContext(async () =>
-      db
-        .update(devices)
-        .set({
-          status: 'quarantined',
-          quarantinedAt: new Date(),
-          quarantinedReason: 'mtls_cert_expired',
-          updatedAt: new Date(),
-        })
-        .where(eq(devices.id, device.id))
-        .returning({ id: devices.id })
+      updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, {
+        status: 'quarantined',
+        quarantinedAt: new Date(),
+        quarantinedReason: 'mtls_cert_expired',
+        updatedAt: new Date(),
+      })
     );
 
     if (quarantined.length !== 1) {
@@ -1135,6 +1135,9 @@ mtlsRoutes.post('/renew-cert', agentBearerAuthMiddleware, async (c) => {
         const activation = await activateIssuedCertificateCore(tx, {
           orgId: device.orgId,
           deviceId: device.id,
+          // #8318 §6.4: the bearer context's identity; the legacy column write
+          // inside is bound to it.
+          agentId: device.agentId,
           cert,
           parsedCert,
           now: new Date(),
@@ -1400,19 +1403,18 @@ mtlsRoutes.post(
             throw new Error('mtls_confirm_activation_failed');
           }
 
-          const legacyUpdated = await tx
-            .update(devices)
-            .set({
-              // I3: store the canonical form, matching the legacy renewal
-              // path's write and what the binding reader expects.
-              mtlsCertSerialNumber: pendingSerial ?? pendingRow.serialNumber,
-              mtlsCertExpiresAt: pendingRow.expiresAt,
-              mtlsCertIssuedAt: pendingRow.issuedAt,
-              mtlsCertCfId: pendingRow.providerCertificateId,
-              updatedAt: now,
-            })
-            .where(eq(devices.id, device.id))
-            .returning({ id: devices.id });
+          // #8318 §6.4: bound to the bearer context's id + agent_id through
+          // updateOwnDeviceRow; 0 rows (a stale install after a reattach
+          // confirm) fails the transaction like any other missed write.
+          const legacyUpdated = await updateOwnDeviceRow(tx, { deviceId: device.id, agentId: device.agentId }, {
+            // I3: store the canonical form, matching the legacy renewal
+            // path's write and what the binding reader expects.
+            mtlsCertSerialNumber: pendingSerial ?? pendingRow.serialNumber,
+            mtlsCertExpiresAt: pendingRow.expiresAt,
+            mtlsCertIssuedAt: pendingRow.issuedAt,
+            mtlsCertCfId: pendingRow.providerCertificateId,
+            updatedAt: now,
+          });
 
           if (legacyUpdated.length !== 1) {
             throw new Error('legacy_device_update_failed');
@@ -1539,6 +1541,7 @@ mtlsRoutes.post('/:id/approve', authMiddleware, requirePermission('devices', 'wr
     return c.json({ error: 'Device is not quarantined' }, 400);
   }
 
+  // own-device-row-allowlisted: quarantine-approve-user-route
   const approved = await db
     .update(devices)
     .set({
@@ -1619,6 +1622,7 @@ mtlsRoutes.post('/:id/deny', authMiddleware, requirePermission('devices', 'write
     return c.json({ error: 'Device is not quarantined' }, 400);
   }
 
+  // own-device-row-allowlisted: quarantine-deny-user-route
   const denied = await db
     .update(devices)
     .set({

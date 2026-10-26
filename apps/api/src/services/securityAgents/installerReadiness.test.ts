@@ -29,6 +29,26 @@ vi.mock('../../db', () => ({
 const decryptForColumn = vi.fn();
 vi.mock('../secretCrypto', () => ({ decryptForColumn: (...args: unknown[]) => decryptForColumn(...args) }));
 
+type FakeVar = { value: string; isSecret: boolean };
+// Per org: the variables the resolver would hand back (org override already
+// applied over the partner default), and the keys whose winning row failed to
+// decrypt. The real resolver's precedence and partner keying are exercised by
+// tenantVariableResolution.test.ts and securityAgentCoverage.integration.test.ts.
+const varsByOrg = new Map<string, Record<string, FakeVar>>();
+const unreadableByOrg = new Map<string, string[]>();
+const loadTenantVariableScope = vi.fn(async (orgIds: string[]) => ({ orgIds: new Set(orgIds) }));
+vi.mock('../tenantVariableResolution', () => ({
+  loadTenantVariableScope: (...args: unknown[]) => loadTenantVariableScope(...(args as [string[]])),
+  resolveForOrg: (scope: { orgIds: Set<string> }, orgId: string) => {
+    if (!scope.orgIds.has(orgId)) throw new Error(`Org ${orgId} is not in this snapshot`);
+    return new Map(Object.entries(varsByOrg.get(orgId) ?? {}).map(([key, v]) => [key, { key, ...v, variableId: 'v', version: 1, ownerScope: 'organization' }]));
+  },
+  unreadableForOrg: (_scope: unknown, orgId: string) => new Set(unreadableByOrg.get(orgId) ?? []),
+}));
+
+const captureException = vi.fn();
+vi.mock('../sentry', () => ({ captureException: (...args: unknown[]) => captureException(...args) }));
+
 import { checkInstallerReadiness, evaluatePlatformReadiness, loadOrgInstallerReadiness } from './installerReadiness';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
@@ -62,6 +82,10 @@ beforeEach(() => {
   queued.length = 0;
   selectCalls.length = 0;
   decryptForColumn.mockReset();
+  varsByOrg.clear();
+  unreadableByOrg.clear();
+  loadTenantVariableScope.mockClear();
+  captureException.mockReset();
 });
 
 describe('evaluatePlatformReadiness', () => {
@@ -217,11 +241,89 @@ describe('loadOrgInstallerReadiness (sentinelone, #6960 W04)', () => {
   });
 });
 
-describe('loadOrgInstallerReadiness (vendors not wired yet)', () => {
-  it.each(['controld', 'nextdns'] as const)('%s fails closed without touching the DB', async (vendor) => {
-    const result = await loadOrgInstallerReadiness(vendor, [ORG]);
-    expect(result.get(ORG)).toEqual({ ok: false, reason: 'vendor_unavailable' });
+describe('loadOrgInstallerReadiness (tenant-variable vendors, #6960 W05)', () => {
+  const PROFILE = '<profile-id>';
+  const CODE = '<provisioning-code>';
+
+  it('NextDNS: an org whose nextdns_profile_id resolves to a value is ready', async () => {
+    varsByOrg.set(ORG, { nextdns_profile_id: { value: PROFILE, isSecret: false } });
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: true });
+  });
+
+  it('Control D reads controld_provisioning_code, not another vendor\'s variable', async () => {
+    varsByOrg.set(ORG, { nextdns_profile_id: { value: PROFILE, isSecret: false } });
+    varsByOrg.set(ORG_B, { controld_provisioning_code: { value: CODE, isSecret: false } });
+    const result = await loadOrgInstallerReadiness('controld', [ORG, ORG_B]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'var_missing' });
+    expect(result.get(ORG_B)).toEqual({ ok: true });
+  });
+
+  it('var_missing when the variable is not set for the org (nor as its partner\'s default)', async () => {
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'var_missing' });
+  });
+
+  it('var_missing when the winning value is blank (an org override of "" shadows the partner default, and dispatch would substitute "")', async () => {
+    varsByOrg.set(ORG, { nextdns_profile_id: { value: '   ', isSecret: false } });
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'var_missing' });
+  });
+
+  it('var_secret when the variable resolves but is marked secret (dispatch refuses to place a secret in a script)', async () => {
+    varsByOrg.set(ORG, { nextdns_profile_id: { value: PROFILE, isSecret: true } });
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'var_secret' });
+  });
+
+  it('var_missing when the winning row exists but cannot be decrypted (it never resolves at dispatch)', async () => {
+    unreadableByOrg.set(ORG, ['nextdns_profile_id']);
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'var_missing' });
+  });
+
+  it('one snapshot for every org, one answer per org, each org judged on its own variables', async () => {
+    varsByOrg.set(ORG, { nextdns_profile_id: { value: PROFILE, isSecret: false } });
+    const ORG_C = '00000000-0000-4000-8000-0000000000a3';
+    varsByOrg.set(ORG_C, { nextdns_profile_id: { value: PROFILE, isSecret: true } });
+    const result = await loadOrgInstallerReadiness('nextdns', [ORG, ORG_B, ORG_C, ORG]);
+    expect(loadTenantVariableScope).toHaveBeenCalledTimes(1);
+    expect(loadTenantVariableScope.mock.calls[0]![0]).toEqual([ORG, ORG_B, ORG_C]);
+    expect(result.get(ORG)).toEqual({ ok: true });
+    expect(result.get(ORG_B)).toEqual({ ok: false, reason: 'var_missing' });
+    expect(result.get(ORG_C)).toEqual({ ok: false, reason: 'var_secret' });
+    expect(result.size).toBe(3);
+    // The resolver escapes to its own system context; nothing here reads the
+    // vendor integration tables.
     expect(selectCalls.length).toBe(0);
+  });
+
+  it('never returns, logs or reports a variable value', async () => {
+    const spies = [vi.spyOn(console, 'log'), vi.spyOn(console, 'warn'), vi.spyOn(console, 'error'), vi.spyOn(console, 'info')];
+    try {
+      varsByOrg.set(ORG, { nextdns_profile_id: { value: PROFILE, isSecret: false } });
+      varsByOrg.set(ORG_B, { nextdns_profile_id: { value: 'secret-<profile-id>', isSecret: true } });
+      const result = await loadOrgInstallerReadiness('nextdns', [ORG, ORG_B]);
+      const seen = JSON.stringify([
+        Array.from(result.entries()),
+        ...spies.map((spy) => spy.mock.calls),
+        captureException.mock.calls,
+      ]);
+      expect(seen).not.toContain(PROFILE);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it('a resolver failure propagates (the compliance pass fails loudly; nothing is assumed ready)', async () => {
+    loadTenantVariableScope.mockRejectedValueOnce(new Error('db down'));
+    await expect(loadOrgInstallerReadiness('nextdns', [ORG])).rejects.toThrow('db down');
+  });
+
+  it('checkInstallerReadiness: a macOS device is platform_unsupported without loading variables', async () => {
+    const result = await checkInstallerReadiness({ vendor: 'controld', deviceId: DEVICE, orgId: ORG, platform: 'macos' });
+    expect(result).toEqual({ ok: false, reason: 'platform_unsupported' });
+    expect(loadTenantVariableScope).not.toHaveBeenCalled();
   });
 });
 

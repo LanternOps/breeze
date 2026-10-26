@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Yapay zekâ asistanı",
+    "assistant": "Breeze AI",
     "agent": "Yapay zekâ ajanı",
+    "flow": "Akış",
     "originUnavailable": "Kaynak kullanılamıyor",
     "openSession": "Görüşmeyi aç",
     "openAgentRun": "Ajan çalıştırmasını aç",
@@ -21,13 +22,13 @@
     "pendingApprovals_one": "{{count}} bekleyen onay",
     "pendingApprovals_other": "{{count}} bekleyen onay",
     "tickets": "Biletler",
-    "incidents": "Olaylar",
+    "incidents": "Güvenlik Olayları",
     "remoteAccess": "Uzaktan Erişim",
     "scripts": "Komut Dosyaları",
     "patches": "Yamalar",
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
-    "aiForOffice": "Office için AI",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Ağ",
     "jobs": "İşler",
     "flows": "Akışlar",
@@ -48,6 +49,7 @@
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
+    "sites": "Siteler",
     "unassignedDevices": "Atanmamış Cihazlar",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Betik yazımı",
     "toolSources": "Araç Kaynakları",
     "aiAgents": "Yapay Zeka Aracıları",
-    "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
-    "aiImpact": "Yapay Zeka Etkisi",
-    "fixMemory": "Düzeltme belleği",
-    "fleetDesign": "Filo Tasarımı",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -89,12 +87,11 @@
     "sectionExtensions": "Uzantılar",
     "llmProviderCatalog": "LLM Sağlayıcı Kataloğu",
     "aiKillSwitch": "Yapay Zeka Acil Durdurma Anahtarı",
+    "wisp": "Wisp",
     "sectionAi": "Yapay Zeka",
     "sectionFleetManagement": "Filo Yönetimi",
     "sectionBilling": "Faturalama",
     "sectionAdministration": "Yönetim",
-    "fleetOrchestration": "Filo Orkestrasyonu",
-    "aiAssistant": "Yapay Zeka Asistanı",
     "software": "Yazılım",
     "softwareInventory": "Yazılım Envanteri",
     "softwarePolicies": "Yazılım Politikaları",
@@ -116,7 +113,18 @@
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
     "ticketsChanges": "Değişiklikler",
-    "endpointMessages": "Mesajlar"
+    "endpointMessages": "Mesajlar",
+    "securityDetectionRules": "Tespit Kuralları",
+    "planAndFeatures": "Plan ve özellikler",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Çalışanlar",
+    "agents": "Ajanlar",
+    "runs": "Çalıştırmalar",
+    "aiTasks": "Yapay Zekâ Görevleri",
+    "findings": "Bulgular",
+    "impact": "Etki",
+    "aiKnowledgeSources": "Bilgi kaynakları",
+    "wispLockedServer": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -427,13 +435,21 @@
       "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "empty": "Henüz yama verisi yok",
       "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
-      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi",
+      "devicesNeedPatches_one": "{{count}} cihazın yamaya ihtiyacı var",
+      "devicesNeedPatches_other": "{{count}} cihazın yamaya ihtiyacı var",
+      "viewPendingDevices": "Bekleyen yaması olan cihazları göster",
+      "viewFailedDevices": "Başarısız yaması olan cihazları göster",
+      "viewCriticalDevices": "Kritik yaması olan cihazları göster"
     },
     "vuln": {
       "title": "Güvenlik Açıkları",
       "criticalOpen": "Kritik açık",
       "kev": "Kullanıldığı biliniyor",
       "patchReady": "Yama mevcut",
+      "viewCritical": "Kritik CVE'leri göster",
+      "viewPatchReady": "Yaması hazır CVE'leri göster",
+      "viewOpen": "Açık CVE'leri görüntüle",
       "totalOpen": "{{count}} açık bulgular",
       "totalOpen_one": "{{count}} açık bulgu",
       "totalOpen_other": "{{count}} açık bulgular",
@@ -659,7 +675,7 @@
     },
     "apps": {
       "title": "Bağlı uygulamalar",
-      "description": "AI asistanları ve diğer MCP istemcileri (Claude.ai, ChatGPT, Cursor,…) sizin adınıza hareket etme yetkisine sahipsiniz. Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
+      "description": "Sizin adınıza hareket etme yetkisi verdiğiniz AI istemcileri (Claude.ai, ChatGPT, Cursor, …). Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
       "empty": "Bağlı uygulama yok",
       "emptyDescription": "Bir Claude.ai sohbetine, ChatGPT'ye, Cursor'a veya başka bir MCP istemcisine yetki verdiğinizde, daha sonra iptal edebilmeniz için burada görünecektir.",
       "authorized": "Yetkili",
@@ -669,7 +685,7 @@
       "revokeTitle": "{{app}} iptal edilsin mi?",
       "revokeDescription": "Bu müşteriye yönelik tüm hibeler ve yenileme jetonları silinecek. Jetonlar 10 dakika içinde çalışmayı durdurur. Bir sonraki kullanımınızda yeniden yetkilendirmeniz gerekecektir.",
       "onlyAppTitle": "Bu sizin tek yetkili uygulamanızdır.",
-      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI asistanının kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
+      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI istemcisinin kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
       "reasonPlaceholder": "Artık gerekmiyor, şüpheli etkinlik, …",
       "revokeAction": "Erişimi iptal et"
     }
@@ -726,8 +742,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Gezinme menüsünü aç",
-      "ai": "Yapay Zeka Asistanı",
-      "aiTitle": "Yapay Zeka Asistanı (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Yardım ve dokümanlar",
       "helpTitle": "Yardım ve Belgeler (Cmd+Shift+H)",
       "theme": "Tema",
@@ -771,9 +787,9 @@
     },
     "search": {
       "prompt": "Ara Breeze",
-      "placeholder": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları, ayarları arayın…",
+      "placeholder": "Cihazları, komut dosyalarını, uyarıları, ayarları arayın…",
       "searching": "Aranıyor…",
-      "startTyping": "Cihazlar, komut dosyaları, uyarılar, kullanıcılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
+      "startTyping": "Cihazlar, komut dosyaları, uyarılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
       "noResults": "Sonuç bulunamadı. Farklı bir sorgu deneyin.",
       "navigationHint": "Gezinmek için okları kullanın, açmak için Enter'ı kullanın",
       "closeHint": "Esc kapatılacak",
@@ -796,7 +812,11 @@
         "alertRules": "Uyarı kuralları",
         "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
         "keyboardShortcuts": "Klavye kısayolları",
-        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
+        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta",
+        "askBreezeAi": "Breeze AI’a sor",
+        "askBreezeAiDescription": "Breeze AI yan panelini aç",
+        "wispHome": "Wisp’i aç",
+        "wispHomeDescription": "Wisp ana sayfanıza gidin"
       },
       "numberHint": "Açmak için {{mod}}1–9"
     },
@@ -863,6 +883,8 @@
       "cycleSidebar": "Kenar çubuğu modunu değiştir",
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
+      "orgSwitcher": "Kuruluş seçiciyi aç",
+      "aiSidebar": "Breeze AI’ı aç veya kapat",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
       "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
       "create": "Oluştur",
@@ -1151,27 +1173,10 @@
           "basicInformation": "Temel Bilgiler",
           "connectionDetails": "Bağlantı Detayları",
           "credentials": "Kimlik Bilgileri",
-          "syncSettings": "Senkronizasyon Ayarları"
+          "syncSettings": "Bilet Senkronizasyonu"
         },
         "sync": {
-          "autoClose": "PSA biletlerini otomatik kapatma",
-          "autoCloseHelp": "Breeze uyarıları çözümlendiğinde bağlantılı biletleri kapatın.",
-          "enable": "Senkronizasyonu etkinleştir",
-          "enableHelp": "Biletleri ve uyarı bağlantılarını bir programa göre güncel tutun.",
-          "notes": "Uyarı notlarını senkronize et",
-          "notesHelp": "Breeze yorumlarını ve güncellemelerini PSA destek zaman çizelgesine aktarın."
-        },
-        "syncDirections": {
-          "bidirectional": "Çift Yönlü",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Günlük",
-          "every15Minutes": "Her 15 dakikada bir",
-          "every30Minutes": "Her 30 dakikada bir",
-          "every6Hours": "Her 6 saatte bir",
-          "everyHour": "Her saat"
+          "unavailable": "Bilet senkronizasyonu henüz kullanılamıyor. Bağlantılar test edilebilir ve şirketleri kuruluş olarak içe aktarmak için kullanılabilir; Breeze ile PSA'nız arasında bilet verisi aktarılmaz."
         },
         "testDirtyHint": "Önce kaydet — Test, kaydedilmemiş düzenlemelerinizi değil, depolanan kimlik bilgilerini kontrol eder.",
         "validation": {
@@ -1195,7 +1200,7 @@
         },
         "connectionCount": "{{filtered}} / {{total}} bağlantı",
         "empty": {
-          "noConnections": "Biletleri senkronize etmeye başlamak için bir PSA sağlayıcısına bağlanın.",
+          "noConnections": "Bir PSA sağlayıcısını test etmek ve şirketlerini içe aktarmak için bağlayın.",
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bağlantı yok.",
           "title": "Yapılandırılmış PSA bağlantısı yok"
         },
@@ -1229,7 +1234,7 @@
           "tryAgain": "Tekrar deneyin"
         },
         "delete": {
-          "activeWarning": "Bu bağlantı etkin. Bilet senkronizasyonu hemen durdurulacaktır.",
+          "activeWarning": "Bu bağlantı etkin. Silindiğinde bağlantı hemen kaldırılır.",
           "confirm": "{{name}} silmek istediğinizden emin misiniz?",
           "irreversible": "Bu işlem geri alınamaz.",
           "title": "PSA Bağlantısını Sil",
@@ -1248,10 +1253,10 @@
         "modal": {
           "addDescription": "Kuruluşunuz için yeni bir PSA bağlantısı kurun.",
           "addTitle": "PSA Bağlantısı Ekle",
-          "editDescription": "PSA bağlantı ayrıntılarını ve senkronizasyon tercihlerini güncelleyin.",
+          "editDescription": "PSA bağlantı ayrıntılarını güncelleyin.",
           "editTitle": "PSA Bağlantısını Düzenle"
         },
-        "subtitle": "Biletleri senkronize etmek ve uyarıları bağlamak için PSA'nızı bağlayın.",
+        "subtitle": "PSA bağlantılarını test edin ve şirketleri kuruluş olarak içe aktarın.",
         "test": {
           "failedMessage": "PSA sağlayıcısına bağlanılamıyor.",
           "failedTitle": "Bağlantı başarısız oldu",
@@ -1266,8 +1271,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bilet yok.",
-          "noTickets": "Biletleri burada görmek için ilk PSA bağlantınızı senkronize edin.",
-          "title": "Senkronize edilen PSA bileti yok"
+          "noTickets": "Bilet senkronizasyonu henüz kullanılamıyor, bu nedenle PSA biletleri içe aktarılmaz.",
+          "title": "PSA bileti yok"
         },
         "filters": {
           "allStatuses": "Tüm durumlar",
@@ -1400,6 +1405,12 @@
           "signingSecret": "Webhook imzalarını doğrulamak için bu sırrı kullanın."
         },
         "invalidJsonPreview": "Şablonda geçersiz JSON.",
+        "otherEvents": {
+          "allEvents": "Tüm olaylar (*)",
+          "allEventsHint": "Bu webhook tüm olaylara abone olduğundan aşağıdaki tekil olaylar kullanılmaz. Belirli olayları seçmek için \"Tüm olaylar\" öğesini kaldırın.",
+          "remove": "{{event}} öğesini kaldır",
+          "title": "Diğer abone olunan olaylar"
+        },
         "payload": {
           "previewEmpty": "JSON geçerli olduğunda önizleme görüntülenir.",
           "subtitle": "Hedefinize gönderilen JSON verisi şeklini tanımlayın.",
@@ -1413,7 +1424,7 @@
           "name": "Prodüksiyon Web Kancası",
           "signingSecret": "İmza sırrını girin"
         },
-        "subtitle": "Teslimatı, kimlik doğrulamayı ve yük davranışını ayarlayın.",
+        "subtitle": "Hedefi, etkinlikleri, kimlik doğrulamayı ve üstbilgileri ayarlayın.",
         "title": "Web kancası yapılandırması",
         "validation": {
           "eventRequired": "En az bir etkinlik seçin",
@@ -1475,7 +1486,7 @@
           "noPayloadTemplate": "Henüz kayıtlı yük şablonu yok.",
           "payloadPreview": "Yük şablonu önizlemesi",
           "testEvent": "Test etkinliği",
-          "testEventHelp": "Testler, seçilen etkinliği ve yük şablonunuzu kullanır.",
+          "testEventHelp": "Seçilen etkinlik için bu uç noktaya örnek bir yük gönderir.",
           "title": "Web kancası ayrıntıları"
         },
         "emptySelection": "Teslimat geçmişini ve test araçlarını görüntülemek için bir web kancası seçin.",
@@ -1995,8 +2006,8 @@
         "errors": {
           "loadFailed": "Filo istatistikleri yüklenemedi"
         },
-        "title": "Filo Düzenlemesi",
-        "description": "Filonuz genelinde politikaları, dağıtımları, yamaları ve otomasyonları yönetin",
+        "title": "Bulgular",
+        "description": "Çalışanların cihazlar arasında bulduğu örüntüler: birçok işlem yerine tek bir işlem",
         "partialWarning": "Bazı veriler eksik olabilir. Yükleme başarısız oldu: {{endpoints}}",
         "cards": {
           "policies": "Politikalar",
@@ -2010,7 +2021,7 @@
           "reports": "Raporlar"
         },
         "aiFleetActions": "Yapay Zeka Filo Eylemleri",
-        "aiFleetActionsHint": "Yapay zeka asistanına sormak için tıklayın",
+        "aiFleetActionsHint": "Breeze AI'a sormak için tıklayın",
         "quickActions": {
           "checkCompliance": "Uyumluluğu kontrol edin",
           "activeDeployments": "Etkin dağıtımlar",
@@ -2223,7 +2234,7 @@
         },
         "loading": "Olaylar yükleniyor...",
         "tryAgain": "Tekrar deneyin",
-        "title": "Olaylar",
+        "title": "Güvenlik Olayları",
         "description": "Kuruluşlarınız genelinde takip edilen olaylar ve EDR bulguları.",
         "filters": {
           "tracked": "Takip edildi",
@@ -2253,6 +2264,11 @@
         "genericEdrProvider": "EDR sağlayıcısı"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Teknisyen",
+          "system": "Sistem"
+        },
         "errors": {
           "notFound": "Olay bulunamadı",
           "fetchFailed": "Olay getirilemedi"
@@ -2385,15 +2401,15 @@
           },
           "search": {
             "title": "İstediğiniz şeyi arayın",
-            "description": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
+            "description": "Cihazları, komut dosyalarını, uyarıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
           },
           "switchOrgs": {
             "title": "Kuruluşları değiştir",
             "description": "Birden fazla müşteriyi mi yönetiyorsunuz? Burada kuruluşlar arasında geçiş yapın."
           },
           "aiHelp": {
-            "title": "Yapay zeka destekli yardım",
-            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman Cmd+Shift+A tuşlarına basın."
+            "title": "Breeze AI",
+            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman ⌘⇧A tuşlarına basın."
           }
         },
         "skipTour": "Turu atla",
@@ -2778,5 +2794,9 @@
     "title": "Bu bölüm çöktü",
     "description": "Bir görüntüleme hatası bu sayfanın gösterilmesini engelledi. Tekrar deneyin; sorun devam ederse bildirirken aşağıdaki mesajı ekleyin.",
     "retry": "Tekrar dene"
+  },
+  "featureLock": {
+    "lockedLabel": "Kilitli",
+    "upgrade": "Planları gör"
   }
 }

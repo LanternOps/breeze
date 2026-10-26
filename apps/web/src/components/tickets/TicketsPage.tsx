@@ -129,7 +129,8 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
 }
 
 // Hash layout (hash-based UI state per CLAUDE.md):
-// `#<selection>&sort=<sort>&type=<type>`.
+// `#<selection>&sort=<sort>&type=<type>&merged=1`.
+// `merged=1` is the "Show merged" list toggle (#8972); absent = off.
 // The bare segment is the selected ticket key (internal number or id); the
 // `sort=` segment carries the queue sort and `type=` the ticket-type filter
 // (#7900). All are optional, and the default sort ('triage') is omitted so
@@ -137,22 +138,25 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
 // BEFORE the selection fallback, so it can never be read as a ticket key; an
 // unknown type value is dropped, not turned into a selection.
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
-function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null } {
+function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null; showMerged: boolean } {
   let selection: string | null = null;
   let sort: TicketSort = 'triage';
   let type: TicketType | null = null;
+  let showMerged = false;
   for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('sort=')) {
       const value = part.slice('sort='.length);
       if (isTicketSort(value)) sort = value;
+    } else if (part.startsWith('merged=')) {
+      showMerged = part.slice('merged='.length) === '1';
     } else if (!part.startsWith('type=')) {
       selection = part;
     }
   }
   // Same helper as the sidebar, over the whole hash, so a repeated `type=`
   // segment resolves identically in the list filter and the nav highlight.
-  return { selection, sort, type: ticketTypeFromHash(hash) };
+  return { selection, sort, type: ticketTypeFromHash(hash), showMerged };
 }
 
 // The whole queue hash as ONE piece of state (#8682 sweep). Selection, sort and
@@ -162,18 +166,19 @@ function parseHash(hash: string): { selection: string | null; sort: TicketSort; 
 // field's update committed (and ran effects) separately — so the auto-select
 // effect saw e.g. the new selection with
 // the OLD type and wrote that stale mix straight back over the new URL.
-type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | '' };
-const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '' };
+type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | ''; showMerged: boolean };
+const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '', showMerged: false };
 function parseQueueHash(hash: string): QueueHash {
-  const { selection, sort, type } = parseHash(hash);
-  return { selection, sort, type: type ?? '' };
+  const { selection, sort, type, showMerged } = parseHash(hash);
+  return { selection, sort, type: type ?? '', showMerged };
 }
 
-function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null): string {
+function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null, showMerged = false): string {
   const parts: string[] = [];
   if (selection) parts.push(selection);
   if (sort !== 'triage') parts.push(`sort=${sort}`);
   if (type) parts.push(`type=${type}`);
+  if (showMerged) parts.push('merged=1');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
 
@@ -197,7 +202,7 @@ export default function TicketsPage() {
   // QueueHash). Ticket-type filter (#7900): '' = All. Hash-backed so the
   // Service Desk nav entries (`/tickets#type=<type>`) and bookmarks deep-link in.
   const [queueHash, setQueueHash] = useHashState<QueueHash>(DEFAULT_QUEUE_HASH, parseQueueHash);
-  const { selection: selectedNumber, sort, type: typeFilter } = queueHash;
+  const { selection: selectedNumber, sort, type: typeFilter, showMerged } = queueHash;
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -233,12 +238,13 @@ export default function TicketsPage() {
   const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
 
   // Single writer for the hash: state and URL always move together, so
-  // selection, sort and type never clobber each other. Declared before
-  // clearFilters, which rewrites it.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '') => {
-    setQueueHash({ selection, sort: sortValue, type: typeValue });
-    replaceUrl(hashFor(selection, sortValue, typeValue || null) || window.location.pathname + window.location.search);
-  }, [setQueueHash]);
+  // selection, sort, type and the merged toggle never clobber each other.
+  // Declared before clearFilters, which rewrites it. `mergedValue` defaults to
+  // the current toggle so the existing three-field callers keep it.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged) => {
+    setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue });
+    replaceUrl(hashFor(selection, sortValue, typeValue || null, mergedValue) || window.location.pathname + window.location.search);
+  }, [setQueueHash, showMerged]);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
@@ -291,9 +297,12 @@ export default function TicketsPage() {
     // 'triage' is the server default, so it's omitted — which also lets the
     // closed tab keep its tabQuery() sort=newest until the user picks a sort.
     if (sort !== 'triage') params.set('sort', sort);
+    // #8972: merged tombstones are hidden server-side unless asked for. Sent on
+    // every tab; it only changes results where closed tickets can appear.
+    if (showMerged) params.set('showMerged', 'true');
     params.set('limit', '100');
     return params.toString();
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort]);
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged]);
   // The query the rows in `tickets` were fetched for (null until the first load).
   const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const listIsCurrent = ticketQuery !== null && loadedQuery === ticketQuery;
@@ -439,10 +448,68 @@ export default function TicketsPage() {
     setHeldTicket((prev) => (prev && tab === 'closed' && isClosedStatus(prev.status) ? prev : null));
   }, [tab]);
 
+  // Keys of tickets that have appeared in a loaded list this session. A
+  // selection that was once listed (tab switch, filter change) keeps the
+  // original "fall back to the first row" behaviour; a selection that was
+  // NEVER listed is a deep link to a ticket outside this view and must not be
+  // silently swapped for another ticket (sweep G10).
+  const seenKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!listIsCurrent) return;
+    for (const row of tickets) {
+      seenKeysRef.current.add(row.id);
+      if (row.internalNumber) seenKeysRef.current.add(row.internalNumber);
+    }
+  }, [listIsCurrent, tickets]);
+  const deepLinkAbsent = selectedNumber !== null && !selected && !seenKeysRef.current.has(selectedNumber);
+  // null = nothing to look up; 'missing' = lookup finished, caller cannot see it.
+  const [absentLookup, setAbsentLookup] = useState<{ key: string; status: 'pending' | 'missing' } | null>(null);
+  useEffect(() => {
+    if (tab === 'review' || tab === 'archived') return;
+    if (loading || !listIsCurrent || !deepLinkAbsent || selectedNumber === null) return;
+    const key = selectedNumber;
+    let cancelled = false;
+    setAbsentLookup({ key, status: 'pending' });
+    void (async () => {
+      let found: TicketSummary | null = null;
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+        if (isUuid) {
+          const res = await fetchWithAuth(`/tickets/${key}`);
+          if (res.ok) found = ((await res.json()) as { data?: TicketSummary }).data ?? null;
+        } else {
+          // No by-number endpoint: the list search matches internalNumber; the
+          // exact match is picked client-side. Status-agnostic (no statusGroup).
+          const res = await fetchWithAuth(`/tickets?${new URLSearchParams({ search: key, limit: '5' })}`);
+          if (res.ok) {
+            const rows = ((await res.json()) as { data?: TicketSummary[] }).data ?? [];
+            found = rows.find((r) => r.internalNumber?.toLowerCase() === key.toLowerCase()) ?? null;
+          }
+        }
+      } catch {
+        found = null;
+      }
+      if (cancelled) return;
+      if (found) {
+        setHeldTicket(found);
+        setAbsentLookup(null);
+      } else {
+        setAbsentLookup({ key, status: 'missing' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, loading, listIsCurrent, deepLinkAbsent, selectedNumber]);
+  const absentNotice = deepLinkAbsent && absentLookup?.key === selectedNumber && absentLookup.status === 'missing'
+    ? selectedNumber
+    : null;
+
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
     // The review + archived tabs have no ticket selection / workbench pane.
     if (tab === 'review' || tab === 'archived') return;
+    // A deep link to an unlisted ticket is resolved by the lookup above, never
+    // by selecting an unrelated row.
+    if (deepLinkAbsent) return;
     // `listIsCurrent`: never auto-select out of a list fetched for other
     // filters — after an external hash change (sidebar entry, back/forward,
     // bookmark) the old rows are still on screen until the refetch lands, and
@@ -452,7 +519,7 @@ export default function TicketsPage() {
       const key = first.internalNumber ?? first.id;
       writeHash(key, sort, typeFilter);
     }
-  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash]);
+  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash, deepLinkAbsent]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -464,6 +531,13 @@ export default function TicketsPage() {
     const key = t.internalNumber ?? t.id;
     writeHash(key, sort, typeFilter);
   }, [sort, typeFilter, writeHash]);
+
+  // #8972: after a merge the source is a closed tombstone; follow the survivor
+  // (by number when the dialog knew it, else by id — both resolve in `selected`).
+  const onWorkbenchMerged = useCallback((survivorId: string, survivorNumber: string | null) => {
+    writeHash(survivorNumber ?? survivorId, sort, typeFilter);
+    scheduleReconcile();
+  }, [sort, typeFilter, writeHash, scheduleReconcile]);
 
   const move = useCallback((delta: 1 | -1) => {
     if (tickets.length === 0) return;
@@ -749,6 +823,15 @@ export default function TicketsPage() {
             <option key={o.value} value={o.value}>{t(/* i18n-dynamic */ `ticketsPage.sort.${o.labelKey}`)}</option>
           ))}
         </select>
+        <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showMerged}
+            onChange={(e) => writeHash(selectedNumber, sort, typeFilter, e.target.checked)}
+            data-testid="ticket-list-show-merged"
+          />
+          {t('ticketsPage.showMerged')}
+        </label>
       </div>
       )}
 
@@ -920,12 +1003,16 @@ export default function TicketsPage() {
                   </div>
                 )}
                 <div className="min-h-0 flex-1">
-                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onChanged={scheduleReconcile} />
+                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onMerged={onWorkbenchMerged} onChanged={scheduleReconcile} />
                 </div>
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
-                <p>{t('ticketsPage.noSelection')}</p>
+                {absentNotice ? (
+                  <p role="status" data-testid="tickets-deeplink-absent">{t('ticketsPage.ticketNotInView', { number: absentNotice })}</p>
+                ) : (
+                  <p>{t('ticketsPage.noSelection')}</p>
+                )}
               </div>
             )}
           </div>

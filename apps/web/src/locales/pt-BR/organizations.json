@@ -392,7 +392,10 @@
           "saved": "Padrões da Central de Confiança salvos",
           "saveFailed": "Não foi possível salvar os padrões da Central de Confiança",
           "mfaRequired": "Alterar estes padrões exige autenticação multifator. Ative a MFA nas configurações de segurança do seu perfil e tente novamente.",
-          "revisionMismatch": "Outra pessoa alterou estes padrões. Recarregue para ver as alterações."
+          "revisionMismatch": "Outra pessoa alterou estes padrões. Recarregue para ver as alterações.",
+          "conflictNotice": "Outra pessoa salvou estes padrões enquanto você editava. Recarregue a versão dela para partir dela, ou continue editando: salvar de novo vai continuar falhando até você recarregar.",
+          "reloadTheirs": "Recarregar a versão dela",
+          "keepEditing": "Continuar editando"
         },
         "title": "Configurações herdadas"
       },
@@ -589,6 +592,7 @@
       "title": "Documentos",
       "subtitle": "Runbooks, baselines, políticas e evidências de entrega desta organização.",
       "empty": "Ainda não há documentos. Envie um runbook, uma baseline ou uma política assinada para iniciar a biblioteca.",
+      "emptyPortalHint": "Seu cliente vê os documentos marcados como Visível no portal. Uma proposta ou um contrato assinado e uma baseline de segurança são bons primeiros documentos.",
       "emptyFiltered": "Nenhum documento nesta categoria.",
       "loadFailed": "Não foi possível carregar os documentos.",
       "upload": "Enviar documento",

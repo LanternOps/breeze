@@ -323,6 +323,25 @@ describe('intentExpiryReaper.reapStaleExecutingIntents', () => {
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
   });
 
+  // B-W04 (#6158, D-B29): an MCP-origin release holds an `executing` Tier-3
+  // ledger row (ai_tool_executions.intent_id); reaping the intent fails it too.
+  it('stale executing intent also fails its linked executing ledger row', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [{ id: 'intent-9', org_id: 'org-9', action_name: 'execute_command', argument_digest: 'd', source: 'mcp_api', decided_at: new Date() }],
+    });
+    executeMock.mockResolvedValueOnce({ rows: [] });
+
+    await reapStaleExecutingIntents();
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const q = new PgDialect().sqlToQuery(executeMock.mock.calls[1]?.[0] as never);
+    const ledgerSql = `${q.sql} ${JSON.stringify(q.params)}`;
+    expect(ledgerSql).toContain('ai_tool_executions');
+    expect(ledgerSql).toContain('execution_lost');
+    expect(ledgerSql).toContain('intent-9');
+  });
+
   it('returns 0 when nothing is stuck past the stale-executing timeout', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
 
@@ -355,5 +374,56 @@ describe('intentExpiryReaper.reapStaleExecutingIntents', () => {
 
     expect(reaped).toBe(1);
     expect(captureException).toHaveBeenCalled();
+  });
+});
+
+// Tool catalog W04 (#5219): both reaper writers insert their intent_outbox
+// rows directly (not through publishIntentTerminalOutbox), so each must wake
+// the flow run of a flow-origin row itself, in the same transaction.
+const { scheduleFlowRunWakeMock } = vi.hoisted(() => ({ scheduleFlowRunWakeMock: vi.fn() }));
+vi.mock('../services/flows/wake', () => ({ scheduleFlowRunWake: scheduleFlowRunWakeMock }));
+
+describe('intentExpiryReaper — flow run wake (#5219)', () => {
+  const RUN_ID = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+  beforeEach(() => {
+    vi.resetAllMocks();
+    insertMock.mockImplementation(() => ({ values: vi.fn(async () => undefined) }));
+  });
+
+  it('expiring a flow intent schedules a flow run wake', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        { id: 'intent-f', org_id: 'org-1', action_name: 'run_script', argument_digest: 'd', source: 'flow', requested_by_user_id: null, expires_at: new Date(), task_id: null, requesting_flow_run_id: RUN_ID },
+        { id: 'intent-c', org_id: 'org-1', action_name: 'run_script', argument_digest: 'd', source: 'chat', requested_by_user_id: 'u', expires_at: new Date(), task_id: null, requesting_flow_run_id: null },
+      ],
+    });
+    const chain = makeUpdateChain([]);
+    updateMock.mockImplementation(() => ({ set: chain.set }));
+
+    expect(await reapExpiredIntents()).toBe(2);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledTimes(1);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledWith(RUN_ID);
+    expect(sqlText(executeMock.mock.calls[0]![0])).toContain('requesting_flow_run_id');
+  });
+
+  it('execution_lost on a flow intent schedules a flow run wake', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [{ id: 'intent-f', org_id: 'org-1', action_name: 'run_script', argument_digest: 'd', source: 'flow', decided_at: new Date(), task_id: null, requesting_flow_run_id: RUN_ID }],
+    });
+    executeMock.mockResolvedValueOnce({ rows: [] });
+
+    expect(await reapStaleExecutingIntents()).toBe(1);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledTimes(1);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledWith(RUN_ID);
+    expect(sqlText(executeMock.mock.calls[0]![0])).toContain('requesting_flow_run_id');
+  });
+
+  it('wakes nothing when no reaped row is flow-origin', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [{ id: 'intent-2', org_id: 'org-2', action_name: 'x', argument_digest: 'd', source: 'mcp_api', decided_at: new Date(), task_id: null, requesting_flow_run_id: null }],
+    });
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    await reapStaleExecutingIntents();
+    expect(scheduleFlowRunWakeMock).not.toHaveBeenCalled();
   });
 });

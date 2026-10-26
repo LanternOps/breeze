@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DeviceStatus, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
 import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
@@ -422,6 +422,20 @@ export interface TicketDetails extends TicketSummary {
   comments: TicketComment[];
 }
 
+/**
+ * A request of the viewer's that staff merged into another ticket (#8972, spec
+ * §6.1). `mergedInto` is set only while the viewer may read that ticket;
+ * `survivorDeleted` means it was deleted since, and nothing else of it is sent.
+ */
+export interface PortalMergedTicket {
+  merged: true;
+  mergedInto: { id: string; internalNumber: string | null } | null;
+  mergedAt: string | null;
+  survivorDeleted: boolean;
+}
+
+export type PortalTicketDetailResult = TicketDetails | PortalMergedTicket;
+
 // Slim portal-visible intake form (Phase 2). Mirrors the `GET /portal/tickets/forms`
 // payload — no titleTemplate (the server composes the subject) and no showInPortal
 // (the route already filtered to portal-visible forms).
@@ -438,12 +452,12 @@ export interface PortalTicketForm {
 // payload. On the form path the subject/description are composed server-side, so
 // no `subject` key is sent (an optional free-text `description` may still ride along).
 export type CreateTicketInput =
-  | { subject: string; description: string; priority: TicketPriority }
+  | { subject: string; description: string; priority?: TicketPriority }
   | {
       formId: string;
       formResponses: Record<string, unknown>;
       description?: string;
-      priority: TicketPriority;
+      priority?: TicketPriority;
     };
 
 export interface Asset {
@@ -451,7 +465,8 @@ export interface Asset {
   hostname: string;
   displayName: string | null;
   osType: string | null;
-  status: 'online' | 'offline' | 'warning';
+  /** `devices.status` — the `device_status` enum; there is no 'warning'. */
+  status: DeviceStatus;
   lastSeenAt: string | null;
 }
 
@@ -759,6 +774,35 @@ export interface QuoteDetail {
   /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
    *  payloads omit it, which must read as 'classic'. */
   presentation?: QuotePresentation;
+}
+
+export interface PublicAgreementDetail {
+  request: {
+    id: string;
+    status: 'sent' | 'viewed' | 'signed' | 'declined';
+    label: string | null;
+    coverMessage: string | null;
+    expiresAt: string;            // ISO instant
+    effectiveDate: string | null; // YYYY-MM-DD
+    signedAt: string | null;      // ISO
+    declinedAt: string | null;    // ISO
+  };
+  template: { name: string; versionNumber: number; sourceType: 'authored' | 'uploaded' };
+  /** Server-sanitized agreement HTML (authored templates). */
+  html: string | null;
+  /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
+  fileUrl: string | null;
+  parties: { partnerName: string; orgName: string | null };
+  branding: {
+    partnerName: string;
+    logoUrl: string | null;
+    seller: { name: string | null; lines: string[]; phone: string | null; email: string | null; website: string | null } | null;
+  };
+}
+
+/** Browser-facing URL of an uploaded agreement's file (same-origin, token-scoped). */
+export function publicAgreementFilePath(token: string): PublicApiPath {
+  return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/file`);
 }
 
 export interface PublicQuoteDetail {
@@ -1104,8 +1148,13 @@ export const portalApi = {
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketDetails>> => {
-    const response = await apiGet<{ ticket: TicketDetails }>(`/portal/tickets/${id}`, config);
+  ): Promise<ApiResponse<PortalTicketDetailResult>> => {
+    // A merged tombstone answers top-level `{ merged: true, mergedInto, mergedAt,
+    // survivorDeleted? }` with no `ticket` key (#8972).
+    type Body =
+      | { ticket: TicketDetails; merged?: undefined }
+      | { merged: true; mergedInto?: PortalMergedTicket['mergedInto']; mergedAt?: string | null; survivorDeleted?: boolean };
+    const response = await apiGet<Body>(`/portal/tickets/${id}`, config);
     if (!response.data) {
       return {
         error: response.error,
@@ -1115,8 +1164,22 @@ export const portalApi = {
       };
     }
 
+    const body = response.data;
+    if (body.merged === true) {
+      return {
+        data: {
+          merged: true,
+          mergedInto: body.mergedInto ?? null,
+          mergedAt: body.mergedAt ?? null,
+          survivorDeleted: body.survivorDeleted === true,
+        },
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
     return {
-      data: response.data.ticket,
+      data: body.ticket,
       statusCode: response.statusCode,
       headers: response.headers
     };
@@ -1421,6 +1484,41 @@ export const portalApi = {
   ): Promise<ApiResponse<{ data: { status: string } }>> => {
     return apiPost<{ data: { status: string } }>(
       `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  // Public, token-gated agreement signing (no portal account). Hits
+  // /agreements/public/* (NOT /portal/*): a 401 must never bounce to login.
+  getPublicAgreement: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicAgreementDetail }>> => {
+    return apiGet<{ data: PublicAgreementDetail }>(
+      `/agreements/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicAgreement: async (
+    token: string,
+    signerName: string,
+    signerEmail: string
+  ): Promise<ApiResponse<{ data: { status: 'signed'; signedAt: string } }>> => {
+    return apiPost<{ data: { status: 'signed'; signedAt: string } }>(
+      `/agreements/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicAgreement: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: 'declined' } }>> => {
+    return apiPost<{ data: { status: 'declined' } }>(
+      `/agreements/public/${encodeURIComponent(token)}/decline`,
       { reason },
       { redirectOnUnauthorized: false }
     );

@@ -21,6 +21,9 @@ vi.mock('../../lib/runAction', () => ({
 }));
 
 import LoginBrandingCard from './LoginBrandingCard';
+import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
+import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit';
+import { renderHook } from '@testing-library/react';
 
 function jsonRes(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body } as unknown as Response;
@@ -52,6 +55,8 @@ describe('LoginBrandingCard', () => {
   beforeEach(() => {
     fetchWithAuth.mockReset();
     runAction.mockClear();
+    // The card's draft lives in the page-scoped store (W2); start every test clean.
+    usePartnerSettingsDraftStore.getState().reset();
   });
 
   it('loads current branding values from GET', async () => {
@@ -85,16 +90,19 @@ describe('LoginBrandingCard', () => {
     expect(preview.style.backgroundColor).toBe('rgb(255, 0, 0)');
   });
 
-  it('saves via runAction sending ALL THREE fields (full-replace)', async () => {
+  it('has no Save of its own; the header Save sends ALL THREE fields via runAction (full-replace)', async () => {
     routeFetch({ logoUrl: 'https://cdn.example.com/logo.png', accentColor: '#112233', headline: 'Old headline' });
     render(<LoginBrandingCard />);
     await waitFor(() =>
       expect((screen.getByTestId('login-branding-headline') as HTMLInputElement).value).toBe('Old headline')
     );
+    expect(screen.queryByTestId('login-branding-save')).toBeNull();
 
     // Clear the headline; logo + accent stay set.
     fireEvent.change(screen.getByTestId('login-branding-headline'), { target: { value: '' } });
-    fireEvent.click(screen.getByTestId('login-branding-save'));
+    const { result } = renderHook(() => useLoginBrandingUnit());
+    expect(result.current.isDirty()).toBe(true);
+    await result.current.save();
 
     await waitFor(() => expect(runAction).toHaveBeenCalled());
     const body = lastPut();
@@ -105,7 +113,7 @@ describe('LoginBrandingCard', () => {
     expect(body.headline).toBeNull();
   });
 
-  it('shows a warning banner and disables Save when the GET returns a server error', async () => {
+  it('shows a warning banner and keeps the unit clean when the GET returns a server error', async () => {
     fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
       if (url === '/partners/me/login-branding' && (!opts || !opts.method || opts.method === 'GET')) {
         return Promise.resolve(jsonRes({ error: 'boom' }, false, 500));
@@ -116,10 +124,12 @@ describe('LoginBrandingCard', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByRole('alert')).toHaveTextContent(/Couldn't load your current branding/i);
-    expect(screen.getByTestId('login-branding-save')).toBeDisabled();
+    // Full-replace PUT: an unloaded form must never be saveable.
+    expect(renderHook(() => useLoginBrandingUnit()).result.current.isDirty()).toBe(false);
+    expect(screen.queryByTestId('login-branding-headline')).toBeNull();
   });
 
-  it('shows a warning banner and disables Save when the GET throws', async () => {
+  it('shows a warning banner with a retry when the GET throws', async () => {
     fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
       if (url === '/partners/me/login-branding' && (!opts || !opts.method || opts.method === 'GET')) {
         return Promise.reject(new Error('network down'));
@@ -129,16 +139,15 @@ describe('LoginBrandingCard', () => {
     render(<LoginBrandingCard />);
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
-    expect(screen.getByTestId('login-branding-save')).toBeDisabled();
+    expect(screen.getByRole('button', { name: /try again|retry/i })).toBeTruthy();
   });
 
-  it('enables Save and shows no banner on a successful load', async () => {
+  it('shows the fields and no banner on a successful load', async () => {
     routeFetch({ logoUrl: null, accentColor: null, headline: null });
     render(<LoginBrandingCard />);
 
     await waitFor(() => expect(screen.getByTestId('login-branding-logo-url')).toBeTruthy());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByTestId('login-branding-save')).not.toBeDisabled();
   });
 
   it('shows the partner sign-in page URL built from the partner slug (#4017)', async () => {

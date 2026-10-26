@@ -678,6 +678,33 @@ describe('discovery routes', () => {
       });
     });
 
+    it('projects a normalized osFingerprint in the asset list response', async () => {
+      const now = new Date();
+      const mk = (id: string, osFingerprint: unknown) => ({
+        asset: {
+          id, orgId: '00000000-0000-0000-0000-000000000000', assetType: 'workstation',
+          approvalStatus: 'pending', isOnline: true, hostname: id, label: null,
+          ipAddress: '10.0.2.9', macAddress: null, manufacturer: null, model: null,
+          openPorts: [], snmpData: null, responseTimeMs: 2, linkedDeviceId: null,
+          osFingerprint, discoveryMethods: ['ping'], notes: null, tags: [],
+          firstSeenAt: now, lastSeenAt: now, createdAt: now, updatedAt: now,
+        },
+        snmpMonitoringEnabled: false, networkMonitoringEnabled: false,
+        linkedDeviceHostname: null, linkedDeviceDisplayName: null,
+        profileId: null, profileName: null, profileSubnets: null,
+      });
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ leftJoin: () => ({ leftJoin: () => ({ leftJoin: () => ({
+          where: () => ({ orderBy: () => Promise.resolve([mk('a-obj', { os: 'Windows 11' }), mk('a-null', null)]) }),
+        }) }) }) }),
+      });
+      const res = await app.request('/discovery/assets', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].osFingerprint).toBe('Windows 11');
+      expect(body.data[1].osFingerprint).toBeNull();
+    });
+
     // Regression guard: the list serializer must forward typeSource and
     // detectedAssetType so the frontend can show the override badge without
     // fetching individual asset detail pages.
@@ -961,6 +988,27 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.siteTimezone).toBe('America/Chicago');
+    });
+
+    it.each([
+      [{ os: 'Windows' }, 'Windows'],
+      ['Cisco IOS', 'Cisco IOS'],
+      [{ os: 42 }, null],
+      [null, null],
+      ['', null],
+      [{ os: '' }, null],
+    ])('returns osFingerprint %j as %j (#9645)', async (stored, expected) => {
+      const row = buildRow();
+      row.asset.osFingerprint = stored as any;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.osFingerprint).toBe(expected);
     });
 
     it('returns a null site timezone when the asset has no site', async () => {
@@ -1319,6 +1367,19 @@ describe('discovery routes', () => {
   });
 
   describe('GET /discovery/profiles', () => {
+    // #9644: the last-run aggregate is a second, separately-qualified query
+    // (a correlated subquery inside the single-table profile select lost its
+    // table qualifiers and always evaluated to NULL).
+    const mockLastRuns = (rows: Array<{ profileId: string; lastRunAt: unknown }>) => {
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            groupBy: () => Promise.resolve(rows),
+          }),
+        }),
+      });
+    };
+
     // Regression: the Changes tab differentiates "Alerting disabled" from "no
     // changes yet" using each profile's alertSettings, so the list response must
     // project alertSettings (#1729).
@@ -1347,7 +1408,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       };
 
       (db.select as any).mockReturnValueOnce({
@@ -1357,6 +1417,7 @@ describe('discovery routes', () => {
           }),
         }),
       });
+      mockLastRuns([]);
 
       const res = await app.request('/discovery/profiles', {
         method: 'GET',
@@ -1391,7 +1452,6 @@ describe('discovery routes', () => {
               createdAt: now,
               updatedAt: now,
             },
-            lastRunAt: '2026-08-25 18:34:15.123',
           };
 
           (db.select as any).mockReturnValueOnce({
@@ -1401,6 +1461,7 @@ describe('discovery routes', () => {
               }),
             }),
           });
+          mockLastRuns([{ profileId: 'profile-003', lastRunAt: '2026-08-25 18:34:15.123' }]);
 
           const res = await app.request('/discovery/profiles', {
             method: 'GET',
@@ -1433,7 +1494,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       };
 
       (db.select as any).mockReturnValueOnce({
@@ -1443,6 +1503,7 @@ describe('discovery routes', () => {
           }),
         }),
       });
+      mockLastRuns([]);
 
       const res = await app.request('/discovery/profiles', {
         method: 'GET',
@@ -1452,6 +1513,50 @@ describe('discovery routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data[0].alertSettings).toBeNull();
+    });
+
+    it('skips the last-run lookup when no profile is visible (#9644)', async () => {
+      (db.select as any).mockClear();
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      });
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns each profile\'s own newest completed-job time, null when none (#9644)', async () => {
+      const now = new Date();
+      const mk = (id: string) => ({
+        profile: {
+          id, orgId: '00000000-0000-0000-0000-000000000000',
+          siteId: '00000000-0000-0000-0000-000000000001',
+          name: id, description: null, enabled: true, subnets: ['10.0.2.0/24'],
+          methods: ['ping'], schedule: { type: 'manual' }, deepScan: false,
+          resolveHostnames: true, alertSettings: null, createdAt: now, updatedAt: now,
+        },
+      });
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ orderBy: () => Promise.resolve([mk('profile-a'), mk('profile-b')]) }) }),
+      });
+      mockLastRuns([{ profileId: 'profile-a', lastRunAt: new Date('2026-10-01T12:00:00.000Z') }]);
+
+      const res = await app.request('/discovery/profiles', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((p: any) => [p.id, p.lastRunAt])).toEqual([
+        ['profile-a', '2026-10-01T12:00:00.000Z'],
+        ['profile-b', null],
+      ]);
     });
   });
 
@@ -1910,7 +2015,6 @@ describe('discovery routes', () => {
           createdAt: now,
           updatedAt: now,
         },
-        lastRunAt: null,
       });
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -1922,6 +2026,8 @@ describe('discovery routes', () => {
             ]),
           }),
         }),
+      } as any).mockReturnValueOnce({
+        from: () => ({ where: () => ({ groupBy: () => Promise.resolve([]) }) }),
       } as any);
 
       const res = await app.request('/discovery/profiles', {
@@ -3640,9 +3746,11 @@ describe('discovery routes', () => {
       };
       (db.select as any).mockReturnValueOnce({
         from: () => ({ where: () => ({ orderBy: () => Promise.resolve([
-          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE }, lastRunAt: null },
-          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null }, lastRunAt: null },
+          { profile: { ...base, id: 'p-pinned', pinnedDeviceId: DEVICE } },
+          { profile: { ...base, id: 'p-auto', pinnedDeviceId: null } },
         ]) }) }),
+      }).mockReturnValueOnce({
+        from: () => ({ where: () => ({ groupBy: () => Promise.resolve([]) }) }),
       });
 
       const res = await app.request('/discovery/profiles', { method: 'GET', headers: { Authorization: 'Bearer token' } });

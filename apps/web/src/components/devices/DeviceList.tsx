@@ -27,6 +27,7 @@ import {
   BatteryWarning,
   Plug,
   Link2,
+  MapPin,
 } from "lucide-react";
 import type {
   BatteryStatus,
@@ -50,6 +51,8 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  BULK_SITE_MOVE_CAP,
+  bulkMoveSiteBlock,
   classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
@@ -93,6 +96,7 @@ import {
   writeVisibleCustomFieldKeys,
 } from "./customFieldColumnVisibility";
 import { useCustomFieldDefinitionsStore } from "../../stores/customFieldDefinitions";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 import {
   densityTableClasses,
   readDensity,
@@ -895,6 +899,8 @@ export default function DeviceList({
   const { can } = usePermissions();
   const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
+  // UX gate; PATCH /devices/:id and POST /devices/bulk/site (#9796) both require devices.write (+ MFA).
+  const canMoveSite = can("devices", "write");
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
   // Use provided timezone or browser default
@@ -1348,6 +1354,18 @@ export default function DeviceList({
   // funnel in DevicesPage still refuses network/manual rows, this just says
   // so before the click instead of after.
   const agentOnlyDisabled = filterBlocked || selectedAgentCount === 0;
+  // Bulk "Move to site" (#9796): agents only, one org, at most the API cap.
+  // Disabled with a VISIBLE reason (not just a title) for the same touch /
+  // keyboard reasons as actionGateHint; never chunked past the cap.
+  const moveSiteBlock = useMemo(() => bulkMoveSiteBlock(selectedDevices), [selectedDevices]);
+  const moveSiteBlockReason =
+    moveSiteBlock === "mixed_org"
+      ? t("deviceList.moveSiteMixedOrgs")
+      : moveSiteBlock === "over_cap"
+        ? t("deviceList.moveSiteOverCap", { count: BULK_SITE_MOVE_CAP })
+        : moveSiteBlock === "no_agents"
+          ? t("deviceList.agentOnlyBulkAction")
+          : undefined;
   const agentOnlyTitle = agentOnlyDisabled
     ? t("deviceList.agentOnlyBulkAction")
     : undefined;
@@ -2730,8 +2748,13 @@ export default function DeviceList({
   // sortValue are keyed by the closed ColumnId union, and threading a
   // per-org dynamic key through them is the same exhaustive-Record problem
   // this design sidesteps.
-  const formatCustomFieldValue = (value: unknown): React.ReactNode => {
+  const formatCustomFieldValue = (
+    def: (typeof visibleCustomFieldDefs)[number],
+    value: unknown,
+  ): React.ReactNode => {
     if (value === null || value === undefined || value === "") return dash;
+    const choiceLabel = dropdownChoiceLabel(def, value);
+    if (choiceLabel !== undefined) return choiceLabel;
     if (typeof value === "boolean") return value ? t("common:labels.yes") : t("common:labels.no");
     if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : dash;
     return String(value);
@@ -2749,7 +2772,7 @@ export default function DeviceList({
         className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground"
         data-testid={`device-${device.id}-custom-${def.fieldKey}`}
       >
-        <span className="block truncate">{formatCustomFieldValue(value)}</span>
+        <span className="block truncate">{formatCustomFieldValue(def, value)}</span>
       </td>
     );
   };
@@ -3027,6 +3050,30 @@ export default function DeviceList({
                   {t("deviceList.disableMaintenance")}
                   {agentOnlySuffix}
                 </button>
+                {canMoveSite && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="devices-bulk-move-site"
+                      onClick={() => handleBulkAction("move-site")}
+                      disabled={filterBlocked || moveSiteBlock !== null}
+                      aria-describedby={moveSiteBlock ? "devices-bulk-move-site-disabled-reason" : undefined}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("deviceList.moveSelectedToSite")}
+                      {agentOnlySuffix}
+                    </button>
+                    {moveSiteBlockReason && (
+                      <p
+                        id="devices-bulk-move-site-disabled-reason"
+                        data-testid="devices-bulk-move-site-disabled-reason"
+                        className="px-4 pb-2 text-xs text-muted-foreground"
+                      >
+                        {moveSiteBlockReason}
+                      </p>
+                    )}
+                  </>
+                )}
                 <hr className="my-1" />
                 {canWake && (
                 <button
@@ -3141,6 +3188,7 @@ export default function DeviceList({
                   checked={allSelected}
                   disabled={filterBlocked}
                   aria-label={t("deviceList.selectAllDevicesOnThisPage")}
+                  data-testid="device-list-select-all"
                   ref={(el) => {
                     if (el) el.indeterminate = someSelected && !allSelected;
                   }}
@@ -3288,6 +3336,7 @@ export default function DeviceList({
                           disabled={filterBlocked}
                           checked={selectedIds.has(device.id)}
                           aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
+                          data-testid={`device-${device.id}-select`}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) =>
                             handleSelectOne(device.id, e.target.checked)
@@ -3515,6 +3564,24 @@ export default function DeviceList({
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
                                   </button>
+                                  {/* #9796: a site move is a DB write, not an
+                                      agent command — not gated on status (the
+                                      API refuses none). Agent rows only: this
+                                      menu never renders for network/manual. */}
+                                  {canMoveSite && (
+                                    <button
+                                      type="button"
+                                      data-testid="device-row-move-site"
+                                      onClick={() => {
+                                        onAction?.("move-site", device);
+                                        setRowMenuOpenId(null);
+                                      }}
+                                      className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                    >
+                                      <MapPin className="h-4 w-4" />
+                                      {t("deviceList.moveToSite")}
+                                    </button>
+                                  )}
                                   {/* #4936: maintenance mode was reachable only
                                       through Bulk Actions, so acting on ONE
                                       device meant ticking its checkbox and

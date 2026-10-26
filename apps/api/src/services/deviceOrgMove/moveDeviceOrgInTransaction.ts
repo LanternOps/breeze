@@ -18,6 +18,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm';
 import type { db } from '../../db';
 import { deviceCommands, devices, tickets } from '../../db/schema';
+import { carryMergedTombstonesInTx } from '../ticketMerge/movers';
 import type { AuthContext } from '../../middleware/auth';
 import {
   getDeviceOrgDenormalizedTables,
@@ -53,6 +54,7 @@ import {
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } from '../ticketService';
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
+import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -198,13 +200,17 @@ export async function moveDeviceOrgInTransaction(
   // devices UPDATE, long before the child tail deletes the links of the
   // moved tickets, so an IMMEDIATE check would 23503 first.
   //
+  // #8972 W1 adds tickets_merged_into_org_fk: the device's survivor tickets
+  // and their merged tombstones are re-stamped row by row, so the self-FK is
+  // checked at COMMIT, when all of them carry the target org.
+  //
   // The device-org cascade trigger restamps tickets.org_id before the
   // loop below can align partner_id; defer their composite FK too.
   //
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED`,
   );
   // #7900 W02: the source org's ticket_links lock, SHARED, before any row
   // lock (an advisory lock, so the step-up row lock below is still the first
@@ -514,6 +520,29 @@ export async function moveDeviceOrgInTransaction(
     sql`UPDATE endpoint_conversations
            SET status = 'closed', close_reason = 'device_moved', closed_at = now(), updated_at = now()
          WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
+  );
+
+  // #6263 W05 — IOC sweep scans detach from their sweep. The flip below
+  // fires breeze_cascade_device_org_id(), which restamps
+  // security_scans.org_id to the target org, while the
+  // security_scan_sweeps row stays in the SOURCE org (an execution record
+  // of the source org's request). sweep_id is a plain FK, not a composite
+  // (sweep_id, org_id), precisely so this restamp cannot 23503; the cost
+  // is that the pointer must be severed here or a target-org scan would
+  // name a source-org sweep. A still-queued scan was never dispatched and
+  // is cancelled (the target org never asked for it); a running one keeps
+  // its status so a delivered command's result still ingests in the new
+  // org. Every sweep reader (claim, pump, fetch, progress) also requires
+  // sweep.org_id = scan.org_id, the backstop for any writer that reaches
+  // devices.org_id without this statement. Placed before the flip, in the
+  // manual_assets position: after it, the restamped rows would already
+  // name the target org.
+  await tx.execute(
+    sql`UPDATE security_scans SET
+          status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+          completed_at = CASE WHEN status = 'queued' THEN now() ELSE completed_at END,
+          sweep_id = NULL
+        WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
   );
 
   // Flip the device row first so any concurrent agent heartbeat
@@ -958,6 +987,11 @@ export async function moveDeviceOrgInTransaction(
       for (const ticket of movedTickets) {
         await revalidateTicketAssignee(ticket.id, { kind: 'user', userId: input.actor.userId }, tx);
       }
+      // #8973 W4 (spec §4.3 "Move-org"): after the restamp above, so each
+      // ticket re-resolves its business calendar for the org it now belongs
+      // to and recomputes its unfrozen deadlines; a source-org calendar is
+      // never left referenced. Same transaction, rows already locked.
+      await reresolveMovedTicketCalendars(tx, [...movedTickets].map((t) => t.id));
     } else {
       // The devices UPDATE above already fired breeze_cascade_device_org_id(),
       // which re-stamps every breeze_device_child_orgid_tables() row with the
@@ -1222,6 +1256,16 @@ export async function moveDeviceOrgInTransaction(
               (source_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS source_moved,
               (target_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS target_moved`);
   const removedTicketLinks = removedTicketLinksFromRows(removedLinkRows);
+
+  // #8972 W1 (spec §3.9): a merged tombstone's device_id is NULL, so the
+  // `device_id = D` joins above never reach it; it moves with its survivor
+  // here (the full per-ticket routine), or tickets_merged_into_org_fk
+  // (deferred at the top) fails at commit.
+  await carryMergedTombstonesInTx(
+    tx,
+    (await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))).map((r) => r.id),
+    targetOrgId,
+  );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
   // core.ts): alert_correlation_groups, alert_correlation_members and

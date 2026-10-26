@@ -13,16 +13,26 @@ import {
   type ReadinessReason,
   type ReadinessResult,
 } from './installerReadiness';
-import { vendorForIntegrationProvider, type VendorKey } from './securityAgentVendors';
+import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors';
 
 /**
  * Which rules of a GENERATED (security agents) software policy apply to which
  * devices, for one compliance pass (#6960).
  *
- * A rule's vendor is derived from its catalogId (the catalog row's
- * integration_provider). Its applicability on a device is the installer
- * readiness preflight: platform first (registry support, then the link's own
- * platform list), then the DEVICE's org (mapping, partner integration, keys).
+ * A rule's vendor is derived from its catalogId: the catalog row's
+ * integration_provider (EDR vendors) or builtin_package_key (tenant-variable
+ * vendors, whose rows each serve exactly one OS). Its applicability on a
+ * device is the installer readiness preflight: platform first (registry
+ * support, the row's own OS, then the link's own platform list), then the
+ * DEVICE's org (EDR mapping and keys, or the org's tenant variables).
+ *
+ * Every violation a managed rule can carry is filtered: `missing` (#6960 W02)
+ * and the `service_running` bridge's `not_running` / `service_unverified`
+ * (#6958 D5 obligation). In today's compliance pass the filter runs before the
+ * bridge, and the bridge only converts a surviving `missing` or adds a
+ * violation for an inventory-matched rule (which a DNS rule, named after its
+ * pinned package, never is), so a not-ready device gets no service violation;
+ * filtering the service types as well keeps that true whatever the order.
  *
  * Fail-closed: a rule whose catalog row is not a known vendor package, or a
  * device the pass did not describe, is not applicable. A managed policy only
@@ -52,6 +62,13 @@ export interface ManagedRuleApplicability {
   ): { violations: SoftwarePolicyViolation[]; notApplicable: NotApplicableEntry[] };
 }
 
+/** Violation types that belong to a managed rule (and so to its vendor's readiness). */
+const MANAGED_RULE_VIOLATION_TYPES: ReadonlySet<SoftwarePolicyViolation['type']> = new Set([
+  'missing',
+  'not_running',
+  'service_unverified',
+]);
+
 export async function loadManagedRuleApplicability(
   policy: { id: string; managedByLinkId: string; rules: SoftwarePolicyRulesDefinition },
   devices: ReadonlyArray<{ deviceId: string; orgId: string; osType: string }>,
@@ -63,12 +80,23 @@ export async function loadManagedRuleApplicability(
   ));
 
   const vendorByCatalogId = new Map<string, VendorKey | null>();
+  // The single OS a built-in (tenant-variable) row installs on; absent for EDR
+  // integration rows, which serve every platform the vendor supports.
+  const platformByCatalogId = new Map<string, string>();
   if (catalogIds.length > 0) {
     const rows = await db
-      .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider })
+      .select({
+        id: softwareCatalog.id,
+        integrationProvider: softwareCatalog.integrationProvider,
+        builtinPackageKey: softwareCatalog.builtinPackageKey,
+      })
       .from(softwareCatalog)
       .where(inArray(softwareCatalog.id, catalogIds));
-    for (const row of rows) vendorByCatalogId.set(row.id, vendorForIntegrationProvider(row.integrationProvider));
+    for (const row of rows) {
+      const pkg = vendorForCatalogPackage(row);
+      vendorByCatalogId.set(row.id, pkg?.vendor ?? null);
+      if (pkg?.platform) platformByCatalogId.set(row.id, pkg.platform);
+    }
   }
 
   // The ONE authored link this policy hangs on: its per-vendor platform list.
@@ -107,21 +135,42 @@ export async function loadManagedRuleApplicability(
     if (!device) return { vendor, result: { ok: false, reason: 'org_not_mapped' } };
     const platform = evaluatePlatformReadiness(vendor, device.osType, platformsByVendor.get(vendor));
     if (!platform.ok) return { vendor, result: platform };
+    // A per-OS row (Control D Windows vs macOS) only ever targets its own OS.
+    const rowPlatform = platformByCatalogId.get(catalogId);
+    if (rowPlatform !== undefined && rowPlatform !== device.osType) {
+      return { vendor, result: { ok: false, reason: 'platform_unsupported' } };
+    }
     return {
       vendor,
       result: orgReadinessByVendor.get(vendor)?.get(device.orgId) ?? { ok: false, reason: 'org_not_mapped' },
     };
   }
 
-  const vendorRules: Array<{ catalogId: string; vendor: VendorKey }> = [];
+  // Vendor → its rule catalog ids, in rule order (several for a per-OS vendor).
+  const vendorRules: Array<{ vendor: VendorKey; catalogIds: string[] }> = [];
   for (const catalogId of catalogIds) {
     const vendor = vendorByCatalogId.get(catalogId) ?? null;
-    if (vendor && !vendorRules.some((rule) => rule.vendor === vendor)) vendorRules.push({ catalogId, vendor });
+    if (!vendor) continue;
+    const entry = vendorRules.find((rule) => rule.vendor === vendor);
+    if (entry) entry.catalogIds.push(catalogId);
+    else vendorRules.push({ vendor, catalogIds: [catalogId] });
+  }
+
+  /** The vendor's rule for this device: the one for the device's OS, else its first. */
+  function deviceCatalogId(deviceId: string, ruleCatalogIds: string[]): string {
+    const osType = deviceById.get(deviceId)?.osType;
+    return ruleCatalogIds.find((id) => {
+      const rowPlatform = platformByCatalogId.get(id);
+      return rowPlatform === undefined || rowPlatform === osType;
+    }) ?? ruleCatalogIds[0]!;
   }
 
   return {
     evaluateDevice(deviceId) {
-      return vendorRules.map(({ catalogId, vendor }) => ({ catalogId, vendor, result: readiness(deviceId, catalogId).result }));
+      return vendorRules.map(({ vendor, catalogIds: ruleCatalogIds }) => {
+        const catalogId = deviceCatalogId(deviceId, ruleCatalogIds);
+        return { catalogId, vendor, result: readiness(deviceId, catalogId).result };
+      });
     },
     vendors() {
       return vendorRules.map((rule) => rule.vendor);
@@ -130,7 +179,7 @@ export async function loadManagedRuleApplicability(
       const kept: SoftwarePolicyViolation[] = [];
       const notApplicable: NotApplicableEntry[] = [];
       for (const violation of violations) {
-        const catalogId = violation.type === 'missing' ? violation.rule?.catalogId : undefined;
+        const catalogId = MANAGED_RULE_VIOLATION_TYPES.has(violation.type) ? violation.rule?.catalogId : undefined;
         if (!catalogId) {
           kept.push(violation);
           continue;

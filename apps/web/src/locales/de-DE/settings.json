@@ -79,6 +79,10 @@
         "categoryLabel": "Kategorie",
         "categoryUnresolved": "Vorgeschlagen — Name in dieser Ansicht nicht verfügbar"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Fix-Gedächtnis",
+      "fleetDesignReport": "Flottendesign"
     }
   },
   "aiDataPolicy": {
@@ -254,41 +258,7 @@
       "twelveHour": "12 Stunden",
       "twentyFourHour": "24 Stunden",
       "language": "Sprache",
-      "languageDescription": "Standardsprache für Partnereinstellungen.",
-      "businessHours": {
-        "title": "Geschäftszeiten",
-        "description": "Legen Sie Ihre Standardbetriebszeiten für Support und Benachrichtigungen fest.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Immer verfügbar"
-          },
-          "business": {
-            "label": "Geschäftszeiten",
-            "description": "Mo-Fr 9-17 Uhr"
-          },
-          "extended": {
-            "label": "Erweiterte Öffnungszeiten",
-            "description": "Mo-Fr 7-19 Uhr, Sa 9-13 Uhr"
-          },
-          "custom": {
-            "label": "Benutzerdefiniert",
-            "description": "Legen Sie Ihren eigenen Zeitplan fest"
-          }
-        },
-        "customSchedule": "Benutzerdefinierter Zeitplan",
-        "open": "Offen",
-        "to": "zu"
-      },
-      "days": {
-        "mon": "Montag",
-        "tue": "Dienstag",
-        "wed": "Mittwoch",
-        "thu": "Donnerstag",
-        "fri": "Freitag",
-        "sat": "Samstag",
-        "sun": "Sonntag"
-      }
+      "languageDescription": "Standardsprache für Partnereinstellungen."
     }
   },
   "partnerAiBudgets": {
@@ -319,7 +289,7 @@
     "subtitle": "Verbinden Sie Anbieter, legen Sie fest, welche Modelle verfügbar sind, und wählen Sie das Standardmodell für jede KI-Funktion.",
     "forbidden": "Sie haben keine Berechtigung, KI-Anbieter und Modelle zu verwalten.",
     "loadFailed": "KI-Anbieter und Modelle konnten nicht geladen werden.",
-    "workspaceNote": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "workspaceNote": "Die Wissensindizierung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
     "connections": {
       "title": "Verbindungen",
       "subtitle": "Wohin Ihre KI-Anfragen gesendet werden und wer sie bezahlt.",
@@ -700,7 +670,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -777,13 +753,10 @@
     "maintenancePlaceholder": "z.B. So 02:00-06:00, 02:00-04:00 oder 24/7",
     "maintenanceInvalid": "Verwenden Sie ein UTC-Fenster wie <first>Sonntag 02:00-04:00</first> oder <second>02:00-04:00</second> oder <always>24/7</always> für Always-On. Lassen Sie das Feld leer, damit Organisationen es konfigurieren können.",
     "maintenanceHelp": "Zeitfenster (UTC) für automatische Updates und Neustarts. Verwenden Sie <always>24/7</always> für Always-On oder lassen Sie das Feld leer, damit Organisationen es individuell konfigurieren können.",
-    "deviceGroup": "Standardgerätegruppe",
-    "alertThreshold": "Standardalarmschwelle",
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung für neue Geräte",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensbenachrichtigung senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "enrollment": {
       "title": "Geräteregistrierung",
@@ -1030,8 +1003,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Unternehmen",
+      "devices": "Geräte und Agenten",
       "security": "Sicherheit und Zugang",
       "communications": "Kommunikation",
+      "ai": "KI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1035,11 @@
       },
       "company": {
         "label": "Unternehmen",
-        "description": "Name, Adresse, Kontakte"
+        "description": "Name, Adresse, Kontakte, E-Mail-Signatur"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zeitzone, Formate, Stunden"
+        "description": "Zeitzone, Sprache, Formate, Stunden"
       },
       "defaults": {
         "label": "Standardeinstellungen",
@@ -1072,7 +1047,7 @@
       },
       "security": {
         "label": "Sicherheit",
-        "description": "IP-Zulassungsliste und Zugriff"
+        "description": "Passwörter, Sitzungen, MFA und IP-Zulassungsliste"
       },
       "remoteAccess": {
         "label": "Fernzugriff",
@@ -1080,11 +1055,11 @@
       },
       "eventLogs": {
         "label": "Ereignisprotokolle",
-        "description": "Weitergabe und Aufbewahrung"
+        "description": "Geräte-Ereignisprotokolle an Elasticsearch weiterleiten"
       },
       "notifications": {
         "label": "Benachrichtigungen",
-        "description": "E-Mail- und Webhook-Benachrichtigungen"
+        "description": "Absenderadresse, SMTP, Slack- und Pushover-Standardwerte"
       },
       "ticketing": {
         "label": "Ticketverkauf",
@@ -1109,7 +1084,7 @@
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
-        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
+        "description": "KI-Datenrichtlinie, Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -1125,7 +1100,15 @@
       },
       "aiApprovals": {
         "label": "KI-Genehmigungs-Timeout",
-        "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
+        "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion wartet"
+      },
+      "callerVerification": {
+        "label": "Anruferverifizierung",
+        "description": "Identitätsprüfung von Anrufern bei Support-Anfragen"
+      },
+      "knownGuests": {
+        "label": "Bekannte Gäste",
+        "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1141,7 +1124,6 @@
     "title": "Partnereinstellungen",
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
-    "selfSaving": "Dieser Abschnitt speichert seine eigenen Änderungen.",
     "saveSettings": "Einstellungen speichern",
     "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
@@ -1170,6 +1152,27 @@
       "topologyAiDescription": "Breeze AI die Karte zusammenfassen und ungewöhnliche Änderungen in der Topologie eines Standorts markieren lassen.",
       "saved": "Module aktualisiert",
       "saveFailed": "Module konnten nicht aktualisiert werden"
+    },
+    "status": {
+      "clean": "Alle Änderungen gespeichert · {{time}}",
+      "cleanNoTime": "Alle Änderungen gespeichert",
+      "dirty": "Ungespeicherte Änderungen in <tabs></tabs>.",
+      "invalid_one": "Korrigieren Sie {{count}} Feld in {{tab}}, um zu speichern.",
+      "invalid_other": "Korrigieren Sie {{count}} Felder in {{tab}}, um zu speichern.",
+      "saving": "Wird gespeichert…",
+      "partial": "<tabs></tabs> konnte nicht gespeichert werden. Die übrigen Änderungen wurden gespeichert.",
+      "failed": "<tabs></tabs> konnte nicht gespeichert werden.",
+      "autosaved": "Gespeichert · {{time}}",
+      "autosaveFailed": "Speichern fehlgeschlagen – bitte erneut versuchen",
+      "readOnly": "Zum Speichern ist voller Partnerzugriff erforderlich"
+    },
+    "validation": {
+      "retentionDays": "Geben Sie eine ganze Zahl an Tagen von 1 bis 3650 ein."
+    },
+    "unsavedConfirm": "Sie haben ungespeicherte Änderungen. Diese Seite verlassen und die Änderungen verwerfen?",
+    "knownGuests": {
+      "added": "Bekanntes Gastgerät hinzugefügt",
+      "removed": "Bekanntes Gastgerät entfernt"
     }
   },
   "partnerSendingDomains": {
@@ -1388,6 +1391,14 @@
     "never": "Niemals",
     "downloadInstaller": "Vorkonfiguriertes Installationsprogramm herunterladen",
     "downloading": "Wird heruntergeladen...",
+    "installerDialogTitle": "Installationsprogramm für „{{name}}“ herunterladen",
+    "installerDialogDescription": "Das Installationsprogramm wird für eine feste Anzahl von Geräten erstellt. Jedes Gerät, das es ausführt, verbraucht eine davon.",
+    "installerDeviceCount": "Anzahl der Geräte",
+    "installerDeviceCountRemaining": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountRemaining_one": "Dieser Schlüssel hat noch {{count}} Registrierung übrig.",
+    "installerDeviceCountRemaining_other": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountUnlimited": "Dieser Schlüssel hat kein Nutzungslimit.",
+    "installerDeviceCountRange": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
     "rotate": "Rotieren",
     "page": "Seite {{current}} von {{total}}",
     "previous": "Zurück",
@@ -1401,7 +1412,10 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "defaultDeviceLimit": "50 (Standard)",
+    "defaultDeviceLimit": "{{count}} (Organisationsstandard)",
+    "expiresAtHelp": "Leer lassen für {{duration}} (Organisationsstandard).",
+    "usageFromDefault": "Standard",
+    "usageFromDefaultTitle": "Das Geräte-Limit stammt aus dem Organisationsstandard.",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -1485,7 +1499,9 @@
       "approval_ask": "Freigabeanfrage",
       "approval_snapshot": "Freigabe-Kennzahlen",
       "approval_expires": "Freigabefrist",
-      "approval_status": "Freigabestatus"
+      "approval_status": "Freigabestatus",
+      "merged_into_number": "Nummer des Ziel-Tickets",
+      "agreement_name": "Name der Vereinbarung"
     },
     "billingPayments": "Abrechnung und Zahlungen",
     "supportPortal": "Support und Portal",
@@ -1500,7 +1516,8 @@
       "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
-      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe"
+      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
+      "ticket_merged": "Ticket zusammengeführt"
     }
   },
   "inboundEmail": {
@@ -1534,9 +1551,6 @@
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
     "staffForwardRouting": "Weitergeleitete E-Mails von Mitarbeitern dem ursprünglichen Kunden zuordnen",
     "staffForwardRoutingDescription": "Leitet ein Mitarbeiter auf Partnerebene die E-Mail eines Kunden an die Support-Adresse weiter, wird das neue Ticket der Organisation zugeordnet, die der Domain des ursprünglichen Absenders zugewiesen ist, statt Ihrer eigenen. Der Mitarbeiter muss Zugriff auf diese Organisation haben. Funktioniert nur für in Gmail erstellte Weiterleitungen, die in einem verbundenen Gmail-Postfach eingehen; nicht für die native Eingangsadresse, Postfächer von Microsoft 365 oder Weiterleitungen aus Outlook.",
-    "defaultAssignee": "Standardbearbeiter für neue eingehende Tickets",
-    "defaultAssigneeDescription": "Jedes neue Ticket aus eingehenden E-Mails wird dieser Person zugewiesen, sofern es nicht bereits anders zugewiesen wurde. Hat sie keinen Zugriff auf die Organisation des Tickets, bleibt das Ticket nicht zugewiesen.",
-    "defaultAssigneeUnavailable": "Nicht verfügbarer Benutzer",
     "defaultAssigneeNotAssignable": "Dieser Benutzer kann nicht Standardbearbeiter sein. Wählen Sie ein aktives Teammitglied mit Ticketzugriff.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
     "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
@@ -1792,27 +1806,13 @@
     "deviceGroup": {
       "title": "Standardgerätegruppe",
       "description": "Neu registrierte Geräte werden dieser Gruppe automatisch hinzugefügt.",
-      "options": {
-        "AllManagedDevices": "Alle verwalteten Geräte",
-        "CriticalInfrastructure": "Kritische Infrastruktur",
-        "RemoteStaff": "Remote-Mitarbeiter",
-        "Contractors": "Auftragnehmer"
-      }
-    },
-    "alertSeverity": {
-      "title": "Standardschweregrad der Warnung",
-      "description": "Warnungen unterhalb dieses Schweregrads werden nur an den Zusammenfassungsfeed übermittelt.",
-      "options": {
-        "critical": "Nur kritisch",
-        "high": "Hoch und kritisch",
-        "medium": "Mittel und höher"
-      }
+      "none": "Keine",
+      "unavailable": "Ausgewählte Gruppe (nicht verfügbar)"
     },
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensnachricht senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "agentUpdates": {
       "title": "Agent-Update-Richtlinie",
@@ -1863,7 +1863,7 @@
     "disabledDescription": "Aktivieren Sie oben die Protokollweiterleitung, um die Verbindungseinstellungen zu konfigurieren.",
     "enable": {
       "title": "Aktivieren Sie die Protokollweiterleitung",
-      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle in einem wiederkehrenden Zeitplan an Ihren Protokollspeicher weitergeleitet."
+      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle an Ihren Protokollspeicher weitergeleitet, sobald jedes Gerät sie meldet."
     },
     "connection": {
       "title": "Verbindung",
@@ -1952,6 +1952,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Kundenansicht",
+      "subtitle": "Vorschau: Das sieht {{who}}",
+      "whoOrganization": "Ihr Kunde",
+      "pickerLabel": "Ansicht als",
+      "pickerAll": "Gesamte Organisation",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Kundenansicht konnte nicht geladen werden.",
+      "on": "An",
+      "off": "Aus",
+      "notAvailable": "Eine detaillierte Vorschau dieses Bereichs ist noch nicht verfügbar.",
+      "permissionWithheld": "Nicht angezeigt: Für diese Vorschau benötigen Sie {{permissions}}.",
+      "tilesWithheld": "Einige Kacheln werden nicht angezeigt: Für die Vorschau benötigen Sie {{permissions}}.",
+      "noteNoUser": "Ticketbezogene Daten sind ausgeblendet. Wählen Sie einen Portalbenutzer, um zu sehen, was diese Person sieht.",
+      "readinessTitle": "Bereitschaftsprüfungen",
+      "readinessNone": "Keine Probleme gefunden.",
+      "fix": "Beheben",
+      "readiness": {
+        "documents_empty": "Dokumente ist aktiviert, aber kein Dokument ist als „Im Portal sichtbar“ markiert – Ihr Kunde sieht eine leere Bibliothek.",
+        "reports_empty": "Berichte ist aktiviert, aber es gibt noch keine Berichtsläufe – Ihr Kunde sieht eine leere Liste.",
+        "service_one_time_visible": "Service ist aktiviert und einmalige Einträge sind für Ihren Kunden weiterhin sichtbar.",
+        "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
+        "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
+        "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      }
+    },
     "loading": "Portaleinstellungen werden geladen…",
     "save": "Portaleinstellungen speichern",
     "toasts": {
@@ -2380,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "KI-Nutzung",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Überwachen Sie die Nutzung des KI-Assistenten und konfigurieren Sie Budgetgrenzen",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Nutzung von Breeze AI überwachen und Budgetgrenzen konfigurieren",
     "budgetConfiguration": "Budgetkonfiguration",
     "aIEnabled": "KI aktiviert",
     "enabled": "Aktiviert",
@@ -2434,7 +2460,7 @@
     "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben",
     "defaultValue": "Standard ({{value}})",
     "viewPartnerWideBudgets": "Partnerweite KI-Budgets",
-    "monitorAIAssistantUsage": "KI-Assistenten-Nutzung überwachen",
+    "monitorAIAssistantUsage": "Nutzung von Breeze AI überwachen",
     "effectiveBudget": "Geltendes Budget",
     "effectiveBudgetHelp": "Die derzeit für diese Organisation geltenden Grenzwerte und wo jeder davon festgelegt wurde.",
     "effectiveBudgetUnavailable": "Das effektive Budget konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -2443,7 +2469,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2539,7 +2569,9 @@
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
       "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
-      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus."
+      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+      "researchLink": "Fix-Gedächtnis öffnen",
+      "designerLink": "Flottendesign öffnen"
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -3024,6 +3056,8 @@
           "cost": "Kosten",
           "duration": "Dauer",
           "trigger": "Auslöser",
+          "requestedBy": "Angefordert von",
+          "wispFor": "Wisp für {{name}}",
           "queuedAt": "Eingereiht",
           "startedAt": "Gestartet",
           "finishedAt": "Beendet",
@@ -3109,7 +3143,7 @@
         },
         "anomalyLink": "Offene Geräteanomalien",
         "budget": {
-          "title": "Nutzungsbudget",
+          "title": "Aktionsbudget",
           "caption": "Erfasste Nutzung — letzte {{hours}} Std.",
           "devices": "{{count}} von {{allowance}} Geräten",
           "decisionsToday": "{{count}} von {{max}} Richtlinienentscheidungen heute",
@@ -3337,7 +3371,7 @@
       "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
       "byOrgTruncated": "Es werden die ersten {{limit}} Organisationen nach Name angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um die übrigen zu sehen.",
       "thresholdPerOrgNote": "Jede Organisation ermittelt ihren eigenen Schwellenwert für die Freigabe, daher werden die bestätigten Ausführungen hier ohne Zielwert angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Zielwert zu sehen.",
-      "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
+      "approvalsLink": "Diesen Antrag in den Genehmigungen verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
       "grantOnlyHint": "Vorab autorisierte Schlüssel für den Agenten einer Organisation werden nur über das Freigabestufen-Panel von einem zweiten Genehmiger erteilt – und auch dort wieder entzogen.",
       "promote": "Hochstufen",
@@ -3936,10 +3970,10 @@
       "runsPerHourCount_other": "{{count}} Läufe pro Stunde",
       "minuteCount_one": "{{count}} Minute",
       "minuteCount_other": "{{count}} Minuten",
-      "approvers_one": "{{roles}} wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approvers_other": "{{roles}} werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approversCount_one": "{{count}} Rolle wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "approversCount_other": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approvers_one": "{{roles}} wird gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approvers_other": "{{roles}} werden gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_one": "{{count}} Rolle wird gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
+      "approversCount_other": "{{count}} Rollen werden gefragt, über Genehmigungen, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
       "scriptGateNote": "{{list}} läuft erst unbeaufsichtigt, wenn ein Skript für diesen Agenten autorisiert ist; bis dahin wird eine Genehmigungsanfrage ausgelöst.",
       "scriptsAuthorized_one": "{{count}} Skript ist für die unbeaufsichtigte Ausführung autorisiert.",
       "scriptsAuthorized_other": "{{count}} Skripte sind für die unbeaufsichtigte Ausführung autorisiert."
@@ -4355,6 +4389,13 @@
     "commitmentTermRange": "Bindungsdauer: Geben Sie eine ganze Zahl von 1 bis 120 Monaten ein."
   },
   "catalogItemsTab": {
+    "viewActive": "Aktiv",
+    "viewArchived": "Archiviert",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Dienstleistung"
+    },
     "itemArchived": "Element archiviert",
     "itemRestored": "Artikel wiederhergestellt",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
@@ -4472,6 +4513,9 @@
     "notEnabledBody": "MCP OAuth ist auf diesem Server deaktiviert. Setzen Sie MCP_OAUTH_ENABLED=true und starten Sie die API neu, um verbundene Apps zuzulassen.",
     "revokeConfirm": "Zugriff für {{name}} entziehen? Ihr Zugriffstoken wird innerhalb von 10 Minuten nicht mehr funktionieren.",
     "revokeFailed": "Widerruf fehlgeschlagen ({{status}})",
+    "revokeTitle": "Verbundene App widerrufen",
+    "revokeSuccess": "Zugriff für {{name}} wurde widerrufen",
+    "revokeFailedGeneric": "Widerruf fehlgeschlagen",
     "networkError": "Netzwerkfehler",
     "networkErrorDuringRevoke": "Netzwerkfehler beim Widerrufen",
     "revoking": "Widerrufen…",
@@ -4703,6 +4747,7 @@
     "actions": "Aktionen",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Keine Rollen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "cloneRole": "Klonrolle: {{name}}",
+    "cloneDescription": "Kopie von {{name}}",
     "clone": "Klonen",
     "edit": "Bearbeiten",
     "delete": "Löschen",
@@ -5191,7 +5236,8 @@
     "timeTracking": "Zeiterfassung",
     "email": "E-Mail",
     "templates": "Vorlagen",
-    "timeCapture": "Zeiterfassung"
+    "timeCapture": "Zeiterfassung",
+    "routing": "Routing"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -5347,7 +5393,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "KI-Budget",
-    "description": "Ausgabengrenzen, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten in dieser Organisation. Vom Partner festgelegte Felder werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
+    "description": "Ausgabenobergrenzen, Ratenlimits und Genehmigungsmodus für Breeze AI in dieser Organisation. Von Ihrem Partner festgelegte Felder werden hier angezeigt, können aber nur auf dem Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
   "orgSettingsPage": {
@@ -5407,7 +5453,7 @@
       "ticketing": "Ticketverkauf",
       "ticketingDescription": "SLA und Abrechnungsüberschreibungen",
       "ai": "KI",
-      "aiDescription": "Budget, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten"
+      "aiDescription": "Budget, Ratenlimits und Genehmigungsmodus für Breeze AI"
     },
     "overview": {
       "title": "Organisationsübersicht",
@@ -5698,6 +5744,20 @@
       "sourceOrg": "Überschreibung der Organisation",
       "sourcePartner": "Partner-Standard",
       "sourceDefault": "Integrierter Standard"
+    },
+    "businessCalendar": {
+      "title": "Geschäftszeiten",
+      "description": "Der Kalender, nach dem die SLA-Uhren dieser Organisation laufen. Bei „Erben“ gilt der Partner-Standard.",
+      "label": "Geschäftskalender",
+      "inherit": "Erben",
+      "inheritedDefault": "Geerbt: {{name}} (Partner-Standard)",
+      "inheritedNone": "Geerbt: 24×7 (kein Partner-Standard)",
+      "partnerWideOption": "{{name}} (alle Orgs)",
+      "archivedOverride": "Archivierter Kalender (gilt nicht mehr)",
+      "loadFailed": "Der Geschäftskalender konnte nicht geladen werden.",
+      "errors": {
+        "save": "Der Geschäftskalender konnte nicht gespeichert werden. Bitte erneut versuchen."
+      }
     }
   },
   "organizationForm": {
@@ -5920,8 +5980,10 @@
   "siteDetailPage": {
     "loading": "Seite wird geladen...",
     "backToOrganizations": "Zurück zu Organisationen",
+    "backToSites": "Zurück zu Standorten",
     "breadcrumbs": {
       "settings": "Einstellungen",
+      "sites": "Standorte",
       "organizations": "Organisationen"
     },
     "errors": {
@@ -6007,6 +6069,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Hauptkontakt"
+  },
+  "sites": {
+    "page": {
+      "title": "Standorte",
+      "description": "Orte, an denen Ihre Geräte stehen. Öffnen Sie einen Standort, um Details und Geräte zu sehen.",
+      "organizationColumn": "Organisation",
+      "pickOrg": "Organisation",
+      "pickOrgPlaceholder": "Organisation auswählen",
+      "pickOrgRequired": "Wählen Sie die Organisation, zu der dieser Standort gehört.",
+      "fleetAddDescription": "Fügen Sie einen neuen Standort hinzu und wählen Sie die Organisation, zu der er gehört.",
+      "empty": "Noch keine Standorte. Fügen Sie einer Organisation einen Standort hinzu, um loszulegen.",
+      "viewDevicesAt": "Geräte an {{name}} anzeigen"
+    }
   },
   "siteList": {
     "title": "Standorte",
@@ -6660,7 +6735,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Skripterstellung",
-    "subtitle": "Lassen Sie den Assistenten und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es zulassen – ohne Karte ausführen.",
+    "subtitle": "Lassen Sie Breeze AI und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es erlauben – ohne Karte ausführen.",
     "partnerCard": {
       "title": "Partner-Obergrenze",
       "description": "Die weiteste Einstellung, die eine Organisation dieses Partners verwenden darf. Einzelne Organisationen können sie nur einschränken.",
@@ -6828,13 +6903,13 @@
     "timeoutLabel": "Zeitüberschreitung für interaktive Genehmigung",
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
-    "description": "Wie lange ein laufender KI-Chat-Zug darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt.",
+    "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
     "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
     "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
   },
   "orgAiApprovalTimeout": {
     "title": "KI-Genehmigungs-Timeout",
-    "description": "Wie lange ein KI-Chat darauf wartet, dass jemand eine gesperrte (Stufe 2/3) Aktion genehmigt, bevor er aufgibt. Organisationen können hier den Partnerstandard überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
+    "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird. Organisationen können den Partnerstandard hier überschreiben; der Organisationswert hat Vorrang, sofern gesetzt.",
     "fieldLabel": "Zeitüberschreitung für interaktive Genehmigung",
     "inherit": "Übernehmen",
     "inheritLabel": "Übernehmen ({{minutes}} Minuten, {{source}})",
@@ -6875,5 +6950,346 @@
     "enabledToast": "Einzeltasten-Kürzel aktiviert",
     "disabledToast": "Einzeltasten-Kürzel deaktiviert",
     "saveFailed": "Einzeltasten-Kürzel konnten nicht gespeichert werden."
+  },
+  "businessHoursCard": {
+    "title": "Geschäftszeiten",
+    "description": "Kalender, nach denen die SLA-Uhren für Reaktion und Lösung laufen. Ein Ticket nutzt den Kalender seiner Organisation oder Ihren Standardkalender; ist keiner festgelegt, läuft die Uhr rund um die Uhr.",
+    "newTicketsOnly": "Änderungen an Zeiten oder Zeitzone gelten nur für neue Tickets. Mit „Auf offene Tickets anwenden“ aktualisieren Sie bereits offene Tickets.",
+    "create": "Neuer Kalender",
+    "loading": "Geschäftszeiten werden geladen…",
+    "loadError": "Geschäftszeiten konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Noch keine Geschäftszeiten-Kalender. Tickets laufen rund um die Uhr (24×7), bis Sie einen Kalender anlegen und als Standard festlegen.",
+    "allOrgs": "Alle Orgs",
+    "default": "Standard",
+    "archived": "Archiviert",
+    "edit": "Bearbeiten",
+    "setDefault": "Als Standard festlegen",
+    "clearDefault": "Standard aufheben",
+    "applyOpen": "Auf offene Tickets anwenden",
+    "archive": "Archivieren",
+    "unarchive": "Wiederherstellen",
+    "delete": "Löschen",
+    "deleteTitle": "{{name}} löschen?",
+    "deleteMessage": "Dadurch werden der Kalender und seine Feiertage endgültig gelöscht. Ein Kalender, den Tickets oder Organisationen noch verwenden, kann nicht gelöscht werden; archivieren Sie ihn stattdessen.",
+    "name": "Kalendername",
+    "timezone": "Zeitzone",
+    "appliesTo": "Gilt für",
+    "ownerPartner": "Alle Organisationen (partnerweit)",
+    "ownerOrg": "Eine Organisation",
+    "organization": "Organisation",
+    "chooseOrg": "Organisation auswählen",
+    "weeklyHours": "Wöchentliche Zeiten",
+    "closed": "Geschlossen",
+    "to": "bis",
+    "addInterval": "Zeiten hinzufügen",
+    "intervalStart": "{{day}} öffnet um",
+    "intervalEnd": "{{day}} schließt um",
+    "removeInterval": "Zeiten für {{day}} entfernen",
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "cancel": "Abbrechen",
+    "holidays": "Feiertage",
+    "holidayHint": "Feiertage mit heutigem oder früherem Datum ändern offene Tickets nicht.",
+    "noHolidays": "Keine Feiertage.",
+    "holidayDate": "Datum",
+    "holidayName": "Feiertagsname",
+    "holidayAdd": "Feiertag hinzufügen",
+    "holidayRemove": "Feiertag {{name}} entfernen",
+    "weekdays": {
+      "0": "Sonntag",
+      "1": "Montag",
+      "2": "Dienstag",
+      "3": "Mittwoch",
+      "4": "Donnerstag",
+      "5": "Freitag",
+      "6": "Samstag"
+    },
+    "errors": {
+      "nameRequired": "Geben Sie einen Namen ein.",
+      "orgRequired": "Wählen Sie eine Organisation aus.",
+      "invalidTime": "Geben Sie Zeiten als HH:MM ein (z. B. 09:00); das Ende kann 24:00 sein.",
+      "order": "Jedes Intervall muss nach seinem Beginn enden.",
+      "overlap": "Intervalle am selben Tag dürfen sich nicht überschneiden.",
+      "empty": "Fügen Sie mindestens ein Öffnungsintervall hinzu.",
+      "timezone": "Wählen Sie eine gültige Zeitzone.",
+      "save": "Der Kalender konnte nicht gespeichert werden. Bitte erneut versuchen.",
+      "holidayInvalid": "Geben Sie ein gültiges Datum und einen Namen für den Feiertag ein.",
+      "holidayAdd": "Der Feiertag konnte nicht hinzugefügt werden. Bitte erneut versuchen.",
+      "holidayRemove": "Der Feiertag konnte nicht entfernt werden. Bitte erneut versuchen.",
+      "inUse": "Dieser Kalender wird von Tickets oder Organisationen verwendet und kann nicht gelöscht werden. Archivieren Sie ihn stattdessen.",
+      "isDefault": "Dieser Kalender ist der Standard. Heben Sie den Standard auf, bevor Sie ihn löschen.",
+      "default": "Der Standardkalender konnte nicht geändert werden. Bitte erneut versuchen.",
+      "archive": "Der Archivstatus konnte nicht geändert werden. Bitte erneut versuchen.",
+      "delete": "Der Kalender konnte nicht gelöscht werden. Bitte erneut versuchen.",
+      "apply": "Der Kalender konnte nicht auf offene Tickets angewendet werden. Bitte erneut versuchen."
+    },
+    "toasts": {
+      "created": "Kalender erstellt",
+      "updated": "Kalender aktualisiert",
+      "defaultSet": "Standardkalender festgelegt",
+      "defaultCleared": "Standard aufgehoben; Tickets ohne Überschreibung laufen 24×7",
+      "archived": "Kalender archiviert",
+      "unarchived": "Kalender wiederhergestellt",
+      "deleted": "Kalender gelöscht",
+      "holidayAdded": "Feiertag hinzugefügt",
+      "holidayRemoved": "Feiertag entfernt",
+      "recompute": "Die Fristen offener Tickets werden aktualisiert.",
+      "applied": "Auf offene Tickets angewendet: {{count}} aktualisiert",
+      "appliedPartial": "{{skipped}} Tickets wurden gerade bearbeitet und behalten ihre bisherigen Zeiten. Wenden Sie die Änderung erneut an, um sie nachzuholen."
+    },
+    "apply": {
+      "title": "{{name}} auf offene Tickets anwenden",
+      "explanation": "Offene Tickets, die nie pausiert wurden, wechseln zu den aktuellen Zeiten und ihre Fristen werden neu berechnet. Tickets mit Pausenverlauf bleiben unverändert.",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Vorschau konnte nicht geladen werden.",
+      "revisionChanged": "Die Zeiten haben sich seit dieser Vorschau geändert. Prüfen Sie die aktualisierten Zahlen, bevor Sie anwenden.",
+      "eligible": "Tickets, die aktualisiert werden: {{count}}",
+      "breached": "Davon würden sofort überfällig: {{count}}",
+      "paused": "Übersprungen, weil sie pausiert waren: {{count}}",
+      "confirm": "Auf offene Tickets anwenden"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Tarif & Funktionen",
+    "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
+    "currentPlan": "Aktueller Tarif",
+    "plans": {
+      "free": "Kostenlos",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unbegrenzt"
+    },
+    "columns": {
+      "feature": "Funktion",
+      "state": "Zustand",
+      "source": "Quelle",
+      "expires": "Läuft ab",
+      "limits": "Grenzwerte"
+    },
+    "state": {
+      "enabled": "Enthalten",
+      "disabled": "Gesperrt"
+    },
+    "source": {
+      "plan": "Tarifstandard",
+      "billing": "Abrechnung",
+      "license": "Lizenz",
+      "manual": "Manuell"
+    },
+    "graceWarning": "Abgelaufen am {{expiresAt}} — Kulanzfrist bis {{graceUntil}}",
+    "noExpiry": "Nie",
+    "noLimits": "—",
+    "reason": "Grund: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding-Supervisor",
+        "why": "Ein KI-Supervisor, der Fehler beim Zero-Touch-Onboarding diagnostiziert und behebt."
+      },
+      "verified_library": {
+        "label": "Verifizierte Softwarebibliothek",
+        "why": "Kuratierte, verifizierte Pakete, die Sie bedenkenlos bereitstellen können."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp sichtet Ihre Geräteflotte fortlaufend und benachrichtigt die richtige Person; verfügbar ab Pro."
+      }
+    },
+    "loadError": "Ihr Tarif konnte nicht geladen werden.",
+    "retry": "Erneut versuchen"
+  },
+  "ticketRouting": {
+    "title": "Ticket-Routing",
+    "description": "Regeln laufen beim Erstellen eines Tickets und setzen Bearbeiter, Priorität, Kategorie, Status und Tags, die der Ersteller nicht gewählt hat. Zuerst gelten Organisationsregeln, dann partnerweite Regeln. Die erste passende Regel gewinnt.",
+    "createRule": "Neue Regel",
+    "loadFailed": "Routing-Regeln konnten nicht geladen werden.",
+    "lookupsFailed": "Einige Techniker, Kategorien oder Status konnten nicht geladen werden, daher sind die Auswahllisten möglicherweise unvollständig. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "empty": "Noch keine Routing-Regeln.",
+    "groupOrg": "Regeln für {{org}}",
+    "groupPartner": "Partnerweite Regeln",
+    "thisOrganization": "Diese Organisation",
+    "allOrgs": "Alle Orgs",
+    "limitedOrgs": "Nur {{count}} Orgs",
+    "catchAll": "Trifft auf jedes Ticket zu",
+    "noActions": "Setzt nichts",
+    "enabledLabel": "Regel {{name}} aktivieren",
+    "enabledOn": "Regel aktiviert",
+    "enabledOff": "Regel deaktiviert",
+    "saveFailed": "Die Regel konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+    "deleteFailed": "Die Regel konnte nicht gelöscht werden. Versuchen Sie es erneut.",
+    "saved": "Regel gespeichert",
+    "created": "Regel erstellt",
+    "deleted": "Regel gelöscht",
+    "reorderFailed": "Die neue Reihenfolge konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+    "dragHandle": "Ziehen, um {{name}} neu zu ordnen, oder mit den Pfeiltasten nach oben oder unten verschieben.",
+    "readOnly": "Sie können diese Regel ansehen, aber nicht ändern.",
+    "chips": {
+      "add": "Hinzufügen",
+      "remove": "{{value}} entfernen"
+    },
+    "errors": {
+      "keywordShort": "Stichwörter benötigen mindestens 2 Zeichen.",
+      "keywordLong": "Stichwörter dürfen höchstens 100 Zeichen lang sein.",
+      "keywordsMax": "Sie können höchstens 20 Stichwörter hinzufügen.",
+      "domainInvalid": "Verwenden Sie einen Host wie example.com oder *.example.com.",
+      "domainsMax": "Sie können höchstens 50 Domains hinzufügen.",
+      "tagEmpty": "Geben Sie ein Tag ein.",
+      "tagLong": "Tags dürfen höchstens 50 Zeichen lang sein.",
+      "tagsMax": "Sie können höchstens 20 Tags hinzufügen.",
+      "nameRequired": "Geben Sie einen Namen für die Regel ein.",
+      "orgRequired": "Wählen Sie eine Organisation.",
+      "orgLinksRequired": "Wählen Sie mindestens eine Organisation oder wenden Sie die Regel auf alle Organisationen an."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "E-Mail",
+      "alert": "Alarm",
+      "manual": "Manuell",
+      "api": "API",
+      "ai": "KI"
+    },
+    "priorities": {
+      "low": "Niedrig",
+      "normal": "Normal",
+      "high": "Hoch",
+      "urgent": "Dringend"
+    },
+    "drawer": {
+      "titleCreate": "Neue Routing-Regel",
+      "titleEdit": "Routing-Regel bearbeiten",
+      "close": "Schließen",
+      "owner": "Eigentümer",
+      "ownerOrg": "Nur diese Organisation",
+      "ownerPartner": "Alle Organisationen (partnerweit)",
+      "organization": "Organisation",
+      "chooseOrg": "Organisation wählen",
+      "appliesTo": "Gilt für",
+      "orgLinksAll": "Alle Organisationen",
+      "orgLinksSelected": "Nur ausgewählte Organisationen",
+      "name": "Name",
+      "conditions": "Wenn ein Ticket passt",
+      "conditionsHelp": "Alle ausgefüllten Bedingungen müssen zutreffen. Leere Bedingungen werden ignoriert.",
+      "matchSources": "Quelle ist eine von",
+      "matchPriorities": "Priorität ist eine von",
+      "matchCategory": "Kategorie",
+      "any": "Beliebig",
+      "matchKeywords": "Betreff enthält eines von",
+      "matchKeywordsHint": "Je 2 bis 100 Zeichen, bis zu 20.",
+      "matchDomains": "E-Mail-Domain des Anfragenden ist eine von",
+      "matchDomainsHint": "example.com oder *.example.com, bis zu 50.",
+      "actions": "Dann setzen",
+      "actionsHelp": "Nur für Felder, die der Ersteller nicht gewählt hat. Legen Sie mindestens eines fest.",
+      "setAssignee": "Bearbeiter",
+      "setPriority": "Priorität",
+      "setCategory": "Kategorie",
+      "setStatus": "Status",
+      "addTags": "Tags hinzufügen",
+      "noChange": "Keine Änderung",
+      "unavailableUser": "Nicht verfügbarer Benutzer",
+      "unavailableStatus": "Nicht verfügbarer Status",
+      "enabled": "Aktiviert",
+      "save": "Speichern",
+      "saving": "Wird gespeichert...",
+      "delete": "Löschen",
+      "deleteTitle": "Diese Regel löschen?",
+      "deleteMessage": "„{{name}}“ wird nicht mehr auf neue Tickets angewendet. Das kann nicht rückgängig gemacht werden."
+    },
+    "test": {
+      "title": "Ticket testen",
+      "description": "Probelauf: Sehen Sie, welche Regel auf ein neues Ticket passen würde und was sie ändern würde. Es wird nichts erstellt.",
+      "org": "Organisation",
+      "source": "Quelle",
+      "subject": "Betreff",
+      "email": "E-Mail des Anfragenden (optional)",
+      "category": "Kategorie (optional)",
+      "priority": "Priorität (optional)",
+      "notChosen": "Nicht gewählt",
+      "run": "Test ausführen",
+      "running": "Test läuft...",
+      "failed": "Der Test konnte nicht ausgeführt werden. Versuchen Sie es erneut.",
+      "matched": "Passende Regel: {{name}}",
+      "noMatch": "Keine Regel passt",
+      "applied": "Würde anwenden",
+      "appliedNothing": "Nichts würde sich ändern",
+      "skipped": "Übersprungen",
+      "actions": {
+        "set_assignee": "Bearbeiter",
+        "set_category": "Kategorie",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "Der Bearbeiter hat keinen Zugriff auf die Tickets dieser Organisation.",
+        "assignee_deleted": "Der Bearbeiter existiert nicht mehr.",
+        "category_foreign": "Die Kategorie gehört zu einem anderen Partner.",
+        "status_foreign": "Der Status gehört zu einem anderen Partner.",
+        "status_inactive": "Der Status ist inaktiv.",
+        "status_core_not_allowed": "Dieser Status kann nicht durch eine Regel gesetzt werden."
+      }
+    },
+    "fallback": {
+      "title": "Wenn keine Regel ein E-Mail-Ticket zuweist",
+      "description": "Jedes neue Ticket aus eingehenden E-Mails wird dieser Person zugewiesen, wenn keine Routing-Regel es zuweist. Hat die Person keinen Zugriff auf die Organisation des Tickets, bleibt es unzugewiesen.",
+      "label": "Standard-Bearbeiter",
+      "unavailable": "Nicht verfügbarer Benutzer",
+      "saveFailed": "Der Ersatz-Bearbeiter konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "saved": "Ersatz-Bearbeiter gespeichert",
+      "loadFailed": "Der Ersatz-Bearbeiter konnte nicht geladen werden."
+    }
+  },
+  "wispMemory": {
+    "title": "Wisp-Gedächtnis",
+    "description": "Prüfen Sie, was Wisp sich für Sie, einen Kunden oder Ihr ganzes Team gemerkt hat, und bestätigen oder widerrufen Sie es.",
+    "tabs": {
+      "mine": "Mein Gedächtnis",
+      "org": "Kunde",
+      "partner": "Alle Kunden",
+      "users": "Techniker"
+    },
+    "empty": "Hier gibt es noch keine Gedächtniseinträge.",
+    "loading": "Gedächtnis wird geladen…",
+    "loadFailed": "Das Gedächtnis konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "columns": {
+      "subject": "Betreff",
+      "type": "Typ",
+      "status": "Status",
+      "confidence": "Konfidenz",
+      "updated": "Aktualisiert",
+      "actions": "Aktionen"
+    },
+    "statusValue": {
+      "unconfirmed": "Unbestätigt",
+      "confirmed": "Bestätigt",
+      "retracted": "Widerrufen"
+    },
+    "type": {
+      "preference": "Präferenz",
+      "standing_instruction": "Dauerhafte Anweisung",
+      "fact": "Fakt",
+      "decision": "Entscheidung",
+      "concern_outcome": "Ergebnis eines Anliegens",
+      "work_summary": "Arbeitszusammenfassung"
+    },
+    "confidenceValue": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch"
+    },
+    "confirm": "Bestätigen",
+    "retract": "Widerrufen",
+    "confirmed": "Eintrag bestätigt.",
+    "retracted": "Eintrag widerrufen.",
+    "confirmFailed": "Der Eintrag konnte nicht bestätigt werden.",
+    "retractFailed": "Der Eintrag konnte nicht widerrufen werden.",
+    "fromConversation": "Aus Unterhaltung",
+    "pickOrg": "Kunden auswählen",
+    "pickUser": "Techniker auswählen",
+    "pickPrompt": "Wählen Sie oben eine Option, um das Gedächtnis zu sehen.",
+    "showContent": "Inhalt anzeigen",
+    "hideContent": "Inhalt ausblenden",
+    "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
+    "usersLoadFailed": "Techniker konnten nicht geladen werden."
   }
 }

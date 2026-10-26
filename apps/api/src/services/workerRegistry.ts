@@ -574,6 +574,27 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Wisp W05 (#9917): daily concern retention + concern_outcome memory
+    // retention; returns zeros while BREEZE_WISP_ENABLED is off.
+    name: 'wispConcernRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispConcernRetention');
+      return { init: m.initializeWispConcernRetention, shutdown: m.shutdownWispConcernRetention };
+    },
+  },
+  {
+    // Wisp W06a (#9912): 15-minute digest + morning-brief sweep; the Worker is
+    // constructed unconditionally and each sweep returns zeros while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispNudgeDigest',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispNudgeDigest');
+      return { init: m.initializeWispNudgeDigestWorker, shutdown: m.shutdownWispNudgeDigestWorker };
+    },
+  },
+  {
     name: 'ipHistoryRetention',
     placement: 'global',
     load: async () => {
@@ -662,6 +683,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return {
         init: m.initializeWebhookDeliveryRetention,
         shutdown: m.shutdownWebhookDeliveryRetention,
+      };
+    },
+  },
+  {
+    // #10019/#10020 — daily prune of DNS security events + aggregations, and
+    // the background delete of a DNS filter integration.
+    name: 'dnsSecurityRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/dnsSecurityRetention');
+      return {
+        init: m.initializeDnsSecurityRetention,
+        shutdown: m.shutdownDnsSecurityRetention,
       };
     },
   },
@@ -762,6 +796,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/quickSupportReaper');
       return { init: m.initializeQuickSupportReaper, shutdown: m.shutdownQuickSupportReaper };
+    },
+  },
+  {
+    // Wisp W02 (#9908): 5-minute grant standing sweep; skips every tick while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispGrantReconciler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispGrantReconciler');
+      return { init: m.initializeWispGrantReconciler, shutdown: m.shutdownWispGrantReconciler };
     },
   },
   {
@@ -1543,6 +1587,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8973 W4: one-shot holiday recompute of business-calendar SLA deadlines.
+    name: 'businessCalendarRecomputeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/businessCalendarRecomputeWorker');
+      return { init: m.initializeBusinessCalendarRecomputeWorker, shutdown: m.shutdownBusinessCalendarRecomputeWorker };
+    },
+  },
+  {
     name: 'inboundEmailWorker',
     placement: 'global',
     load: async () => {
@@ -1699,6 +1752,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiAgentSweepScheduler');
       return { init: m.initializeAiAgentSweepScheduler, shutdown: m.shutdownAiAgentSweepScheduler };
+    },
+  },
+  {
+    // Wisp W05b Task 9 (#9917): the 5-minute wake tick (entitlement
+    // reconcile, watch stop, floor-tick round-robin, due watches, pollers)
+    // plus the debounced per-(grant, org) assess jobs. Registered
+    // unconditionally; the tick and the job return at once when Wisp is off.
+    // `global`, verified by workerEntrypointClosure.contract.test.ts: like
+    // aiAgentSweepScheduler, its deepest AI dependency is
+    // runService.createAndEnqueueAgentRun (insert + enqueue only).
+    name: 'wispWakeScheduler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispWakeScheduler');
+      return { init: m.initializeWispWakeScheduler, shutdown: m.shutdownWispWakeScheduler };
     },
   },
   {
@@ -1870,6 +1938,55 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/toolSourceDiscoveryWorker');
       return { init: m.initializeToolSourceDiscoveryWorkers, shutdown: m.shutdownToolSourceDiscoveryWorkers };
+    },
+  },
+  {
+    // Tool catalog W04 (#5219), Task A8 — executes flow run slices
+    // (flow-runs queue). socket-owner: a step dispatches device commands
+    // (run_script), like automationWorker and aiAgentRunner. Runs with the
+    // flag off too, so a queued run ends `flows_disabled` instead of waiting.
+    name: 'flowRunner',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowRunner');
+      return { init: m.initializeFlowRunner, shutdown: m.shutdownFlowRunner };
+    },
+  },
+  {
+    // Task A8 — 60 s sweep re-enqueueing runs whose wake was lost and
+    // pausing event flows when event delivery stops being durable.
+    // socket-owner, not the plan's `global`: clause (e) calls pauseFlow
+    // (services/flows/versions.ts), whose runtime closure reaches
+    // routes/agentWs.ts through the guardrails/tool catalog
+    // (workerEntrypointClosure.contract.test.ts).
+    name: 'flowRunReconciler',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowRunReconciler');
+      return { init: m.initializeFlowRunReconciler, shutdown: m.shutdownFlowRunReconciler };
+    },
+  },
+  {
+    // Task A8 — daily flow run body pruning (rows are kept).
+    name: 'flowRunRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/flowRunRetention');
+      return { init: m.initializeFlowRunRetention, shutdown: m.shutdownFlowRunRetention };
+    },
+  },
+  {
+    // Task A9 — 60 s schedule-trigger tick (one global repeatable over the
+    // enabled schedule flows; partner-wide flows fan out per live org).
+    // socket-owner, not `global`: createFlowRun's module (runService.ts)
+    // imports the rule-7 helper and intent cancel from versions.ts, whose
+    // runtime closure reaches routes/agentWs.ts (the flowRunReconciler note
+    // above; workerEntrypointClosure.contract.test.ts).
+    name: 'flowScheduleTick',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowScheduleTick');
+      return { init: m.initializeFlowScheduleTick, shutdown: m.shutdownFlowScheduleTick };
     },
   },
   {

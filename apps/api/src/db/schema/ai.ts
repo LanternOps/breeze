@@ -117,6 +117,14 @@ export const aiSessions = pgTable('ai_sessions', {
   // NULL (continued_from_session_id), DEFERRABLE INITIALLY IMMEDIATE, and a
   // not-self CHECK — declared in 2026-11-29-100200-ai-sessions-continued-from.sql.
   continuedFromSessionId: uuid('continued_from_session_id'),
+  // Wisp W04 (#9910): the delegation grant + the revision this session was
+  // created under (both-or-none CHECK ai_sessions_wisp_grant_pair_chk). The FK
+  // (wisp_grant_revision_id, wisp_grant_id) -> wisp_grant_revisions(id,
+  // grant_id) ON DELETE SET NULL is SQL-only (same rule as agent_id) —
+  // declared in 2027-01-04-110200-wisp-threads.sql. Server-owned: written only
+  // by createSession, never from a request body.
+  wispGrantId: uuid('wisp_grant_id'),
+  wispGrantRevisionId: uuid('wisp_grant_revision_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
@@ -328,6 +336,39 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   // ai_budget_reservations_credits_debit_attempts_chk, _pending_settlement_attempts_chk).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
   // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
+}));
+
+// ============================================
+// AI credit debits (#9451, #7717) — durable outbox for keyed platform credit
+// debits with no budget reservation: sandbox compute ('compute', source_id =
+// ai_agent_runs.id) and unreserved token settlements ('invocation', source_id =
+// the first ai_invocations.id). Written in the transaction of the spend it
+// bills; retried by the sweep; terminal failures re-driven by an operator
+// under the SAME idempotency_key and cost_cents. RLS shape 1.
+// ============================================
+
+export const aiCreditDebits = pgTable('ai_credit_debits', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  source: varchar('source', { length: 16 }).$type<'compute' | 'invocation'>().notNull(),
+  // No FK on purpose (see the migration): identity is the idempotency key.
+  sourceId: uuid('source_id').notNull(),
+  idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+  costCents: numeric('cost_cents', { precision: 20, scale: 6 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  debitedAt: timestamp('debited_at', { withTimezone: true }),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  error: varchar('error', { length: 128 }),
+  attempts: integer('attempts').notNull().default(0),
+}, (table) => ({
+  idempotencyKeyIdx: uniqueIndex('ai_credit_debits_idempotency_key_uidx').on(table.idempotencyKey),
+  orgIdx: index('ai_credit_debits_org_idx').on(table.orgId),
+  sourceCheck: check('ai_credit_debits_source_check', sql`${table.source} IN ('compute', 'invocation')`),
+  costPositiveCheck: check('ai_credit_debits_cost_positive_check', sql`${table.costCents} > 0`),
+  attemptsCheck: check('ai_credit_debits_attempts_check', sql`${table.attempts} >= 0`),
+  // Partial indexes created via SQL migration: ai_credit_debits_undelivered_idx,
+  // ai_credit_debits_failed_idx.
 }));
 
 // ============================================

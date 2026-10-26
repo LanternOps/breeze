@@ -392,7 +392,10 @@
           "saved": "Valores del Centro de confianza guardados",
           "saveFailed": "No se pudieron guardar los valores del Centro de confianza",
           "mfaRequired": "Cambiar estos valores requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
-          "revisionMismatch": "Otra persona cambió estos valores. Recargue para ver sus cambios."
+          "revisionMismatch": "Otra persona cambió estos valores. Recargue para ver sus cambios.",
+          "conflictNotice": "Otra persona guardó estos valores predeterminados mientras editabas. Vuelve a cargar su versión para partir de ella, o sigue editando: volver a guardar seguirá fallando hasta que recargues.",
+          "reloadTheirs": "Cargar su versión",
+          "keepEditing": "Seguir editando"
         },
         "title": "Configuración heredada"
       },
@@ -589,6 +592,7 @@
       "title": "Documentos",
       "subtitle": "Runbooks, líneas base, políticas y evidencia de entrega para esta organización.",
       "empty": "Aún no hay documentos. Suba un runbook, una línea base o una política firmada para iniciar la biblioteca.",
+      "emptyPortalHint": "Su cliente ve los documentos marcados como Visible en el portal. Una propuesta o un acuerdo firmado y una línea base de seguridad son buenos primeros documentos.",
       "emptyFiltered": "No hay documentos en esta categoría.",
       "loadFailed": "No se pudieron cargar los documentos.",
       "upload": "Subir documento",

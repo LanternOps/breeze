@@ -392,7 +392,10 @@
           "saved": "Standardwerte des Vertrauenszentrums gespeichert",
           "saveFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht gespeichert werden",
           "mfaRequired": "Zum Ändern dieser Standardwerte ist eine Multi-Faktor-Authentifizierung erforderlich. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
-          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen."
+          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen.",
+          "conflictNotice": "Jemand anderes hat diese Standards gespeichert, während Sie bearbeitet haben. Laden Sie deren Version neu, um davon auszugehen, oder bearbeiten Sie weiter: Erneutes Speichern schlägt fehl, bis Sie neu laden.",
+          "reloadTheirs": "Deren Version laden",
+          "keepEditing": "Weiter bearbeiten"
         },
         "title": "Geerbte Einstellungen"
       },
@@ -589,6 +592,7 @@
       "title": "Dokumente",
       "subtitle": "Runbooks, Baselines, Richtlinien und Servicenachweise für diese Organisation.",
       "empty": "Noch keine Dokumente. Laden Sie ein Runbook, eine Baseline oder eine unterschriebene Richtlinie hoch, um die Bibliothek zu starten.",
+      "emptyPortalHint": "Ihr Kunde sieht Dokumente, die als „Im Portal sichtbar“ markiert sind. Ein unterschriebenes Angebot oder eine Vereinbarung und eine Sicherheits-Baseline sind gute erste Dokumente.",
       "emptyFiltered": "Keine Dokumente in dieser Kategorie.",
       "loadFailed": "Dokumente konnten nicht geladen werden.",
       "upload": "Dokument hochladen",

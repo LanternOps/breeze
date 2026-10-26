@@ -34,6 +34,8 @@ Both connectors live in the organization's **Integrations** area as dedicated ca
     The card walks you through creating a Google Cloud service account, downloading its JSON key, enabling the required Google APIs (Admin SDK, Gmail, Calendar, Enterprise License Manager), and authorizing **domain-wide delegation** with the exact OAuth scopes Breeze displays for you to copy into the Google Admin console.
 
     On save, Breeze makes a **live Directory API call** to confirm the key works and that domain-wide delegation is correctly authorized. The connection is only stored if that check succeeds.
+
+    Breeze repeats that check about every six hours (v0.124.0+). If Google later rejects the service account -- domain-wide delegation revoked, the admin account removed -- a **Verification failed** incident opens in the **Connection health** panel on **Integrations**; saving the connection again clears it. A rate limit or an outage at Google does not open one. See [Connection Health Checks](/features/notifications/#connection-health-checks).
   </TabItem>
   <TabItem label="Microsoft 365">
     To connect a Microsoft 365 tenant you provide:
@@ -124,9 +126,17 @@ Every identity action carries one of two tiers:
 
 - Disable a user (block sign-in)
 - Reset a password (temporary password, force-change at next sign-in)
+- Revoke all sign-in sessions and refresh tokens
+- Assign or remove a licence (assigning fails closed when no seat is free)
+- Add to or remove from a group
+- Retire an Intune-managed device (removes company data and unenrols it; not a full wipe)
+- Create a user (temporary password, force-change at next sign-in)
+- Set, schedule or disable a mailbox automatic reply (out of office)
 
-<Aside type="note">
-  Microsoft 365 mutating actions are intentionally limited to disabling a user and resetting a password. The Google Workspace action set is much broader -- the two providers are not at parity.
+The eight actions beyond disable and reset arrived in v0.124.0 and are **four-eyes** actions: a second approver decides them every time, never the requester. A tenant whose Admin actions were granted on an earlier release must re-consent once to the current permission set; until then those eight are refused with a "consent upgrade required" error while disable and reset keep working. See [Cloud Tenant Integrations](/features/identity-integrations/).
+
+<Aside type="caution" title="Reset and disable need a verified caller">
+  From v0.124.0 a password reset or account disable is pinned to one Entra account and runs only against a fresh [caller verification](/security/caller-verification/) of that account -- a verification link by SMS or email, a callback attestation, or an administrative disable with an MFA step-up. Without one the action is refused with "caller verification required" in chat, over MCP, and again when an approved request is released. Approved resets or disables created before upgrading to v0.124.0 are not pinned to a target and fail at release; recreate them.
 </Aside>
 
 ### Retrieving a Microsoft 365 reset password

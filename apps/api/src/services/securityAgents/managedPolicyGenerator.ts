@@ -16,9 +16,16 @@ import {
 } from '../../db/schema';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
-import { readOwnerCatalog, vendorRequiresUploadedBinary, type DbExecutor } from './managedPolicyOwnerCatalog';
+import { BUILTIN_TENANT_VAR_PACKAGES } from '../builtinDeploymentPackages';
+import {
+  readOwnerCatalog,
+  vendorRequiresUploadedBinary,
+  type DbExecutor,
+  type VendorCatalogRow,
+} from './managedPolicyOwnerCatalog';
 
 export { vendorRequiresUploadedBinary };
+export type { VendorCatalogRow };
 
 /**
  * Generator for the software policy a `security_agents` feature link owns
@@ -39,6 +46,11 @@ export { vendorRequiresUploadedBinary };
  *    jobs queued under the old shape are refused at dispatch.
  *  - Only vendors that are enableable in the registry get a rule, so a stored
  *    blob can never arm a vendor whose install path is not wired.
+ *  - One rule per catalog row the vendor installs from: EDR vendors have one
+ *    (their integration package, matched by an inventory glob); tenant-variable
+ *    vendors have one per supported, selected OS (`builtinPackageKeysForVendor`,
+ *    #6958 D1), each named after its pinned package so no inventory entry can
+ *    match it and presence comes only from the `service_running` bridge.
  *  - A vendor whose built-in package needs a partner-uploaded installer
  *    (`BUILTIN_PACKAGES[provider].requiresBinaryUpload`, SentinelOne's MSI) gets
  *    a rule only while the partner's package has a deployable version. The
@@ -79,11 +91,25 @@ const NAME_MAX = 200;
 export const SECURITY_AGENTS_CATALOG_MISSING_CODE = 'security_agents_catalog_missing' as const;
 export const SECURITY_AGENTS_BINARY_MISSING_CODE = 'security_agents_binary_missing' as const;
 
+/** The software-policy rule name for one of a vendor's catalog rows. */
+function ruleNameFor(vendor: ReturnType<typeof getVendor>, row: VendorCatalogRow): string {
+  if (row.builtinPackageKey) return BUILTIN_TENANT_VAR_PACKAGES[row.builtinPackageKey].name;
+  // EDR vendors always carry a glob (pinned by the registry test). A
+  // tenant-variable vendor's row always carries its built-in key; naming its
+  // rule after the vendor instead would be an inventory glob that could match
+  // an unrelated product, so refuse loudly (the sweep logs + reports it).
+  if (!vendor.detectionRuleName) {
+    throw new Error(`Security agents: ${vendor.key} catalog row ${row.catalogId} has no built-in package key; refusing to generate an inventory-glob rule`);
+  }
+  return vendor.detectionRuleName;
+}
+
 /** Pure: the row the link's settings ask for. */
 export function desiredManagedPolicy(input: {
   configPolicy: ManagedConfigPolicy;
   settings: SecurityAgentsInlineSettings;
-  catalogIdByVendor: ReadonlyMap<VendorKey, string>;
+  /** The owner partner's catalog rows per vendor (`readOwnerCatalog`). */
+  catalogByVendor: ReadonlyMap<VendorKey, readonly VendorCatalogRow[]>;
   /**
    * Vendors whose catalog package has a deployable partner-uploaded installer.
    * Only consulted for vendors that need one; absent means none has (fail closed).
@@ -98,8 +124,8 @@ export function desiredManagedPolicy(input: {
   // Registry order, so the rule list is stable whatever order the link lists vendors in.
   for (const vendor of listVendors()) {
     if (!enabled.has(vendor.key) || !vendor.enableable) continue;
-    const catalogId = input.catalogIdByVendor.get(vendor.key);
-    if (!catalogId) {
+    const rows = input.catalogByVendor.get(vendor.key) ?? [];
+    if (rows.length === 0) {
       missingCatalog.push(vendor.key);
       continue;
     }
@@ -108,11 +134,13 @@ export function desiredManagedPolicy(input: {
       continue;
     }
     vendors.push(vendor.key);
-    software.push({
-      name: vendor.detectionRuleName,
-      catalogId,
-      reason: `${vendor.label} is required by a configuration policy (Security Agents)`,
-    });
+    for (const row of rows) {
+      software.push({
+        name: ruleNameFor(vendor, row),
+        catalogId: row.catalogId,
+        reason: `${vendor.label} is required by a configuration policy (Security Agents)`,
+      });
+    }
   }
 
   const partnerWide = input.configPolicy.orgId === null;
@@ -243,15 +271,15 @@ export async function syncManagedSoftwarePolicy(
     .limit(1);
   if (!configPolicy) throw new Error(`Configuration policy ${link.configPolicyId} not found for security agents link ${link.id}`);
 
-  const { catalogIdByVendor, uploadedBinaryVendors } = await readOwnerCatalog(executor, configPolicy, settings);
-  const desired = desiredManagedPolicy({ configPolicy, settings, catalogIdByVendor, uploadedBinaryVendors });
+  const { catalogByVendor, uploadedBinaryVendors } = await readOwnerCatalog(executor, configPolicy, settings);
+  const desired = desiredManagedPolicy({ configPolicy, settings, catalogByVendor, uploadedBinaryVendors });
 
   if (desired.missingCatalog.length > 0 && options.onMissingCatalog !== 'skip') {
     const first = getVendor(desired.missingCatalog[0]!);
     throw new SecurityAgentsLinkWriteError({
       status: 400,
       body: {
-        error: `${desired.missingCatalog.map((key) => getVendor(key).label).join(', ')} cannot be enabled until its integration is connected for this partner.`,
+        error: catalogMissingMessage(desired.missingCatalog),
         code: SECURITY_AGENTS_CATALOG_MISSING_CODE,
         vendors: desired.missingCatalog,
         setupPath: first.setupPath,
@@ -259,7 +287,7 @@ export async function syncManagedSoftwarePolicy(
     });
   }
   if (desired.missingBinary.length > 0 && options.onMissingCatalog !== 'skip') {
-    const firstCatalogId = catalogIdByVendor.get(desired.missingBinary[0]!);
+    const firstCatalogId = catalogByVendor.get(desired.missingBinary[0]!)?.[0]?.catalogId;
     throw new SecurityAgentsLinkWriteError({
       status: 400,
       body: {
@@ -347,6 +375,24 @@ export async function syncManagedSoftwarePolicy(
     },
   });
   return { ...base, policyId: existing!.id };
+}
+
+/**
+ * Where each missing vendor's prerequisite is fixed: an EDR vendor's package
+ * appears when its integration is connected; a tenant-variable vendor's
+ * package is added from the Built-in packages panel of the software catalog.
+ */
+function catalogMissingMessage(vendors: VendorKey[]): string {
+  const labels = (orgSource: 'edr_mapping' | 'tenant_var') =>
+    vendors.filter((key) => getVendor(key).orgSource === orgSource).map((key) => getVendor(key).label).join(', ');
+  const parts: string[] = [];
+  const edr = labels('edr_mapping');
+  if (edr) parts.push(`${edr} cannot be enabled until its integration is connected for this partner.`);
+  const builtin = labels('tenant_var');
+  if (builtin) {
+    parts.push(`${builtin} cannot be enabled until its client is added to this partner's software catalog (Software → Catalog → Built-in packages).`);
+  }
+  return parts.join(' ');
 }
 
 /**

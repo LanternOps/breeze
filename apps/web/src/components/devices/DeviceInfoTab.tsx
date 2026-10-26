@@ -40,10 +40,12 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import { formatOsBuild } from "./formatOsLabel";
 import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -728,10 +730,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
     if (value === null || value === undefined || value === "") return "—";
     if (def.type === "boolean")
       return value ? t("deviceInfoTab.yes") : t("deviceInfoTab.no");
-    if (def.type === "dropdown" && def.options?.choices) {
-      const choice = def.options.choices.find((c) => c.value === value);
-      return choice?.label ?? String(value);
-    }
+    if (def.type === "dropdown") return dropdownChoiceLabel(def, value) ?? String(value);
     if (def.type === "date" && typeof value === "string")
       return formatDate(value);
     return String(value);
@@ -1075,7 +1074,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
         <InfoRow
           label={t("deviceInfoTab.osBuild")}
-          value={info?.osBuild ?? "—"}
+          value={formatOsBuild(info?.osType, info?.osVersion, info?.osBuild) ?? "—"}
         />
         <InfoRow
           label={t("deviceInfoTab.architecture")}

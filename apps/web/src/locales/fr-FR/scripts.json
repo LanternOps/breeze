@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Décrivez le script dont vous avez besoin...",
-      "opening": "Ouverture de l’assistant IA..."
+      "opening": "Ouverture de Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Arrêter la génération",
@@ -826,12 +826,12 @@
       "reject": "Rejeter"
     },
     "empty": {
-      "title": "Assistant IA de script",
-      "description": "Décrivez votre besoin et j’écrirai le script pour vous."
+      "title": "Breeze AI",
+      "description": "Demandez à Breeze AI d’écrire ou de relire ce script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistant IA de script",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Réappliquer la modification IA",
       "redo": "Rétablir",
@@ -970,7 +970,15 @@
       "allAdmitted": "Tous les appareils sélectionnés ont été admis et placés en file d’attente.",
       "partiallyAdmitted": "Certains appareils ont été admis et placés en file d’attente. Examinez les cibles restantes.",
       "rejected": "Aucun appareil n’a été admis. Examinez les raisons ci-dessous.",
-      "queued": "En file d’attente"
+      "queued": "En file d’attente",
+      "reasons": {
+        "not_found_or_inaccessible": "Appareil introuvable ou inaccessible",
+        "site_access_denied": "Vous n'avez pas accès au site de cet appareil",
+        "script_org_mismatch": "Le script appartient à une autre organisation que l'appareil",
+        "os_incompatible": "Le script n'est pas compatible avec le système d'exploitation de cet appareil",
+        "device_decommissioned": "L'appareil a été mis hors service",
+        "maintenance_suppressed": "Ignoré : l'appareil est dans une fenêtre de maintenance"
+      }
     },
     "confirm": {
       "title": "Confirmer l’exécution",
@@ -1126,8 +1134,8 @@
       "exitCodeSeverity": "Sévérité des codes de sortie"
     },
     "ai": {
-      "toggleTitle": "Activer/désactiver l’assistant IA de script (⌘⇧I)",
-      "button": "Assistant IA"
+      "toggleTitle": "Activer/désactiver Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",

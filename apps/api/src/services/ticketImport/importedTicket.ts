@@ -54,9 +54,12 @@ export const importedTicketSchema = z.object({
   // default for the source (defaultTicketTypeForSource), with no provenance.
   ticketType: ticketTypeSchema.optional(),
   source: z.enum(IMPORTED_TICKET_SOURCES),
+  // A contact of the ticket's org, or a display-only name with an optional
+  // email: a source customer may have no address (Zammad, Z15), and
+  // tickets.submitter_email is nullable (spec 2026-10-19 §5.3 item 2).
   requester: z.union([
     z.object({ contactId: z.string().uuid() }).strict(),
-    z.object({ name: text(255).trim().min(1), email: z.string().email().max(255) }).strict(),
+    z.object({ name: text(255).trim().min(1), email: z.string().email().max(255).optional() }).strict(),
   ]),
   assigneeUserId: z.string().uuid().nullable().optional(),
   finalStatus: z.enum(IMPORTED_TICKET_FINAL_STATUSES),

@@ -31,8 +31,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'accounting/index.ts',
   'aiAgentSchedules.ts',
   'aiOperatorTasks.ts',
-  'alerts/correlations.ts',
-  'alertTemplates/correlations.ts',
   'auditBaselines.ts',
   'backup/bmrRecoveries.ts',
   'backup/health.ts',
@@ -46,7 +44,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'contracts/reports.ts',
   'contracts/templates.ts',
   'devices/aiOrigin.ts',
-  'devices/anomalies.ts',
   'devices/billing.ts',
   'devices/events.ts',
   'devices/function.ts',
@@ -72,13 +69,11 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'orgPortalSettings.ts',
   'orgPortalUsers.ts',
   'orgSummary.ts',
-  'orgTicketSettings.ts',
   'packageSearch.ts',
   'patchPlan.ts',
   'pax8.ts',
   'pax8Orders.ts',
   'policyManagement/actions.ts',
-  'reliability.ts',
   'remote/supportSessions.ts',
   'reports/recipients.ts',
   'roles.ts',
@@ -94,15 +89,7 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'softwareInventory.ts',
   'systemTools/eventLogs.ts',
   'tenantVariables.ts',
-  'ticketCategories.ts',
-  'ticketChecklistTemplates.ts',
-  'ticketConfig.ts',
-  'tickets/attachments.ts',
-  'tickets/bulk.ts',
   'tickets/export.ts',
-  'tickets/forms.ts',
-  'tickets/ticketResponseTemplates.ts',
-  'timeEntries/suggestions.ts',
   'topology/manual.ts',
   'topology/policies.ts',
   'topology/settings.ts',
@@ -125,6 +112,9 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
   it('every entry names an existing route module', () => {
     const set = new Set(modules);
     expect(Object.keys(MCP_COVERAGE).filter((k) => !set.has(k)), 'entries for files that do not exist / register no routes').toEqual([]);
+  });
+  it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
+    expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
   });
   it('every tool named exists in the registry, and tool entries are non-empty', () => {
     const bad: string[] = [];
@@ -153,5 +143,10 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
     expect((MCP_COVERAGE['orgs.ts'] as { tools: string[] }).tools).toEqual(expect.arrayContaining(['list_organizations', 'manage_organizations', 'list_sites', 'get_site']));
     expect((MCP_COVERAGE['discovery.ts'] as { tools: string[] }).tools).toEqual(expect.arrayContaining(['list_network_assets', 'get_network_asset', 'network_discovery']));
     expect(aiTools.size).toBeGreaterThan(150);
+  });
+  it('the W04 flow tools cover the flows route module', () => {
+    expect((MCP_COVERAGE['flows.ts'] as { tools: string[] }).tools).toEqual(
+      expect.arrayContaining(['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']),
+    );
   });
 });

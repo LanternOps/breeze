@@ -275,17 +275,30 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk');
   });
 
-  it('auto-selects the first row when the hash matches nothing', async () => {
-    window.location.hash = '#garbage-hash';
-    mockListApi([healthy, atRisk, breached]);
+  it('does not auto-select another ticket when the hash names a ticket absent from the list, and says so', async () => {
+    window.location.hash = '#T-2026-0099';
+    mockListApi((url) => (url.includes('search=') ? [] : [healthy, atRisk, breached]));
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
 
+    expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0099');
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+    expect(window.location.hash).toBe('#T-2026-0099');
+  });
+
+  it('opens an absent-from-list ticket directly when the lookup by number finds it', async () => {
+    window.location.hash = '#T-2026-0099';
+    const closedOne = makeTicket({ id: 'tk-closed', internalNumber: 'T-2026-0099', status: 'closed', subject: 'Old one' });
+    mockListApi((url) => (url.includes('search=') ? [closedOne] : [healthy, atRisk, breached]));
+    render(<TicketsPage />);
+
     await waitFor(() => {
-      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-closed');
     });
-    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
   });
 
   it('picking a priority adds priority= to the fetch and re-renders from the result', async () => {
@@ -1341,5 +1354,117 @@ describe('TicketsPage', () => {
         expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Ticket restored' });
       });
     });
+  });
+});
+
+describe('TicketsPage — merged tickets (#8972)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearHash();
+    capturedWorkbenchProps.length = 0;
+    authState.permissions = [];
+    mockGetJwtClaims.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
+    fetchConfigMock.mockResolvedValue(null);
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
+  });
+
+  it('"Show merged" sends showMerged=true and carries merged=1 in the hash; off removes both', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
+
+    const toggle = screen.getByTestId('ticket-list-show-merged');
+    expect(toggle).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('showMerged'))).toBe(true);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    expect(window.location.hash).toBe('#T-2026-0001&merged=1');
+    expect(screen.getByTestId('ticket-list-show-merged')).toBeChecked();
+
+    fireEvent.click(screen.getByTestId('ticket-list-show-merged'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).not.toContain('showMerged'));
+    expect(window.location.hash).toBe('#T-2026-0001');
+  });
+
+  it('applies on every tab (closed included)', async () => {
+    window.location.hash = '#merged=1';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await selectTicketsTab('closed');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('statusGroup=closed'));
+    expect(ticketFetchUrls().at(-1)).toContain('showMerged=true');
+  });
+
+  it('a reload with #…&merged=1 restores the toggle and is not read as a selection', async () => {
+    window.location.hash = '#T-2026-0002&sort=oldest&merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-risk');
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    expect(screen.getByTestId('ticket-list-show-merged')).toBeChecked();
+    expect(screen.getByTestId('ticket-sort')).toHaveValue('oldest');
+    await waitFor(() => expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true'));
+    // Other hash writers keep the segment.
+    fireEvent.change(screen.getByTestId('ticket-sort'), { target: { value: 'newest' } });
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&sort=newest&merged=1'));
+  });
+
+  it('#merged=1 alone is not a selection: auto-select keeps the segment', async () => {
+    window.location.hash = '#merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1'));
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+  });
+
+  it('merged=0 or another value reads as off', async () => {
+    window.location.hash = '#T-2026-0001&merged=true';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.getByTestId('ticket-list-show-merged')).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('showMerged'))).toBe(true);
+  });
+
+  it('the type filter and row selection keep merged=1', async () => {
+    window.location.hash = '#T-2026-0001&merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-risk');
+    fireEvent.change(screen.getByTestId('tickets-filter-type'), { target: { value: 'problem' } });
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=problem&merged=1'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-risk'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&type=problem&merged=1'));
+  });
+
+  it('onMerged moves the selection to the survivor and reconciles the queue', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-healthy'));
+    const before = ticketFetchUrls().length;
+
+    const onMerged = (lastWorkbenchProps() as WorkbenchProps & { onMerged?: (id: string, n: string | null) => void }).onMerged;
+    expect(onMerged).toBeTypeOf('function');
+    act(() => onMerged!('tk-risk', 'T-2026-0002'));
+
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002'));
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-risk'));
+    await waitFor(() => expect(ticketFetchUrls().length).toBeGreaterThan(before));
+  });
+
+  it('onMerged without a survivor number selects by id', async () => {
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(lastWorkbenchProps()?.ticketId).toBe('tk-healthy'));
+    const onMerged = (lastWorkbenchProps() as WorkbenchProps & { onMerged?: (id: string, n: string | null) => void }).onMerged;
+    act(() => onMerged!('tk-risk', null));
+    await waitFor(() => expect(window.location.hash).toBe('#tk-risk'));
   });
 });

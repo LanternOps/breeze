@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
+  notificationChannels, ticketForms, ticketResponseTemplates,
+  ticketChecklistTemplates, ticketChecklistTemplateItems,
 } from '../../db/schema';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
+import { yaraRuleSets } from '../../db/schema/yara';
+import { canonicalizeArguments } from './canonicalize';
 import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
@@ -297,6 +301,57 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     }
   },
 
+  // W06 (#6776) hard deletes. The approver signs off on deleting a specific
+  // row by its CONTENT, so pin the content fields (not just updated_at):
+  // an edit between approval and release changes the digest and the release
+  // fails closed instead of destroying a different template than was approved.
+  'manage_ticket_forms:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database.select().from(ticketForms).where(eq(ticketForms.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, description: row.description, categoryId: row.categoryId,
+      fields: row.fields, titleTemplate: row.titleTemplate, descriptionIntro: row.descriptionIntro,
+      defaultPriority: row.defaultPriority, defaultTags: row.defaultTags, showInPortal: row.showInPortal,
+      isActive: row.isActive, version: row.version, updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  'manage_ticket_response_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketResponseTemplates).where(eq(ticketResponseTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, body: row.body, category: row.category, isActive: row.isActive,
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  // Items are separate rows (item edits do not always bump the template's
+  // updated_at), so they are hashed explicitly, ordered for stability.
+  'manage_ticket_checklist_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketChecklistTemplates).where(eq(ticketChecklistTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    const items = await database
+      .select({
+        id: ticketChecklistTemplateItems.id, label: ticketChecklistTemplateItems.label,
+        detail: ticketChecklistTemplateItems.detail, sortOrder: ticketChecklistTemplateItems.sortOrder,
+      })
+      .from(ticketChecklistTemplateItems)
+      .where(eq(ticketChecklistTemplateItems.templateId, id))
+      .orderBy(ticketChecklistTemplateItems.sortOrder, ticketChecklistTemplateItems.id);
+    return material(JSON.stringify({
+      name: row.name, description: row.description, instructions: row.instructions,
+      isActive: row.isActive, updatedAt: row.updatedAt.toISOString(), items,
+    }));
+  },
+
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
   // deterministic snapshot of its line items — a header-only updated_at
   // covers header edits, but line edits (add/remove/reprice) don't always
@@ -557,6 +612,31 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     return material(JSON.stringify({ orgId: ticket.orgId, status: ticket.status }));
   },
 
+  // manage_notification_channels:delete (full-control W02, #6756; four_eyes
+  // per QV3) — pins the channel's IDENTITY (name, type, org/partner scope),
+  // deliberately NOT updated_at: a `test` run or a delivery-status write
+  // touches the row without changing which channel the approvers agreed to
+  // destroy. The destination lives in notification_channel_configs and is
+  // destroyed with the channel, so a repointed destination does not change
+  // what the delete does. A rename or re-scope does: the approvers signed
+  // off on "delete <name>", and that name now identifies something else.
+  'manage_notification_channels:delete': async (args, database) => {
+    const channelId = typeof args.channelId === 'string' ? args.channelId : null;
+    if (!channelId) return MISSING_ARG;
+    const [channel] = await database
+      .select({
+        name: notificationChannels.name,
+        type: notificationChannels.type,
+        orgId: notificationChannels.orgId,
+        partnerId: notificationChannels.partnerId,
+      })
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, channelId))
+      .limit(1);
+    if (!channel) return TARGET_ABSENT;
+    return material(JSON.stringify(channel));
+  },
+
   // execute_dr_plan — structurally the same TOCTOU shape as run_script: the
   // approver approves "execute plan <id>", and the PLAN DEFINITION can be
   // edited inside the approval window while the intent's arguments stay
@@ -597,7 +677,129 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     if (!partner) return TARGET_ABSENT;
     return material(JSON.stringify({ name: partner.name, status: partner.status }));
   },
+
+  // confirm_memory / retract_memory (Wisp W03; registry tier 3, FOUR_EYES like
+  // operator_plan). The approver signs off on a block REFERENCE (`blockId`);
+  // pin the block itself so one edited, superseded, retracted or re-owned
+  // between approval and release fails closed. Both tools touch the same row,
+  // so they share one resolver.
+  confirm_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
+  retract_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
+
+  // ioc_hunt:sweep (#6268, W05-7). The approver approves a PREVIEW: its
+  // previewDigest (computed under the requester's own context over the
+  // eligible targets and the set shas) plus the sets' published bytes. Pins
+  // both, so a set republished between approval and release is
+  // content_changed here, and a target change is refused by createSweep
+  // itself (SWEEP_SCOPE_CHANGED: previewDigest re-proved under the rebuilt
+  // auth, or more targets than expectedDeviceCount). Resolvers get no auth,
+  // so caller-scoped eligibility is carried only by previewDigest.
+  'ioc_hunt:sweep': async (args, database) => {
+    const orgId = typeof args.orgId === 'string' && UUID_RE.test(args.orgId) ? args.orgId.toLowerCase() : null;
+    const previewDigest = typeof args.previewDigest === 'string' && /^[0-9a-f]{64}$/.test(args.previewDigest)
+      ? args.previewDigest
+      : null;
+    const ids = Array.isArray(args.ruleSetIds) ? args.ruleSetIds : [];
+    if (!orgId || !previewDigest || ids.length === 0 || !ids.every((id) => typeof id === 'string' && UUID_RE.test(id))) {
+      return MISSING_ARG;
+    }
+    const setIds = [...new Set((ids as string[]).map((id) => id.toLowerCase()))].sort();
+    const rows = await database
+      .select({
+        id: yaraRuleSets.id,
+        enabled: yaraRuleSets.enabled,
+        publishedVersion: yaraRuleSets.publishedVersion,
+        publishedSha256: yaraRuleSets.publishedSha256,
+      })
+      .from(yaraRuleSets)
+      // Only sets usable in the sweep's org (its own, partner-wide, built-in):
+      // a foreign org's set pins as absent, never as material.
+      .where(and(inArray(yaraRuleSets.id, setIds), or(eq(yaraRuleSets.orgId, orgId), isNull(yaraRuleSets.orgId))));
+    const byId = new Map(rows.map((r) => [r.id.toLowerCase(), r]));
+    const pins: Array<{ id: string; version: number; sha256: string }> = [];
+    for (const id of setIds) {
+      const row = byId.get(id);
+      if (!row || !row.enabled || row.publishedVersion === null || !row.publishedSha256) return TARGET_ABSENT;
+      pins.push({ id, version: row.publishedVersion, sha256: row.publishedSha256 });
+    }
+    return material(canonicalizeArguments({ v: 1, orgId, previewDigest, pins }));
+  },
+
+  // ioc_hunt:import_iocs (#6268). Pins the set's draft and published
+  // versions, so a set edited or republished between approval and release is
+  // content_changed, and a digest of the IOC list (also immutable in the
+  // intent's arguments; pinned here so the effect names exactly what is added).
+  'ioc_hunt:import_iocs': async (args, database) => {
+    const ruleSetId = typeof args.ruleSetId === 'string' && UUID_RE.test(args.ruleSetId) ? args.ruleSetId.toLowerCase() : null;
+    const iocs = Array.isArray(args.iocs) ? args.iocs : [];
+    const wellFormed = iocs.every((ioc) => {
+      const o = (ioc && typeof ioc === 'object' ? ioc : null) as Record<string, unknown> | null;
+      return !!o && typeof o.kind === 'string' && typeof o.value === 'string';
+    });
+    if (!ruleSetId || iocs.length === 0 || !wellFormed) return MISSING_ARG;
+    const [set] = await database
+      .select({ currentVersion: yaraRuleSets.currentVersion, publishedVersion: yaraRuleSets.publishedVersion })
+      .from(yaraRuleSets)
+      .where(eq(yaraRuleSets.id, ruleSetId))
+      .limit(1);
+    if (!set) return TARGET_ABSENT;
+    const sorted = iocs
+      .map((ioc) => ({ kind: (ioc as { kind: string }).kind, value: (ioc as { value: string }).value }))
+      // Code-point order, not localeCompare: the digest is recomputed at release,
+      // possibly on another host, and must not depend on its ICU locale.
+      .sort((a, b) => cmp(a.kind, b.kind) || cmp(a.value, b.value));
+    const iocDigest = createHash('sha256').update(canonicalizeArguments({ iocs: sorted })).digest('hex');
+    return material(canonicalizeArguments({
+      v: 1,
+      ruleSetId,
+      currentVersion: set.currentVersion,
+      publishedVersion: set.publishedVersion ?? 0,
+      iocDigest,
+    }));
+  },
 };
+
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** JSON with object keys sorted at every depth, so a jsonb round trip never changes the pin. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.keys(value as Record<string, unknown>).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+async function resolveMemoryBlockMaterial(blockIdArg: unknown, database: Database): Promise<ResolverResult> {
+  const blockId = typeof blockIdArg === 'string' ? blockIdArg : null;
+  if (!blockId) return MISSING_ARG;
+  // A non-uuid would make Postgres throw (22P02); no such block can exist.
+  if (!UUID_RE.test(blockId)) return TARGET_ABSENT;
+  // Loaded on demand: memoryService pulls the db + audit graph. The read lives
+  // there (the single-caller contract), through the caller's database handle.
+  const { readMemoryBlockForEffectDigest } = await import('../wisp/memoryService');
+  const block = await readMemoryBlockForEffectDigest(database, blockId);
+  if (!block) return TARGET_ABSENT;
+  return material(JSON.stringify({
+    v: 1,
+    id: block.id,
+    tenantPartnerId: block.tenantPartnerId,
+    ownerKind: block.ownerKind,
+    ownerUserId: block.ownerUserId,
+    ownerOrgId: block.ownerOrgId,
+    blockType: block.blockType,
+    subjectKey: block.subjectKey,
+    confidence: block.confidence,
+    status: block.status,
+    supersededById: block.supersededById,
+    updatedAt: block.updatedAt.toISOString(),
+    contentSha256: createHash('sha256').update(canonicalJson(block.content)).digest('hex'),
+  }));
+}
 
 async function resolveInvoiceUpdatedAt(
   invoiceIdArg: unknown,

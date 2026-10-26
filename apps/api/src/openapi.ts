@@ -375,7 +375,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           name: { type: 'string' },
           slug: { type: 'string' },
           type: { type: 'string', enum: ['msp', 'enterprise', 'internal'] },
-          plan: { type: 'string', enum: ['free', 'pro', 'enterprise', 'unlimited'] },
+          plan: { type: 'string', enum: ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited'] },
           maxOrganizations: { type: 'integer', nullable: true },
           maxDevices: { type: 'integer', nullable: true },
           billingEmail: { type: 'string', format: 'email', nullable: true },
@@ -2133,7 +2133,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   name: { type: 'string', minLength: 1 },
                   slug: { type: 'string', minLength: 1, maxLength: 100 },
                   type: { type: 'string', enum: ['msp', 'enterprise', 'internal'] },
-                  plan: { type: 'string', enum: ['free', 'pro', 'enterprise', 'unlimited'] },
+                  plan: { type: 'string', enum: ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited'] },
                   maxOrganizations: { type: 'integer', nullable: true },
                   maxDevices: { type: 'integer', nullable: true },
                   billingEmail: { type: 'string', format: 'email' }

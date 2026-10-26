@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Bağlantılı uygulamalar (kurum çapında)",
       "description": {
-        "prefix": "AI asistanları ve kullanıcıların içinde bulunduğu diğer MCP istemcileri",
+        "prefix": "Kullanıcıların içinde bulunduğu AI istemcileri",
         "yourOrganization": "kuruluşunuz",
         "suffix": "yetkilendirdik. Her aktif izni anında iptal etmek için herhangi bir müşteriyi engelleyin."
       },
@@ -561,6 +561,61 @@
         "mfaRequired": "Yapay zeka acil durdurma anahtarını değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Wisp yetkilerinin ve bugünkü etkinliğin iş ortağı bazında genel görünümü. Salt okunur.",
+      "refresh": "Yenile",
+      "retry": "Yeniden dene",
+      "loading": "Yükleniyor...",
+      "empty": "Henüz Wisp yetkisi olan iş ortağı yok",
+      "disabled": "Wisp bu dağıtımda etkin değil (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Wisp genel görünümü yüklenemedi"
+      },
+      "platformAdmin": {
+        "title": "Yalnızca platform yöneticileri",
+        "description": "Wisp genel görünümü platform yöneticileri için kullanılabilir."
+      },
+      "table": {
+        "partner": "İş ortağı",
+        "plan": "Plan",
+        "activeGrants": "Etkin yetkiler",
+        "pausedGrants": "Duraklatılmış yetkiler",
+        "assessmentsToday": "Bugünkü kontroller",
+        "specialistRequestsToday": "Bugünkü uzman istekleri",
+        "openConcerns": "Açık endişeler",
+        "budgetExhaustedToday": "Bugün bütçesi tükenen yetkiler"
+      },
+      "grants": {
+        "loading": "Yetkiler yükleniyor...",
+        "error": "Yetkiler yüklenemedi",
+        "empty": "Bu iş ortağının yetkisi yok",
+        "grantor": "Yetkiyi veren",
+        "scope": "Kapsam",
+        "status": "Durum",
+        "pausedReason": "Duraklatma nedeni",
+        "expires": "Bitiş",
+        "budget": "Bütçe (sent/gün)",
+        "tickMinutes": "Aralık (dk)",
+        "assessmentsToday": "Bugünkü kontroller",
+        "partnerWide": "Tüm iş ortağı"
+      },
+      "status": {
+        "active": "Etkin",
+        "paused": "Duraklatıldı",
+        "revoked": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Bütçe tükendi",
+        "grantor_suspended": "Yetkiyi veren askıya alındı",
+        "grantor_access_lost": "Yetkiyi veren erişimi kaybetti",
+        "factor_expired": "Faktörün süresi doldu",
+        "entitlement_lost": "Hak kaybedildi",
+        "user_paused": "Kullanıcı tarafından duraklatıldı",
+        "partner_disabled": "İş ortağı devre dışı"
+      }
+    },
     "systemPage": {
       "title": "Sistem",
       "description": "Platform yöneticileri için tüm dağıtımın durumu. Bu sayfa salt okunurdur.",
@@ -791,6 +846,7 @@
       "agent.eventlogs.submit": "Olay günlükleri bildirildi",
       "agent.reliability.submit": "Güvenilirlik bildirildi",
       "agent.command.result.submit": "Komut sonucu gönderildi",
+      "agent.command.*": "Komut kuyruğa alındı: {command}",
       "agent.filesystem.threshold_scan.queued": "Dosya sistemi taraması sıraya alındı",
       "agent.enroll": "Aracı kaydedildi",
       "api.fallback.post": "Gönderildi: {target}",
@@ -808,6 +864,8 @@
       "session_consent_bypassed": "Uzak oturum, onay istemine yanıt verilmeden başlatıldı",
       "screen_access_consent_blocked": "Ekran erişimi engellendi: cihaz kullanıcı onayı gerektiriyor",
       "device.wake_on_lan": "Wake-on-LAN gönderildi",
+      "device.recovery_key.reveal": "Kurtarma anahtarı gösterildi",
+      "device.recovery_key.rotate": "Kurtarma anahtarı döndürüldü",
       "device.create": "Cihaz eklendi",
       "device.update": "Cihaz güncellendi",
       "device.delete": "Cihaz kaldırıldı",
@@ -826,12 +884,15 @@
       "enrollment_key.revoke": "Kayıt anahtarı iptal edildi",
       "partner.settings.update": "İş ortağı ayarları güncellendi",
       "ai.message.send": "AI mesajı gönderildi",
+      "backup.restore.create": "Geri yükleme başlatıldı",
+      "backup.restore.cancel": "Geri yükleme iptal edildi",
+      "backup.restore.unattested_override": "Doğrulanmamış anlık görüntünün geri yüklenmesi onaylandı",
       "ai.tool_approval.update": "AI araç onayı güncellendi",
       "ai.tool.*": "AI aracı: {tool}",
-      "ai.session.create": "AI sohbeti başlatıldı",
-      "ai.session.close": "AI sohbeti kapatıldı",
-      "ai.session.flag": "AI sohbeti işaretlendi",
-      "ai.session.unflag": "AI sohbeti işareti kaldırıldı",
+      "ai.session.create": "Bir Breeze AI görüşmesi başlattı",
+      "ai.session.close": "Bir Breeze AI görüşmesini kapattı",
+      "ai.session.flag": "Bir Breeze AI görüşmesini işaretledi",
+      "ai.session.unflag": "Bir Breeze AI görüşmesinin işaretini kaldırdı",
       "ai.message.interrupt": "AI yanıtı durduruldu",
       "ai.command.executed": "AI bir komut çalıştırdı",
       "ai.script.executed": "AI bir betik çalıştırdı",
@@ -847,6 +908,7 @@
       "mcp.resources.list": "MCP: kaynakları listele",
       "terminal.session.summary": "Terminal oturumu özeti",
       "script.run": "Komut dosyası çalıştırıldı",
+      "script.execute": "Komut dosyası cihazda çalıştırıldı",
       "script.create": "Komut dosyası oluşturuldu",
       "script.update": "Komut dosyası güncellendi",
       "script.delete": "Komut dosyası silindi",

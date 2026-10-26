@@ -36,6 +36,14 @@ Breeze supports three categories of integrations, each served by a dedicated set
 
 ---
 
+## Connection Health
+
+The **Connection health** panel at the top of **Integrations** (v0.124.0+) lists every connection that is currently broken -- a failed sync, a revoked authorization, a webhook whose retries ran out, a Google Workspace service account that Google no longer accepts -- each with a **Fix** link to the place where it is repaired, and a **Recently resolved** list underneath. Breeze checks connections every 15 minutes and clears an incident on its own once the connection works again. The people who can fix an incident also get an in-app notice and a daily digest email.
+
+The **Health notifications** card on the same page decides whether the admins of a customer organization also hear about their own organization's connections: off by default, with a partner default and a per-organization override. The checks, the digest and the opt-outs are described under [Connection Health Checks](/features/notifications/#connection-health-checks).
+
+---
+
 ## Communication Integrations
 
 Communication integrations push notifications from Breeze into your team's messaging platform. Each provider is configured with a POST request containing the webhook URL and any provider-specific settings.

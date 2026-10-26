@@ -98,6 +98,7 @@
     "loading": "Chargement des approbations récentes…",
     "error": "Impossible de charger les approbations récentes.",
     "retry": "Réessayer",
+    "decisionReasonLabel": "Motif de l’approbateur",
     "empty": "Rien ne s’est terminé récemment.",
     "status": {
       "failed": "Échec",
@@ -131,7 +132,7 @@
     "durationValue": "{{minutes}} minutes après l'approbation",
     "purpose": "Objectif",
     "requestedBy": "Demandé par",
-    "principalUser": "Clavardage IA Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Clé d'API MCP",
     "principalOauth": "Connexion OAuth MCP",
     "paths": "Chemins",
@@ -149,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan de la tâche de l’opérateur IA",
+    "title": "Plan de la tâche IA",
     "summary_one": "{{count}} effet, révision {{revision}} du plan",
     "summary_other": "{{count}} effets, révision {{revision}} du plan",
     "groupBreeze": "Appareils Breeze",
@@ -160,5 +161,19 @@
     "orderNote": "Les effets s’exécutent dans cet ordre. L’ouverture de session est désactivée en dernier, de sorte qu’un arrêt anticipé ne laisse jamais de courriels sans acheminement.",
     "empty": "Ce plan ne contient aucun effet.",
     "invalid": "Ce plan n’a pas pu être affiché en entier. Ne l’approuvez pas."
+  },
+  "intentStatus": {
+    "title": "État de l’approbation",
+    "waitingForApprovers": "En attente des approbateurs",
+    "notFound": "Cette approbation est introuvable.",
+    "status": {
+      "pending_approval": "Approbation en attente",
+      "in_progress": "En cours",
+      "completed": "Terminée",
+      "failed": "Échec",
+      "rejected": "Refusé",
+      "expired": "Expirée",
+      "cancelled": "Annulée"
+    }
   }
 }

@@ -1,0 +1,167 @@
+---
+title: Breeze AI
+description: Breeze AI, the chat door to the workers - the side panel and full chat page, suggested fixes, and per-device context memory.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+**Breeze AI** is the chat door. Ask it a question about your fleet and it plans a sequence of tool calls, runs them against live data and answers. Every tool call is governed by the [AI risk engine](/features/ai/#ai-risk-engine): reads run freely, changes ask first, and everything is audited. The full page lives at `/ai/chat`. When you have an active [Wisp](/features/wisp/) grant, the side panel speaks as Wisp.
+
+Breeze AI is one of the built-in workers; see [AI in Breeze](/features/ai/) for how it fits with agents, AI tasks and Wisp.
+
+---
+
+## Where you talk to Breeze AI
+
+You can talk to Breeze AI in two places:
+
+- **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
+- **Breeze AI** — the full page, at `/ai/chat`, reached from **Breeze AI** in the sidebar. The old `/workspace` and `/wisp/chat` addresses redirect here. It holds up to five conversations, one per tab, and open tabs survive a reload. The **Wisp** entry opens the Wisp home instead; see [Wisp](/features/wisp/).
+
+The side panel does not have a Wisp switch. Its voice follows the Wisp grant. If you are partner staff and Wisp is on, your plan includes it and you have an **active** grant (partner-wide, or for the organization selected in the header), the panel speaks as **Wisp** and uses the grant's thread. With no grant, or a paused or ended one, it stays Breeze AI and shows a **Meet Wisp** link to `/wisp`. That link also shows when Wisp is on but your plan does not include it. A conversation already open in the panel is not replaced; the next **New conversation** starts under the grant. To say "not now", pause the grant on the Wisp home.
+
+A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
+
+### Move a conversation to the Breeze AI page
+
+<Steps>
+
+1. In the side panel, click **Open in Breeze AI** (the arrow icon in the panel header).
+2. The Breeze AI page opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
+3. The side panel closes and lets the conversation go. It stays in your history.
+
+</Steps>
+
+If the Breeze AI page already has five tabs, nothing moves and you see **Close a tab in Breeze AI to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
+
+### Move a conversation back to the side panel
+
+Use either **Continue in side panel** in the chat header, or **Tab options** (the tab's menu) → **Continue in side panel**. The side panel opens with the conversation and your unsent text, then the tab closes. If the side panel already holds a different conversation with unsent text or a reply in progress, you are asked first: **Replace the conversation in the side panel? It stays in your history.**
+
+### A reply that is still being written
+
+You do not have to wait for Breeze AI to finish. If you move a conversation while a reply is streaming, the destination shows the reply so far and keeps following it to the end. Nothing is sent again.
+
+An approval card that is waiting moves with the conversation and keeps its **original** deadline — moving it does not give you more time. You can approve or deny it from the destination.
+
+For a very long reply you may see **Joined mid-response. The full reply appears when it finishes.** The complete reply appears as soon as the reply is done.
+
+### Open a past conversation
+
+- In the side panel, click **History** (the clock icon).
+- On the Breeze AI page, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
+
+Both lists show your active conversations from every organization you can access, most recent first, and each has a search box:
+
+- An **organization chip** names the conversation's organization when you work in more than one. It reads **Another organization** until the name loads.
+- A **Device** chip marks a conversation bound to a device.
+- A conversation already open on the other surface is labelled **Open in Breeze AI** (in the side panel's History) or **Open in side panel** (in the Breeze AI list). Picking it moves it there.
+- Topology investigations are listed in the side panel only. Script-authoring and MCP sessions are not chat conversations and do not appear in either list.
+
+Opening a conversation from another organization does not change the organization switcher.
+
+### Links to a conversation
+
+`/ai/chat#session=<conversation id>` (old `/workspace#session=...` and `/wisp/chat#session=...` links redirect) opens that conversation on the Breeze AI page, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
+
+| Message | Meaning |
+|---|---|
+| **This conversation isn't available** | The conversation does not exist or you cannot access it. |
+| **This conversation was closed** | The conversation has ended and can no longer be continued. |
+| **Close a tab to open this conversation** | The Breeze AI page already has five tabs. Nothing is closed for you. |
+| **Investigations open from the topology map** | Topology investigations live in the side panel; the message offers to open it there. |
+| **Continue in side panel to choose a model** | The next message needs a model choice, which is made in the side panel. |
+
+Both surfaces need the **`ai_sessions:use`** permission (see [Who can approve](/features/ai/#who-can-approve)). Signing out clears both surfaces in that browser: the next sign-in starts with no tabs and an empty side panel.
+
+<Aside type="note" title="For self-hosters">
+The conversation list now shows only chat conversations: script-authoring and MCP sessions no longer appear in the side panel's History, and the mobile app's history list changes the same way. API users: `GET /api/v1/ai/sessions` and `/search` return only chat sessions and now include `orgId`, `type` and `deviceId` (search also `status`), and `GET /api/v1/ai/sessions/:id/stream` is a new read-only route that follows a conversation's current reply. No environment variable, migration or proxy change is needed beyond what `POST …/messages` already requires for streaming.
+</Aside>
+
+---
+
+## Suggested fixes and fix memory
+
+On an alert or anomaly, **Suggested Fixes** lists things a technician could do about it. The panel groups suggestions as **Proven fixes** (fixes your fleet has already seen work), **AI suggestions** (from the built-in research agent), **Similar fixes**, and a collapsed **Earlier keyword matches** group. AI suggestions carry an **AI researched** badge. The feature is controlled by the `ml.remediation_suggestions.enabled` flag (see [ML Insights](/features/ml-insights/)); research also needs AI credits (or the organization's AI budget) to be available, and a manual request needs the `ai_sessions:use` permission.
+
+### Generate and Research deeper
+
+- **Generate** attaches proven fix memory first: a fix that worked for the same kind of problem on the same operating system is suggested straight away with its track record. It then also starts a **quick** research run, whether or not a proven fix exists, provided you have `ai_sessions:use`. Without that permission the panel tells you so.
+- **Research deeper** starts a **deep** research run for the same alert or anomaly. It gets a larger turn and budget ceiling than a quick run, and is meant for when the first answer was not enough.
+
+AI triage consults fix memory first as well, behind the same `ml.remediation_suggestions.enabled` flag. When an alert already has a proven fix that can be attached, shadow-mode triage attaches it instead of starting a triage run. Triage verdict and full alert runs see the alert's proven fixes and their track record, and a full run proposes a proven fix (through the normal approval path) before researching alternatives.
+
+Every attempt ends in an explicit state on the panel, never a silent blank: researching; "AI found no safe fix for this problem"; research failed, with a **Retry** button; still researching after about five minutes ("check back", with **Refresh**); busy, when concurrency or rate limits are reached; no permission; or one of the other reasons a run could not start, such as the feature being off for the organization, AI credits being used up, or the alert having no single device. Asking again while a run is active shows that run instead of starting a second one.
+
+**Research never runs anything.** The research agent is read-only: it can look at device details, logs, your script and playbook catalog and proven fixes, and it submits suggestions. It cannot execute, change or draft a script on its own. A technician always chooses what to accept and run.
+
+### What a suggestion can be
+
+| Kind | What it is |
+|---|---|
+| Catalog script or playbook | One from your own catalog that runs on the device's operating system. Anything else the agent names is dropped by the server. |
+| Built-in action | One of `reboot`, `restart_service`, `kill_process` or `disk_cleanup`, with typed parameters (a service name, a process name, or cleanup action IDs). |
+| Manual steps | A short list of steps for a person to follow. |
+| Script draft request | A brief for a script that does not exist yet. |
+
+**Built-in actions and approval.** Running a built-in action needs `devices:execute` in addition to `scripts:execute`. Each action has a minimum risk level the server enforces regardless of what the agent proposed: `reboot` is always high risk, so it always goes through approval before it runs; `restart_service` and `kill_process` are at least medium; `disk_cleanup` is low. `kill_process` resolves the process by name when you run it and refuses if none or more than one process matches.
+
+**Draft a script.** On a script draft request, **Draft a script** opens the script builder with the brief and language pre-filled (it needs `scripts:write`). If the hand-off cannot be stashed in your browser, the brief is copied to the clipboard as a prompt instead. Nothing is sent or saved until you do it yourself.
+
+### Written by AI and reviewed steps
+
+Manual steps written by the research agent are labelled **Written by AI — review before following**, and that label stays on the suggestion. After checking the steps, a user with `scripts:write` and partner-wide management rights can use **Save as reviewed steps** to keep a reusable copy for an operating system. When a technician later marks a manual-steps suggestion **Done**, a picker offers the reviewed steps (or "Steps as written (not shared)"). The choice is recorded with the outcome, and once verified outcomes accumulate the fix appears as a proven fix labelled with the reviewed title, visible to your organizations' users. The research agent does not read reviewed steps; it only sees that a proven manual-steps fix exists and its track record.
+
+### The Fix memory page
+
+**Fix memory** (in the AI Agents section of the navigation) has two tabs. **Fixes** lists what Breeze has learned from observed outcomes, each with its condition, operating system, kind, scope (this client or all clients), status (including Demoted and Stale) and track record. **Reviewed steps** lists the saved reviewed steps and lets you retire them. Only counts are shared across clients, never another client's details. Retire an entry to stop it being suggested. Retiring a fix on the **Fixes** tab needs the AI agents write permission and MFA, and retiring an all-clients fix also needs partner-wide management rights. Saving reviewed steps, and retiring a saved entry on the **Reviewed steps** tab, each need partner-level access, `scripts:write`, partner-wide management rights and MFA.
+
+### The "Fix research (built-in)" agent
+
+- **Provisioned for you.** Each partner gets one built-in agent, named "Fix research (built-in)", created the first time research is requested. It cannot be created by hand at partner level.
+- **Only a few things are editable.** You can enable or disable it, rename it and adjust its research caps. Its instructions, tools and mode are fixed.
+- **Default ceilings.** A quick run is limited to 4 turns and 5 cents; a deep run to 10 turns and 25 cents. These are configurable ceilings, not typical costs. There are also per-hour and concurrency limits.
+- **Organization override.** An organization can have its own override of the agent, for example to disable it or set tighter caps for that client. The override carries only those same editable settings.
+- **Automatic research.** For **high** and **critical** alerts where no proven fix could be attached, research starts on its own at quick depth, once per alert, and is capped per organization per hour (6 by default). Medium and low alerts are only researched when a technician asks.
+- **Credits.** Research runs are billed like other AI agent runs. If credits are exhausted, runs are refused and the panel says why.
+
+---
+
+## Device context memory
+
+The AI can remember device-specific facts across conversations. When you ask the AI about a device, it automatically loads that device's context entries and incorporates them into its analysis — so it won't re-alert on known quirks or forget about open follow-ups.
+
+### Context types
+
+| Type | Purpose | Example |
+|---|---|---|
+| `issue` | Known problems to track | "Recurring BSOD on boot since Jan 2026" |
+| `quirk` | Normal but unusual behaviour | "Slow startup is expected due to a legacy driver" |
+| `followup` | Pending actions | "Check disk health after replacement on 2026-03-01" |
+| `preference` | User or device preferences | "Maintenance window: Sundays 2 AM–4 AM only" |
+
+### Managing context
+
+Context is managed through Breeze AI — there is no separate UI. Ask naturally:
+
+- _"Remember that this device has a recurring BSOD issue."_
+- _"Mark the disk check follow-up as resolved."_
+- _"What do you know about HOSTNAME?"_
+
+Context entries can have an **expiry date**, which is useful for time-bound follow-ups. Expired entries are excluded from future queries but are not deleted.
+
+The AI uses three tools internally to manage context:
+
+| Tool | Tier | Description |
+|---|---|---|
+| `get_device_context` | Tier 1 | Load context entries for a device |
+| `set_device_context` | Tier 2 | Create a new context entry |
+| `resolve_device_context` | Tier 2 | Mark an existing entry as resolved |
+
+<Aside>
+  Context is scoped to your organisation. Entries created by one user are visible to all users in the same organisation when they ask the AI about the same device.
+</Aside>
+
+<Aside type="note">
+  Direct REST endpoints for device context are not yet available. Context is currently managed exclusively through Breeze AI.
+</Aside>

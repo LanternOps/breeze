@@ -140,7 +140,12 @@ export interface DnsRow {
   lastSyncStatus: string | null;
 }
 
-/** dnsSyncJob writes 'success' / 'error'; NULL means the integration never ran. */
+/**
+ * dnsSyncJob writes 'success' / 'error', or 'partial' when a run stopped at the
+ * provider's request budget with the rest left for the next run (#10018) — that
+ * run reached the vendor, so it is linked like 'success'. NULL means the
+ * integration never ran.
+ */
 export function dnsState(row: DnsRow): MappingState {
   if (row.lastSyncStatus === null) return { state: 'pending', reason: 'never_synced' };
   if (row.lastSyncStatus === 'error') return { state: 'error', reason: 'sync_error' };

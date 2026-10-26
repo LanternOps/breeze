@@ -20,6 +20,7 @@
     "state": {
       "met": "Respecté",
       "notMet": "Jamais rencontrés",
+      "metLate": "Respecté en retard",
       "breached": "Violation",
       "pausedLeft": "En pause · temps restant : {{relative}}",
       "left": "Temps restant : {{relative}}"
@@ -83,7 +84,8 @@
       "low": "Faible"
     },
     "checklistProgress": "{{done}}/{{total}} étapes",
-    "checklistTitle": "Liste de contrôle : {{done}} étapes sur {{total}} terminées"
+    "checklistTitle": "Liste de contrôle : {{done}} étapes sur {{total}} terminées",
+    "merged": "Fusionné"
   },
   "ticketArchivedList": {
     "emptyTitle": "Pas de tickets archivés.",
@@ -175,7 +177,9 @@
       "broken": "Impossible de charger {{name}}",
       "open": "Ouvrir la pièce jointe",
       "remove": "Retirer la pièce jointe"
-    }
+    },
+    "mergedFrom": "de {{number}}",
+    "mergedFromUnknown": "d'un ticket fusionné"
   },
   "ticketPartsCard": {
     "title": "Parties",
@@ -335,6 +339,7 @@
     "selectedCount_other": "{{count}} sélectionné",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un ticket. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le ticket {{number}} n’est pas dans cette vue.",
     "movedToClosed": {
       "message": "{{status}} — désormais sous {{tab}}",
       "view": "Voir dans {{tab}}"
@@ -410,13 +415,15 @@
       "confirm": "Supprimer les tickets"
     },
     "filterByType": "Filtrer par type",
-    "allTypes": "Tous les types"
+    "allTypes": "Tous les types",
+    "showMerged": "Afficher les fusionnés"
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
     "loadFailed": "Le ticket n’a pas fonctionné.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du ticket",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",
@@ -476,6 +483,90 @@
       "blockedCurrency": "Ce ticket comporte {{timeCount}} saisies de temps non facturées et {{partCount}} pièces non facturées valorisées en {{sourceCurrency}}, mais {{targetOrg}} facture en {{targetCurrency}}. Facturez-les d’abord, ou déplacez quand même : les montants restent en {{sourceCurrency}} et ne peuvent être facturés que sur un brouillon en {{sourceCurrency}}.",
       "acceptCurrency": "Je comprends que ces montants restent en {{sourceCurrency}} et ne sont pas convertis.",
       "moveAnyway": "Déplacer quand même"
+    },
+    "merge": {
+      "open": "Fusionner avec…",
+      "title": "Fusionner {{number}} avec un autre ticket",
+      "description": "Les commentaires, le temps, les pièces et les liens de {{number}} sont déplacés vers le ticket choisi. {{number}} est ensuite fermé et renvoie vers ce ticket.",
+      "pickerLabel": "Ticket cible",
+      "searchPlaceholder": "Rechercher par numéro ou objet",
+      "pickerHint": "Seuls les tickets ouverts de cette organisation sont listés, du plus ancien au plus récent.",
+      "loading": "Chargement des tickets…",
+      "candidatesFailed": "Impossible de charger les tickets. Fermez la boîte de dialogue et réessayez.",
+      "noCandidates": "Aucun autre ticket ouvert dans cette organisation.",
+      "previewLoading": "Vérification de la fusion…",
+      "previewFailed": "Impossible de vérifier cette fusion. Sélectionnez à nouveau le ticket pour réessayer.",
+      "side": {
+        "source": "Ce ticket",
+        "survivor": "La cible",
+        "both": "Les deux tickets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Un ticket ne peut pas être fusionné avec lui-même.",
+        "MERGE_CROSS_ORG": "Les deux tickets doivent appartenir à la même organisation.",
+        "MERGE_SOURCE_INELIGIBLE": "Ce ticket ne peut pas être fusionné (il est supprimé ou déjà fusionné).",
+        "MERGE_SURVIVOR_INELIGIBLE": "La cible ne peut pas recevoir de fusion (elle est fermée, supprimée ou déjà fusionnée).",
+        "MERGE_DELIVERABLE_PINNED": "Un ticket rattaché à un livrable de service ne peut pas être fusionné.",
+        "MERGE_IMPORT_WINDOW": "Un ticket dans une fenêtre d'importation ouverte ne peut pas être fusionné.",
+        "MERGE_APPROVAL_STATE": "Les tickets avec des demandes d'approbation ou un budget ne peuvent pas être fusionnés.",
+        "MERGE_WORK_KIND_MISMATCH": "Le support et le travail de projet ne peuvent pas être fusionnés.",
+        "MERGE_PENDING_INTENTS": "Ce ticket a des actions d'IA en attente. Attendez qu'elles se terminent ou annulez-les.",
+        "ORG_MERGING": "Cette organisation est en cours de fusion. Réessayez plus tard.",
+        "MERGE_SCOPE_DENIED": "Vous n'avez pas accès à un appareil ou à un site de l'un de ces tickets."
+      },
+      "suggested": "{{number}} est plus ancien ; c'est généralement celui à conserver.",
+      "movesTo": "Déplacé vers {{number}}",
+      "nothingMoves": "Rien d'autre n'est déplacé.",
+      "counts": {
+        "ticket_comments": "Commentaires : {{count}}",
+        "time_entries": "Saisies de temps : {{count}}",
+        "ticket_parts": "Pièces : {{count}}",
+        "ticket_alert_links": "Liens d'alerte : {{count}}",
+        "ticket_attachments": "Pièces jointes : {{count}}",
+        "ticket_email_links": "Liens e-mail : {{count}}",
+        "ticket_checklist_items": "Éléments de liste de contrôle : {{count}}",
+        "ticket_external_refs": "Références externes : {{count}}",
+        "ticket_links": "Liens entre tickets : {{count}}",
+        "device_vulnerabilities": "Vulnérabilités : {{count}}",
+        "organization_key_dates": "Rappels de dates clés : {{count}}",
+        "service_deliverable_occurrences": "Occurrences de livrables : {{count}}",
+        "ai_operator_task_targets": "Cibles de la tâche IA : {{count}}",
+        "ticket_drafts": "Brouillons supprimés : {{count}}"
+      },
+      "droppedHeading": "Liens supprimés",
+      "dropped": {
+        "between_pair": "lien entre les deux tickets",
+        "pair_unique": "doublon d’un lien que la cible possède déjà",
+        "self": "pointerait vers lui-même",
+        "canonical_duplicate": "doublon après réordonnancement",
+        "cycle": "créerait un cycle",
+        "limit": "dépasse la limite de liens par ticket"
+      },
+      "retained": "Reste sur {{number}} : {{name}}",
+      "anIntegration": "une intégration",
+      "device": {
+        "keeps": "Le ticket fusionné conserve {{device}}.",
+        "takes": "Le ticket fusionné reprend {{device}}.",
+        "unknown": "un autre appareil"
+      },
+      "requesterAccess": "Le demandeur de {{source}} verra le fil public de {{survivor}} dans le portail et pourra y répondre.",
+      "notify": "Informer par e-mail le demandeur de {{number}} que sa demande a été fusionnée",
+      "noRequester": "{{number}} n'a pas de demandeur à qui envoyer un e-mail.",
+      "warning": "Cette action est irréversible. {{source}} passe en lecture seule et renvoie vers {{survivor}}.",
+      "confirm": "Fusionner",
+      "merging": "Fusion en cours…",
+      "failed": "Échec de la fusion. Réessayez.",
+      "merged": "Fusionné avec {{number}}",
+      "mfaRequired": "La fusion de tickets exige l'authentification multifacteur. Reconnectez-vous avec la MFA et réessayez.",
+      "alreadyMerged": "L'un de ces tickets a déjà été fusionné. Choisissez une autre cible.",
+      "retry": "Ces tickets ont été modifiés pendant la fusion. Réessayez."
+    },
+    "mergedBanner": {
+      "mergedInto": "Ce ticket a été fusionné avec {{number}} le {{date}}.",
+      "pending": "Ce ticket a été fusionné avec un autre ticket le {{date}}.",
+      "deleted": "Ce ticket a été fusionné le {{date}} avec un ticket qui a été supprimé ou que vous ne pouvez pas voir.",
+      "open": "Ouvrir {{number}}",
+      "readOnly": "Les tickets fusionnés sont en lecture seule. Répondez sur le ticket avec lequel il a été fusionné."
     },
     "triage": {
       "title": "Triage suggéré",

@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Verbundene Apps (organisationsweit)",
       "description": {
-        "prefix": "KI-Assistenten und andere MCP-Clients, die Benutzer in",
+        "prefix": "KI-Clients, die Benutzer in",
         "yourOrganization": "Ihrer Organisation",
         "suffix": "autorisiert haben. Sperren Sie einen Client, um alle aktiven Berechtigungen sofort zu widerrufen."
       },
@@ -561,6 +561,61 @@
         "mfaRequired": "Das Umschalten des KI-Notausschalters erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Übersicht der Wisp-Berechtigungen und der heutigen Aktivität pro Partner. Nur Lesezugriff.",
+      "refresh": "Aktualisieren",
+      "retry": "Erneut versuchen",
+      "loading": "Wird geladen...",
+      "empty": "Noch keine Partner mit Wisp-Berechtigungen",
+      "disabled": "Wisp ist auf dieser Bereitstellung nicht aktiviert (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Die Wisp-Übersicht konnte nicht geladen werden"
+      },
+      "platformAdmin": {
+        "title": "Nur für Plattformadministratoren",
+        "description": "Die Wisp-Übersicht steht Plattformadministratoren zur Verfügung."
+      },
+      "table": {
+        "partner": "Partner",
+        "plan": "Tarif",
+        "activeGrants": "Aktive Berechtigungen",
+        "pausedGrants": "Pausierte Berechtigungen",
+        "assessmentsToday": "Prüfungen heute",
+        "specialistRequestsToday": "Spezialistenanfragen heute",
+        "openConcerns": "Offene Bedenken",
+        "budgetExhaustedToday": "Heute erschöpfte Budgets"
+      },
+      "grants": {
+        "loading": "Berechtigungen werden geladen...",
+        "error": "Berechtigungen konnten nicht geladen werden",
+        "empty": "Dieser Partner hat keine Berechtigungen",
+        "grantor": "Erteilt von",
+        "scope": "Geltungsbereich",
+        "status": "Status",
+        "pausedReason": "Pausierungsgrund",
+        "expires": "Läuft ab",
+        "budget": "Budget (Cent/Tag)",
+        "tickMinutes": "Takt (Min.)",
+        "assessmentsToday": "Prüfungen heute",
+        "partnerWide": "Partnerweit"
+      },
+      "status": {
+        "active": "Aktiv",
+        "paused": "Pausiert",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget erschöpft",
+        "grantor_suspended": "Erteiler gesperrt",
+        "grantor_access_lost": "Erteiler hat Zugriff verloren",
+        "factor_expired": "Faktor abgelaufen",
+        "entitlement_lost": "Berechtigung verloren",
+        "user_paused": "Vom Benutzer pausiert",
+        "partner_disabled": "Partner deaktiviert"
+      }
+    },
     "systemPage": {
       "title": "System",
       "description": "Bereitstellungsweiter Status für Plattformadministratoren. Diese Seite ist schreibgeschützt.",
@@ -791,6 +846,7 @@
       "agent.eventlogs.submit": "Ereignisprotokolle gemeldet",
       "agent.reliability.submit": "Zuverlässigkeit gemeldet",
       "agent.command.result.submit": "Befehlsergebnis übermittelt",
+      "agent.command.*": "Befehl in Warteschlange: {command}",
       "agent.filesystem.threshold_scan.queued": "Dateisystemscan eingereiht",
       "agent.enroll": "Agent registriert",
       "api.fallback.post": "Gesendet: {target}",
@@ -808,6 +864,8 @@
       "session_consent_bypassed": "Remotesitzung ohne Antwort auf die Zustimmungsabfrage gestartet",
       "screen_access_consent_blocked": "Bildschirmzugriff blockiert: Gerät erfordert die Zustimmung des Benutzers",
       "device.wake_on_lan": "Wake-on-LAN gesendet",
+      "device.recovery_key.reveal": "Wiederherstellungsschlüssel angezeigt",
+      "device.recovery_key.rotate": "Wiederherstellungsschlüssel rotiert",
       "device.create": "Gerät hinzugefügt",
       "device.update": "Gerät aktualisiert",
       "device.delete": "Gerät entfernt",
@@ -826,12 +884,15 @@
       "enrollment_key.revoke": "Registrierungsschlüssel widerrufen",
       "partner.settings.update": "Partnereinstellungen aktualisiert",
       "ai.message.send": "KI-Nachricht gesendet",
+      "backup.restore.create": "Wiederherstellung gestartet",
+      "backup.restore.cancel": "Wiederherstellung abgebrochen",
+      "backup.restore.unattested_override": "Wiederherstellung eines ungeprüften Snapshots bestätigt",
       "ai.tool_approval.update": "KI-Tool-Genehmigung aktualisiert",
       "ai.tool.*": "KI-Tool: {tool}",
-      "ai.session.create": "KI-Chat gestartet",
-      "ai.session.close": "KI-Chat geschlossen",
-      "ai.session.flag": "KI-Chat markiert",
-      "ai.session.unflag": "KI-Chat-Markierung entfernt",
+      "ai.session.create": "Eine Unterhaltung mit Breeze AI gestartet",
+      "ai.session.close": "Eine Unterhaltung mit Breeze AI geschlossen",
+      "ai.session.flag": "Eine Unterhaltung mit Breeze AI markiert",
+      "ai.session.unflag": "Markierung einer Unterhaltung mit Breeze AI entfernt",
       "ai.message.interrupt": "KI-Antwort gestoppt",
       "ai.command.executed": "KI hat einen Befehl ausgeführt",
       "ai.script.executed": "KI hat ein Skript ausgeführt",
@@ -847,6 +908,7 @@
       "mcp.resources.list": "MCP: Ressourcen auflisten",
       "terminal.session.summary": "Terminal-Sitzungszusammenfassung",
       "script.run": "Skript ausgeführt",
+      "script.execute": "Skript auf Gerät ausgeführt",
       "script.create": "Skript erstellt",
       "script.update": "Skript aktualisiert",
       "script.delete": "Skript gelöscht",

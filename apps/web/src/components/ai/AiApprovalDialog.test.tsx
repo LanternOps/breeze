@@ -48,18 +48,18 @@ beforeEach(() => {
 });
 
 describe('AiApprovalDialog', () => {
-  it('renders Approve/Reject buttons for a non-intent-backed (legacy Tier-2) execution', () => {
+  it('renders Approve/Deny buttons for a non-intent-backed (legacy Tier-2) execution', () => {
     render(<AiApprovalDialog {...baseProps} />);
 
     expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /deny/i })).toBeInTheDocument();
   });
 
   it('renders a waiting-for-an-approver state instead of a self-approve button when intentBacked', () => {
     render(<AiApprovalDialog {...baseProps} intentBacked />);
 
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^reject$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^deny$/i })).not.toBeInTheDocument();
     expect(screen.getByText(/waiting for an approver/i)).toBeInTheDocument();
     expect(
       screen.getByText(/needs approval in the approvals area or the breeze mobile app/i),
@@ -794,7 +794,7 @@ describe('AiApprovalDialog — script run context (#4888)', () => {
 
     const row = screen.getByTestId('approval-run-context');
     expect(row).toHaveTextContent(/system/i);
-    expect(row).toHaveTextContent(/chosen by the assistant/i);
+    expect(row).toHaveTextContent(/chosen by Breeze AI/i);
   });
 
   it('calls out an assistant override of the script’s saved default', () => {
@@ -835,7 +835,7 @@ describe('AiApprovalDialog — script run context (#4888)', () => {
     const row = screen.getByTestId('approval-run-context');
     expect(row).toHaveTextContent(/logged-in user/i);
     expect(row).toHaveTextContent(/saved default/i);
-    expect(row).not.toHaveTextContent(/chosen by the assistant/i);
+    expect(row).not.toHaveTextContent(/chosen by Breeze AI/i);
   });
 
   it('names the pinned Windows session for a session-targeted user run', () => {

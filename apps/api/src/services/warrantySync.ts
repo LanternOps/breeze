@@ -356,6 +356,7 @@ async function recordVendorShipDate(subject: WarrantySubject, shipDate: string |
   if (!shipDate) return;
   const now = new Date();
   if (subject.kind === 'device') {
+    // own-device-row-allowlisted: warranty-vendor-ship-date
     await db
       .update(devices)
       .set({ purchaseDate: shipDate, purchaseDateSource: 'vendor', updatedAt: now })

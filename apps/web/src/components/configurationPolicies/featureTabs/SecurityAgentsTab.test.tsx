@@ -263,3 +263,76 @@ describe('SecurityAgentsTab', () => {
     expect(screen.getByTestId('security-agents-execute-required')).toBeInTheDocument();
   });
 });
+
+// #6960 W05: the DNS vendors are wired but stay off until the #6958 lab gates
+// are recorded (code-only wave); their notes and the catalog-missing copy ship now.
+describe('SecurityAgentsTab — DNS-filtering vendors (#6960 W05)', () => {
+  it.each([
+    ['controld', 'Control D', 'controld_provisioning_code'],
+    ['nextdns', 'NextDNS', 'nextdns_profile_id'],
+  ])('%s (%s) notes: Windows only, add it from Built-in packages, set %s per organization (non-secret), coverage is readiness only', (vendor, name, variable) => {
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId(`security-agents-${vendor}-platform-windows`)).toHaveTextContent(/Windows/);
+    expect(screen.getByTestId(`security-agents-${vendor}-platform-macos`)).toHaveTextContent(/not supported/i);
+    expect(screen.getByTestId(`security-agents-${vendor}-platform-linux`)).toHaveTextContent(/not supported/i);
+    expect(screen.getByTestId(`security-agents-${vendor}-builtin-note`)).toHaveTextContent(new RegExp(`${name}.*Built-in packages`));
+    expect(screen.getByTestId(`security-agents-${vendor}-builtin-link`)).toHaveAttribute('href', '/software');
+    const variableNote = screen.getByTestId(`security-agents-${vendor}-variable-note`);
+    expect(variableNote).toHaveTextContent(variable);
+    expect(variableNote).toHaveTextContent(/not secret/i);
+    expect(screen.getByTestId(`security-agents-${vendor}-variable-link`)).toHaveAttribute('href', '/settings/variables');
+    expect(screen.getByTestId(`security-agents-${vendor}-coverage-note`)).toHaveTextContent(name);
+  });
+
+  it('the catalog-missing banner for a DNS vendor points at Built-in packages, not an integration', () => {
+    m.hook.errorDetail = { status: 400, code: 'security_agents_catalog_missing', body: { vendors: ['nextdns'] } };
+    render(<SecurityAgentsTab {...props} />);
+    const banner = screen.getByTestId('security-agents-catalog-missing');
+    expect(banner).toHaveTextContent(/NextDNS/);
+    expect(banner).toHaveTextContent(/Built-in packages/);
+    expect(banner).not.toHaveTextContent(/integration/i);
+    expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/software');
+  });
+
+  it('the DNS catalog-missing link still goes through the off-site guard', () => {
+    m.hook.errorDetail = { status: 400, code: 'security_agents_catalog_missing', body: { vendors: ['controld'], setupPath: '//evil.example' } };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/software');
+  });
+
+  it('a stored enabled DNS entry is not shown on, and re-saving keeps it off, while the vendor is not enableable', async () => {
+    render(
+      <SecurityAgentsTab
+        {...props}
+        existingLink={{
+          id: 'link',
+          featureType: 'security_agents',
+          featurePolicyId: null,
+          inlineSettings: { version: 1, agents: [{ vendor: 'nextdns', enabled: true, platforms: ['windows'] }] },
+        } as FeatureLink}
+      />,
+    );
+    expect((screen.getByTestId('security-agents-nextdns-toggle') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(m.save).toHaveBeenCalled());
+    expect(m.save.mock.calls[0][1].inlineSettings.agents).toEqual([{ vendor: 'nextdns', enabled: false, platforms: ['windows'] }]);
+  });
+
+  it('renders translated DNS notes in a non-English locale (no raw keys)', async () => {
+    const { i18n, loadLocale } = await import('@/lib/i18n');
+    await loadLocale('de-DE');
+    await i18n.changeLanguage('de-DE');
+    try {
+      render(<SecurityAgentsTab {...props} />);
+      for (const id of ['nextdns-builtin-note', 'nextdns-variable-note', 'nextdns-coverage-note']) {
+        const text = screen.getByTestId(`security-agents-${id}`).textContent ?? '';
+        expect(text, id).not.toMatch(/securityAgentsTab\.|dnsVariableNote|dnsBuiltinNote|dnsCoverageNote/);
+      }
+      expect(screen.getByTestId('security-agents-nextdns-variable-note')).toHaveTextContent('nextdns_profile_id');
+      // Proves the German bundle rendered (not a silent English fallback).
+      expect(screen.getByTestId('security-agents-nextdns-variable-note')).toHaveTextContent(/Mandantenvariable/);
+    } finally {
+      await i18n.changeLanguage('en');
+    }
+  });
+});

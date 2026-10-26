@@ -302,6 +302,9 @@
     "workspace": "Arbeitsbereich",
     "workspaceID": "Arbeitsbereich-ID: {{id}}",
     "connectWorkspace": "Arbeitsbereich verbinden",
+    "notConnected": "Nicht verbunden",
+    "pendingConnection": "Verbindung ausstehend",
+    "turnOnSlackToConnectWorkspace": "Aktivieren Sie Slack-Benachrichtigungen, um einen Arbeitsbereich zu verbinden.",
     "oauthRedirectStartsWhenYouConnectASlack": "Die OAuth-Umleitung startet, wenn Sie eine Verbindung zu einem Slack-Workspace herstellen.",
     "defaultChannel": "Standardkanal",
     "microsoftTeams": "Microsoft Teams",
@@ -336,10 +339,14 @@
   "connectionHealthPanel": {
     "title": "Verbindungsstatus",
     "allHealthy": "Alle Verbindungen sind in Ordnung",
+    "allHealthyDetail": "Verbundene Integrationen werden automatisch geprüft. Probleme erscheinen hier und neben der Integration in der Liste.",
     "loadError": "Der Verbindungsstatus konnte nicht geladen werden.",
     "retry": "Erneut versuchen",
     "since": "seit {{time}}",
     "fix": "Beheben",
+    "remedy": {
+      "reconnect": "Verbinden Sie sich erneut über die Client-App (z. B. den MCP-Server neu hinzufügen). In Breeze ist nichts zu tun."
+    },
     "truncated": "Die ersten {{count}} werden angezeigt",
     "recentlyResolved": "Kürzlich behoben ({{count}})",
     "resolution": {
@@ -394,11 +401,11 @@
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
     "googleWorkspace": "Google Workspace",
-    "connectAWorkspaceDomainSoTheAIAssistant": "Verbinden Sie eine Workspace-Domäne, damit der KI-Assistent Benutzer und Gruppen für diese Organisation verwalten kann.",
+    "connectAWorkspaceDomainSoTheAIAssistant": "Verbinden Sie eine Workspace-Domain, damit Breeze AI Benutzer und Gruppen dieser Organisation verwalten kann. ",
     "googleWorkspaceIntegrationIsNotEnabledOnThis": "Die Google Workspace-Integration ist in dieser Instanz nicht aktiviert.",
     "anAdministratorEnablesItBySetting": "Ein Administrator aktiviert es durch Einstellung",
     "onTheAPIServerThenReloadingThisPage": "auf dem API-Server, dann Neuladen dieser Seite.",
-    "connectAWorkspaceDomainSoTheAIAssistant2": "Verbinden Sie eine Workspace-Domäne, damit der KI-Assistent nach Benutzern suchen, Gruppen verwalten, Passwörter zurücksetzen, geführtes Offboarding durchführen und mehr für diese Organisation durchführen kann.",
+    "connectAWorkspaceDomainSoTheAIAssistant2": "Verbinden Sie eine Workspace-Domain, damit Breeze AI für diese Organisation Benutzer nachschlagen, Gruppen verwalten, Kennwörter zurücksetzen, ein geführtes Offboarding durchführen und mehr kann. ",
     "connection": "Verbindung",
     "pasteTheServiceAccountJSONKeyAndThe": "Fügen Sie den Dienstkontoschlüssel JSON und den Superadministrator ein, den er verkörpert. Breeze führt einen Live-Aufruf von Directory API durch, um vor dem Speichern die domänenweite Delegation zu überprüfen.",
     "howToGetTheServiceAccountJSONAnd": "So erhalten Sie das Dienstkonto JSON und autorisieren die Delegation",
@@ -547,6 +554,14 @@
     "pageOf": "Seite {{current}} von {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "Partnerweit",
+      "partnerWideDetail": "Gilt für alle Organisationen, die Sie verwalten."
+    },
+    "nav": {
+      "select": "Integration auswählen",
+      "openProblems": "Offene Probleme: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Integrationen werden konfiguriert für",
       "thisOrganization": "diese Organisation",
@@ -565,16 +580,16 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Preis",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
     "payments": "Zahlungen",
     "integrations": "Integrationen",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Verwalten Sie alle Verbindungen und sorgen Sie für reibungslose Automatisierungsworkflows.",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Verbinden Sie Breeze mit den Tools, mit denen Ihr MSP arbeitet, und sehen Sie, welche Verbindungen Aufmerksamkeit brauchen.",
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor-Integrationen (Pax8 und TD SYNNEX) sind nur für Partnerkonten verfügbar.",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Buchhaltungsintegrationen sind nur für Partnerkonten verfügbar.",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "Die UniFi-Netzwerkintegration ist nur für Partnerkonten verfügbar.",
     "psa": "PSA",
     "viewNameDocumentation": "{{name}} Dokumentation ansehen",
-    "tdSYNNEXPriceFile": "TD SYNNEX Preisdatei",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "backup": "Backup",
     "edrProviders": "EDR-Anbieter"
   },
@@ -658,7 +673,7 @@
   "m365Integration": {
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
     "microsoft365": "Microsoft 365",
-    "connectAnEntraAzureADAppRegistrationSo": "Verbinden Sie eine Entra (Azure AD)-App-Registrierung, damit der KI-Assistent Benutzer und Gruppen für den Mandanten dieser Organisation verwalten kann.",
+    "connectAnEntraAzureADAppRegistrationSo": "Verbinden Sie eine Entra-App-Registrierung (Azure AD), damit Breeze AI Benutzer und Gruppen im Mandanten dieser Organisation verwalten kann. ",
     "microsoft365IntegrationIsNotEnabledOnThis": "Die direkte Legacy-Verbindung ist auf dieser Instanz nicht aktiviert.",
     "anAdministratorEnablesItBySetting": "Ein Administrator aktiviert es durch Einstellung",
     "onTheAPIServerThenReloadingThisPage": "auf dem API-Server, dann Neuladen dieser Seite.",
@@ -713,11 +728,11 @@
     "legacyBadge": "Veraltet",
     "precedenceNote": "Diese veraltete Direktverbindung hat für diesen Mandanten Vorrang vor der zustimmungsbasierten Verbindung.",
     "disconnectConfirm": "Die veraltete Direktverbindung trennen? Breeze löscht die gespeicherten Anmeldedaten der App-Registrierung. Die App-Registrierung selbst bleibt in Microsoft Entra erhalten.",
-    "legacyHeading": "Microsoft 365: veraltete App-Registrierung (nur KI-Assistent)",
-    "legacyHeadingForOrg": "Microsoft 365: veraltete App-Registrierung (nur KI-Assistent) für {{orgName}}",
-    "legacyScopeSummary": "Eine Entra-App-Registrierung samt Clientgeheimnis für den Mandanten dieser Organisation. Sie steuert nur die unten aufgeführten Aktionen des KI-Assistenten.",
+    "legacyHeading": "Microsoft 365: ältere App-Registrierung (nur Breeze AI)",
+    "legacyHeadingForOrg": "Microsoft 365: ältere App-Registrierung (nur Breeze AI) für {{orgName}}",
+    "legacyScopeSummary": "Eine Entra-App-Registrierung samt Clientgeheimnis für den Mandanten dieser Organisation. Sie steuert ausschließlich die unten aufgeführten Aktionen von Breeze AI.",
     "powersHeading": "Steuert",
-    "powersList": "Sechs Aktionen des KI-Assistenten: Benutzersuche, Anmeldeaktivität, Gruppen auflisten, Gruppenmitglieder, Benutzer deaktivieren, Kennwort zurücksetzen.",
+    "powersList": "Sechs Aktionen von Breeze AI: Benutzersuche, Anmeldeaktivität, Gruppen auflisten, Gruppenmitglieder, Benutzer deaktivieren, Kennwort zurücksetzen.",
     "doesNotPowerHeading": "Steuert nicht",
     "doesNotPowerSync": "Mandantensynchronisierung (Benutzer, Lizenzen, Anmeldungen, Conditional Access, Secure Score)",
     "doesNotPowerQueryTools": "KI- und MCP-Tools",
@@ -727,7 +742,10 @@
     "allApplications": "Alle Anwendungen",
     "searchAllApplicationsFirst2": " (nicht „Eigene Anwendungen“) nach einer vorhandenen Breeze-App in diesem Mandanten. ",
     "tenantIdGuidPlaceholder": "Mandanten-ID (GUID), z. B. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Zum Speichern ist eine MFA-Bestätigung erforderlich.",
+    "clientSecretPlaceholder": "Client-Geheimnis der App",
+    "clientSecretStoredPlaceholder": "•••••••••• (gespeichert, verschlüsselt)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Gerätezustand",

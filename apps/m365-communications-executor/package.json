@@ -14,19 +14,19 @@
   "dependencies": {
     "@azure/identity": "^4.6.0",
     "@azure/keyvault-secrets": "^4.9.0",
-    "@azure/msal-node": "^6.0.0",
+    "@azure/msal-node": "^7.1.0",
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.5",
     "hono": "^4.13.13",
     "jose": "^6.2.12",
     "postgres": "^3.4.9",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "tsup": "^8.3.5",
     "tsx": "^4.23.15",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }

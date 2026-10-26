@@ -135,7 +135,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
+import { authMiddleware, computeAccessibleOrgIds, requireScope, requirePermission, requireMfa, requireInteractiveSession, requireOrg, requirePartner, requireOrgAccess, requireSiteAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext, hasSatisfiedMfa } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -1784,5 +1784,41 @@ describe('requireOrgAccess', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+  });
+});
+
+// #9529: `accessibleOrgIds[0]` is the last-resort org for an AI session (and
+// the default of every `getOrgId` tool helper). The org query has no ORDER BY,
+// so that element used to be whatever the planner returned first.
+describe('computeAccessibleOrgIds ordering (#9529)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const ROWS = [
+    { id: 'org-zulu', slug: 'zulu', type: 'customer' },
+    { id: 'org-qs', slug: 'quick-support-partner-123', type: 'quick_support' },
+    { id: 'org-acme', slug: 'Acme', type: 'customer' },
+    { id: 'org-beta', slug: 'beta', type: 'internal' },
+  ];
+
+  it('returns an orgAccess=all list in slug order, the hidden Quick Support org last', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'all', orgIds: null }]) as any)
+      .mockReturnValueOnce(selectWithWhere(ROWS) as any);
+
+    const reach = await computeAccessibleOrgIds('partner', 'partner-123', null, 'user-123');
+
+    expect(reach).toEqual({ orgIds: ['org-acme', 'org-beta', 'org-zulu', 'org-qs'], partnerOrgAccess: 'all' });
+  });
+
+  it('orders an orgAccess=selected list the same way, regardless of row order', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'selected', orgIds: ['org-zulu', 'org-acme'] }]) as any)
+      .mockReturnValueOnce(selectWithWhere([...ROWS].reverse()) as any);
+
+    const reach = await computeAccessibleOrgIds('partner', 'partner-123', null, 'user-123');
+
+    expect(reach.orgIds).toEqual(['org-acme', 'org-beta', 'org-zulu', 'org-qs']);
   });
 });

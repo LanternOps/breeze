@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MCP_HEADER_MISMATCH, MCP_UNSUPPORTED_PROTOCOL_VERSION,
+  MCP_CAPABILITY_REQUIRED, MCP_HEADER_MISMATCH, MCP_UNSUPPORTED_PROTOCOL_VERSION,
   classifyMcpRequest, decodeMcpHeaderValue, validateJsonRpcEnvelope,
   type JsonRpcEnvelope, type McpRequestHeaders,
 } from './mcpModernEnvelope';
@@ -247,5 +247,53 @@ describe('classifyMcpRequest decision table', () => {
     const { body, headers } = build({ method: 'notifications/cancelled' });
     delete body.id;
     expect(classifyMcpRequest({ body, headers, statelessEnabled: true, endpoint: 'streamable' }).era).toBe('modern');
+  });
+});
+
+describe('B-W06 (#6160, D-B51): tasks/* are name-bearing only while Tasks are effective', () => {
+  const TASK_ID = '77777777-7777-4777-8777-777777777777';
+  const meta = { [PV]: '2026-07-28', [CAPS]: {}, [INFO]: { name: 'test-client', version: '1.0.0' } };
+  function task(method: string, taskId: unknown, name: string | undefined, tasksEffective?: boolean) {
+    const params: Record<string, unknown> = { _meta: meta };
+    if (taskId !== undefined) params.taskId = taskId;
+    const input = {
+      body: { jsonrpc: '2.0' as const, id: 1, method, params },
+      headers: { protocolVersion: '2026-07-28', method, name },
+      statelessEnabled: true,
+      endpoint: 'streamable' as const,
+    };
+    return classifyMcpRequest(tasksEffective === undefined ? input : { ...input, tasksEffective });
+  }
+
+  it('-32021 is the Tasks capability-required code (SEP-2663)', () => {
+    expect(MCP_CAPABILITY_REQUIRED).toBe(-32021);
+  });
+
+  it.each(['tasks/get', 'tasks/update', 'tasks/cancel'])('%s: Mcp-Name must equal params.taskId when effective', (method) => {
+    expect(task(method, TASK_ID, TASK_ID, true).era).toBe('modern');
+    expect(task(method, TASK_ID, 'other', true))
+      .toMatchObject({ era: 'reject', rejection: { status: 400, error: { code: MCP_HEADER_MISMATCH }, reason: 'header_mismatch' } });
+    expect(task(method, TASK_ID, undefined, true))
+      .toMatchObject({ era: 'reject', rejection: { status: 400, error: { code: MCP_HEADER_MISMATCH }, reason: 'header_mismatch' } });
+  });
+
+  it.each(['tasks/get', 'tasks/update', 'tasks/cancel'])('%s: not name-bearing when Tasks are not effective — classifies exactly as today', (method) => {
+    for (const name of [TASK_ID, 'other', undefined]) {
+      const off = task(method, TASK_ID, name, false);
+      expect(off).toEqual(task(method, TASK_ID, name));
+      expect(off.era).toBe('modern');
+    }
+  });
+
+  it('a non-string taskId is not name-bearing (the handler answers not-found, D-B51)', () => {
+    expect(task('tasks/get', 42, undefined, true).era).toBe('modern');
+    expect(task('tasks/get', 42, '42', true).era).toBe('modern');
+    expect(task('tasks/get', undefined, undefined, true).era).toBe('modern');
+  });
+
+  it('other methods are unchanged by tasksEffective', () => {
+    const { body, headers } = build({}, { name: 'other_tool' });
+    expect(classifyMcpRequest({ body, headers, statelessEnabled: true, endpoint: 'streamable', tasksEffective: true }))
+      .toEqual(classifyMcpRequest({ body, headers, statelessEnabled: true, endpoint: 'streamable' }));
   });
 });

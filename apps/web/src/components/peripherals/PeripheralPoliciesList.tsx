@@ -15,6 +15,12 @@ type PeripheralPolicy = {
   action: string;
   isActive: boolean;
   exceptions?: Array<Record<string, unknown>>;
+  targetType?: string;
+  targetIds?: {
+    siteIds?: string[];
+    groupIds?: string[];
+    deviceIds?: string[];
+  } | null;
   createdAt?: string;
 };
 

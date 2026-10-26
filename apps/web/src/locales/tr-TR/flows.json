@@ -1,10 +1,10 @@
 {
   "title": "Akışlar",
   "subtitle": "Araçları birbirine zincirleyen çok adımlı otomasyonlar.",
-  "previewNotice": "Akışlar bu sürümde salt okunurdur. Bunları yapay zekâ sohbetinde taslak olarak hazırlayın; etkinleştirme ve çalıştırmalar sonraki bir sürümde gelecek.",
+  "previewNotice": "Akışlar bu sürümde salt okunurdur. Bunları Breeze AI'da taslak olarak hazırlayın; etkinleştirme ve çalıştırmalar sonraki bir sürümde gelecek.",
   "empty": {
     "title": "Henüz akış yok",
-    "body": "Yapay zekâ asistanından bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
+    "body": "Breeze AI'dan bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
   },
   "list": {
     "name": "Ad",
@@ -33,7 +33,7 @@
     "inputs": "Girdiler",
     "steps": "Adımlar",
     "version": "Sürüm {{version}}",
-    "createdInChat": "Yapay zekâ sohbetinde oluşturuldu"
+    "createdInChat": "Breeze AI'da oluşturuldu"
   },
   "step": {
     "tool": "Araç",

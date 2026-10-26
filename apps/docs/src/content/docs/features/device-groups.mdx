@@ -253,12 +253,14 @@ Fields are organized by category. Each field supports a specific set of operator
 |---|---|---|---|
 | `orgId` | Organization | string | `equals`, `in` |
 | `siteId` | Site | string | `equals`, `in` |
-| `groupId` | Device Group | string | `equals`, `in` |
+| `groupId` | Device Group | string | `equals`, `notEquals`, `in`, `notIn` |
 | `custom.*` | Custom Fields | string | `equals`, `contains`, `startsWith` |
 
 Custom fields use the prefix `custom.` followed by the field key (e.g., `custom.department`).
 
 The rule builder lists your organization's and partner's custom fields under **Custom Fields** (v0.123.0+), and the group card shows the field's name rather than its key, for example "Asset disposition equals Retired".
+
+**Device Group** also takes **does not equal** (`notEquals`) and **is not one of** (`notIn`) from v0.124.0. A device that belongs to no group matches **does not equal**. Excluding a dynamic group uses that group's last evaluated membership rather than re-evaluating it on the spot. Saving a dynamic group whose filter references itself -- directly, or through a chain of other dynamic groups -- is refused.
 </TabItem>
 </Tabs>
 
@@ -546,3 +548,4 @@ When creating or updating a dynamic group with filter conditions, the API valida
 - **"Unknown field"** -- The field key does not match any known filter field. Check the [Available filter fields](#available-filter-fields) tables above. Custom fields must use the `custom.` prefix.
 - **"Operator not valid for field"** -- The operator is not supported for the field's data type. For example, `greaterThan` is not valid for enum fields.
 - **"Group must have at least one condition"** -- A filter condition group cannot be empty.
+- **"A dynamic group cannot reference itself in its own filter"** / **"Filter creates a membership cycle between dynamic groups"** -- A Device Group condition points back at the group being saved, directly or through other dynamic groups (v0.124.0+). Point the condition at a different group.

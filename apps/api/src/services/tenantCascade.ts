@@ -323,6 +323,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_credit_debits (#9451): keyed credit debit outbox, shape 1, NOT NULL
+  // org_id ON DELETE CASCADE. Leaf: no FKs in, and source_id deliberately has
+  // no FK (ai_agent_runs / ai_invocations), so its position is alphabetical.
+  'ai_credit_debits',
   // AI device file read policy: only the org override row cascades; the
   // partner default has org_id NULL and never participates.
   'ai_data_policies',
@@ -489,6 +493,18 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'browser_extensions',
   'browser_policies',
   'browser_policy_violations',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config tables; the three children copy the owner pair. Every
+  // child FK is ON DELETE CASCADE to its parent, and the children sort before
+  // the parent under localeCompare ('business_calendar_…' < 'business_calendars').
+  // tickets.sla_calendar_revision_id and org_ticket_settings.business_calendar_id
+  // are ON DELETE SET NULL back-edges that close no cycle, so the topological
+  // order already deletes those referencing rows first and no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry is needed.
+  'business_calendar_holidays',
+  'business_calendar_intervals',
+  'business_calendar_revisions',
+  'business_calendars',
   'c2c_backup_configs',
   'c2c_backup_items',
   'c2c_backup_jobs',
@@ -535,6 +551,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
+  'contract_skipped_billing_periods',
   // contract_template_versions sorts before contract_templates: localeCompare
   // puts '_' (versions) before 's' (templates) at the diverging character —
   // same prefix-extension trap as custom_field_definitions/customer_email_domains
@@ -662,6 +679,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // ai_memory_blocks: deliberately absent — no `org_id` column (owner_org_id); owner rows cascade by FK; see migration 2027-01-04-110100-ai-memory-blocks.sql header (Wisp W03, w00 A9).
   // AI Suggested Fixes W1: fix_memory is dual-owner (org_id XOR partner_id).
   // Org rows cascade with the org; partner rows (org_id NULL) are untouched by
   // an org erasure and are rebuilt by jobs/tenantErasure.ts afterwards. FKs out
@@ -678,6 +696,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql). flow_run_steps
+  // -> flow_runs (run_id, org_id) and flow_runs -> flow_versions are ON DELETE
+  // CASCADE; action_intents(requesting_flow_run_id, org_id) -> flow_runs is
+  // ON DELETE RESTRICT, so topologicalCascadeOrder() (live pg_constraint)
+  // deletes action_intents before flow_runs whatever the position here.
+  // flow_versions is org XOR partner like flows: partner-wide publications
+  // (org_id NULL) are untouched by an org erasure.
+  'flow_run_steps',
+  'flow_runs',
+  'flow_versions',
   // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
   // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
   // child-before-parent constraint of its own.
@@ -907,6 +935,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',
+  'security_scan_sweeps',
   'security_scans',
   'security_status',
   'security_threats',
@@ -1050,6 +1079,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ticket_outbox',
   'offline_transition_effects',
   'ticket_parts',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000). Dual-axis XOR config
+  // table plus its org-links FK child (whose org_id is the allowlisted org).
+  // localeCompare: 'ticket_parts' < 'ticket_routing_rule_org_links' <
+  // 'ticket_routing_rules' < 'tickets' ('p' < 'r'; 'rule_' < 'rules'), so the
+  // child precedes its parent. tickets.routing_rule_id -> rules is ON DELETE
+  // SET NULL and closes no FK cycle, so it needs no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry (the delete order is topological).
+  'ticket_routing_rule_org_links',
+  'ticket_routing_rules',
   'tickets',
   'time_entries',
   'time_series_metrics',
@@ -1117,6 +1155,35 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'users',
   'vault_snapshot_inventory',
   'webhooks',
+  // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
+  // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a
+  // grant with ON DELETE RESTRICT FKs, so they must (and do) precede it; the
+  // revisions go with the grant via ON DELETE CASCADE.
+  'wisp_grants',
+  // Wisp W04 (#9910). wisp_thread_attachments is shape 1 (its artifact's org);
+  // wisp_thread_sessions is partner-axis but carries the attached session's
+  // org_id. Both reference ai_run_artifacts / ai_sessions / organizations with
+  // ON DELETE CASCADE and wisp_threads (a partner table, not in this list);
+  // topologicalCascadeOrder() puts them before their parents.
+  // wisp_threads.focus_org_id needs no step: its FK is ON DELETE SET NULL
+  // (focus_org_id).
+  // Wisp W05a (#9911). All three are partner-anchored / org-optional
+  // (DUAL_AXIS_TENANT_TABLES): this pass deletes their org rows only; a
+  // partner-level row (org_id NULL) leaves with the partner. Recipients
+  // reference wisp_concerns ON DELETE CASCADE, and recipients + watches
+  // reference wisp_grants ON DELETE CASCADE; topologicalCascadeOrder() puts
+  // them before their parents.
+  'wisp_concern_recipients',
+  'wisp_concerns',
+  'wisp_thread_attachments',
+  // Wisp W08a (#9914). Partner-anchored / org-optional like wisp_concerns
+  // (DUAL_AXIS_TENANT_TABLES): this pass deletes its org rows only; a
+  // partner-level link (org_id NULL) leaves with its thread / partner. It
+  // references wisp_threads, users and organizations ON DELETE CASCADE and
+  // wisp_grants ON DELETE SET NULL (added_by_grant_id).
+  'wisp_thread_links',
+  'wisp_thread_sessions',
+  'wisp_watches',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
   // so deleting the parent first is FK-safe; built-in rows (org_id NULL) are
   // never matched by an org erasure.
@@ -1431,6 +1498,16 @@ interface FkEdge {
  */
 export const CASCADE_ORDER_SET_NULL_EDGE_BREAKS: ReadonlySet<string> = new Set([
   'report_runs_artifact_id_ai_run_artifacts_id_fk',
+  // Wisp W02: wisp_grants.current_revision_id -> wisp_grant_revisions is ON
+  // DELETE SET NULL (current_revision_id); the reverse edge (revisions ->
+  // grants, CASCADE) is the real ownership, so the partner-axis sweep deletes
+  // revisions first and the grant's pointer falls to NULL.
+  'wisp_grants_current_revision_fk',
+  // Wisp W07: ai_operator_tasks.requested_by_run_id -> ai_agent_runs is ON
+  // DELETE SET NULL (requested_by_run_id) — a lineage back-pointer. The
+  // reverse edge (ai_agent_runs.task_id -> ai_operator_tasks) is the real
+  // ordering, so runs go first and a specialist task's pointer falls to NULL.
+  'ai_operator_tasks_requested_by_run_fk',
 ]);
 
 /**

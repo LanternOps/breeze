@@ -371,3 +371,471 @@ describe('planEffectStep — existing operation rows', () => {
     expect(h.createActionIntent).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1d — plan facts from a sealed planning snapshot; fail closed.
+// Appended: every case above is unchanged and runs on a recipe that declares
+// no snapshot step, i.e. today's buildPlan(input, {}) path.
+// ---------------------------------------------------------------------------
+import { aiOperatorTaskSteps } from '../../db/schema/aiOperatorTaskGraph';
+import { aiOperatorPlanApprovals } from '../../db/schema/aiOperatorPlanApprovals';
+import { sealPlanningSnapshot } from './planningSnapshot';
+import { planProbeStep } from './effectDispatch';
+
+describe('planEffectStep — planning snapshot (R1a-0 Task 1d)', () => {
+  const STEP_ID = '00000000-0000-4000-8000-0000000000f1';
+  const facts = { targets: { contactTargetId: TARGET }, accounts: { google: '101' } };
+  const sealed = sealPlanningSnapshot(facts, new Date('2026-10-11T09:00:00.000Z'));
+  const snapRecipe = () => ({ buildPlan, steps: { discover: {}, after: {} }, planningSnapshotStepKey: 'discover' }) as never;
+  const snapCheckpoint = (digest = sealed.digest) => ({ recipeInput: { who: 'dana' }, planningSnapshot: { stepId: STEP_ID, digest } });
+  const stepRow = { id: STEP_ID, orgId: 'o1', taskId: TASK_ID, stepKey: 'discover', state: 'succeeded', checkpoint: { planningSnapshot: sealed.envelope } };
+  const runSnap = (checkpoint: Record<string, unknown> = snapCheckpoint()) =>
+    planEffectStep({ task, recipe: snapRecipe(), checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+  const MISMATCH = 'f'.repeat(64);
+
+  beforeEach(() => {
+    h.tables.set(aiOperatorTaskSteps, [stepRow]);
+  });
+
+  it('1: a recipe with planningSnapshotStepKey gets buildPlan(input, facts) with the loaded facts', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    h.proposePlanApproval.mockResolvedValue({ ok: true, approvalId: 'ap1', intentId: 'plan-intent', effectSetDigest: 'x', effectCount: 3 });
+    await expect(runSnap()).resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+    expect(buildPlan).toHaveBeenCalledTimes(1);
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts);
+  });
+
+  it('2: snapshot_digest_mismatch with NO approval row fails unresolved and never proposes', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    const out = await runSnap(snapCheckpoint(MISMATCH));
+    expect(out).toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('3: the same failure with an approval row at the revision hands off unresolved; nothing probed or minted', async () => {
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    const out = await runSnap(snapCheckpoint(MISMATCH)) as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(out.handoffSummary).toContain('Nothing further was dispatched');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+    expect(h.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+
+  it('4: the same failure with an operation row still pending hands off unknown_effect', async () => {
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    await expect(runSnap(snapCheckpoint(MISMATCH))).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('snapshot_required (recipe declares a step, checkpoint has no ref) fails closed and never builds with {}', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+    await expect(runSnap({ recipeInput: {} })).resolves.toMatchObject({ action: 'settle', event: 'fail', detail: expect.stringContaining('snapshot_required') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('5: an I/O throw from the loader propagates; it is not settled', async () => {
+    h.tables.set(aiOperatorTaskSteps, { then: (_res: unknown, rej: (e: unknown) => void) => rej(new Error('pool timeout')) } as never);
+    await expect(runSnap()).rejects.toThrow('pool timeout');
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('6: an approval at the revision plus an EMPTY plan hands off as a seal mismatch, not success', async () => {
+    buildPlan.mockReturnValue([]);
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(run({ recipeInput: {}, resumeStepKey: 'after' })).resolves.toMatchObject({
+      action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: 'the plan changed under its approval',
+    });
+    await expect(run()).resolves.toMatchObject({ action: 'settle', event: 'hand_off' });
+  });
+
+  it('6a: a buildPlan throw WITH an approval row hands off (pending op -> unknown_effect), never fail', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('recipe code changed'); });
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(run()).resolves.toMatchObject({
+      action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('recipe code changed'),
+    });
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    await expect(run()).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('7: planProbeStep loads facts the same way, and fails closed the same way', async () => {
+    h.probeEffect.mockResolvedValue(probe('satisfied'));
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint() as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'complete' });
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts);
+
+    buildPlan.mockClear();
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint(MISMATCH) as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('snapshot_digest_mismatch') });
+    expect(buildPlan).not.toHaveBeenCalled();
+    h.tables.set(aiOperatorPlanApprovals, []);
+    await expect(planProbeStep({ task, recipe: snapRecipe(), checkpoint: snapCheckpoint(MISMATCH) as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1a-0 Task 1e — the post-approval not-before gate, and declared unobservable
+// effects. Appended; the cases above are unchanged.
+//
+// The harness above mocks './effectProbes' with `probeEffect` only. The walk
+// now also calls `isStructurallyUnobservable`, so this section re-registers
+// the SAME mock with that one export added (vitest: the last `vi.mock` for a
+// path wins; `probeEffect` is still `h.probeEffect`, so every case above sees
+// an identical module). The mirror answers true for `google_signout` alone —
+// exactly the real registry, which effectProbes/index.test.ts proves.
+// ---------------------------------------------------------------------------
+const u = vi.hoisted(() => ({
+  isStructurallyUnobservable: vi.fn((tool: string) => tool === 'google_signout'),
+}));
+vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect, isStructurallyUnobservable: u.isStructurallyUnobservable }));
+
+/** The jsonb stamp `recordVerification` merges into an operation's result. */
+const stampOf = (i: number) => {
+  const chunks = (h.updates[i]!.set.result as { queryChunks: unknown[] }).queryChunks;
+  return JSON.parse(chunks.find((c) => typeof c === 'string' && c.includes('"verified"')) as string);
+};
+
+describe('planEffectStep — not-before gate (R1a-0 Task 1e)', () => {
+  const HOUR_AHEAD = '2026-10-12T01:00:00.000Z';
+
+  it('1: an approved plan with dispatchNotBefore ahead and no operations waits maintenance_window; nothing probed or minted', async () => {
+    const out = await run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD });
+    expect(out).toMatchObject({ action: 'wait', reason: 'maintenance_window', dependency: null, wakeAfterMs: 60 * 60 * 1000 });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+
+  it('2: the gate does not hide in-flight work — ordinal 0 pending on a live intent waits on THAT intent', async () => {
+    setOps([op(e0, { resultState: 'pending', intentId: 'c1' })]);
+    setIntents([{ id: 'c1', status: 'executing', errorCode: null }]);
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { kind: 'intent', id: 'c1' } });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('2b: a dispatched effect is still post-probed and verified while the gate holds the next one', async () => {
+    setOps([op(e0)]);
+    h.probeEffect.mockResolvedValue(probe('satisfied'));
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'maintenance_window' });
+    expect(h.probeEffect).toHaveBeenCalledTimes(1);
+    expect(h.probeEffect.mock.calls[0]![1]).toMatchObject({ phase: 'post' });
+    expect(h.updates).toHaveLength(1);
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('3: dispatchNotBefore in the past dispatches as today', async () => {
+    h.probeEffect.mockResolvedValue(probe('unsatisfied'));
+    await expect(run({ recipeInput: {}, dispatchNotBefore: '2026-10-11T00:00:00.000Z' }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'child-intent' } });
+    expect(h.createActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('the gate only applies once the plan is approved — a pending plan still waits on approval', async () => {
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ state: 'pending', approvedByUserId: null }));
+    setIntents([{ id: 'plan-intent', status: 'pending_approval', errorCode: null }]);
+    await expect(run({ recipeInput: {}, dispatchNotBefore: HOUR_AHEAD }))
+      .resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+  });
+});
+
+describe('planEffectStep — declared unobservable effects (R1a-0 Task 1e)', () => {
+  // The identity order: the sign-out precedes the suspend that subsumes it.
+  const s0: PlannedEffect = { ...mkEffect(0, 'google_signout'), accountExternalId: '101' };
+  const s1: PlannedEffect = { ...mkEffect(1, 'google_suspend_user'), accountExternalId: '101' };
+  const unobsRecipe = (
+    plan: PlannedEffect[],
+    declared: Record<string, string> = { google_signout: 'google_suspend_user' },
+  ) => {
+    buildPlan.mockReturnValue(plan);
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ effectSetDigest: sealOf(plan) }));
+    return { buildPlan, steps: { after: {} }, unobservableEffects: declared } as never;
+  };
+  const runWith = (r: never, checkpoint: Record<string, unknown> = { recipeInput: {} }) =>
+    planEffectStep({ task, recipe: r, checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+  const unobservableRow = (e: PlannedEffect) =>
+    op(e, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } });
+
+  it('4: a declared, structurally unobservable post-probe unknown is recorded unobservable and the walk dispatches the suspend', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([op(s0)]);
+    h.probeEffect
+      .mockResolvedValueOnce(probe('unknown'))        // signout post-probe
+      .mockResolvedValueOnce(probe('unsatisfied'));   // suspend pre-probe
+    const out = await runWith(r);
+    expect(out).toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'child-intent' } });
+    expect(stampOf(0)).toMatchObject({ verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } });
+    expect(h.createActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'google_suspend_user' });
+    expect(u.isStructurallyUnobservable).toHaveBeenCalledWith('google_signout');
+  });
+
+  it('5: a replay wake does not re-probe or re-record an unobservable effect', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([unobservableRow(s0), op(s1, { resultState: 'pending', intentId: 'c1' })]);
+    setIntents([{ id: 'c1', status: 'executing', errorCode: null }]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'wait', reason: 'execution', dependency: { id: 'c1' } });
+    expect(h.probeEffect).not.toHaveBeenCalled();
+    expect(h.updates).toHaveLength(0);
+  });
+
+  it('6: no resume step + suspend verified on the SAME account settles complete/verified_resolved', async () => {
+    const r = unobsRecipe([s0, s1]);
+    setOps([unobservableRow(s0), op(s1, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+    // a no-op'd subsumer counts too
+    setOps([unobservableRow(s0), op(s1, { result: { noop: true } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+  });
+
+  it('6: a different account, or both ids null, is NOT subsumed — partial/unresolved', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    let r = unobsRecipe([s0, other]);
+    setOps([unobservableRow(s0), op(other, { result: { verified: { ok: true } } })]);
+    const out = await runWith(r) as { handoffSummary?: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'partial', outcome: 'unresolved' });
+    expect(out.handoffSummary).toContain('google_signout');
+
+    const n0 = { ...s0, accountExternalId: null };
+    const n1 = { ...s1, accountExternalId: null };
+    r = unobsRecipe([n0, n1]);
+    setOps([unobservableRow(n0), op(n1, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'partial', outcome: 'unresolved' });
+  });
+
+  it('6: with a resume step the walk moves on and leaves the verdict to that step', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    const r = unobsRecipe([s0, other]);
+    setOps([unobservableRow(s0), op(other, { result: { verified: { ok: true } } })]);
+    await expect(runWith(r, { recipeInput: {}, resumeStepKey: 'after' })).resolves.toMatchObject({ action: 'move', toStepKey: 'after' });
+  });
+
+  it('6a: a declared tool whose probe is NOT structurally unobservable still hands off unknown_effect', async () => {
+    const only = { ...s1, ordinal: 0 };
+    const r = unobsRecipe([only], { google_suspend_user: 'google_remove_from_group' });
+    setOps([op(only)]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('7: an undeclared unknown still hands off unknown_effect', async () => {
+    const r = unobsRecipe([s0, s1], { google_remove_license: 'google_suspend_user' });
+    setOps([op(s0)]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('planProbeStep: a declared unobservable effect is not unconfirmed when its same-account subsumer is satisfied', async () => {
+    const r = unobsRecipe([s0, s1]);
+    h.probeEffect.mockImplementation(async (e: PlannedEffect) => probe(e.toolName === 'google_signout' ? 'unknown' : 'satisfied'));
+    await expect(planProbeStep({ task, recipe: r, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'complete', outcome: 'verified_resolved' });
+
+    const other = { ...s1, accountExternalId: '202' };
+    const r2 = unobsRecipe([s0, other]);
+    await expect(planProbeStep({ task, recipe: r2, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('google_signout') });
+
+    h.probeEffect.mockImplementation(async (e: PlannedEffect) => probe(e.toolName === 'google_signout' ? 'unknown' : 'unsatisfied'));
+    await expect(planProbeStep({ task, recipe: r, checkpoint: { recipeInput: {} } as never, now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1a-0 review round (Opus): appended regression cases.
+// ---------------------------------------------------------------------------
+describe('planEffectStep — review-round fixes (R1a-0)', () => {
+  const s0: PlannedEffect = { ...mkEffect(0, 'google_signout'), accountExternalId: '101' };
+  const s1: PlannedEffect = { ...mkEffect(1, 'google_suspend_user'), accountExternalId: '101' };
+  const recipeFor = (plan: PlannedEffect[], declared: Record<string, string>) => {
+    buildPlan.mockReturnValue(plan);
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ effectSetDigest: sealOf(plan) }));
+    return { buildPlan, steps: { after: {} }, unobservableEffects: declared } as never;
+  };
+  const runWith = (r: never, checkpoint: Record<string, unknown> = { recipeInput: {} }) =>
+    planEffectStep({ task, recipe: r, checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+
+  it('a plan-build failure with an approval row and an operation whose result is UNKNOWN hands off unknown_effect', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('recipe code changed'); });
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    setOps([op(e0, { resultState: 'unknown', dispatchedAt: new Date() })]);
+    const out = await run() as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(out.handoffSummary).toContain('may still be running');
+  });
+
+  it('a recorded-unobservable row whose carve-out no longer applies is re-probed and an unknown hands off (fail closed)', async () => {
+    const r = recipeFor([s0, s1], {});
+    setOps([op(s0, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } })]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.probeEffect).toHaveBeenCalledTimes(1);
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('the audit event for an unobservable record does not claim subsumption before it is known', async () => {
+    const r = recipeFor([s0, s1], { google_signout: 'google_suspend_user' });
+    setOps([op(s0)]);
+    h.probeEffect.mockResolvedValueOnce(probe('unknown')).mockResolvedValueOnce(probe('unsatisfied'));
+    await runWith(r);
+    const detail = h.appendTaskEvent.mock.calls
+      .map((c) => (c[1] as { eventType: string; detail: string }))
+      .find((e) => e.eventType === 'verification_recorded')!.detail;
+    expect(detail).toContain('unobservable');
+    expect(detail).toContain('google_suspend_user');
+    expect(detail).not.toMatch(/\(subsumed by/);
+  });
+
+  it('with a resume step, the move detail names each unobservable effect that was NOT subsumed', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    const r = recipeFor([s0, other], { google_signout: 'google_suspend_user' });
+    setOps([op(s0, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } }),
+      op(other, { result: { verified: { ok: true } } })]);
+    const out = await runWith(r, { recipeInput: {}, resumeStepKey: 'after' }) as { settledDetail: string };
+    expect(out).toMatchObject({ action: 'move', toStepKey: 'after' });
+    expect(out.settledDetail).toContain('google_signout (ordinal 0)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2a Task 3a (W07 Amendment B2): per-step planning snapshots and the
+// post-stage-1 build-failure policy. Appended; every case above is unchanged.
+//
+// A synthetic two-stage recipe (the onboarding recipe does not exist yet):
+// `create_accounts` plans from snapshot 1 (`discover`), `provision_effects`
+// and `verify_outcome` from snapshot 2 (`resolve_accounts`). Stage 2 runs at
+// revision 3; stage 1's operations sit at revision 2. No approval row exists
+// at revision 3 in any case here — the A.4 rule alone would `fail`, but stage
+// 1 may already have created an account, so a stage-2 fault must hand off.
+// ---------------------------------------------------------------------------
+describe('planEffectStep — per-stage snapshots (R2a Task 3a)', () => {
+  const S2_STEP_ID = '00000000-0000-4000-8000-0000000000f2';
+  const S2_REVISION = 3;
+  const facts2 = { stage: 'provision', targets: { contactTargetId: TARGET }, accounts: { m365: 'obj-1111', google: null } };
+  const sealed2 = sealPlanningSnapshot(facts2, new Date('2026-10-11T10:00:00.000Z'));
+  const snapshot2Row = (over: Record<string, unknown> = {}) => ({
+    id: S2_STEP_ID, orgId: 'o1', taskId: TASK_ID, stepKey: 'resolve_accounts', state: 'succeeded',
+    checkpoint: { planningSnapshot: sealed2.envelope }, ...over,
+  });
+  const stageTask = (currentStepKey: string, revision = S2_REVISION) => ({
+    id: TASK_ID, orgId: 'o1', revision, currentStepKey, attemptOrdinal: 0, requesterUserId: 'u-requester',
+  }) as never;
+  /** `null` = the map is absent (an explicit `undefined` would take the default). */
+  const twoStage = (planningSnapshotStepFor: Record<string, string> | null = {
+    review: 'discover', create_accounts: 'discover', resolve_accounts: 'discover',
+    provision_effects: 'resolve_accounts', verify_outcome: 'resolve_accounts', manual_work: 'resolve_accounts',
+  }) => ({
+    key: 'fixture_two_stage', buildPlan,
+    steps: { discover: {}, create_accounts: {}, resolve_accounts: {}, provision_effects: {}, verify_outcome: {}, manual_work: {} },
+    planningSnapshotStepKey: 'discover',
+    ...(planningSnapshotStepFor ? { planningSnapshotStepFor } : {}),
+  }) as never;
+  const cp = (over: Record<string, unknown> = {}) =>
+    ({ recipeInput: { who: 'dana' }, planningSnapshot: { stepId: S2_STEP_ID, digest: sealed2.digest }, resumeStepKey: 'manual_work', ...over }) as never;
+  const runStage = (stepKey: string, recipe: never = twoStage(), checkpoint: never = cp()) =>
+    planEffectStep({ task: stageTask(stepKey), recipe, checkpoint, now: new Date('2026-10-12T00:00:00Z') });
+  /** A stage-1 operation: an earlier revision, an earlier step. */
+  const stage1Op = (resultState: string) => op(e0, { resultState, intentId: 'c1', planRevision: 2, taskStepKey: 'create_accounts' });
+
+  beforeEach(() => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row()]);
+    h.tables.set(aiOperatorPlanApprovals, []);
+    h.readPlanApprovalAtRevision.mockResolvedValue(null);
+  });
+
+  it('a stage-2 wake plans from snapshot 2: buildPlan gets its facts', async () => {
+    h.proposePlanApproval.mockResolvedValue({ ok: true, approvalId: 'ap2', intentId: 'plan-intent-2', effectSetDigest: 'x', effectCount: 3 });
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'wait', reason: 'approval' });
+    expect(buildPlan).toHaveBeenCalledWith({ who: 'dana' }, facts2);
+  });
+
+  it('stage-2 snapshot fault (ref still at discover) with NO approval at the revision hands off unresolved, never fails', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    const out = await runStage('provision_effects') as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    expect(out.handoffSummary).toContain('Nothing further was dispatched');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(h.readPlanApprovalAtRevision).not.toHaveBeenCalled();
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'unknown'])('stage-2 buildPlan throw with an EARLIER-revision %s operation hands off unknown_effect', async (state) => {
+    buildPlan.mockImplementation(() => { throw new Error('malformed stage-2 facts'); });
+    setOps([stage1Op(state)]);
+    const out = await runStage('provision_effects') as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect', detail: expect.stringContaining('malformed stage-2 facts') });
+    expect(out.handoffSummary).toContain('may still be running');
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('stage-2 buildPlan throw with no unsettled operation hands off unresolved', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('malformed stage-2 facts'); });
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved' });
+  });
+
+  it('snapshot_step_unmapped: a consumer step the declared map does not name hands off, never builds with snapshot 1', async () => {
+    const out = await runStage('provision_effects', twoStage({ review: 'discover', create_accounts: 'discover' }));
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', detail: expect.stringContaining('snapshot_step_unmapped') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('the stage-2 EMPTY plan with no approval at the revision still finishes (moves to resumeStepKey)', async () => {
+    buildPlan.mockReturnValue([]);
+    setOps([stage1Op('pending')]);
+    await expect(runStage('provision_effects')).resolves.toMatchObject({ action: 'move', toStepKey: 'manual_work' });
+    expect(h.proposePlanApproval).not.toHaveBeenCalled();
+  });
+
+  it('planProbeStep at a stage-2 probe step applies the same hand-off', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    await expect(planProbeStep({ task: stageTask('verify_outcome'), recipe: twoStage(), checkpoint: cp(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    setOps([stage1Op('unknown')]);
+    await expect(planProbeStep({ task: stageTask('verify_outcome'), recipe: twoStage(), checkpoint: cp(), now: new Date() }))
+      .resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+  });
+
+  it('PIN: a stage-1 snapshot fault (create_accounts reads a resolve_accounts ref) fails closed under the A.4 rule', async () => {
+    // create_accounts maps to planningSnapshotStepKey, so the stage-1 rule is
+    // today's: no approval at the revision ⇒ fail.
+    const out = await planEffectStep({
+      task: stageTask('create_accounts', 2), recipe: twoStage(), checkpoint: cp(), now: new Date('2026-10-12T00:00:00Z'),
+    });
+    expect(out).toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('snapshot_wrong_step') });
+    expect(buildPlan).not.toHaveBeenCalled();
+  });
+
+  it('PIN (stage 1 keeps the A.4 split): a create_accounts buildPlan throw with no approval fails, even with a pending op', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    buildPlan.mockImplementation(() => { throw new Error('boom'); });
+    setOps([stage1Op('pending')]);
+    await expect(planEffectStep({
+      task: stageTask('create_accounts', 2), recipe: twoStage(), checkpoint: cp(), now: new Date('2026-10-12T00:00:00Z'),
+    })).resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved' });
+  });
+
+  it('PIN (map absent ⇒ today\'s fail): a single-snapshot recipe at any step with a pending op and no approval fails', async () => {
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row({ stepKey: 'discover' })]);
+    buildPlan.mockImplementation(() => { throw new Error('boom'); });
+    setOps([stage1Op('pending')]);
+    await expect(runStage('provision_effects', twoStage(null)))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', outcome: 'unresolved', detail: expect.stringContaining('boom') });
+    // and a wrong-step ref on a map-less recipe is still today's fail
+    h.tables.set(aiOperatorTaskSteps, [snapshot2Row()]);
+    await expect(runStage('provision_effects', twoStage(null)))
+      .resolves.toMatchObject({ action: 'settle', event: 'fail', detail: expect.stringContaining('snapshot_wrong_step') });
+  });
+});

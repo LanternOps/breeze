@@ -12,7 +12,7 @@
  *  - `routes/devices/patches.ts` manual-install gate (ring-agnostic)
  *  - `vulnerabilityRemediation.ts` (ring-agnostic)
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../db';
 import { patchApprovals } from '../db/schema';
 
@@ -85,6 +85,57 @@ export function selectManualDecisionRows(partnerId: string, patchIds: string[]) 
         eq(patchApprovals.partnerId, partnerId),
         inArray(patchApprovals.patchId, patchIds),
         inArray(patchApprovals.status, ['approved', 'rejected']),
+      ),
+    );
+}
+
+/**
+ * Where a ring's winning decision for a patch lives: `'ring'` when a row for
+ * this ring carries the winning status, otherwise `'partner'` (the blanket
+ * row). Hint for the UI only — the verdict itself is `resolveLatestManualDecisions`.
+ */
+export function manualDecisionScope(
+  rows: readonly ManualDecisionRow[],
+  ringId: string,
+  patchId: string,
+  verdict: 'approved' | 'rejected',
+): 'ring' | 'partner' {
+  // The winner is the NEWEST applicable row carrying the winning status (a
+  // newer opposite-status row would have changed the verdict). A timestamp tie
+  // attributes to the ring's own row.
+  let best: { at: number; scope: 'ring' | 'partner' } | null = null;
+  for (const r of rows) {
+    if (r.patchId !== patchId || r.status !== verdict) continue;
+    if (r.ringId !== null && r.ringId !== ringId) continue;
+    const t = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
+    const scope = r.ringId === null ? 'partner' : 'ring';
+    if (!best || at > best.at || (at === best.at && scope === 'ring')) best = { at, scope };
+  }
+  return best?.scope ?? 'partner';
+}
+
+/**
+ * Ring-view read: this ring's rows PLUS partner-wide (`ring_id IS NULL`) rows,
+ * every status, for the partner. Feed the result to `resolveLatestManualDecisions`
+ * with `{ ringId }` — the same resolution `patchEligibility.ts` uses — so the
+ * ring UI never disagrees with what the evaluator installs (#9633). Rows of
+ * OTHER rings are never returned. `patchIds` omitted = the whole partner.
+ */
+export function selectRingScopedApprovalRows(partnerId: string, ringId: string, patchIds?: string[]) {
+  return db
+    .select({
+      patchId: patchApprovals.patchId,
+      status: patchApprovals.status,
+      ringId: patchApprovals.ringId,
+      updatedAt: patchApprovals.updatedAt,
+    })
+    .from(patchApprovals)
+    .where(
+      and(
+        eq(patchApprovals.partnerId, partnerId),
+        or(eq(patchApprovals.ringId, ringId), isNull(patchApprovals.ringId)),
+        ...(patchIds ? [inArray(patchApprovals.patchId, patchIds)] : []),
       ),
     );
 }

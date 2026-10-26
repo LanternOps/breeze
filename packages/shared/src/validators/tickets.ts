@@ -250,6 +250,18 @@ export const moveTicketOrgSchema = z.object({
   acceptCurrencyMismatch: z.boolean().optional()
 });
 
+// Ticket merge (#8972, spec §3.4). `notifyRequester` omitted → the API
+// defaults it on when the two requesters differ (D6). Merge is irreversible (D4).
+export const mergeTicketSchema = z.object({
+  intoTicketId: z.string().guid(),
+  notifyRequester: z.boolean().optional(),
+});
+export type MergeTicketInput = z.infer<typeof mergeTicketSchema>;
+
+export const mergePreviewQuerySchema = z.object({
+  into: z.string().guid(),
+});
+
 const ticketTypeListQuerySchema = z.preprocess(
   (raw) => {
     if (raw === undefined) return undefined;
@@ -277,7 +289,9 @@ export const listTicketsQuerySchema = z.object({
   sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage'),
   // deleted=only returns the soft-deleted "Archived" queue (tickets:manage only).
   // Omitted/any other value returns live tickets (deleted rows excluded).
-  deleted: z.enum(['only']).optional()
+  deleted: z.enum(['only']).optional(),
+  // #8972: merged tombstones are hidden unless `showMerged=true`.
+  showMerged: z.enum(['true', 'false']).transform((v) => v === 'true').optional()
 });
 
 export const ticketCategoryInputSchema = z.object({

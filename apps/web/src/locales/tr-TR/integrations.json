@@ -302,6 +302,9 @@
     "workspace": "Çalışma Alanı",
     "workspaceID": "Çalışma Alanı Kimliği: {{id}}",
     "connectWorkspace": "Çalışma alanını bağlayın ",
+    "notConnected": "Bağlı değil",
+    "pendingConnection": "Bağlantı bekleniyor",
+    "turnOnSlackToConnectWorkspace": "Bir çalışma alanı bağlamak için Slack bildirimlerini açın.",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth yönlendirmesi, bir Slack çalışma alanına bağlandığınızda başlar. ",
     "defaultChannel": "Varsayılan kanal",
     "microsoftTeams": "Microsoft Teams",
@@ -336,10 +339,14 @@
   "connectionHealthPanel": {
     "title": "Bağlantı durumu",
     "allHealthy": "Tüm bağlantılar sağlıklı",
+    "allHealthyDetail": "Bağlı entegrasyonlar otomatik olarak denetlenir. Sorunlar burada ve listede entegrasyonun yanında görünür.",
     "loadError": "Bağlantı durumu yüklenemedi.",
     "retry": "Yeniden dene",
     "since": "{{time}} beri",
     "fix": "Düzelt",
+    "remedy": {
+      "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok."
+    },
     "truncated": "İlk {{count}} gösteriliyor",
     "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
     "resolution": {
@@ -394,11 +401,11 @@
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Bağlantı doğrulandı ve kaydedildi.",
     "googleWorkspace": "Google Workspace",
-    "connectAWorkspaceDomainSoTheAIAssistant": "Yapay zeka asistanının bu kuruluştaki kullanıcıları ve grupları yönetebilmesi için bir Çalışma Alanı etki alanı bağlayın. ",
+    "connectAWorkspaceDomainSoTheAIAssistant": "Breeze AI'ın bu kuruluştaki kullanıcıları ve grupları yönetebilmesi için bir Çalışma Alanı etki alanı bağlayın. ",
     "googleWorkspaceIntegrationIsNotEnabledOnThis": "Google Workspace entegrasyonu bu örnekte etkin değil. ",
     "anAdministratorEnablesItBySetting": "Bir yönetici bunu ayarlayarak etkinleştirir",
     "onTheAPIServerThenReloadingThisPage": "API sunucusunda, ardından bu sayfayı yeniden yüklüyor. ",
-    "connectAWorkspaceDomainSoTheAIAssistant2": "AI asistanının bu kuruluş için kullanıcıları arayabilmesi, grupları yönetebilmesi, şifreleri sıfırlayabilmesi, rehberli ayrılma işlemini gerçekleştirebilmesi ve daha fazlasını yapabilmesi için bir Çalışma Alanı etki alanı bağlayın. ",
+    "connectAWorkspaceDomainSoTheAIAssistant2": "Breeze AI'ın bu kuruluş için kullanıcıları arayabilmesi, grupları yönetebilmesi, şifreleri sıfırlayabilmesi, rehberli ayrılma işlemini gerçekleştirebilmesi ve daha fazlasını yapabilmesi için bir Çalışma Alanı etki alanı bağlayın. ",
     "connection": "Bağlantı",
     "pasteTheServiceAccountJSONKeyAndThe": "Hizmet hesabı JSON anahtarını ve onun kimliğine büründüğü süper yöneticiyi yapıştırın. Breeze, kaydetmeden önce alan çapında yetkilendirmeyi doğrulamak için canlı bir Dizin API çağrısı yapar. ",
     "howToGetTheServiceAccountJSONAnd": "Hizmet hesabı JSON'u nasıl alınır ve yetkilendirme nasıl yapılır?",
@@ -547,6 +554,14 @@
     "pageOf": "Sayfa {{current}} / {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "İş ortağı çapında",
+      "partnerWideDetail": "Yönettiğiniz tüm kuruluşlar için geçerlidir."
+    },
+    "nav": {
+      "select": "Bir entegrasyon seçin",
+      "openProblems": "Açık sorunlar: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Entegrasyonlar şu kuruluş için yapılandırılıyor:",
       "thisOrganization": "bu kuruluş",
@@ -565,14 +580,14 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Fiyatlandırması",
-    "tdSYNNEXPriceFile": "TD SYNNEX Fiyat Dosyası",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "payments": "Ödemeler",
     "integrations": "Entegrasyonlar",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Tüm bağlantıları yönetin ve otomasyon iş akışlarını sağlıklı tutun. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distribütör entegrasyonları (Pax8 ve TD SYNNEX) yalnızca ortak hesaplar için geçerlidir. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Muhasebe entegrasyonları yalnızca iş ortağı hesapları tarafından kullanılabilir. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "UniFi ağ entegrasyonu yalnızca ortak hesapları tarafından kullanılabilir. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Breeze'i MSP'nizin kullandığı araçlara bağlayın ve hangi bağlantıların ilgi gerektirdiğini görün.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distribütör entegrasyonları (Pax8 ve TD SYNNEX) yalnızca ortak hesaplar için geçerlidir.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Muhasebe entegrasyonları yalnızca iş ortağı hesapları tarafından kullanılabilir.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "UniFi ağ entegrasyonu yalnızca ortak hesapları tarafından kullanılabilir.",
     "psa": "PSA",
     "viewNameDocumentation": "{{name}} belgelerini görüntüleyin",
     "backup": "Yedekleme",
@@ -658,7 +673,7 @@
   "m365Integration": {
     "connectionVerifiedAndSaved": "Bağlantı doğrulandı ve kaydedildi.",
     "microsoft365": "Microsoft 365",
-    "connectAnEntraAzureADAppRegistrationSo": "Entra (Azure AD) uygulama kaydını bağlayın, böylece AI asistanı bu kuruluşun kiracısı için kullanıcıları ve grupları yönetebilir. ",
+    "connectAnEntraAzureADAppRegistrationSo": "Entra (Azure AD) uygulama kaydını bağlayın, böylece Breeze AI bu kuruluşun kiracısı için kullanıcıları ve grupları yönetebilir. ",
     "microsoft365IntegrationIsNotEnabledOnThis": "Eski doğrudan bağlantı bu örnekte etkin değil. ",
     "anAdministratorEnablesItBySetting": "Bir yönetici bunu ayarlayarak etkinleştirir\n__BREEZE_TOKEN_0__ sunucusunda ",
     "onTheAPIServerThenReloadingThisPage": "API sunucusunda, ardından bu sayfayı yeniden yüklüyor.",
@@ -713,11 +728,11 @@
     "legacyBadge": "Eski yöntem",
     "precedenceNote": "Bu eski doğrudan bağlantı, bu kiracı için onaya dayalı bağlantıya göre önceliklidir.",
     "disconnectConfirm": "Eski doğrudan bağlantı kesilsin mi? Breeze, kayıtlı uygulama kaydı kimlik bilgilerini siler. Uygulama kaydının kendisi Microsoft Entra'da kalır.",
-    "legacyHeading": "Microsoft 365: eski uygulama kaydı (yalnızca yapay zekâ asistanı)",
-    "legacyHeadingForOrg": "Microsoft 365: eski uygulama kaydı (yalnızca yapay zekâ asistanı) – {{orgName}}",
-    "legacyScopeSummary": "Bu kuruluşun Entra tenant’ı için bir Entra uygulama kaydı ve istemci gizli anahtarı. Yalnızca aşağıda listelenen yapay zekâ asistanı eylemlerini çalıştırır.",
+    "legacyHeading": "Microsoft 365: eski uygulama kaydı (yalnızca Breeze AI)",
+    "legacyHeadingForOrg": "Microsoft 365: eski uygulama kaydı (yalnızca Breeze AI) – {{orgName}}",
+    "legacyScopeSummary": "Bu kuruluşun kiracısı için bir Entra uygulama kaydı ve istemci gizli anahtarı. Yalnızca aşağıda listelenen Breeze AI eylemlerini çalıştırır.",
     "powersHeading": "Çalıştırır",
-    "powersList": "Altı yapay zekâ asistanı eylemi: kullanıcı arama, oturum açma etkinliği, grupları listeleme, grup üyeleri, kullanıcıyı devre dışı bırakma ve parola sıfırlama.",
+    "powersList": "Altı Breeze AI eylemi: kullanıcı arama, oturum açma etkinliği, grupları listeleme, grup üyeleri, kullanıcıyı devre dışı bırakma ve parola sıfırlama.",
     "doesNotPowerHeading": "Çalıştırmaz",
     "doesNotPowerSync": "Tenant eşitlemesi (kullanıcılar, lisanslar, oturum açmalar, Koşullu Erişim, Secure Score)",
     "doesNotPowerQueryTools": "Yapay zekâ ve MCP araçları",
@@ -727,7 +742,10 @@
     "allApplications": "Tüm uygulamalar",
     "searchAllApplicationsFirst2": " (Sahip olunan uygulamalar değil) bölümünde bu tenant’ta mevcut bir Breeze uygulaması arayın. ",
     "tenantIdGuidPlaceholder": "Tenant Kimliği (GUID), ör. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın."
+    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın.",
+    "savingRequiresMfa": " Kaydetmek için MFA doğrulaması gerekir.",
+    "clientSecretPlaceholder": "uygulama istemci sırrı",
+    "clientSecretStoredPlaceholder": "•••••••••• (saklandı, şifrelendi)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",

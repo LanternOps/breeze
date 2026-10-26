@@ -9,9 +9,11 @@ import {
   type TicketComment,
   type TicketCommentAttachment,
   type TicketDetails as TicketDetailsType,
+  type PortalMergedTicket,
   type TicketStatus,
 } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/utils';
+import { isPortalMergedTicket } from '@/lib/mergedTicket';
 import { cn } from '@/lib/utils';
 import { approvalAskSentence } from '@/lib/approvalText';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
@@ -43,7 +45,8 @@ function activityStatusText(status: TicketStatus, updatedAt: string | null): str
 }
 
 interface TicketDetailsProps {
-  ticket: TicketDetailsType | null;
+  /** A live ticket, or a request staff merged into another one (#8972). */
+  ticket: TicketDetailsType | PortalMergedTicket | null;
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
@@ -207,7 +210,50 @@ function ReplyComposer({
   );
 }
 
-export function TicketDetails({ ticket, error, statusCode, pendingApproval }: TicketDetailsProps) {
+/** Where a merged request went (#8972, spec §6.1). No reply form and no status:
+ *  the conversation continues on the ticket it was merged into. */
+function MergedTicketNotice({ ticket }: { ticket: PortalMergedTicket }) {
+  const target = ticket.mergedInto;
+  const message = target
+    ? `This request was merged into ${target.internalNumber ?? 'another request'}.`
+    : ticket.survivorDeleted
+      ? 'This request was merged into a ticket that has since been removed.'
+      : 'This request was merged into another request.';
+  return (
+    <div className="max-w-3xl">
+      <div className="mb-6">
+        <a
+          href={withBase('/tickets')}
+          className="inline-flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to tickets
+        </a>
+      </div>
+      <div role="status" data-testid="portal-ticket-merged-banner" className="rounded-lg bg-primary/10 p-4 text-sm text-foreground">
+        <p className="font-semibold">{message}</p>
+        {target ? (
+          <p className="mt-1">
+            Follow the conversation there.{' '}
+            <a
+              href={withBase(`/tickets/${encodeURIComponent(target.id)}`)}
+              data-testid="portal-ticket-merged-link"
+              className="font-semibold text-primary-on-tint underline underline-offset-4"
+            >
+              Open {target.internalNumber ?? 'the request'}
+            </a>
+          </p>
+        ) : (
+          <p className="mt-1 text-muted-foreground">Your tickets list has the latest.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function TicketDetails({ ticket: ticketOrMerged, error, statusCode, pendingApproval }: TicketDetailsProps) {
+  const mergedTicket = isPortalMergedTicket(ticketOrMerged) ? ticketOrMerged : null;
+  const ticket = mergedTicket ? null : (ticketOrMerged as TicketDetailsType | null);
   // The API returns public replies newest-first; this reads as a conversation
   // under the description, so show them oldest-first. `comments` is defensively
   // defaulted for any payload that predates the field. Local state so a reply
@@ -230,6 +276,8 @@ export function TicketDetails({ ticket, error, statusCode, pendingApproval }: Ti
   // The ask sentence carries times in the viewer's zone, so (like `when`) it is
   // computed only after mount; the server-rendered UTC text never reaches the page.
   const askSentence = mounted && pendingApproval ? approvalAskSentence(pendingApproval.approval) : null;
+
+  if (mergedTicket) return <MergedTicketNotice ticket={mergedTicket} />;
 
   if (error || !ticket) {
     return (

@@ -16,6 +16,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '../../lib/navigation';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { OrgRequiredState } from '../shared/OrgRequiredState';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 import { asList } from '@/lib/asList';
@@ -298,6 +299,8 @@ function getTabFromHash(): DiscoveryTab {
 
 export default function DiscoveryPage() {
   const { t } = useTranslation('discovery');
+  const [pendingDeleteProfile, setPendingDeleteProfile] = useState<DiscoveryProfile | null>(null);
+  const [deletingProfile, setDeletingProfile] = useState(false);
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId, sites, fetchSites, allOrgs, selectOrganization } = useOrgStore();
   // "All orgs" mode: a partner/multi-org user who has *explicitly* chosen the
@@ -605,25 +608,39 @@ export default function DiscoveryPage() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [currentOrgId]);
 
-  const handleDeleteProfile = async (profile: DiscoveryProfile) => {
-    if (!confirm(t('discoveryPage.confirmDeleteProfile', { name: profile.name }))) {
-      return;
-    }
+  const handleDeleteProfile = (profile: DiscoveryProfile) => {
+    setPendingDeleteProfile(profile);
+  };
+
+  const confirmDeleteProfile = async () => {
+    const profile = pendingDeleteProfile;
+    if (!profile) return;
 
     setProfilesError(undefined);
+    setDeletingProfile(true);
 
     try {
-      const response = await fetchWithAuth(`/discovery/profiles/${profile.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/discovery/profiles/${profile.id}`, {
+          method: 'DELETE'
+        }),
+        errorFallback: t('discoveryPage.errors.deleteProfile'),
+        successMessage: t('discoveryPage.toasts.profileDeleted', { name: profile.name }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
-      if (!response.ok) {
-        throw new Error(t('discoveryPage.errors.deleteProfile'));
-      }
-
+      setPendingDeleteProfile(null);
       await fetchProfiles();
     } catch (err) {
-      setProfilesError(err instanceof Error ? err.message : t('discoveryPage.errors.generic'));
+      setPendingDeleteProfile(null);
+      if (err instanceof ActionError) {
+        if (err.status === 401) return;
+        setProfilesError(err.message);
+      } else {
+        setProfilesError(err instanceof Error ? err.message : t('discoveryPage.errors.generic'));
+      }
+    } finally {
+      setDeletingProfile(false);
     }
   };
 
@@ -869,6 +886,20 @@ export default function DiscoveryPage() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pendingDeleteProfile !== null}
+        onClose={() => { if (!deletingProfile) setPendingDeleteProfile(null); }}
+        onConfirm={() => void confirmDeleteProfile()}
+        title={t('discoveryProfileList.actions.deleteProfile')}
+        message={pendingDeleteProfile
+          ? t('discoveryPage.confirmDeleteProfile', { name: pendingDeleteProfile.name })
+          : ''}
+        confirmLabel={t('discoveryProfileList.actions.deleteProfile')}
+        variant="destructive"
+        isLoading={deletingProfile}
+        confirmTestId="discovery-profile-delete-confirm"
+      />
     </div>
   );
 }

@@ -8,7 +8,9 @@ import { getActiveOrgTenant } from '../tenantStatus';
 import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+import { checkFlowReleaseAuthority } from '../flows/releaseAuthority';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { IntentScopeLostError } from './intentTargetScope';
@@ -236,8 +238,21 @@ export async function revalidateApprovedIntentForRelease(
   intent: ActionIntent,
   winningApproval: { boundArgumentDigest: string | null } | null,
 ): Promise<IntentReleaseRevalidation> {
-  const revalidation = await revalidateApprovedIntentCore(intent, winningApproval);
+  let revalidation = await revalidateApprovedIntentCore(intent, winningApproval);
   if (!revalidation.ok) return revalidation;
+  // Wisp W04a: a chat-originated intent (`ai_origin_session_id`) from a Wisp
+  // session is held to the session's delegation ceiling at release too — the
+  // approval wait can outlive the grant, and the durable worker has no live
+  // chat gate. Ordinary sessions pass unchanged after one by-id session read;
+  // intents with no chat origin never load the Wisp module. On success the
+  // release runs under the ceiling-narrowed auth. Before the caller-verification
+  // consume, so a refusal never spends that single-use grant.
+  if (intent.aiOriginSessionId) {
+    const { checkWispCeilingForRelease } = await import('../wisp/releaseCeiling');
+    const wisp = await checkWispCeilingForRelease(intent, revalidation.auth);
+    if (!wisp.ok) return wisp;
+    revalidation = { ...revalidation, auth: wisp.auth };
+  }
   // Caller verification (#6354 W05) runs LAST: only an intent that passed
   // every other release check may spend the caller's single-use grant.
   return consumeCallerVerificationForRelease(intent, revalidation);
@@ -481,13 +496,39 @@ async function revalidateApprovedIntentCore(
   // where it gets there first (a policy-decided intent, or a future caller
   // that skips this step).
   let auth: AuthContext | null;
-  try {
-    auth = await buildAuthContextForIntent(intent);
-  } catch (error) {
-    if (error instanceof IntentScopeLostError) {
-      return { ok: false, errorCode: error.code, details: { reason: error.message } };
+  if (isMcpOriginIntent(intent)) {
+    // B-W04 (#6158, D-B26): rebuild from the live origin credential directly
+    // (not via buildAuthContextForIntent's null-collapsing branch) to keep the
+    // specific errorCode, then re-run the creation gates against live state.
+    // RBAC and the governance site ceiling below still run, unchanged.
+    const { rebuildMcpOriginAuthContext, checkMcpOriginReleaseAuthority } = await import('../mcpPrincipalAuth');
+    const rebuilt = await rebuildMcpOriginAuthContext(intent);
+    if ('error' in rebuilt) {
+      return { ok: false, errorCode: rebuilt.error };
     }
-    throw error;
+    const authority = checkMcpOriginReleaseAuthority(intent, rebuilt);
+    if (!authority.ok) {
+      return { ok: false, errorCode: authority.errorCode };
+    }
+    auth = rebuilt.auth;
+  } else if (intent.requestingFlowRunId) {
+    // Tool catalog W04 (#5219): rebuild the RUN's flow principal directly
+    // (not via buildAuthContextForIntent's null-collapsing branch) so the
+    // refusal reason survives into the audit trail.
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      return { ok: false, errorCode: 'actor_invalid', details: { reason: authority.code } };
+    }
+    auth = authority.auth;
+  } else {
+    try {
+      auth = await buildAuthContextForIntent(intent);
+    } catch (error) {
+      if (error instanceof IntentScopeLostError) {
+        return { ok: false, errorCode: error.code, details: { reason: error.message } };
+      }
+      throw error;
+    }
   }
   if (!auth) {
     return { ok: false, errorCode: 'actor_invalid' };
@@ -522,6 +563,25 @@ async function revalidateApprovedIntentCore(
     if (!authority.ok) {
       return authority;
     }
+    return { ok: true, auth };
+  }
+
+  // (e') Tool catalog W04 (#5219): a FLOW-originated intent is likewise never
+  // checked against user RBAC (checkToolPermission denies automation
+  // principals as its first statement). Its release authority is structural:
+  // the dispatch claim (services/flows/intentClaim.ts) re-proved, under lock,
+  // that the run is still parked on this intent, the flow is enabled on the
+  // run's publication, the delegator still holds what they delegated and the
+  // step still matches its pin; (c) rebuilt the run's flow principal and
+  // refused an org the flow does not own. Here only the structural
+  // consistency of that rebuild is asserted, and an external step reloads its
+  // descriptor under the flow principal (owner predicate + kill switch).
+  if (intent.requestingFlowRunId) {
+    const principal = auth.principal;
+    if (principal?.kind !== 'flow' || principal.runId !== intent.requestingFlowRunId || auth.orgId !== intent.orgId) {
+      return { ok: false, errorCode: 'actor_invalid', details: { reason: 'flow_principal_mismatch' } };
+    }
+    if (isExternalTool) return revalidateExternalToolForActor(intent, auth);
     return { ok: true, auth };
   }
 

@@ -52,6 +52,11 @@ vi.mock('../services/featureConfigResolver', () => ({
 vi.mock('../middleware/auth', () => ({
   // Step-up MFA gate on privileged routes; not under test here.
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // POST /scan/:deviceId passes the session's MFA state to startDeviceScan
+  // (#6263 W05-11); the sweep routes also read the principal kind.
+  hasSatisfiedMfa: vi.fn(() => false),
+  isInteractiveUserSession: vi.fn(() => true),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
@@ -835,6 +840,7 @@ describe('security routes', () => {
     it('should return BE-9 recommendations with persisted action statuses', async () => {
       vi.mocked(listLatestSecurityPosture).mockResolvedValue([
         makePostureRow({
+          capturedAt: '2026-10-01T00:00:00.000Z',
           overallScore: 52,
           riskLevel: 'high',
           factors: {
@@ -862,16 +868,19 @@ describe('security routes', () => {
           severity: 'critical',
           status: 'detected',
           filePath: 'C:\\malware.exe',
-          detectedAt: new Date(),
+          detectedAt: new Date('2026-10-01T00:00:00.000Z'),
           resolvedAt: null
         }
       ]);
+      // Status is per org (#9641): the persisted action carries the org it was
+      // recorded against, and post-dates the last observation of the problem.
       mockAuditLogSelect([
         {
           action: 'security.recommendation.complete',
+          orgId: '11111111-1111-1111-1111-111111111111',
           resourceName: 'rec-enable-firewall',
           details: null,
-          timestamp: new Date()
+          timestamp: new Date('2026-10-02T00:00:00.000Z')
         }
       ]);
 

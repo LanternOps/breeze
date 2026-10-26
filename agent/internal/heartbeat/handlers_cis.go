@@ -1,11 +1,16 @@
 package heartbeat
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/cis"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
+
+// cisRemediate is a seam over cis.Remediate so handler tests can drive both
+// the success and failure branches on any host OS.
+var cisRemediate = cis.Remediate
 
 func init() {
 	handlerRegistry[tools.CmdCisBenchmark] = handleCisBenchmark
@@ -38,6 +43,23 @@ func handleApplyCisRemediation(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	action := tools.GetPayloadString(cmd.Payload, "action", "apply")
 
-	result := cis.Remediate(checkID, action, cmd.Payload)
-	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	result := cisRemediate(checkID, action, cmd.Payload)
+	cmdResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	if result.Success || cmdResult.Status != "completed" {
+		return cmdResult
+	}
+
+	// #9604: a remediation that was not applied (unimplemented check, failed
+	// write) is a FAILED command. Before this, the only failure signal was
+	// `success:false` inside stdout, and the server recorded the action as
+	// completed. The remediation JSON stays on Stdout so the server still gets
+	// the before-state of a partially applied change.
+	errMsg := result.Error
+	if errMsg == "" {
+		errMsg = fmt.Sprintf("CIS remediation for check %s did not succeed", checkID)
+	}
+	cmdResult.Status = "failed"
+	cmdResult.ExitCode = 1
+	cmdResult.Error = errMsg
+	return cmdResult
 }

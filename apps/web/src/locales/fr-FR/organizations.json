@@ -392,7 +392,10 @@
           "saved": "Valeurs du Centre de confiance enregistrées",
           "saveFailed": "Impossible d'enregistrer les valeurs du Centre de confiance",
           "mfaRequired": "La modification de ces valeurs exige l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
-          "revisionMismatch": "Quelqu'un d'autre a modifié ces valeurs. Rechargez pour voir ses modifications."
+          "revisionMismatch": "Quelqu'un d'autre a modifié ces valeurs. Rechargez pour voir ses modifications.",
+          "conflictNotice": "Quelqu’un d’autre a enregistré ces valeurs par défaut pendant votre modification. Rechargez sa version pour repartir de celle-ci, ou continuez à modifier : un nouvel enregistrement échouera tant que vous n’aurez pas rechargé.",
+          "reloadTheirs": "Recharger sa version",
+          "keepEditing": "Continuer à modifier"
         },
         "title": "Paramètres hérités"
       },
@@ -589,6 +592,7 @@
       "title": "Bibliothèque de documents",
       "subtitle": "Guides opérationnels, lignes de base, politiques et preuves de livraison pour cette organisation.",
       "empty": "Aucun document pour le moment. Téléversez un guide opérationnel, une ligne de base ou une politique signée pour démarrer la bibliothèque.",
+      "emptyPortalHint": "Votre client voit les documents marqués Visible dans le portail. Une proposition ou un accord signé et une ligne de base de sécurité sont de bons premiers documents.",
       "emptyFiltered": "Aucun document dans cette catégorie.",
       "loadFailed": "Impossible de charger les documents.",
       "upload": "Téléverser un document",

@@ -14,6 +14,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import {
+  cleanupSoftwarePolicyElevations,
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
@@ -29,7 +30,6 @@ import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
 import { assertMayManageExecutableRules } from '../services/softwarePolicyExecutableRulesAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
-import { requestPamCleanup } from '../services/pamActuationLifecycle';
 
 export const softwarePoliciesRoutes = new Hono();
 const requireSoftwarePolicyRead = requirePermission(
@@ -199,40 +199,6 @@ function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
     return sql`(${orgCond} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;
-}
-
-type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-export async function cleanupSoftwarePolicyElevations(
-  tx: SoftwarePolicyTx,
-  policyId: string,
-): Promise<number> {
-  const result = await tx.execute<{ id: string }>(sql`
-    WITH matching AS (
-      SELECT id
-      FROM elevation_requests
-      WHERE metadata->>'software_policy_match_id' = ${policyId}
-        AND status IN ('approved', 'auto_approved', 'actuating')
-      FOR UPDATE
-    )
-    UPDATE elevation_requests AS request
-    SET status = 'revoked',
-        revoked_at = now(),
-        revision = request.revision + 1,
-        updated_at = now()
-    FROM matching
-    WHERE request.id = matching.id
-      AND request.status IN ('approved', 'auto_approved', 'actuating')
-    RETURNING request.id
-  `);
-  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
-  for (const row of rows) {
-    await requestPamCleanup(tx, {
-      elevationRequestId: row.id,
-      cause: 'policy_removed',
-    });
-  }
-  return rows.length;
 }
 
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {

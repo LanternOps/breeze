@@ -385,6 +385,8 @@ export async function acceptQuote(
       // The join is pinned to the same partner, so a mismatched org can only
       // yield NULL (inherit), never another tenant's value.
       orgTermsDays: organizations.invoiceTermsDays,
+      // #9778: client name for the auto-created contract's name.
+      orgName: organizations.name,
     })
     .from(partners)
     .leftJoin(organizations, and(eq(organizations.id, quote.orgId), eq(organizations.partnerId, partners.id)))
@@ -670,6 +672,8 @@ export async function acceptQuote(
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,
+      title: quote.title ?? null,
+      orgName: partner?.orgName ?? null,
       currencyCode: quote.currencyCode,
       terms: quote.terms ?? null,
     },

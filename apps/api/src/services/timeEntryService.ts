@@ -16,6 +16,8 @@ import { isMissingRateGap } from './invoiceAssembly';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiplyToCurrency, toMinorUnits, fromMinorUnits, laborAmount, laborHours, billedLaborMinutes } from '@breeze/shared';
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 import { emitTicketEvent } from './ticketEvents';
+import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketNotMerged, assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   peekEntry, peekRunningEntry, planGatedWrite, settleGatedWrite, settleRemovedEntry,
   type GatedWritePlan,
@@ -547,14 +549,14 @@ export async function getTicketTimeEntryDefaults(
  * the new row under its guard. RLS still scopes the read to the caller's axis.
  */
 async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: string }> {
-  const rows = await db
-    .select({ id: tickets.id, orgId: tickets.orgId })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1)
-    .for('update');
-  const row = rows[0];
+  // Same SQL as before #8972 W0, now shared by every ticket-child writer
+  // (services/ticketRowLock.ts); the 404 shape stays this service's own.
+  const row = await lockTicketForWrite(db, ticketId);
   if (!row) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+  // #8972 W1: no time or part write lands on a merged tombstone (409
+  // TICKET_MERGED), checked under the lock; every time-entry and part lock
+  // in this file funnels through here.
+  assertTicketNotMerged(row);
   return row;
 }
 
@@ -1729,6 +1731,9 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
     ticketId: string | null;
   }[] = [];
   if (eligible.length > 0) {
+    // #8972 W0: the entries' tickets first, ascending, in one statement. The
+    // UPDATE below then never waits on a ticket while holding an entry.
+    assertTicketsNotMerged((await lockTicketsForWrite(db, eligible.map((id) => found.get(id)?.ticketId))).values());
     updated = await db
       .update(timeEntries)
       .set(approve
@@ -1828,10 +1833,26 @@ function assertCanMutatePart(part: { addedBy: string | null }, actor: TimeEntryA
   }
 }
 
+/**
+ * #8972 W0: a part edit locks the part's TICKET first — read the part
+ * unlocked, lock its ticket (lockTicketRow), then lock-and-re-read the part
+ * (getPartOr404). A part that moved to another ticket in between is answered
+ * with the writer's existing "reload and retry" 409, never written without
+ * its ticket's lock.
+ */
+async function lockPartForWrite(id: string, lost: { message: string; code: 'PART_UPDATE_LOST' | 'PART_DELETE_LOST' }) {
+  const [peek] = await db.select({ ticketId: ticketParts.ticketId }).from(ticketParts).where(eq(ticketParts.id, id)).limit(1);
+  if (!peek) throw new TimeEntryServiceError('Part not found', 404, 'PART_NOT_FOUND');
+  await lockTicketRow(peek.ticketId);
+  const part = await getPartOr404(id);
+  if (part.ticketId !== peek.ticketId) throw new TimeEntryServiceError(lost.message, 409, lost.code);
+  return part;
+}
+
 /** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
-  const part = await getPartOr404(id);
+  const part = await lockPartForWrite(id, { message: 'Part could not be updated — reload and retry', code: 'PART_UPDATE_LOST' });
   assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed' && BILLED_LOCKED_PART_FIELDS.some((k) => input[k] !== undefined)) {
     throw new TimeEntryServiceError('This part has been invoiced; only its description, vendor, part number and notes can change', 409, 'PART_BILLED');
@@ -1872,7 +1893,7 @@ export async function updateTicketPart(id: string, input: Partial<TicketPartInpu
 }
 
 export async function deleteTicketPart(id: string, actor: TimeEntryActor) {
-  const part = await getPartOr404(id);
+  const part = await lockPartForWrite(id, { message: 'Part could not be deleted — reload and retry', code: 'PART_DELETE_LOST' });
   assertCanMutatePart(part, actor);
   if (part.billingStatus === 'billed') {
     throw new TimeEntryServiceError(

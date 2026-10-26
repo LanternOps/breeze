@@ -6,7 +6,10 @@ import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
-import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+import {
+  composeStaticSystemPrompt, DOMAIN_NOTES, DOMAIN_VOCABULARY, listToolIndex, MAX_INLINE_ACTIONS, PAGE_CONTEXT_TOOL_DOMAINS,
+  renderAlwaysOnIndex, renderDomainBlock, renderPageContextToolBlocks, renderToolIndexByDomain, resolveToolIndexMode,
+} from './aiToolIndex';
 
 const COVERAGE_BURNDOWN_TOOLS = [
   ['Tickets & time', 'list_time_entries'],
@@ -120,6 +123,27 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(renderToolIndexByDomain(['run_script'])).not.toContain('external runs');
   });
 
+  // Full-control W02 (#6756), Todd 2026-10-22 option 2: action lists collapse
+  // to "(N actions)" at 8+ actions so the 7 PSA/billing write tools fit the
+  // index ceiling. Renderer only — the names stay in each tool's schema.
+  it('inlines up to 7 action names and collapses 8+ to a count', () => {
+    expect(MAX_INLINE_ACTIONS).toBe(7);
+    const all = listToolIndex(getAllRegisteredToolNames());
+    // No registered tool has exactly 7 actions today, so pin the largest one
+    // that still inlines; the constant assertion above covers the boundary.
+    const inline = all.filter((e) => e.actions.length > 0 && e.actions.length <= 7)
+      .sort((a, b) => b.actions.length - a.actions.length)[0];
+    const eight = all.find((e) => e.actions.length === 8);
+    expect(inline, 'need a registered tool with 1-7 actions').toBeDefined();
+    expect(eight, 'need a registered tool with exactly 8 actions').toBeDefined();
+    expect(inline!.actions.length).toBeGreaterThanOrEqual(5);
+    expect(eight!.actions).toHaveLength(8);
+    expect(renderToolIndexByDomain([inline!.name])).toContain(`${inline!.name} (${inline!.actions.join('/')})`);
+    const collapsed = renderToolIndexByDomain([eight!.name]);
+    expect(collapsed).toContain(`${eight!.name} (8 actions)`);
+    expect(collapsed).not.toContain(eight!.actions.join('/'));
+  });
+
   it('skips names that have no domain instead of throwing', () => {
     expect(listToolIndex(['query_devices', 'propose_action_plan', 'not_a_tool']).map((e) => e.name)).toEqual(['query_devices']);
   });
@@ -128,8 +152,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   // (diagnose_connectivity, get_diagnostic_run, get_link_evidence,
   // get_topology) took it to 5.5 KB (5188 bytes) after the DOMAIN_NOTES prose
   // had already been tightened once.
-  it('stays small: the whole index is under 6.5 KB and every note under 400 chars', () => {
-    // Ceiling raised to 6.5 KB (#6755): W01 wired 32 more chat-callable tools
+  it('keeps every note under 400 chars and records the retired whole-index ceiling', () => {
+    // Ceiling raised to 6.5 KB (#6755; raised again to 6.75 KB for W02, below): W01 wired 32 more chat-callable tools
     // (measured 119280 -> 140468 registry bytes, see
     // docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
     // "Full-control W01 (#6755) delta"), which legitimately grows this
@@ -153,27 +177,64 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // ("Tool Catalog W3 delta"). Both fit under the existing ceiling, so the
     // 6.75 KB raise signed off for W3 was not taken; the flag-on prompt is
     // gated too (below).
-    expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
+    // Full-control W02 (#6756): 7 PSA/billing write tools (+343 B) paid for in
+    // part by MAX_INLINE_ACTIONS 8 -> 7 (Todd 2026-10-22, option 2; -245 B):
+    // main 6576 / 6625 -> 6674 default / 6723 flag-on, still over 6656. So the
+    // 6.75 KB raise (6912 B) was taken 2026-10-22 for W02 (Todd, option 1);
+    // the W3 sign-off was re-used. Headroom ~238 B default / ~189 B flag-on;
+    // the manage_billing_catalog rename (D3) makes it 6682 / 6731 (~230 / ~181).
+    // Any further raise needs a prompt-size review, not a bump.
+    // W19 (#10065, closes #10062): this whole-index ceiling is RETIRED. The
+    // chat no longer ships the whole index by default: it ships the always-on
+    // domain index (renderAlwaysOnIndex) plus, on a device/alert page, at most
+    // two per-domain blocks. Prompt size is now gated by the W19 bounds below
+    // (B1 always-on < 2,560 B and invariant under catalog growth, B2 per-domain
+    // block < 2,048 B, B3 worst page turn < 7,040 B). The legacy render is
+    // still what AI_TOOL_INDEX=full ships; it is a kill switch pinned by
+    // equivalence (B5), not a growth path, and no wave may raise a ceiling for
+    // it. INDEX_BUDGET_BYTES stays as the B3 worst-turn limit.
+    expect(INDEX_BUDGET_BYTES).toBe(7040);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
 
-  it('with FLOWS_ENABLED=true the index stays under the ceiling and lists the flow tools', () => {
+  it('with FLOWS_ENABLED=true the index lists the flow tools', () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       const flagOn = renderToolIndexByDomain(listChatSurfaceToolNames());
-      for (const name of ['draft_flow', 'get_flow', 'list_flows', 'validate_flow']) expect(flagOn).toContain(name);
-      expect(Buffer.byteLength(flagOn, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
+      // Tool Catalog W04 (#5219, A11): +4 names (run_flow, list_flow_runs, get_flow_run,
+      // cancel_flow_run) on the Scripts line. Measured against the W19 bounds with
+      // FLOWS_ENABLED=true: always-on 2494 B (unchanged, < 2560), scripts block 363 -> 469 B
+      // (flag off -> on, all eight flow tools; < 2048), largest block security 1268 B,
+      // worst page turn 4423 B (alert page; device page 3999 -> 4105 B) < 7040.
+      for (const name of [
+        'draft_flow', 'get_flow', 'list_flows', 'validate_flow',
+        'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run',
+      ]) expect(flagOn).toContain(name);
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
   it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
-    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows)\b/);
+    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
   });
 });
 
-const INDEX_BUDGET_BYTES = 6.5 * 1024;
+// #8883 W5: +128 B (6656 -> 6784) for the three ticket routing tools on the
+// Tickets line (+112 B: list_ticket_routing_rules, test_ticket_routing_rule,
+// manage_ticket_routing_rules (create/update/reorder/delete)); measured 6714
+// default / 6763 flag-on. Every SDK tool must carry a searchHint, so a new
+// tool cannot stay out of the index, and paying 112 B by rewriting other
+// domains' notes would change unrelated guidance. Flagged for prompt-size
+// review in the PR.
+// #6263 W05 PR B (#6268): +128 B (6784 -> 6912) for `ioc_hunt
+// (list_rule_sets/preview_sweep/list_sweeps/sweep_status/sweep/cancel_sweep/import_iocs)`
+// on the Security line (+97 B); measured 6811 default / 6860 flag-on (6714 /
+// 6763 before). Pre-authorized by Todd 2026-10-24 (Gate B 5); action names and
+// other domains' notes left unchanged.
+// Merge of #6756 W02 (+~7 tools) with main's 6912 B ceiling: measured 6917 default /
+// 6966 flag-on; reconciled to 6.875 KB (7040 B), pre-authorized by Todd 2026-10-24/25.
+const INDEX_BUDGET_BYTES = 6.875 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */
 function isActionToken(text: string, token: string): boolean {
@@ -200,13 +261,12 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
     );
   }
 
-  /** Tool tokens actually mentioned in the rendered index, intersected with
-   *  the registry so action-enum tokens (rendered in parens) are ignored. */
+  /** Tool names the per-domain blocks advertise (W19: the union of blocks is
+   *  what the model can be shown). Parsed per entry, so a tool name without
+   *  an underscore (Wisp `recall`/`remember`) is counted too. */
   function advertisedNames(): Set<string> {
     const names = listChatSurfaceToolNames();
-    const text = renderToolIndexByDomain(names);
-    const tokens = text.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [];
-    return new Set(tokens.filter((t) => registered.has(t)));
+    return new Set(AI_TOOL_DOMAINS.flatMap((d) => blockEntries(renderDomainBlock(d, names))).filter((t) => registered.has(t)));
   }
 
   function assertNoDrift() {
@@ -222,11 +282,8 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
     assertNoDrift();
   });
 
-  it('flags ON (M365 + Google Workspace + AI script authoring + Flows): advertised set matches what buildBreezeSdkTools declares', () => {
-    vi.stubEnv('M365_ENABLED', 'true');
-    vi.stubEnv('GOOGLE_WORKSPACE_ENABLED', 'true');
-    vi.stubEnv('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', 'true');
-    vi.stubEnv('FLOWS_ENABLED', 'true');
+  it('flags ON (M365 + Google Workspace + AI script authoring + Flows + Wisp): advertised set matches what buildBreezeSdkTools declares', () => {
+    stubAllFlagsOn();
     try {
       assertNoDrift();
     } finally {
@@ -236,9 +293,206 @@ describe('the generated index tracks env-gated tool declarations (A-W02 review f
 });
 
 // Preserve the exact static prefix previously assembled inline by buildSystemPrompt.
-it('composes byte-identically to the original production static prompt', () => {
+// W19: `lazy` (default) swaps the whole index for the always-on index; `full`
+// (the kill switch) is the original composition byte for byte (B5).
+describe('composeStaticSystemPrompt', () => {
   const names = listChatSurfaceToolNames();
   // #7582 appended the diagnosis + agent ground-truth block after the tail.
   const original = [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(names), AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
-  expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(original));
+  const lazy = [AI_SYSTEM_PROMPT_BASE, renderAlwaysOnIndex(names), AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
+
+  it('AI_TOOL_INDEX=full composes byte-identically to the original production static prompt (B5)', () => {
+    expect(Buffer.from(composeStaticSystemPrompt(names, 'full'))).toEqual(Buffer.from(original));
+    vi.stubEnv('AI_TOOL_INDEX', 'full');
+    try {
+      expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(original));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('defaults to the lazy composition: base + always-on index + tail + diagnosis', () => {
+    expect(Buffer.from(composeStaticSystemPrompt(names))).toEqual(Buffer.from(lazy));
+    expect(Buffer.from(composeStaticSystemPrompt(names, 'lazy'))).toEqual(Buffer.from(lazy));
+  });
+});
+
+/** Tool names in a per-domain block line: `- **Label**: a (x/y), b, c (9 actions)`. */
+function blockEntries(block: string): string[] {
+  if (!block) return [];
+  const body = block.slice(block.indexOf('**: ') + 4);
+  return body.split(', ').map((entry) => entry.replace(/ \(.*\)$/, ''));
+}
+
+const ALL_FLAGS_ON = {
+  M365_ENABLED: 'true',
+  GOOGLE_WORKSPACE_ENABLED: 'true',
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true',
+  FLOWS_ENABLED: 'true',
+  DELEGANT_BASE_URL: 'https://delegant.example.com',
+  // Wisp tools are declared only when wispEnabled() (all three).
+  IS_HOSTED: 'true',
+  BREEZE_AI_AGENTS_ENABLED: 'true',
+  BREEZE_WISP_ENABLED: 'true',
+} as const;
+
+function stubAllFlagsOn(): void {
+  for (const [k, v] of Object.entries(ALL_FLAGS_ON)) vi.stubEnv(k, v);
+}
+
+/**
+ * The 38 tools full-control W03 (#6757) and W04 (#6758) wired into chat. The
+ * simulated catalog `[...chat, ...FIXTURE_W03_W04]` was the post-wave catalog
+ * while they were registered but undeclared; both waves have landed, so the
+ * fixture is now EMPTY and `simulated` is the real chat catalog — the B1-B3
+ * bounds below are measured on it directly.
+ */
+const W03_W04_WIRED = [
+  // W03 (#6757)
+  'manage_dr_plan', 'manage_hyperv_vm', 'manage_backup_profiles', 'manage_hyperv_checkpoints', 'configure_backup_sla',
+  'configure_vault', 'restore_mssql_database', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'verify_mssql_backup',
+  'trigger_vault_sync', 'restore_hyperv_vm', 'restore_c2c_items', 'trigger_c2c_sync', 'restore_snapshot',
+  'instant_boot_vm', 'execute_dr_plan', 'trigger_backup', 'restore_as_vm',
+  // W04 (#6758)
+  'remediate_sensitive_data', 'manage_peripheral_policy', 'registry_operations', 'manage_software_policy',
+  'manage_scheduled_tasks', 'manage_browser_policy', 'manage_processes', 'remediate_software_violation',
+  'configure_network_baseline', 'acknowledge_network_device', 'assign_security_training', 'create_remote_session',
+  'trigger_agent_restart', 'trigger_agent_upgrade', 'execute_containment', 'request_elevation', 'collect_evidence',
+  'revoke_elevation', 'create_incident',
+] as const;
+const FIXTURE_W03_W04: readonly string[] = [
+];
+
+const ALWAYS_ON_INDEX_BUDGET_BYTES = 2.5 * 1024;
+const DOMAIN_BLOCK_BUDGET_BYTES = 2 * 1024;
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+
+describe('W19 lazy chat tool index (#10065)', () => {
+  const registered = new Set(getAllRegisteredToolNames());
+  const names = listChatSurfaceToolNames();
+  const simulated = [...names, ...FIXTURE_W03_W04];
+  const alwaysOn = renderAlwaysOnIndex(names);
+
+  it('the W03/W04 fixture is empty: all 38 W03/W04 tools are registered and chat-declared (#6757, #6758)', () => {
+    expect(FIXTURE_W03_W04).toHaveLength(0);
+    expect(W03_W04_WIRED).toHaveLength(38);
+    expect(W03_W04_WIRED.filter((n) => !registered.has(n)), 'renamed or removed tool').toEqual([]);
+    expect(W03_W04_WIRED.filter((n) => !names.includes(n)), 'not chat-declared').toEqual([]);
+    expect(listToolIndex(W03_W04_WIRED).map((e) => e.name).sort()).toEqual([...W03_W04_WIRED].sort());
+  });
+
+  // B1 is a ceiling on curated prose, not only on tool growth: a new
+  // DOMAIN_NOTES sentence or vocabulary word counts against it (66 B left at W19).
+  it('B1: the always-on index is under 2.5 KB with flags off and with every flag on', () => {
+    expect(bytes(alwaysOn)).toBeLessThan(ALWAYS_ON_INDEX_BUDGET_BYTES);
+    stubAllFlagsOn();
+    try {
+      expect(bytes(renderAlwaysOnIndex(listChatSurfaceToolNames()))).toBeLessThan(ALWAYS_ON_INDEX_BUDGET_BYTES);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('B1 invariance: the (now empty) fixture changes the always-on index by 0 bytes', () => {
+    expect(renderAlwaysOnIndex(simulated)).toBe(alwaysOn);
+  });
+
+  it('B2: every per-domain block stays under 2 KB with the W03/W04 tools added', () => {
+    for (const domain of AI_TOOL_DOMAINS) {
+      expect(bytes(renderDomainBlock(domain, simulated)), domain).toBeLessThan(DOMAIN_BLOCK_BUDGET_BYTES);
+    }
+  });
+
+  it('B3: no page turn\'s index text reaches the 7,040 B worst-turn bound', () => {
+    for (const page of ['device', 'alert', 'dashboard', 'custom', 'topology'] as const) {
+      const turn = bytes(renderAlwaysOnIndex(simulated)) + bytes(renderPageContextToolBlocks(page, simulated));
+      expect(turn, page).toBeLessThan(INDEX_BUDGET_BYTES);
+    }
+  });
+
+  it('B4: the per-domain blocks are exactly the legacy domain lines, so every chat tool is listed once', () => {
+    const legacyLines = renderToolIndexByDomain(names).split('\n').filter((line) => line.startsWith('- **'));
+    const blocks = AI_TOOL_DOMAINS.map((d) => renderDomainBlock(d, names)).filter((b) => b.length > 0);
+    expect(blocks).toEqual(legacyLines);
+    const listed = blocks.flatMap(blockEntries);
+    expect([...listed].sort()).toEqual([...names].sort());
+  });
+
+  it('B4: the always-on index names no tool beyond its notes, and only declared ones', () => {
+    for (const flagsOn of [false, true]) {
+      if (flagsOn) stubAllFlagsOn();
+      try {
+        const declared = listChatSurfaceToolNames();
+        const text = renderAlwaysOnIndex(declared);
+        const mentioned = new Set((text.match(/\b[a-z][a-z0-9_]*\b/g) ?? []).filter((t) => registered.has(t)));
+        const fromNotes = new Set(Object.values(DOMAIN_NOTES).join(' ').match(/\b[a-z][a-z0-9_]*\b/g) ?? []);
+        expect([...mentioned].filter((t) => !declared.includes(t)), 'undeclared tool named').toEqual([]);
+        expect([...mentioned].filter((t) => !fromNotes.has(t)), 'tool named outside DOMAIN_NOTES').toEqual([]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+    for (const vocab of Object.values(DOMAIN_VOCABULARY)) {
+      const words = vocab.match(/\b[a-z][a-z0-9_]*\b/g) ?? [];
+      expect(words.filter((w) => registered.has(w)), vocab).toEqual([]);
+    }
+  });
+
+  it('lists every present domain once, in spec order, with its vocabulary and no tool list', () => {
+    expect(alwaysOn.startsWith('## Available Tools by Domain\n')).toBe(true);
+    const present = AI_TOOL_DOMAINS.filter((d) => listToolIndex(names).some((e) => e.domain === d));
+    const lines = alwaysOn.split('\n').filter((line) => line.startsWith('- **'));
+    expect(lines).toEqual(present.map((d) => `- **${AI_TOOL_DOMAIN_LABELS[d]}**: ${DOMAIN_VOCABULARY[d]}`));
+    expect(Object.keys(DOMAIN_VOCABULARY).sort()).toEqual([...AI_TOOL_DOMAINS].sort());
+    expect(alwaysOn).toMatch(/ToolSearch/);
+    expect(alwaysOn).toMatch(/select:/);
+  });
+
+  it('keeps CVE vocabulary and the domain notes always-on (#2605)', () => {
+    expect(alwaysOn).toMatch(/CVE/);
+    expect(alwaysOn).toMatch(/vulnerabilit/i);
+    expect(alwaysOn).toContain(DOMAIN_NOTES.patching);
+    expect(alwaysOn).toContain(DOMAIN_NOTES.scripts);
+    // Notes keep the "drop sentences naming absent tools" rule.
+    const restricted = renderAlwaysOnIndex(['manage_policy_feature_link', 'manage_patches']);
+    expect(restricted).toContain('no vulnerabilities');
+    expect(restricted).not.toContain('featurePolicyId');
+    expect(restricted).not.toContain('**Scripts & automation**');
+  });
+
+  it('a per-domain block is the legacy line alone: no heading, no note, empty for an absent domain', () => {
+    const block = renderDomainBlock('patching', names);
+    expect(block.startsWith('- **Patching & software**: ')).toBe(true);
+    expect(block).not.toContain('\n');
+    expect(renderDomainBlock('patching', ['query_devices'])).toBe('');
+    expect(renderDomainBlock('devices', ['system_cleanup'])).toBe('- **Devices**: system_cleanup (list/run/status)');
+  });
+
+  it('the page-context table is closed, at most two domains per page, and pins the chosen rows', () => {
+    expect(PAGE_CONTEXT_TOOL_DOMAINS).toEqual({
+      device: ['devices', 'scripts'],
+      alert: ['monitoring', 'devices'],
+      dashboard: [],
+      custom: [],
+      topology: [],
+    });
+    for (const domains of Object.values(PAGE_CONTEXT_TOOL_DOMAINS)) expect(domains.length).toBeLessThanOrEqual(2);
+    expect(Object.isFrozen(PAGE_CONTEXT_TOOL_DOMAINS)).toBe(true);
+  });
+
+  it('renders a page\'s domain blocks under one heading, and nothing for a page with no domains', () => {
+    const device = renderPageContextToolBlocks('device', names);
+    expect(device).toBe(['### Tools for this page', renderDomainBlock('devices', names), renderDomainBlock('scripts', names)].join('\n'));
+    expect(renderPageContextToolBlocks('dashboard', names)).toBe('');
+    expect(renderPageContextToolBlocks('topology', names)).toBe('');
+    // A page domain with no declared tools is skipped, not rendered empty.
+    expect(renderPageContextToolBlocks('device', ['run_script'])).toBe(['### Tools for this page', renderDomainBlock('scripts', ['run_script'])].join('\n'));
+    expect(renderPageContextToolBlocks('device', ['query_devices'])).toBe('');
+  });
+
+  it.each([
+    [undefined, 'lazy'], ['', 'lazy'], ['lazy', 'lazy'], ['full', 'full'], [' FULL ', 'full'], ['off', 'lazy'],
+  ] as const)('AI_TOOL_INDEX=%j resolves to %s', (value, mode) => {
+    expect(resolveToolIndexMode(value === undefined ? {} : { AI_TOOL_INDEX: value })).toBe(mode);
+  });
 });

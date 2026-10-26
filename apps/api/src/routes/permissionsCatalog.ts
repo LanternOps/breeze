@@ -41,6 +41,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   ai_sessions: 'AI Sessions',
   ai_agents: 'AI Agents',
   ai_models: 'AI Models',
+  ai_workspace: 'AI Sandbox Workspaces',
   client_ai_templates: 'AI for Office Templates',
   approvals: 'Approvals',
   variables: 'Variables',

@@ -114,7 +114,8 @@ describe('CreateTicketPage', () => {
     const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
     const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
     // #7900: the type is always sent explicitly; the form defaults to Incident.
-    expect(body).toEqual({ orgId: 'org-a', subject: 'Printer down', priority: 'normal', ticketType: 'incident' });
+    expect(body).toEqual({ orgId: 'org-a', subject: 'Printer down', ticketType: 'incident' });
+    expect(body).not.toHaveProperty('priority');
     expect(body).not.toHaveProperty('deviceId');
     expect(body).not.toHaveProperty('categoryId');
     expect(body).not.toHaveProperty('description');
@@ -141,6 +142,31 @@ describe('CreateTicketPage', () => {
     const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
     const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
     expect(body.ticketType).toBe('problem');
+  });
+
+  it('sends priority only after the user changes it, and categoryId only when picked', async () => {
+    mockOptionsApi();
+    render(<CreateTicketPage />);
+    await screen.findByTestId('create-ticket-form');
+    await screen.findByRole('option', { name: 'Hardware' });
+
+    fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
+    fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Printer down' } });
+    // The visible default stays Normal even though it is not sent.
+    expect(screen.getByTestId('create-ticket-priority-input')).toHaveValue('normal');
+    fireEvent.change(screen.getByTestId('create-ticket-priority-input'), { target: { value: 'urgent' } });
+    fireEvent.change(screen.getByTestId('create-ticket-category-input'), { target: { value: 'cat-1' } });
+    await waitFor(() => expect(screen.getByTestId('create-ticket-submit')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/tickets' && init?.method === 'POST')).toBe(true);
+    });
+    const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+    const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+    expect(body.priority).toBe('urgent');
+    expect(body.categoryId).toBe('cat-1');
+    expect(body).not.toHaveProperty('assigneeId');
   });
 
   it('loads the device list for the selected organization', async () => {

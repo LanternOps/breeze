@@ -3,6 +3,7 @@ import { Link2, MessageSquare, Save, Send, Users, Webhook } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -496,16 +497,12 @@ export default function CommunicationIntegrations() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">
-          {t("communicationIntegrations.communicationIntegrations")}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "communicationIntegrations.connectChatToolsRouteAlertsBySeverityAnd",
-          )}
-        </p>
-      </div>
+      <IntegrationPanelHeader
+        title={t("communicationIntegrations.communicationIntegrations")}
+        description={t(
+          "communicationIntegrations.connectChatToolsRouteAlertsBySeverityAnd",
+        )}
+      />
 
       {loadError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -552,11 +549,15 @@ export default function CommunicationIntegrations() {
                     {t("communicationIntegrations.workspace")}
                   </p>
                   <p className="text-sm font-medium">
-                    {slackWorkspaceName ? slackWorkspaceName : "Not connected"}
+                    {slackWorkspaceName
+                      ? slackWorkspaceName
+                      : t("communicationIntegrations.notConnected")}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {t("communicationIntegrations.workspaceID", {
-                      id: slackWorkspaceId || "Pending connection",
+                      id:
+                        slackWorkspaceId ||
+                        t("communicationIntegrations.pendingConnection"),
                     })}
                   </p>
                 </div>
@@ -568,12 +569,23 @@ export default function CommunicationIntegrations() {
                     }
                   }}
                   disabled={!slackEnabled}
+                  aria-describedby={
+                    slackEnabled ? undefined : "slack-connect-disabled-reason"
+                  }
                   className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Link2 className="h-4 w-4" />
                   {t("communicationIntegrations.connectWorkspace")}
                 </button>
               </div>
+              {!slackEnabled && (
+                <p
+                  id="slack-connect-disabled-reason"
+                  className="mt-2 text-xs text-muted-foreground"
+                >
+                  {t("communicationIntegrations.turnOnSlackToConnectWorkspace")}
+                </p>
+              )}
               <p className="mt-2 text-xs text-muted-foreground">
                 {t(
                   "communicationIntegrations.oauthRedirectStartsWhenYouConnectASlack",

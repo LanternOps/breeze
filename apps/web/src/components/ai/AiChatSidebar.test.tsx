@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 const permState = vi.hoisted(() => ({ canUseAi: true }));
@@ -24,20 +24,28 @@ vi.mock('./AiChatMessages', () => ({ default: () => null }));
 vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
+// #9840 W4: History renders the shared list; its source is tested in its own
+// file and with the real stores in AiChatSidebar.history.test.tsx.
+vi.mock('./useAiConversationSource', () => ({
+  MIN_SEARCH_CHARS: 2,
+  useAiConversationSource: () => ({ items: [], query: '', setQuery: () => undefined, isLoading: false, isSearching: false, error: null }),
+}));
 
 const noop = vi.fn();
 const baseState = {
   toggle: noop, close: noop, messages: [], isStreaming: false, isLoading: false,
   error: null, pageContext: null, pendingApproval: null, pendingPlan: null,
   activePlan: null, approvalMode: 'manual', isPaused: false, sessionId: null,
-  showHistory: false, sessions: [], searchResults: [], isSearching: false,
+  showHistory: false, sessions: [],
   sendMessage: noop, approveExecution: noop, approvePlan: noop, abortPlan: noop,
   pauseAi: noop, createSession: noop, closeSession: noop, clearError: noop,
   toggleHistory: noop, loadSessions: noop, loadSession: noop,
-  searchConversations: noop, switchSession: noop, interruptResponse: noop,
+  switchSession: noop, interruptResponse: noop,
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
+  // #9840 W3: the Open in Breeze AI control reads both.
+  topologySiteId: null, wisp: null,
 };
 
 // #1419: the off-canvas shell stays mounted (transition:persist); collapsed it
@@ -135,5 +143,109 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
       render(<AiChatSidebar />);
       expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
     });
+  });
+});
+
+// #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),
+// so the handler must not compare against lowercase "a" only.
+describe('AiChatSidebar keyboard shortcut (#9613)', () => {
+  function setup() {
+    permState.canUseAi = true;
+    const toggle = vi.fn();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, toggle, isOpen: false });
+    render(<AiChatSidebar />);
+    return toggle;
+  }
+
+  it.each([
+    ['Ctrl+Shift+A (key "A")', { key: 'A', ctrlKey: true, shiftKey: true }],
+    ['Cmd+Shift+A (key "A")', { key: 'A', metaKey: true, shiftKey: true }],
+    ['Ctrl+Shift+a (key "a")', { key: 'a', ctrlKey: true, shiftKey: true }],
+  ])('toggles on %s', (_label, init) => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { ...init, cancelable: true }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not toggle without Shift or without a modifier', () => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
+    expect(toggle).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
+// suites cover them; this pins where the sidebar mounts them. W05 (#10136)
+// removed the "Turn on Wisp" toggle: the grant decides the voice
+// (AiChatSidebar.wispHome.test.tsx covers the lookup).
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
+    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
+  ),
+}));
+vi.mock('./WispThreadAttachments', () => ({ default: () => <div data-testid="wisp-attachments-stub" /> }));
+
+describe('AiChatSidebar Wisp mode (W04)', () => {
+  const wisp = {
+    grantId: 'g-1', threadId: 't-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active',
+    expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
+  };
+
+  it('without Wisp mode the header says Breeze AI and offers no Wisp toggle', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-toggle')).toBeNull();
+    expect(screen.queryByText('Turn on Wisp')).toBeNull();
+  });
+
+  it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.getByText('Wisp')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
+  });
+
+  it('shows the thread attachments behind a disclosure', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-attachments-stub')).toBeNull();
+    const toggle = screen.getByTestId('wisp-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('wisp-attachments-stub')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+
+// #9840 W5: the E2E (e2e-tests/tests/ai-move-conversation.spec.ts) drives the
+// header by data-testid only. Each id must sit on the control it names.
+describe('AiChatSidebar header test ids (#9840 W5)', () => {
+  it('History, New and Close carry their ids and their own handlers', () => {
+    const toggleHistory = vi.fn();
+    const close = vi.fn();
+    const closeSession = vi.fn(async () => undefined);
+    vi.mocked(useAiStore).mockReturnValue({
+      ...baseState, isOpen: true, sessionId: 's-1', toggleHistory, close, closeSession,
+    });
+    render(<AiChatSidebar />);
+    fireEvent.click(screen.getByTestId('ai-chat-history-toggle'));
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('ai-chat-close'));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('New is absent without a bound session; History and Close are always there', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-history-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-new-conversation')).toBeNull();
   });
 });

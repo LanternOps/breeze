@@ -302,6 +302,9 @@
     "workspace": "Workspace",
     "workspaceID": "Workspace ID: {{id}}",
     "connectWorkspace": "Connect workspace ",
+    "notConnected": "Not connected",
+    "pendingConnection": "Pending connection",
+    "turnOnSlackToConnectWorkspace": "Turn on Slack notifications to connect a workspace.",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth redirect starts when you connect a Slack workspace. ",
     "defaultChannel": "Default channel",
     "microsoftTeams": "Microsoft Teams",
@@ -336,10 +339,14 @@
   "connectionHealthPanel": {
     "title": "Connection health",
     "allHealthy": "All connections are healthy",
+    "allHealthyDetail": "Connected integrations are checked automatically. Problems show here and beside the integration in the list.",
     "loadError": "Could not load connection health.",
     "retry": "Retry",
     "since": "since {{time}}",
     "fix": "Fix",
+    "remedy": {
+      "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze."
+    },
     "truncated": "Showing the first {{count}}",
     "recentlyResolved": "Recently resolved ({{count}})",
     "resolution": {
@@ -373,11 +380,11 @@
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Connection verified and saved.",
     "googleWorkspace": "Google Workspace",
-    "connectAWorkspaceDomainSoTheAIAssistant": "Connect a Workspace domain so the AI assistant can manage users and groups for this organization. ",
+    "connectAWorkspaceDomainSoTheAIAssistant": "Connect a Workspace domain so Breeze AI can manage users and groups for this organization. ",
     "googleWorkspaceIntegrationIsNotEnabledOnThis": "Google Workspace integration is not enabled on this instance. ",
     "anAdministratorEnablesItBySetting": "An administrator enables it by setting",
     "onTheAPIServerThenReloadingThisPage": "on the API server, then reloading this page. ",
-    "connectAWorkspaceDomainSoTheAIAssistant2": "Connect a Workspace domain so the AI assistant can look up users, manage groups, reset passwords, run guided offboarding, and more for this organization. ",
+    "connectAWorkspaceDomainSoTheAIAssistant2": "Connect a Workspace domain so Breeze AI can look up users, manage groups, reset passwords, run guided offboarding, and more for this organization. ",
     "connection": "Connection",
     "pasteTheServiceAccountJSONKeyAndThe": "Paste the service-account JSON key and the super-admin it impersonates. Breeze makes a live Directory API call to verify domain-wide delegation before saving. ",
     "howToGetTheServiceAccountJSONAnd": "How to get the service-account JSON and authorize delegation",
@@ -526,6 +533,14 @@
     "pageOf": "Page {{current}} of {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "Partner-wide",
+      "partnerWideDetail": "Applies to every organization you manage."
+    },
+    "nav": {
+      "select": "Choose an integration",
+      "openProblems": "Open problems: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configuring integrations for",
       "thisOrganization": "this organization",
@@ -544,14 +559,14 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Pricing",
-    "tdSYNNEXPriceFile": "TD SYNNEX Price File",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "payments": "Payments",
     "integrations": "Integrations",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Manage all connections and keep automation workflows healthy. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Accounting integrations are available to partner accounts only. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "The UniFi network integration is available to partner accounts only. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Connect Breeze to the tools your MSP runs on, and see which connections need attention.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Distributor integrations (Pax8 and TD SYNNEX) are available to partner accounts only.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Accounting integrations are available to partner accounts only.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "The UniFi network integration is available to partner accounts only.",
     "psa": "PSA",
     "viewNameDocumentation": "View {{name}} documentation",
     "backup": "Backup",
@@ -637,7 +652,7 @@
   "m365Integration": {
     "connectionVerifiedAndSaved": "Connection verified and saved.",
     "microsoft365": "Microsoft 365",
-    "connectAnEntraAzureADAppRegistrationSo": "Connect an Entra (Azure AD) app registration so the AI assistant can manage users and groups for this organization's tenant. ",
+    "connectAnEntraAzureADAppRegistrationSo": "Connect an Entra (Azure AD) app registration so Breeze AI can manage users and groups for this organization's tenant. ",
     "microsoft365IntegrationIsNotEnabledOnThis": "Legacy direct connection is not enabled on this instance. ",
     "anAdministratorEnablesItBySetting": "An administrator enables it by setting",
     "onTheAPIServerThenReloadingThisPage": "on the API server, then reloading this page. ",
@@ -692,11 +707,11 @@
     "legacyBadge": "Legacy",
     "precedenceNote": "This legacy direct connection takes precedence over the consent-based connection for this tenant.",
     "disconnectConfirm": "Disconnect the legacy direct connection? Breeze deletes the stored app registration credentials. The app registration itself stays in Microsoft Entra.",
-    "legacyHeading": "Microsoft 365: legacy app registration (AI assistant only)",
-    "legacyHeadingForOrg": "Microsoft 365: legacy app registration (AI assistant only) for {{orgName}}",
-    "legacyScopeSummary": "An Entra app registration plus client secret for this organization's tenant. It powers only the AI assistant actions listed below.",
+    "legacyHeading": "Microsoft 365: legacy app registration (Breeze AI only)",
+    "legacyHeadingForOrg": "Microsoft 365: legacy app registration (Breeze AI only) for {{orgName}}",
+    "legacyScopeSummary": "An Entra app registration plus client secret for this organization's tenant. It powers only the Breeze AI actions listed below.",
     "powersHeading": "Powers",
-    "powersList": "Six AI assistant actions: user lookup, sign-in activity, list groups, group members, disable user, reset password.",
+    "powersList": "Six Breeze AI actions: user lookup, sign-in activity, list groups, group members, disable user, reset password.",
     "doesNotPowerHeading": "Does not power",
     "doesNotPowerSync": "Tenant sync (users, licenses, sign-ins, Conditional Access, Secure Score)",
     "doesNotPowerQueryTools": "AI and MCP tools",
@@ -706,7 +721,10 @@
     "allApplications": "All applications",
     "searchAllApplicationsFirst2": " (not Owned applications) for an existing Breeze app in this tenant. ",
     "tenantIdGuidPlaceholder": "Tenant ID (GUID), e.g. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain."
+    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.",
+    "savingRequiresMfa": " Saving requires MFA verification.",
+    "clientSecretPlaceholder": "app client secret",
+    "clientSecretStoredPlaceholder": "•••••••••• (stored, encrypted)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

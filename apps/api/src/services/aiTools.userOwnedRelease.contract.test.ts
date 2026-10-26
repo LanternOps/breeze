@@ -111,14 +111,20 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `apply_cis_remediation:` this file's own allowlist entry covers. Both
   // values (and the omitted/default case) reach the identical unguarded
   // `approvedBy`/`requestedBy` insert, so all three keys are required.
-  ['services/aiToolsCisBenchmark.ts:520', ['', 'apply', 'rollback']],
-  ['services/aiToolsCisBenchmark.ts:523', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:508', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:511', ['', 'apply', 'rollback']],
   // aiToolsEdr.ts (#8167 W03): edr_endpoint_action has ONE write site — the
   // `requestedBy: auth.user.id` handed to dispatchEdrAction, which writes
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
   // guard: the action flows straight into the dispatch. The model is offered
   // isolate/unisolate/scan, the whole input_schema enum (proven below).
   ['services/aiToolsEdr.ts:239', ['isolate', 'unisolate', 'scan']],
+  // aiToolsAnomalies.ts (W07, #6777): manage_device_anomalies has ONE write site, the
+  // `actorUserId` handed to applyAnomalyStatus (-> ml_feedback_events.actor_user_id, a users FK).
+  // It sits after the `action === 'list'` early return rather than inside an `if (action === …)`
+  // guard, and `STATUS_FOR_ACTION` maps exactly the three write actions of the input_schema enum
+  // (dismiss -> dismissed, resolve -> resolved, promote -> promoted).
+  ['services/aiToolsAnomalies.ts:98', ['dismiss', 'resolve', 'promote']],
 ]);
 
 /**
@@ -153,8 +159,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:458', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:566', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:477', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:618', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must
@@ -163,29 +169,29 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:606', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsBrowser.ts:611', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
   ['services/aiToolsIntegrations.ts:340', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:874', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1870', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:877', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1873', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:976', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:979', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:631', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:720', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:666', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:763', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.
-  ['services/aiToolsUserRisk.ts:341', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
+  ['services/aiToolsUserRisk.ts:354', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
 ]);
 
 function usersFkPropertyNames(): ReadonlySet<string> {
@@ -441,12 +447,13 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
    * qualifying site satisfies this contract either way: registered in
    * USER_OWNED_RELEASE_ACTIONS (checked for its approverReleaseMismatch
    * guard below, same as tier 3), OR refused for an agent principal before
-   * the write (`isAiAgentPrincipal(auth)` / `isAgentPrincipalCaller(auth)`
+   * the write (`isAiAgentPrincipal(auth)` / `isAutomationPrincipal(auth)`
+   * — agent or flow, #5219 — / `isAgentPrincipalCaller(auth)`
    * followed by a `return`, mirroring aiToolsFleet.ts's
    * `isAgentPrincipalCaller` -> `refuseFleetAgentPrincipal` pair, #6206).
    */
   function hasAgentPrincipalRefusal(branch: string): boolean {
-    const m = /isA(?:gentPrincipalCaller|iAgentPrincipal)\(\s*auth(?:\.principal)?\s*\)/.exec(branch);
+    const m = /is(?:AgentPrincipalCaller|AiAgentPrincipal|AutomationPrincipal)\(\s*auth(?:\.principal)?\s*\)/.exec(branch);
     if (!m) return false;
     return /return\b/.test(branch.slice(m.index));
   }

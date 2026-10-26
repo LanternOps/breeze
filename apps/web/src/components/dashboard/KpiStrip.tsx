@@ -4,10 +4,15 @@ import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { useTranslation } from 'react-i18next';
 import { formatNumber } from '@/lib/i18n/format';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
+import { DashboardMetric } from './DashboardMetric';
+import { patchDevicePercent } from './PatchComplianceCard';
+import type { MetricKey } from './dashboardLinks';
 import type { AlertsSummary, DeviceStats, PatchCompliance, TicketStats } from './types';
 
 interface Tile {
   key: string;
+  /** Registry entry that decides whether (and where) the whole tile links. */
+  metric: MetricKey;
   testId: string;
   label: string;
   value: string;
@@ -15,7 +20,8 @@ interface Tile {
   subTone?: 'muted' | 'success' | 'warning' | 'destructive';
   icon: typeof Monitor;
   iconTone: string;
-  href?: string;
+  /** False when the backing summary is unavailable: render as plain text. */
+  linked?: boolean;
 }
 
 const GRID_BY_COUNT: Record<number, string> = {
@@ -115,15 +121,16 @@ export default function KpiStrip({
   const tiles: Tile[] = [
     {
       key: 'total-devices',
+      metric: 'kpi.totalDevices',
       testId: 'dashboard-total-devices-card',
       label: t('dashboard.stats.totalDevices'),
       value: formatNumber(stats.total),
       icon: Monitor,
       iconTone: 'text-muted-foreground',
-      href: '/devices',
     },
     {
       key: 'online',
+      metric: 'kpi.online',
       testId: 'dashboard-online-card',
       label: t('states.online'),
       value: formatNumber(stats.online),
@@ -133,10 +140,10 @@ export default function KpiStrip({
       subTone: onlinePct >= 80 ? 'success' : 'muted',
       icon: CheckCircle,
       iconTone: stats.online > 0 ? 'text-success' : 'text-muted-foreground',
-      href: '/devices?status=online',
     },
     {
       key: 'critical',
+      metric: 'kpi.critical',
       testId: 'dashboard-critical-card',
       label: t('dashboard.stats.critical'),
       value: criticalCount === null ? '—' : formatNumber(criticalCount),
@@ -144,10 +151,11 @@ export default function KpiStrip({
       subTone: 'muted',
       icon: XCircle,
       iconTone: criticalCount !== null && criticalCount > 0 ? 'text-destructive' : 'text-muted-foreground',
-      href: alerts.unavailable ? undefined : '/alerts',
+      linked: !alerts.unavailable,
     },
     {
       key: 'warnings',
+      metric: 'kpi.warnings',
       testId: 'dashboard-warnings-card',
       label: t('dashboard.stats.warnings'),
       value: warningCount === null ? '—' : formatNumber(warningCount),
@@ -155,7 +163,7 @@ export default function KpiStrip({
       subTone: 'muted',
       icon: AlertTriangle,
       iconTone: warningCount !== null && warningCount > 0 ? 'text-warning-strong' : 'text-muted-foreground',
-      href: alerts.unavailable ? undefined : '/alerts',
+      linked: !alerts.unavailable,
     },
   ];
 
@@ -165,6 +173,7 @@ export default function KpiStrip({
   if (tickets.data) {
     tiles.push({
       key: 'tickets',
+      metric: 'kpi.tickets',
       testId: 'dashboard-tickets-card',
       label: t('dashboard.stats.openTickets'),
       value: formatNumber(tickets.data.open),
@@ -175,11 +184,11 @@ export default function KpiStrip({
       subTone: 'muted',
       icon: Ticket,
       iconTone: 'text-muted-foreground',
-      href: '/tickets',
     });
   } else if (tickets.error && !tickets.unavailable) {
     tiles.push({
       key: 'tickets',
+      metric: 'kpi.tickets',
       testId: 'dashboard-tickets-card',
       label: t('dashboard.stats.openTickets'),
       value: '—',
@@ -187,24 +196,31 @@ export default function KpiStrip({
       subTone: 'muted',
       icon: Ticket,
       iconTone: 'text-muted-foreground',
-      href: '/tickets',
     });
   }
 
   if (patch.data) {
-    const pct = Math.round(patch.data.compliancePercent);
+    // The device % (#9791 C, Decision 4), the same figure /patches shows. An
+    // empty fleet has no percentage: "—" plus the card's empty copy.
+    const hasDevices = patch.data.totalDevices > 0;
+    const pct = patchDevicePercent(patch.data);
     tiles.push({
       key: 'patch',
+      metric: 'kpi.patchCompliance',
       testId: 'dashboard-patch-card',
       label: t('dashboard.stats.patchCompliance'),
-      value: `${formatNumber(pct)}%`,
+      value: hasDevices ? `${formatNumber(pct)}%` : '—',
+      sub: hasDevices ? undefined : t('dashboard.patch.empty'),
+      subTone: 'muted',
       icon: ShieldCheck,
-      iconTone: pct >= 90 ? 'text-success' : pct >= 70 ? 'text-warning-strong' : 'text-destructive',
-      href: '/patches',
+      iconTone: !hasDevices
+        ? 'text-muted-foreground'
+        : pct >= 90 ? 'text-success' : pct >= 70 ? 'text-warning-strong' : 'text-destructive',
     });
   } else if (patch.error && !patch.unavailable) {
     tiles.push({
       key: 'patch',
+      metric: 'kpi.patchCompliance',
       testId: 'dashboard-patch-card',
       label: t('dashboard.stats.patchCompliance'),
       value: '—',
@@ -212,7 +228,6 @@ export default function KpiStrip({
       subTone: 'muted',
       icon: ShieldCheck,
       iconTone: 'text-muted-foreground',
-      href: '/patches',
     });
   }
 
@@ -222,11 +237,13 @@ export default function KpiStrip({
       data-testid="dashboard-stats"
     >
       {tiles.map((tile) => (
-        <a
+        <DashboardMetric
           key={tile.key}
-          href={tile.href}
-          data-testid={tile.testId}
-          className="group rounded-lg border bg-card px-4 py-3 transition-colors hover:border-primary/40 hover:bg-muted/30"
+          metric={tile.metric}
+          data={{ devices: stats }}
+          linked={tile.linked}
+          testId={tile.testId}
+          className="group block rounded-lg border bg-card px-4 py-3 no-underline transition-colors hover:border-primary/40 hover:bg-muted/30"
         >
           <div className="flex items-center justify-between gap-2">
             <span className="truncate text-xs font-medium text-muted-foreground">{tile.label}</span>
@@ -248,7 +265,7 @@ export default function KpiStrip({
               </span>
             )}
           </div>
-        </a>
+        </DashboardMetric>
       ))}
     </div>
   );

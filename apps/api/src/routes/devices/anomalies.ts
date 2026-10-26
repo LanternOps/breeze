@@ -23,19 +23,19 @@ export const anomaliesRoutes = new Hono();
 
 anomaliesRoutes.use('*', authMiddleware);
 
-const anomaliesQuerySchema = z.object({
+export const anomaliesQuerySchema = z.object({
   // `cleared` = closed by episode auto-resolve (metric anomaly episodes W01).
   // PATCH below deliberately still refuses it: a human never sets `cleared`.
   status: z.enum([...METRIC_ANOMALY_STATUSES, 'all']).optional().default('open'),
   limit: z.coerce.number().int().min(1).max(100).optional().default(25),
 });
 
-const anomalyStatusSchema = z.object({
+export const anomalyStatusSchema = z.object({
   status: z.enum(['dismissed', 'promoted', 'resolved']),
   note: z.string().max(500).optional(),
 });
 
-function serializeAnomaly(row: typeof metricAnomalies.$inferSelect) {
+export function serializeAnomaly(row: typeof metricAnomalies.$inferSelect) {
   return {
     id: row.id,
     orgId: row.orgId,
@@ -65,6 +65,135 @@ function serializeAnomaly(row: typeof metricAnomalies.$inferSelect) {
   };
 }
 
+/**
+ * Anomalies on one device. The caller has already passed the device org + site
+ * gate. Shared by the REST route and the `manage_device_anomalies` AI tool
+ * (full-control W07, #6777).
+ */
+export async function queryDeviceAnomalies(
+  orgId: string,
+  deviceId: string,
+  query: z.infer<typeof anomaliesQuerySchema>,
+) {
+  const conditions = [
+    eq(metricAnomalies.orgId, orgId),
+    eq(metricAnomalies.deviceId, deviceId),
+  ];
+  if (query.status !== 'all') {
+    conditions.push(eq(metricAnomalies.status, query.status));
+  }
+
+  const rows = await db
+    .select()
+    .from(metricAnomalies)
+    .where(and(...conditions))
+    .orderBy(desc(metricAnomalies.detectedAt))
+    .limit(query.limit);
+
+  return rows.map(serializeAnomaly);
+}
+
+export type AnomalyStatusOutcome =
+  | { status: 'not_found' }
+  | { status: 'disabled' }
+  | { status: 'ok'; data: ReturnType<typeof serializeAnomaly> };
+
+/**
+ * Set an anomaly's status; the caller has already passed the device org + site
+ * gate. `promoted` raises an alert and publishes `alert.triggered`, so it is
+ * the one status that reaches notification channels.
+ */
+export async function applyAnomalyStatus(options: {
+  orgId: string;
+  deviceId: string;
+  anomalyId: string;
+  actorUserId: string;
+  input: z.infer<typeof anomalyStatusSchema>;
+}): Promise<AnomalyStatusOutcome> {
+  const { orgId, deviceId, anomalyId, actorUserId, input } = options;
+
+  if (input.status === 'promoted') {
+    const result = await promoteMetricAnomalyToAlert({
+      orgId,
+      deviceId,
+      anomalyId,
+      actorUserId,
+      requireCreateAlertsFlag: false,
+    });
+
+    if (result.status === 'not_found') return { status: 'not_found' };
+    if (result.status === 'disabled') return { status: 'disabled' };
+
+    await emitAnomalyFeedback({
+      orgId: result.anomaly.orgId,
+      anomalyId: result.anomaly.id,
+      eventType: 'anomaly.promoted',
+      dedupeKey: result.alertId ? `promoted:alert:${result.alertId}` : 'promoted',
+      outcome: 'promoted',
+      actorUserId,
+      occurredAt: result.anomaly.updatedAt,
+      metadata: {
+        route: 'devices.anomalies.status',
+        metricName: result.anomaly.metricName,
+        anomalyType: result.anomaly.anomalyType,
+        linkedAlertId: result.alertId,
+        createdAlert: result.created,
+        note: input.note,
+      },
+    });
+
+    return { status: 'ok', data: serializeAnomaly(result.anomaly) };
+  }
+
+  const now = new Date();
+  const [updated] = await db
+    .update(metricAnomalies)
+    .set({
+      status: input.status,
+      resolvedAt: input.status === 'resolved' ? now : null,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(metricAnomalies.id, anomalyId),
+      eq(metricAnomalies.orgId, orgId),
+      eq(metricAnomalies.deviceId, deviceId),
+      ne(metricAnomalies.status, input.status),
+    ))
+    .returning();
+
+  if (!updated) {
+    const [existing] = await db
+      .select()
+      .from(metricAnomalies)
+      .where(and(
+        eq(metricAnomalies.id, anomalyId),
+        eq(metricAnomalies.orgId, orgId),
+        eq(metricAnomalies.deviceId, deviceId),
+      ))
+      .limit(1);
+    if (!existing) return { status: 'not_found' };
+    return { status: 'ok', data: serializeAnomaly(existing) };
+  }
+
+  await emitAnomalyFeedback({
+    orgId: updated.orgId,
+    anomalyId: updated.id,
+    eventType: `anomaly.${input.status}`,
+    dedupeKey: `status:${input.status}`,
+    outcome: input.status,
+    actorUserId,
+    occurredAt: updated.updatedAt,
+    metadata: {
+      route: 'devices.anomalies.status',
+      metricName: updated.metricName,
+      anomalyType: updated.anomalyType,
+      note: input.note,
+    },
+  });
+
+  return { status: 'ok', data: serializeAnomaly(updated) };
+}
+
 anomaliesRoutes.get(
   '/:id/anomalies',
   requireScope('organization', 'partner', 'system'),
@@ -83,22 +212,9 @@ anomaliesRoutes.get(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const conditions = [
-      eq(metricAnomalies.orgId, device.orgId),
-      eq(metricAnomalies.deviceId, deviceId),
-    ];
-    if (query.status !== 'all') {
-      conditions.push(eq(metricAnomalies.status, query.status));
-    }
+    const data = await queryDeviceAnomalies(device.orgId, deviceId, query);
 
-    const rows = await db
-      .select()
-      .from(metricAnomalies)
-      .where(and(...conditions))
-      .orderBy(desc(metricAnomalies.detectedAt))
-      .limit(query.limit);
-
-    return c.json({ data: rows.map(serializeAnomaly) });
+    return c.json({ data });
   }
 );
 
@@ -121,92 +237,20 @@ anomaliesRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    if (input.status === 'promoted') {
-      const result = await promoteMetricAnomalyToAlert({
-        orgId: device.orgId,
-        deviceId,
-        anomalyId,
-        actorUserId: auth.user.id,
-        requireCreateAlertsFlag: false,
-      });
-
-      if (result.status === 'not_found') {
-        return c.json({ error: 'Anomaly not found' }, 404);
-      }
-      if (result.status === 'disabled') {
-        return c.json({ error: 'Anomaly alert promotion is disabled' }, 409);
-      }
-
-      await emitAnomalyFeedback({
-        orgId: result.anomaly.orgId,
-        anomalyId: result.anomaly.id,
-        eventType: 'anomaly.promoted',
-        dedupeKey: result.alertId ? `promoted:alert:${result.alertId}` : 'promoted',
-        outcome: 'promoted',
-        actorUserId: auth.user.id,
-        occurredAt: result.anomaly.updatedAt,
-        metadata: {
-          route: 'devices.anomalies.status',
-          metricName: result.anomaly.metricName,
-          anomalyType: result.anomaly.anomalyType,
-          linkedAlertId: result.alertId,
-          createdAlert: result.created,
-          note: input.note,
-        },
-      });
-
-      return c.json({ data: serializeAnomaly(result.anomaly) });
-    }
-
-    const now = new Date();
-    const [updated] = await db
-      .update(metricAnomalies)
-      .set({
-        status: input.status,
-        resolvedAt: input.status === 'resolved' ? now : null,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(metricAnomalies.id, anomalyId),
-        eq(metricAnomalies.orgId, device.orgId),
-        eq(metricAnomalies.deviceId, deviceId),
-        ne(metricAnomalies.status, input.status),
-      ))
-      .returning();
-
-    if (!updated) {
-      const [existing] = await db
-        .select()
-        .from(metricAnomalies)
-        .where(and(
-          eq(metricAnomalies.id, anomalyId),
-          eq(metricAnomalies.orgId, device.orgId),
-          eq(metricAnomalies.deviceId, deviceId),
-        ))
-        .limit(1);
-      if (!existing) {
-        return c.json({ error: 'Anomaly not found' }, 404);
-      }
-      return c.json({ data: serializeAnomaly(existing) });
-    }
-
-    await emitAnomalyFeedback({
-      orgId: updated.orgId,
-      anomalyId: updated.id,
-      eventType: `anomaly.${input.status}`,
-      dedupeKey: `status:${input.status}`,
-      outcome: input.status,
+    const outcome = await applyAnomalyStatus({
+      orgId: device.orgId,
+      deviceId,
+      anomalyId,
       actorUserId: auth.user.id,
-      occurredAt: updated.updatedAt,
-      metadata: {
-        route: 'devices.anomalies.status',
-        metricName: updated.metricName,
-        anomalyType: updated.anomalyType,
-        note: input.note,
-      },
+      input,
     });
-
-    return c.json({ data: serializeAnomaly(updated) });
+    if (outcome.status === 'not_found') {
+      return c.json({ error: 'Anomaly not found' }, 404);
+    }
+    if (outcome.status === 'disabled') {
+      return c.json({ error: 'Anomaly alert promotion is disabled' }, 409);
+    }
+    return c.json({ data: outcome.data });
   }
 );
 

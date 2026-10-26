@@ -95,6 +95,40 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
   });
 
+  it('formats file size and modified time in the file table instead of raw bytes / ISO strings (#9626)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots/snap-1/browse?dir=%2FDocuments') {
+        return makeJsonResponse({
+          data: [{ name: 'big.bin', path: '/Documents/big.bin', type: 'file', sizeBytes: 4823117, modifiedAt: '2026-10-21T01:12:44.000Z' }],
+          nextCursor: null,
+        });
+      }
+      return base(input, init);
+    });
+    render(<SnapshotBrowser />);
+    fireEvent.click(await screen.findByText('Documents'));
+    const row = (await screen.findByText('big.bin')).closest('tr')!;
+    expect(row.textContent).toContain('4.6 MB');
+    expect(row.textContent).not.toContain('4823117 B');
+    expect(row.textContent).not.toContain('2026-10-21T01:12:44.000Z');
+  });
+
+  it('shows integrity status in the snapshot picker and the details card (#9626)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        const res = await base(input, init);
+        const payload = await res.json();
+        return makeJsonResponse({ data: payload.data.map((row: object) => ({ ...row, integrityStatus: 'unattested' })) });
+      }
+      return base(input, init);
+    });
+    render(<SnapshotBrowser />);
+    expect(await screen.findByRole('option', { name: /Nightly Snapshot.*Not verified/ })).toBeTruthy();
+    expect((await screen.findByTestId('snapshot-integrity-badge')).textContent).toBe('Not verified');
+  });
+
   it('loads only the root level up front and fetches a directory when it is selected (#8230)', async () => {
     render(<SnapshotBrowser />);
 
@@ -207,6 +241,62 @@ describe('SnapshotBrowser', () => {
     expect(href).toContain('snapshot=snap-1');
     expect(href).toContain('paths=');
     expect(decodeURIComponent(href)).toContain('/report.txt');
+  });
+
+  describe('folder selection (#9628)', () => {
+    const arrangeFolderTree = (fileCount: number) => {
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+        if (url === '/backup/snapshots' && method === 'GET') {
+          return makeJsonResponse({
+            data: [{ id: 'snap-1', label: 'Nightly Snapshot', createdAt: '2026-03-31T00:00:00Z', sizeBytes: 1, fileCount: 5 }],
+          });
+        }
+        if (url === '/backup/snapshots/snap-1/browse' && method === 'GET') {
+          return makeJsonResponse({
+            data: [
+              { name: 'Finance', path: '/Finance', type: 'directory', fileCount },
+              { name: 'top.txt', path: '/top.txt', type: 'file', sizeBytes: 1 },
+            ],
+          });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+    };
+
+    const settle = async () => {
+      await screen.findByText('top.txt');
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+
+    it('lists subfolders with a checkbox and file count, and carries a checked folder into the restore link', async () => {
+      arrangeFolderTree(7);
+      render(<SnapshotBrowser />);
+      await settle();
+
+      expect(screen.getByText('7 files')).toBeTruthy();
+      fireEvent.click(screen.getByLabelText('Select folder Finance'));
+
+      const href = screen.getByTestId('snapshot-browser-restore-link').getAttribute('href') ?? '';
+      expect(decodeURIComponent(href)).toContain('/Finance');
+      expect((screen.getByLabelText('Select folder Finance') as HTMLInputElement).checked).toBe(true);
+    });
+
+    it('asks before selecting a folder over 1,000 files and honours a refusal', async () => {
+      arrangeFolderTree(2500);
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      render(<SnapshotBrowser />);
+      await settle();
+
+      fireEvent.click(screen.getByLabelText('Select folder Finance'));
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect((screen.getByLabelText('Select folder Finance') as HTMLInputElement).checked).toBe(false);
+      confirmSpy.mockRestore();
+    });
+
   });
 
   it('applies legal hold for the selected snapshot', async () => {

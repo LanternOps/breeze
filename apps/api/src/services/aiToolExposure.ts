@@ -15,6 +15,11 @@
 export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, string>([
   // Empty at W01 (spec 2026-09-23 W01-D4) until the AI Operator plan approval.
   ['operator_plan', 'Plan-approval carrier minted only by the AI Operator coordinator under the task requester; releasing it executes nothing but marks the approved plan, so it must never be declared to chat, Helper or agents (Recipe Library spec 6.4).'],
+  // Wisp W03 (spec §8.3, §14 — Todd's sign-off for these two entries).
+  ['confirm_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
+  ['retract_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
+  // Wisp W07 (spec §7.5 — the sign-off for this entry).
+  ['wisp_specialist_request', 'Approval carrier minted only by the Wisp coordinator under an assessment run; releasing it admits one specialist under the approver\'s authority, so it is never declared to chat, Helper or agents (Wisp spec §7.5).'],
 ]);
 
 /**
@@ -42,16 +47,33 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // Tool Catalog W03 (#5218, Decision 6): an operator agent authoring flows
   // needs the managed_by_agent_id story first, not a side door.
   'draft_flow',
+  // W04 (#5219): starting or cancelling a flow run is a human decision (run_flow
+  // is Tier 3 chat-only; a flow must not be started by an agent before W05).
+  'run_flow',
+  'cancel_flow_run',
   // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.
   'send_endpoint_message',
+  // Full-control W07 (#6777, quorum QW3): acknowledging / resolving a correlation GROUP spans devices,
+  // and a supervised release rebuilds the approver's auth, which drops the originating run's exact-device
+  // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
+  // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
+  'manage_alert_correlations',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one
   // click (the §11 four-eyes bypass). The COORDINATOR raises it, under the
   // task's human requester.
   'operator_plan',
+  // #6263 W05 Gate B 10 (#6268): fleet IOC sweeps and IOC rule imports are
+  // started from a human chat or MCP session; no operator agent mints them.
+  'ioc_hunt',
+  // Wisp W03 (spec §8.3): a person confirms or retracts memory; Wisp never does.
+  // Also in HUMAN_ONLY_TOOLS; listed here so the ai_agent principal is denied
+  // above any allowlist and assertWithinCeiling refuses them for every grant.
+  'confirm_memory',
+  'retract_memory',
   // Diagnostic read grants are bound to a human session or an MCP credential
   // (services/diagnosticAccess/grants.ts beneficiaryOf); an operator agent can
   // never request, hold, use or revoke one.
@@ -77,6 +99,25 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // `ai_agents:read` holder. See the LANDMINE note at their TOOL_PERMISSIONS
   // entries, and aiGuardrails.workspaceToolSurface.contract.test.ts.
   'workspace_launch_analysis',
+  // Wisp W07 (spec §7.5 — the sign-off for this entry): a human chat turn under
+  // a grant hands work to a specialist; an agent never does. Wisp's own
+  // assessment requests specialists through its `request_specialist` outcome
+  // tool, which the deterministic coordinator admits after the run — so a
+  // specialist can never launch a specialist (depth one).
+  'launch_specialist',
+]);
+
+/**
+ * Wisp W07 — approval CARRIERS the Wisp coordinator mints under an assessment
+ * run's own `ai_agent` principal (plan Task 4). `checkAgentGuardrails`
+ * accepts these from a device-less run without an allowlist entry — and ONLY
+ * these: a carrier executes nothing org-wide by itself; its release re-runs
+ * every coordinator gate under the APPROVER's rebuilt authority. Every entry
+ * MUST also be in HUMAN_ONLY_TOOLS (never declared to any model), so no model
+ * can raise one — pinned by aiToolsWisp.registration.test.ts.
+ */
+export const AGENT_COORDINATOR_CARRIER_TOOLS: ReadonlySet<string> = new Set<string>([
+  'wisp_specialist_request',
 ]);
 
 /**
@@ -105,4 +146,24 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
   // WQ2: errorLog can carry Graph error text naming user principal names and
   // item names sourced from the tenant's own directory/mail data.
   ['query_c2c_jobs', 'Returns job errorLog entries that can carry user principal names and item names from Graph error text.'],
+]);
+
+/**
+ * Single ACTIONS of an otherwise agent-reachable tool that a headless agent may
+ * never call, whatever its allowlist says (spec 2026-09-23 D4, action level —
+ * class-review question 4; W02-D2 + quorum QV2, #6756). Keyed `tool:action`.
+ *
+ * Enforced in `checkAgentGuardrails` directly after the `isNeverAgentTool`
+ * deny, and filtered out of the capability picker's operations
+ * (`agentToolCatalog.ts`), so the UI can never write one to an allowlist
+ * either. Entries are added only with Todd's sign-off.
+ */
+export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<string, string>([
+  // Full-control W04 (#6758, W04-D8 — the W02 Task 16 follow-up): the group
+  // analogue of manage_tags. Membership is a live read at run admission and
+  // before tool use (runResourceScope.ts), so these are the same self-scope path.
+  ['manage_groups:add_devices', 'Group membership feeds agent run scope (triggers.deviceGroupIds, a live read in runResourceScope.ts): an allowlisted tier-2 add would let an agent put devices inside its own or another agent\'s future reach unattended.'],
+  ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
+  ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
+  ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
 ]);

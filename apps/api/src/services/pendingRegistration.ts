@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from './redis';
+import { newPartnerPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
 
 /**
  * SR2-21 — email-first partner registration.
@@ -30,6 +31,7 @@ export interface PendingRegistration {
   acceptTerms: boolean;
   termsVersion: string;
   hostedExpectation: boolean;
+  purchaseSelection?: LaunchPurchaseSelection;
   createdAt: number;
   // Step-1 abuse attribution (#2343): captured from the LIVE step-1 request and
   // threaded into createPartner at step 2 — never the verification click's
@@ -139,6 +141,7 @@ export async function createPendingRegistration(
   const stored: StoredPendingRegistration = {
     ...record,
     email: normalizedEmail,
+    purchaseSelection: newPartnerPurchaseSelectionSchema.parse(record.purchaseSelection),
     createdAt: Date.now(),
     rawToken,
   };

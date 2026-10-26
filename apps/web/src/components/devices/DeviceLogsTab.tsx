@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
+import { EVENTLOG_TAB_HASH, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -37,6 +38,12 @@ type DeviceLogsTabProps = {
   deviceId: string;
   timezone?: string;
   osType?: OSType;
+  /**
+   * Filter carried by a `#eventlog[/<source>]&from=&to=` link (e.g. from the
+   * Reliability panel). Seeds the source + window; the ISO instants are sent
+   * to the API verbatim.
+   */
+  linkedFilter?: EventLogFilter;
 };
 
 const levelConfig: Record<
@@ -140,10 +147,23 @@ const osCategoryHints: Record<OSType, Record<string, string>> = {
 
 const PAGE_SIZE = 50;
 
+// ISO instant → the `YYYY-MM-DDTHH:mm` (browser-local) value a
+// datetime-local input displays.
+function isoToLocalInput(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+const linkedKey = (f: EventLogFilter | undefined) =>
+  f ? `${f.source ?? ""}\u0000${f.from}\u0000${f.to}` : "";
+
 export default function DeviceLogsTab({
   deviceId,
   timezone,
   osType,
+  linkedFilter,
 }: DeviceLogsTabProps) {
   const { t } = useTranslation("devices");
   const [logs, setLogs] = useState<DeviceLog[]>([]);
@@ -156,9 +176,49 @@ export default function DeviceLogsTab({
   // Filters
   const [levelFilter, setLevelFilter] = useState<LogLevel | "">("");
   const [categoryFilter, setCategoryFilter] = useState<LogCategory | "">("");
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [sourceFilter, setSourceFilter] = useState(linkedFilter?.source ?? "");
+  const [startDate, setStartDate] = useState(
+    linkedFilter ? isoToLocalInput(linkedFilter.from) : "",
+  );
+  const [endDate, setEndDate] = useState(
+    linkedFilter ? isoToLocalInput(linkedFilter.to) : "",
+  );
+  // The linked scoring window, kept as ISO so it is sent verbatim; cleared by
+  // any manual edit (the inputs then own the window).
+  const [linkedWindow, setLinkedWindow] = useState<{
+    from: string;
+    to: string;
+  } | null>(linkedFilter ? { from: linkedFilter.from, to: linkedFilter.to } : null);
+  const [linkedSource, setLinkedSource] = useState<string | undefined>(
+    linkedFilter?.source,
+  );
+
+  // Back/forward between two links (or a new link while mounted) re-seeds.
+  const appliedKey = useRef(linkedKey(linkedFilter));
+  useEffect(() => {
+    const key = linkedKey(linkedFilter);
+    if (!linkedFilter || key === appliedKey.current) return;
+    appliedKey.current = key;
+    setLevelFilter("");
+    setCategoryFilter("");
+    setSourceFilter(linkedFilter.source ?? "");
+    setStartDate(isoToLocalInput(linkedFilter.from));
+    setEndDate(isoToLocalInput(linkedFilter.to));
+    setLinkedWindow({ from: linkedFilter.from, to: linkedFilter.to });
+    setLinkedSource(linkedFilter.source);
+    setPage(1);
+    setExpandedId(null);
+  }, [linkedFilter]);
+
+  // A manual edit drops the linked state and the hash params so the URL and
+  // the visible filters agree.
+  const dropLinked = () => {
+    if (linkedWindow === null && linkedFilter === undefined) return;
+    setLinkedWindow(null);
+    setLinkedSource(undefined);
+    appliedKey.current = "";
+    if (linkedFilter !== undefined) window.location.hash = EVENTLOG_TAB_HASH;
+  };
 
   const effectiveTimezone =
     timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -174,8 +234,10 @@ export default function DeviceLogsTab({
       if (levelFilter) params.set("level", levelFilter);
       if (categoryFilter) params.set("category", categoryFilter);
       if (sourceFilter) params.set("source", sourceFilter);
-      if (startDate) params.set("startDate", startDate);
-      if (endDate) params.set("endDate", endDate);
+      const effectiveStart = linkedWindow ? linkedWindow.from : startDate;
+      const effectiveEnd = linkedWindow ? linkedWindow.to : endDate;
+      if (effectiveStart) params.set("startDate", effectiveStart);
+      if (effectiveEnd) params.set("endDate", effectiveEnd);
 
       const response = await fetchWithAuth(
         `/devices/${deviceId}/eventlogs?${params}`,
@@ -210,6 +272,7 @@ export default function DeviceLogsTab({
     sourceFilter,
     startDate,
     endDate,
+    linkedWindow,
   ]);
 
   useEffect(() => {
@@ -223,6 +286,7 @@ export default function DeviceLogsTab({
     setStartDate("");
     setEndDate("");
     setPage(1);
+    dropLinked();
   };
 
   const hasFilters =
@@ -245,6 +309,33 @@ export default function DeviceLogsTab({
 
   return (
     <div className="space-y-4">
+      {linkedWindow && (
+        <div
+          data-testid="device-logs-linked-filter"
+          className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 px-4 py-2 text-sm"
+        >
+          <span>
+            {linkedSource
+              ? t("deviceLogsTab.linkedWindowWithSource", {
+                  from: formatDateTime(linkedWindow.from, effectiveTimezone),
+                  to: formatDateTime(linkedWindow.to, effectiveTimezone),
+                  source: linkedSource,
+                })
+              : t("deviceLogsTab.linkedWindow", {
+                  from: formatDateTime(linkedWindow.from, effectiveTimezone),
+                  to: formatDateTime(linkedWindow.to, effectiveTimezone),
+                })}
+          </span>
+          <button
+            type="button"
+            data-testid="device-logs-linked-filter-clear"
+            onClick={clearFilters}
+            className="text-xs text-muted-foreground underline hover:text-foreground"
+          >
+            {t("deviceLogsTab.clearLinkedFilter")}
+          </button>
+        </div>
+      )}
       {/* Filters */}
       <div className="rounded-lg border bg-card p-4 shadow-xs">
         <div className="flex items-center gap-2 mb-3">
@@ -268,8 +359,10 @@ export default function DeviceLogsTab({
               {t("deviceLogsTab.level")}
             </label>
             <select
+              data-testid="device-logs-level-select"
               value={levelFilter}
               onChange={(e) => {
+                dropLinked();
                 setLevelFilter(e.target.value as LogLevel | "");
                 setPage(1);
               }}
@@ -288,8 +381,10 @@ export default function DeviceLogsTab({
               {t("deviceLogsTab.category")}
             </label>
             <select
+              data-testid="device-logs-category-select"
               value={categoryFilter}
               onChange={(e) => {
+                dropLinked();
                 setCategoryFilter(e.target.value as LogCategory | "");
                 setPage(1);
               }}
@@ -313,8 +408,12 @@ export default function DeviceLogsTab({
             </label>
             <input
               type="text"
+              data-testid="device-logs-source-input"
               value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
+              onChange={(e) => {
+                dropLinked();
+                setSourceFilter(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") setPage(1);
               }}
@@ -337,6 +436,7 @@ export default function DeviceLogsTab({
                     key={preset.value}
                     type="button"
                     onClick={() => {
+                      dropLinked();
                       setSourceFilter(preset.value);
                       setPage(1);
                     }}
@@ -358,9 +458,11 @@ export default function DeviceLogsTab({
             </label>
             <input
               id="device-logs-start-date"
+              data-testid="device-logs-start-date"
               type="datetime-local"
               value={startDate}
               onChange={(e) => {
+                dropLinked();
                 setStartDate(e.target.value);
                 setPage(1);
               }}
@@ -373,9 +475,11 @@ export default function DeviceLogsTab({
             </label>
             <input
               id="device-logs-end-date"
+              data-testid="device-logs-end-date"
               type="datetime-local"
               value={endDate}
               onChange={(e) => {
+                dropLinked();
                 setEndDate(e.target.value);
                 setPage(1);
               }}
@@ -392,7 +496,10 @@ export default function DeviceLogsTab({
           <h3 className="text-lg font-semibold">
             {t("deviceLogsTab.deviceLogs")}
           </h3>
-          <span className="text-sm text-muted-foreground">
+          <span
+            data-testid="device-logs-count"
+            className="text-sm text-muted-foreground"
+          >
             {loading
               ? "..."
               : `${total} log${total !== 1 ? t("deviceLogsTab.s") : ""}`}

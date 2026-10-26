@@ -1,6 +1,6 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index, check, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { ImpactWeightOverrides } from '@breeze/shared';
+import type { ImpactWeightOverrides, LaunchPurchaseSelection } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -37,6 +37,10 @@ export const partners = pgTable('partners', {
   status: partnerStatusEnum('status').notNull().default('active'),
   maxOrganizations: integer('max_organizations'),
   maxDevices: integer('max_devices'),
+  // Billing-controlled, finite temporary enrollment allowance. It is not paid
+  // capacity and never comes from signup intent or partner-editable settings.
+  billingAdmissionLimit: integer('billing_admission_limit'),
+  billingAdmissionExpiresAt: timestamp('billing_admission_expires_at', { withTimezone: true }),
   // First-class partner timezone (issue #1318). The canonical default that a tz
   // field resolves to when no more-specific scope (explicit/site/org) is set.
   // Kept in sync with the legacy `settings.timezone` JSONB key, which remains
@@ -45,6 +49,8 @@ export const partners = pgTable('partners', {
   settings: jsonb('settings').default({}),
   ssoConfig: jsonb('sso_config'),
   billingEmail: varchar('billing_email', { length: 255 }),
+  // Durable signup preference. It never grants plan, capacity or subscription authority.
+  purchaseSelection: jsonb('purchase_selection').$type<LaunchPurchaseSelection | null>(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: text('email_signature'),
   // Auto-email the issued invoice (with its public pay link) when a quote is
@@ -184,6 +190,10 @@ export const partners = pgTable('partners', {
   // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
   // which is a platform-granted entitlement).
   serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // Partner billing toggle (spec 2026-10-16-partner-billing-enabled-design.md §5.6):
+  // a dedicated column, not partners.settings, because gates and job predicates query it.
+  // Migration 2027-01-05-120000 backfills existing partners, then sets DEFAULT true + NOT NULL.
+  billingEnabled: boolean('billing_enabled').notNull().default(true),
   // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
   // only: integrations.ts already imports orgs.ts, so a `.references()` here
   // would close an import cycle. Paired with the mode by
@@ -192,7 +202,18 @@ export const partners = pgTable('partners', {
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
-});
+}, (table) => [
+  check('partners_purchase_selection_valid', sql`${table.purchaseSelection} IS NULL OR COALESCE((
+    jsonb_typeof(${table.purchaseSelection}) = 'object'
+    AND ${table.purchaseSelection} ?& ARRAY['catalogVersion', 'capacity', 'billingPeriod']
+    AND ${table.purchaseSelection} - ARRAY['catalogVersion', 'capacity', 'billingPeriod'] = '{}'::jsonb
+    AND ${table.purchaseSelection}->'catalogVersion' = '"launch-2026-10"'::jsonb
+    AND (
+      (${table.purchaseSelection}->'billingPeriod' = '"monthly"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '150'::jsonb, '200'::jsonb, '250'::jsonb, '300'::jsonb, '350'::jsonb, '400'::jsonb, '450'::jsonb, '500'::jsonb, '750'::jsonb, '1000'::jsonb))
+      OR (${table.purchaseSelection}->'billingPeriod' = '"annual"'::jsonb AND ${table.purchaseSelection}->'capacity' IN ('100'::jsonb, '250'::jsonb, '500'::jsonb, '1000'::jsonb))
+    )
+  ), false)`),
+]);
 
 /**
  * Name of the per-partner, case-insensitive, lifetime slug uniqueness index

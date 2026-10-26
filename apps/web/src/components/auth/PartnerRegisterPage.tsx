@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { DEFAULT_LAUNCH_PURCHASE_SELECTION, parseLaunchPurchaseHandoff, launchPurchaseHandoffQuery, type LaunchPurchaseHandoff } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import PartnerRegisterForm from './PartnerRegisterForm';
 import StatusIcon from './StatusIcon';
@@ -23,6 +24,14 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [errorAction, setErrorAction] = useState<{ url: string; label: string }>();
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [handoff, setHandoff] = useState<LaunchPurchaseHandoff | null>(null);
+  const purchaseSelection = handoff?.kind === 'selected'
+    ? handoff.selection
+    : DEFAULT_LAUNCH_PURCHASE_SELECTION;
+
+  useEffect(() => {
+    setHandoff(parseLaunchPurchaseHandoff(new URLSearchParams(window.location.search)));
+  }, []);
 
   // Sweep paper cut #1: this is a bare Astro page reached by a full-page
   // navigation, so an already-signed-in visitor arrives with a persisted
@@ -42,13 +51,16 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [alreadySignedIn, setAlreadySignedIn] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !handoff || handoff.kind === 'invalid') return;
     let cancelled = false;
     void restoreAccessTokenFromCookieDetailed().then((outcome) => {
       if (cancelled) return;
       if (outcome === 'restored') {
         setAlreadySignedIn(true);
-        void navigateTo('/dashboard', { replace: true });
+        const destination = handoff.kind === 'selected'
+          ? `/billing/plans?${launchPurchaseHandoffQuery(handoff.selection)}`
+          : '/dashboard';
+        void navigateTo(destination, { replace: true });
         return;
       }
       // Only a definitive refusal clears the persisted flag. 'throttled'
@@ -62,10 +74,9 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       setSessionChecked(true);
     });
     return () => { cancelled = true; };
-    // Intentionally runs once per mount: `isAuthenticated` flipping to false
-    // is this effect's OWN result on the stale-flag branch and must not
-    // re-arm it.
-  }, []);
+    // Resolve only after the handoff is parsed; a stale-auth eviction must not
+    // re-arm this check. Selection is a preference passed to normal billing auth.
+  }, [handoff]);
 
   // Runtime registration gate (#1308). The server enforces ENABLE_REGISTRATION
   // on /auth/register-partner; this mirrors it client-side so the form isn't
@@ -75,10 +86,11 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   // already-signed-in check above has resolved.
   const { enabled: registrationEnabled, loaded: gateLoaded } = useRegistrationGate(sessionChecked);
   useEffect(() => {
-    if (sessionChecked && gateLoaded && !registrationEnabled) {
-      void navigateTo('/login?reason=registration-disabled');
+    if (handoff && handoff.kind !== 'invalid' && sessionChecked && gateLoaded && !registrationEnabled) {
+      const next = handoff.kind === 'selected' ? `&next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(handoff.selection)}`)}` : '';
+      void navigateTo(`/login?reason=registration-disabled${next}`);
     }
-  }, [sessionChecked, gateLoaded, registrationEnabled]);
+  }, [handoff, sessionChecked, gateLoaded, registrationEnabled]);
 
   const handleRegister = async (values: {
     companyName: string;
@@ -95,7 +107,8 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       values.companyName,
       values.email,
       values.password,
-      values.name
+      values.name,
+      purchaseSelection
     );
 
     if (!result.success) {
@@ -113,6 +126,18 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
     setSubmitted(true);
     setLoading(false);
   };
+
+  if (!handoff) return null;
+  if (handoff.kind === 'invalid') {
+    return (
+      <div data-testid="register-purchase-error" role="alert" className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
+        <h2 className="text-lg font-semibold">{t('partnerRegister.purchase.invalidTitle', { defaultValue: 'Review your plan selection' })}</h2>
+        <p className="text-sm text-muted-foreground">{t('partnerRegister.purchase.invalidDescription', { defaultValue: 'This signup link has an incomplete or unavailable plan selection. Return to pricing to choose a plan, or continue with the default plan.' })}</p>
+        <a href="https://breezermm.com/pricing" className="block text-sm font-medium text-primary hover:underline">{t('partnerRegister.purchase.pricing', { defaultValue: 'Choose a plan from pricing' })}</a>
+        <a href="/register-partner" className="inline-flex text-sm font-medium text-primary hover:underline">{t('partnerRegister.purchase.clear', { defaultValue: 'Continue with the default plan' })}</a>
+      </div>
+    );
+  }
 
   // Until the already-signed-in check resolves, or once it finds a real
   // session (the effect above is redirecting to the dashboard), render
@@ -143,7 +168,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
           </p>
         </div>
         <a
-          href="/login"
+          href={`/login?next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(purchaseSelection)}`)}`}
           className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
         >
           {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
@@ -158,6 +183,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       errorMessage={error}
       errorAction={errorAction}
       loading={loading}
+      purchaseSelection={purchaseSelection}
     />
   );
 }

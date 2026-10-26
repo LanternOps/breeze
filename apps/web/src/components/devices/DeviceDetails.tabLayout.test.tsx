@@ -101,9 +101,16 @@ describe('DeviceDetails tab layout', () => {
     ]);
     fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     const items = screen.getAllByRole('menuitem').map((m) => m.textContent);
-    expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'Operator Tasks', 'Monitoring', 'Compliance']));
+    expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'AI Tasks', 'Monitoring', 'Compliance']));
     const headers = Array.from(screen.getByRole('menu').querySelectorAll('[data-overflow-group]')).map((h) => h.textContent);
     expect(headers).toEqual(['Monitoring', 'Inventory', 'Management', 'History & Network']);
+  });
+
+  it('gives the tabs data-testids (#9610)', async () => {
+    render(<DeviceDetails device={device} />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/devices/device-1/tab-counts')));
+    expect(screen.getByTestId('device-tab-overview')).toBeInTheDocument();
+    expect(screen.getByTestId('device-tab-alerts')).toBeInTheDocument();
   });
 
   it('files Topology under the Monitoring header in "More" instead of orphaning it above (#9030)', async () => {
@@ -140,7 +147,7 @@ describe('DeviceDetails tab layout', () => {
     counts = { alerts: 0, anomalies: 0, tickets: 0, operatorTasks: 0, monitoring: 1, compliance: 3 };
     render(<DeviceDetails device={device} />);
 
-    await waitFor(() => expect(screen.getByTestId('overflow-tabs-hidden-dot')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('device-tab-overflow-tabs-hidden-dot')).toBeInTheDocument());
     expect(screen.queryByRole('tab', { name: /compliance/i })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     expect(screen.getByRole('menuitem', { name: /compliance/i })).toHaveTextContent('Compliance3');
@@ -152,7 +159,7 @@ describe('DeviceDetails tab layout', () => {
     render(<DeviceDetails device={device} />);
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(expect.stringContaining('/tab-counts')));
     expect(screen.getByRole('tab', { name: /overview/i })).toBeInTheDocument();
-    expect(screen.queryByTestId('overflow-tabs-hidden-dot')).toBeNull();
+    expect(screen.queryByTestId('device-tab-overflow-tabs-hidden-dot')).toBeNull();
   });
 
   // Sweep E1: a stale open metric_anomalies count (server-side, device-scoped)

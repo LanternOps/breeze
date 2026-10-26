@@ -354,6 +354,7 @@ describe('portalApi customer reports', () => {
       startedAt: '2026-09-02T12:00:00.000Z',
       completedAt: '2026-09-02T12:01:00.000Z',
       rowCount: 4,
+      csvAvailable: true,
       createdAt: '2026-09-02T12:00:00.000Z',
     };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -496,5 +497,45 @@ describe('portalApi approvals (#8200)', () => {
     expect(String(fetchMock.mock.calls[1][0])).toMatch(/\/portal\/approvals\/abc\/deny$/);
     expect(fetchMock.mock.calls[0][1].method).toBe('POST');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
+  });
+});
+
+// #8972 W2: GET /portal/tickets/:id answers a merged tombstone with a TOP-LEVEL
+// `{ merged: true, mergedInto, mergedAt, survivorDeleted? }` and no `ticket`
+// key. Reading `body.ticket` alone turned it into "Ticket not found".
+describe('portalApi.getTicket — merged tombstone envelope', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stub = (body: unknown) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  it('returns the merged result when the survivor is readable', async () => {
+    stub({ merged: true, mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' }, mergedAt: '2026-10-20T12:00:00.000Z' });
+    const result = await portalApi.getTicket('tomb-1');
+    expect(result.statusCode).toBe(200);
+    expect(result.data).toEqual({
+      merged: true,
+      mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' },
+      mergedAt: '2026-10-20T12:00:00.000Z',
+      survivorDeleted: false,
+    });
+  });
+
+  it('carries survivorDeleted when the survivor was soft-deleted', async () => {
+    stub({ merged: true, mergedInto: null, mergedAt: '2026-10-20T12:00:00.000Z', survivorDeleted: true });
+    const result = await portalApi.getTicket('tomb-1');
+    expect(result.data).toEqual({ merged: true, mergedInto: null, mergedAt: '2026-10-20T12:00:00.000Z', survivorDeleted: true });
+  });
+
+  it('still returns body.ticket for a live ticket', async () => {
+    stub({ ticket: { id: 't-1', ticketNumber: 'T-1', subject: 'Printer', comments: [] } });
+    const result = await portalApi.getTicket('t-1');
+    expect(result.data).toMatchObject({ id: 't-1', subject: 'Printer' });
+    expect(result.data).not.toHaveProperty('merged');
   });
 });

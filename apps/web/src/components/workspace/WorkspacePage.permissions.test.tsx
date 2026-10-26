@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// #6498: /workspace is the full-page AI Assistant. #6396/#6399 gated the header
+// #6498: /ai/chat (was /workspace, then /wisp/chat) is the full-page multi-tab chat. #6396/#6399 gated the header
 // button and the docked sidebar on `ai_sessions:use` but not this page, so a
 // role holding only devices:read got a composer that 403s on send. The page
 // must render the AccessDenied state instead — and must not touch /ai/sessions.
@@ -30,8 +30,17 @@ const store = vi.hoisted(() => ({
   renameTab: vi.fn(),
   restoreWorkspace: vi.fn(async () => undefined),
   cleanupAllStreams: vi.fn(),
+  // #9840 W3: the deep link (#session=) and the move controls.
+  openSession: vi.fn(async () => 'opened'),
+  setComposerDraft: vi.fn(),
+  resetForLogout: vi.fn(),
 }));
-vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
+vi.mock('@/stores/workspaceStore', () => ({
+  useWorkspaceStore: Object.assign(
+    (selector?: (s: typeof store) => unknown) => (selector ? selector(store) : store),
+    { getState: () => store },
+  ),
+}));
 vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
 vi.mock('./WorkspaceChatPanel', () => ({ default: () => <div data-testid="workspace-chat-panel" /> }));
 vi.mock('./WorkspaceEmptyState', () => ({ default: () => <div data-testid="workspace-empty-state" /> }));
@@ -63,6 +72,17 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
 
     expect(store.restoreWorkspace).not.toHaveBeenCalled();
     expect(store.createTab).not.toHaveBeenCalled();
+  });
+
+  it('never acts on a #session= deep link without the permission (#9840 W3)', () => {
+    state.permissions = [DEVICES_READ];
+    window.history.replaceState(null, '', '/ai/chat#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    render(<WorkspacePage />);
+
+    expect(screen.getByTestId('workspace-access-denied')).toBeInTheDocument();
+    expect(store.openSession).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe('#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    window.history.replaceState(null, '', '/');
   });
 
   it('keeps the workspace hidden while permissions are still loading', () => {

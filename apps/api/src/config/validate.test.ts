@@ -3039,6 +3039,31 @@ describe('validateConfig', () => {
     });
   });
 
+  // Wisp W02 (Wisp design §10): the deployment switch is hosted-only.
+  it('refuses BREEZE_WISP_ENABLED=true in production without IS_HOSTED=true', () => {
+    withEnv({ ...workspaceProdEnv, IS_HOSTED: 'false', BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires IS_HOSTED=true/);
+    });
+  });
+
+  it('accepts BREEZE_WISP_ENABLED=true in production when hosted', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses BREEZE_WISP_ENABLED=true in production with ENABLE_2FA=false (grants need step-up proof)', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true', ENABLE_2FA: 'false' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires ENABLE_2FA/);
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.
@@ -3528,6 +3553,110 @@ describe('MCP_STATELESS_ENABLED boolean guard', () => {
   });
 });
 
+describe('MCP Apps env guard (B-W05 #6159)', () => {
+  it('declares MCP_APPS_ENABLED in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_APPS_ENABLED');
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_APPS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_APPS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_APPS_ENABLED).toBe(value);
+    });
+  });
+});
+
+describe('MCP Tasks env guards (B-W06 #6160, D-B55)', () => {
+  const intKnobs = ['MCP_TASK_PENDING_POLL_INTERVAL_MS', 'MCP_TASK_POLL_INTERVAL_MS', 'MCP_TASK_TTL_GRACE_MS'];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TASKS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TASKS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_TASKS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: value, MCP_STATELESS_ENABLED: 'true' }, () => {
+      expect(validateConfig().MCP_TASKS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15000' }, () => {
+      expect(validateConfig()[knob as 'MCP_TASK_POLL_INTERVAL_MS']).toBe('15000');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+
+  const tasksWarnings = (env: Record<string, string>): string[] => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let calls: string[] = [];
+    withEnv({ ...validEnv, ...env }, () => {
+      expect(() => validateConfig()).not.toThrow();
+      calls = warnSpy.mock.calls.map((args) => args[0] as string).filter((msg) => msg.includes('MCP_TASKS_ENABLED'));
+    });
+    warnSpy.mockRestore();
+    return calls;
+  };
+  it('warns at boot when MCP_TASKS_ENABLED is on without MCP_STATELESS_ENABLED', () => {
+    const calls = tasksWarnings({ MCP_TASKS_ENABLED: 'true' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/MCP_STATELESS_ENABLED/);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'on', MCP_STATELESS_ENABLED: 'false' })).toHaveLength(1);
+  });
+  it('no warning when both are on, or Tasks are off', () => {
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'true', MCP_STATELESS_ENABLED: 'true' })).toHaveLength(0);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'false' })).toHaveLength(0);
+    expect(tasksWarnings({})).toHaveLength(0);
+  });
+});
+
+describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
+  const intKnobs = [
+    'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+    'MCP_INTENT_CREATES_PER_HOUR',
+    'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+    'MCP_APPROVAL_WAIT_MS',
+    'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+  ];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TIER3_INTENTS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TIER3_INTENTS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0'])('accepts MCP_TIER3_INTENTS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_TIER3_INTENTS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15' }, () => {
+      expect(validateConfig()[knob as 'MCP_APPROVAL_WAIT_MS']).toBe('15');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+});
+
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
   it('accepts an explicit false', () => {
     withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {
@@ -3856,6 +3985,47 @@ describe('FLOWS_ENABLED boolean guard', () => {
   it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
     withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
       expect(() => validateConfig()).toThrow(/FLOWS_ENABLED must be a boolean/);
+    });
+  });
+});
+
+describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOW_APPROVAL_TTL_HOURS');
+    expect(buildEnvParseInput({ FLOW_APPROVAL_TTL_HOURS: 'sentinel' }).FLOW_APPROVAL_TTL_HOURS).toBe('sentinel');
+  });
+
+  it.each(['1', '24', '168', ' 72 ', ''])('accepts %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0', '169', '-1', '2.5', 'day'])('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168/);
+    });
+  });
+});
+
+describe.each([
+  ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, ['1', '20', '500', ' 64 ', ''], ['0', '501', '-1', '2.5', 'lots']],
+  ['FLOW_RUN_RETENTION_DAYS', 7, 3650, ['7', '90', '3650', ' 30 ', ''], ['6', '0', '3651', '-1', '1.5', 'forever']],
+] as const)('%s range guard (#5219 A8)', (key, min, max, accepted, refused) => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  it.each(accepted)('accepts %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(refused)('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, [key]: value }, () => {
+      expect(() => validateConfig()).toThrow(new RegExp(`${key} must be an integer between ${min} and ${max}`));
     });
   });
 });

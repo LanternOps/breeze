@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { securityScanPathSchema } from '@breeze/shared';
 import type { SecurityPostureItem } from '../../services/securityPosture';
 
 export const providerCatalog = {
@@ -160,7 +161,8 @@ export const listThreatsQuerySchema = z.object({
 
 export const scanRequestSchema = z.object({
   scanType: z.enum(['quick', 'full', 'custom']),
-  paths: z.array(z.string().min(1)).optional()
+  // One path element definition, shared with IOC sweeps (#6263 W05): non-empty, ≤ 1024 chars.
+  paths: z.array(securityScanPathSchema).optional()
 });
 
 export const listScansQuerySchema = z.object({
@@ -168,7 +170,9 @@ export const listScansQuerySchema = z.object({
   limit: z.string().optional(),
   // 'timed_out' (#6263 W01): a scan that hit its policy deadline. Threats found
   // before the deadline are still ingested, so it is an outcome, not a failure.
-  status: z.enum(['queued', 'running', 'completed', 'failed', 'timed_out']).optional(),
+  // 'cancelled' / 'expired' (#6263 W05): sweep scans cancelled with their sweep,
+  // or never delivered before the sweep expired.
+  status: z.enum(['queued', 'running', 'completed', 'failed', 'timed_out', 'cancelled', 'expired']).optional(),
   scanType: z.enum(['quick', 'full', 'custom']).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional()
@@ -250,7 +254,8 @@ export const recommendationActionQuerySchema = z.object({
 });
 
 export const trendsQuerySchema = z.object({
-  period: z.enum(['7d', '30d', '90d']).optional().default('30d')
+  period: z.enum(['7d', '30d', '90d']).optional().default('30d'),
+  orgId: z.string().guid().optional()
 });
 
 export const postureQuerySchema = z.object({

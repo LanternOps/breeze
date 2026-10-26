@@ -20,6 +20,7 @@
     "state": {
       "met": "Getroffen",
       "notMet": "Nicht erfüllt",
+      "metLate": "Verspätet erfüllt",
       "breached": "Durchbrochen",
       "pausedLeft": "Pausiert · {{relative}} übrig",
       "left": "{{relative}} übrig"
@@ -83,7 +84,8 @@
       "low": "Niedrig"
     },
     "checklistProgress": "{{done}}/{{total}} Schritte",
-    "checklistTitle": "Checkliste: {{done}} von {{total}} Schritten erledigt"
+    "checklistTitle": "Checkliste: {{done}} von {{total}} Schritten erledigt",
+    "merged": "Zusammengeführt"
   },
   "ticketArchivedList": {
     "emptyTitle": "Keine archivierten Tickets.",
@@ -175,7 +177,9 @@
       "broken": "{{name}} konnte nicht geladen werden",
       "open": "Anhang öffnen",
       "remove": "Anhang entfernen"
-    }
+    },
+    "mergedFrom": "aus {{number}}",
+    "mergedFromUnknown": "aus einem zusammengeführten Ticket"
   },
   "ticketPartsCard": {
     "title": "Teile",
@@ -335,6 +339,7 @@
     "selectedCount_other": "{{count}} ausgewählt",
     "clearSelection": "Auswahl aufheben",
     "noSelection": "Wählen Sie ein Ticket aus. Verwenden Sie j/k zum Verschieben, Enter zum Erweitern.",
+    "ticketNotInView": "Ticket {{number}} ist nicht in dieser Ansicht.",
     "movedToClosed": {
       "message": "{{status}} — jetzt unter {{tab}}",
       "view": "In {{tab}} anzeigen"
@@ -410,13 +415,15 @@
       "confirm": "Tickets löschen"
     },
     "filterByType": "Nach Typ filtern",
-    "allTypes": "Alle Typen"
+    "allTypes": "Alle Typen",
+    "showMerged": "Zusammengeführte anzeigen"
   },
   "ticketWorkbench": {
     "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",
     "loadFailed": "Das Laden des Tickets ist fehlgeschlagen.",
     "backToQueue": "Zurück zur Warteschlange",
     "ticketSubject": "Betreff des Tickets",
+    "subjectEditButton": "Betreff bearbeiten",
     "openFullPage": "Ganze Seite öffnen",
     "priorityLabel": "Priorität",
     "categoryLabel": "Kategorie",
@@ -476,6 +483,90 @@
       "blockedCurrency": "Dieses Ticket hat {{timeCount}} nicht abgerechnete Zeiteinträge und {{partCount}} nicht abgerechnete Teile in {{sourceCurrency}}, aber {{targetOrg}} rechnet in {{targetCurrency}} ab. Rechnen Sie sie zuerst ab oder verschieben Sie trotzdem — die Beträge bleiben in {{sourceCurrency}} und können nur auf einem Entwurf in {{sourceCurrency}} in Rechnung gestellt werden.",
       "acceptCurrency": "Ich verstehe, dass diese Beträge in {{sourceCurrency}} bleiben und nicht umgerechnet werden.",
       "moveAnyway": "Trotzdem verschieben"
+    },
+    "merge": {
+      "open": "Zusammenführen mit …",
+      "title": "{{number}} mit einem anderen Ticket zusammenführen",
+      "description": "Kommentare, Zeiten, Teile und Verknüpfungen von {{number}} werden in das ausgewählte Ticket verschoben. Danach wird {{number}} geschlossen und verweist darauf.",
+      "pickerLabel": "Zielticket",
+      "searchPlaceholder": "Nach Nummer oder Betreff suchen",
+      "pickerHint": "Nur offene Tickets dieser Organisation werden angezeigt, die ältesten zuerst.",
+      "loading": "Tickets werden geladen …",
+      "candidatesFailed": "Tickets konnten nicht geladen werden. Schließen Sie den Dialog und versuchen Sie es erneut.",
+      "noCandidates": "Diese Organisation hat keine weiteren offenen Tickets.",
+      "previewLoading": "Zusammenführung wird geprüft …",
+      "previewFailed": "Diese Zusammenführung konnte nicht geprüft werden. Wählen Sie das Ticket erneut aus, um es noch einmal zu versuchen.",
+      "side": {
+        "source": "Dieses Ticket",
+        "survivor": "Das Ziel",
+        "both": "Beide Tickets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Ein Ticket kann nicht mit sich selbst zusammengeführt werden.",
+        "MERGE_CROSS_ORG": "Beide Tickets müssen zur selben Organisation gehören.",
+        "MERGE_SOURCE_INELIGIBLE": "Dieses Ticket kann nicht zusammengeführt werden (es ist gelöscht oder bereits zusammengeführt).",
+        "MERGE_SURVIVOR_INELIGIBLE": "Das Ziel kann keine Zusammenführung aufnehmen (es ist geschlossen, gelöscht oder bereits zusammengeführt).",
+        "MERGE_DELIVERABLE_PINNED": "Ein Ticket, das an eine Serviceleistung gebunden ist, kann nicht zusammengeführt werden.",
+        "MERGE_IMPORT_WINDOW": "Ein Ticket in einem offenen Importfenster kann nicht zusammengeführt werden.",
+        "MERGE_APPROVAL_STATE": "Tickets mit Genehmigungsanfragen oder einem Budget können nicht zusammengeführt werden.",
+        "MERGE_WORK_KIND_MISMATCH": "Support- und Projektarbeit können nicht zusammengeführt werden.",
+        "MERGE_PENDING_INTENTS": "Für dieses Ticket stehen KI-Aktionen aus. Warten Sie, bis sie abgeschlossen sind, oder brechen Sie sie ab.",
+        "ORG_MERGING": "Diese Organisation wird gerade zusammengeführt. Versuchen Sie es später erneut.",
+        "MERGE_SCOPE_DENIED": "Sie haben keinen Zugriff auf ein Gerät oder einen Standort eines dieser Tickets."
+      },
+      "suggested": "{{number}} ist älter und wird normalerweise beibehalten.",
+      "movesTo": "Wird verschoben nach {{number}}",
+      "nothingMoves": "Sonst wird nichts verschoben.",
+      "counts": {
+        "ticket_comments": "Kommentare: {{count}}",
+        "time_entries": "Zeiteinträge: {{count}}",
+        "ticket_parts": "Teile: {{count}}",
+        "ticket_alert_links": "Alarmverknüpfungen: {{count}}",
+        "ticket_attachments": "Anhänge: {{count}}",
+        "ticket_email_links": "E-Mail-Verknüpfungen: {{count}}",
+        "ticket_checklist_items": "Checklistenpunkte: {{count}}",
+        "ticket_external_refs": "Externe Referenzen: {{count}}",
+        "ticket_links": "Ticketverknüpfungen: {{count}}",
+        "device_vulnerabilities": "Schwachstellen: {{count}}",
+        "organization_key_dates": "Erinnerungen an Stichtage: {{count}}",
+        "service_deliverable_occurrences": "Leistungstermine: {{count}}",
+        "ai_operator_task_targets": "Ziele der KI-Aufgabe: {{count}}",
+        "ticket_drafts": "Verworfene Entwürfe: {{count}}"
+      },
+      "droppedHeading": "Verknüpfungen, die entfernt werden",
+      "dropped": {
+        "between_pair": "Verknüpfung zwischen den beiden Tickets",
+        "pair_unique": "Duplikat einer Verknüpfung, die das Ziel bereits hat",
+        "self": "würde auf sich selbst verweisen",
+        "canonical_duplicate": "Duplikat nach der Neuordnung",
+        "cycle": "würde einen Zyklus erzeugen",
+        "limit": "über dem Verknüpfungslimit pro Ticket"
+      },
+      "retained": "Bleibt bei {{number}}: {{name}}",
+      "anIntegration": "eine Integration",
+      "device": {
+        "keeps": "Das zusammengeführte Ticket behält {{device}}.",
+        "takes": "Das zusammengeführte Ticket übernimmt {{device}}.",
+        "unknown": "ein anderes Gerät"
+      },
+      "requesterAccess": "Der Anforderer von {{source}} sieht im Portal den öffentlichen Verlauf von {{survivor}} und kann dort antworten.",
+      "notify": "Den Anforderer von {{number}} per E-Mail informieren, dass seine Anfrage zusammengeführt wurde",
+      "noRequester": "{{number}} hat keinen Anforderer, der benachrichtigt werden kann.",
+      "warning": "Dies kann nicht rückgängig gemacht werden. {{source}} wird schreibgeschützt und verweist auf {{survivor}}.",
+      "confirm": "Zusammenführen",
+      "merging": "Wird zusammengeführt …",
+      "failed": "Zusammenführung fehlgeschlagen. Versuchen Sie es erneut.",
+      "merged": "Zusammengeführt mit {{number}}",
+      "mfaRequired": "Zum Zusammenführen von Tickets ist eine Multi-Faktor-Authentifizierung erforderlich. Melden Sie sich erneut mit MFA an und versuchen Sie es noch einmal.",
+      "alreadyMerged": "Eines dieser Tickets wurde bereits zusammengeführt. Wählen Sie ein anderes Ziel.",
+      "retry": "Diese Tickets wurden während der Zusammenführung geändert. Versuchen Sie es erneut."
+    },
+    "mergedBanner": {
+      "mergedInto": "Dieses Ticket wurde am {{date}} mit {{number}} zusammengeführt.",
+      "pending": "Dieses Ticket wurde am {{date}} mit einem anderen Ticket zusammengeführt.",
+      "deleted": "Dieses Ticket wurde am {{date}} mit einem Ticket zusammengeführt, das gelöscht wurde oder für Sie nicht sichtbar ist.",
+      "open": "{{number}} öffnen",
+      "readOnly": "Zusammengeführte Tickets sind schreibgeschützt. Antworten Sie in dem Ticket, mit dem es zusammengeführt wurde."
     },
     "triage": {
       "title": "Empfohlene Triage",

@@ -21,7 +21,8 @@ import { CreateTicketScreen } from '../screens/tickets/CreateTicketScreen';
 import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
-import { flushPendingNavigation } from './navigationRef';
+import { WispThreadScreen } from '../screens/wisp/WispThreadScreen';
+import { flushPendingNavigation, type WispThreadParams } from './navigationRef';
 import type { CommentMode } from '../screens/tickets/commentMode';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
@@ -92,19 +93,30 @@ export type TimeStackParamList = {
 };
 
 /**
+ * Wisp W06. Home was mounted straight onto the tab; a stack lets a nudge tap
+ * push the Wisp thread with the chat underneath, so back lands on Home.
+ */
+export type HomeStackParamList = {
+  Home: undefined;
+  WispThread: WispThreadParams;
+};
+
+/**
  * `TicketsTab` carries nested params so push taps can address a screen inside
  * the tickets stack directly (`navigateToTicket`, #4336). Declared rather than
  * cast: a cast here would let a rename inside TicketsStackParamList compile
- * fine and fail only on a real device.
+ * fine and fail only on a real device. `HomeTab` does the same for Wisp nudge
+ * taps (`navigateToWispThread`, W06).
  */
 export type MainTabParamList = {
-  HomeTab: undefined;
+  HomeTab: NavigatorScreenParams<HomeStackParamList> | undefined;
   SystemsTab: undefined;
   TicketsTab: NavigatorScreenParams<TicketsStackParamList> | undefined;
   TimeTab: undefined;
 };
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
+const HomeStack = createNativeStackNavigator<HomeStackParamList>();
 const SystemsStack = createNativeStackNavigator<SystemsStackParamList>();
 const TicketsStack = createNativeStackNavigator<TicketsStackParamList>();
 const TimeStack = createNativeStackNavigator<TimeStackParamList>();
@@ -120,6 +132,15 @@ const stackScreenOptions = {
   },
   contentStyle: { backgroundColor: palette.dark.bg0 },
 } as const;
+
+function HomeStackNavigator() {
+  return (
+    <HomeStack.Navigator screenOptions={stackScreenOptions}>
+      <HomeStack.Screen name="Home" component={HomeScreen} options={{ headerShown: false }} />
+      <HomeStack.Screen name="WispThread" component={WispThreadScreen} options={{ title: 'Wisp' }} />
+    </HomeStack.Navigator>
+  );
+}
 
 function TicketsStackNavigator() {
   return (
@@ -296,7 +317,7 @@ export function MainNavigator() {
     >
       <Tab.Screen
         name="HomeTab"
-        component={HomeScreen}
+        component={HomeStackNavigator}
         options={{
           tabBarLabel: 'Home',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (

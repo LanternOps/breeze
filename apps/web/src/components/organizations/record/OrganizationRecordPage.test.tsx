@@ -31,6 +31,12 @@ vi.mock('./OrgServiceTab', () => ({
   },
 }));
 
+// The header's Link-to-Wisp button reads the Wisp flag off /orgs/partners/me,
+// which would add a request this suite's exact-request assertions do not
+// expect; the button has its own suite, and OrgRecordHeader.test.tsx asserts
+// it is mounted.
+vi.mock('@/components/wisp/WispLinkButton', () => ({ default: () => null }));
+
 const trustTabProps = vi.hoisted(() => vi.fn());
 vi.mock('@/components/trustCenter/TrustCenterTab', () => ({
   default: (props: { orgId: string; orgFetch: unknown }) => {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { launchPurchaseSelectionSchema, type LaunchPurchaseSelection } from '@breeze/shared';
 import { persist } from 'zustand/middleware';
 import {
   startAuthentication,
@@ -9,10 +10,15 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import { runLogoutHooks } from './logoutHooks';
+// #9427 W3: stores register through ./logoutHooks directly (see that module).
+export { registerLogoutHook } from './logoutHooks';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
+import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
+import { isGlobalScopeRoute } from '@/lib/routeScope';
 import {
   parseMfaChallengeResponse,
   type MfaChallenge,
@@ -213,6 +219,8 @@ export const useAuthStore = create<AuthState>()(
         // A partner switch in the same tab must never render the previous
         // partner's currency (lib/usePartnerCurrency caches per page).
         resetPartnerCurrencyCache();
+        // Same for the partner's plan entitlements (hooks/useEntitlement).
+        resetEntitlementsCache();
         // Reporting totals are converted into the VIEWER's partner reporting
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
@@ -320,6 +328,25 @@ export const useAuthStore = create<AuthState>()(
 let _getOrgId: (() => string | null) | null = null;
 export function registerOrgIdProvider(fn: () => string | null) {
   _getOrgId = fn;
+}
+
+/**
+ * Pure read of the org selection `orgStore` persists ('breeze-org', zustand
+ * persist envelope). Used only until orgStore registers its provider. Mirrors
+ * the provider: null on global-scope routes and when All-orgs is selected.
+ */
+function readPersistedOrgId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    if (isGlobalScopeRoute(window.location.pathname)) return null;
+    const raw = window.localStorage.getItem('breeze-org');
+    if (!raw) return null;
+    const state = (JSON.parse(raw) as { state?: { currentOrgId?: unknown; allOrgs?: unknown } } | null)?.state;
+    if (!state || state.allOrgs === true) return null;
+    return typeof state.currentOrgId === 'string' && state.currentOrgId ? state.currentOrgId : null;
+  } catch {
+    return null;
+  }
 }
 
 // API helper functions
@@ -1348,8 +1375,13 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   // fail invisibly rather than loudly.
   const { skipOrgIdInjection, skipUnauthorizedRetry, orgIdOverride, ...init } = options;
 
-  // Auto-inject orgId from the org store so partner/system users always scope API calls
-  const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient: _getOrgId?.() ?? null });
+  // Auto-inject orgId from the org store so partner/system users always scope API calls.
+  // Astro islands hydrate independently: a page island can reach this before the
+  // header island has imported orgStore (which registers the provider). Fall back
+  // to a side-effect-free read of the persisted selection (no orgStore import, so
+  // no store bootstrap or network) so the first request is scoped (#9642).
+  const ambient = _getOrgId ? _getOrgId() : readPersistedOrgId();
+  const url = applyOrgId(rawUrl, { skipOrgIdInjection, orgIdOverride, ambient });
 
   const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
@@ -1809,7 +1841,8 @@ export async function apiRegisterPartner(
   companyName: string,
   email: string,
   password: string,
-  name: string
+  name: string,
+  purchaseSelection?: LaunchPurchaseSelection
 ): Promise<
   | { success: true; message: string }
   | { success: false; error: string; action?: { url: string; label: string } }
@@ -1819,7 +1852,7 @@ export async function apiRegisterPartner(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true })
+      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true, ...(purchaseSelection ? { purchaseSelection } : {}) })
     });
 
     const data = await response.json();
@@ -1856,11 +1889,15 @@ export type CfTerminalLogoutPreparationOutcome =
   | Readonly<{ kind: 'partial'; message: string }>;
 
 function evictLocalAuthState(): void {
+  // #9427 W3: clear runtime AI state (workspace tabs, attach readers) BEFORE
+  // any storage removal, or a persist write would put the old tabs back.
+  runLogoutHooks();
   useAuthStore.getState().logout();
   try {
     localStorage.removeItem('breeze-auth');
     localStorage.removeItem('breeze-org');
     localStorage.removeItem('breeze-ai-chat');
+    localStorage.removeItem('breeze-workspace');
   } catch {
     // localStorage may be unavailable
   }
@@ -2086,6 +2123,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   user?: User;
   tokens?: Tokens;
   status?: 'sign_in';
+  purchaseSelection?: LaunchPurchaseSelection;
   redirectUrl?: string;
 }> {
   try {
@@ -2104,7 +2142,8 @@ export async function apiVerifyEmail(token: string): Promise<{
     // Registration-completion path bounced to sign-in (address already taken).
     // 200 body but `verified: false` — surface the status, not success.
     if (data.verified === false && data.status === 'sign_in') {
-      return { success: false, error: 'already_registered', status: 'sign_in' };
+      const selected = launchPurchaseSelectionSchema.safeParse(data.purchaseSelection);
+      return { success: false, error: 'already_registered', status: 'sign_in', ...(selected.success ? { purchaseSelection: selected.data } : {}) };
     }
 
     return {

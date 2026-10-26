@@ -9,14 +9,15 @@ type Props = {
   data: InheritableAiBudgetSettings;
   onChange: (data: InheritableAiBudgetSettings) => void;
   /**
-   * Raised when the alert-threshold box holds text that does not parse. The
-   * hub gates its Save button on it, so an unparseable ladder cannot be
-   * silently dropped while the save reports success (#4388 W03).
+   * The alert-threshold box as typed (`null` until edited). The page owns it so
+   * an unparseable ladder survives a tab switch and keeps Save blocked
+   * (#4388 W03); validity is derived from it by the partners/me unit.
    */
-  onValidityChange?: (valid: boolean) => void;
+  thresholdsText?: string | null;
+  onThresholdsTextChange?: (text: string) => void;
 };
 
-export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }: Props) {
+export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, onThresholdsTextChange }: Props) {
   const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableAiBudgetSettings>) =>
     onChange({ ...data, ...patch });
@@ -153,7 +154,8 @@ export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }
                 id="partner-ai-budget-thresholds"
                 value={data.alertThresholdPercents}
                 onChange={(v) => set({ alertThresholdPercents: v })}
-                onValidityChange={onValidityChange}
+                text={thresholdsText}
+                onTextChange={onThresholdsTextChange}
                 placeholder={t('partnerAiBudgets.notSet')}
                 testId="partner-ai-budget-thresholds"
               />

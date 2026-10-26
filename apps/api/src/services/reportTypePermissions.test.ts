@@ -65,13 +65,16 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
       { resource: 'tickets', action: 'read' },
       { resource: 'time_entries', action: 'read' },
       { resource: 'ai_sessions', action: 'read_all' },
+      { resource: 'contracts', action: 'read' },
+      // #9828 W2: held so this caller lacks invoices:read ONLY.
+      { resource: 'quotes', action: 'read' },
     ],
   };
   const all = { permissions: [{ resource: '*', action: '*' }] };
   /** Every type that needs invoices:read. ai_usage_by_client (#7608) needs it
    *  too (plus ai_sessions:read_all, which `noInvoices` holds), so a caller
    *  without invoices:read sees neither money report. */
-  const invoiceGated = ['ar_aging', 'ai_usage_by_client'];
+  const invoiceGated = ['ar_aging', 'ai_usage_by_client', 'client_profitability'];
 
   it('hides exactly the types whose required permissions are missing', () => {
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noInvoices))).toEqual(invoiceGated);
@@ -92,6 +95,36 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(reportTypeHiddenByPermission('ai_usage_by_client', sessionsOnly)).toBe(true);
     expect(reportTypeHiddenByPermission('ai_usage_by_client', {
       permissions: [...invoicesOnly.permissions, { resource: 'ai_sessions', action: 'read_all' }],
+    })).toBe(false);
+  });
+
+  it('mrr_renewals (#9828) needs contracts:read and nothing else', () => {
+    const noContracts = { permissions: noInvoices.permissions.filter((p) => p.resource !== 'contracts').concat({ resource: 'invoices', action: 'read' }) };
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noContracts))).toEqual(['mrr_renewals']);
+    expect(reportTypeHiddenByPermission('mrr_renewals', {
+      permissions: [{ resource: 'reports', action: '*' }, { resource: 'contracts', action: 'read' }],
+    })).toBe(false);
+  });
+
+  it('quote_win_rate (#9828 W2) needs quotes:read and nothing else', () => {
+    const noQuotes = { permissions: noInvoices.permissions.filter((p) => p.resource !== 'quotes').concat({ resource: 'invoices', action: 'read' }) };
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noQuotes))).toEqual(['quote_win_rate']);
+    expect(reportTypeHiddenByPermission('quote_win_rate', {
+      permissions: [{ resource: 'reports', action: '*' }, { resource: 'quotes', action: 'read' }],
+    })).toBe(false);
+  });
+
+  it('client_profitability (#9828 W3) needs BOTH invoices:read and time_entries:read', () => {
+    const noTime = { permissions: noInvoices.permissions.filter((p) => p.resource !== 'time_entries').concat({ resource: 'invoices', action: 'read' }) };
+    // technician_time_billability also needs time_entries:read; order follows REPORT_TYPES.
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noTime)))
+      .toEqual(REPORT_TYPES.filter((t) => t === 'technician_time_billability' || t === 'client_profitability'));
+    const invoicesOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }] };
+    const timeOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'time_entries', action: 'read' }] };
+    expect(reportTypeHiddenByPermission('client_profitability', invoicesOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('client_profitability', timeOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('client_profitability', {
+      permissions: [...invoicesOnly.permissions, { resource: 'time_entries', action: 'read' }],
     })).toBe(false);
   });
 

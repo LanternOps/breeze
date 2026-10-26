@@ -32,7 +32,7 @@
  * must never import routes/software.ts (cycle) — shared helpers live in
  * services/softwareVersionShared.ts.
  */
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, gte, isNull, sql } from 'drizzle-orm';
@@ -62,8 +62,11 @@ import {
   MAX_UPLOAD_SIZE,
   authorizeCatalogItemRead,
   getFileExtension,
+  hasInstallScript,
   insertLatestSoftwareVersion,
+  installSpecError,
   lockSoftwareCatalogForVersionInsert,
+  normalizeSupportedOs,
   resolveScopedOrgId,
 } from '../services/softwareVersionShared';
 import { detectionRulesSchema, successExitCodesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
@@ -92,6 +95,50 @@ const requireSoftwareWrite = requirePermission(
   PERMISSIONS.DEVICES_WRITE.resource,
   PERMISSIONS.DEVICES_WRITE.action,
 );
+const requireSoftwareExecute = requirePermission(
+  PERMISSIONS.DEVICES_EXECUTE.resource,
+  PERMISSIONS.DEVICES_EXECUTE.action,
+);
+
+/**
+ * #6958 — the version rules of routes/software.ts for this third create path:
+ * a Breeze built-in package takes no upload, `supportedOs` is de-duplicated
+ * before the single-OS rule, a script needs devices.execute (it runs as
+ * SYSTEM/root), and the install spec must validate. Checked at session create
+ * (fail before 400MB move) AND at completion (the authoritative write: a
+ * grant can be revoked mid-upload, and stored metadata is re-parsed there).
+ * Returns the refusal response, or the normalized supportedOs and whether the
+ * version's scripts are enabled.
+ */
+async function checkUploadInstallSpec(
+  c: Context,
+  catalogItem: { builtinPackageKey?: string | null },
+  input: {
+    fileType: string;
+    supportedOs: unknown;
+    silentInstallArgs: string | null | undefined;
+    preInstallScript: string | null | undefined;
+    postInstallScript: string | null | undefined;
+  },
+): Promise<{ refused: Response } | { supportedOs: string[] | null | undefined; scriptsEnabled: boolean }> {
+  const auth = c.get('auth') as { scope: string };
+  if (catalogItem.builtinPackageKey != null && auth.scope !== 'system') {
+    return { refused: c.json({ error: 'Built-in packages are managed by Breeze and cannot be changed' }, 403) };
+  }
+  const normalizedOs = normalizeSupportedOs(input.supportedOs);
+  if (!normalizedOs.ok) return { refused: c.json({ error: normalizedOs.error }, 400) };
+  const scriptsEnabled = hasInstallScript(input);
+  if (scriptsEnabled) {
+    let allowed = false;
+    const res = await requireSoftwareExecute(c, async () => { allowed = true; });
+    if (!allowed) {
+      return { refused: res ?? c.json({ error: 'Install scripts require the devices.execute permission' }, 403) };
+    }
+  }
+  const specError = installSpecError({ ...input, supportedOs: normalizedOs.value ?? null });
+  if (specError) return { refused: c.json(specError, 400) };
+  return { supportedOs: normalizedOs.value, scriptsEnabled };
+}
 
 export const MIN_CHUNK_SIZE = 256 * 1024; // 256 KB
 export const MAX_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB — bodyLimit carve-out is 9MB
@@ -243,8 +290,18 @@ softwareUploadRoutes.post(
 
     const {
       fileName, fileSize, chunkSize,
-      ...metadata
+      ...rawMetadata
     } = payload;
+
+    const spec = await checkUploadInstallSpec(c, catalogItem, {
+      fileType: ext.slice(1),
+      supportedOs: rawMetadata.supportedOs,
+      silentInstallArgs: rawMetadata.silentInstallArgs,
+      preInstallScript: rawMetadata.preInstallScript,
+      postInstallScript: rawMetadata.postInstallScript,
+    });
+    if ('refused' in spec) return spec.refused;
+    const metadata = spec.supportedOs === undefined ? rawMetadata : { ...rawMetadata, supportedOs: spec.supportedOs ?? undefined };
 
     // Session caps: each active session can pin up to 500MB of API-host temp
     // disk for hours, so concurrency is bounded before the row is inserted.
@@ -695,6 +752,16 @@ softwareUploadRoutes.post(
         silentUninstallArgs = silentDefaults.uninstall;
       }
 
+      // #6958: re-checked here, before any bytes reach object storage.
+      const spec = await checkUploadInstallSpec(c, catalogItem, {
+        fileType,
+        supportedOs: meta.supportedOs,
+        silentInstallArgs,
+        preInstallScript: meta.preInstallScript,
+        postInstallScript: meta.postInstallScript,
+      });
+      if ('refused' in spec) return spec.refused;
+
       const versionId = randomUUID();
       const s3Key = `software/${orgId}/${catalogId}/${versionId}/${session.fileName}`;
 
@@ -737,12 +804,13 @@ softwareUploadRoutes.post(
           originalFileName: session.fileName,
           checksum,
           fileSize: session.fileSize,
-          supportedOs: meta.supportedOs ?? null,
+          supportedOs: spec.supportedOs ?? null,
           architecture: meta.architecture ?? null,
           silentInstallArgs,
           silentUninstallArgs,
           preInstallScript: meta.preInstallScript ?? null,
           postInstallScript: meta.postInstallScript ?? null,
+          installScriptsEnabled: spec.scriptsEnabled,
           detectionRules: meta.detectionRules ?? null,
           successExitCodes: meta.successExitCodes ?? [],
         });

@@ -5,7 +5,11 @@ import PartnerSettingsPage from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
+}));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/authScope', () => ({
@@ -22,7 +26,7 @@ const useOrgStoreMock = vi.mocked(useOrgStore);
 const PARTNER = {
   id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
   createdAt: '2026-02-09T00:00:00.000Z',
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {} },
 };
 
 const DOMAIN = {
@@ -96,13 +100,14 @@ describe('PartnerSettingsPage — sending domains tab', () => {
     expect(screen.getByTestId('sending-domains-identities')).not.toBeNull();             // SenderIdentitiesForm
   });
 
-  it('is self-saving: the page shows no global Save button on this tab', async () => {
+  // W2: the header Save shows on every tab; a list tab leaves it disabled while nothing else is dirty.
+  it('a list tab: the header Save stays, disabled while nothing is dirty', async () => {
     window.location.hash = '#sending-domains';
     route({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
     render(<PartnerSettingsPage />);
 
     await screen.findByTestId('partner-sending-domains-tab');
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
+    expect((screen.getByTestId('partner-settings-save') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('falls back to the Company tab when the hash names a tab this instance hides', async () => {

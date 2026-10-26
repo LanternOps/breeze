@@ -81,7 +81,7 @@ export { CommandTypes, type CommandType } from './commandTypes';
 import { CommandTypes, type CommandType } from './commandTypes';
 import type { WatchdogRecoveryCommandType } from './watchdogCommands';
 import type { AiOriginRef } from '@breeze/shared';
-import { aiOriginColumns } from './aiOriginColumns';
+import { aiOriginAuditActor, aiOriginColumns } from './aiOriginColumns';
 import { createAuditLogAsync } from './auditService';
 import { markRequestAuditWritten } from './auditRequestTracking';
 
@@ -130,10 +130,6 @@ export interface QueuedCommand {
 export type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 
-
-/** Matches scriptDispatch.ts's sentinel — audit_logs.actor_id is NOT NULL. */
-const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
-
 /**
  * The `ai.command.executed` audit row (#5022 W01).
  *
@@ -166,22 +162,24 @@ function writeAiCommandAudit(input: {
   commandType: string;
   actorId: string | null;
 }): void {
-  const principalIsAgent = input.aiOrigin.kind === 'ai_agent';
+  // Tool catalog W04 (#5219), Decision 16: one mapping for every AI dispatch
+  // audit row — a flow origin is system automation carrying its run.
+  const actor = aiOriginAuditActor(input.aiOrigin, { agentActorId: input.actorId, humanActorId: input.actorId });
   void createAuditLogAsync({
     orgId: input.orgId,
-    actorType: principalIsAgent ? 'ai_agent' : 'user',
-    actorId: input.actorId ?? SYSTEM_ACTOR_ID,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
     action: 'ai.command.executed',
     resourceType: 'device',
     resourceId: input.deviceId,
     ...(input.hostname ? { resourceName: input.hostname } : {}),
-    initiatedBy: 'ai',
+    initiatedBy: actor.initiatedBy,
     result: 'dispatched',
     details: {
       deviceId: input.deviceId,
       commandId: input.commandId,
       commandType: input.commandType,
-      ...aiOriginColumns(input.aiOrigin),
+      ...actor.originDetails,
     },
   }).catch(() => {
     // Already retried + Sentry-captured inside createAuditLogAsync.
@@ -327,7 +325,9 @@ export async function rearmIdempotentCommandForDelivery(input: {
   if (claimed.status !== 'claimed') {
     return { delivered: false, reason: 'delivery_failed' };
   }
-  const delivered = sendCommandToAgent(prepared.agentId, {
+  // #8318 §6.4: push to the agent_id read IN the claim. The one read above,
+  // before it, can belong to an install a reattach or re-enroll retired since.
+  const delivered = sendCommandToAgent(claimed.agentId, {
     id: input.commandId,
     type: input.type,
     payload: input.payload,
@@ -1600,15 +1600,19 @@ async function dispatchPreparedCommand(
         const delivered = refreshed.ok
           ? decryptCommandForDelivery({ id: command.id, type, deviceId, payload: refreshed.payload })
           : null;
+        // #8318 §6.4: every attempt goes to the agent_id read IN the claim,
+        // never to `device.agentId`, read before it: a reattach or re-enroll
+        // that committed in between hands the row to a different install.
+        const claimedAgentId = claimed.agentId;
         let sent = false;
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered));
+          sent = sendCommandToAgent(claimedAgentId, toAgentCommandFrame(delivered));
           if (sent) {
             if (attempt > 0) {
               console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
                 commandId: command.id,
                 deviceId,
-                agentId: device.agentId,
+                agentId: claimedAgentId,
                 type,
                 attempt: attempt + 1,
               });
@@ -1618,7 +1622,7 @@ async function dispatchPreparedCommand(
           console.warn('[commandQueue] sendCommandToAgent failed, will retry', {
             commandId: command.id,
             deviceId,
-            agentId: device.agentId,
+            agentId: claimedAgentId,
             type,
             attempt: attempt + 1,
             maxAttempts: SEND_RETRY_ATTEMPTS,
@@ -1632,7 +1636,7 @@ async function dispatchPreparedCommand(
           console.warn('[commandQueue] sendCommandToAgent exhausted retries', {
             commandId: command.id,
             deviceId,
-            agentId: device.agentId,
+            agentId: claimedAgentId,
             type,
             attempts: SEND_RETRY_ATTEMPTS,
           });

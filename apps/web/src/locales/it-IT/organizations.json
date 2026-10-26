@@ -392,7 +392,10 @@
           "saved": "Valori del Centro di fiducia salvati",
           "saveFailed": "Impossibile salvare i valori del Centro di fiducia",
           "mfaRequired": "Per modificare questi valori è necessaria l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del profilo e riprova.",
-          "revisionMismatch": "Qualcun altro ha modificato questi valori. Ricarica per vedere le modifiche."
+          "revisionMismatch": "Qualcun altro ha modificato questi valori. Ricarica per vedere le modifiche.",
+          "conflictNotice": "Qualcun altro ha salvato queste impostazioni predefinite mentre le modificavi. Ricarica la sua versione per ripartire da quella, oppure continua a modificare: un nuovo salvataggio non riuscirà finché non ricarichi.",
+          "reloadTheirs": "Ricarica la sua versione",
+          "keepEditing": "Continua a modificare"
         },
         "title": "Impostazioni ereditate"
       },
@@ -589,6 +592,7 @@
       "title": "Documenti",
       "subtitle": "Runbook, baseline, criteri ed evidenze di erogazione per questa organizzazione.",
       "empty": "Ancora nessun documento. Carica un runbook, una baseline o un criterio firmato per avviare la libreria.",
+      "emptyPortalHint": "Il cliente vede i documenti contrassegnati come Visibile nel portale. Una proposta o un accordo firmato e una baseline di sicurezza sono ottimi primi documenti.",
       "emptyFiltered": "Nessun documento in questa categoria.",
       "loadFailed": "Impossibile caricare i documenti.",
       "upload": "Carica documento",

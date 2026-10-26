@@ -8,6 +8,13 @@ interface AiChatInputProps {
   disabled?: boolean;
   isStreaming?: boolean;
   isInterrupting?: boolean;
+  /**
+   * Controlled text (#9427): the side panel keeps its draft in aiStore so a
+   * refused send can put it back. Pass both or neither; without them the
+   * input keeps its own state.
+   */
+  value?: string;
+  onValueChange?: (value: string) => void;
 }
 
 export default function AiChatInput({
@@ -16,9 +23,14 @@ export default function AiChatInput({
   disabled,
   isStreaming,
   isInterrupting,
+  value: controlledValue,
+  onValueChange,
 }: AiChatInputProps) {
   const { t } = useTranslation("ai");
-  const [value, setValue] = useState("");
+  const [localValue, setLocalValue] = useState("");
+  const controlled = controlledValue !== undefined && onValueChange !== undefined;
+  const value = controlled ? controlledValue : localValue;
+  const setValue = controlled ? onValueChange : setLocalValue;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSubmit = useCallback(() => {
@@ -29,7 +41,7 @@ export default function AiChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, disabled, isStreaming, onSend]);
+  }, [value, setValue, disabled, isStreaming, onSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -62,6 +74,7 @@ export default function AiChatInput({
           }
           disabled={disabled || isStreaming}
           rows={1}
+          data-testid="ai-chat-input"
           className="flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary disabled:opacity-50"
         />
         {isStreaming ? (
@@ -70,6 +83,7 @@ export default function AiChatInput({
             disabled={isInterrupting || !onInterrupt}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:opacity-50"
             title={t("aiChatInput.stopResponse")}
+            data-testid="ai-chat-stop"
           >
             {isInterrupting ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -81,6 +95,7 @@ export default function AiChatInput({
           <button
             onClick={handleSubmit}
             disabled={!value.trim() || disabled}
+            data-testid="ai-chat-send"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             <Send className="h-4 w-4" />

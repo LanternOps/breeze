@@ -1,7 +1,10 @@
 import { and, eq, inArray, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { deviceCommands } from '../db/schema';
 import { CommandTypes, QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from './commandTypes';
-import { commandIncarnationIsCurrentCondition } from './commandIncarnation';
+import {
+  commandIncarnationAcceptedForCallerCondition,
+  type CommandCallerIncarnation,
+} from './commandIncarnation';
 
 /**
  * Types excluded from the #3607 provisional-timeout reopen below. A
@@ -119,14 +122,17 @@ export const RESULT_PROCESSING_FAILED_REOPEN_EXCLUDED_COMMAND_TYPES = [
  * Use it in BOTH the ingest lookup and the terminal compare-and-set. Applying
  * it only at the CAS does nothing: the lookup runs first and returns no row.
  *
- * #8318 §4.2/§5.2: every branch, the three reopen paths included, also
- * requires the row to belong to the device's CURRENT install incarnation, read
- * in the same statement. A result for work queued to an earlier install (a
- * server timeout, a backup queue-ack or a processing failure the old install
- * could otherwise reopen, or a replayed outbox) is refused.
+ * #8318 §4.2/§5.2/§6.4: every branch, the three reopen paths included, also
+ * requires the row's stamp to equal BOTH the device's CURRENT install
+ * incarnation AND the incarnation the caller authenticated under, read in the
+ * same statement. A result for work queued to an earlier install (a server
+ * timeout, a backup queue-ack or a processing failure the old install could
+ * otherwise reopen, or a replayed outbox) is refused, and so is a result from
+ * a caller that authenticated before a reattach confirm for a row enqueued
+ * after it.
  */
-export function commandAcceptsAgentResultCondition(): SQL {
-  return and(commandIncarnationIsCurrentCondition(), commandAcceptsAgentResultStatusCondition())!;
+export function commandAcceptsAgentResultCondition(caller: CommandCallerIncarnation): SQL {
+  return and(commandIncarnationAcceptedForCallerCondition(caller), commandAcceptsAgentResultStatusCondition())!;
 }
 
 /** The status half of {@link commandAcceptsAgentResultCondition}, without the incarnation check. */
@@ -167,7 +173,8 @@ function commandAcceptsAgentResultStatusCondition(): SQL {
  * route's pre-read short-circuit which already holds the row. It covers the
  * status half only: the incarnation half needs the device's current
  * incarnation, which the callers read with the row
- * (`commandIncarnationIsCurrentCondition`) and check first.
+ * (`commandIncarnationIsCurrentCondition`) and the caller's own
+ * (`commandStampMatchesCaller`), and check first.
  *
  * `type` is optional so every existing call keeps its old (pre-D20) meaning
  * when omitted — the queue-ack branch never fires without it, matching the

@@ -69,7 +69,30 @@ async function fixture() {
 
 beforeEach(() => { vi.clearAllMocks(); });
 describe('reservation with real PostgreSQL', () => {
-  it.each([['manage_invoices', 'sdk'], ['manage_quotes', 'sdk'], ['manage_invoices', 'mcp'], ['manage_quotes', 'mcp']])('%s over %s creates a pay link without holding the invoice lock at Stripe', async (toolName, dispatcher) => {
+  // manage_quotes:create_pay_link is Tier 3 since W02 (#6756), so external MCP
+  // denies it (W02-D6) and its lock-free property is carried by the sdk row:
+  // the chat/agent tool handler that runs once the approval resolves.
+  it('manage_quotes over mcp is denied as approval-required and never reaches Stripe', async () => {
+    const f = await fixture();
+    const [quote] = await withSystemDbAccessContext(() => db.insert(quotes).values({
+      partnerId: f.invoice.partnerId, orgId: f.invoice.orgId, currencyCode: 'USD',
+      status: 'converted', convertedInvoiceId: f.invoice.id,
+    }).returning());
+    mocks.key = { id: randomUUID(), orgId: null, accessibleOrgIds: [f.invoice.orgId], partnerId: f.invoice.partnerId, createdBy: randomUUID(), name: 'Synthetic key', scopes: ['ai:read', 'ai:write', 'ai:execute'], rateLimit: 1000, mcpDomains: null };
+    const response = await new Hono().route('/mcp', mcpServerRoutes).request('/mcp/message', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'brz_synthetic' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'manage_quotes', arguments: { action: 'create_pay_link', quoteId: quote!.id } } }),
+    });
+    const body = await response.json() as any;
+    expect(body.error).toBeUndefined();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED' });
+    expect(mocks.client).not.toHaveBeenCalled();
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'mcp.tool.manage_quotes', result: 'success' }));
+    expect(await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, f.invoice.id)))).toHaveLength(0);
+  });
+  it.each([['manage_invoices', 'sdk'], ['manage_quotes', 'sdk'], ['manage_invoices', 'mcp']])('%s over %s creates a pay link without holding the invoice lock at Stripe', async (toolName, dispatcher) => {
     const f = await fixture();
     const [quote] = await withSystemDbAccessContext(() => db.insert(quotes).values({
       partnerId: f.invoice.partnerId, orgId: f.invoice.orgId, currencyCode: 'USD',

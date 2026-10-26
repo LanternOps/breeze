@@ -1,11 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Loader2, Palette, Save } from 'lucide-react';
-import type { LoginContextBranding } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
-import { runAction, ActionError } from '../../lib/runAction';
-import { showToast } from '../shared/Toast';
+import { Loader2 } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
-import { navigateTo } from '@/lib/navigation';
+import { useLoginBrandingDraft, type LoginBrandingValue } from './partnerSettings/units/loginBrandingUnit';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -22,98 +17,30 @@ const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm';
  * /login page shows the branding automatically when the instance resolves to
  * exactly one partner (typical self-hosted setup); every partner also has its
  * own /login/<partner-slug> page that shows it on any deployment (#4017), and
- * this card displays that URL. Reads/writes GET/PUT
- * /api/v1/partners/me/login-branding.
- *
- * PUT is FULL-REPLACE: we always send all three fields on every save, so an
- * omitted field is not treated as "unchanged" — it is nulled server-side.
+ * this card displays that URL. The fields are a form card of the partner
+ * settings page: the header Save sends them (full-replace PUT
+ * /api/v1/partners/me/login-branding, see loginBrandingUnit.ts).
  */
 export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: string } = {}) {
   const { t } = useTranslation('settings');
-  const [logoUrl, setLogoUrl] = useState('');
-  const [accentColor, setAccentColor] = useState('');
-  const [headline, setHeadline] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  // Set when the initial GET fails (non-401 error response or thrown fetch
-  // error). The PUT is full-replace, so saving over an unloaded form would
-  // silently wipe any real saved branding — Save is disabled until this clears.
-  const [loadFailed, setLoadFailed] = useState(false);
+  // The draft lives in the page-scoped store (W2), so it survives a tab switch;
+  // the header Save sends it through the loginBranding unit.
+  const { slice, setDraft, retry } = useLoginBrandingDraft();
+  const draft = slice.draft;
+  const set = (patch: Partial<LoginBrandingValue>) => setDraft(prev => ({ ...prev, ...patch }));
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchWithAuth('/partners/me/login-branding');
-        if (res.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        if (res.ok) {
-          const body = (await res.json().catch(() => null)) as { data?: LoginContextBranding | null } | null;
-          const data = body?.data ?? null;
-          if (!cancelled) {
-            if (data) {
-              setLogoUrl(data.logoUrl ?? '');
-              setAccentColor(data.accentColor ?? '');
-              setHeadline(data.headline ?? '');
-            }
-            setLoadFailed(false);
-          }
-        } else {
-          console.error('[login-branding] failed to load current branding', res.status);
-          if (!cancelled) setLoadFailed(true);
-        }
-      } catch (err) {
-        console.error('[login-branding] failed to load current branding', err);
-        if (!cancelled) setLoadFailed(true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  if (slice.status === 'error') {
+    return (
+      <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="login-branding-card">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {t('loginBranding.loadFailed')}
+          <button type="button" onClick={retry} className="underline">{t('common:actions.retry')}</button>
+        </div>
+      </section>
+    );
+  }
 
-  const save = async () => {
-    setSaving(true);
-    try {
-      await runAction<{ data: LoginContextBranding }>({
-        // Full-replace: always send all three fields. A blank field goes as null
-        // (cleared), never omitted — omitting would NULL it server-side anyway,
-        // but sending explicit null keeps request intent unambiguous.
-        request: () =>
-          fetchWithAuth('/partners/me/login-branding', {
-            method: 'PUT',
-            body: JSON.stringify({
-              logoUrl: logoUrl.trim() || null,
-              accentColor: accentColor.trim() || null,
-              headline: headline.trim() || null,
-            }),
-          }),
-        successMessage: t('loginBranding.saved'),
-        errorFallback: t('loginBranding.saveFailed'),
-        onUnauthorized: () => {
-          void navigateTo('/login', { replace: true });
-        },
-      });
-    } catch (err) {
-      // 401 → the auth redirect is the feedback; non-401 ActionError was already
-      // toasted by runAction; anything else is unexpected → surface it.
-      if (err instanceof ActionError && err.status === 401) return;
-      if (!(err instanceof ActionError)) {
-        showToast({ message: t('loginBranding.saveFailed'), type: 'error' });
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const previewAccent = accentColor.trim() || DEFAULT_ACCENT;
-  const previewLogo = sanitizeImageSrc(logoUrl.trim() || null);
-
-  if (loading) {
+  if (!draft) {
     return (
       <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="login-branding-card">
         <div className="flex items-center justify-center py-8">
@@ -123,17 +50,15 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
     );
   }
 
+  const { logoUrl, accentColor, headline } = draft;
+  const previewAccent = accentColor.trim() || DEFAULT_ACCENT;
+  const previewLogo = sanitizeImageSrc(logoUrl.trim() || null);
+
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="login-branding-card">
-      <div className="mb-6">
-        <div className="flex items-center gap-2">
-          <Palette className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">{t('loginBranding.title')}</h2>
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('loginBranding.description')}
-        </p>
-      </div>
+      <p className="mb-6 max-w-prose text-sm text-muted-foreground">
+        {t('loginBranding.description')}
+      </p>
 
       {partnerSlug && (
         <div className="mb-6 space-y-2">
@@ -153,15 +78,6 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
         </div>
       )}
 
-      {loadFailed && (
-        <div
-          role="alert"
-          className="mb-6 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
-          {t('loginBranding.loadFailed')}
-        </div>
-      )}
-
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Fields */}
         <div className="space-y-4">
@@ -174,7 +90,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
               data-testid="login-branding-logo-url"
               type="url"
               value={logoUrl}
-              onChange={(e) => setLogoUrl(e.target.value)}
+              onChange={(e) => set({ logoUrl: e.target.value })}
               placeholder={t('loginBranding.logoPlaceholder')}
               className={inputClass}
             />
@@ -193,7 +109,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
                 data-testid="login-branding-accent-color"
                 type="color"
                 value={/^#[0-9a-fA-F]{6}$/.test(accentColor) ? accentColor : DEFAULT_ACCENT}
-                onChange={(e) => setAccentColor(e.target.value)}
+                onChange={(e) => set({ accentColor: e.target.value })}
                 className="h-10 w-14 shrink-0 cursor-pointer rounded-md border bg-background"
               />
               <input
@@ -201,7 +117,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
                 data-testid="login-branding-accent-hex"
                 type="text"
                 value={accentColor}
-                onChange={(e) => setAccentColor(e.target.value)}
+                onChange={(e) => set({ accentColor: e.target.value })}
                 placeholder="#2563eb"
                 maxLength={7}
                 className={inputClass}
@@ -219,7 +135,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
               data-testid="login-branding-headline"
               type="text"
               value={headline}
-              onChange={(e) => setHeadline(e.target.value)}
+              onChange={(e) => set({ headline: e.target.value })}
               placeholder={t('loginBranding.headlinePlaceholder')}
               maxLength={HEADLINE_MAX}
               className={inputClass}
@@ -235,6 +151,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
           <span className="text-sm font-medium">{t('loginBranding.preview')}</span>
           <div
             data-testid="login-branding-preview"
+            data-preview
             className="flex min-h-40 flex-col items-center justify-center gap-4 rounded-lg border p-6 text-center"
             style={{ backgroundColor: previewAccent }}
           >
@@ -257,18 +174,6 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
         </div>
       </div>
 
-      <div className="mt-6 flex justify-end">
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || loadFailed}
-          data-testid="login-branding-save"
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-        >
-          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {saving ? t('common:states.saving') : t('loginBranding.save')}
-        </button>
-      </div>
     </section>
   );
 }

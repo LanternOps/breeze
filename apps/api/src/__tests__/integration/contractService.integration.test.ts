@@ -414,13 +414,17 @@ describe('contractService generation', () => {
     // Simulate a concurrent run that started against the SAME period: rewind the
     // pointer to 2026-07-01 so generateDueInvoice re-targets the already-claimed
     // July period. The ledger unique constraint must reject the re-claim, the
-    // loser deletes its own draft, and the pointer is NOT advanced again.
+    // loser deletes its own draft, and (#9509) the pointer moves past the claim
+    // to where the winner left it — never further, never left on July.
     await withSystemDbAccessContext(() =>
       db.update(contracts).set({ nextBillingAt: '2026-07-01' }).where(eq(contracts.id, c.id)));
 
     const loser = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:05:00Z')));
     expect(loser.generated).toBe(false);
     expect(loser.skipped).toBe('already_billed');
+    const [ptr] = await withSystemDbAccessContext(() =>
+      db.select({ nextBillingAt: contracts.nextBillingAt }).from(contracts).where(eq(contracts.id, c.id)).limit(1));
+    expect(ptr!.nextBillingAt).toBe('2026-08-01');
 
     // Still exactly one billing-period row, and the loser's draft was reaped.
     const periods = await withSystemDbAccessContext(() =>
@@ -430,6 +434,108 @@ describe('contractService generation', () => {
       db.select().from(invoiceLines).where(eq(invoiceLines.sourceType, 'contract')));
     // Only the winning invoice's contract line remains (loser's draft cascaded away).
     expect(drafts.every((l) => l.invoiceId === first.invoiceId)).toBe(true);
+  });
+
+  // #9509: pause -> resume inside a period that was already billed (advance) used to
+  // park the pointer ON that claimed period, so every later run returned
+  // already_billed and the contract silently stopped billing.
+  async function billedThenPausedAdvanceContract(actor: ContractActorT, orgId: string) {
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'ResumeTest', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed', unitPrice: '500.00', taxable: false
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+    const july = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:00:00Z')));
+    expect(july.generated).toBe(true);
+    await withSystemDbAccessContext(() => pauseContract(c.id, actor));
+    return { c, july };
+  }
+
+  async function claimedStarts(contractId: string): Promise<string[]> {
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ periodStart: contractBillingPeriods.periodStart }).from(contractBillingPeriods)
+        .where(eq(contractBillingPeriods.contractId, contractId)));
+    return rows.map((r) => r.periodStart).sort();
+  }
+
+  it('#9509 resume inside an already-billed advance period points at the NEXT period and the next run bills it', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const { c } = await billedThenPausedAdvanceContract(actor, orgId);
+
+    // Resume mid-July: July is already claimed, so the pointer must not land on it.
+    const resumed = await withSystemDbAccessContext(() => resumeContract(c.id, actor, '2026-07-15'));
+    expect(resumed.nextBillingAt).toBe('2026-08-01');
+
+    // Bill across the claimed boundary: August is invoiced, not already_billed.
+    const aug = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-01T08:00:00Z')));
+    expect(aug.skipped).toBeUndefined();
+    expect(aug.generated).toBe(true);
+    expect(await claimedStarts(c.id)).toEqual(['2026-07-01', '2026-08-01']);
+  });
+
+  it('#9509 activating a PAUSED contract inside an already-billed period also skips the claimed period', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const { c } = await billedThenPausedAdvanceContract(actor, orgId);
+
+    const reactivated = await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-20T08:00:00Z')));
+    expect(reactivated.nextBillingAt).toBe('2026-08-01');
+  });
+
+  it('#9509 resume after the claimed period ended keeps the no-back-billing rule (current period, unclaimed)', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const { c } = await billedThenPausedAdvanceContract(actor, orgId);
+
+    // Paused through Aug + Sep; resuming in October bills October, never Aug/Sep.
+    const resumed = await withSystemDbAccessContext(() => resumeContract(c.id, actor, '2026-10-10'));
+    expect(resumed.nextBillingAt).toBe('2026-10-01');
+  });
+
+  it('#9509 a pointer parked on a claimed period self-heals: the run advances it past the ledger, the next run bills', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const { c } = await billedThenPausedAdvanceContract(actor, orgId);
+    await withSystemDbAccessContext(() => resumeContract(c.id, actor, '2026-07-15'));
+    // A contract already stuck by the pre-fix resume: pointer parked on claimed July.
+    await withSystemDbAccessContext(() =>
+      db.update(contracts).set({ nextBillingAt: '2026-07-01' }).where(eq(contracts.id, c.id)));
+
+    const stuck = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-02T08:00:00Z')));
+    expect(stuck.generated).toBe(false);
+    expect(stuck.skipped).toBe('already_billed');
+    const [after] = await withSystemDbAccessContext(() =>
+      db.select({ nextBillingAt: contracts.nextBillingAt }).from(contracts).where(eq(contracts.id, c.id)).limit(1));
+    expect(after!.nextBillingAt).toBe('2026-08-01');
+
+    const aug = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-02T09:00:00Z')));
+    expect(aug.generated).toBe(true);
+    expect(await claimedStarts(c.id)).toEqual(['2026-07-01', '2026-08-01']);
+  });
+
+  it('#9509 ARREARS: a pointer parked on a claimed period heals to the next period END, and the next run bills that period', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'ArrearsHeal', billingTiming: 'arrears', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'flat', description: 'Managed', unitPrice: '500.00', taxable: false
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+    const july = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-08-01T08:00:00Z')));
+    expect(july.generated).toBe(true);
+    // Park the arrears pointer back on July's END (July is claimed).
+    await withSystemDbAccessContext(() =>
+      db.update(contracts).set({ nextBillingAt: '2026-08-01' }).where(eq(contracts.id, c.id)));
+
+    const stuck = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-09-02T08:00:00Z')));
+    expect(stuck.skipped).toBe('already_billed');
+    const [after] = await withSystemDbAccessContext(() =>
+      db.select({ nextBillingAt: contracts.nextBillingAt }).from(contracts).where(eq(contracts.id, c.id)).limit(1));
+    expect(after!.nextBillingAt).toBe('2026-09-01');
+
+    const aug = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-09-02T09:00:00Z')));
+    expect(aug.generated).toBe(true);
+    expect(await claimedStarts(c.id)).toEqual(['2026-07-01', '2026-08-01']);
   });
 
   it('generates successfully when the contract has createdBy = null (FK cliff fix)', async () => {

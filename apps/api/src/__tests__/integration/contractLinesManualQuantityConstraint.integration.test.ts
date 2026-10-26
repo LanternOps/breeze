@@ -16,7 +16,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, contracts, contractLines } from '../../db/schema';
 import { getTestDb } from './setup';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2027-01-02-182700-contract-lines-manual-quantity-check.sql');
+const MIGRATION_FILE = join(__dirname, '../../../migrations/2027-01-06-150000-contract-lines-manual-quantity-check.sql');
 const CONSTRAINT = 'contract_lines_manual_quantity_chk';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 

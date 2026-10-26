@@ -94,7 +94,9 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   'services/yaraBuiltinPackStore.ts':
     'boot-only system-scope upsert of THE built-in set (no org, no site); no caller, so no site-restricted actor can reach it (#6263 W03b)',
   'services/yaraRuleSetPublisher.ts':
-    'reached only through routes/security/yara.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing either file',
+    'reached only through routes/security/yara.ts and services/yaraIocImportService.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing any of these files',
+  'services/yaraIocImportService.ts':
+    'every mutation runs writeDenial (services/yaraRuleSetAccess.ts: canMutateOrgWideGovernance + canManagePartnerWidePolicies) first; 403s pinned in yaraIocImportService.test.ts and routes/security/yaraIocImport.test.ts (#6263 W04; extracted for the AI ioc_hunt import_iocs path, #6268)',
   // Background probe of a destination's create-only write support, started
   // after a brokered backup write is issued. Writes only the
   // provider_capabilities.conditionalWrites record, in system context; no
@@ -205,6 +207,13 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // services/aiToolsDns.ts) gate before enqueueing.
   'jobs/dnsSyncJob.ts':
     'updates only syncStatus/lastSynced/syncError on a saved DNS policy from the sync worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
+
+  // DNS integration background delete (#10019): removes the policies of an
+  // integration the DELETE route already deactivated. That route is the
+  // caller-facing gate (requireOrgWideIntegrationAccess rejects any site
+  // ceiling); the worker reloads the row by id in system context.
+  'jobs/dnsSecurityRetention.ts':
+    'deletes dns_policies only for an integration already marked deleting by DELETE /dns-security/integrations/:id (site-ceiling gated by requireOrgWideIntegrationAccess); runs in a BullMQ worker in system context — no caller-scoped auth object reaches this path',
 
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',

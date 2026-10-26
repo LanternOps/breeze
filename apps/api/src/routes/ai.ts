@@ -17,6 +17,7 @@ import {
   withAuthDbAccessContext,
 } from '../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../config/env';
+import { WispSessionError } from '../services/wisp/sessionGrant';
 import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
@@ -35,10 +36,12 @@ import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } f
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { registerAiAttachRoute } from './aiAttach';
 import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
   checkBudgetDetailed,
   getUsageSummary,
+  getAggregateUsageSummary,
   updateBudget,
   getSessionHistory,
 } from '../services/aiCostTracker';
@@ -162,7 +165,10 @@ const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   deviceId: z.string().guid().optional(),
   // Let the caller pick the approval posture (e.g. plan-first for open-ended
   // device tasks). Defaults to the column default (per_step) when omitted.
-  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional()
+  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+  // Wisp W04: open the session under the caller's own delegation grant.
+  // Validated (flag, ownership, status, entitlement, scope) in createSession.
+  wispGrantId: z.string().guid().optional()
 });
 
 /**
@@ -252,6 +258,7 @@ aiRoutes.post(
       });
       return c.json(session, 201);
     } catch (err) {
+      if (err instanceof WispSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
       if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
@@ -344,6 +351,10 @@ aiRoutes.get(
     return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
   }
 );
+
+// GET /sessions/:id/stream - Attach to the session's current turn (#9427).
+// Same ownership surface as GET /sessions/:id; see routes/aiAttach.ts.
+registerAiAttachRoute(aiRoutes);
 
 // DELETE /sessions/:id - Close a session
 aiRoutes.delete(
@@ -891,10 +902,12 @@ aiRoutes.post(
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         await abortTopology();
+        // #9427: coded so a client can attach to the running turn instead.
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
             : 'The assistant is wrapping up the previous turn — please try again in a moment',
+          code: 'turn_in_progress',
         }, 409);
       }
     }
@@ -1046,7 +1059,7 @@ aiRoutes.post(
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1).
       if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
-        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session', code: 'turn_in_progress' }, 409) };
       }
 
       writeRouteAudit(c, {
@@ -1058,11 +1071,17 @@ aiRoutes.post(
       });
 
       try {
-        await db.insert(aiMessages).values({
+        const [userRow] = await db.insert(aiMessages).values({
           sessionId,
           role: 'user',
           content: sanitizedContent,
-        });
+        }).returning({ id: aiMessages.id });
+        // #9427: the anchor an attaching client splices this turn's replay
+        // after. Set before the turn is pushed.
+        activeSession.turnUserMessageId = userRow?.id ?? null;
+        if (!userRow) {
+          console.warn('[AI] User message insert returned no row; attaching clients get no turn anchor', { sessionId });
+        }
       } catch (err) {
         console.error('[AI] Failed to save user message to DB:', err);
         activeSession.state = 'idle';
@@ -1118,12 +1137,24 @@ aiRoutes.post(
       // own system transaction never runs beside a held request connection.
       await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      // Wisp W04: getOrCreate refuses a grant-pinned session it cannot gate
+      // (services/wisp/chatCeiling.ts WispSessionUnavailableError) — a typed
+      // 409, never a 500 and never an ungated turn. Matched on `code` so this
+      // route does not load the Wisp graph.
+      if (dispatch.kind === 'failed' && (dispatch.error as { code?: unknown } | null)?.code === 'wisp_session_unavailable') {
+        return c.json({ error: (dispatch.error as Error).message, code: 'wisp_session_unavailable' }, 409);
+      }
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }
     const { activeSession, events } = dispatch;
 
     return streamSSE(c, async (stream) => {
+      // #9427: a client that goes away stops listening at once; the turn is
+      // NOT interrupted (another surface may be attached to it).
+      stream.onAbort(() => {
+        activeSession.eventBus.unsubscribe(subscriptionId);
+      });
 
       try {
         for await (const event of events) {
@@ -1447,20 +1478,11 @@ aiRoutes.get(
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      // System/partner users without a specific org: no org to resolve an
-      // effective budget for, so budget stays null. #4388: alerts.fired must
-      // still be present (empty) so callers can read it unconditionally.
-      return c.json({
-        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        budget: null,
-        billedTo: 'platform' as const,
-        // #4388 W04: present (null) on every /ai/usage response, same
-        // rationale as `alerts.fired` above: callers read `usage.credits`
-        // unconditionally.
-        credits: null,
-        alerts: { fired: [] },
-      });
+      // System/partner users on "All organizations" (#9667): aggregate usage
+      // over exactly the orgs this caller can access. No single org means no
+      // effective budget to resolve, so budget stays null. #4388: alerts.fired
+      // is present (empty) so callers can read it unconditionally.
+      return c.json(await getAggregateUsageSummary(auth.accessibleOrgIds));
     }
 
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {

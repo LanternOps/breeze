@@ -16,10 +16,11 @@
  * `google_signout` is ALWAYS `unknown`: the Directory user resource exposes no
  * session-validity field (`lastLoginTime` is not one).
  */
+import { runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { getDirectoryClient, getGmailClient, getLicensingClient } from '../../googleClient';
 import { canonicalizeUserEmail, resolveContextByOrg, type GoogleToolContext } from '../../aiToolsGoogle';
 import type { PlannedEffect } from '../recipes/types';
-import { registerEffectProbe, type EffectProbe, type EffectProbeResult } from './index';
+import { registerEffectProbe, type EffectProbe, type EffectProbeRegistration, type EffectProbeResult } from './index';
 
 /** Page size the write-adjacent list reads use; a full page cannot prove absence. */
 const LICENSE_PAGE_SIZE = 100;
@@ -51,8 +52,15 @@ const lc = (s: string | null | undefined): string => (s ?? '').trim().toLowerCas
 
 async function ctxForOrg(orgId: string): Promise<GoogleToolContext> {
   // Same resolver the headless write path uses, so a probe can never read
-  // through a different connection than the write wrote through.
-  const resolved = await resolveContextByOrg(orgId);
+  // through a different connection than the write wrote through. The task
+  // worker calls probes with NO db context, and the connection table has
+  // forced RLS: resolve it in a context scoped to exactly this org (the M365
+  // probe's pattern), or every Google probe reads "not connected" → unknown.
+  // Only the lookup is inside the context; the Google API calls are not.
+  const resolved = await runOutsideDbContext(() => withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.effectProbe.google' },
+    () => resolveContextByOrg(orgId),
+  ));
   if ('error' in resolved) throw new Error(resolved.error);
   return resolved;
 }
@@ -214,16 +222,16 @@ export const probeGoogleSignout: EffectProbe = async () =>
   );
 
 /**
- * `google_wipe_mobile_device` — reads `userEmail`. Mirrors `resolveWipeTarget`:
+ * `google_wipe_mobile_device` and `google_account_wipe_mobile_device` — read `userEmail`. Mirrors `resolveWipeTarget`:
  * canonicalize, `users.get` for the primaryEmail, `mobiledevices.list` with
  * `email:<primaryEmail>`, then local EXACT-match on each device's `email[]`.
  */
 export const probeGoogleWipeMobileDevice: EffectProbe = async (effect, ctx) => {
   const raw = arg(effect, 'userEmail');
-  if (!raw) return missing('google_wipe_mobile_device', 'userEmail');
+  if (!raw) return missing(effect.toolName, 'userEmail');
   const canonical = canonicalizeUserEmail(raw);
   if (!canonical) {
-    return result('unknown', 'google_wipe_mobile_device: userEmail is not a single canonical address, so the device set cannot be resolved');
+    return result('unknown', `${effect.toolName}: userEmail is not a single canonical address, so the device set cannot be resolved`);
   }
   const g = await ctxForOrg(ctx.orgId);
   const dir = getDirectoryClient(g.keyJson, g.conn.adminEmail);
@@ -250,19 +258,107 @@ export const probeGoogleWipeMobileDevice: EffectProbe = async (effect, ctx) => {
     : result('unsatisfied', `${pending.length} of ${matched.length} device(s) for ${primaryEmail} have not started wiping`);
 };
 
-const GOOGLE_PROBES: ReadonlyArray<readonly [string, EffectProbe]> = [
+/**
+ * `google_assign_license` — inverse of `probeGoogleRemoveLicense`; mirrors the
+ * write (`licenseAssignments.insert`, same admin identity). Reads
+ * `licenseAssignments.listForProductAndSku` and pages it. Truncation (page cap
+ * reached with a next-page token and no match) is `unknown`, NEVER
+ * `unsatisfied`: an unread page is not an absence.
+ */
+const LICENSE_MAX_PAGES = 10;
+export const probeGoogleAssignLicense: EffectProbe = async (effect, ctx) => {
+  const email = arg(effect, 'userEmail');
+  if (!email) return missing('google_assign_license', 'userEmail');
+  const productId = arg(effect, 'productId');
+  if (!productId) return missing('google_assign_license', 'productId');
+  const skuId = arg(effect, 'skuId');
+  if (!skuId) return missing('google_assign_license', 'skuId');
+  const g = await ctxForOrg(ctx.orgId);
+  const lic = getLicensingClient(g.keyJson, g.conn.adminEmail);
+  let pageToken: string | undefined;
+  for (let page = 0; page < LICENSE_MAX_PAGES; page += 1) {
+    const res = await lic.licenseAssignments.listForProductAndSku({
+      productId,
+      skuId,
+      customerId: 'my_customer',
+      maxResults: LICENSE_PAGE_SIZE,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    if ((res.data.items ?? []).some((a) => lc(a.userId) === lc(email))) {
+      return result('satisfied', `${email} holds license ${productId}/${skuId}`);
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+    if (!pageToken) return result('unsatisfied', `${email} holds no ${productId}/${skuId} license assignment`);
+  }
+  return result('unknown', `the license list for ${productId}/${skuId} is truncated after ${LICENSE_MAX_PAGES} pages and ${email} was not found; absence is unproven`);
+};
+
+/**
+ * `google_add_to_group` — mirrors the write (`members.insert`). Uses a targeted
+ * `members.get({ groupKey, memberKey })` (cannot truncate, unlike the capped
+ * `groups.list`). 404 is `unsatisfied`; other errors propagate (-> `unknown`).
+ * The role is NOT asserted: this verifies membership, not privilege.
+ */
+export const probeGoogleAddToGroup: EffectProbe = async (effect, ctx) => {
+  const email = arg(effect, 'userEmail');
+  if (!email) return missing('google_add_to_group', 'userEmail');
+  const groupEmail = arg(effect, 'groupEmail');
+  if (!groupEmail) return missing('google_add_to_group', 'groupEmail');
+  const g = await ctxForOrg(ctx.orgId);
+  const dir = getDirectoryClient(g.keyJson, g.conn.adminEmail);
+  try {
+    await dir.members.get({ groupKey: groupEmail, memberKey: email });
+  } catch (err) {
+    if (isNotFound(err)) return result('unsatisfied', `${email} is not a member of ${groupEmail}`);
+    throw err;
+  }
+  return result('satisfied', `${email} is a member of ${groupEmail}`);
+};
+
+/**
+ * `google_move_ou` — mirrors the write (`users.update({ orgUnitPath })`). Reads
+ * `users.get({ userKey })`; satisfied only on an EXACT `orgUnitPath` match (a
+ * parent OU is a different policy set). Absent path or 404 is `unknown`.
+ */
+export const probeGoogleMoveOu: EffectProbe = async (effect, ctx) => {
+  const email = arg(effect, 'userEmail');
+  if (!email) return missing('google_move_ou', 'userEmail');
+  const orgUnitPath = arg(effect, 'orgUnitPath');
+  if (!orgUnitPath) return missing('google_move_ou', 'orgUnitPath');
+  const g = await ctxForOrg(ctx.orgId);
+  const dir = getDirectoryClient(g.keyJson, g.conn.adminEmail);
+  let actual: string | null | undefined;
+  try {
+    const res = await dir.users.get({ userKey: email });
+    actual = res.data.orgUnitPath;
+  } catch (err) {
+    if (isNotFound(err)) return result('unknown', `${email} was not found in Google Workspace, so the org unit cannot be observed`);
+    throw err;
+  }
+  if (!actual) return result('unknown', `the Directory response for ${email} carried no orgUnitPath`);
+  return actual === orgUnitPath
+    ? result('satisfied', `${email} is in org unit ${orgUnitPath}`)
+    : result('unsatisfied', `${email} is in org unit ${actual}, not ${orgUnitPath}`);
+};
+
+const GOOGLE_PROBES: ReadonlyArray<readonly [string, EffectProbe, EffectProbeRegistration?]> = [
   ['google_suspend_user', probeGoogleSuspendUser],
   ['google_remove_from_group', probeGoogleRemoveFromGroup],
   ['google_remove_license', probeGoogleRemoveLicense],
   ['google_set_vacation', probeGoogleSetVacation],
   ['google_set_forwarding', probeGoogleSetForwarding],
   ['google_add_mail_delegate', probeGoogleAddMailDelegate],
-  ['google_signout', probeGoogleSignout],
+  // Structurally unobservable: no provider call, always `unknown` (R1a-0).
+  ['google_signout', probeGoogleSignout, { alwaysUnknown: true }],
   ['google_wipe_mobile_device', probeGoogleWipeMobileDevice],
+  ['google_account_wipe_mobile_device', probeGoogleWipeMobileDevice],
+  ['google_assign_license', probeGoogleAssignLicense],
+  ['google_add_to_group', probeGoogleAddToGroup],
+  ['google_move_ou', probeGoogleMoveOu],
 ];
 
-/** Registers the eight Google probes; returns the tool names. The registry refuses duplicates, so call once. */
+/** Registers the Google probes; returns the tool names. The registry refuses duplicates, so call once. */
 export function registerGoogleEffectProbes(): string[] {
-  for (const [name, probe] of GOOGLE_PROBES) registerEffectProbe(name, probe);
+  for (const [name, probe, opts] of GOOGLE_PROBES) registerEffectProbe(name, probe, opts);
   return GOOGLE_PROBES.map(([name]) => name);
 }

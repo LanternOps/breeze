@@ -5,6 +5,6 @@ import OperatorTaskDetail from '../../../components/aiOperator/OperatorTaskDetai
 const { taskId } = Astro.params;
 ---
 
-<DashboardLayout title="Operator Task">
+<DashboardLayout titleKey="titles.aiTask">
   <OperatorTaskDetail taskId={taskId!} client:load />
 </DashboardLayout>

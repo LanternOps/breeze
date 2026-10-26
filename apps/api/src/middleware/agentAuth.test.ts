@@ -2338,23 +2338,62 @@ describe('Task 18 — suspendAgentToken helper', () => {
     vi.clearAllMocks();
   });
 
-  it('writes agentTokenSuspendedAt + reason via UPDATE', async () => {
-    const setMock = vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
-    });
+  const identity = { deviceId: 'device-1', agentId: 'agent-1' };
+
+  it('writes agentTokenSuspendedAt + reason via UPDATE, bound to the socket\'s id + agent_id (#8318 §6.4)', async () => {
+    const whereMock = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'device-1' }]) });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    await suspendAgentToken('device-1', 'cross-tenant-probe');
+    await suspendAgentToken(identity, 'cross-tenant-probe');
 
     expect(setMock).toHaveBeenCalledTimes(1);
     const arg = setMock.mock.calls[0]?.[0];
     expect(arg).toMatchObject({ agentTokenSuspendedReason: 'cross-tenant-probe' });
     expect(arg.agentTokenSuspendedAt).toBeInstanceOf(Date);
+    // The identity predicate (updateOwnDeviceRow: id AND agent_id) ANDed with
+    // the not-yet-suspended guard. drizzle-orm is mocked above to plain
+    // objects, so the whole predicate tree is inspectable.
+    const where = JSON.stringify(whereMock.mock.calls[0]?.[0]);
+    expect(where).toContain('{"left":"id","right":"device-1"}');
+    expect(where).toContain('{"left":"agentId","right":"agent-1"}');
+    expect(where).toContain('{"isNull":"agentTokenSuspendedAt"}');
+  });
+
+  // #8318 §6.4 (review of wave 1b-1): the caller audits by outcome.
+  function updateReturning(rows: unknown[]) {
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) }),
+    } as any);
+  }
+  function reReadReturning(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }),
+    } as any);
+  }
+
+  it('reports suspended when its write stamped the row, without re-reading it', async () => {
+    updateReturning([{ id: 'device-1' }]);
+    vi.mocked(db.select).mockClear();
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('suspended');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('reports stale_caller when the 0-row write found the row in another install\'s hands', async () => {
+    updateReturning([]);
+    reReadReturning([{ agentId: 'agent-after-reattach' }]);
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('stale_caller');
+  });
+
+  it('reports unchanged when the 0-row write met an already-suspended row of the same install', async () => {
+    updateReturning([]);
+    reReadReturning([{ agentId: 'agent-1' }]);
+    await expect(suspendAgentToken(identity, 'cross-tenant-probe')).resolves.toBe('unchanged');
   });
 
   it('truncates reasons longer than 100 chars to fit the column', async () => {
     const setMock = vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
@@ -2362,7 +2401,7 @@ describe('Task 18 — suspendAgentToken helper', () => {
     // Cast past the AgentTokenSuspendReason union: the canonical reasons are all
     // < 100 chars, but this exercises the defensive runtime .slice(0, 100) that
     // guards the varchar(100) column against any future non-canonical caller.
-    await suspendAgentToken('device-1', longReason as never);
+    await suspendAgentToken(identity, longReason as never);
 
     const arg = setMock.mock.calls[0]?.[0];
     expect(arg.agentTokenSuspendedReason.length).toBe(100);
@@ -2375,8 +2414,8 @@ describe('Task 18 — suspendAgentToken helper', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(
-      suspendAgentToken('device-1', 'cross-tenant-probe')
-    ).resolves.toBeUndefined();
+      suspendAgentToken(identity, 'cross-tenant-probe')
+    ).resolves.toBe('failed');
     expect(errSpy).toHaveBeenCalledWith(
       '[agentAuth] suspendAgentToken failed',
       expect.objectContaining({ deviceId: 'device-1' })

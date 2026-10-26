@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils';
 import type { AiOperatorTaskListItemDto } from '@breeze/shared';
 import { taskStateLabel } from './operatorTaskLabels';
 
-const AI_OPERATOR_DOCS_URL = 'https://docs.breezermm.com/features/ai-agents/';
+const AI_OPERATOR_DOCS_URL = 'https://docs.breezermm.com/features/ai-tasks/';
 
 export default function OperatorTaskActivityFeed({ deviceId }: { deviceId: string }) {
   const { t } = useTranslation('aiOperator');

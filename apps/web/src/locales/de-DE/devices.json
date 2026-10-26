@@ -360,7 +360,22 @@
     "moving": "Wird verschoben...",
     "toADifferentSite": "an einen anderen Standort.",
     "deviceMovedByOther": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen",
-    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück."
+    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück.",
+    "bulkIntro": "{{count}} ausgewählte Geräte an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntro_one": "{{count}} ausgewähltes Gerät an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntro_other": "{{count}} ausgewählte Geräte an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntroNoOrg": "{{count}} ausgewählte Geräte an einen anderen Standort verschieben.",
+    "bulkIntroNoOrg_one": "{{count}} ausgewähltes Gerät an einen anderen Standort verschieben.",
+    "bulkIntroNoOrg_other": "{{count}} ausgewählte Geräte an einen anderen Standort verschieben.",
+    "devicesFromSites": "{{count}} Geräte von {{siteCount}} Standorten",
+    "devicesFromSites_one": "{{count}} Gerät von {{siteCount}} Standorten",
+    "devicesFromSites_other": "{{count}} Geräte von {{siteCount}} Standorten",
+    "selectSite": "Standort auswählen",
+    "moveDevices": "{{count}} Geräte verschieben",
+    "moveDevices_one": "{{count}} Gerät verschieben",
+    "moveDevices_other": "{{count}} Geräte verschieben",
+    "bulkPolicyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für diese Geräte gelten. Breeze verschiebt sie nicht automatisch zurück.",
+    "failedToMoveDevices": "Geräte konnten nicht verschoben werden"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -962,8 +977,8 @@
     "strip": "Streifen",
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
-    "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "operatorTasks": "KI-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Aufgaben für dieses Gerät",
     "tabGroups": {
       "monitoring": "Überwachung",
       "inventory": "Inventar",
@@ -1362,6 +1377,7 @@
     "drive": "Laufwerk",
     "size": "Größe",
     "used": "Verwendet",
+    "usedPercent": "Belegt %",
     "health": "Zustand",
     "noDiskInventoryReported": "Kein Festplatteninventar gemeldet.",
     "networkAdapters": "Netzwerkadapter",
@@ -1845,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} von {{count}} Gerät",
     "countLine_other": "{{shown}} von {{count}} Geräten",
-    "noMatchesTitle": "Keine Geräte passen zu diesen Filtern"
+    "noMatchesTitle": "Keine Geräte passen zu diesen Filtern",
+    "moveToSite": "An Standort verschieben",
+    "moveSelectedToSite": "An Standort verschieben",
+    "moveSiteMixedOrgs": "Die ausgewählten Geräte gehören zu mehr als einer Organisation",
+    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -1867,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Geräteprotokolle werden geladen...",
     "noLogsMatchTheSelectedFilters": "Keine Protokolle entsprechen den ausgewählten Filtern.",
-    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet."
+    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet.",
+    "linkedWindow": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}}",
+    "linkedWindowWithSource": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}} für {{source}}",
+    "clearLinkedFilter": "Link-Filter zurücksetzen"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Verwaltungsstatus wird geladen...",
@@ -1949,6 +1972,7 @@
     "title": "Aktive Netzwerkverbindungen"
   },
   "devicePatchStatusTab": {
+    "released": "Veröffentlicht am {{date}}",
     "compliance": {
       "compliant": "{{percent}} % konform",
       "description": "Ausstehende vs. installierte Updates",
@@ -2152,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Dauer: {{duration}}",
     "empty": "Für dieses Gerät wurden keine Playbook-Ausführungen gefunden.",
-    "emptyHelp": "Playbooks können über den KI-Assistenten ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
+    "emptyHelp": "Playbooks können über Breeze AI ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
     "loading": "Playbook-Verlauf wird geladen...",
     "noStepResults": "Es wurden keine Schrittergebnisse aufgezeichnet.",
     "rollbackExecuted": "Rollback wurde ausgeführt",
@@ -2287,7 +2311,11 @@
       "savedNotActive": "Markierung gespeichert. Eine spätere Markierung ist weiterhin wirksam, daher hat sich die Punktzahl nicht geändert.",
       "clearNotFound": "Diese Markierung existiert nicht mehr.",
       "clearAlreadyCleared": "Diese Markierung wurde bereits aufgehoben."
-    }
+    },
+    "eventLogLinkExact": "Im Ereignisprotokoll anzeigen",
+    "eventLogLinkWindow": "Ereignisprotokoll öffnen",
+    "eventLogLinkTitle": "Ereignisprotokoll, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Ereignisprotokoll für {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "In die Zwischenablage kopieren",
@@ -2497,7 +2525,7 @@
     "showFindings": "Befunde anzeigen",
     "stats": {
       "accepted": "Akzeptiert",
-      "kev": "Kev",
+      "kev": "Bekanntermaßen ausgenutzt",
       "mitigated": "Abgemildert",
       "open": "Offen",
       "patchReady": "Patch bereit",
@@ -2515,9 +2543,9 @@
     "statusLabel": "Statusetikett",
     "table": {
       "actions": "Aktionen",
-      "cve": "Cve",
-      "cvss": "Lebenslauf",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risiko",
       "severity": "Schweregrad",
       "status": "Status"
@@ -2572,7 +2600,7 @@
       "shutdown": "Herunterfahren"
     },
     "addDevice": "Gerät hinzufügen",
-    "importFromRmm": "Von einer anderen RMM importieren",
+    "importFromRmm": "Benutzerdefinierte Felder aus einer anderen RMM importieren",
     "bulkPurge": {
       "andMore": "und {{count}} weitere",
       "confirm": "Endgültig löschen",
@@ -2689,7 +2717,13 @@
       "bulkRestoreUninstallAlreadySent_one": "Bei {{count}} Gerät wurde die Deinstallation bereits gesendet — auf dieser Maschine muss der Agent ggf. neu installiert werden.",
       "bulkRestoreUninstallAlreadySent_other": "Bei {{count}} Geräten wurde die Deinstallation bereits gesendet — auf diesen Maschinen muss der Agent ggf. neu installiert werden.",
       "bulkRestored_one": "{{count}} Gerät wiederhergestellt",
-      "bulkRestored_other": "{{count}} Geräte wiederhergestellt"
+      "bulkRestored_other": "{{count}} Geräte wiederhergestellt",
+      "bulkMoveSiteSuccess": "{{count}} Geräte befinden sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} Gerät befindet sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} Geräte befinden sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSomeFailed": "{{moved}} von {{total}} Geräten nach {{site}} verschoben. Nicht verschoben: {{devices}}",
+      "bulkMoveSiteAllFailed": "Es wurden keine Geräte nach {{site}} verschoben. Nicht verschoben: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -3483,6 +3517,8 @@
     "health": {
       "empty": {
         "title": "Es wird noch nichts überwacht",
+        "titleWithCheck": "Keine SNMP-Integritätsdaten",
+        "descriptionWithCheck": "Für dieses Gerät ist eine Netzwerkprüfung aktiv, daher wird die Erreichbarkeit weiterhin erfasst. Aktivieren Sie SNMP, um zusätzlich Integritätsdaten zu erfassen.",
         "action": "Überwachung einrichten",
         "benefit": {
           "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",

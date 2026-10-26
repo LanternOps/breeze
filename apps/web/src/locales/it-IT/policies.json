@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applicata a tutte le organizzazioni. Deseleziona “Tutte le organizzazioni” per scegliere un sottoinsieme.",
       "polite": "polite",
       "loading": "Caricamento…",
-      "loadMoreOrganizations": "Carica altre organizzazioni"
+      "loadMoreOrganizations": "Carica altre organizzazioni",
+      "appliedToAllOrgs": "Il criterio ora si applica a tutte le organizzazioni",
+      "removedFromAllOrgs": "Il criterio non si applica più a tutte le organizzazioni"
     },
     "featureTabs": {
       "automationTab": {
@@ -356,7 +358,11 @@
         "pathPrefix": "Prefisso percorso",
         "optional": "(facoltativo)",
         "backupsBreeze": "backups/breeze/",
-        "keyPrefixForOrganizingObjectsInThe": "Prefisso chiave per organizzare gli oggetti nel bucket.",
+        "keyPrefixHelp": "Prefisso chiave per questa destinazione. I nuovi snapshot vengono archiviati in <prefix>/snapshots/. Gli snapshot esistenti restano dove sono. Modificarlo rende completo il backup successivo.",
+        "keyPrefixInvalidTooLong": "Prefisso chiave non valido: deve contenere al massimo {{max}} caratteri.",
+        "keyPrefixInvalidSegment": "Prefisso chiave non valido: non deve contenere segmenti vuoti, \".\" o \"..\".",
+        "keyPrefixInvalidCharacters": "Prefisso chiave non valido: usa solo lettere, cifre e ! _ . * ' ( ) - in ogni segmento, separati da /.",
+        "keyPrefixInvalidReserved": "Prefisso chiave non valido: non deve contenere un segmento \"snapshots\".",
         "customEndpoint": "Endpoint personalizzato",
         "optional2": "(facoltativo)",
         "httpsS3UsWest002Backblazeb2Com": "https://s3.us-west-002.backblazeb2.com",
@@ -741,7 +747,7 @@
         "muteAlertNotificationsDuringWindow": "Durante la finestra non vengono create nuove segnalazioni.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Sopprimi patching",
-        "delayPatchInstallationsDuringWindow": "Ritarda le installazioni delle patch durante la finestra.",
+        "delayPatchInstallationsDuringWindow": "Le installazioni pianificate durante la finestra vengono saltate ed eseguite alla successiva occorrenza pianificata.",
         "suppressPatching2": "suppressPatching",
         "suppressAutomations": "Sopprimi automazioni",
         "pauseAutomationRunsDuringWindow": "Metti in pausa le esecuzioni delle automazioni durante la finestra.",
@@ -750,9 +756,8 @@
         "pauseScriptExecutionDuringWindow": "Metti in pausa l'esecuzione degli script durante la finestra.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Riavvia se è presente un riavvio in sospeso",
-        "duringTheWindowRebootDevicesThatHave": "Durante la finestra, riavvia i dispositivi con un riavvio in sospeso. Windows avvisa l'utente che ha effettuato l'accesso circa 5 minuti prima del riavvio; Linux pianifica il riavvio dopo 15 minuti con un avviso agli utenti connessi. macOS non è supportato.",
+        "duringTheWindowRebootDevicesThatHave": "Durante la finestra, riavvia i dispositivi con un riavvio in sospeso. Il periodo di avviso deriva dal ritardo di riavvio del criterio di patch del dispositivo. macOS non è supportato.",
         "rebootIfPending": "rebootIfPending",
-        "maintenanceRebootIfPendingToggle": "maintenance-reboot-if-pending-toggle",
         "notifyOnStart": "Notifica all'inizio",
         "sendNotificationWhenWindowOpens": "Invia una notifica all'apertura della finestra.",
         "notifyOnStart2": "notifyOnStart",
@@ -1021,7 +1026,25 @@
         "fullScan": "Scansione completa",
         "maxFileSizeMb": "Dimensione massima file (MB)",
         "scanTimeoutMinutes": "Timeout scansione (minuti)",
-        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale."
+        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale.",
+        "ruleSets": {
+          "title": "Set di regole di rilevamento",
+          "description": "Set di regole usati dalle scansioni IOC di questo criterio.",
+          "manageLink": "Gestisci regole di rilevamento",
+          "loading": "Caricamento dei set di regole…",
+          "loadError": "Impossibile caricare i set di regole. Il criterio mantiene i set attuali; puoi comunque salvare le altre impostazioni.",
+          "none": "Nessun set di regole disponibile per questo criterio.",
+          "legacyNote": "Nessun set di regole: le scansioni usano solo le firme legacy integrate.",
+          "cap": "Un criterio può usare al massimo {{max}} set di regole.",
+          "unavailable": "Set di regole non disponibile",
+          "blocking": "Questo criterio non può usare i set di regole non disponibili (eliminati, spostati o di un'altra organizzazione). Rimuovili prima di salvare.",
+          "overrideDraft": "Le impostazioni ereditate includono set di regole che questo criterio non può usare. Rimuovi i set non disponibili, poi salva.",
+          "errors": {
+            "tooMany": "Un criterio può usare al massimo {{max}} set di regole.",
+            "invalidIds": "L'elenco dei set di regole non è valido. Ricarica la pagina e riprova.",
+            "notAttachable": "Questo criterio non può usare alcuni dei set di regole selezionati. Sono evidenziati qui sotto."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credenziali",
@@ -1148,7 +1171,13 @@
         "binaryMissing": "{{vendors}} non può essere attivato finché il pacchetto integrato non ha un programma di installazione distribuibile: un MSI Windows come versione più recente, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Correggilo nella scheda Versioni del pacchetto, quindi salva di nuovo.",
         "binaryMissingLink": "Apri la scheda Versioni",
         "platformMacosUnsupported": "macOS: non supportato.",
-        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente."
+        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente.",
+        "catalogMissingBuiltin": "{{vendors}} non è ancora nel catalogo software di questo partner. Aggiungilo da Software → Catalogo → Pacchetti integrati, poi salva di nuovo.",
+        "catalogMissingBuiltinLink": "Apri Pacchetti integrati",
+        "dnsBuiltinNote": "Aggiungi prima {{vendor}} al catalogo software di questo partner da Software → Catalogo → Pacchetti integrati; finché non è presente non può essere attivato.",
+        "dnsVariableNote": "Ogni organizzazione deve avere la variabile tenant {{variable}}, creata come variabile normale (non segreta). Le organizzazioni che non ce l'hanno vengono saltate e mostrate come non applicabili.",
+        "dnsVariableLink": "Apri Variabili",
+        "dnsCoverageNote": "Breeze non sincronizza la console di {{vendor}}, quindi la copertura mostra solo se ogni dispositivo può ricevere il client (in attesa o non applicabile). Lo stato di installazione e del servizio (mancante, non in esecuzione) compare nella conformità della policy software generata."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",
@@ -1236,7 +1265,7 @@
       "uploadFile": "Carica file",
       "source2": "source",
       "downloadUrl": "downloadUrl",
-      "noFileSelectedMsiExeDmgDeb": "Nessun file selezionato (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Nessun file selezionato (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "supportedOs",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "silentInstallArgs",
@@ -1292,7 +1321,19 @@
       "thisOrganizationOnly": "Solo questa organizzazione",
       "partnerWideUrlOnly": "I pacchetti a livello di partner usano un URL di download — il caricamento di file non è ancora disponibile per loro.",
       "selectedFileRemoved": "Il file selezionato è stato rimosso — i pacchetti a livello di partner usano un URL di download.",
-      "scopeLockedAfterCreate": "Il pacchetto è già stato creato con questo ambito — la proprietà non può cambiare dopo la creazione."
+      "scopeLockedAfterCreate": "Il pacchetto è già stato creato con questo ambito — la proprietà non può cambiare dopo la creazione.",
+      "installScripts": "Script di installazione",
+      "installScriptsHelp": "Obbligatori per i pacchetti zip, facoltativi negli altri casi. Gli script vengono eseguiti come SYSTEM su Windows o root su macOS e Linux, scadono dopo 10 minuti, richiedono il permesso devices.execute ed esattamente un sistema operativo di destinazione.",
+      "availableTokens": "Token disponibili:",
+      "preInstallScript": "Script di pre-installazione",
+      "postInstallScript": "Script di post-installazione",
+      "preInstallScriptPlaceholder": "Eseguito prima dell'installer (PowerShell su Windows, bash su macOS e Linux)",
+      "postInstallScriptPlaceholder": "Eseguito dopo l'installer o dopo l'estrazione dello zip",
+      "silentArgsNotUsedForType": "Gli argomenti di installazione silenziosa non vengono usati per gli installer pkg, dmg, deb o zip.",
+      "issueZipRequiresPostInstallScript": "I pacchetti zip richiedono uno script di post-installazione: l'agent si limita a estrarre l'archivio.",
+      "issueScriptsRequireSingleOs": "Gli script di installazione richiedono esattamente un sistema operativo di destinazione.",
+      "issueScriptTooLarge": "Ogni script di installazione deve essere di 64 KiB o meno.",
+      "issueArgsUnsupportedForFileType": "Gli argomenti di installazione silenziosa non sono supportati per questo tipo di installer."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Integrato gestito",
@@ -1338,9 +1379,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Nessun criterio software trovato. Creane uno per iniziare.",
       "recentViolations": "Violazioni recenti",
       "noCurrentSoftwareViolations": "Nessuna violazione software corrente.",
-      "violationS": "violazione/i",
-      "remediation": "Correzione:",
-      "checked": "Controllato:",
+      "remediation": "Correzione: {{value}}",
+      "checked": "Controllato: {{date}}",
       "deactivatePolicy": "Disattiva criterio",
       "areYouSureYouWantToDeactivate": "Vuoi davvero disattivare",
       "thePolicyWillBeMarkedInactiveAnd": "? Il criterio verrà contrassegnato come inattivo e i dati di conformità saranno cancellati.",
@@ -1376,7 +1416,18 @@
       "coverageVendor": "Fornitore",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agent noto solo al fornitore",
-      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}"
+      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}",
+      "violationCount": "{{count}} violazione",
+      "violationCount_one": "{{count}} violazione",
+      "violationCount_other": "{{count}} violazioni",
+      "violationTypes": {
+        "unauthorized": "Non autorizzato",
+        "missing": "Mancante",
+        "outdated": "Obsoleto",
+        "not_running": "Non in esecuzione",
+        "service_unverified": "Servizio non verificato",
+        "serviceTitle": "Servizio: {{name}}"
+      }
     },
     "deploymentList": {
       "running": "In esecuzione",
@@ -1439,6 +1490,8 @@
       "error": "Errore",
       "deploymentComplete": "Distribuzione completata",
       "inProgress": "In corso",
+      "completedWithErrors": "Completato con errori",
+      "scheduledFor": "Pianificato per {{time}}",
       "autoRefreshing": "Aggiornamento automatico ogni 5 secondi",
       "queuedOffline": "In coda — dispositivo offline",
       "cancelled": "Annullata",
@@ -1590,20 +1643,25 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Servizio in esecuzione",
+      "readOnlyHint": "Creata tramite API. Non modificabile qui; viene mantenuta invariata al salvataggio.",
+      "serviceName": "Nome del servizio",
+      "serviceNamePlaceholder": "es. ctrld",
+      "serviceNameHint": "Nome del servizio Windows, etichetta launchd di macOS o unità systemd di Linux. Verificato prima e dopo l'installazione.",
+      "serviceNameInvalid": "Inserisci un nome di servizio senza caratteri di controllo e senza \"-\" iniziale (massimo 256 byte)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossibile recuperare i dispositivi",
-      "devicesWith": "Dispositivi con",
-      "by": "di",
+      "devicesWith": "Dispositivi con {{name}}",
+      "by": "di {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Nessun dispositivo trovato con questo software.",
       "hostname": "Nome host",
       "oS": "OS",
       "version": "Versione",
       "lastSeen": "Ultimo rilevamento",
-      "device": "device",
-      "total": "totale",
-      "s": "s"
+      "deviceTotal_one": "{{count}} dispositivo in totale",
+      "deviceTotal_other": "{{count}} dispositivi in totale"
     },
     "policyForm": {
       "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",
@@ -1708,7 +1766,10 @@
       "catalogTab": "Catalogo",
       "summaryCompleted7d": "Completate (7 gg)",
       "summaryFailed7d": "Non riuscite (7 gg)",
-      "categoryFilterLabel": "Categoria"
+      "categoryFilterLabel": "Categoria",
+      "requiredVariables": "Variabili richieste",
+      "uninstallCommand": "Comando di disinstallazione",
+      "managedByBreezeHint": "Gestito da Breeze. Questo pacchetto non può essere modificato né eliminato, e qui non è possibile aggiungere nuove versioni."
     },
     "softwareInventory": {
       "allowed": "Consentito",
@@ -1850,7 +1911,10 @@
       "uploadsRequireS3Storage": "Il caricamento di file richiede uno storage a oggetti S3 configurato sul server.",
       "editingVersion": "Modifica della versione",
       "failedToUpdateVersion": "Impossibile aggiornare la versione",
-      "replaceFileAddNewVersion": "Per sostituire il file di installazione, aggiungi invece una nuova versione."
+      "replaceFileAddNewVersion": "Per sostituire il file di installazione, aggiungi invece una nuova versione.",
+      "inactiveStoredScripts": "Gli script di installazione memorizzati non sono attivi; ricrea la versione per attivarli.",
+      "addZipFromAddPackage": "Aggiungi i pacchetti zip da Aggiungi pacchetto.",
+      "builtinVersionsReadOnly": "Gestito da Breeze. Le versioni dei pacchetti integrati non possono essere aggiunte o modificate qui."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserisci una variabile di distribuzione",
@@ -1884,6 +1948,30 @@
       "queuedNone": "Nulla è stato messo in coda: i dispositivi dell'anteprima non richiedono più la correzione o l'hanno già in sospeso.",
       "queuedPartial": "Correzione in coda per {{queued}} di {{requested}} dispositivi dell'anteprima; gli altri non ne hanno più bisogno o l'hanno già in sospeso.",
       "previewFailedWithReason": "Impossibile caricare l'anteprima della correzione: {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Pacchetti integrati",
+      "description": "Client di filtraggio DNS bloccati su una versione e verificati da Breeze. Aggiungine uno al catalogo, imposta la sua variabile per ogni organizzazione, quindi distribuiscilo come qualsiasi altro pacchetto.",
+      "colPackage": "Pacchetto",
+      "colPlatform": "Piattaforma",
+      "colPinnedVersion": "Versione bloccata",
+      "colRequiredVariables": "Variabili richieste",
+      "colUninstallCommand": "Comando di disinstallazione",
+      "colStatus": "Stato",
+      "addToCatalog": "Aggiungi al catalogo",
+      "adding": "Aggiunta in corso…",
+      "inCatalog": "Nel catalogo",
+      "archived": "Archiviato",
+      "restoreToCatalog": "Ripristina",
+      "addedToCatalog": "{{name}} aggiunto al catalogo",
+      "couldNotAddToCatalog": "Impossibile aggiungere {{name}} al catalogo",
+      "couldNotLoadBuiltinPackages": "Impossibile caricare i pacchetti integrati",
+      "loadingBuiltinPackages": "Caricamento dei pacchetti integrati…",
+      "setVariablesPerOrganization": "Da impostare per organizzazione in Impostazioni → Variabili",
+      "copyUninstallCommand": "Copia comando di disinstallazione",
+      "uninstallCommandCopied": "Comando di disinstallazione copiato",
+      "breezeDoesNotUninstall": "Breeze non disinstalla questi client. Esegui il comando sul dispositivo per rimuoverne uno.",
+      "copyFailed": "Copia non riuscita. Seleziona il comando e copialo manualmente."
     }
   }
 }

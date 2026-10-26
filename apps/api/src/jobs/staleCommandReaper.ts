@@ -3,7 +3,7 @@ import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStale
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import {
   deviceCommands,
   scriptExecutions,
@@ -33,6 +33,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
+import { finalizeContainmentAction } from '../services/incidentContainmentResults';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
@@ -91,10 +92,11 @@ const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 // Software deployment (`deployment_results`) stale thresholds — §1.5 of the
 // 2026-07-28 software-deployment-visibility plan. Exported for tests.
 //
-// Tier 1 (delivered but silent): 55 min sits above the agent's own hard
-// ceilings (15 min download + 30 min install,
-// agent/internal/remote/tools/software_install.go:22-26), so the server only
-// declares a timeout after the agent's ceilings have provably lapsed.
+// Tier 1 (delivered but silent): 75 min sits above the agent's worst-case
+// budget: download 15 + installer 30 (software_install.go) + two install
+// scripts 2×10 (#6958; agent-side enforcement lands with the agent PR) +
+// detection settle window 1 = 66 min, plus margin. The server only declares a
+// timeout after the agent's ceilings have provably lapsed.
 // Lives in @breeze/shared (#3578) so the web deployment view's "no update from
 // the agent" hint quotes the same number this reaper enforces.
 export const SOFTWARE_INSTALL_TIMEOUT_MS = SOFTWARE_INSTALL_SERVER_TIMEOUT_MS;
@@ -337,6 +339,28 @@ export async function propagateTimedOutDeviceCommand(params: {
       );
     } catch (err) {
       console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // #9662 — an execute_containment command the server stopped waiting for
+  // leaves its incident action `in_progress` forever otherwise; nothing else
+  // ever revisits it. Recorded as a server timeout, which a late real agent
+  // result may still repair. Contained like the blocks above: a failure must
+  // not skip the DR reconcile — and, because the manual mark-timed-out route
+  // calls this inside its request transaction, it runs in a real savepoint so
+  // a caught SQL fault does not leave that transaction aborted.
+  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+    const finalize = () => finalizeContainmentAction({
+      commandId,
+      payload,
+      outcome: { kind: 'timeout', error: errorMsg },
+      completedAt,
+    });
+    try {
+      await (hasDbAccessContext() ? withDbTransaction(finalize) : finalize());
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to finalize the containment action for timed-out command ${commandId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }

@@ -193,6 +193,11 @@ describe('action_intents immutability trigger (live DB)', () => {
     requested_by_user_id: { requestedByUserId: randomUUID() },
     requesting_api_key_id: { requestingApiKeyId: randomUUID() },
     requesting_agent_run_id: { requestingAgentRunId: randomUUID() },
+    // 2027-01-06-130000 (tool catalog W04, #5219): unconditional guard. The
+    // seeded intent starts with it NULL, so setting it is the blocked
+    // direction; the trigger raises before the one-actor / flow-origin CHECKs
+    // and the composite flow_runs FK get to complain.
+    requesting_flow_run_id: { requestingFlowRunId: randomUUID() },
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
