@@ -60,7 +60,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_unifi_status',
       description:
-        'Read the partner UniFi integration. Actions: status; hosts (live consoles and sites); collectors; mappings; telemetry (siteId: devices and clients); sync_runs (last 20); controller_sites. Read-only.',
+        'Read the partner UniFi integration. Actions: status,hosts (live consoles and sites),collectors,mappings,telemetry (siteId: devices and clients),sync_runs (last 20),controller_sites. Read-only.',
       input_schema: {
         type: 'object' as const,
         properties: {

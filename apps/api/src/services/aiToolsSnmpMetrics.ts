@@ -34,7 +34,7 @@ export function registerSnmpMetricsTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_snmp_metrics',
       description:
-        'SNMP metric history and the SNMP dashboard. Actions: history (assetId,oid; optional from,to,bucket,delta) returns bucketed series for a discovered asset; dashboard returns device, template and threshold counts, top interfaces and recent polls.',
+        'SNMP metric history and the SNMP dashboard. Actions: history (assetId,oid,from,to,bucket,delta),dashboard. history returns bucketed series for a discovered asset; dashboard returns counts, top interfaces and recent polls.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -97,7 +97,7 @@ export function registerSnmpMetricsTools(aiTools: Map<string, AiTool>): void {
           return jsonError('The SNMP dashboard aggregates the whole organization; a device-restricted session cannot read it', 'ACCESS_DENIED');
         }
         const orgResult = resolveOrgId(auth, typeof input.orgId === 'string' ? input.orgId : undefined);
-        if ('error' in orgResult) return jsonError(orgResult.error, 'ACCESS_DENIED');
+        if ('error' in orgResult) return jsonError(orgResult.error ?? 'Access denied', 'ACCESS_DENIED');
         const visibility = templateVisibilityCondition(auth, orgResult.orgId ?? undefined);
         if (visibility.error) return jsonError(visibility.error, 'ACCESS_DENIED');
         const sites = siteAllowlistOf(auth);

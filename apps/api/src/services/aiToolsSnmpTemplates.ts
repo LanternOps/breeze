@@ -70,7 +70,7 @@ export function registerSnmpTemplateTools(aiTools: Map<string, AiTool>): void {
             },
           },
           query: { type: 'string', description: 'browse_oids: text to match against OID, name or description' },
-          limit: { type: 'number', description: 'browse_oids: max results (1-100, default 25)' },
+          limit: { type: 'number', description: 'Max results for browse_oids (default 25, max 100)' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -159,7 +159,7 @@ export function registerSnmpTemplateTools(aiTools: Map<string, AiTool>): void {
             if ('error' in parsed) return parsed.error;
             const payload = parsed.value;
             const orgResult = resolveOrgId(auth, payload.orgId, true);
-            if ('error' in orgResult) return jsonError(orgResult.error, 'ACCESS_DENIED');
+            if ('error' in orgResult) return jsonError(orgResult.error ?? 'Access denied', 'ACCESS_DENIED');
             const [template] = await db.insert(snmpTemplates).values({
               orgId: orgResult.orgId!,
               name: payload.name,
