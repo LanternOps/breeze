@@ -120,6 +120,73 @@ describe('flow mutations go through runAction', () => {
   });
 });
 
+describe('error toasts: friendly copy and no double-reporting', () => {
+  it('409 already_terminal on cancel toasts localized copy, never the raw token', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(409, { error: 'already_terminal' }));
+    await expect(cancelFlowRun('r1')).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('runDetail.alreadyTerminal'), type: 'error' });
+  });
+
+  it.each([
+    [403, 'delegation_scope_restricted'],
+    [403, 'partner_wide_forbidden'],
+    [403, 'interactive_session_required'],
+    [404, 'flow_not_found'],
+    [409, 'version_conflict'],
+    [409, 'already_enabled'],
+    [409, 'slug_unavailable'],
+    [422, 'permission_missing'],
+    [422, 'invalid'],
+    [422, 'pre_approval_not_eligible'],
+    [422, 'event_dispatch_not_durable'],
+    [422, 'foreach_concurrency_not_available'],
+  ])('enable %s %s is rendered inline by the dialog, so it is not toasted', async (status, code) => {
+    mocks.fetchWithAuth.mockResolvedValue(json(status, { error: code }));
+    await expect(enableFlow('f1', { expectedVersion: 1, preApprovedStepIds: [] })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('enable MFA_REQUIRED (rides code) is not toasted; an unmapped enable error still is', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(403, { error: 'MFA required', code: 'MFA_REQUIRED' }));
+    await expect(enableFlow('f1', { expectedVersion: 1, preApprovedStepIds: [] })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+    mocks.fetchWithAuth.mockResolvedValue(json(500, { error: 'boom_unknown' }));
+    await expect(enableFlow('f1', { expectedVersion: 1, preApprovedStepIds: [] })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [422, 'inputs_invalid'],
+    [403, 'permission_missing'],
+    [429, 'flow_queue_full'],
+    [409, 'not_enabled'],
+    [422, 'org_required'],
+    [403, 'delegation_scope_restricted'],
+    [403, 'interactive_user_required'],
+    [403, 'org_forbidden'],
+  ])('run %s %s is rendered inline by the dialog, so it is not toasted', async (status, code) => {
+    mocks.fetchWithAuth.mockResolvedValue(json(status, { error: code }));
+    await expect(startFlowRun('f1', { inputs: {} })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('run MFA_REQUIRED is not toasted; unknown run errors still toast', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(403, { error: 'MFA required', code: 'MFA_REQUIRED' }));
+    await expect(startFlowRun('f1', { inputs: {} })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+    mocks.fetchWithAuth.mockResolvedValue(json(500, { error: 'boom_unknown' }));
+    await expect(startFlowRun('f1', { inputs: {} })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('disable and cancel failures are still toasted (no inline surface)', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(403, { error: 'delegation_scope_restricted' }));
+    await expect(disableFlow('f1')).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('locale key lists match the shared const arrays', () => {
   const keys = (o: unknown) => Object.keys(o as object).sort();
   const sorted = (a: readonly string[]) => [...a].sort();

@@ -102,4 +102,24 @@ describe('useFlowRunPolling', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
     expect(api.getFlowRun).toHaveBeenCalledTimes(before + 1);
   });
+
+  it('unmount stops all further calls', async () => {
+    api.getFlowRun.mockResolvedValue(run('running'));
+    const { unmount } = renderHook(() => useFlowRunPolling('r1'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.getFlowRun).toHaveBeenCalledTimes(1);
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(api.getFlowRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('a runId change fetches the new id', async () => {
+    api.getFlowRun.mockResolvedValue(run('running'));
+    const { rerender } = renderHook(({ id }) => useFlowRunPolling(id), { initialProps: { id: 'r1' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.getFlowRun).toHaveBeenLastCalledWith('r1');
+    rerender({ id: 'r2' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.getFlowRun).toHaveBeenLastCalledWith('r2');
+  });
 });

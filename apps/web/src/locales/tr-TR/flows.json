@@ -226,6 +226,7 @@
       "output": "Çıktı",
       "truncated": "Çıktı çok büyük olduğu için kısaltıldı.",
       "notReached": "Ulaşılmadı",
+      "pending": "Beklemede",
       "item": "Öğe {{index}}",
       "approver": "Onaylayan: {{id}}",
       "attempt": "Deneme {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "Adım ayrıntıları erişiminizle görüntülenemiyor."
     },
     "notFound": "Çalıştırma bulunamadı.",
+    "alreadyTerminal": "Bu çalıştırma zaten sona erdi.",
     "loadFailed": "Bu çalıştırma yüklenemedi.",
     "retry": "Yeniden dene",
     "version": "Sürüm {{version}} (yayın {{seq}})",

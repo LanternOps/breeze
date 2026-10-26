@@ -14,7 +14,12 @@ vi.mock('../../stores/orgStore', () => ({
   },
 }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const perms = vi.hoisted(() => ({ write: true }));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => r === 'automations' && a === 'write' && perms.write }),
+}));
 
+import { ActionError } from '@/lib/runAction';
 import FlowRunPage from './FlowRunPage';
 
 const step = (over: Record<string, unknown>) => ({
@@ -54,6 +59,7 @@ describe('FlowRunPage', () => {
     api.getFlowRun.mockReset();
     api.getFlowRunStep.mockReset();
     api.cancelFlowRun.mockReset();
+    perms.write = true;
     api.getFlowRun.mockResolvedValue(runDetail());
   });
 
@@ -150,5 +156,33 @@ describe('FlowRunPage', () => {
     render(<FlowRunPage runId="run-1" />);
     await userEvent.setup().click(await screen.findByTestId('flow-run-step-toggle-row-list'));
     expect((await screen.findByTestId('flow-run-step-pruned-row-list')).textContent).toMatch(/retention/i);
+  });
+
+  it('hides Cancel without automations.write', async () => {
+    perms.write = false;
+    render(<FlowRunPage runId="run-1" />);
+    await screen.findByTestId('flow-run-status');
+    expect(screen.queryByTestId('flow-run-cancel')).toBeNull();
+  });
+
+  it('a 409 already_terminal on cancel refetches the run', async () => {
+    api.cancelFlowRun.mockRejectedValue(new ActionError('x', 409, undefined, { error: 'already_terminal' }));
+    render(<FlowRunPage runId="run-1" />);
+    const btn = await screen.findByTestId('flow-run-cancel');
+    expect(api.getFlowRun).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(btn);
+    await waitFor(() => expect(api.getFlowRun).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows the not-found state when the run 404s', async () => {
+    api.getFlowRun.mockRejectedValue(new ActionError('missing', 404));
+    render(<FlowRunPage runId="run-1" />);
+    expect(await screen.findByTestId('flow-run-not-found')).toBeTruthy();
+    expect(screen.queryByTestId('flow-run-error')).toBeNull();
+  });
+
+  it('an unreached step in an active run reads Pending', async () => {
+    render(<FlowRunPage runId="run-1" />);
+    expect((await screen.findByTestId('flow-run-step-final')).textContent).toContain('Pending');
   });
 });

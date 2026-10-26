@@ -226,6 +226,7 @@
       "output": "Risultato",
       "truncated": "Il risultato è stato accorciato perché troppo grande.",
       "notReached": "Non raggiunto",
+      "pending": "In attesa",
       "item": "Elemento {{index}}",
       "approver": "Approvatore: {{id}}",
       "attempt": "Tentativo {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "I dettagli del passaggio non sono disponibili con il tuo livello di accesso."
     },
     "notFound": "Esecuzione non trovata.",
+    "alreadyTerminal": "Questa esecuzione è già terminata.",
     "loadFailed": "Impossibile caricare questa esecuzione.",
     "retry": "Riprova",
     "version": "Versione {{version}} (pubblicazione {{seq}})",

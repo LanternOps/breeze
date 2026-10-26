@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowDocumentV1, FlowRunStepDetailDto, FlowRunStepSummaryDto } from '@breeze/shared';
@@ -22,24 +22,28 @@ function json(value: unknown): string {
 /**
  * Steps in definition order merged with the run's step rows. Unreached steps
  * are greyed, for-each items nest under their step, and bodies load lazily
- * (once per step row) when a row is expanded.
+ * when a row is expanded and reload when the row's status / timing changes.
  */
 export function FlowRunTimeline({
   runId,
   definition,
   steps,
   bodiesPrunedAt = null,
+  runActive = false,
 }: {
   runId: string;
   definition: FlowDocumentV1;
   steps: FlowRunStepSummaryDto[];
   /** Set once retention pruned the run's bodies; null + `bodiesPruned` rows means the API redacted them for this reader. */
   bodiesPrunedAt?: string | null;
+  /** True while the run is non-terminal: steps not yet reached read "Pending" instead of "Not reached". */
+  runActive?: boolean;
 }) {
   const { t } = useTranslation('flows');
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [bodies, setBodies] = useState<Record<string, BodyState>>({});
-  const requested = useRef<Set<string>>(new Set());
+  /** rowId -> the status key its in-flight / loaded body was fetched for. */
+  const requested = useRef<Map<string, string>>(new Map());
 
   const byStep = new Map<string, FlowRunStepSummaryDto[]>();
   for (const row of steps) {
@@ -53,22 +57,32 @@ export function FlowRunTimeline({
     ...[...byStep.keys()].filter((id) => !known.has(id)).map((id) => ({ id, tool: byStep.get(id)![0].tool })),
   ];
 
-  const load = (rowId: string) => {
-    if (requested.current.has(rowId)) return;
-    requested.current.add(rowId);
-    setBodies((b) => ({ ...b, [rowId]: { kind: 'loading' } }));
+  const load = (row: FlowRunStepSummaryDto) => {
+    const rowId = row.id;
+    const key = `${row.status}|${row.finishedAt ?? ''}|${row.durationMs ?? ''}`;
+    if (requested.current.get(rowId) === key) return;
+    requested.current.set(rowId, key);
+    // Keep showing the previous body while a changed row reloads (no flicker).
+    setBodies((b) => (b[rowId]?.kind === 'ready' ? b : { ...b, [rowId]: { kind: 'loading' } }));
     getFlowRunStep(runId, rowId)
-      .then((step) => setBodies((b) => ({ ...b, [rowId]: { kind: 'ready', step } })))
+      .then((step) => {
+        if (requested.current.get(rowId) === key) setBodies((b) => ({ ...b, [rowId]: { kind: 'ready', step } }));
+      })
       .catch(() => {
-        requested.current.delete(rowId); // a failed load may be retried on the next expand
+        if (requested.current.get(rowId) !== key) return;
+        requested.current.delete(rowId); // a failed load is never cached: the next expand / poll retries
         setBodies((b) => ({ ...b, [rowId]: { kind: 'error' } }));
       });
   };
 
+  useEffect(() => {
+    for (const row of steps) {
+      if (open[row.id] && !row.bodiesPruned) load(row);
+    }
+  }, [steps, open]);
+
   const toggle = (row: FlowRunStepSummaryDto) => {
-    const next = !open[row.id];
-    setOpen((o) => ({ ...o, [row.id]: next }));
-    if (next && !row.bodiesPruned) load(row.id);
+    setOpen((o) => ({ ...o, [row.id]: !o[row.id] }));
   };
 
   const renderBody = (row: FlowRunStepSummaryDto) => {
@@ -158,7 +172,7 @@ export function FlowRunTimeline({
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="font-mono font-medium">{g.id}</span>
               <span className="text-xs text-muted-foreground">{g.tool}</span>
-              {!reached && <span className="text-xs italic text-muted-foreground">{t('runDetail.step.notReached')}</span>}
+              {!reached && <span className="text-xs italic text-muted-foreground">{runActive ? t('runDetail.step.pending') : t('runDetail.step.notReached')}</span>}
             </div>
             {reached && (
               <ul className="space-y-2">

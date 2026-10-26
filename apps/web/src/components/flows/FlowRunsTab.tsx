@@ -24,7 +24,12 @@ export function FlowRunsTab({ flowId, ownerScope }: { flowId: string; ownerScope
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+    let wantsPoll = false; // the last load saw an active run (or failed) but could not schedule
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      wantsPoll = false;
       let active = false;
       try {
         const res = await listFlowRuns(flowId, { limit: PAGE_LIMIT, ...(status ? { status } : {}) });
@@ -38,12 +43,21 @@ export function FlowRunsTab({ flowId, ownerScope }: { flowId: string; ownerScope
         setRuns((prev) => prev ?? []);
         active = true; // keep trying: a failed list is not "no runs"
       }
-      if (active && !cancelled && !document.hidden) timer = setTimeout(() => { void load(); }, POLL_MS);
+      inFlight = false;
+      if (active && !cancelled) {
+        if (document.hidden) wantsPoll = true; // resume from the visibilitychange handler
+        else timer = setTimeout(() => { void load(); }, POLL_MS);
+      }
     };
+    const onVisibility = () => {
+      if (!document.hidden && wantsPoll && !cancelled && !inFlight) void load();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
     void load();
     return () => {
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [flowId, status]);
 

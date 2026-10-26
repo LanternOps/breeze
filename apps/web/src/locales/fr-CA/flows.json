@@ -226,6 +226,7 @@
       "output": "Sortie",
       "truncated": "La sortie a été raccourcie parce qu'elle était trop volumineuse.",
       "notReached": "Non atteinte",
+      "pending": "En attente",
       "item": "Élément {{index}}",
       "approver": "Approbateur : {{id}}",
       "attempt": "Tentative {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "Les détails de l’étape ne sont pas accessibles avec votre niveau d’accès."
     },
     "notFound": "Exécution introuvable.",
+    "alreadyTerminal": "Cette exécution est déjà terminée.",
     "loadFailed": "Impossible de charger cette exécution.",
     "retry": "Réessayer",
     "version": "Version {{version}}, publication n° {{seq}}",

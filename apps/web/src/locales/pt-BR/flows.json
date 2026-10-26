@@ -226,6 +226,7 @@
       "output": "Saída",
       "truncated": "A saída foi encurtada por ser grande demais.",
       "notReached": "Não alcançada",
+      "pending": "Pendente",
       "item": "Elemento {{index}}",
       "approver": "Aprovador: {{id}}",
       "attempt": "Tentativa {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "Os detalhes da etapa não estão disponíveis com o seu acesso."
     },
     "notFound": "Execução não encontrada.",
+    "alreadyTerminal": "Esta execução já foi concluída.",
     "loadFailed": "Não foi possível carregar esta execução.",
     "retry": "Tentar novamente",
     "version": "Versão {{version}} (publicação {{seq}})",

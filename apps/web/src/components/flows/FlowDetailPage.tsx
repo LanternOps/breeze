@@ -57,6 +57,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('errors.disableFailed') }); // ActionError already toasted
       setDisableOpen(false);
+      reload(); // the flow's state may have changed under us (e.g. already disabled)
     } finally {
       setDisabling(false);
     }
@@ -94,8 +95,8 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const { definition } = flow;
   const canWrite = can('automations', 'write');
   const canEnable = canWrite && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
-  const canDisable = canWrite && flow.status === 'enabled';
-  const canRun = canDisable && definition.trigger.type === 'manual';
+  const canDisable = canWrite && (flow.status === 'enabled' || flow.status === 'paused');
+  const canRun = canWrite && flow.status === 'enabled' && definition.trigger.type === 'manual';
 
   return (
     <div className="space-y-6 p-4" data-testid="flow-detail">
@@ -204,6 +205,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
           flow={flow}
           validation={validation}
           onClose={() => setEnableOpen(false)}
+          onStale={reload}
           onEnabled={() => {
             setEnableOpen(false);
             reload();

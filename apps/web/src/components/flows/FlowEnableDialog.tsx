@@ -45,12 +45,15 @@ export function FlowEnableDialog({
   validation,
   onClose,
   onEnabled,
+  onStale,
 }: {
   open: boolean;
   flow: FlowDetailDto;
   validation: FlowValidationResult;
   onClose: () => void;
   onEnabled: () => void;
+  /** Called on a 409 (version conflict / already enabled) so the caller can reload the flow. */
+  onStale?: () => void;
 }) {
   const { t } = useTranslation('flows');
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -84,6 +87,7 @@ export function FlowEnableDialog({
         // 422 is not toasted by enableFlow, so render it inline. Any other status
         // was already toasted by runAction; still surface a known code inline.
         setError(readBody(err));
+        if (err.status === 409) onStale?.();
       } else {
         showToast({ type: 'error', message: t('enable.generic') });
       }

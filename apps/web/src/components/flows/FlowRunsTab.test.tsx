@@ -30,6 +30,7 @@ describe('FlowRunsTab', () => {
     api.listFlowRuns.mockResolvedValue({ runs, total: 2 });
   });
   afterEach(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
     vi.useRealTimers();
   });
 
@@ -66,6 +67,28 @@ describe('FlowRunsTab', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(api.listFlowRuns).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(api.listFlowRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it('reloads when the tab becomes visible after a fetch finished while it was hidden', async () => {
+    vi.useFakeTimers();
+    const setHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    let resolveFirst: (v: unknown) => void = () => {};
+    api.listFlowRuns.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+    api.listFlowRuns.mockResolvedValue({ runs: [{ ...base, id: 'run-a', status: 'running', finishedAt: null }], total: 1 });
+    render(<FlowRunsTab flowId="f1" ownerScope="organization" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(api.listFlowRuns).toHaveBeenCalledTimes(1);
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    await act(async () => {
+      resolveFirst({ runs: [{ ...base, id: 'run-a', status: 'running', finishedAt: null }], total: 1 });
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(api.listFlowRuns).toHaveBeenCalledTimes(1); // no timer was scheduled while hidden
+    await act(async () => { setHidden(false); await vi.advanceTimersByTimeAsync(0); });
     expect(api.listFlowRuns).toHaveBeenCalledTimes(2);
   });
 });

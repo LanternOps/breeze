@@ -51,8 +51,9 @@ const validation = {
 function setup(f = flow()) {
   const onEnabled = vi.fn();
   const onClose = vi.fn();
-  render(<FlowEnableDialog open flow={f} validation={validation} onClose={onClose} onEnabled={onEnabled} />);
-  return { onEnabled, onClose };
+  const onStale = vi.fn();
+  render(<FlowEnableDialog open flow={f} validation={validation} onClose={onClose} onEnabled={onEnabled} onStale={onStale} />);
+  return { onEnabled, onClose, onStale };
 }
 
 beforeEach(() => {
@@ -137,5 +138,76 @@ describe('FlowEnableDialog', () => {
     setup();
     await user.click(screen.getByTestId('flow-enable-confirm'));
     expect((await screen.findByTestId('flow-enable-error-flow_not_found')).textContent).toContain('not found');
+  });
+
+  it.each([
+    [409, 'version_conflict', /changed since you opened/i],
+    [409, 'already_enabled', /already enabled/i],
+    [422, 'event_dispatch_not_durable', /not durable/i],
+    [422, 'foreach_concurrency_not_available', /in parallel/i],
+    [403, 'delegation_scope_restricted', /limited to some sites/i],
+    [403, 'partner_wide_forbidden', /all organizations/i],
+    [403, 'interactive_session_required', /signed-in browser session/i],
+    [409, 'slug_unavailable', /already uses this identifier/i],
+  ])('renders %s %s as localized text, never the raw code', async (status, code, pattern) => {
+    const user = userEvent.setup();
+    api.enableFlow.mockRejectedValueOnce(new ActionError('x', status, undefined, { error: code }));
+    setup();
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    const el = await screen.findByTestId(`flow-enable-error-${code}`);
+    expect(el.textContent).toMatch(pattern);
+    expect(el.textContent).not.toContain(code);
+  });
+
+  it('pre_approval_not_eligible names the step and the localized reason', async () => {
+    const user = userEvent.setup();
+    api.enableFlow.mockRejectedValueOnce(
+      new ActionError('x', 422, undefined, { error: 'pre_approval_not_eligible', stepId: 'wipe', reason: 'four_eyes' }),
+    );
+    setup();
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    const el = await screen.findByTestId('flow-enable-error-pre_approval_not_eligible');
+    expect(el.textContent).toContain('wipe');
+    expect(el.textContent).toMatch(/second person/i);
+    expect(el.textContent).not.toContain('four_eyes');
+  });
+
+  it('an unknown error code falls back to the generic message without the raw code', async () => {
+    const user = userEvent.setup();
+    api.enableFlow.mockRejectedValueOnce(new ActionError('x', 500, undefined, { error: 'mystery_code' }));
+    setup();
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    const el = await screen.findByTestId('flow-enable-error-generic');
+    expect(el.textContent).toBe('Could not enable the flow.');
+    expect(screen.getByTestId('flow-enable-error').textContent).not.toContain('mystery_code');
+  });
+
+  it('permission_missing lists both the step id and the permission', async () => {
+    const user = userEvent.setup();
+    api.enableFlow.mockRejectedValue(
+      new ActionError('x', 422, undefined, {
+        error: 'permission_missing',
+        missing: [{ stepId: 'run_a', permission: 'scripts.execute' }, { stepId: 'run_b', permission: 'devices.write' }],
+      }),
+    );
+    setup();
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    const list = await screen.findByTestId('flow-enable-missing');
+    for (const text of ['run_a', 'scripts.execute', 'run_b', 'devices.write']) {
+      expect(within(list).getByText(text)).toBeTruthy();
+    }
+  });
+
+  it('a 409 asks the caller to reload the flow; a 422 does not', async () => {
+    const user = userEvent.setup();
+    api.enableFlow.mockRejectedValueOnce(new ActionError('x', 422, undefined, { error: 'invalid', validation: { issues: [] } }));
+    const { onStale } = setup();
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    await screen.findByTestId('flow-enable-validation');
+    expect(onStale).not.toHaveBeenCalled();
+    api.enableFlow.mockRejectedValueOnce(new ActionError('x', 409, 'version_conflict', { error: 'version_conflict' }));
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    await screen.findByTestId('flow-enable-error-version_conflict');
+    expect(onStale).toHaveBeenCalledTimes(1);
   });
 });

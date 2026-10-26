@@ -38,7 +38,11 @@ A step can be pre-approved only when it is a **Run script** step and all of thes
 
 The pre-approval is **bound to the script's content**. If the script is edited after you enable the flow, the next run detects the change, the flow pauses with the reason `binding_drift`, and you must review and enable it again.
 
-**Runs started by an AI never use pre-approvals.** When someone starts a flow from Breeze AI with `run_flow`, or a run is started with an API key, every sensitive step waits for a human approval. A manual run started from the web interface honors pre-approvals only when the person starting it could run every step themselves and has no site restriction.
+**Runs started by an AI never use pre-approvals.** When someone starts a flow from Breeze AI with `run_flow`, or a run is started with an API key, every sensitive step waits for a human approval. A manual run started from the web interface honors pre-approvals only when the person starting it could run every step themselves (and, for a partner-wide flow, has access to all of the partner's organizations).
+
+**Who can start a run.** Starting a run uses the flow's delegation, which is organization-wide, so Breeze refuses to start a run for anyone limited to specific sites. This includes a person whose membership is site-limited, a token with a site ceiling, and an API key whose creator is site-limited. The start is rejected with `delegation_scope_restricted`; it does not start without pre-approvals. A run started with an API key is also clamped to the key's scopes: the key must be allowed to do everything the flow's steps do.
+
+Enabling, disabling, starting and cancelling a flow all require a session that has completed multi-factor authentication. Without it the request is refused with `MFA_REQUIRED`.
 
 <Aside type="caution">
 Event flows react to platform events whatever caused them. An alert resolved by an AI action, for example, can trigger an event flow that has a pre-approved script. The script and its parameters are fixed, so the event can only choose which single device in the organization it runs on. Enable event flows with that in mind.

@@ -226,6 +226,7 @@
       "output": "Output",
       "truncated": "Output was shortened because it was too large.",
       "notReached": "Not reached",
+      "pending": "Pending",
       "item": "Item {{index}}",
       "approver": "Approver: {{id}}",
       "attempt": "Attempt {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "Step details aren't available with your access."
     },
     "notFound": "Run not found.",
+    "alreadyTerminal": "This run has already finished.",
     "loadFailed": "Could not load this run.",
     "retry": "Retry",
     "version": "Version {{version}} (publication {{seq}})",

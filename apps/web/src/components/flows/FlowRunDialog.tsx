@@ -39,7 +39,7 @@ export function FlowRunDialog({
   const inputs = flow.definition.inputs;
 
   const [values, setValues] = useState<Record<string, string | boolean>>({});
-  const [orgId, setOrgId] = useState<string>(currentOrgId ?? '');
+  const [chosenOrgId, setOrgId] = useState<string>(currentOrgId ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [queueFull, setQueueFull] = useState(false);
   const [permissionMissing, setPermissionMissing] = useState<string | null>(null);
@@ -51,6 +51,9 @@ export function FlowRunDialog({
   const orgOptions = organizations
     .filter((o) => SELECTABLE_ORG_STATUSES.has(o.status))
     .sort((a, b) => a.name.localeCompare(b.name));
+  // Only a selectable (active / trial) org may be submitted: a current org that is
+  // hidden from the picker must not ride along invisibly.
+  const orgId = orgOptions.some((o) => o.id === chosenOrgId) ? chosenOrgId : '';
 
   const submit = async () => {
     if (submitting) return;

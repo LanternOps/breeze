@@ -169,6 +169,7 @@ const FLOW_ERROR_KEYS: Record<string, string> = {
   flow_queue_full: 'flows:run.queueFull',
   flow_not_found: 'flows:errors.notFound',
   run_not_found: 'flows:runDetail.notFound',
+  already_terminal: 'flows:runDetail.alreadyTerminal',
   partner_wide_forbidden: 'flows:enable.partnerWideForbidden',
   interactive_session_required: 'flows:enable.interactiveRequired',
 };
@@ -177,6 +178,48 @@ function flowFriendly(code: string): string | undefined {
   const key = FLOW_ERROR_KEYS[code];
   return key ? i18n.t(/* i18n-dynamic */ key) : undefined;
 }
+
+/** The machine token of a failed response: `code` (MFA_REQUIRED) or `error` (everything else). */
+function errorToken(code: string | undefined, body: unknown): string | undefined {
+  if (code) return code;
+  const e = body && typeof body === 'object' ? (body as { error?: unknown }).error : undefined;
+  return typeof e === 'string' ? e : undefined;
+}
+
+/**
+ * Failures the enable dialog renders inline (every code it maps, any status), so
+ * a toast on top would report the same error twice. Unmapped errors still toast.
+ */
+const ENABLE_INLINE_CODES = new Set([
+  'MFA_REQUIRED',
+  'version_conflict',
+  'already_enabled',
+  'event_dispatch_not_durable',
+  'foreach_concurrency_not_available',
+  'delegation_scope_restricted',
+  'partner_wide_forbidden',
+  'interactive_session_required',
+  'slug_unavailable',
+  'flow_not_found',
+  'permission_missing',
+  'invalid',
+  'pre_approval_not_eligible',
+]);
+
+/** Failures the run dialog renders inline. */
+const RUN_INLINE_CODES = new Set([
+  'inputs_invalid',
+  'permission_missing',
+  'flow_queue_full',
+  'not_enabled',
+  'org_required',
+  'delegation_scope_restricted',
+  'interactive_user_required',
+  'org_forbidden',
+  'not_manual',
+  'flow_not_found',
+  'MFA_REQUIRED',
+]);
 
 export interface EnableFlowResult {
   ok: true;
@@ -194,7 +237,11 @@ export function enableFlow(flowId: string, body: FlowEnableRequest): Promise<Ena
     request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/enable`, postInit(body)),
     errorFallback: i18n.t('flows:errors.enableFailed'),
     successMessage: i18n.t('flows:toast.enabled'),
-    suppressErrorToast: (status) => status === 422,
+    suppressErrorToast: (status, code, body) => {
+      if (status === 422) return true;
+      const token = errorToken(code, body);
+      return token !== undefined && ENABLE_INLINE_CODES.has(token);
+    },
     friendly: flowFriendly,
   });
 }
@@ -215,6 +262,11 @@ export function startFlowRun(
   return runAction({
     request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}/runs`, postInit(body)),
     errorFallback: i18n.t('flows:errors.runFailed'),
+    suppressErrorToast: (status, code, body) => {
+      if (status === 429) return true; // queue full: rendered inline
+      const token = errorToken(code, body);
+      return token !== undefined && RUN_INLINE_CODES.has(token);
+    },
     friendly: flowFriendly,
     successMessage: i18n.t('flows:toast.runStarted'),
   });

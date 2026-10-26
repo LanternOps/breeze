@@ -226,6 +226,7 @@
       "output": "Ausgabe",
       "truncated": "Die Ausgabe wurde gekürzt, weil sie zu groß war.",
       "notReached": "Nicht erreicht",
+      "pending": "Ausstehend",
       "item": "Element {{index}}",
       "approver": "Genehmiger: {{id}}",
       "attempt": "Versuch {{n}}",
@@ -237,6 +238,7 @@
       "redacted": "Die Schrittdetails sind mit Ihrem Zugriff nicht verfügbar."
     },
     "notFound": "Ausführung nicht gefunden.",
+    "alreadyTerminal": "Diese Ausführung ist bereits beendet.",
     "loadFailed": "Diese Ausführung konnte nicht geladen werden.",
     "retry": "Erneut versuchen",
     "version": "Version {{version}} (Veröffentlichung {{seq}})",

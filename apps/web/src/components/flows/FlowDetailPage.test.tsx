@@ -26,6 +26,7 @@ const gate = vi.hoisted(() => ({ value: { enabled: true, loaded: true } }));
 vi.mock('../../stores/featuresStore', () => ({ useFlowsGate: () => gate.value }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
+import { ActionError } from '@/lib/runAction';
 import FlowDetailPage from './FlowDetailPage';
 
 const ID = '9f1c0f4e-0000-4000-8000-000000000001';
@@ -201,5 +202,40 @@ describe('FlowDetailPage', () => {
     render(<FlowDetailPage flowId={ID} />);
     expect(screen.getByTestId('flow-not-found')).toBeTruthy();
     expect(api.getFlow).not.toHaveBeenCalled();
+  });
+
+  it('offers Disable (and Enable) for a paused flow', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'paused', pausedReason: 'drift' });
+    api.getFlow.mockResolvedValue(d);
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    expect(screen.getByTestId('flow-disable')).toBeTruthy();
+    expect(screen.getByTestId('flow-enable')).toBeTruthy();
+    expect(screen.queryByTestId('flow-run-now')).toBeNull();
+  });
+
+  it('reloads the flow after a failed disable (state may have changed)', async () => {
+    const d = detail();
+    Object.assign(d.flow, { status: 'enabled' });
+    api.getFlow.mockResolvedValue(d);
+    api.disableFlow.mockRejectedValue(new ActionError('x', 409, undefined, { error: 'conflict' }));
+    const user = userEvent.setup();
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    await user.click(screen.getByTestId('flow-disable'));
+    await user.click(screen.getByTestId('flow-disable-confirm'));
+    await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+  });
+
+  it('reloads the flow when enabling hits a version conflict', async () => {
+    api.enableFlow.mockRejectedValue(new ActionError('x', 409, 'version_conflict', { error: 'version_conflict' }));
+    const user = userEvent.setup();
+    render(<FlowDetailPage flowId={ID} />);
+    await screen.findByTestId('flow-steps');
+    await user.click(screen.getByTestId('flow-enable'));
+    await user.click(screen.getByTestId('flow-enable-confirm'));
+    await screen.findByTestId('flow-enable-error-version_conflict');
+    await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
   });
 });

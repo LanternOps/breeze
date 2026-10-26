@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({ startFlowRun: vi.fn() }));
 vi.mock('./api', () => api);
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
+vi.mock('../shared/Toast', () => toast);
 const nav = vi.hoisted(() => ({ navigateTo: vi.fn() }));
 vi.mock('@/lib/navigation', () => nav);
 const orgState = vi.hoisted(() => ({
@@ -16,6 +18,7 @@ const orgState = vi.hoisted(() => ({
     organizations: [
       { id: '11111111-1111-4111-8111-111111111111', name: 'Acme', status: 'active' },
       { id: '22222222-2222-4222-8222-222222222222', name: 'Beta', status: 'active' },
+      { id: '33333333-3333-4333-8333-333333333333', name: 'Gone', status: 'suspended' },
     ],
   },
 }));
@@ -134,5 +137,83 @@ describe('FlowRunDialog', () => {
     await screen.findByTestId('flow-run-error-code-org_forbidden');
     await user.click(screen.getByTestId('flow-run-submit'));
     expect(screen.queryByTestId('flow-run-error-code-org_forbidden')).toBeNull();
+  });
+
+  it('does not preselect a current org that is not selectable (a hidden org cannot be submitted)', async () => {
+    const user = userEvent.setup();
+    orgState.value.currentOrgId = '33333333-3333-4333-8333-333333333333';
+    render(<FlowRunDialog open flow={flow({ ownerScope: 'partner', orgId: null, definition: NO_INPUTS })} onClose={vi.fn()} />);
+    expect((screen.getByTestId('flow-run-org') as HTMLSelectElement).value).toBe('');
+    await user.click(screen.getByTestId('flow-run-submit'));
+    expect(screen.getByTestId('flow-run-error-org')).toBeTruthy();
+    expect(api.startFlowRun).not.toHaveBeenCalled();
+  });
+
+  it('preselects the current org when it is selectable', async () => {
+    const user = userEvent.setup();
+    orgState.value.currentOrgId = '22222222-2222-4222-8222-222222222222';
+    api.startFlowRun.mockResolvedValue({ runId: 'r3', duplicate: false });
+    render(<FlowRunDialog open flow={flow({ ownerScope: 'partner', orgId: null, definition: NO_INPUTS })} onClose={vi.fn()} />);
+    await user.click(screen.getByTestId('flow-run-submit'));
+    expect(api.startFlowRun).toHaveBeenCalledWith('f1', { orgId: '22222222-2222-4222-8222-222222222222', inputs: {} });
+  });
+
+  it.each([
+    ['permissions shape', { error: 'permission_missing', permissions: ['scripts.execute', 'devices.write'] }, ['scripts.execute', 'devices.write']],
+    ['missing shape', { error: 'permission_missing', missing: [{ permission: 'alerts.write' }, 'tickets.write'] }, ['alerts.write', 'tickets.write']],
+  ])('renders permission_missing (%s) inline', async (_n, body, expected) => {
+    const user = userEvent.setup();
+    api.startFlowRun.mockRejectedValueOnce(new ActionError('x', 403, undefined, body));
+    render(<FlowRunDialog open flow={flow({ definition: NO_INPUTS })} onClose={vi.fn()} />);
+    await user.click(screen.getByTestId('flow-run-submit'));
+    const el = await screen.findByTestId('flow-run-permission-missing');
+    for (const perm of expected as string[]) expect(el.textContent).toContain(perm);
+  });
+
+  it('renders not_enabled inline and stays open', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    api.startFlowRun.mockRejectedValueOnce(new ActionError('x', 409, undefined, { error: 'not_enabled' }));
+    render(<FlowRunDialog open flow={flow({ definition: NO_INPUTS })} onClose={onClose} />);
+    await user.click(screen.getByTestId('flow-run-submit'));
+    expect((await screen.findByTestId('flow-run-not-enabled')).textContent).toMatch(/not enabled/i);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('an unknown error code shows no raw token inline and keeps the dialog open', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    api.startFlowRun.mockRejectedValueOnce(new ActionError('x', 500, undefined, { error: 'totally_unknown' }));
+    render(<FlowRunDialog open flow={flow({ definition: NO_INPUTS })} onClose={onClose} />);
+    await user.click(screen.getByTestId('flow-run-submit'));
+    await vi.waitFor(() => expect((screen.getByTestId('flow-run-submit') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByText(/totally_unknown/)).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(nav.navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('a non-ActionError failure toasts errors.runFailed and the dialog stays open', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    api.startFlowRun.mockRejectedValueOnce(new Error('network down'));
+    render(<FlowRunDialog open flow={flow({ definition: NO_INPUTS })} onClose={onClose} />);
+    await user.click(screen.getByTestId('flow-run-submit'));
+    await vi.waitFor(() => expect(toast.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not start the run.' }));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('flow-run-dialog')).toBeTruthy();
+  });
+
+  it('double-submit guard: two clicks while pending make one call and the button is disabled', async () => {
+    const user = userEvent.setup();
+    let resolve: (v: unknown) => void = () => {};
+    api.startFlowRun.mockImplementation(() => new Promise((r) => { resolve = r; }));
+    render(<FlowRunDialog open flow={flow({ definition: NO_INPUTS })} onClose={vi.fn()} />);
+    const btn = screen.getByTestId('flow-run-submit') as HTMLButtonElement;
+    await user.click(btn);
+    await user.click(btn);
+    expect(api.startFlowRun).toHaveBeenCalledTimes(1);
+    expect(btn.disabled).toBe(true);
+    resolve({ runId: 'r5', duplicate: false });
+    await vi.waitFor(() => expect(nav.navigateTo).toHaveBeenCalledWith('/flows/runs/r5'));
   });
 });

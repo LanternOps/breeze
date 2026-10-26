@@ -6,6 +6,7 @@ import { useFlowsGate } from '../../stores/featuresStore';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ActionError } from '@/lib/runAction';
+import { usePermissions } from '@/lib/permissions';
 import { showToast } from '../shared/Toast';
 import { cancelFlowRun } from './api';
 import { FlowRunTimeline } from './FlowRunTimeline';
@@ -16,6 +17,7 @@ import { useFlowRunPolling } from './useFlowRunPolling';
 export default function FlowRunPage({ runId }: { runId: string }) {
   const { t } = useTranslation('flows');
   const { enabled, loaded } = useFlowsGate();
+  const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations) ?? [];
   const { run, loading, loadError, paused, lastUpdated, retry, refetch } = useFlowRunPolling(runId, enabled);
   const [cancelling, setCancelling] = useState(false);
@@ -28,6 +30,7 @@ export default function FlowRunPage({ runId }: { runId: string }) {
       refetch();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (err instanceof ActionError && err.status === 409) refetch(); // already terminal: show the real status
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('errors.cancelFailed') }); // ActionError already toasted
     } finally {
       setCancelling(false);
@@ -111,7 +114,7 @@ export default function FlowRunPage({ runId }: { runId: string }) {
           </p>
         )}
 
-        {!terminal && (
+        {!terminal && can('automations', 'write') && (
           <div className="pt-1">
             <button
               type="button"
@@ -142,7 +145,7 @@ export default function FlowRunPage({ runId }: { runId: string }) {
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">{t('runDetail.timeline')}</h2>
-        <FlowRunTimeline runId={run.id} definition={run.definition} steps={run.steps} bodiesPrunedAt={run.bodiesPrunedAt} />
+        <FlowRunTimeline runId={run.id} definition={run.definition} steps={run.steps} bodiesPrunedAt={run.bodiesPrunedAt} runActive={!terminal} />
       </section>
     </div>
   );
