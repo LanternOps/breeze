@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { UserPermissions } from '../../permissions';
+import { PERMISSIONS, type UserPermissions } from '../../permissions';
 import { builtinPermissionMisses, corePermissionMisses, FLOW_BUILTIN_PERMISSIONS } from './permissions';
 
 function perms(grants: Array<[string, string]>): UserPermissions {
@@ -17,6 +17,13 @@ describe('FLOW_BUILTIN_PERMISSIONS', () => {
     expect(FLOW_BUILTIN_PERMISSIONS.notify).toEqual([{ resource: 'alerts', action: 'write' }]);
     expect(FLOW_BUILTIN_PERMISSIONS.http_request).toEqual([{ resource: 'external_tools', action: 'write' }]);
     expect(FLOW_BUILTIN_PERMISSIONS.ai).toEqual([{ resource: 'ai_sessions', action: 'use' }]);
+  });
+
+  it('the literals are the registered PERMISSIONS (a renamed permission breaks here, not in production)', () => {
+    const pick = (p: { resource: string; action: string }) => ({ resource: p.resource, action: p.action });
+    expect(FLOW_BUILTIN_PERMISSIONS.notify).toEqual([pick(PERMISSIONS.ALERTS_WRITE)]);
+    expect(FLOW_BUILTIN_PERMISSIONS.http_request).toEqual([pick(PERMISSIONS.EXTERNAL_TOOLS_WRITE)]);
+    expect(FLOW_BUILTIN_PERMISSIONS.ai).toEqual([pick(PERMISSIONS.AI_SESSIONS_USE)]);
   });
 });
 

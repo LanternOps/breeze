@@ -472,6 +472,16 @@ describe('createActionIntent — built-in flow steps (#5220)', () => {
     expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
   });
 
+  it('builtin flow intent fans out to holders of its built-in permission over an indirect target', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+    await createActionIntent(flowAuth(), builtinInput());
+    expect(intentApproversState.resolveIntentTargetScope).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveAgentIntentApprovers).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'http_request', targetScope: { kind: 'indirect' }, requiredOverride: [{ resource: 'external_tools', action: 'write' }],
+    }));
+  });
+
   it('a built-in whose input is Tier 2 (a GET) is refused tool_not_tier3', async () => {
     await expect(createActionIntent(flowAuth(), builtinInput({ input: { method: 'GET', url: 'https://api.example.com/x' } })))
       .rejects.toMatchObject({ code: 'tool_not_tier3' });

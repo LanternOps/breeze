@@ -15,18 +15,13 @@
  */
 import type { FlowBuiltinName } from '@breeze/shared';
 import { checkToolPermissionForResolvedUser, resolveToolPermissionRequirements } from '../../aiGuardrails';
-import { hasPermission, PERMISSIONS, type UserPermissions } from '../../permissions';
+import { hasPermission, type UserPermissions } from '../../permissions';
 import { tenantToolPermissionRequirement } from '../../toolSources/guardrails';
+import { FLOW_BUILTIN_PERMISSIONS } from './permissionTable';
+
+export { FLOW_BUILTIN_PERMISSIONS };
 
 type Requirement = { resource: string; action: string };
-
-export const FLOW_BUILTIN_PERMISSIONS: Readonly<Record<FlowBuiltinName, ReadonlyArray<Requirement>>> = {
-  wait: [],
-  set: [],
-  notify: [{ resource: PERMISSIONS.ALERTS_WRITE.resource, action: PERMISSIONS.ALERTS_WRITE.action }],
-  http_request: [{ resource: PERMISSIONS.EXTERNAL_TOOLS_WRITE.resource, action: PERMISSIONS.EXTERNAL_TOOLS_WRITE.action }],
-  ai: [{ resource: PERMISSIONS.AI_SESSIONS_USE.resource, action: PERMISSIONS.AI_SESSIONS_USE.action }],
-};
 
 const label = (r: Requirement) => `${r.resource}.${r.action}`;
 

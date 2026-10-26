@@ -57,8 +57,8 @@ import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHan
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { loadFlowIntentRun, type FlowIntentRunFacts } from '../flows/intentRun';
+import { flowIntentApproverRule } from './flowIntentApproverRule';
 import {
-  FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION,
   isOrgWideGovernanceIntent,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
@@ -2360,9 +2360,17 @@ export async function createActionIntent(
     // run has no device of its own: the target is whatever the step's
     // arguments name. An external step has no core RBAC mapping, so its pool
     // is the external-tool grant over an org-wide (indirect) target.
+    // W05 (#5220): the same rule decides who may approve at decide time
+    // (intentApprovers.flowIntentApproverRule) — external and built-in steps
+    // carry their own grant over an org-wide target.
+    const rule = flowIntentApproverRule({
+      actionName: input.toolName,
+      toolSourceToolId: externalTool ? externalTool.toolSourceToolId : null,
+      arguments: input.input,
+    });
     let targetScope: IntentTargetScope;
     try {
-      targetScope = externalTool
+      targetScope = rule.indirect
         ? { kind: 'indirect' }
         : await resolveIntentTargetScope(input.toolName, input.input, { deviceId: null }, orgId);
     } catch (err) {
@@ -2376,7 +2384,7 @@ export async function createActionIntent(
       toolName: input.toolName,
       input: input.input,
       targetScope,
-      ...(externalTool ? { requiredOverride: [FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION] } : {}),
+      ...(rule.indirect && rule.required ? { requiredOverride: rule.required } : {}),
     });
   }
 
