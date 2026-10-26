@@ -9,7 +9,9 @@ import { Dialog } from '../shared/Dialog';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { listContractTemplates, type ContractTemplateWithLatest } from '../../lib/api/contractTemplates';
 import { listContracts, getContract, type ContractSummary, type ContractDetail } from '../../lib/api/contracts';
+import { AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS, type AgreementRequestDefaultsDto } from '@breeze/shared';
 import {
+  getAgreementRequestDefaults,
   createAgreementRequest,
   updateAgreementRequest,
   deleteAgreementRequest,
@@ -24,15 +26,17 @@ import SendAgreementPreview from './SendAgreementPreview';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 const MAX_RECIPIENTS = 50;
-const DEFAULT_EXPIRY_DAYS = 30;
+/** Shown until the partner's own default (GET …/defaults, #9075 W4a) arrives;
+ *  also what the server falls back to. */
+const BUILT_IN_EXPIRY_DAYS = AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS;
 const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const localDay = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const localToday = () => localDay(new Date());
-function defaultExpiry(): string {
+function defaultExpiry(days: number = BUILT_IN_EXPIRY_DAYS): string {
   const d = new Date();
-  d.setDate(d.getDate() + DEFAULT_EXPIRY_DAYS);
+  d.setDate(d.getDate() + days);
   return localDay(d);
 }
 /** The picked calendar day, as the END of that day in the user's timezone. */
@@ -105,6 +109,10 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   // The address last auto-filled from the org's billing contact, so a later org
   // change can replace it without ever clobbering something the tech typed.
   const prefilled = useRef('');
+  // #9075 W4a: the partner's resolved agreement defaults for this org, and the
+  // expiry day last auto-filled from them (same no-clobber rule as recipients).
+  const [defaults, setDefaults] = useState<AgreementRequestDefaultsDto | null>(null);
+  const prefilledExpiry = useRef(defaultExpiry());
 
   const orgId = lockedOrgId ?? (contractOrgId || pickedOrgId);
   const orgLocked = Boolean(lockedOrgId || lockedContractId);
@@ -112,7 +120,10 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   useEffect(() => {
     if (!open) return;
     setPickedOrgId(''); setContractOrgId(''); setTemplateId(''); setContractId(lockedContractId ?? '');
-    setRecipientsText(''); setCover(''); setExpiry(defaultExpiry()); setLabel(''); setTouched(false);
+    const initialExpiry = defaultExpiry();
+    prefilledExpiry.current = initialExpiry;
+    setDefaults(null);
+    setRecipientsText(''); setCover(''); setExpiry(initialExpiry); setLabel(''); setTouched(false);
     setDraftId(null); setPreview(null); setPreviewLoading(false); setPreviewError(null); setValues({});
     setLockedContractName(''); setOrgsFailed(false); setContractFailed(false); setContractsFailed(false);
     setBusy(false);
@@ -210,6 +221,31 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
       } catch (err) {
         // Leave Recipients empty; the tech types them.
         console.warn('[SendAgreementDialog] billing-contact prefill failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, orgId]);
+
+  // Expiry defaults to the partner's setting (Billing settings → Agreements),
+  // resolved server-side for the org's owning partner. A read failure keeps the
+  // built-in default already shown; the server never needs this to send.
+  useEffect(() => {
+    if (!open || !orgId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getAgreementRequestDefaults(orgId);
+        if (res.status === 401) return UNAUTHORIZED();
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json().catch(() => null)) as { data?: AgreementRequestDefaultsDto } | null;
+        if (cancelled || !body?.data) return;
+        const next = defaultExpiry(body.data.defaultExpiryDays);
+        const previous = prefilledExpiry.current;
+        prefilledExpiry.current = next;
+        setDefaults(body.data);
+        setExpiry((cur) => (cur === previous ? next : cur));
+      } catch (err) {
+        if (!cancelled) console.warn('[SendAgreementDialog] agreement defaults read failed; keeping the built-in expiry', err);
       }
     })();
     return () => { cancelled = true; };
@@ -500,6 +536,18 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
                 {touched && !expiryOk && (
                   <span className="mt-1 block text-xs text-destructive" data-testid="agreements-send-expiry-error">
                     {t('agreements.send.expiryPast')}
+                  </span>
+                )}
+                {defaults && (
+                  <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-expiry-default">
+                    {t('agreements.send.expiryDefaultHint', { count: defaults.defaultExpiryDays })}
+                  </span>
+                )}
+                {defaults?.autoReminder && (
+                  <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-auto-reminder">
+                    {t('agreements.send.autoReminderHint', {
+                      count: defaults.autoReminder.intervalDays, max: defaults.autoReminder.maxReminders,
+                    })}
                   </span>
                 )}
               </label>

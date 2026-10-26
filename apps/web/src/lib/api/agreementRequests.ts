@@ -97,6 +97,13 @@ export interface ListAgreementRequestsQuery {
   status?: AgreementRequestBucket;
 }
 
+/** GET /defaults?orgId= (#9075 W4a) → `{ data: AgreementRequestDefaultsDto }`:
+ *  the partner's default expiry and automatic-reminder cadence for that org.
+ *  Read-only (no runAction). */
+export function getAgreementRequestDefaults(orgId: string): Promise<Response> {
+  return fetchWithAuth(`${BASE}/defaults?${new URLSearchParams({ orgId }).toString()}`);
+}
+
 export function listAgreementRequests(query: ListAgreementRequestsQuery = {}): Promise<Response> {
   const params = new URLSearchParams();
   if (query.orgId) params.set('orgId', query.orgId);

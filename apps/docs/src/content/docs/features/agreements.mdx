@@ -68,7 +68,7 @@ You do not need a quote to get an agreement signed. **Send for signature** on **
 
 <Steps>
 1. Click **Send for signature** and pick the **organization** and the **agreement template**. Only a template's published version can be sent; the request is pinned to that version, so later edits never change what the customer sees.
-2. Optionally choose a **contract** to file the signed agreement against, add the **recipients** (pre-filled from the organization's billing contact), an optional **cover message**, and an **expiry** (30 days from now by default). Fill in any manual **Agreement details** the template needs -- a template that uses quote variables (the quote number, totals, expiry date) has no quote to fill them from, so the dialog asks you to type those values in.
+2. Optionally choose a **contract** to file the signed agreement against, add the **recipients** (pre-filled from the organization's billing contact), an optional **cover message**, and an **expiry** (by default 30 days from now, or the number of days set under **Settings → Billing → Agreements**). Fill in any manual **Agreement details** the template needs -- a template that uses quote variables (the quote number, totals, expiry date) has no quote to fill them from, so the dialog asks you to type those values in.
 3. Check the **preview**: it is exactly the document the customer will see. Breeze won't send while a variable is still unresolved, so a blank value never ends up in a legal record.
 4. Click **Send**. Every recipient gets an email with the signing link.
 </Steps>
@@ -82,6 +82,17 @@ Pending requests live under **Awaiting signature**, and **Declined / voided / ex
 - **Void** withdraws the request. The link stops working immediately, and a signed agreement can't be voided.
 
 A request **expires** at its expiry time: the link refuses signatures from that moment, and within about fifteen minutes the request moves to **Declined / voided / expired** as **Expired**. Nothing is deleted -- send a new request to ask again.
+
+### Default expiry and automatic reminders
+
+**Settings → Billing → Agreements** holds two defaults for every agreement request your partner sends. It is the only place they are set; there is no per-organization override.
+
+- **Default link expiry (days)** -- how long a new request's signing link lasts when the sender does not pick a date (1-365, 30 unless you change it). The Send dialog pre-fills the expiry from it and names where it came from; the sender can still pick any other date for that one request. Changing the setting never moves the expiry of a request that already exists.
+- **Send automatic reminders** -- off unless you turn it on. When on, Breeze re-sends the **same** signing link to the recipients every **N** days (1-30) after the request was sent or last reminded, and stops after the number of reminders you choose (1-10). Manual **Remind** clicks count toward that limit and restart the wait. Reminders never go to a request that is signed, declined, voided or expired, nor to an organization that is suspended or archived. Turning reminders off stops them for every request at once.
+
+Automatic reminders go out from an hourly background job (`agreementRequestAutoReminder`), so one can arrive up to an hour after it is due. Each one is audited as `billing.agreement.reminded` with `automatic: true`. If the email fails, the reminder still counts and the next one waits a full interval.
+
+Changing these settings needs the Billing settings permission (`invoices:write` with full partner organization access) **and** `agreements:send`.
 
 <Aside type="note" title="What the customer receives">
   When the customer signs, they are emailed a copy. By default that is the **certified copy**: the agreement as signed, plus a final page recording who signed, when, how, and the document's fingerprint (SHA-256). In the signed agreements list, **Download PDF** gives the certified copy and **Original** gives the file exactly as it was filed.

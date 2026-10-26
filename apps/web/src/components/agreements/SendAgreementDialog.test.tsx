@@ -25,6 +25,7 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
 });
 
 const api = vi.hoisted(() => ({
+  getAgreementRequestDefaults: vi.fn(),
   createAgreementRequest: vi.fn(),
   updateAgreementRequest: vi.fn(),
   deleteAgreementRequest: vi.fn(),
@@ -82,6 +83,52 @@ describe('SendAgreementDialog', () => {
     api.updateAgreementRequest.mockResolvedValue(resp({ data: { id: 'r-1' } }));
     api.deleteAgreementRequest.mockResolvedValue(resp({ data: { id: 'r-1' } }));
     api.sendAgreementRequest.mockResolvedValue(resp({ data: sendResult() }));
+    api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 30, autoReminder: null } }));
+  });
+
+  describe('#9075 W4a: expiry pre-filled from the partner default', () => {
+    const inDays = (days: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    it("pre-fills now + the partner's default days and says where it came from, plus the reminder cadence", async () => {
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } } }));
+      renderDialog();
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(14)));
+      expect(api.getAgreementRequestDefaults).toHaveBeenCalledWith('org-1');
+      expect(screen.getByTestId('agreements-send-expiry-default')).toHaveTextContent('14 days');
+      expect(screen.getByTestId('agreements-send-auto-reminder')).toHaveTextContent(/every 3 days, up to 2/);
+    });
+
+    it('reminders off → no reminder line', async () => {
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 7, autoReminder: null } }));
+      renderDialog();
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(7)));
+      expect(screen.queryByTestId('agreements-send-auto-reminder')).not.toBeInTheDocument();
+    });
+
+    it('never clobbers an expiry the tech picked before the default arrived', async () => {
+      let release: (r: Response) => void = () => {};
+      api.getAgreementRequestDefaults.mockImplementation(() => new Promise<Response>((r) => { release = r; }));
+      renderDialog();
+      fireEvent.change(await screen.findByTestId('agreements-send-expiry'), { target: { value: '2099-01-15' } });
+      release(resp({ data: { defaultExpiryDays: 14, autoReminder: null } }));
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry-default')).toBeInTheDocument());
+      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue('2099-01-15');
+    });
+
+    it('a failed defaults read keeps the built-in 30 days and shows no source line', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ error: 'nope' }, 500));
+      renderDialog();
+      await waitFor(() => expect(api.getAgreementRequestDefaults).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 10));
+      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(30));
+      expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
+      warn.mockRestore();
+    });
   });
 
   it('locks the org and prefills recipients from the org billing contact', async () => {

@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { createOrganization, createPartner, createUser } from './db-utils';
-import { insertRecipient, insertRequest, rows, seedPublishedTemplate, sys } from './agreementRequestsFixtures';
+import { insertRecipient, insertRequest, rows, seedPublishedTemplate, sqlstate, sys } from './agreementRequestsFixtures';
 import { selectDueAutoReminderIds } from '../../jobs/agreementRequestAutoReminder';
 import {
   autoRemindAgreementRequest,
@@ -66,6 +66,25 @@ async function reminderState(id: string) {
     SELECT reminder_count, last_reminded_at, accept_token_jti
       FROM agreement_requests WHERE id = ${id}::uuid`))[0]!);
 }
+
+describe('partners agreement-default columns (2027-01-06-141000)', () => {
+  runDb('a new partner gets 30 days, reminders off, cap 3; the CHECKs refuse out-of-range values', async () => {
+    const partner = await sys(() => createPartner());
+    const [row] = await sys(async () => rows(await db.execute(sql`
+      SELECT agreement_default_expiry_days, agreement_reminder_interval_days, agreement_max_reminders
+        FROM partners WHERE id = ${partner.id}::uuid`)));
+    expect(row).toEqual({ agreement_default_expiry_days: 30, agreement_reminder_interval_days: null, agreement_max_reminders: 3 });
+
+    for (const set of [
+      sql`agreement_default_expiry_days = 0`, sql`agreement_default_expiry_days = 366`,
+      sql`agreement_reminder_interval_days = 0`, sql`agreement_reminder_interval_days = 31`,
+      sql`agreement_max_reminders = 0`, sql`agreement_max_reminders = 11`,
+    ]) {
+      await expect(sqlstate(() => sys(() => db.execute(sql`UPDATE partners SET ${set} WHERE id = ${partner.id}::uuid`))))
+        .resolves.toBe('23514');
+    }
+  });
+});
 
 describe('selectDueAutoReminderIds', () => {
   runDb('returns only due, open, unexpired, unrevoked, under-cap requests of partners with reminders on', async () => {

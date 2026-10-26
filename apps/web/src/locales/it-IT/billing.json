@@ -853,6 +853,10 @@
       "cover": "Messaggio di accompagnamento (facoltativo)",
       "expiry": "Il link scade il",
       "expiryPast": "Scegli una data di scadenza futura.",
+      "expiryDefaultHint_one": "Predefinito: {{count}} giorno, da Impostazioni di fatturazione → Accordi.",
+      "expiryDefaultHint_other": "Predefinito: {{count}} giorni, da Impostazioni di fatturazione → Accordi.",
+      "autoReminderHint_one": "I promemoria automatici vengono inviati ogni giorno, fino a un massimo di {{max}}.",
+      "autoReminderHint_other": "I promemoria automatici vengono inviati ogni {{count}} giorni, fino a un massimo di {{max}}.",
       "label": "Etichetta (facoltativo)",
       "createDraft": "Crea bozza e anteprima",
       "creating": "Creazione…",
@@ -2474,6 +2478,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Accordi",
+      "description": "Valori predefiniti per gli accordi che invii per la firma. I mittenti possono comunque scegliere una scadenza diversa per ogni richiesta.",
+      "expiryDays": "Scadenza predefinita del link (giorni)",
+      "expiryDaysHelp": "Il link di firma di una nuova richiesta di accordo scade dopo questo numero di giorni dalla creazione, a meno che il mittente non scelga un’altra data.",
+      "expiryDaysInvalid": "Inserisci un numero intero di giorni da {{min}} a {{max}}.",
+      "remindersEnabled": "Invia promemoria automatici",
+      "remindersHelp": "Invia di nuovo via e-mail lo stesso link di firma ai destinatari finché l’accordo non viene firmato, rifiutato, annullato o scade.",
+      "intervalDays": "Ricorda ogni (giorni)",
+      "intervalDaysInvalid": "Inserisci un numero intero di giorni da {{min}} a {{max}}.",
+      "maxReminders": "Interrompi dopo (promemoria)",
+      "maxRemindersHelp": "Conta tutti i promemoria della richiesta, manuali o automatici.",
+      "maxRemindersInvalid": "Inserisci un numero intero da {{min}} a {{max}}.",
+      "readOnlyNoSend": "Modificare i valori predefiniti degli accordi richiede l’autorizzazione a inviare accordi. Hai accesso di sola lettura."
+    },
     "company": {
       "addressInherited": "Uguale ai dettagli dell'azienda",
       "addressLine1": "Indirizzo riga 1",
@@ -2560,6 +2579,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Predefiniti",
     "documents": "Documenti",
+    "agreements": "Accordi",
     "connections": "Connessioni",
     "rates": "Tariffe",
     "payments": "Pagamenti"
