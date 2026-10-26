@@ -259,6 +259,9 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (body.method !== 'tools/call') return false;
     const name = body.params?.name;
     if (typeof name !== 'string') return false;
+    // Also true for a flow tool (`flow__<slug>` has the tenant shape), on
+    // purpose: handleFlowToolCall's reads and the run insert open their own
+    // system contexts, exactly like the tenant path (W5 PR C, #5220).
     if (isTenantToolName(name)) return true;
     const input = body.params?.arguments;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
@@ -1969,10 +1972,11 @@ async function handleToolsList(
   // W5 PR C (#5220): flow tools (`flow__<slug>`), listed only when callable
   // right now (tier 1; tier 2 with ai:write; tier 3 never) under the domain
   // the flow tools live in. Same degrade-to-none rule as tenant tools.
+  // listMcpFlowTools answers [] with FLOWS_ENABLED off before any read.
   let flowResult: typeof tenantResult = [];
-  const flowDomain = mcpToolDomain('list_flows');
-  if (isDomainGranted(domainGrant, flowDomain)) {
-    try {
+  try {
+    const flowDomain = mcpToolDomain('list_flows');
+    if (isDomainGranted(domainGrant, flowDomain)) {
       const flowTools = await listMcpFlowTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}), { hasWrite });
       flowResult = flowTools.map((t) => ({
         ...buildMcpToolPresentation({ name: t.name, input_schema: t.inputSchema }, t.tier, flowDomain),
@@ -1980,9 +1984,10 @@ async function handleToolsList(
         description: t.description,
         inputSchema: t.inputSchema,
       }));
-    } catch (err) {
-      console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
     }
+  } catch (err) {
+    console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
+    flowResult = [];
   }
 
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');

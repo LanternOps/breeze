@@ -128,6 +128,17 @@ Everything below is behind `FLOWS_ENABLED` (default off); with the flag off the 
 - **Retention.** Refused, org-unresolved and invalid webhook delivery rows are deleted after `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS`; accepted rows live as long as their run. Usage counters are deleted 13 months after their month.
 - **New optional environment variables:** `FLOW_WEBHOOK_RATE_PER_MINUTE` (default 120, 1–6000; per flow, after authentication), `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS` (default 30, 1–365), `FLOW_FOREACH_MAX_PARALLEL` (default 5, 1–10).
 - **Migration** `2027-01-07-140000-flow-webhooks-tools-budgets.sql`: creates `flow_webhook_deliveries` and `flow_usage_counters` (empty at upgrade, forced row-level security), adds nullable columns to `flows` (webhook secret and markers), `flow_runs` (`ai_tokens_used` defaulted 0, `parent_agent_run_id`, `triggered_by_api_key_id`), `flow_run_steps` (AI usage), `action_intents.invoked_flow_id` and `ai_invocations.flow_run_id`, and widens the flow-run CHECKs by name; DDL only, no backfill.
+
+### Flows W05 (#5215 / #5220, PR C)
+
+Behind `FLOWS_ENABLED` (default off). No migration, no new environment variables.
+
+- **Enabled manual flows are tools.** Each one appears to the AI as `flow__<slug>` (at most 20 per chat session, most recently run first; the rest are still reachable through `list_flows` + `run_flow`). Its arguments are the flow's declared inputs, plus `orgId` for a partner-wide flow called by a partner user, plus an optional `idempotencyKey`.
+- **A flow tool's approval is the flow's own tier, checked when it is called.** The tier is the higher of the tier recorded at enable and the tier of the flow's steps today, so a flow re-enabled with a riskier step is gated at the new tier. In chat, a Tier-1 flow starts at once, a Tier-2 flow asks for confirmation (unless the conversation auto-approves Tier 2), and a Tier-3 flow becomes an approval request; once approved, the run starts with the approver as the person who started it. `run_flow` now follows the same rule: a read-only flow no longer needs a tap.
+- **Breeze's MCP server** lists a flow tool only when the key can call it right away (Tier 1 with `ai:read`, Tier 2 with `ai:write`). A Tier-3 flow is never listed and is refused if called, including for keys in `MCP_UNATTENDED_TIER3_PRINCIPALS`. `run_flow` stays chat-only.
+- **AI agents** can start a flow only when the flow is named in the agent's tool allowlist, its tier is 1, and the run is not tied to a device, a site or a delegation grant. Anything else is refused (`flow_not_allowed_for_agent`); there is no proposal path for flows. Saving an agent whose allowlist names a flow that does not exist succeeds with a `flow_tool_unknown` warning.
+- Every flow started this way is recorded as a `tool` run (`triggered_via` `ai_tool`, `mcp` or `ai_agent`) and never honours pre-approvals, so its own sensitive steps still wait for a human.
+
 ### On-device dialogs (#10190)
 
 - **Breeze Assist is no longer started on a WebView2 Runtime it cannot use (#10183).** On Windows the agent checks the WebView2 Runtime version before it starts Breeze Assist. Below the version the installed Assist build needs (shipped with Assist as `assist-requirements.json`; 92.0.902.49 for current builds), it does not start Assist, logs one warning with the version found, and the device reports `webview2_outdated`. Prompts use the standard Windows dialogs until the runtime is updated. Before this, Assist crash-looped silently on images such as the original Windows 11 21H2.
