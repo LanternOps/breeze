@@ -303,6 +303,7 @@ func TestApplyDisabledInstalledCleansUpOnce(t *testing.T) {
 	mgr.baseDir = tmpDir
 	mgr.binaryPath = binPath
 	mgr.sessionEnumerator = &mockEnumerator{}
+	markAgentInstalled(t, mgr) // only the agent's own install is removed (#10185)
 
 	mgr.Apply(&Settings{Enabled: false}) // installed → migrate once, then uninstall
 	if uninstallCalls != 1 {
