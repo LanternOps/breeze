@@ -23,7 +23,7 @@ import type { Job } from 'bullmq';
 const h = vi.hoisted(() => ({
   enqueueFlowRunSlice: vi.fn(async (_runId: string, _opts?: { delayMs?: number }) => 'job'),
   safeFetch: vi.fn(),
-  sendEmailNotification: vi.fn(async () => ({ success: true })),
+  sendEmailNotification: vi.fn(async (_payload: Record<string, unknown>) => ({ success: true })),
   resolveModel: vi.fn(),
   create: vi.fn(),
 }));
