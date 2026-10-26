@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import { WISP_ENTITY_KINDS, WISP_LINK_LABEL_MAX } from '../types/wisp';
+import { WISP_TIMELINE_DEFAULT_LIMIT, WISP_TIMELINE_MAX_LIMIT } from '../types/wispTimeline';
 
 export const wispEntityKindSchema = z.enum(WISP_ENTITY_KINDS);
 
@@ -35,3 +36,11 @@ export type WispPartnerSettingsInput = z.infer<typeof wispPartnerSettingsSchema>
 
 /** `GET /wisp/home?grantId=` (omitted = the caller's single active grant). */
 export const wispHomeQuerySchema = z.object({ grantId: z.guid().optional() });
+
+/** `GET /wisp/thread/:id/timeline` query: keyset cursor, page size, optional session to leave out. */
+export const wispTimelineQuerySchema = z.object({
+  cursor: z.string().min(1).max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(WISP_TIMELINE_MAX_LIMIT).default(WISP_TIMELINE_DEFAULT_LIMIT),
+  excludeSessionId: z.guid().optional(),
+});
+export type WispTimelineQuery = z.infer<typeof wispTimelineQuerySchema>;
