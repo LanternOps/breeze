@@ -6346,7 +6346,8 @@ describe('org routes', () => {
       // chain on the shared mock, so re-declare one that reaches .limit().
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          // Also awaited bare: the legacy-role adapter reads `contact_roles`.
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), { limit: vi.fn().mockResolvedValue([]) }))
         })
       } as any);
 
@@ -6375,7 +6376,8 @@ describe('org routes', () => {
       // See the phone-only test above: the contact mirror reads before writing.
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+          // Also awaited bare: the legacy-role adapter reads `contact_roles`.
+          where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([]), { limit: vi.fn().mockResolvedValue([]) }))
         })
       } as any);
 
