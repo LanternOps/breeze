@@ -29,7 +29,7 @@ func showNativePromptOS(ctx context.Context, m nativePromptModel, presented func
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		out := classifyNativeZenity(m, exitErr.ExitCode())
+		out := classifyNativeZenityRun(m, exitErr.ExitCode(), stderr.String())
 		if out.Err != nil {
 			log.Warn("zenity prompt failed", "exitCode", exitErr.ExitCode(), "stderr", truncateForLog(stderr.String()))
 		}

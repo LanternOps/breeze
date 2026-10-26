@@ -51,3 +51,27 @@ func TestEndpointMessageNeverReplayedToAnotherUser(t *testing.T) {
 		t.Fatalf("alice got %v, want only her own card", got)
 	}
 }
+
+// A Windows Assist session with no SID has no principal: it gets no cards.
+func TestEndpointMessageReplaySkipsASessionWithoutAPrincipal(t *testing.T) {
+	prev := messageOwnerGOOS
+	messageOwnerGOOS = "windows"
+	t.Cleanup(func() { messageOwnerGOOS = prev })
+	nobody := newHelperProbe(t, ipc.HelperRoleAssist, "nobody", "1", []string{ipc.ScopeAssist, ipc.ScopeMessaging})
+	nobody.session.IdentityKey = ""
+	if key := messageOwnerKey(nobody.session); key != "" {
+		t.Fatalf("owner key = %q, want none", key)
+	}
+	h, _ := newMessagingHeartbeat(t, nobody.session)
+	now := time.Now()
+	if err := h.endpointMessages.Put(testShow("someone-elses", now.Add(time.Hour)), now); err != nil {
+		t.Fatal(err)
+	}
+	h.replayEndpointMessages(nobody.session)
+	time.Sleep(100 * time.Millisecond)
+	for _, env := range nobody.envelopes() {
+		if env.Type == ipc.TypeMessageShow {
+			t.Fatal("a session without a principal was handed a card")
+		}
+	}
+}

@@ -205,7 +205,12 @@ func (h *Heartbeat) replayEndpointMessages(s *sessionbroker.Session) {
 	}
 	// Only this user's cards (or pre-W02 cards, which bind to this user now):
 	// a card is never replayed into another user's session.
-	pending := h.endpointMessageStore().PendingFor(messageOwnerKey(s), time.Now())
+	owner := messageOwnerKey(s)
+	if owner == "" {
+		log.Warn("endpoint message replay skipped: the assist session has no user principal", "sessionId", s.SessionID)
+		return
+	}
+	pending := h.endpointMessageStore().PendingFor(owner, time.Now())
 	for _, show := range pending {
 		show.Replay = true
 		id := fmt.Sprintf("msg-replay-%s-%d", show.MessageID, time.Now().UnixNano())

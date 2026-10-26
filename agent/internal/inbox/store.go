@@ -376,7 +376,7 @@ func (s *Store) tombstonedLocked(id string, now time.Time) bool {
 // authoritative for this process and the next successful save catches up.
 func (s *Store) saveLogged() {
 	if err := s.saveLocked(); err != nil {
-		storeLog.Warn("inbox save failed", "file", filepath.Base(s.path), "error", err.Error())
+		storeLog.Error("inbox save failed; a removed entry may reappear after a restart", "file", filepath.Base(s.path), "error", err.Error())
 	}
 }
 

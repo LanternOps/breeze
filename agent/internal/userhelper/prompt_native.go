@@ -368,9 +368,10 @@ func classifyNativeOsascript(m nativePromptModel, output string, failed bool) na
 	const marker = "button returned:"
 	if i := strings.Index(output, marker); i >= 0 {
 		label := output[i+len(marker):]
-		if j := strings.IndexAny(label, ",\n"); j >= 0 {
+		if j := strings.Index(label, ", gave up:"); j >= 0 {
 			label = label[:j]
 		}
+		label = strings.TrimRight(label, "\r\n")
 		for _, b := range m.twoButtons() {
 			if b.Label == label {
 				return classifyNativeResult(m, nativeResultButton, b.ID)
@@ -399,6 +400,16 @@ func nativePromptZenityArgs(m nativePromptModel, now time.Time) []string {
 		args = append(args, fmt.Sprintf("--timeout=%d", int((t+time.Second-1)/time.Second)))
 	}
 	return args
+}
+
+// classifyNativeZenityRun maps a zenity run. GTK also exits 1 when it cannot
+// open the display, which must never read as the user's cancel (on a decision
+// that would answer the safe action for them).
+func classifyNativeZenityRun(m nativePromptModel, exitCode int, stderr string) nativeOutcome {
+	if exitCode == 1 && (strings.Contains(stderr, "cannot open display") || strings.Contains(stderr, "Gtk-WARNING")) {
+		return nativeOutcome{Err: fmt.Errorf("zenity could not open the display: %s", strings.TrimSpace(stderr))}
+	}
+	return classifyNativeZenity(m, exitCode)
 }
 
 // classifyNativeZenity maps a zenity exit: 0 = OK, 1 = Cancel / Esc / close,
@@ -465,6 +476,9 @@ type nativeActive struct {
 	cancel context.CancelFunc
 }
 
+// maxEndedNativePrompts bounds the memory of dialogs that ended on screen.
+const maxEndedNativePrompts = 64
+
 // nativePromptRenderer runs the native side of the prompt contract: one
 // dialog per prompt, presented / action / closed reported on the prompt's
 // lease, a prompt_close (or a newer rev) taking the dialog down silently.
@@ -476,10 +490,17 @@ type nativePromptRenderer struct {
 
 	mu     sync.Mutex
 	active map[string]*nativeActive
+	// ended remembers prompts whose dialog ended on screen (answered,
+	// hidden, timed out), so a later update is applied (redraw while still
+	// open, ignore once terminal) instead of being refused as unknown — a
+	// refusal would make the agent reroute a prompt the user already
+	// answered.
+	ended      map[string]ipc.PromptShow
+	endedOrder []string
 }
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
-	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}}
+	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{}}
 	for _, ad := range advertised {
 		r.advertised[ad] = true
 	}
@@ -487,6 +508,30 @@ func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func
 		r.now = time.Now
 	}
 	return r
+}
+
+// closeAll takes every dialog down without reporting anything: the
+// connection ended, and the agent re-shows what is still open on reconnect.
+func (r *nativePromptRenderer) closeAll() {
+	r.mu.Lock()
+	active := r.active
+	r.active = map[string]*nativeActive{}
+	r.mu.Unlock()
+	for _, a := range active {
+		a.cancel()
+	}
+}
+
+// rememberEndedLocked records a dialog that ended on screen. Caller holds mu.
+func (r *nativePromptRenderer) rememberEndedLocked(p ipc.PromptShow) {
+	if _, seen := r.ended[p.PromptID]; !seen {
+		r.endedOrder = append(r.endedOrder, p.PromptID)
+	}
+	r.ended[p.PromptID] = p
+	for len(r.endedOrder) > maxEndedNativePrompts {
+		delete(r.ended, r.endedOrder[0])
+		r.endedOrder = r.endedOrder[1:]
+	}
 }
 
 func (r *nativePromptRenderer) activeCount() int {
@@ -511,7 +556,18 @@ func (r *nativePromptRenderer) handle(env *ipc.Envelope) {
 	case ipc.TypePromptShow:
 		var p ipc.PromptShow
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
-			log.Warn("malformed prompt_show", "error", err.Error())
+			// Unknown is never silent for a decision (rule 4): answer what we
+			// can identify so the agent falls back now, not after its budget.
+			var ref struct {
+				PromptID string          `json:"promptId"`
+				Rev      uint64          `json:"rev"`
+				Lease    ipc.PromptLease `json:"lease"`
+			}
+			_ = json.Unmarshal(env.Payload, &ref)
+			log.Warn("malformed prompt_show", "promptId", ref.PromptID, "error", err.Error())
+			if ref.PromptID != "" {
+				r.renderFailed(ipc.PromptShow{PromptID: ref.PromptID, Rev: ref.Rev, Lease: ref.Lease}, "malformed")
+			}
 			return
 		}
 		r.onShow(p)
@@ -529,8 +585,16 @@ func (r *nativePromptRenderer) handle(env *ipc.Envelope) {
 			return
 		}
 		r.onClose(c)
-	case ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
-		// A native dialog has no "working" state and draws no identity header.
+	case ipc.TypePromptActionResult:
+		// A native dialog has no "working" state: it already closed. A refusal
+		// means the click did not count; the agent re-shows the prompt if it
+		// is still open.
+		var res ipc.PromptActionResult
+		if err := json.Unmarshal(env.Payload, &res); err == nil && res.Result != ipc.PromptActionAccepted {
+			log.Warn("native prompt action not accepted", "promptId", res.PromptID, "action", res.ActionID, "result", res.Result)
+		}
+	case ipc.TypePromptBrandingSync:
+		// A native dialog draws no identity header.
 	default:
 		log.Warn("unsupported prompt message type", "type", env.Type)
 	}
@@ -543,7 +607,16 @@ func (r *nativePromptRenderer) onShow(p ipc.PromptShow) {
 	}
 	r.mu.Lock()
 	if cur := r.active[p.PromptID]; cur != nil && p.Rev <= cur.show.Rev {
+		adopt := p.Rev == cur.show.Rev && p.Lease != cur.show.Lease
+		if adopt {
+			// A replay of the same rev under a new lease: keep the window,
+			// answer on the new lease, and confirm it is on screen.
+			cur.show.Lease = p.Lease
+		}
 		r.mu.Unlock()
+		if adopt {
+			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Visible: true})
+		}
 		return // stale or duplicate: the dialog for this prompt is already up
 	}
 	r.mu.Unlock()
@@ -552,16 +625,24 @@ func (r *nativePromptRenderer) onShow(p ipc.PromptShow) {
 
 func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 	r.mu.Lock()
+	var base ipc.PromptShow
 	cur := r.active[u.PromptID]
+	ended, wasEnded := r.ended[u.PromptID]
+	switch {
+	case cur != nil:
+		base = cur.show
+	case wasEnded:
+		base = ended
+	}
 	r.mu.Unlock()
-	if cur == nil {
+	if cur == nil && !wasEnded {
 		r.renderFailed(ipc.PromptShow{PromptID: u.PromptID, Rev: u.Rev, Lease: u.Lease}, "unknown_prompt")
 		return
 	}
-	if u.Rev <= cur.show.Rev {
+	if u.Rev <= base.Rev {
 		return
 	}
-	merged, err := ipc.ApplyPromptUpdate(cur.show, u)
+	merged, err := ipc.ApplyPromptUpdate(base, u)
 	if err != nil {
 		r.renderFailed(ipc.PromptShow{PromptID: u.PromptID, Rev: u.Rev, Lease: u.Lease}, "invalid_update")
 		r.takeDown(u.PromptID)
@@ -569,8 +650,13 @@ func (r *nativePromptRenderer) onUpdate(u ipc.PromptUpdate) {
 	}
 	if merged.State.Terminal() {
 		// The native fallback shows no terminal card; the outcome is in the
-		// agent's list. Take the question down.
+		// agent's list. Take the question down (nothing to do if it ended).
 		r.takeDown(u.PromptID)
+		r.mu.Lock()
+		if _, ok := r.ended[u.PromptID]; ok {
+			r.rememberEndedLocked(merged)
+		}
+		r.mu.Unlock()
 		return
 	}
 	// A native dialog cannot change in place: redraw it.
@@ -609,6 +695,7 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 			detail = "operator_text_on_breeze_kind"
 		}
 		log.Warn("native renderer refused a prompt", "promptId", p.PromptID, "error", err.Error())
+		r.takeDown(p.PromptID) // never leave an older copy up
 		r.renderFailed(p, detail)
 		return
 	}
@@ -621,16 +708,34 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 	if prev != nil {
 		prev.cancel() // one window per prompt: the redraw replaces it
 	}
+	lease := func() ipc.PromptLease {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return act.show.Lease // a replay may have moved it
+	}
 	go func() {
-		out := r.show(ctx, m, func() {
-			r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Visible: true})
-		})
+		var out nativeOutcome
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					out = nativeOutcome{Err: fmt.Errorf("native dialog panicked: %v", rec)}
+				}
+			}()
+			out = r.show(ctx, m, func() {
+				r.reply(ipc.TypePromptPresented, ipc.PromptPresented{PromptID: p.PromptID, Rev: p.Rev, Lease: lease(), Visible: true})
+			})
+		}()
 		r.mu.Lock()
 		current := r.active[p.PromptID] == act
 		if current {
 			delete(r.active, p.PromptID)
+			if out.Err == nil {
+				r.rememberEndedLocked(act.show)
+			}
 		}
+		l := act.show.Lease
 		r.mu.Unlock()
+		p.Lease = l
 		if !current || ctx.Err() != nil {
 			return // closed or replaced by the agent: report nothing
 		}
@@ -642,7 +747,9 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 			r.reply(ipc.TypePromptAction, ipc.PromptActionRequest{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, ActionID: out.ActionID, Via: ipc.PromptViaClick})
 		case out.Hidden:
 			r.reply(ipc.TypePromptClosed, ipc.PromptClosed{PromptID: p.PromptID, Rev: p.Rev, Lease: p.Lease, Reason: ipc.PromptClosedHidden})
+		case out.TimedOut:
+			// Report nothing: the agent's own timer decides expiry.
+			log.Debug("native prompt dialog timed out", "promptId", p.PromptID)
 		}
-		// A timeout reports nothing: the agent's own timer decides expiry.
 	}()
 }

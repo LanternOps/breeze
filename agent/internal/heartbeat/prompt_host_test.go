@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
-	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 func canonical(t *testing.T, raw []byte) string {
@@ -121,5 +120,4 @@ func TestHeartbeatTelemetryReportsConsoleAssistAdvertisement(t *testing.T) {
 	if empty.promptHostTelemetry() != nil {
 		t.Fatal("no broker: want nil")
 	}
-	_ = sessionbroker.ErrPromptScopeMissing
 }

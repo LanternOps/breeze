@@ -125,6 +125,14 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 	return c
 }
 
+// closePrompts takes every native prompt dialog down when the connection
+// ends; a new client re-receives what is still open after reconnect.
+func (c *Client) closePrompts() {
+	if c.prompts != nil {
+		c.prompts.closeAll()
+	}
+}
+
 // sendPromptMessage sends a renderer -> agent prompt message (#10190).
 func (c *Client) sendPromptMessage(msgType string, payload any) error {
 	conn := c.currentConn()
@@ -157,6 +165,7 @@ func (c *Client) Run() error {
 	}
 	defer c.conn.Close()
 	defer c.desktopMgr.stopAll() // Release DXGI/COM handles on any exit path
+	defer c.closePrompts()       // No native prompt dialog outlives its connection (#10190)
 
 	if err := c.authenticate(); err != nil {
 		return fmt.Errorf("authenticate: %w", err)

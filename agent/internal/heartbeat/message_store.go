@@ -90,13 +90,23 @@ func (h *Heartbeat) endpointMessageStore() *messageStore {
 	return h.endpointMessages
 }
 
+// messageOwnerGOOS is the platform messageOwnerKey reads the principal for
+// (a test seam).
+var messageOwnerGOOS = runtime.GOOS
+
 // messageOwnerKey is the user principal an Assist session draws for (the
-// notification-list owner, shared with prompt entries).
+// notification-list owner, shared with prompt entries). "" when the session
+// carries no principal (a Windows session without a SID): such a session
+// must not be handed anyone's cards.
 func messageOwnerKey(s *sessionbroker.Session) string {
 	if s == nil {
 		return ""
 	}
-	return prompthost.RendererFromSession(s, runtime.GOOS).Owner.PrincipalKey()
+	o := prompthost.RendererFromSession(s, messageOwnerGOOS).Owner
+	if messageOwnerGOOS == "windows" && o.UserSID == "" {
+		return ""
+	}
+	return o.PrincipalKey()
 }
 
 // Put records a card with no owner yet (bound at its first replay).
