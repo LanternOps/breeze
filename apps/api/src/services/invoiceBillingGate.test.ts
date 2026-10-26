@@ -30,7 +30,7 @@ describe('invoiceBillingGate', () => {
     rows.value = [];
     await expect(assertInvoiceBillingEnabledById('i1')).resolves.toBeUndefined();
     // first read (invoice org) returns the org, second (partner flag) returns off
-    const limit = (await import('../db')).db.limit as unknown as ReturnType<typeof vi.fn>;
+    const limit = ((await import('../db')).db as unknown as { limit: ReturnType<typeof vi.fn> }).limit;
     limit.mockResolvedValueOnce([{ orgId: 'org1' }]).mockResolvedValueOnce([{ billingEnabled: false }]);
     await expect(assertInvoiceBillingEnabledById('i1')).rejects.toMatchObject({ code: 'BILLING_DISABLED', status: 404 });
   });
