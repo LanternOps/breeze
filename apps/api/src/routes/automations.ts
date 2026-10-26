@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -25,6 +25,7 @@ import {
 } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
+import { verifyBreezeHmacSignature, type BreezeHmacFailure } from '../services/webhookSignature';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { getRedis } from '../services/redis';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -202,6 +203,14 @@ async function reserveAutomationWebhookReplayNonce(replayKey: string, now: numbe
   }
 }
 
+const AUTOMATION_SIGNATURE_FAILURES: Record<BreezeHmacFailure, { ok: false; error: string; status: 400 | 401 }> = {
+  missing_signature: { ok: false, error: 'Missing webhook signature', status: 401 },
+  missing_timestamp: { ok: false, error: 'Missing webhook timestamp', status: 401 },
+  invalid_timestamp: { ok: false, error: 'Invalid webhook timestamp', status: 400 },
+  stale_timestamp: { ok: false, error: 'Webhook signature timestamp is outside the replay window', status: 401 },
+  bad_signature: { ok: false, error: 'Invalid webhook signature', status: 401 },
+};
+
 async function verifyAutomationWebhookSignature(input: {
   automationId: string;
   secret: string;
@@ -210,37 +219,23 @@ async function verifyAutomationWebhookSignature(input: {
   timestampHeader?: string | null;
   eventIdHeader?: string | null;
 }): Promise<{ ok: true } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
-  const signature = input.signatureHeader?.trim();
-  if (!signature) return { ok: false, error: 'Missing webhook signature', status: 401 };
-
-  const timestamp = input.timestampHeader?.trim();
-  if (!timestamp) return { ok: false, error: 'Missing webhook timestamp', status: 401 };
-
-  const parsedTimestamp = Number(timestamp);
-  if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
-    return { ok: false, error: 'Invalid webhook timestamp', status: 400 };
-  }
-
-  const timestampMs = parsedTimestamp > 1_000_000_000_000
-    ? parsedTimestamp
-    : parsedTimestamp * 1000;
+  // The shared Breeze HMAC scheme (services/webhookSignature.ts, also used by
+  // flow webhooks — Tool Catalog W05 #5220). Messages and statuses unchanged.
   const now = Date.now();
-  if (Math.abs(now - timestampMs) > AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS) {
-    return { ok: false, error: 'Webhook signature timestamp is outside the replay window', status: 401 };
-  }
-
-  const expected = `sha256=${createHmac('sha256', input.secret).update(`${timestamp}.${input.payload}`).digest('hex')}`;
-  const normalizedSignature = signature.startsWith('sha256=') ? signature : `sha256=${signature}`;
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-  const providedBuffer = Buffer.from(normalizedSignature, 'utf8');
-  if (expectedBuffer.length !== providedBuffer.length || !timingSafeEqual(expectedBuffer, providedBuffer)) {
-    return { ok: false, error: 'Invalid webhook signature', status: 401 };
-  }
+  const verified = verifyBreezeHmacSignature({
+    secret: input.secret,
+    timestamp: input.timestampHeader,
+    signature: input.signatureHeader,
+    payload: input.payload,
+    now,
+    windowMs: AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS,
+  });
+  if (!verified.ok) return AUTOMATION_SIGNATURE_FAILURES[verified.reason];
 
   // The replay key is always derived from the verified signature, never from a
   // caller-supplied header alone — an unsigned event-id is not trustworthy as
   // the sole dedup key, since a byte-identical resend can carry a fresh one.
-  const signatureNonceHash = createHash('sha256').update(normalizedSignature).digest('hex');
+  const signatureNonceHash = verified.signatureDigest;
   const signatureReplayKey = `${input.automationId}:${signatureNonceHash}`;
   const signatureReservation = await reserveAutomationWebhookReplayNonce(signatureReplayKey, now);
   if (!signatureReservation.ok) return signatureReservation;
