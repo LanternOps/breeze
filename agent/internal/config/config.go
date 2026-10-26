@@ -400,7 +400,7 @@ func Default() *Config {
 		ECH:              true,
 		ECHServerEnabled: true,
 
-		AutoUpdate:                 true,
+		AutoUpdate: true,
 		// Windows feature releases are decided by the device's update ring
 		// (heartbeat feature_update_settings); this key is only an operator kill
 		// switch that excludes them regardless of the ring.

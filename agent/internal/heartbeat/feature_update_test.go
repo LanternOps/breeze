@@ -13,11 +13,13 @@ type recordingFeatureProvider struct {
 	policy *patching.FeatureUpdatePolicy
 }
 
-func (p *recordingFeatureProvider) ID() string                                     { return "windows_update" }
-func (p *recordingFeatureProvider) Name() string                                   { return "fake" }
-func (p *recordingFeatureProvider) Scan() ([]patching.AvailablePatch, error)       { return nil, nil }
-func (p *recordingFeatureProvider) Install(string) (patching.InstallResult, error) { return patching.InstallResult{}, nil }
-func (p *recordingFeatureProvider) Uninstall(string) error                         { return nil }
+func (p *recordingFeatureProvider) ID() string                               { return "windows_update" }
+func (p *recordingFeatureProvider) Name() string                             { return "fake" }
+func (p *recordingFeatureProvider) Scan() ([]patching.AvailablePatch, error) { return nil, nil }
+func (p *recordingFeatureProvider) Install(string) (patching.InstallResult, error) {
+	return patching.InstallResult{}, nil
+}
+func (p *recordingFeatureProvider) Uninstall(string) error { return nil }
 func (p *recordingFeatureProvider) GetInstalled() ([]patching.InstalledPatch, error) {
 	return nil, nil
 }
