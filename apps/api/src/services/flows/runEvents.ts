@@ -29,6 +29,7 @@ import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { createNotification } from '../userNotifications';
+import { sendFlowNoticeToChannel } from './notices';
 
 export interface FlowRunEventRef {
   id: string;
@@ -70,6 +71,12 @@ export async function notifyFlowRunUnknownOutcome(input: {
   runId: string;
   stepId: string;
 }): Promise<void> {
+  const title = 'Flow run needs review';
+  const message = `${input.flowName}: step ${input.stepId} may or may not have taken effect, so the run was stopped instead of retrying it. Check the target and the run before running it again.`;
+  const dedupeKey = `flow-run-unknown:${input.runId}`;
+  // W5 (#5220, Decision 14): the flow's notice channel too, whether or not a
+  // delegator is left to notify in-app. Best effort; never throws.
+  await sendFlowNoticeToChannel({ id: input.flowId, orgId: input.orgId }, null, { kind: 'unknown_outcome', title, text: message, dedupeKey });
   const userId = input.delegatorUserId;
   if (!userId) return;
   try {
@@ -79,11 +86,11 @@ export async function notifyFlowRunUnknownOutcome(input: {
       orgId: input.orgId,
       type: 'automation',
       priority: 'high',
-      title: 'Flow run needs review',
-      message: `${input.flowName}: step ${input.stepId} may or may not have taken effect, so the run was stopped instead of retrying it. Check the target and the run before running it again.`,
+      title,
+      message,
       link: `/flows/runs/${input.runId}`,
       metadata: { flowId: input.flowId, runId: input.runId, stepId: input.stepId, reason: 'unknown_outcome' },
-      dedupeKey: `flow-run-unknown:${input.runId}`,
+      dedupeKey,
     }), 'flows.runEvents.notifyUnknownOutcome'));
   } catch (err) {
     console.error(`[FlowRunner] unknown-outcome notification failed (run=${input.runId} flow=${input.flowId} org=${input.orgId})`, err);

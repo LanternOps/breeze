@@ -331,6 +331,40 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     expect(h.checkGuardrails).not.toHaveBeenCalled();
   });
 
+  // W5 PR B (#5220, Decision 12): an approved Tier-3 built-in step.
+  describe('built-in steps', () => {
+    const builtinPin = { stepId: 'cleanup', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+    const POST = { method: 'POST', url: 'https://api.example.com/x' };
+
+    it('a built-in still matching its Tier-3 supervised pin is claimed without the core classifier', async () => {
+      h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [builtinPin] }));
+      h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'http_request', arguments: POST }));
+      await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toMatchObject({ claimed: true });
+      expect(h.checkGuardrails).not.toHaveBeenCalled();
+    });
+
+    it('a built-in intent against a pin of another tool, source or scope is approval_scope_changed (drift + pause)', async () => {
+      for (const pin of [
+        { ...builtinPin, tool: 'notify' },
+        { ...builtinPin, source: 'core' },
+        { ...builtinPin, approvalScope: null, tier: 2 },
+      ]) {
+        vi.clearAllMocks();
+        untouched();
+        h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [pin] }));
+        h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'http_request', arguments: POST }));
+        await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'approval_scope_changed' });
+        expectIntentCancelledWithWake();
+      }
+    });
+
+    it('an ai or notify intent (never Tier 3) is refused', async () => {
+      h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [{ ...builtinPin, tool: 'ai' }] }));
+      h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'ai', arguments: { prompt: 'x', tools: [], output: { type: 'object' } } }));
+      await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'approval_scope_changed' });
+    });
+  });
+
   it('claim refuses when supervised became four_eyes', async () => {
     h.checkGuardrails.mockReturnValue({ allowed: true, tier: 3, approvalScope: 'four_eyes', requiresApproval: true, readOnly: false });
     await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'approval_scope_changed' });

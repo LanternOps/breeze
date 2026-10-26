@@ -33,7 +33,7 @@ export interface FlowIntentRunFacts extends FlowIntentPeople {
   status: FlowRunStatus;
   chainDepth: number;
   /** The step row the intent is minted for, when it belongs to this run. */
-  step: { id: string; stepId: string; status: string } | null;
+  step: { id: string; stepId: string; status: string; tool: string; toolSource: string; tier: number } | null;
 }
 
 /** The run + publication + flow + (optionally) the step row an intent is about to be minted for. */
@@ -59,7 +59,7 @@ export async function loadFlowIntentRun(runId: string, stepRowId?: string): Prom
     let step: FlowIntentRunFacts['step'] = null;
     if (stepRowId) {
       const [stepRow] = await db
-        .select({ id: flowRunSteps.id, stepId: flowRunSteps.stepId, status: flowRunSteps.status })
+        .select({ id: flowRunSteps.id, stepId: flowRunSteps.stepId, status: flowRunSteps.status, tool: flowRunSteps.tool, toolSource: flowRunSteps.toolSource, tier: flowRunSteps.tier })
         .from(flowRunSteps)
         .where(and(eq(flowRunSteps.id, stepRowId), eq(flowRunSteps.runId, runId)))
         .limit(1);

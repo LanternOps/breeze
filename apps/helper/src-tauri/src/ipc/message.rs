@@ -90,6 +90,8 @@ pub fn deny_message_window(label: &str) -> Result<(), String> {
     }
     // Endpoint live chat windows (#8743) render technician text too.
     super::chat::deny_chat_window(label)?;
+    // Prompt cards (#10190) render agent and, for restart, operator text.
+    super::prompt::deny_prompt_window(label)?;
     Ok(())
 }
 

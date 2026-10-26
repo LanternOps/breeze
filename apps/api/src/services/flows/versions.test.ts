@@ -63,6 +63,7 @@ vi.mock('../permissions', async (importOriginal) => ({
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
+vi.mock('./builtins/aiBudget', () => ({ aiStepPermanentBudgetDenial: vi.fn() }));
 
 import { eventDispatchMode, eventDispatchQueueSubscribers } from '../../config/env';
 import { FlowStepPinError, stepPinsFor, validateFlowDocument, type FlowStepPin } from '../flowValidator';
@@ -72,6 +73,7 @@ import { getUserPermissions, type UserPermissions } from '../permissions';
 import { writeAuditEvent } from '../auditEvents';
 import { createNotification } from '../userNotifications';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
 import { assertDelegatorAuthority, disableFlow, enableFlow, pauseFlow, webhookSecretSurvivesEnable } from './versions';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -174,6 +176,7 @@ beforeEach(() => {
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(createNotification).mockReset().mockResolvedValue('n1');
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
+  vi.mocked(aiStepPermanentBudgetDenial).mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -341,6 +344,43 @@ describe('enableFlow — refusals', () => {
     expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
   });
 
+  // W5 PR B (#5220, Decision 13): spec §6.7 "cannot be enabled if the owner has no budget".
+  describe('ai step budget', () => {
+    const AI_DOC = { ...MANUAL_DOC, steps: [{ id: 'think', tool: 'ai', input: { prompt: 'x', tools: [], output: { type: 'object' } }, ...STEP_DEFAULTS }] };
+    const AI_PINS: FlowStepPin[] = [{ stepId: 'think', tool: 'ai', source: 'builtin', tier: 1, approvalScope: null }];
+
+    it('org flow with an ai step and AI disabled is ai_budget_unavailable', async () => {
+      queues.select.push([row({ definition: AI_DOC })]);
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'AI features are disabled for this organization' });
+      expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+        .toEqual({ ok: false, error: 'ai_budget_unavailable', message: 'AI features are disabled for this organization' });
+      expect(aiStepPermanentBudgetDenial).toHaveBeenCalledWith(ORG, PARTNER);
+      expect(callsOf('update')).toHaveLength(0);
+    });
+
+    it('org flow with an ai step and a usable budget enables', async () => {
+      queueEnable(row({ definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+    });
+
+    it('a partner-wide flow checks per run org at run time, not at enable', async () => {
+      queueEnable(row({ orgId: null, partnerId: PARTNER, definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'x' });
+      vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
+      expect((await enableFlow(partnerAuth('all'), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
+
+    it('a flow without an ai step never checks the AI budget', async () => {
+      queueEnable();
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
+  });
+
   it('missing permissions are all listed', async () => {
     const doc = {
       ...MANUAL_DOC,
@@ -360,6 +400,31 @@ describe('enableFlow — refusals', () => {
     expect(missing.find((m) => m.stepId === 'ticket')!.permission).toBe('external_tools.write');
     expect(missing.find((m) => m.stepId === 'read')!.permission).toBe('devices.read');
     expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  it('built-in steps are covered by rule 7 at enable (notify alerts.write, http_request external_tools.write)', async () => {
+    const doc = {
+      ...MANUAL_DOC,
+      steps: [
+        { id: 'tell', tool: 'notify', input: { channelId: SCRIPT, title: 't', message: 'm' }, ...STEP_DEFAULTS },
+        { id: 'call', tool: 'http_request', input: { method: 'POST', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS },
+        { id: 'pause', tool: 'wait', input: { minutes: 1 }, ...STEP_DEFAULTS },
+      ],
+    };
+    queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValue([
+      { stepId: 'tell', tool: 'notify', source: 'builtin', tier: 2, approvalScope: null },
+      { stepId: 'call', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' },
+      { stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null },
+    ]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toEqual({
+      ok: false,
+      error: 'permission_missing',
+      missing: [{ stepId: 'tell', permission: 'alerts.write' }, { stepId: 'call', permission: 'external_tools.write' }],
+    });
+    expect(callsOf('update')).toHaveLength(0);
   });
 
   it('rule 7 passes for a user holding exactly the needed permissions', async () => {
@@ -724,6 +789,17 @@ describe('assertDelegatorAuthority', () => {
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(false);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(true);
+  });
+
+  // W5 PR B (#5220, Decision 12): built-ins are no longer a side door.
+  it('delegator losing external_tools.write pauses the flow (built-in rule 7)', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ id: 'call', tool: 'http_request', input: { method: 'GET', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS }] };
+    const rule7 = { doc: doc as never, pins: [{ stepId: 'call', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null }] as FlowStepPin[] };
+    queues.select.push([{ status: 'active' }], [{ status: 'active' }]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(false);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'write' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(true);
   });
 
   // Review finding 6: rule 7 re-applied at run time. A delegator who is still

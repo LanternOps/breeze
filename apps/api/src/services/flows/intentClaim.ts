@@ -58,7 +58,7 @@
  *                             instead of failing every later run).
  *  Every intent cancel publishes the terminal outbox, which wakes the run.
  */
-import { flowDocumentV1Schema, type FlowDocumentV1, type FlowPausedReason, type FlowRunErrorCode, type FlowStepErrorCode } from '@breeze/shared';
+import { flowBuiltinTierFor, flowDocumentV1Schema, isFlowBuiltin, type FlowDocumentV1, type FlowPausedReason, type FlowRunErrorCode, type FlowStepErrorCode } from '@breeze/shared';
 import { flowsEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { checkGuardrails } from '../aiGuardrails';
@@ -178,6 +178,18 @@ function coreStepStillPinned(intent: store.ClaimIntentRow, pin: FlowStepPin): bo
   return liveScope === pin.approvalScope && intent.approvalScope === pin.approvalScope;
 }
 
+/**
+ * W5 (#5220, Decision 12): an approved Tier-3 built-in (an http_request
+ * write). The pin must be this built-in at Tier 3 / supervised, and the
+ * built-in's own tier of the STORED arguments must not exceed it. Only
+ * `http_request` reaches Tier 3; anything else is drift.
+ */
+function builtinStepStillPinned(intent: store.ClaimIntentRow, pin: FlowStepPin): boolean {
+  if (pin.source !== 'builtin' || pin.tool !== intent.actionName || intent.actionName !== 'http_request') return false;
+  if (pin.tier !== 3 || pin.approvalScope !== 'supervised' || intent.approvalScope !== 'supervised') return false;
+  return flowBuiltinTierFor('http_request', intent.arguments) <= pin.tier;
+}
+
 type Decision =
   | { kind: 'result'; result: FlowClaimResult }
   | {
@@ -294,6 +306,8 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
     if (!pin) return refuse('pin_invalid', stepCtx);
     if (intent.toolSourceToolId) {
       if (!(await tenantStepStillPinned(intent, pin))) return refuse('tool_revision_changed', stepCtx);
+    } else if (isFlowBuiltin(intent.actionName)) {
+      if (!builtinStepStillPinned(intent, pin)) return refuse('approval_scope_changed', stepCtx);
     } else if (!coreStepStillPinned(intent, pin)) {
       return refuse('approval_scope_changed', stepCtx);
     }
