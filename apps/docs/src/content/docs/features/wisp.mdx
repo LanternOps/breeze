@@ -15,7 +15,7 @@ Wisp is a triage companion that works on behalf of one person. Once that person 
 
 Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier and no bypass.
 
-Wisp threads open at `/ai/wisp/thread/<id>`. The docked AI chat sidebar has a Wisp toggle for starting or continuing a conversation with it, and the **Wisp** entry in the AI section of the navigation opens the [Wisp home](#the-wisp-home).
+Wisp threads open at `/ai/wisp/thread/<id>`. Under an active grant the docked Breeze AI side panel speaks as Wisp (there is no toggle; see [Where you talk to Wisp](#where-you-talk-to-wisp)), and the **Wisp** entry in the AI section of the navigation opens the [Wisp home](#the-wisp-home).
 
 ## Turning it on
 
@@ -32,14 +32,14 @@ Wisp has three independent gates, and none of them overrides another:
 - **The partner switch.** A partner administrator can turn Wisp off for their own company; see [Turning Wisp off for your company](#turning-wisp-off-for-your-company).
 
 <Aside type="note" title="For self-hosters and operators: the knowledge connector">
-  The built-in extension that indexes files and email for Wisp is labelled **Wisp knowledge connector** in the interface (its pages are **Wisp Sources** and **Wisp Dashboard**). It has its own flag, `BREEZE_WORKSPACE_ENABLED`, which also accepts the alias `BREEZE_WISP_CONNECTOR_ENABLED`; setting either one enables it. It needs the pgvector extension in Postgres. `BREEZE_WISP_ENABLED` is a separate flag and never loads the connector, and Wisp runs fine without the connector.
+  The built-in extension that indexes files and email for Wisp is labelled **Wisp knowledge connector** in the interface (its pages are **Knowledge sources** and **Knowledge dashboard**). It has its own flag, `BREEZE_WORKSPACE_ENABLED`, which also accepts the alias `BREEZE_WISP_CONNECTOR_ENABLED`; setting either one enables it. It needs the pgvector extension in Postgres. `BREEZE_WISP_ENABLED` is a separate flag and never loads the connector, and Wisp runs fine without the connector.
 </Aside>
 
 ## The Wisp home
 
 The **Wisp** entry in the AI section of the navigation opens the Wisp home at `/wisp`. It is where you see, at a glance, what Wisp has been doing for you and what is waiting on you. The page is drawn from stored results; opening it never runs a model.
 
-The home appears when Wisp is on for the deployment and you signed in at partner scope. Otherwise `/wisp` sends you to **Wisp chats** (`/wisp/chat`). If your plan does not include Wisp you see the same locked upgrade prompt as elsewhere. If you have no grant yet, a **Put Wisp to work** card starts one and opens the usual step-up confirmation.
+The home appears when Wisp is on for the deployment and you signed in at partner scope. If Wisp is off for the deployment (self-hosted), `/wisp` shows the page locked: "Wisp runs on Breeze Cloud. It is not available on this server." There is no upgrade link, and the Wisp sidebar entry shows the same lock. If you signed in at organization scope, `/wisp` sends you to Breeze AI at `/ai/chat`. If your plan does not include Wisp you see the same locked upgrade prompt as elsewhere. If you have no grant yet, a **Put Wisp to work** card starts one and opens the usual step-up confirmation.
 
 The home has these sections:
 
@@ -52,15 +52,15 @@ The home has these sections:
 | **Talk to Wisp** | The conversation, inline. It resumes the thread's last session instead of starting a new one on every visit. Nothing starts while the grant is paused or ended. |
 | **Linked items** | The tickets, devices and other items you pinned to Wisp; see [Linked items](#linked-items). |
 
-The page also links to **All chats** (`/wisp/chat`) and to **Memory** (`/settings/wisp-memory`).
+The page also links to **All chats** (`/ai/chat`) and to **Memory** (`/settings/wisp-memory`).
 
 You can link straight to a section: `/wisp#needs-you`, `#brief`, `#activity`, `#thread` and `#links`. `/wisp#concern=<id>` opens **Needs your attention** on that concern.
 
-The docked chat sidebar's Wisp mode has an **Open in Wisp** link that goes to the home; concerns are listed on the home, not in the sidebar. On mobile, the Wisp thread screen shows the brief sections, the full activity timeline and the linked items (read-only, each opening its item).
+The side panel, when it speaks as Wisp, has an **Open in Wisp** link that goes to the home; concerns are listed on the home, not in the sidebar. On mobile, the Wisp thread screen shows the brief sections, the full activity timeline and the linked items (read-only, each opening its item).
 
-### Wisp chats
+### Where you talk to Wisp
 
-The multi-tab chat page now lives at `/wisp/chat`, titled **Wisp chats**. It is unchanged: the same tabs (open tabs survive a reload), the same shortcuts, and it works with Wisp off exactly as before. The old `/workspace` address redirects permanently to it, and old `#session=<id>` links still open their tab. In the side panel, the control that moves a conversation to the page is now **Open in Wisp chats**. See [AI assistant](/features/ai/#chat-surfaces-the-side-panel-and-wisp-chats).
+The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (up to five; open tabs survive a reload) and shortcuts, and it works with Wisp off. The old `/workspace` and `/wisp/chat` addresses redirect to it, and old `#session=<id>` links still open their tab. The side panel speaks as Wisp only while you have an active grant; there is no toggle. Its **Open in Breeze AI** control moves a conversation to the page. See [Breeze AI](/features/breeze-ai/#where-you-talk-to-breeze-ai).
 
 ## Linked items
 
@@ -164,7 +164,7 @@ When a concern needs focused work, Wisp can ask a **specialist** to do it. A req
 |---|---|---|
 | `sweep` | Collects evidence across the estate | On its own |
 | `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)) | On its own |
-| `operator_recipe` | Runs an AI Operator recipe | After you approve |
+| `operator_recipe` | Runs an AI task recipe | After you approve |
 | `patch_plan` | Drafts a patch plan | After you approve |
 | `remediation_research` | Researches a fix for a problem | After you approve |
 | `bulk_ticket_reply` | Sends one message to a list of tickets (for example, everyone hit by the same outage). The approval card shows the exact tickets and the exact message; no ticket is added after approval, and the batch stops at the first failure and reports | After you approve |

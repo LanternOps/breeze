@@ -11,6 +11,7 @@
  */
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
+import { isFlowPrincipal } from '../middleware/principalKind';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { createArtifact } from './artifacts/artifactService';
@@ -41,6 +42,13 @@ const CONTENT_TYPES: Record<ExportFormat, string> = {
 
 function isExportDataset(value: unknown): value is ExportDataset {
   return typeof value === 'string' && (EXPORT_DATASETS as readonly string[]).includes(value);
+}
+
+function refuseFlowExport(): string {
+  return JSON.stringify({
+    error: 'export_requires_run',
+    message: 'export_dataset writes an agent-run-owned artifact; a flow run cannot own one.',
+  });
 }
 
 export function registerExportTools(aiTools: Map<string, AiTool>): void {
@@ -91,6 +99,10 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: resolvedOrg.error ?? 'No organization context available' });
         }
         orgId = resolvedOrg.orgId;
+
+        // Tool catalog W04 (#5219): an artifact is owned by an AGENT run
+        // (ai_agent_runs); a flow run id is never substituted for one.
+        if (isFlowPrincipal(auth)) return refuseFlowExport();
 
         // Run IDENTITY comes from the PRINCIPAL, not from ToolExecutionContext
         // (reconciliation R4): `buildAgentAuthContext` puts the run id on

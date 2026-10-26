@@ -1,6 +1,7 @@
 ---
-// Wisp W08 (#9921): the multi-tab chat moved to /wisp/chat. Permanent
-// redirect so bookmarks and `/workspace#session=<id>` links keep working —
+// The multi-tab chat moved to /wisp/chat (Wisp W08 #9921), then to /ai/chat
+// (AI surface cohesion W05 #10136). Permanent redirect straight to the current
+// address so bookmarks and `/workspace#session=<id>` links keep working —
 // browsers carry the fragment across a redirect whose Location has none.
-return Astro.redirect('/wisp/chat', 301);
+return Astro.redirect('/ai/chat', 301);
 ---

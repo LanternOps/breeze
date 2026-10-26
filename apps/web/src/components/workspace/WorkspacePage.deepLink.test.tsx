@@ -1,5 +1,5 @@
 /**
- * #9840 W3 (Task 12): /workspace#session=<id> deep link and hash-follows-tab
+ * #9840 W3 (Task 12): /ai/chat#session=<id> deep link and hash-follows-tab
  * (spec §3.6, D6; Advisor finding 8). Real workspaceStore, fetch mocked.
  *
  * - a link is acted on only with ai_sessions:use (no fetch, no hash read otherwise);
@@ -298,7 +298,7 @@ describe('result → toast, hash, hand-off', () => {
 
 describe('hash follows the active tab', () => {
   it('switching tabs rewrites the hash with replaceState(history.state, …) and re-enters nothing', async () => {
-    window.history.replaceState({ astro: 'router' }, '', '/workspace');
+    window.history.replaceState({ astro: 'router' }, '', '/ai/chat');
     useWorkspaceStore.setState({ tabs: [tab({ id: 'ta', sessionId: A }), tab({ id: 'tb', sessionId: B })], activeTabId: 'ta' });
     render(<WorkspacePage />);
     await waitFor(() => expect(window.location.hash).toBe(`#session=${A}`));
@@ -306,7 +306,7 @@ describe('hash follows the active tab', () => {
     const onHash = vi.fn();
     window.addEventListener('hashchange', onHash);
     await act(async () => { state().switchTab('tb'); });
-    expect(replace).toHaveBeenCalledWith({ astro: 'router' }, '', `/workspace#session=${B}`);
+    expect(replace).toHaveBeenCalledWith({ astro: 'router' }, '', `/ai/chat#session=${B}`);
     expect(window.history.state).toEqual({ astro: 'router' });
     window.removeEventListener('hashchange', onHash);
     expect(onHash).not.toHaveBeenCalled();
@@ -332,7 +332,7 @@ describe('hash follows the active tab', () => {
     render(<WorkspacePage />);
     await waitFor(() => expect(callsTo(`/ai/sessions/${A}`)).toHaveLength(1));
     // The user follows a link to B: the URL changes now, its hashchange is delivered later.
-    window.history.replaceState(null, '', `/workspace#session=${B}`);
+    window.history.replaceState(null, '', `/ai/chat#session=${B}`);
     await act(async () => { release(); });
     await waitFor(() => expect(activeSession()).toBe(A));
     await act(async () => { await Promise.resolve(); });

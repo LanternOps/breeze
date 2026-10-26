@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Noch keine Patch-Jobs. Von Richtlinien, Update-Ringen oder dem KI-Assistenten erstellte Jobs werden hier angezeigt.",
+    "empty": "Noch keine Patch-Aufträge. Aufträge, die durch Richtlinien, Update-Ringe oder Breeze AI erstellt werden, erscheinen hier.",
     "loading": "Patch-Jobs werden geladen...",
     "columns": {
       "name": "Job",

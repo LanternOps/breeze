@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "KI-Assistent",
+    "assistant": "Breeze AI",
     "agent": "KI-Agent",
+    "flow": "Ablauf",
     "originUnavailable": "Ursprung nicht verfügbar",
     "openSession": "Unterhaltung öffnen",
     "openAgentRun": "Agentenlauf öffnen",
@@ -27,7 +28,7 @@
     "patches": "Patches",
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
-    "aiForOffice": "KI für Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
     "flows": "Abläufe",
@@ -66,10 +67,6 @@
     "scriptAuthoring": "Skripterstellung",
     "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
-    "aiAgentRuns": "KI-Agenten-Läufe",
-    "aiImpact": "KI-Wirkung",
-    "fixMemory": "Fix-Gedächtnis",
-    "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "moreSettings": "Weitere Einstellungen",
@@ -95,7 +92,6 @@
     "sectionFleetManagement": "Flottenverwaltung",
     "sectionBilling": "Abrechnung",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Flottenorchestrierung",
     "software": "Software",
     "softwareInventory": "Software-Inventar",
     "softwarePolicies": "Software-Richtlinien",
@@ -119,7 +115,16 @@
     "ticketsChanges": "Änderungen",
     "endpointMessages": "Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
-    "planAndFeatures": "Tarif & Funktionen"
+    "planAndFeatures": "Tarif & Funktionen",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Worker",
+    "agents": "Agenten",
+    "runs": "Läufe",
+    "aiTasks": "KI-Aufgaben",
+    "findings": "Erkenntnisse",
+    "impact": "Wirkung",
+    "aiKnowledgeSources": "Wissensquellen",
+    "wispLockedServer": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -670,7 +675,7 @@
     },
     "apps": {
       "title": "Verbundene Apps",
-      "description": "KI-Assistenten und andere MCP-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden; die Token funktionieren innerhalb von 10 Minuten nicht mehr.",
+      "description": "KI-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden – Tokens funktionieren dann nach spätestens 10 Minuten nicht mehr.",
       "empty": "Keine verbundenen Apps",
       "emptyDescription": "Wenn Sie einen Claude.ai-Chat, ChatGPT, Cursor oder einen anderen MCP-Client autorisieren, wird dieser hier angezeigt und kann später widerrufen werden.",
       "authorized": "Autorisiert",
@@ -680,7 +685,7 @@
       "revokeTitle": "{{app}} widerrufen?",
       "revokeDescription": "Alle Berechtigungen und Refresh-Token für diesen Client werden gelöscht. Die Token funktionieren innerhalb von 10 Minuten nicht mehr. Bei der nächsten Verwendung ist eine erneute Autorisierung erforderlich.",
       "onlyAppTitle": "Dies ist Ihre einzige autorisierte App.",
-      "onlyAppDescription": "Nach dem Widerruf müssen Sie erneut autorisieren, bevor ein KI-Assistent in Ihrem Mandanten handeln kann.",
+      "onlyAppDescription": "Nach dem Widerrufen müssen Sie erneut autorisieren, bevor ein KI-Client in Ihrem Mandanten handeln kann.",
       "reasonPlaceholder": "Nicht mehr benötigt, verdächtige Aktivität, …",
       "revokeAction": "Zugriff widerrufen"
     }
@@ -737,8 +742,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Navigationsmenü öffnen",
-      "ai": "KI-Assistent",
-      "aiTitle": "KI-Assistent (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Hilfe und Dokumentation",
       "helpTitle": "Hilfe und Dokumentation (Cmd+Shift+H)",
       "theme": "Design",
@@ -807,7 +812,11 @@
         "alertRules": "Alarmregeln",
         "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
         "keyboardShortcuts": "Tastenkürzel",
-        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte",
+        "askBreezeAi": "Breeze AI fragen",
+        "askBreezeAiDescription": "Den Breeze AI-Seitenbereich öffnen",
+        "wispHome": "Wisp öffnen",
+        "wispHomeDescription": "Zu Ihrer Wisp-Startseite wechseln"
       },
       "numberHint": "{{mod}}1–9 zum Öffnen"
     },
@@ -875,7 +884,7 @@
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
       "orgSwitcher": "Organisationsauswahl öffnen",
-      "aiSidebar": "KI-Seitenleiste ein- oder ausblenden",
+      "aiSidebar": "Breeze AI ein- oder ausblenden",
       "close": "Dialog oder Menü schließen",
       "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
       "create": "Erstellen",
@@ -1997,8 +2006,8 @@
         "errors": {
           "loadFailed": "Die Flottenstatistiken konnten nicht geladen werden"
         },
-        "title": "Flottenorchestrierung",
-        "description": "Verwalten Sie Richtlinien, Bereitstellungen, Patches und Automatisierungen in Ihrer gesamten Flotte",
+        "title": "Erkenntnisse",
+        "description": "Geräteübergreifende Muster, die die Worker gefunden haben – eine Aktion statt vieler",
         "partialWarning": "Einige Daten sind möglicherweise unvollständig. Fehler beim Laden: {{endpoints}}",
         "cards": {
           "policies": "Richtlinien",
@@ -2012,7 +2021,7 @@
           "reports": "Berichte"
         },
         "aiFleetActions": "KI-Flottenaktionen",
-        "aiFleetActionsHint": "Klicken Sie hier, um den KI-Assistenten zu fragen",
+        "aiFleetActionsHint": "Klicken, um Breeze AI zu fragen",
         "quickActions": {
           "checkCompliance": "Überprüfen Sie die Einhaltung",
           "activeDeployments": "Aktive Bereitstellungen",
@@ -2399,8 +2408,8 @@
             "description": "Mehrere Kunden verwalten? Wechseln Sie hier zwischen Organisationen."
           },
           "aiHelp": {
-            "title": "KI-gestützte Hilfe",
-            "description": "Stellen Sie Fragen zu Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie jederzeit Befehl+Umschalt+A."
+            "title": "Breeze AI",
+            "description": "Fragen Sie in einfacher Sprache nach Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie überall ⌘⇧A."
           }
         },
         "skipTour": "Tour überspringen",

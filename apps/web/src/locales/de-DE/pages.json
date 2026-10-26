@@ -27,7 +27,7 @@
     "flowDetail": "Ablauf",
     "aiAgentsRunsDetail": "Lauf-Details",
     "aiAgentsRuns": "Agenten-Läufe",
-    "aiForOffice": "KI für Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "KI-Risiko-Engine",
     "alertsDelivery": "Warnungen – Zustellung",
     "alertsCorrelations": "Warnmeldungskorrelationen",
@@ -72,7 +72,7 @@
     "dnsSecurity": "DNS-Sicherheit",
     "dr": "Notfallwiederherstellung",
     "extensionsNamePath": "Erweiterung",
-    "fleet": "Flottenorchestrierung",
+    "fleet": "Erkenntnisse",
     "forgotPassword": "Passwort vergessen",
     "incidentsDetail": "Vorfalldetails",
     "incidents": "Sicherheitsvorfälle",
@@ -186,7 +186,10 @@
     "settingsWispMemory": "Wisp-Gedächtnis",
     "wispThread": "Wisp-Thread",
     "wisp": "Wisp",
-    "wispChat": "Wisp — Chats"
+    "wispChat": "Breeze AI",
+    "aiTasks": "KI-Aufgaben",
+    "aiTask": "KI-Aufgabe",
+    "settingsAi": "KI-Einstellungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -240,7 +243,7 @@
       },
       "connectedApps": {
         "title": "Verbundene Apps",
-        "description": "Überprüfen und widerrufen Sie KI-Assistenten und MCP-Clients, die Zugriff auf Ihren Mandanten haben."
+        "description": "KI-Clients prüfen und widerrufen, die auf Ihren Mandanten zugreifen dürfen."
       },
       "officeAddinBindings": {
         "title": "Outlook-Add-In-Bindungen",
@@ -299,7 +302,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Verbundene Apps",
-    "description": "KI-Assistenten und andere MCP-Clients, die per OAuth für den Zugriff auf Ihren Mandanten autorisiert wurden. Widerrufen Sie den Zugriff jederzeit — das Token der App wird innerhalb von 10 Minuten abgelehnt."
+    "description": "KI-Clients, die über OAuth für den Zugriff auf Ihren Mandanten autorisiert wurden. Der Zugriff kann jederzeit widerrufen werden – das Token der App wird nach spätestens 10 Minuten abgelehnt."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organisationseinstellungen",

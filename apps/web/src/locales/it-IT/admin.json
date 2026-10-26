@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "App connesse (a livello organizzazione)",
       "description": {
-        "prefix": "Assistenti AI e altri client MCP che gli utenti in",
+        "prefix": "Client AI che gli utenti in",
         "yourOrganization": "la tua organizzazione",
         "suffix": "hanno autorizzato. Blocca qualsiasi client per revocare immediatamente ogni concessione attiva."
       },
@@ -581,7 +581,7 @@
         "plan": "Piano",
         "activeGrants": "Autorizzazioni attive",
         "pausedGrants": "Autorizzazioni in pausa",
-        "assessmentsToday": "Valutazioni di oggi",
+        "assessmentsToday": "Controlli di oggi",
         "specialistRequestsToday": "Richieste a specialisti di oggi",
         "openConcerns": "Segnalazioni aperte",
         "budgetExhaustedToday": "Autorizzazioni senza budget oggi"
@@ -597,7 +597,7 @@
         "expires": "Scade",
         "budget": "Budget (centesimi/giorno)",
         "tickMinutes": "Intervallo (min)",
-        "assessmentsToday": "Valutazioni di oggi",
+        "assessmentsToday": "Controlli di oggi",
         "partnerWide": "Intero partner"
       },
       "status": {
@@ -889,10 +889,10 @@
       "backup.restore.unattested_override": "Ripristino di uno snapshot non verificato confermato",
       "ai.tool_approval.update": "Approvazione strumento IA aggiornata",
       "ai.tool.*": "Strumento IA: {tool}",
-      "ai.session.create": "Chat IA avviata",
-      "ai.session.close": "Chat IA chiusa",
-      "ai.session.flag": "Chat IA segnalata",
-      "ai.session.unflag": "Segnalazione chat IA rimossa",
+      "ai.session.create": "Avviata una conversazione con Breeze AI",
+      "ai.session.close": "Chiusa una conversazione con Breeze AI",
+      "ai.session.flag": "Contrassegnata una conversazione con Breeze AI",
+      "ai.session.unflag": "Contrassegno rimosso da una conversazione con Breeze AI",
       "ai.message.interrupt": "Risposta IA interrotta",
       "ai.command.executed": "L'IA ha eseguito un comando",
       "ai.script.executed": "L'IA ha eseguito uno script",

@@ -212,7 +212,7 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
             onClick={() => void submit()}
             data-testid="wisp-grant-confirm"
           >
-            {busy ? t('wisp.toggle.turningOn') : t('wisp.modal.confirm')}
+            {busy ? t('wisp.modal.turningOn') : t('wisp.modal.confirm')}
           </button>
         </div>
       </div>

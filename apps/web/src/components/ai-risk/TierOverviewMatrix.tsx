@@ -92,12 +92,7 @@ function TierCard({
       {/* Header */}
       <div className="flex items-center justify-between p-5 pb-3">
         <div className="flex items-center gap-2">
-          <span
-            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${tier.badgeBg} ${tier.badgeText}`}
-          >
-            {t("aiRiskTierOverviewMatrix.tier", { tier: tier.tier })}
-          </span>
-          <h3 className="text-sm font-semibold">{tier.label}</h3>
+          <h3 className="text-sm font-semibold">{t(/* i18n-dynamic */ tier.label)}</h3>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">

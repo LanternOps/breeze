@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Bağlantılı uygulamalar (kurum çapında)",
       "description": {
-        "prefix": "AI asistanları ve kullanıcıların içinde bulunduğu diğer MCP istemcileri",
+        "prefix": "Kullanıcıların içinde bulunduğu AI istemcileri",
         "yourOrganization": "kuruluşunuz",
         "suffix": "yetkilendirdik. Her aktif izni anında iptal etmek için herhangi bir müşteriyi engelleyin."
       },
@@ -581,7 +581,7 @@
         "plan": "Plan",
         "activeGrants": "Etkin yetkiler",
         "pausedGrants": "Duraklatılmış yetkiler",
-        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "assessmentsToday": "Bugünkü kontroller",
         "specialistRequestsToday": "Bugünkü uzman istekleri",
         "openConcerns": "Açık endişeler",
         "budgetExhaustedToday": "Bugün bütçesi tükenen yetkiler"
@@ -597,7 +597,7 @@
         "expires": "Bitiş",
         "budget": "Bütçe (sent/gün)",
         "tickMinutes": "Aralık (dk)",
-        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "assessmentsToday": "Bugünkü kontroller",
         "partnerWide": "Tüm iş ortağı"
       },
       "status": {
@@ -889,10 +889,10 @@
       "backup.restore.unattested_override": "Doğrulanmamış anlık görüntünün geri yüklenmesi onaylandı",
       "ai.tool_approval.update": "AI araç onayı güncellendi",
       "ai.tool.*": "AI aracı: {tool}",
-      "ai.session.create": "AI sohbeti başlatıldı",
-      "ai.session.close": "AI sohbeti kapatıldı",
-      "ai.session.flag": "AI sohbeti işaretlendi",
-      "ai.session.unflag": "AI sohbeti işareti kaldırıldı",
+      "ai.session.create": "Bir Breeze AI görüşmesi başlattı",
+      "ai.session.close": "Bir Breeze AI görüşmesini kapattı",
+      "ai.session.flag": "Bir Breeze AI görüşmesini işaretledi",
+      "ai.session.unflag": "Bir Breeze AI görüşmesinin işaretini kaldırdı",
       "ai.message.interrupt": "AI yanıtı durduruldu",
       "ai.command.executed": "AI bir komut çalıştırdı",
       "ai.script.executed": "AI bir betik çalıştırdı",

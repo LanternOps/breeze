@@ -134,6 +134,31 @@ describe('executeTenantTool', () => {
     expect(loadTenantToolForExecution).toHaveBeenCalledWith(descriptor.id, auth, undefined);
   });
 
+  // Tool catalog W04 (#5219): a flow step's external call is attributed to its
+  // RUN as system automation on the 'flow' surface — never as a user whose id
+  // happens to be the run id.
+  it('audits a flow actor as system automation on the flow surface, naming the run', async () => {
+    vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
+    const runId = '99999999-9999-4999-8999-999999999999';
+
+    const auth = makeAuth({ user: { id: 'flow-1', email: 'flow+flow-1@breeze.internal', name: 'Flow' } } as Partial<AuthContext>);
+    await executeTenantTool(makeDescriptor(), { id: 'a1' }, auth, { surface: 'flow', orgId: 'org-1', actor: { kind: 'flow', id: runId } });
+
+    expect(checkTenantToolRateLimit).toHaveBeenCalledWith(expect.anything(), runId);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai.external_tool.call',
+        actorType: 'system',
+        actorId: null,
+        initiatedBy: 'automation',
+        details: expect.objectContaining({ surface: 'flow', flowRunId: runId }),
+      }),
+    );
+  });
+
   it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for dispatch', async () => {
     vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);

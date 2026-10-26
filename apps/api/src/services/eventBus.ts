@@ -6,6 +6,7 @@ import { captureException } from './sentry';
 import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
 import { eventDispatchMode } from '../config/env';
 import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
+import { currentFlowExecutionFrame } from './flows/flowExecutionContext';
 
 // Event types for type safety
 export type EventType =
@@ -75,6 +76,13 @@ export type EventType =
   // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
   // went wrong, so alerting keyed on automation.failed must not fire.
   | 'automation.cancelled'
+  // Tool catalog W04 (#5219), plan Task A8: a flow run finished (spec §6.5
+  // step 7). Payload `{ flowId, runId, chainDepth, status }` — ids only;
+  // `failed` also covers `expired` (status says which). Published by the
+  // runner (and by a refused dispatch claim) after the terminal write commits,
+  // with metadata.flowRunId / flowChainDepth so an event flow inherits depth.
+  | 'flow.run.completed'
+  | 'flow.run.failed'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -276,6 +284,14 @@ export interface BreezeEvent<T = Record<string, unknown>> {
     causationId?: string;
     userId?: string;
     timestamp: string;
+    /**
+     * Tool catalog W04 (#5219), Decision 14: the flow run whose step caused
+     * this event, and that run's chain depth (0..3). Stamped by `publish()`
+     * from the flowExecutionContext frame — a frame always wins over the
+     * caller's options, so a step cannot forge or clear its ancestry.
+     */
+    flowRunId?: string;
+    flowChainDepth?: number;
   };
 }
 
@@ -295,6 +311,13 @@ export interface PublishOptions {
    * known. `null`/`undefined` ⇒ org-level (no site attribution).
    */
   siteId?: string | null;
+  /**
+   * Flow ancestry for an event published OUTSIDE a flow step (the runner's own
+   * `flow.run.*` events). Ignored whenever a flowExecutionContext frame is
+   * active — the frame is authoritative (Decision 14).
+   */
+  flowRunId?: string;
+  flowChainDepth?: number;
 }
 
 export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) => Promise<void>;
@@ -376,7 +399,8 @@ class EventBus {
         correlationId: options.correlationId || eventId,
         causationId: options.causationId,
         userId: options.userId,
-        timestamp: occurredAt.toISOString()
+        timestamp: occurredAt.toISOString(),
+        ...flowAncestryMetadata(options),
       }
     };
 
@@ -603,6 +627,23 @@ export function getEventBus(): EventBus {
 }
 
 // Convenience function for publishing events
+/**
+ * Decision 14: the frame of the executing flow step wins over caller-supplied
+ * ancestry; outside a frame an explicit, well-formed pair is carried (the
+ * runner publishing `flow.run.*`). Keys are omitted when absent so a plain
+ * event's metadata shape is unchanged.
+ */
+function flowAncestryMetadata(options: PublishOptions): { flowRunId?: string; flowChainDepth?: number } {
+  const frame = currentFlowExecutionFrame();
+  if (frame) return { flowRunId: frame.runId, flowChainDepth: frame.chainDepth };
+  const out: { flowRunId?: string; flowChainDepth?: number } = {};
+  if (typeof options.flowRunId === 'string' && options.flowRunId.length > 0) out.flowRunId = options.flowRunId;
+  if (Number.isInteger(options.flowChainDepth) && options.flowChainDepth! >= 0 && options.flowChainDepth! <= 3) {
+    out.flowChainDepth = options.flowChainDepth;
+  }
+  return out;
+}
+
 export async function publishEvent<T = Record<string, unknown>>(
   type: EventType,
   orgId: string,
@@ -644,6 +685,9 @@ export const EVENT_TYPES = {
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
   AUTOMATION_CANCELLED: 'automation.cancelled' as const,
+  // Flow runs (#5219 W04)
+  FLOW_RUN_COMPLETED: 'flow.run.completed' as const,
+  FLOW_RUN_FAILED: 'flow.run.failed' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,

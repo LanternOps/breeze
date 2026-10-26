@@ -1,5 +1,5 @@
 /**
- * #9840 W4 (Task 16): "Open a past conversation" on /workspace. Real
+ * #9840 W4 (Task 16): "Open a past conversation" on /ai/chat. Real
  * workspaceStore + aiStore, fetch mocked.
  *
  * - the "+" menu and the empty state both open the picker; without
@@ -121,7 +121,7 @@ beforeEach(() => {
   useWorkspaceStore.getState().cleanupAllStreams();
   useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1' })], activeTabId: 'tab-1' });
   useAiStore.setState({ isOpen: false, sessionId: null, composerDraft: '', isStreaming: false });
-  window.history.replaceState(null, '', '/workspace');
+  window.history.replaceState(null, '', '/ai/chat');
 });
 
 afterEach(() => {

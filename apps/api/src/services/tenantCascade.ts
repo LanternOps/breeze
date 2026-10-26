@@ -551,6 +551,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
+  'contract_skipped_billing_periods',
   // contract_template_versions sorts before contract_templates: localeCompare
   // puts '_' (versions) before 's' (templates) at the diverging character —
   // same prefix-extension trap as custom_field_definitions/customer_email_domains
@@ -695,6 +696,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql). flow_run_steps
+  // -> flow_runs (run_id, org_id) and flow_runs -> flow_versions are ON DELETE
+  // CASCADE; action_intents(requesting_flow_run_id, org_id) -> flow_runs is
+  // ON DELETE RESTRICT, so topologicalCascadeOrder() (live pg_constraint)
+  // deletes action_intents before flow_runs whatever the position here.
+  // flow_versions is org XOR partner like flows: partner-wide publications
+  // (org_id NULL) are untouched by an org erasure.
+  'flow_run_steps',
+  'flow_runs',
+  'flow_versions',
   // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
   // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
   // child-before-parent constraint of its own.

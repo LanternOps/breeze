@@ -31,7 +31,8 @@ import {
   executionStatusEnum,
 } from '../db/schema';
 import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
-import { isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
+import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 // Type-only: the runtime import stays dynamic inside the handler.
@@ -480,7 +481,9 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
   // has no human review and no revalidation behind it at all. Ignore both
   // for this principal; dispatch falls back to the SAVED script's own
   // `runAs` (its `targetSessionId`, unset, already defaults to none).
-  const isUnattendedAgentDispatch = isAiAgentPrincipal(auth);
+  // A flow run (W04 #5219) is the same unattended case: the saved script's
+  // own run context wins over a caller-supplied runAs / targetSessionId.
+  const isUnattendedAgentDispatch = isAutomationPrincipal(auth);
 
   // #4888 — an assistant-chosen run context clears the SAME gate a human
   // one does. Not a copy of the rules, the actual object the HTTP route

@@ -251,10 +251,10 @@ describe('createWorkspaceApi', () => {
 
 describe('WorkspaceApiError user-visible copy', () => {
   it.each(['protocol', 'unauthorized', 'not-found', 'server', 'network'] as const)(
-    'labels the %s failure as Wisp, never Workspace',
+    'labels the %s failure as Knowledge, never Workspace',
     (kind) => {
       const { message } = new WorkspaceApiError(kind);
-      expect(message).toContain('Wisp');
+      expect(message).toContain('Knowledge');
       expect(message).not.toMatch(/workspace/i);
     },
   );

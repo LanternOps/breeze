@@ -718,7 +718,15 @@
       },
       "fileType": {
         "image": "cópia digitalizada"
-      }
+      },
+      "sendForSignature": "Enviar para assinatura",
+      "filter": {
+        "pending": "Aguardando assinatura",
+        "signed": "Assinados",
+        "closed": "Recusados / anulados / expirados"
+      },
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "Não foi possível gerar a cópia certificada deste acordo; o arquivo original foi baixado no lugar."
     },
     "templateEditor": {
       "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
@@ -764,6 +772,101 @@
       "submit": "Registrar acordo assinado",
       "success": "Acordo assinado registrado.",
       "error": "Não foi possível registrar o acordo assinado."
+    },
+    "requests": {
+      "columns": {
+        "template": "Modelo",
+        "organization": "Organização",
+        "recipients": "Destinatários",
+        "sent": "Enviado",
+        "expires": "Expira",
+        "status": "Status"
+      },
+      "status": {
+        "draft": "Rascunho",
+        "sent": "Aguardando assinatura",
+        "viewed": "Visualizado",
+        "signed": "Assinado",
+        "declined": "Recusado",
+        "voided": "Anulado",
+        "expired": "Expirado"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nada aguardando assinatura",
+          "description": "Os acordos enviados para assinatura aparecem aqui até o cliente assinar."
+        },
+        "closed": {
+          "title": "Nenhuma solicitação recusada, anulada ou expirada",
+          "description": "As solicitações recusadas, anuladas ou expiradas aparecem aqui."
+        }
+      },
+      "loadError": "Não foi possível carregar as solicitações de acordo.",
+      "recipientsMore": "+{{count}} outros",
+      "notSent": "Não enviado",
+      "declinedReason": "Recusado: {{reason}}",
+      "voidedReason": "Anulado: {{reason}}",
+      "copyLink": {
+        "label": "Copiar link",
+        "success": "Link de assinatura copiado",
+        "error": "Não foi possível copiar o link de assinatura.",
+        "clipboardError": "Não foi possível copiar para a área de transferência. Link de assinatura: {{link}}"
+      },
+      "void": {
+        "label": "Anular",
+        "title": "Anular esta solicitação de acordo?",
+        "description": "O link de assinatura deixa de funcionar e os destinatários não poderão mais assinar este acordo.",
+        "reasonLabel": "Motivo (opcional)",
+        "confirm": "Anular solicitação",
+        "confirming": "Anulando…",
+        "success": "Solicitação de acordo anulada.",
+        "error": "Não foi possível anular a solicitação de acordo."
+      },
+      "deleteDraft": {
+        "label": "Excluir rascunho",
+        "success": "Rascunho excluído.",
+        "error": "Não foi possível excluir o rascunho."
+      }
+    },
+    "send": {
+      "title": "Enviar para assinatura",
+      "contract": "Arquivar em um contrato (opcional)",
+      "contractsError": "Não foi possível carregar os contratos desta organização. Você ainda pode enviar o acordo e vinculá-lo a um contrato depois.",
+      "recipients": "Destinatários",
+      "recipientsHelp": "Endereços de e-mail, separados por vírgulas ou quebras de linha. Preenchidos com o contato de cobrança da organização.",
+      "recipientsRequired": "Adicione pelo menos um e-mail de destinatário.",
+      "recipientsInvalid": "Estes não parecem endereços de e-mail: {{emails}}",
+      "recipientsTooMany": "No máximo 50 destinatários.",
+      "cover": "Mensagem de apresentação (opcional)",
+      "expiry": "O link expira em",
+      "expiryPast": "Escolha uma data de expiração futura.",
+      "label": "Rótulo (opcional)",
+      "createDraft": "Criar rascunho e visualizar",
+      "creating": "Criando…",
+      "preview": {
+        "title": "Pré-visualização",
+        "loading": "Carregando pré-visualização…",
+        "error": "Não foi possível carregar a pré-visualização.",
+        "uploaded": "Este modelo é um documento enviado. O cliente assina o arquivo enviado."
+      },
+      "unresolved": {
+        "title": "Preencha os valores ausentes antes de enviar"
+      },
+      "updatePreview": "Atualizar pré-visualização",
+      "updating": "Atualizando…",
+      "submit": "Enviar",
+      "sending": "Enviando…",
+      "createError": "Não foi possível criar o rascunho.",
+      "updateError": "Não foi possível atualizar o acordo.",
+      "sendError": "Não foi possível enviar o acordo.",
+      "discardError": "Não foi possível descartar o rascunho; ele continua listado em Aguardando assinatura, onde você pode excluí-lo.",
+      "sent_one": "Acordo enviado a {{count}} destinatário",
+      "sent_other": "Acordo enviado a {{count}} destinatários",
+      "notEmailed": {
+        "no_email_service": "Enviado, mas o e-mail não está configurado. Copie o link de assinatura em «Aguardando assinatura» e compartilhe.",
+        "no_recipients": "Enviado, mas não havia destinatários para receber o e-mail. Copie o link de assinatura em «Aguardando assinatura» e compartilhe.",
+        "send_failed": "Enviado, mas o e-mail não foi entregue. Copie o link de assinatura em «Aguardando assinatura» e compartilhe."
+      }
     }
   },
   "quotes": {
@@ -2520,7 +2623,7 @@
     "ai": {
       "column": "Uso de IA",
       "sectionTitle": "Uso de IA",
-      "sectionHelp": "Como o uso do assistente de IA pelas organizações com este perfil de cobrança é faturado. Cobre o custo do Breeze mais uma margem ou defina um preço por modelo.",
+      "sectionHelp": "Como o uso do Breeze AI pelas organizações com este perfil de cobrança é faturado. Cobre o custo do Breeze mais uma margem ou defina um preço por modelo.",
       "coverage": "Cobrança do uso de IA",
       "coverageBillable": "Faturável",
       "coverageIncluded": "Incluído",

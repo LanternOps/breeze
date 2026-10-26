@@ -364,3 +364,17 @@ describe('StartRecipeForm — review-round regressions', () => {
     await waitFor(() => expect(within(screen.getByTestId('start-recipe-inheritor-contact')).getByText(/Second Page/)).toBeInTheDocument());
   });
 });
+
+// W07 R2b (Task 17 case 1, the other direction): one component, one recipeKey
+// prop. The offboarding workflow renders none of onboarding's fields; the
+// onboarding direction is pinned in StartRecipeOnboardingFields.test.tsx.
+describe('StartRecipeForm — recipeKey selects the field set', () => {
+  it('identity_offboarding renders no onboarding field', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    expect(screen.getByTestId('start-recipe-inheritor')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-recipe-onboarding-fields')).toBeNull();
+    expect(screen.queryByTestId('start-recipe-display-name')).toBeNull();
+    expect(screen.queryByTestId('start-recipe-provider-m365')).toBeNull();
+    expect(screen.queryByTestId('start-recipe-start-at')).toBeNull();
+  });
+});

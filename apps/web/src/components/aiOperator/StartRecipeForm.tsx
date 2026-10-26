@@ -1,7 +1,12 @@
 /**
- * Start an `identity_offboarding` task (Operator Recipe Library W06 R1b,
+ * Start an identity recipe task (Operator Recipe Library W06 R1b, W07 R2b;
  * spec §4, §6.2). One form, three launch contexts — the Library, a ticket
- * and a contact — chosen by `launch`, never by three components.
+ * and a contact — chosen by `launch`, never by three components. The RECIPE
+ * is a prop too: `workflow.recipeKey` selects the field set, so every launcher
+ * renders this one component. `identity_onboarding`'s fields live in
+ * `StartRecipeOnboardingFields`, its preview in `StartRecipeOnboardingPreview`;
+ * the preview / submit / refusal handling for it is `OnboardingStartRecipeForm`
+ * at the bottom of this file. The offboarding rules below are unchanged.
  *
  * Rules this form holds, each pinned by its test:
  *  - The person is a contact OR a free-text hint, never both, in the UI and on
@@ -29,6 +34,8 @@ import '@/lib/i18n';
 import {
   IDENTITY_OFFBOARDING_EFFECT_TOGGLES,
   identityOffboardingEffectsSchema,
+  identityOnboardingInputSchema,
+  type AiOperatorIdentityOnboardingTaskDraftDto,
   type AiOperatorIdentityTaskDraftDto,
   type AiOperatorWorkflowDto,
 } from '@breeze/shared';
@@ -40,11 +47,21 @@ import { contactsPage, type ContactOption } from '@/lib/api/callerVerification';
 import {
   createOperatorTaskDraft,
   newClientIdempotencyKey,
+  parseOnboardingTaskDraft,
   parseOperatorTaskDraft,
   parseStartedOperatorTask,
   startOperatorTask,
 } from '@/lib/api/aiOperatorWorkflows';
 import { effectToolLabel, effectToolProvider, providerLabel, type EffectProviderKey } from './operatorTaskLabels';
+import StartRecipeOnboardingFields, { onboardingIssueText, type OnboardingOptions } from './StartRecipeOnboardingFields';
+import StartRecipeOnboardingPreview from './StartRecipeOnboardingPreview';
+import {
+  initialOnboardingValue,
+  ONBOARDING_RECIPE_KEY,
+  startAtBeyondDeadline,
+  toOnboardingInput,
+  type OnboardingFormValue,
+} from './onboardingForm';
 
 type Toggle = (typeof IDENTITY_OFFBOARDING_EFFECT_TOGGLES)[number];
 type Effects = Record<Toggle, boolean>;
@@ -63,6 +80,8 @@ export interface StartRecipeFormProps {
   orgId: string;
   launch: StartRecipeLaunch;
   onClose?: () => void;
+  /** `identity_onboarding` only: SKU / group lists to pick from, when a caller has them. */
+  onboardingOptions?: OnboardingOptions;
 }
 
 type Person = { mode: 'contact'; contactId: string; label: string } | { mode: 'hint'; text: string };
@@ -196,7 +215,7 @@ function groupByProvider(tools: readonly string[]): Array<[EffectProviderKey, st
   return [...groups.entries()];
 }
 
-export default function StartRecipeForm({ workflow, orgId, launch, onClose }: StartRecipeFormProps) {
+function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartRecipeFormProps) {
   const { t } = useTranslation('aiOperator');
   const defaults = useMemo(() => identityOffboardingEffectsSchema.parse({}) as Effects, []);
 
@@ -664,4 +683,248 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
       )}
     </form>
   );
+}
+
+// ---------------------------------------------------------------------------
+// identity_onboarding (W07 R2b, Task 17)
+// ---------------------------------------------------------------------------
+
+/**
+ * The onboarding variant's preview / submit / refusal handling. Its fields
+ * are `StartRecipeOnboardingFields`; this owns what is SENT:
+ *  - the input is validated client-side by the shared schema before any call,
+ *    and what was previewed is exactly what is submitted (stale → no submit);
+ *  - "check availability" is the draft call itself, never another endpoint;
+ *  - the start-date limit is the SERVER's (`deadlineDays` on a 422
+ *    `START_AT_BEYOND_DEADLINE`), held inline afterwards — never a constant;
+ *  - a 409 `OPERATOR_CONTACT_ALREADY_EXISTS` points at the existing contact;
+ *  - no source citation is sent (the route refuses one, R1b G3);
+ *  - there is NO implicit submission: Enter in a field (the natural "add"
+ *    gesture in the list editors) never starts the task. Only the submit
+ *    button, by click, does.
+ */
+function OnboardingStartRecipeForm({ workflow, orgId, launch, onClose, onboardingOptions }: StartRecipeFormProps) {
+  const { t } = useTranslation('aiOperator');
+  // From a ticket the requester is usually the new hire's MANAGER: pre-fill
+  // that, never the new hire's own name (the likeliest wrong-person error).
+  const managerFromTicket = launch.kind === 'ticket' ? launch.contactId : null;
+  const [value, setValue] = useState<OnboardingFormValue>(() => initialOnboardingValue(managerFromTicket));
+  const [draft, setDraft] = useState<AiOperatorIdentityOnboardingTaskDraftDto | null>(null);
+  const [draftFor, setDraftFor] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'submit' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState<string[] | null>(null);
+  const [duplicateTaskId, setDuplicateTaskId] = useState<string | null>(null);
+  const [existingContact, setExistingContact] = useState<{ id: string | null } | null>(null);
+  /** The server's start-date limit, once a refusal has told us it. */
+  const [deadlineDays, setDeadlineDays] = useState<number | null>(null);
+  const idempotency = useRef<{ key: string; body: string | null }>({ key: newClientIdempotencyKey('onboard'), body: null });
+
+  const parsed = useMemo(() => identityOnboardingInputSchema.safeParse(toOnboardingInput(value)), [value]);
+  const inputsKey = parsed.success ? JSON.stringify(parsed.data) : null;
+  const previewCurrent = draft !== null && inputsKey !== null && draftFor === inputsKey;
+  const startAtError = deadlineDays !== null && startAtBeyondDeadline(value.startAt, deadlineDays)
+    ? t('startRecipe.onboarding.startBeyondDeadline', { count: deadlineDays })
+    : null;
+  const canSubmit = previewCurrent && busy === null && startAtError === null && !value.startAtIncomplete;
+
+  const change = (next: OnboardingFormValue) => {
+    setValue(next);
+    setInvalid(null);
+  };
+
+  const reportFailure = (err: unknown, fallback: string): void => {
+    if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+    if (!(err instanceof ActionError)) {
+      showToast({ type: 'error', message: fallback });
+      setError(fallback);
+      return;
+    }
+    // runAction already toasted; keep the server's reason on the form as well.
+    setError(err.message);
+  };
+
+  const runPreview = async () => {
+    setError(null);
+    setDuplicateTaskId(null);
+    setExistingContact(null);
+    if (value.startAtIncomplete) {
+      setInvalid([t('startRecipe.onboarding.startAtIncomplete')]);
+      return;
+    }
+    if (!parsed.success) {
+      // Named by field; the shared schema's own messages are English and name regexes.
+      setInvalid([...new Set(parsed.error.issues.map((i) => onboardingIssueText(t, i.path, value)))]);
+      return;
+    }
+    setBusy('preview');
+    const sentKey = JSON.stringify(parsed.data);
+    try {
+      const result = await runAction({
+        request: () => createOperatorTaskDraft({
+          recipeKey: workflow.recipeKey, recipeVersion: workflow.recipeVersion, orgId, inputs: parsed.data,
+        }),
+        parseSuccess: parseOnboardingTaskDraft,
+        errorFallback: t('startRecipe.preview.failed'),
+      });
+      setDraft(result);
+      setDraftFor(sentKey);
+    } catch (err) {
+      // Drop the old preview: kept beside the error it would read as "the form changed".
+      setDraft(null);
+      setDraftFor(null);
+      reportFailure(err, t('startRecipe.preview.failed'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const submit = async () => {
+    if (!canSubmit || !parsed.success) return;
+    setBusy('submit');
+    setError(null);
+    setDuplicateTaskId(null);
+    setExistingContact(null);
+    const body = parsed.data;
+    const bodyKey = JSON.stringify(body);
+    // One key per SUBMISSION (R1b): a retry of the same body reuses it; a changed body mints a new one.
+    if (idempotency.current.body !== null && idempotency.current.body !== bodyKey) {
+      idempotency.current = { key: newClientIdempotencyKey('onboard'), body: null };
+    }
+    idempotency.current.body = bodyKey;
+    const clientIdempotencyKey = idempotency.current.key;
+    try {
+      const { taskId } = await runAction({
+        request: () => startOperatorTask({ workflow, orgId, inputs: body, clientIdempotencyKey }),
+        parseSuccess: parseStartedOperatorTask,
+        errorFallback: t('startRecipe.onboarding.failed'),
+        successMessage: (r) => (r.replayed ? t('startRecipe.onboarding.replayed') : t('startRecipe.onboarding.started')),
+        friendly: (code, message, payload) => {
+          if (code === 'OPERATOR_DUPLICATE_LIVE_TASK') {
+            const id = (payload as { taskId?: unknown } | undefined)?.taskId;
+            return typeof id === 'string' ? t('startRecipe.onboarding.duplicate') : message;
+          }
+          if (code === 'START_AT_BEYOND_DEADLINE') {
+            const days = (payload as { deadlineDays?: unknown } | undefined)?.deadlineDays;
+            return typeof days === 'number' ? t('startRecipe.onboarding.startBeyondDeadline', { count: days }) : message;
+          }
+          return undefined;
+        },
+      });
+      await navigateTo(`/operator/tasks/${taskId}`);
+    } catch (err) {
+      if (err instanceof ActionError && err.code === 'OPERATOR_DUPLICATE_LIVE_TASK') {
+        const id = (err.body as { taskId?: unknown } | undefined)?.taskId;
+        if (typeof id === 'string') setDuplicateTaskId(id);
+      }
+      if (err instanceof ActionError && err.code === 'OPERATOR_CONTACT_ALREADY_EXISTS') {
+        const id = (err.body as { existingContactId?: unknown } | undefined)?.existingContactId;
+        setExistingContact({ id: typeof id === 'string' ? id : null });
+      }
+      if (err instanceof ActionError && err.code === 'START_AT_BEYOND_DEADLINE') {
+        const days = (err.body as { deadlineDays?: unknown } | undefined)?.deadlineDays;
+        if (typeof days === 'number' && Number.isFinite(days)) {
+          setDeadlineDays(days);
+          // The field carries it from here when this browser agrees the date is
+          // beyond it; if it does not (clock skew), the server's reason stays on the form.
+          if (startAtBeyondDeadline(value.startAt, days)) return;
+        }
+      }
+      reportFailure(err, t('startRecipe.onboarding.failed'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <form
+      data-testid="start-recipe-form"
+      data-recipe-key={workflow.recipeKey}
+      className="space-y-5 rounded-lg border bg-card p-4 shadow-xs"
+      // No implicit submission: Enter in a field must never start the task.
+      onSubmit={(e) => e.preventDefault()}
+    >
+      <header className="flex items-start justify-between gap-2">
+        <h3 className="text-base font-semibold">{t('startRecipe.onboarding.title')}</h3>
+        {onClose && (
+          <button type="button" data-testid="start-recipe-close" onClick={onClose} className="text-sm underline">
+            {t('startRecipe.close')}
+          </button>
+        )}
+      </header>
+
+      <StartRecipeOnboardingFields
+        orgId={orgId}
+        value={value}
+        onChange={change}
+        draft={draft}
+        startAtError={startAtError}
+        managerPrefilled={managerFromTicket !== null}
+        options={onboardingOptions}
+        onCheckAvailability={() => void runPreview()}
+        busy={busy !== null}
+      />
+
+      {invalid && (
+        <div role="alert" data-testid="start-recipe-invalid" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          <p>{t('startRecipe.onboarding.invalid')}</p>
+          <ul className="list-disc pl-5 text-xs">{invalid.map((m) => <li key={m}>{m}</li>)}</ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-testid="start-recipe-preview-button"
+          disabled={busy !== null}
+          onClick={() => void runPreview()}
+          className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+        >
+          {draft ? t('startRecipe.preview.refresh') : t('startRecipe.preview.button')}
+        </button>
+        <button
+          type="button"
+          data-testid="start-recipe-submit"
+          disabled={!canSubmit}
+          onClick={() => void submit()}
+          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t('startRecipe.onboarding.submit')}
+        </button>
+      </div>
+
+      {error && (
+        <div role="alert" data-testid="start-recipe-error" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          <p>{error}</p>
+          {duplicateTaskId && (
+            <a data-testid="start-recipe-duplicate-link" href={`/operator/tasks/${duplicateTaskId}`} className="mt-1 inline-block font-medium underline">
+              {t('startRecipe.duplicateLink')}
+            </a>
+          )}
+          {existingContact && (
+            <a
+              data-testid="start-recipe-existing-contact-link"
+              data-contact-id={existingContact.id ?? undefined}
+              href={`/organizations/${orgId}#contacts`}
+              className="mt-1 inline-block font-medium underline"
+            >
+              {t('startRecipe.onboarding.existingContactLink')}
+            </a>
+          )}
+        </div>
+      )}
+
+      {draft && !previewCurrent && (
+        <p data-testid="start-recipe-preview-stale" className="text-sm text-muted-foreground">{t('startRecipe.preview.stale')}</p>
+      )}
+
+      {draft && <StartRecipeOnboardingPreview draft={draft} />}
+    </form>
+  );
+}
+
+export default function StartRecipeForm(props: StartRecipeFormProps) {
+  return props.workflow.recipeKey === ONBOARDING_RECIPE_KEY
+    ? <OnboardingStartRecipeForm {...props} />
+    : <OffboardingStartRecipeForm {...props} />;
 }

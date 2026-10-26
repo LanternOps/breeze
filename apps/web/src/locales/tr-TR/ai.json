@@ -18,7 +18,7 @@
     "pendingApproverDescription": "Bu işlemin Onaylar alanında veya Breeze mobil uygulamasında onaylanması gerekiyor.",
     "timeRemaining": "{{minutes}} dakika {{seconds}} saniye kaldı",
     "urgentWarning": "30 saniyeden az kaldı. Bu istek otomatik olarak reddedilecek.",
-    "progressLabel": "Otomatik reddetmeden önce kalan süre",
+    "progressLabel": "Otomatik reddedilmeden önce kalan süre",
     "showParameters": "Parametreleri göster",
     "approve": "Onayla",
     "reject": "Reddet",
@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} işlem reddedildi",
     "refusedToast": "Onay uygulanmadı. İstek reddedildi.",
     "runContextLabel": "Çalıştırma bağlamı:",
-    "runContextChosenByAssistant": "asistan tarafından seçildi",
+    "runContextChosenByAssistant": "Breeze AI tarafından seçildi",
     "runContextScriptDefault": "komut dosyasının kayıtlı varsayılanı",
-    "runContextOverrides": "asistan tarafından seçildi ve komut dosyasının kayıtlı varsayılanını geçersiz kılıyor ({{context}})"
+    "runContextOverrides": "Breeze AI tarafından seçildi ve komut dosyasının kayıtlı varsayılanını ({{context}}) geçersiz kılıyor"
   },
   "aiChatInput": {
     "waiting": "Yanıt bekleniyor...",
@@ -56,7 +56,7 @@
     "sendShortcut": "Göndermek için Cmd+Enter"
   },
   "aiChatMessages": {
-    "title": "Breeze Yapay Zeka Asistanı",
+    "title": "Breeze AI",
     "description": "Cihazlarınız, uyarılarınız, ölçümleriniz hakkında bilgi alın veya sorunları giderin.",
     "unknownTool": "Bilinmeyen araç",
     "toolResult": "Araç sonucu",
@@ -107,10 +107,10 @@
     "dismiss": "Kapat"
   },
   "aiConversationMove": {
-    "openInAssistant": "Wisp sohbetlerinde aç",
+    "openInAssistant": "Breeze AI'da aç",
     "continueInPanel": "Yan panelde devam et",
     "openPastConversation": "Geçmiş bir konuşmayı aç",
-    "closeTabInAssistant": "Bu konuşmayı açmak için Wisp sohbetlerinde bir sekmeyi kapatın",
+    "closeTabInAssistant": "Bu konuşmayı açmak için Breeze AI'da bir sekmeyi kapatın",
     "closeTabToOpen": "Bu konuşmayı açmak için bir sekmeyi kapatın",
     "notAvailable": "Bu konuşma kullanılamıyor",
     "wasClosed": "Bu konuşma kapatıldı",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} msjlar",
     "messageCount_one": "{{count}} msj",
-    "messageCount_other": "{{count}} msjlar"
+    "messageCount_other": "{{count}} msjlar",
+    "thisMonth": "Bu ay {{amount}}",
+    "credits_one": "{{formatted}} kredi",
+    "credits_other": "{{formatted}} kredi"
   },
   "aiPlanProgressBar": {
     "completed": "Plan tamamlandı ({{completed}}/{{total}})",
@@ -160,7 +163,7 @@
     "outputExpired": "Çıktının saklama politikası kapsamındaki süresi doldu"
   },
   "aiForOfficePage": {
-    "title": "Office için AI",
+    "title": "Breeze AI for Office",
     "description": "Müşterilerinizin Excel'inde yönetilen yapay zeka asistanı — sağlama, politika, denetim, kullanım ve şablonlar",
     "tabs": {
       "orgs": "Organizasyonlar",
@@ -194,7 +197,7 @@
       "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (Entra eklenti uygulaması kaydı) API üzerinde ayarlayın ve yeniden yükleyin."
     },
     "title": "Müşteri kuruluşları",
-    "description": "Müşteri kuruluşu başına Excel AI asistanını sağlayın: Entra kiracısını eşleyin, yönetici onayı verin, politikayı etkinleştirin, eklentiyi dağıtın.",
+    "description": "Müşteri kuruluşu başına Breeze AI for Office'i sağlayın: Entra kiracısını eşleyin, yönetici onayı verin, politikayı etkinleştirin, eklentiyi dağıtın.",
     "columns": {
       "aiEnabled": "AI etkin",
       "entraTenant": "Entra kiracı",
@@ -208,7 +211,7 @@
     "noOrganizations": "Kuruluş yok",
     "removeMapping": {
       "title": "Kiracı eşlemesini kaldır",
-      "message": "{{orgName}}'nin Entra kiracısındaki kullanıcılar artık Excel asistanında oturum açamayacak. Kuruluş politikası ve kullanım geçmişi tutulur.",
+      "message": "{{orgName}}'nin Entra kiracısındaki kullanıcılar artık Breeze AI for Office'te oturum açamayacak. Kuruluş politikası ve kullanım geçmişi tutulur.",
       "confirm": "Eşlemeyi kaldır"
     },
     "wizard": {
@@ -230,7 +233,7 @@
       "openNewTab": "Yeni sekmede aç",
       "afterConsent": "Verdikten sonra Microsoft, Breeze onay sayfasına yönlendirir. Onay, ilk kullanıcı Excel'den oturum açtığında burada verildiği gibi görünür - Microsoft'a karşı canlı bir anket yoktur (Plan-4 karar 1).",
       "consentGranted": "İzin verdim",
-      "enableDescription": "Bu kuruluş için asistanı etkinleştirin. Bu, güvenli varsayılanlarla (tüm kullanıcılar, son kullanıcı onayıyla okuma/yazma, finansal/kimlik bilgisi türleri için DLP düzenlemesi) kuruluş politikasına <code>enabled: true</code> yazar. Daha sonra politika düzenleyicide her şeyi ayarlayın.",
+      "enableDescription": "Bu kuruluş için Breeze AI for Office'i etkinleştirin. Bu, güvenli varsayılanlarla (tüm kullanıcılar, son kullanıcı onayıyla okuma/yazma, finansal/kimlik bilgisi türleri için DLP düzenlemesi) kuruluş politikasına <code>enabled: true</code> yazar. Daha sonra politika düzenleyicide her şeyi ayarlayın.",
       "enabling": "Etkinleştiriliyor…",
       "alreadyEnabled": "Zaten etkin — devam et",
       "enableAi": "Office için AI'yı etkinleştirin",
@@ -257,7 +260,7 @@
     },
     "organizations": "Organizasyonlar",
     "title": "Kuruluş politikası",
-    "description": "Bu müşteri kuruluşunun Excel asistanının yapmasına izin verilen her şey.",
+    "description": "Bu müşteri kuruluşunun Breeze AI for Office'inin yapmasına izin verilen her şey.",
     "sections": {
       "general": "Genel",
       "userAccess": "Kullanıcı erişimi",
@@ -454,8 +457,8 @@
     "dismiss": "Kapat"
   },
   "workspaceEmptyState": {
-    "title": "Wisp Sohbetleri",
-    "description": "Aynı anda birden fazla AI görüşmesini çalıştırın. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
+    "title": "Breeze AI",
+    "description": "Aynı anda birden fazla görüşme yürütün. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
     "newConversation": "Yeni Konuşma",
     "limit": "5'e kadar eşzamanlı görüşme"
   },
@@ -576,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Wisp'i aç",
-      "turningOn": "Wisp açılıyor…"
-    },
     "locked": {
-      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir."
+      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir.",
+      "server": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
     },
     "modal": {
       "title": "Wisp'i aç",
@@ -598,7 +598,8 @@
       "cancel": "İptal",
       "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
       "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
-      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin."
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin.",
+      "turningOn": "Wisp açılıyor…"
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
@@ -615,7 +616,7 @@
     },
     "settings": {
       "title": "Bütçe ve kontrol aralığı",
-      "budget": "Günlük bütçe (¢)",
+      "budget": "Günlük bütçe",
       "tick": "Kontrol aralığı (dakika)",
       "save": "Kaydet"
     },
@@ -660,7 +661,7 @@
       "resumeFailed": "Wisp devam ettirilemedi"
     },
     "spend": {
-      "meter": "Bugün {{budget}}¢ içinden {{spent}}¢",
+      "meter": "Bugün {{budget}} içinden {{spent}}",
       "resets": "{{hours}} saat içinde sıfırlanır",
       "raise": "Bugünün bütçesini artır",
       "label": "Bugünkü Wisp harcaması"
@@ -688,7 +689,7 @@
       "empty": "Henüz bir şey yok. Wisp'in çalışmaları burada görünür.",
       "loadFailed": "Etkinlik yüklenemedi",
       "loadMore": "Daha fazla yükle",
-      "cost": "{{cents}} ¢",
+      "cost": "Maliyet {{amount}}",
       "kind": {
         "assessment": "Kontrol",
         "concern": "Endişe",
@@ -751,7 +752,7 @@
         "site": "Konumlar",
         "alert": "Uyarılar",
         "run": "Aracı çalıştırmaları",
-        "task": "Operatör görevleri",
+        "task": "Yapay Zekâ Görevleri",
         "user": "Kullanıcılar"
       },
       "loading": "Aranıyor…",
@@ -766,7 +767,8 @@
       "linking": "Bağlanıyor…"
     },
     "sidebar": {
-      "openHome": "Wisp’te aç"
+      "openHome": "Wisp’te aç",
+      "meetWisp": "Wisp ile tanışın"
     },
     "partnerSwitch": {
       "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",

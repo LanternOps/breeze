@@ -450,7 +450,7 @@ describe('operator_task items (recipe spec §6.5)', () => {
     fireEvent.click(await screen.findByTestId('ticket-checklist-delete-it-op'));
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
-        expect.objectContaining({ message: 'An Operator task is still waiting on this step, so it can\'t be deleted. Tick it when the work is done, or stop the task first.' }),
+        expect.objectContaining({ message: 'An AI task is still waiting on this step, so it can\'t be deleted. Tick it when the work is done, or stop the task first.' }),
       );
     });
     // The item must still be present — the delete was refused, not silently dropped.
@@ -488,7 +488,7 @@ describe('operator_task items (recipe spec §6.5)', () => {
     await waitFor(() => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: 'An Operator task is waiting on one of this ticket\'s unticked steps, so the template can\'t replace them. Choose \u201cAdd these steps to the existing checklist\u201d instead, tick the step when the work is done, or stop the task first.',
+          message: 'An AI task is waiting on one of this ticket\'s unticked steps, so the template can\'t replace them. Choose \u201cAdd these steps to the existing checklist\u201d instead, tick the step when the work is done, or stop the task first.',
         }),
       );
     });
@@ -537,7 +537,7 @@ describe('operator_task items (recipe spec §6.5)', () => {
         expect.objectContaining({ type: 'success', message: expect.stringContaining('Runbook') }),
       ));
       const toast = vi.mocked(showToast).mock.calls.at(-1)![0] as { message: string };
-      expect(toast.message).toContain('1 Operator');
+      expect(toast.message).toContain('1 AI task');
       expect(toast.message).toContain('2 repeated');
       await waitFor(() => expect(screen.queryByTestId('ticket-checklist-save-template-form')).toBeNull());
     });

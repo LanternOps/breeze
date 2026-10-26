@@ -186,7 +186,7 @@ describe("M365Integration", () => {
       render(<M365Integration />);
       const h = await screen.findByRole("heading", { level: 2 });
       expect(h).toHaveTextContent(/legacy app registration/i);
-      expect(h).toHaveTextContent(/AI assistant only/i);
+      expect(h).toHaveTextContent(/Breeze AI only/i);
       expect(h).toHaveTextContent("Northwind Traders");
     });
 

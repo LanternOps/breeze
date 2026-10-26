@@ -718,7 +718,15 @@
       },
       "fileType": {
         "image": "copia scansionata"
-      }
+      },
+      "sendForSignature": "Invia per la firma",
+      "filter": {
+        "pending": "In attesa di firma",
+        "signed": "Firmati",
+        "closed": "Rifiutati / annullati / scaduti"
+      },
+      "downloadOriginal": "Originale",
+      "certifiedUnavailable": "Non è stato possibile generare la copia certificata di questo accordo: è stato scaricato il file originale."
     },
     "templateEditor": {
       "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",
@@ -764,6 +772,101 @@
       "submit": "Registra accordo firmato",
       "success": "Accordo firmato registrato.",
       "error": "Impossibile registrare l'accordo firmato."
+    },
+    "requests": {
+      "columns": {
+        "template": "Modello",
+        "organization": "Organizzazione",
+        "recipients": "Destinatari",
+        "sent": "Inviato",
+        "expires": "Scade",
+        "status": "Stato"
+      },
+      "status": {
+        "draft": "Bozza",
+        "sent": "In attesa di firma",
+        "viewed": "Visualizzato",
+        "signed": "Firmato",
+        "declined": "Rifiutato",
+        "voided": "Annullato",
+        "expired": "Scaduto"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nulla in attesa di firma",
+          "description": "Gli accordi inviati per la firma compaiono qui finché il cliente non firma."
+        },
+        "closed": {
+          "title": "Nessuna richiesta rifiutata, annullata o scaduta",
+          "description": "Le richieste rifiutate, annullate o scadute compaiono qui."
+        }
+      },
+      "loadError": "Impossibile caricare le richieste di accordo.",
+      "recipientsMore": "+{{count}} altri",
+      "notSent": "Non inviato",
+      "declinedReason": "Rifiutato: {{reason}}",
+      "voidedReason": "Annullato: {{reason}}",
+      "copyLink": {
+        "label": "Copia link",
+        "success": "Link di firma copiato",
+        "error": "Impossibile copiare il link di firma.",
+        "clipboardError": "Impossibile copiare negli appunti. Link di firma: {{link}}"
+      },
+      "void": {
+        "label": "Annulla",
+        "title": "Annullare questa richiesta di accordo?",
+        "description": "Il link di firma smette di funzionare e i destinatari non potranno più firmare questo accordo.",
+        "reasonLabel": "Motivo (facoltativo)",
+        "confirm": "Annulla richiesta",
+        "confirming": "Annullamento…",
+        "success": "Richiesta di accordo annullata.",
+        "error": "Impossibile annullare la richiesta di accordo."
+      },
+      "deleteDraft": {
+        "label": "Elimina bozza",
+        "success": "Bozza eliminata.",
+        "error": "Impossibile eliminare la bozza."
+      }
+    },
+    "send": {
+      "title": "Invia per la firma",
+      "contract": "Archivia con un contratto (facoltativo)",
+      "contractsError": "Impossibile caricare i contratti di questa organizzazione. Puoi comunque inviare l’accordo e collegarlo a un contratto in seguito.",
+      "recipients": "Destinatari",
+      "recipientsHelp": "Indirizzi email, separati da virgole o a capo. Precompilati con il contatto di fatturazione dell’organizzazione.",
+      "recipientsRequired": "Aggiungi almeno un indirizzo email destinatario.",
+      "recipientsInvalid": "Questi non sembrano indirizzi email: {{emails}}",
+      "recipientsTooMany": "Al massimo 50 destinatari.",
+      "cover": "Messaggio di accompagnamento (facoltativo)",
+      "expiry": "Il link scade il",
+      "expiryPast": "Scegli una data di scadenza futura.",
+      "label": "Etichetta (facoltativo)",
+      "createDraft": "Crea bozza e anteprima",
+      "creating": "Creazione…",
+      "preview": {
+        "title": "Anteprima",
+        "loading": "Caricamento anteprima…",
+        "error": "Impossibile caricare l’anteprima.",
+        "uploaded": "Questo modello è un documento caricato. Il cliente firma il file caricato."
+      },
+      "unresolved": {
+        "title": "Compila i valori mancanti prima dell’invio"
+      },
+      "updatePreview": "Aggiorna anteprima",
+      "updating": "Aggiornamento…",
+      "submit": "Invia",
+      "sending": "Invio…",
+      "createError": "Impossibile creare la bozza.",
+      "updateError": "Impossibile aggiornare l’accordo.",
+      "sendError": "Impossibile inviare l’accordo.",
+      "discardError": "Impossibile eliminare la bozza: è ancora elencata in In attesa di firma, dove puoi eliminarla.",
+      "sent_one": "Accordo inviato a {{count}} destinatario",
+      "sent_other": "Accordo inviato a {{count}} destinatari",
+      "notEmailed": {
+        "no_email_service": "Inviato, ma l’email non è configurata. Copia il link di firma da «In attesa di firma» e condividilo.",
+        "no_recipients": "Inviato, ma non c’erano destinatari a cui scrivere. Copia il link di firma da «In attesa di firma» e condividilo.",
+        "send_failed": "Inviato, ma l’email non è stata recapitata. Copia il link di firma da «In attesa di firma» e condividilo."
+      }
     }
   },
   "quotes": {
@@ -2520,7 +2623,7 @@
     "ai": {
       "column": "Utilizzo IA",
       "sectionTitle": "Utilizzo dell'IA",
-      "sectionHelp": "Come viene addebitato l'utilizzo dell'assistente IA da parte delle organizzazioni con questo profilo di fatturazione. Fatturi il costo di Breeze più un ricarico oppure imposti un prezzo per modello.",
+      "sectionHelp": "Come viene addebitato l'utilizzo di Breeze AI da parte delle organizzazioni con questo profilo di fatturazione. Fatturi il costo di Breeze più un ricarico oppure imposti un prezzo per modello.",
       "coverage": "Fatturazione dell'utilizzo IA",
       "coverageBillable": "Fatturabile",
       "coverageIncluded": "Incluso",

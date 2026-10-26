@@ -1,10 +1,10 @@
 {
   "title": "Flux",
   "subtitle": "Automatisations en plusieurs étapes qui enchaînent des outils.",
-  "previewNotice": "Les flux sont en lecture seule dans cette version. Rédigez-les dans le clavardage IA; l’activation et les exécutions arriveront dans une version ultérieure.",
+  "previewNotice": "Les flux sont en lecture seule dans cette version. Rédigez-les dans Breeze AI; l’activation et les exécutions arriveront dans une version ultérieure.",
   "empty": {
     "title": "Aucun flux pour le moment",
-    "body": "Demandez à l’assistant IA de rédiger un flux, puis examinez-le ici."
+    "body": "Demandez à Breeze AI de rédiger un flux, puis examinez-le ici."
   },
   "list": {
     "name": "Nom",
@@ -33,7 +33,7 @@
     "inputs": "Entrées",
     "steps": "Étapes",
     "version": "Version {{version}}",
-    "createdInChat": "Créé dans le clavardage IA"
+    "createdInChat": "Créé dans Breeze AI"
   },
   "step": {
     "tool": "Outil",

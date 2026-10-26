@@ -106,6 +106,10 @@ describe('Action intents migration', () => {
     // intent whose attributed run could be swapped after approval would
     // defeat release revalidation.
     'requesting_agent_run_id',
+    // 2027-01-06-130000 (tool catalog W04, #5219): the originating flow run,
+    // for the same reason as requesting_agent_run_id. Unconditional — its FK
+    // is ON DELETE RESTRICT, so there is no tombstone transition to permit.
+    'requesting_flow_run_id',
     // 2026-09-23 (P2-2, #4189): typed target scope. scope_kind is a plain
     // deny-listed column (never changes post-creation). scope_device_id's
     // guard is actually conditional — `NEW.scope_device_id IS DISTINCT FROM

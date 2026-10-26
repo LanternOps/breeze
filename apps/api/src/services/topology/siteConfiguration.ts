@@ -22,6 +22,7 @@ import {
   auditLogs,
 } from '../../db/schema';
 import { hasSatisfiedMfa } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import {
   requireTopologySiteAccess,
   type TopologyRequestContext,
@@ -191,7 +192,7 @@ export async function assertConfigurationEffects(
       ctx.scope.siteId,
       'execute',
     );
-    if (ctx.auth.principal?.kind === 'ai_agent' || !hasSatisfiedMfa(ctx.auth))
+    if (isAutomationPrincipal(ctx.auth) || !hasSatisfiedMfa(ctx.auth))
       throw new TopologyOperationError('mfa_required', 403);
   }
   // M3: a policy's `enabled` is activation INTENT only (the stronger branch

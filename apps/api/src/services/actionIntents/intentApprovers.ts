@@ -38,6 +38,7 @@ import { effectiveTargetDeviceId, resolveIntentTargetDevice } from './intentTarg
 import {
   aiAgentRuns,
   devices,
+  flowRuns,
   organizations,
   organizationUsers,
   partnerUsers,
@@ -420,11 +421,18 @@ export async function resolveAgentIntentApprovers(opts: {
   toolName: string;
   input: Record<string, unknown>;
   targetScope: IntentTargetScope;
+  /**
+   * Tool catalog W04 (#5219): an EXTERNAL (tenant tool-source) step has no
+   * core RBAC mapping — `requiredPermissionsForTool` answers null for a
+   * `<slug>__<name>` and nobody would be eligible. The flow lane passes the
+   * external-tool grant instead (the same requirement chat applies).
+   */
+  requiredOverride?: Array<{ resource: string; action: string }>;
 }): Promise<string[]> {
   // No RBAC mapping (unknown tool / unknown action / missing action on a
   // multiplexed tool) ⇒ nobody is eligible. Short-circuits before any
   // membership lookup.
-  const required = requiredPermissionsForTool(opts.toolName, opts.input);
+  const required = opts.requiredOverride ?? requiredPermissionsForTool(opts.toolName, opts.input);
   if (required === null) return [];
 
   // Candidate pool: the same active-member union resolveIntentApprovers
@@ -508,8 +516,14 @@ export async function isAgentIntentDecideAuthorized(
   intent: Pick<
     ActionIntent,
     'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId'
-  >,
+  > & Partial<Pick<ActionIntent, 'requestingFlowRunId' | 'toolSourceToolId'>>,
 ): Promise<boolean> {
+  // Tool catalog W04 (#5219), Decision 6: a supervised FLOW intent is decided
+  // by the same action-and-target pool. It has no requester and no device of
+  // its own — the target comes from the step's arguments only.
+  if (!intent.requestingAgentRunId && intent.requestingFlowRunId) {
+    return isFlowIntentDecideAuthorized(userId, intent as typeof intent & { requestingFlowRunId: string });
+  }
   const runId = intent.requestingAgentRunId;
   if (!runId) return false;
 
@@ -580,4 +594,56 @@ export async function isAgentIntentDecideAuthorized(
     required,
     targetScope,
   });
+}
+
+/**
+ * The external-tool grant a flow intent's approvers must hold when the step is
+ * a tenant tool (Tier 3 ⇒ `external_tools:write`, toolSources/guardrails.ts).
+ */
+export const FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION = { resource: 'external_tools', action: 'write' } as const;
+
+/**
+ * Decide-time twin of the flow fan-out (createActionIntent): the run must still
+ * sit in the intent's org, the decider must hold the step's full RBAC mapping
+ * (or the external-tool grant) AND reach every device the stored arguments
+ * name. Fails closed on any doubt.
+ */
+async function isFlowIntentDecideAuthorized(
+  userId: string,
+  intent: Pick<ActionIntent, 'orgId' | 'actionName' | 'arguments'> & {
+    requestingFlowRunId: string;
+    toolSourceToolId?: string | null;
+  },
+): Promise<boolean> {
+  const required = intent.toolSourceToolId
+    ? [FLOW_EXTERNAL_TOOL_APPROVER_PERMISSION]
+    : requiredPermissionsForTool(intent.actionName, intent.arguments ?? {});
+  if (required === null) return false;
+
+  const { run, partnerId } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [runRow] = await db
+        .select({ orgId: flowRuns.orgId })
+        .from(flowRuns)
+        .where(eq(flowRuns.id, intent.requestingFlowRunId))
+        .limit(1);
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, intent.orgId))
+        .limit(1);
+      return { run: runRow ?? null, partnerId: org?.partnerId ?? null };
+    }),
+  );
+  if (!run || run.orgId !== intent.orgId) return false;
+
+  let targetScope: IntentTargetScope;
+  try {
+    targetScope = intent.toolSourceToolId
+      ? { kind: 'indirect' }
+      : await resolveIntentTargetScope(intent.actionName, intent.arguments ?? {}, { deviceId: null }, intent.orgId);
+  } catch {
+    return false;
+  }
+  return userHasActionAndTargetAuthority(userId, { orgId: intent.orgId, partnerId, required, targetScope });
 }

@@ -121,6 +121,13 @@ const EXPECTED_WORKER_NAMES = [
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
+  // Tool catalog W04 (#5219), Task A8 — flow run slices, the 60 s run
+  // reconciler and daily run-body retention.
+  'flowRunner',
+  'flowRunReconciler',
+  'flowRunRetention',
+  // Task A9 — the schedule-trigger tick.
+  'flowScheduleTick',
   // Partner sending domains W03 (#6183) — the one place that calls the
   // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
   'sendingDomainsWorker',
