@@ -59,11 +59,14 @@ const FLOW_A = '33333333-3333-4333-8333-333333333333';
 const FLOW_B = '33333333-3333-4333-8333-444444444444';
 const USER = '44444444-4444-4444-8444-444444444444';
 
-const WEBHOOK_DOC = { version: 1, name: 'Inbound', trigger: { type: 'webhook', auth: 'hmac' }, inputs: [], steps: [] };
+const WEBHOOK_DOC = {
+  version: 1, name: 'Inbound', trigger: { type: 'webhook', auth: 'hmac' }, inputs: [],
+  steps: [{ id: 'pause', tool: 'wait', input: { minutes: 1 }, approval: 'default', onFailure: 'stop', timeoutSec: 300 }],
+};
 
 function flowRow(over: Record<string, unknown> = {}) {
   return {
-    id: FLOW_A, orgId: ORG, partnerId: null, name: 'Inbound', definition: WEBHOOK_DOC, webhookSecretFingerprint: null,
+    id: FLOW_A, orgId: ORG, partnerId: null, name: 'Inbound', definition: WEBHOOK_DOC, definitionVersion: 3, webhookSecretFingerprint: null,
     enabledPublicationSeq: null, ...over,
   };
 }
@@ -215,11 +218,33 @@ describe('createOrRotateWebhookSecret', () => {
     expect(calls.some((c) => c.kind === 'update')).toBe(false);
   });
 
-  it('a draft whose steps do not resolve yet can still get a secret (enable re-checks the enabler)', async () => {
+  // #10270 option (b): an enable keeps a secret minted against the content it
+  // publishes, so the mint itself must have been checked against that content.
+  it('a draft whose steps no longer resolve, with no live publication, is draft_unresolvable and writes nothing', async () => {
     vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
     selects.push([flowRow({ definition: RUN_DOC })]);
+    expect(await createOrRotateWebhookSecret(auth(), FLOW_A)).toEqual({ ok: false, error: 'draft_unresolvable' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
+  });
+
+  it('a draft that does not parse is draft_unresolvable', async () => {
+    selects.push([flowRow({ definition: { ...WEBHOOK_DOC, steps: [] } })]);
+    expect(await createOrRotateWebhookSecret(auth(), FLOW_A)).toEqual({ ok: false, error: 'draft_unresolvable' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
+  });
+
+  it('an enabled flow whose draft IS the live publication rotates even when its steps no longer resolve (checked against the publication)', async () => {
+    vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
+    selects.push([flowRow({ definition: RUN_DOC, enabledPublicationSeq: 2 })], [{ definition: RUN_DOC, stepPins: RUN_PINS, definitionVersion: 3 }]);
     updates.push([{ id: FLOW_A }]);
     expect((await createOrRotateWebhookSecret(auth(), FLOW_A)).ok).toBe(true);
+  });
+
+  it('a paused flow whose draft was edited since its live publication and no longer resolves is draft_unresolvable', async () => {
+    vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
+    selects.push([flowRow({ definition: RUN_DOC, enabledPublicationSeq: 2 })], [{ definition: RUN_DOC, stepPins: RUN_PINS, definitionVersion: 2 }]);
+    expect(await createOrRotateWebhookSecret(auth(), FLOW_A)).toEqual({ ok: false, error: 'draft_unresolvable' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
   });
 
   it('non-webhook flow is not_webhook', async () => {

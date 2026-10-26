@@ -13,6 +13,8 @@
  *  4. The secret generation changes between verify and run creation (a
  *     rotation, or an enable that invalidates): the delivery verified a moment
  *     earlier is refused `409 flow_changed`, with no run.
+ *  5. A draft save whose timestamp matches the mint's to the millisecond still
+ *     counts as an edit.
  *
  * The validator still refuses webhook triggers until PR B (B1 lifts
  * `trigger_not_available`). This suite strips that one issue and leaves the
@@ -180,6 +182,25 @@ describe('webhook secret binding at enable (#10270 option b, real Postgres)', ()
     expect(await f.runs()).toHaveLength(1);
   });
 
+  it('a draft save stamped in the same millisecond as the mint still invalidates at enable (no timestamp collision keeps the secret)', async () => {
+    const f = await setup();
+    const stale = await f.mint();
+    const minted = (await f.row()).webhookSecretRotatedAt!;
+    // The save computes its timestamp before it can wait on the mint's row lock, so
+    // on a busy host (or another API instance) the two can coincide to the millisecond.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(minted);
+    try {
+      await f.edit(DRAFT_V2, 1);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect((await f.row()).updatedAt.getTime()).toBeGreaterThan(minted.getTime());
+
+    expect(await f.enable(2)).toMatchObject({ ok: true, webhookSecretInvalidated: true });
+    expect(await deliver(f.flowId, stale)).toEqual(UNAUTHORIZED);
+  });
+
   it('a secret minted after the last draft edit survives the enable and its deliveries are accepted', async () => {
     const f = await setup();
     await f.edit(DRAFT_V2, 1);
@@ -232,6 +253,8 @@ describe('webhook secret binding at enable (#10270 option b, real Postgres)', ()
     expect(await deliver(f.flowId, second)).toMatchObject({ http: 202, body: { status: 'accepted' } });
   });
 
+  // The new publication (seq 1 -> 2) is what refuses here; the rotated_at
+  // binding on its own is the rotation case above.
   it('an enable that invalidates the secret between verification and run creation refuses the verified delivery 409 flow_changed', async () => {
     const f = await setup();
     const secret = await f.mint();

@@ -68,14 +68,15 @@ export type RotateWebhookSecretResult =
   | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> }
   | {
       ok: false;
-      error: 'flow_not_found' | 'not_webhook' | 'interactive_session_required' | 'partner_wide_forbidden' | 'delegation_scope_restricted';
+      error: 'flow_not_found' | 'not_webhook' | 'interactive_session_required' | 'partner_wide_forbidden' | 'delegation_scope_restricted'
+        | 'draft_unresolvable';
     };
 
 /** The live publication's document and pins (system read, explicit predicates), or null when unreadable. */
 async function livePublication(flowId: string, seq: number) {
   const [pub] = await runOutsideDbContext(() => withSystemDbAccessContext(
     () => db
-      .select({ definition: flowVersions.definition, stepPins: flowVersions.stepPins })
+      .select({ definition: flowVersions.definition, stepPins: flowVersions.stepPins, definitionVersion: flowVersions.definitionVersion })
       .from(flowVersions)
       .where(and(eq(flowVersions.flowId, flowId), eq(flowVersions.publicationSeq, seq)))
       .limit(1),
@@ -84,7 +85,7 @@ async function livePublication(flowId: string, seq: number) {
   if (!pub) return null;
   const doc = flowDocumentV1Schema.safeParse(pub.definition);
   const pins = flowStepPinSchema.array().safeParse(pub.stepPins);
-  return doc.success && pins.success ? { doc: doc.data, pins: pins.data } : null;
+  return doc.success && pins.success ? { doc: doc.data, pins: pins.data, definitionVersion: pub.definitionVersion } : null;
 }
 
 /**
@@ -100,7 +101,7 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
   const [row] = await db
     .select({
       id: flows.id, orgId: flows.orgId, partnerId: flows.partnerId, name: flows.name, definition: flows.definition,
-      enabledPublicationSeq: flows.enabledPublicationSeq,
+      definitionVersion: flows.definitionVersion, enabledPublicationSeq: flows.enabledPublicationSeq,
     })
     .from(flows)
     .where(eq(flows.id, flowId))
@@ -127,26 +128,34 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
   if (!ceilingAllowsDelegation(perms, owner) || hasSiteCeiling(auth) || (!owner.orgId && auth.partnerOrgAccess !== 'all')) {
     return { ok: false, error: 'delegation_scope_restricted' };
   }
+  let live: Awaited<ReturnType<typeof livePublication>> = null;
   if (row.enabledPublicationSeq !== null) {
-    const live = await livePublication(row.id, row.enabledPublicationSeq);
+    live = await livePublication(row.id, row.enabledPublicationSeq);
     if (!live) return { ok: false, error: 'flow_not_found' };
     const missing = missingPermissionsFor(live.doc, live.pins, perms);
     if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
   }
-  // A secret minted on the DRAFT stays valid after someone else enables it,
-  // so the minter must also hold what the draft's steps need now (PR review).
-  // A draft whose steps do not resolve yet cannot be enabled as it stands;
-  // its enabler is rule-7 checked at enable.
+  // The minter must also hold what the draft's steps need now (PR review). An
+  // enable keeps this secret only if it was minted against the content being
+  // published (#10270 option b, versions.ts webhookSecretSurvivesEnable), so
+  // every mint must be checked against the draft as it stands. Saved drafts
+  // always resolve. If the steps no longer resolve (catalog drift since the
+  // save), the check holds only when a live publication of the same content
+  // (same definition_version) was checked above. Otherwise refuse, so that no
+  // mint skips the check.
+  let draftChecked = live !== null && live.definitionVersion === row.definitionVersion;
   const draft = flowDocumentV1Schema.safeParse(row.definition);
   if (draft.success) {
     try {
       const pins = await stepPinsFor(draft.data, { owner });
       const missing = missingPermissionsFor(draft.data, pins, perms);
       if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+      draftChecked = true;
     } catch (err) {
       if (!(err instanceof FlowStepPinError)) throw err;
     }
   }
+  if (!draftChecked) return { ok: false, error: 'draft_unresolvable' };
 
   const secret = `${FLOW_WEBHOOK_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
   const fingerprint = hmacFingerprint(secret);

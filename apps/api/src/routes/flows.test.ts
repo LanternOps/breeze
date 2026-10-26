@@ -355,7 +355,7 @@ describe('flows routes', () => {
 
     it.each([
       ['flow_not_found', 404], ['not_webhook', 409], ['interactive_session_required', 403], ['partner_wide_forbidden', 403],
-      ['delegation_scope_restricted', 403],
+      ['delegation_scope_restricted', 403], ['draft_unresolvable', 409],
     ])(
       'maps %s to %i and never returns a secret',
       async (error, status) => {

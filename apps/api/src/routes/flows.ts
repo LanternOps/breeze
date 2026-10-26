@@ -183,6 +183,8 @@ const WEBHOOK_SECRET_STATUS: Record<string, Status> = {
   partner_wide_forbidden: 403,
   delegation_scope_restricted: 403,
   permission_missing: 422,
+  // #10270: the draft's steps no longer resolve, so the minter cannot be checked against them.
+  draft_unresolvable: 409,
 };
 
 flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {

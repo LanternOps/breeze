@@ -28,6 +28,7 @@ import {
   type PreApprovalEligibility,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { sqlTimestamptz } from '../../db/sqlValues';
 import { flows, flowVersions, organizations, type FlowRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
@@ -310,9 +311,13 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
       definition: document as unknown as Record<string, unknown>,
       effectiveTier: validation.effectiveTier ?? 3,
       definitionVersion: sql`${flows.definitionVersion} + 1`,
-      // Must move on every content write: versions.ts webhookSecretSurvivesEnable
-      // reads "updated_at still equals the secret's rotated_at" as "no edit since the mint".
-      updatedAt: new Date(),
+      // Strictly after the webhook secret's rotated_at. versions.ts
+      // webhookSecretSurvivesEnable treats "updated_at still equals rotated_at" as
+      // "no edit since the mint". This timestamp is computed before the UPDATE can
+      // wait on a mint's row lock, so the two can match to the millisecond; GREATEST
+      // runs after the lock and rules that out (#10270). GREATEST ignores the NULL
+      // when the flow has no secret.
+      updatedAt: sql`GREATEST(${sqlTimestamptz(new Date())}, ${flows.webhookSecretRotatedAt} + interval '1 millisecond')`,
     })
     .where(and(eq(flows.id, flowId), eq(flows.definitionVersion, existing.definitionVersion), eq(flows.status, existing.status)))
     .returning();
