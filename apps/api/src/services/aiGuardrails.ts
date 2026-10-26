@@ -21,6 +21,7 @@ import { getRedis } from './redis';
 import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
+import { isFlowToolName } from './flows/toolNames';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../middleware/principalKind';
 import { envFlag } from '../config/env';
@@ -3210,11 +3211,26 @@ export function checkAgentGuardrails(
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
   context?: GuardrailContext,
+  /**
+   * W5 PR C (#5220, Decision 9): the LIVE invocation tier of a flow tool
+   * (`flow__<slug>`), which has no `TOOL_TIERS` entry. Honoured ONLY for a
+   * flow tool name — any other name is classified by `checkGuardrails` as
+   * before (an unknown name stays tier 4 / denied). Every other gate below
+   * (env flag, kill switch, policy, enabled, mode, allowlist for mutations)
+   * still applies; the agent path additionally requires the allowlist at
+   * every tier and Tier 1 (services/flows/agentFlowTools.ts).
+   */
+  opts: { resolvedTier?: 1 | 2 | 3 } = {},
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
   const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
-  const base = checkGuardrails(toolName, input, agentContext);
+  const flowTier = opts.resolvedTier !== undefined && isFlowToolName(toolName) ? opts.resolvedTier : undefined;
+  const base: GuardrailCheck = flowTier === undefined
+    ? checkGuardrails(toolName, input, agentContext)
+    : flowTier === 3
+      ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: `Run ${toolName}` }
+      : { tier: flowTier, allowed: true, requiresApproval: flowTier >= 2, readOnly: flowTier === 1, description: `Run ${toolName}` };
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

@@ -66,7 +66,7 @@ import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/res
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 import type { FlowToolDescriptor } from './flows/flowTools';
 import { flowsEnabled } from '../config/env';
-import { buildFlowSdkTools, flowMcpToolNames } from './flows/sdkFlowTools';
+import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './flows/sdkFlowTools';
 import { sessionMayStartFlows } from './flows/flowToolGate';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
@@ -1224,7 +1224,7 @@ export class StreamingSessionManager {
         [
           ...buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
           // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
-          ...buildFlowSdkTools(flowDescriptors, () => session),
+          ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
         ],
       );
     }

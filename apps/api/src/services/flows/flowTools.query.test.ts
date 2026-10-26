@@ -10,6 +10,7 @@ import type { AuthContext } from '../../middleware/auth';
 vi.mock('../flowValidator', () => ({ stepPinsFor: vi.fn(), FlowStepPinError: class extends Error {} }));
 
 import { buildFlowToolsQuery } from './flowTools';
+import { buildKnownFlowSlugsQuery } from './agentFlowTools';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '33333333-3333-4333-8333-333333333333';
@@ -88,5 +89,27 @@ describe('buildFlowToolsQuery — owner predicate (DB-less, real toSQL)', () => 
     expect(buildFlowToolsQuery({ scope: 'system', orgId: null, partnerId: null } as unknown as AuthContext, null)).toBeNull();
     expect(buildFlowToolsQuery({ scope: 'organization', orgId: null, partnerId: null } as unknown as AuthContext, null)).toBeNull();
     expect(buildFlowToolsQuery({ scope: 'partner', orgId: null, partnerId: null } as unknown as AuthContext, null)).toBeNull();
+  });
+});
+
+describe('buildKnownFlowSlugsQuery — the agent-save warning read (W5 PR C)', () => {
+  it('an org agent sees its org flows and its LIVE partner\'s partner-wide flows; enabled manual live publications only', () => {
+    const { sql: text, params } = buildKnownFlowSlugsQuery({ orgId: ORG_A, partnerId: null }, ['report', 'fixit'])!.toSQL();
+    expect(params).toEqual(expect.arrayContaining([ORG_A, 'enabled', 'manual', 'report', 'fixit']));
+    expect(params).not.toContain(PARTNER_A);
+    expect(text).toMatch(/select "organizations"\."partner_id" from "organizations"/);
+    expect(text).toMatch(/"flow_versions"\."publication_seq" = "flows"\."enabled_publication_seq"/);
+  });
+
+  it('a partner agent sees partner-wide flows of its partner only', () => {
+    const { sql: text, params } = buildKnownFlowSlugsQuery({ orgId: null, partnerId: PARTNER_A }, ['report'])!.toSQL();
+    expect(params).toContain(PARTNER_A);
+    expect(params).not.toContain(ORG_A);
+    expect(text).toMatch(/"flows"\."org_id" is null/);
+    expect(text).not.toMatch(/"flows"\."org_id" = \$\d+/);
+  });
+
+  it('no owner ⇒ no query', () => {
+    expect(buildKnownFlowSlugsQuery({ orgId: null, partnerId: null }, ['report'])).toBeNull();
   });
 });

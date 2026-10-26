@@ -13,7 +13,7 @@ vi.mock('./toolRuns', () => ({ startToolRun: vi.fn() }));
 import { resolveFlowToolForCall, type FlowToolDescriptor } from './flowTools';
 import { startToolRun } from './toolRuns';
 import { wrapExtraToolWithHooks } from '../aiAgentSdkTools';
-import { buildFlowSdkTools, flowMcpToolNames } from './sdkFlowTools';
+import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './sdkFlowTools';
 import {
   flowToolIntentBinding,
   flowToolPermissionRequirement,
@@ -128,7 +128,7 @@ describe('guardrail shape and RBAC', () => {
 
 describe('buildFlowSdkTools', () => {
   it('one [Flow] tool per descriptor, exposed under mcp__breeze__', () => {
-    const tools = buildFlowSdkTools([descriptor()], () => session());
+    const tools = buildFlowSdkTools([descriptor()], chatFlowToolRunStarter(() => session()));
     expect(tools.map((t) => t.name)).toEqual(['flow__disk']);
     expect(tools[0]!.description.startsWith('[Flow] Flow: Disk')).toBe(true);
     expect(flowMcpToolNames([descriptor()])).toEqual(['mcp__breeze__flow__disk']);
@@ -137,7 +137,7 @@ describe('buildFlowSdkTools', () => {
   it('tier-1 flow tool runs without approval and returns runPath (on the gated publication)', async () => {
     const gated = descriptor({ publicationId: 'p-gated', publicationSeq: 9 });
     const call = { inputs: { count: 2 }, orgId: null, idempotencyKey: null };
-    const [t] = buildFlowSdkTools([descriptor()], () => session());
+    const [t] = buildFlowSdkTools([descriptor()], chatFlowToolRunStarter(() => session()));
     // The real carry channel: the gate's context rides the call's `extra`.
     const wrapped = wrapExtraToolWithHooks(t!, async () => ({ allowed: true as const, context: { flowToolGate: { descriptor: gated, call } } }));
     const res = await wrapped.handler({ count: 2 }, {} as never);
@@ -147,7 +147,7 @@ describe('buildFlowSdkTools', () => {
   });
 
   it('a handler reached without a gate context refuses and starts nothing', async () => {
-    const [t] = buildFlowSdkTools([descriptor()], () => session());
+    const [t] = buildFlowSdkTools([descriptor()], chatFlowToolRunStarter(() => session()));
     const res = await t!.handler({}, {} as never);
     expect(res.isError).toBe(true);
     expect(startToolRun).not.toHaveBeenCalled();
@@ -155,7 +155,7 @@ describe('buildFlowSdkTools', () => {
 
   it('a run refusal is an error result carrying its code', async () => {
     vi.mocked(startToolRun).mockResolvedValue({ ok: false, error: 'flow_tool_changed' });
-    const [t] = buildFlowSdkTools([descriptor()], () => session());
+    const [t] = buildFlowSdkTools([descriptor()], chatFlowToolRunStarter(() => session()));
     const wrapped = wrapExtraToolWithHooks(t!, async () => ({
       allowed: true as const, context: { flowToolGate: { descriptor: descriptor(), call: { inputs: {}, orgId: null, idempotencyKey: null } } },
     }));
