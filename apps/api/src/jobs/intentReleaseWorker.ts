@@ -61,6 +61,8 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { claimFlowLinkedIntentForDispatch } from '../services/flows/intentClaim';
+import { isFlowBuiltinIntent } from '../services/flows/builtins/intentKind';
+import { executeReleasedFlowBuiltin, FlowBuiltinNotRunError } from '../services/flows/builtins/release';
 import { withFlowExecutionContext, type FlowExecutionFrame } from '../services/flows/flowExecutionContext';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { isTopologyAiToolName, withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
@@ -1515,7 +1517,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   const inFlowFrame = <T,>(fn: () => Promise<T>): Promise<T> =>
     (flowFrame ? withFlowExecutionContext(flowFrame, fn) : fn());
   try {
-    if (secretAction) {
+    if (flowFrame && isFlowBuiltinIntent(intent)) {
+      // Tool catalog W05 (#5220), Decision 12: an approved Tier-3 built-in
+      // flow step (an http_request write) is not a registered tool — it runs
+      // in-process through executeFlowBuiltin under the run's flow principal,
+      // never executeTool. It opens its own short system reads and performs
+      // external I/O, so it runs outside any DB context. Its own deadline
+      // (≤ 30 s for http_request) is inside the generic tool timeout.
+      rawResult = await inFlowFrame(() => withToolTimeout(
+        runOutsideDbContext(() => executeReleasedFlowBuiltin(intent, auth)),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      ));
+    } else if (secretAction) {
       carrier = await inFlowFrame(() => withToolTimeout(
         withAuthDbAccessContext(auth, () =>
           executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
@@ -1634,6 +1648,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     if (refusal) {
       await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
         details: { requiresCallerVerification: refusal.requiresCallerVerification },
+        mcpLifecycleAudited: mcpRelease !== null,
+      });
+      return;
+    }
+    if (err instanceof FlowBuiltinNotRunError) {
+      // Tool catalog W05 (#5220): the approved built-in step could not be
+      // started (its run/step is gone, or the principal is not the run's).
+      // Nothing was sent: a clean failure, never `executed`.
+      await failIntent(intent, 'flow_builtin_not_run', {
+        details: { reason: err.message },
         mcpLifecycleAudited: mcpRelease !== null,
       });
       return;

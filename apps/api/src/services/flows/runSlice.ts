@@ -676,6 +676,7 @@ async function runStepExecutor(
       scope: scopeFor(s),
       auth: s.auth!,
       deadline: t0 + step.timeoutSec * 1000,
+      leaseToken: s.token,
       stepRowId,
     });
   } catch (err) {

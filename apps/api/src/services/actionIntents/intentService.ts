@@ -1,4 +1,4 @@
-import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
+import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -239,6 +239,15 @@ export interface CreateActionIntentInput {
     triggeredByUserId: string | null;
     flowName: string;
     stepId: string;
+    /**
+     * Tool catalog W05 (#5220), Decision 12: the step is a Tier-3 built-in
+     * (an `http_request` write). A built-in name is accepted ONLY with source
+     * 'flow' and this flag (`builtin_intent_invalid` otherwise, both
+     * directions). The core classifier is skipped; the tier comes from the
+     * built-in's own `tierFor` and must equal the step row's pinned tier;
+     * approval is `supervised`; never policy-decidable.
+     */
+    builtin?: boolean;
   };
   /**
    * #6475 — the org's interactive AI approval timeout (ms) for the chat
@@ -1352,6 +1361,21 @@ export async function createActionIntent(
     );
   }
   const flowRunInput = flowPrincipal ? input.flowRun! : null;
+  // Tool catalog W05 (#5220), Decision 12: built-in flow step names are not
+  // registered tools. They are accepted only from a flow principal's own run
+  // with the explicit flag, and the flag only with a built-in name.
+  const builtinIntent = isFlowBuiltin(input.toolName);
+  if (builtinIntent !== (flowRunInput?.builtin === true)) {
+    throw new ActionIntentError(
+      builtinIntent
+        ? `"${input.toolName}" is a flow built-in step; only its flow run may request approval for it`
+        : `flowRun.builtin is set but "${input.toolName}" is not a flow built-in step`,
+      'builtin_intent_invalid',
+    );
+  }
+  if (builtinIntent && (input.externalTool || input.scope || input.binding || input.task)) {
+    throw new ActionIntentError(`"${input.toolName}" is a flow built-in step and takes no binding, scope or task`, 'builtin_intent_invalid');
+  }
   const isAgentIntent = auth.principal.kind === 'ai_agent';
   if (isAgentIntent !== (input.source === 'ai_agent')) {
     throw new ActionIntentError(
@@ -1598,6 +1622,23 @@ export async function createActionIntent(
         } satisfies GuardrailCheck,
         context: undefined,
       }
+    : builtinIntent
+    // Tool catalog W05 (#5220), Decision 12: a built-in has no core
+    // classification. Its tier is its own `tierFor` on the immutable input
+    // (Tier 3 only reaches here — the gate below refuses lower), one
+    // supervised approver, and it is cross-checked against the step row's
+    // pinned tier once the run facts load.
+    ? {
+        check: {
+          tier: flowBuiltinTierFor(input.toolName as Parameters<typeof flowBuiltinTierFor>[0], input.input),
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `${input.toolName} — flow built-in step`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
     : await resolveGuardrailForIntent(
         input.toolName,
         input.input,
@@ -1657,6 +1698,10 @@ export async function createActionIntent(
       || facts.step.status !== 'running'
       || (facts.delegatorUserId ?? null) !== (flowRunInput.delegatorUserId ?? null)
       || (facts.triggeredByUserId ?? null) !== (flowRunInput.triggeredByUserId ?? null)
+      // W05 (#5220): a built-in intent is for exactly this step row's built-in at its pinned tier.
+      || (builtinIntent && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'builtin' || facts.step.tier !== guardrail.tier
+      ))
     ) {
       throw new ActionIntentError(
         'Flow run is missing, belongs to another flow or org, is not running, or does not match the step being parked',

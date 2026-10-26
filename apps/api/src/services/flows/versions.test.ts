@@ -402,6 +402,31 @@ describe('enableFlow — refusals', () => {
     expect(callsOf('insert')).toHaveLength(0);
   });
 
+  it('built-in steps are covered by rule 7 at enable (notify alerts.write, http_request external_tools.write)', async () => {
+    const doc = {
+      ...MANUAL_DOC,
+      steps: [
+        { id: 'tell', tool: 'notify', input: { channelId: SCRIPT, title: 't', message: 'm' }, ...STEP_DEFAULTS },
+        { id: 'call', tool: 'http_request', input: { method: 'POST', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS },
+        { id: 'pause', tool: 'wait', input: { minutes: 1 }, ...STEP_DEFAULTS },
+      ],
+    };
+    queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValue([
+      { stepId: 'tell', tool: 'notify', source: 'builtin', tier: 2, approvalScope: null },
+      { stepId: 'call', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' },
+      { stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null },
+    ]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toEqual({
+      ok: false,
+      error: 'permission_missing',
+      missing: [{ stepId: 'tell', permission: 'alerts.write' }, { stepId: 'call', permission: 'external_tools.write' }],
+    });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
   it('rule 7 passes for a user holding exactly the needed permissions', async () => {
     queueEnable();
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: ALL_PERMS }));
@@ -764,6 +789,17 @@ describe('assertDelegatorAuthority', () => {
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(false);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(true);
+  });
+
+  // W5 PR B (#5220, Decision 12): built-ins are no longer a side door.
+  it('delegator losing external_tools.write pauses the flow (built-in rule 7)', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ id: 'call', tool: 'http_request', input: { method: 'GET', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS }] };
+    const rule7 = { doc: doc as never, pins: [{ stepId: 'call', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null }] as FlowStepPin[] };
+    queues.select.push([{ status: 'active' }], [{ status: 'active' }]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(false);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'write' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(true);
   });
 
   // Review finding 6: rule 7 re-applied at run time. A delegator who is still

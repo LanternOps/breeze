@@ -6,13 +6,16 @@
  *   1. `when` — false ⇒ skipped (nothing rendered, nothing read).
  *   2. render `input` against the run scope (`render_failed` on a template
  *      error or an oversized render).
- *   3. built-ins: `set` returns its values; `wait` returns `park_wait` — the
- *      runner writes the wait step COMPLETED with `{ waitUntil }` in the same
- *      checkpoint that parks the run, so a resume never re-enters it.
- *   4. `revalidateRenderedStep` — the rendered input UNMASKED against the live
+ *   3. `revalidateRenderedStep` — the rendered input UNMASKED against the live
  *      catalog, the publication's pin, and ownership of every referenced asset
  *      in the RUN org (a partner-wide flow included). Any failure is a policy
- *      failure: the run fails regardless of `onFailure`.
+ *      failure: the run fails regardless of `onFailure`. Built-ins too (W5).
+ *   4. built-ins (W5 #5220, builtins/index.ts): Tier 3 (an http_request
+ *      write) parks on a `source: 'flow'` intent EVERY run and executes only
+ *      through the release worker; Tier ≤ 2 runs in-process. `set` returns its
+ *      values; `wait` returns `park_wait` — the runner writes the wait step
+ *      COMPLETED with `{ waitUntil }` in the same checkpoint that parks the
+ *      run, so a resume never re-enters it.
  *   5. tier 3: a pre-approved `run_script` (honoured on this run + a binding
  *      for this step) executes directly against ONE snapshot read that is both
  *      the binding comparison and the `verifiedRunScript` pin — content edited
@@ -39,6 +42,7 @@ import {
   isTruthy,
   parseExpr,
   renderTemplates,
+  type FlowBuiltinName,
   type FlowDocumentV1,
   type FlowScope,
   type FlowStepErrorCode,
@@ -54,6 +58,9 @@ import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin 
 import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
+import { executeFlowBuiltin } from './builtins/index';
+import { countRunBuiltinCalls } from './builtins/runCounters';
+import type { BuiltinContext } from './builtins/types';
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
@@ -96,6 +103,8 @@ export interface StepExecutionInput {
   deadline: number;
   /** The `flow_run_steps` row the runner inserted (status 'running') for this attempt. */
   stepRowId: string;
+  /** W5: the slice's lease token, for lease-fenced writes a built-in makes (the `ai` step's run token reservation). */
+  leaseToken?: string;
 }
 
 /** Test seam: the backoff sleep (defaults to a real timer, so fake timers drive it too). */
@@ -393,7 +402,11 @@ async function executePreApproved(
   }, sleep);
 }
 
-async function parkForApproval(i: StepExecutionInput, rendered: Record<string, FlowValue>): Promise<StepOutcome> {
+async function parkForApproval(
+  i: StepExecutionInput,
+  rendered: Record<string, FlowValue>,
+  opts: { builtin?: true } = {},
+): Promise<StepOutcome> {
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   let intent: Awaited<ReturnType<typeof createActionIntent>>;
   try {
@@ -409,6 +422,7 @@ async function parkForApproval(i: StepExecutionInput, rendered: Record<string, F
         triggeredByUserId: i.run.triggeredByUserId ?? null,
         flowName: flowNameOf(i.version),
         stepId: i.step.id,
+        ...(opts.builtin ? { builtin: true } : {}),
       },
     });
   } catch (err) {
@@ -429,6 +443,46 @@ async function parkForApproval(i: StepExecutionInput, rendered: Record<string, F
     );
   }
   return { kind: 'park_approval', intentId: intent.id, ...meta };
+}
+
+// ── built-ins (W5 #5220) ─────────────────────────────────────────────────────
+
+/**
+ * A Tier ≤ 2 built-in, in-process, inside the run's flow execution frame and
+ * raced against the step deadline like a tool call. Never retried: a built-in
+ * answers for itself (`ai` settles its own model calls, `http_request` never
+ * retries a request that may have arrived). A throw or a timeout from Tier 2
+ * may have taken effect (`unknown_outcome`); from Tier 1 it is a plain failure.
+ */
+async function runBuiltin(
+  i: StepExecutionInput,
+  name: FlowBuiltinName,
+  input: Record<string, FlowValue>,
+  tier: 1 | 2 | 3,
+  owner: ToolOwnerRef,
+): Promise<StepOutcome> {
+  const meta: StepOutcomeMeta = { renderedInput: input };
+  const counters = name === 'notify' || name === 'http_request'
+    ? await countRunBuiltinCalls(i.run.id)
+    : { notify: 0, http: 0 };
+  const ctx: BuiltinContext = {
+    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId,
+    deadline: i.deadline, counters, leaseToken: i.leaseToken ?? null,
+  };
+  const frame = { runId: i.run.id, chainDepth: i.run.chainDepth };
+  const settled = await raceDeadline(() => withFlowExecutionContext(frame, () => executeFlowBuiltin(name, input, ctx)), i.deadline);
+  if (settled.kind === 'timeout') {
+    return tier === 1
+      ? { kind: 'failed', code: 'step_timeout', message: 'The step did not finish before its timeout.', policy: false, ...meta }
+      : { kind: 'unknown_outcome', message: 'The step did not finish before its timeout; it may have taken effect.', ...meta };
+  }
+  if (settled.kind === 'threw') {
+    return tier === 1
+      ? { kind: 'failed', code: 'step_failed', message: messageOf(settled.error), policy: false, ...meta }
+      : { kind: 'unknown_outcome', message: `The step failed unexpectedly and may have taken effect: ${messageOf(settled.error)}`, ...meta };
+  }
+  const outcome = settled.value;
+  return outcome.kind === 'skipped' || outcome.renderedInput ? outcome : { ...outcome, ...meta };
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -458,27 +512,23 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
     return failedPolicy('drift', 'This step no longer matches what was published.', { renderedInput: rendered });
   }
 
-  // 3. built-ins (in-process; never a tool call)
-  if (i.pin.source === 'builtin') {
-    if (!isFlowBuiltin(i.step.tool) || (i.step.tool !== 'set' && i.step.tool !== 'wait')) {
-      return failedPolicy('tool_unavailable', `Built-in '${i.step.tool}' is not available.`, { renderedInput: rendered });
-    }
-    if (i.step.tool === 'set') {
-      const parsed = FLOW_BUILTIN_STEPS.set.inputSchema.safeParse(rendered);
-      if (!parsed.success) return failedPolicy('input_invalid', parsed.error.issues[0]?.message ?? 'Invalid set input.', { renderedInput: rendered });
-      return { kind: 'completed', ...storedOutput(parsed.data.values as Record<string, FlowValue>), renderedInput: rendered };
-    }
-    const parsed = FLOW_BUILTIN_STEPS.wait.inputSchema.safeParse(rendered);
-    if (!parsed.success) return failedPolicy('input_invalid', parsed.error.issues[0]?.message ?? 'Invalid wait input.', { renderedInput: rendered });
-    const resumeAt = new Date(Date.now() + parsed.data.minutes * 60_000);
-    return { kind: 'park_wait', resumeAt, output: { waitUntil: resumeAt.toISOString() }, renderedInput: rendered };
-  }
-
-  // 4. run-time revalidation, unmasked, against the RUN org
+  // 3. run-time revalidation, unmasked, against the RUN org — built-ins
+  //    included (W5 #5220, Decision 12: schema on the rendered input and the
+  //    live tier, so a rise is drift, never a silent run).
   const owner = ownerOf(i.version, i.run, i.auth);
   if (!owner) return failedPolicy('drift', 'This run no longer belongs to the flow\'s owner.', { renderedInput: rendered });
   const check = await revalidateRenderedStep(i.pin, rendered, { owner, runOrgId: i.run.orgId });
   if (!check.ok) return failedPolicy(check.code, check.message, { renderedInput: rendered });
+
+  // 4. built-ins (in-process; never a tool call). A Tier-3 built-in (an
+  //    http_request write) parks for one supervised approval EVERY run — never
+  //    pre-approved — and executes only through the release worker.
+  if (i.pin.source === 'builtin' && isFlowBuiltin(i.pin.tool)) {
+    const name = i.pin.tool;
+    const input = FLOW_BUILTIN_STEPS[name].inputSchema.parse(rendered) as Record<string, FlowValue>;
+    if (check.tier === 3) return parkForApproval(i, input, { builtin: true });
+    return runBuiltin(i, name, input, check.tier, owner);
+  }
 
   // A flow never dispatches a step's own run context for run_script (the
   // saved script's governs — see FLOW_IGNORED_RUN_SCRIPT_KEYS); drop it so the

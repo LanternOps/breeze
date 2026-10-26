@@ -31,7 +31,6 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { actionIntents, flowRuns, flows, flowVersions, users, type FlowRow, type FlowVersionRow } from '../../db/schema';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
-import { checkToolPermissionForResolvedUser, resolveToolPermissionRequirements } from '../aiGuardrails';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import {
@@ -50,6 +49,7 @@ import { latestCronOccurrence } from '../aiAgents/sweepOccurrence';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
+import { builtinPermissionMisses, corePermissionMisses } from './builtins/permissions';
 import { sendFlowNotice } from './notices';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
@@ -111,21 +111,20 @@ export function missingPermissionsFor(
   const pinById = new Map(pins.map((p) => [p.stepId, p]));
   for (const step of doc.steps) {
     const pin = pinById.get(step.id);
-    if (!pin || pin.source === 'builtin') continue;
+    if (!pin) continue;
+    if (pin.source === 'builtin') {
+      // W5 (#5220, Decision 12): built-ins are covered by rule 7 too.
+      for (const permission of builtinPermissionMisses(step, perms)) missing.push({ stepId: step.id, permission });
+      continue;
+    }
     if (pin.source === 'tenant') {
       const req = tenantToolPermissionRequirement(pin.tier);
       if (!hasPermission(perms, req.resource, req.action)) missing.push({ stepId: step.id, permission: `${req.resource}.${req.action}` });
       continue;
     }
-    const input = literalGuardInput(step.tool, step.input);
-    const denial = checkToolPermissionForResolvedUser(step.tool, input, perms);
-    if (!denial) continue;
-    const resolution = resolveToolPermissionRequirements(step.tool, input);
-    const unmet = resolution.ok
-      ? resolution.requirements.filter((r) => !hasPermission(perms, r.resource, r.action)).map((r) => `${r.resource}.${r.action}`)
-      : [];
-    if (unmet.length === 0) missing.push({ stepId: step.id, permission: denial });
-    for (const permission of unmet) missing.push({ stepId: step.id, permission });
+    for (const permission of corePermissionMisses(step.tool, literalGuardInput(step.tool, step.input), perms)) {
+      missing.push({ stepId: step.id, permission });
+    }
   }
   return missing;
 }
