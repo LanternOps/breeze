@@ -23,24 +23,16 @@ const (
 	consentDialogPollInterval = 200 * time.Millisecond
 )
 
-const (
-	consentMBYesNo         = 0x00000004
-	consentMBIconQuestion  = 0x00000020
-	consentMBSystemModal   = 0x00001000
-	consentMBSetForeground = 0x00010000
-	consentMBTopMost       = 0x00040000
-
-	consentInfiniteMs = 0xFFFFFFFF
-)
+const consentInfiniteMs = 0xFFFFFFFF
 
 // showConsentDialogOS renders a native Yes/No prompt via MessageBoxTimeoutW
 // (undocumented-but-stable user32 export; used because MessageBoxW has no
-// countdown). Yes=Allow, No=Deny; the box's own timeout return is reported
+// countdown). Yes=Allow, No=Deny, and No is the default button
+// (consentMessageBoxFlags, #10187); the box's own timeout return is reported
 // as an expired countdown, and a failed call as unavailable — never as a
 // user decision (classifyMessageBoxReturn).
 func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
-	titleStr, bodyStr := buildConsentDialogText(req)
-	bodyStr += "\r\n\r\nSelect Yes to allow, or No to decline."
+	titleStr, bodyStr := consentMessageBoxText(req)
 	title, err := syscall.UTF16PtrFromString(titleStr)
 	if err != nil {
 		return dialogUnavailable
@@ -53,7 +45,7 @@ func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented 
 	if req.TimeoutMs > 0 {
 		timeoutMs = uintptr(req.TimeoutMs)
 	}
-	flags := uintptr(consentMBYesNo | consentMBIconQuestion | consentMBTopMost | consentMBSystemModal | consentMBSetForeground)
+	flags := uintptr(consentMessageBoxFlags)
 	presented()
 	done := make(chan struct{})
 	defer close(done)
