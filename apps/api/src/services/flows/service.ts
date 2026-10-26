@@ -310,6 +310,8 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
       definition: document as unknown as Record<string, unknown>,
       effectiveTier: validation.effectiveTier ?? 3,
       definitionVersion: sql`${flows.definitionVersion} + 1`,
+      // Must move on every content write: versions.ts webhookSecretSurvivesEnable
+      // reads "updated_at still equals the secret's rotated_at" as "no edit since the mint".
       updatedAt: new Date(),
     })
     .where(and(eq(flows.id, flowId), eq(flows.definitionVersion, existing.definitionVersion), eq(flows.status, existing.status)))

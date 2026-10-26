@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { FLOW_STEP_ID_RE, FLOW_PAUSED_REASONS } from './flows';
-import type { FlowDocumentV1, FlowPausedReason, FlowToolSource } from './flows';
+import type { FlowDetailDto, FlowDocumentV1, FlowPausedReason, FlowToolSource } from './flows';
 
 /**
  * Flow run contracts (tool catalog W4, #5219). Browser safe.
@@ -87,6 +87,21 @@ export const flowEnableRequestSchema = z.object({
   preApprovedStepIds: z.array(z.string().regex(FLOW_STEP_ID_RE)).max(50).default([]),
 });
 export type FlowEnableRequest = z.infer<typeof flowEnableRequestSchema>;
+
+/** `POST /flows/:id/enable` 200 body. */
+export interface FlowEnableResultDto {
+  ok: true;
+  flow: FlowDetailDto;
+  publication: { id: string; publicationSeq: number; definitionVersion: number };
+  /**
+   * W5 (#10270): true when this enable cleared the flow's webhook secret,
+   * because it was minted against an older draft than the one just published.
+   * The flow is live, but every delivery gets 401 until someone creates a new
+   * secret (`POST /flows/:id/webhook-secret`, shown once) and gives it to the
+   * sender. Always false for a flow whose trigger is not a webhook.
+   */
+  webhookSecretInvalidated: boolean;
+}
 
 interface FlowRunStepBase {
   id: string;
