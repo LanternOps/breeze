@@ -216,7 +216,10 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
   if (!block) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
   if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
-  return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
+  // c.body, not a bare `new Response`: Hono only merges the headers app-wide middleware set before next() (the
+  // path-selected CSP with `frame-ancestors 'self'`, #10192) into a response built through the context.
+  const bytes = new Uint8Array(renderData.fileData);
+  return c.body(bytes, 200, { 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.byteLength), 'Cache-Control': 'private, max-age=300' });
 });
 
 // POST /:token/accept — typed signature. System-scope write, token-resolved.
