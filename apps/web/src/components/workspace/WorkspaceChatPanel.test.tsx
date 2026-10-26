@@ -180,6 +180,15 @@ describe('WorkspaceChatPanel - move to the side panel, draft, chips (#9840 W3)',
     expect(screen.queryByTestId('workspace-error-continue-in-panel')).toBeNull();
   });
 
+  // Wisp companion W01 (#10211, spec D3): the Breeze AI page gets the same
+  // thread look as the Wisp home: reading width and time dividers.
+  it('renders the thread at reading width with time dividers, and the composer in the same column', () => {
+    const { container } = render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(messagesHarness.props).toMatchObject({ layout: 'page', showTimeDividers: true });
+    expect(messagesHarness.props!.assistantLabel).toBeUndefined();
+    expect(container.querySelector('[data-testid="workspace-composer"]')?.className).toContain('max-w-3xl');
+  });
+
   it('the composer is controlled by the tab’s draft', () => {
     render(<WorkspaceChatPanel tab={baseTab({ id: 'tab-c', composerDraft: 'carried over' }) as any} />);
     expect(inputHarness.props!.value).toBe('carried over');

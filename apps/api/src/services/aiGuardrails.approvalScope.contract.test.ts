@@ -1324,3 +1324,72 @@ describe('W08 class rows (#6778)', () => {
     for (const tool of Object.keys(W08_EXPECTED)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
   });
 });
+
+// ── W09 class rows (#6779, spec checklist item 3) ──────────────────────────
+// Copied from the W09 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the multiplexed W09 tools has a row, so a new action reds here until someone classifies it.
+const W09_EXPECTED: Record<string, Record<string, W02Class>> = {
+  // SNMP template rows are tenant-internal and reversible (an edit can be edited back); the OID rows are reads.
+  manage_snmp_templates: {
+    list: 't1', get: 't1', browse_oids: 't1', validate_oids: 't1',
+    create: 't2', update: 't2', delete: 't2',
+  },
+  get_snmp_metrics: { history: 't1', dashboard: 't1' },
+  manage_known_guests: { list: 't1', add: 't2', delete: 't2' },
+  get_unifi_status: {
+    status: 't1', hosts: 't1', collectors: 't1', mappings: 't1', telemetry: 't1', sync_runs: 't1', controller_sites: 't1',
+  },
+};
+// Single-purpose tools: no action enum, one class for the whole tool.
+const W09_WHOLE_TOOL: Record<string, W02Class> = {
+  probe_network_asset: 't2',
+  trigger_unifi_sync: 't2',
+};
+
+describe('W09 class rows (#6779)', () => {
+  it('covers the six W09 tools exactly once', () => {
+    expect([...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)].sort()).toEqual([
+      'get_snmp_metrics', 'get_unifi_status', 'manage_known_guests', 'manage_snmp_templates',
+      'probe_network_asset', 'trigger_unifi_sync',
+    ]);
+  });
+
+  it.each(Object.keys(W09_EXPECTED))('%s: W09_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W09_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W09_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W09_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+
+  it('registry tiers: the probe and the sync are 2, the four multiplexers start at 1', () => {
+    expect(getToolTier('probe_network_asset')).toBe(2);
+    expect(getToolTier('trigger_unifi_sync')).toBe(2);
+    for (const tool of Object.keys(W09_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  it('nothing in W09 is supervised or four-eyes (every action is reversible, tenant-internal or a read)', () => {
+    for (const tool of [...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)]) {
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('the partner-wide tools (known guests, UniFi) are agent-human-only: an agent has no partner-wide authority', () => {
+    for (const tool of ['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+    }
+    for (const tool of ['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});

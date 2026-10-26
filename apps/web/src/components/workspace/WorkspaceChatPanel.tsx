@@ -191,18 +191,22 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         onPauseAi={(paused) => pauseAi(tab.id, paused)}
         onSendQuickAction={(prompt) => sendMessage(tab.id, prompt)}
         onIntentDecided={() => clearPendingApproval(tab.id)}
+        layout="page"
+        showTimeDividers
       />
 
-      {/* Input */}
-      <AiChatInput
-        onSend={(content) => sendMessage(tab.id, content)}
-        value={tab.composerDraft}
-        onValueChange={(value) => setComposerDraft(tab.id, value)}
-        onInterrupt={() => interruptResponse(tab.id)}
-        disabled={tab.isLoading}
-        isStreaming={tab.isStreaming}
-        isInterrupting={tab.isInterrupting}
-      />
+      {/* Input, in the thread's reading-width column (W01 #10211) */}
+      <div className="mx-auto w-full max-w-3xl" data-testid="workspace-composer">
+        <AiChatInput
+          onSend={(content) => sendMessage(tab.id, content)}
+          value={tab.composerDraft}
+          onValueChange={(value) => setComposerDraft(tab.id, value)}
+          onInterrupt={() => interruptResponse(tab.id)}
+          disabled={tab.isLoading}
+          isStreaming={tab.isStreaming}
+          isInterrupting={tab.isInterrupting}
+        />
+      </div>
 
       {modalOpen && (
         <CreateTicketFromChatModal

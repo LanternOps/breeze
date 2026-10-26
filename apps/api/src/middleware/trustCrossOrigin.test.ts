@@ -30,11 +30,13 @@ describe('index.ts registration', () => {
   const indexSource = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8');
   it('registers secureHeaders through byTrustCrossOriginPath with a cross-origin twin of the same options', () => {
     // The app-wide registration is the only place the exception can live (secureHeaders writes after next()).
+    // bySameOriginFramePath (#10192, sameOriginFrame.test.ts) wraps it to pick X-Frame-Options by path.
     expect(indexSource).toMatch(
-      /exceptTunnelHttp\(\s*routeReferrerPolicyWins\(\s*byTrustCrossOriginPath\(\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS \}\),\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' \}\),\s*\)\s*\)\s*\)/,
+      /exceptTunnelHttp\(\s*routeReferrerPolicyWins\(\s*bySameOriginFramePath\(\s*byTrustCrossOriginPath\(\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS \}\),\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' \}\),\s*\),/,
     );
-    // No second, unconditional secureHeaders registration that would overwrite the exception.
-    expect(indexSource.match(/secureHeaders\(\{/g)).toHaveLength(2);
+    // No further, unconditional secureHeaders registration that would overwrite the exceptions: the two above plus
+    // the SAMEORIGIN twin bySameOriginFramePath selects.
+    expect(indexSource.match(/secureHeaders\(\{/g)).toHaveLength(3);
   });
 });
 

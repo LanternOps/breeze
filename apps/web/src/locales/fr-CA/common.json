@@ -1349,6 +1349,10 @@
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
           },
+          "deviceReinstalled": {
+            "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
+            "label": "Appareil réinstallé"
+          },
           "scriptCompleted": {
             "description": "Déclenché à la fin d’un script.",
             "label": "Scénario terminé"

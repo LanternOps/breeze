@@ -52,14 +52,15 @@
     "waiting": "Esperando respuesta...",
     "placeholder": "Pregunta por sus dispositivos...",
     "stopResponse": "Detener respuesta",
-    "thinking": "La AI está procesando... haga clic en Detener para cancelar",
-    "sendShortcut": "Cmd+Enter para enviar"
+    "send": "Enviar mensaje"
   },
   "aiChatMessages": {
     "title": "Breeze AI",
     "description": "Pregunte sobre sus dispositivos, alertas, métricas o solucione problemas.",
     "unknownTool": "herramienta desconocida",
     "toolResult": "Resultado de la herramienta",
+    "unattendedRelease": "Revisado por el revisor de scripts de la IA y publicado sin una tarjeta de aprobación.",
+    "openScriptProposal": "Abrir la propuesta para ver sus ejecuciones o guardarla en la biblioteca",
     "pauseAi": "Pausa AI",
     "quickActions": {
       "serverHealth": {
@@ -87,8 +88,22 @@
         "prompt": "Muéstreme las entradas del registro de auditoría más recientes: ¿qué acciones se tomaron en las últimas horas?"
       }
     },
-    "unattendedRelease": "Revisado por el revisor de scripts de la IA y publicado sin una tarjeta de aprobación.",
-    "openScriptProposal": "Abrir la propuesta para ver sus ejecuciones o guardarla en la biblioteca"
+    "toolGroup": {
+      "done": "{{count}} completadas",
+      "failed_one": "{{count}} fallida",
+      "failed_other": "{{count}} fallidas",
+      "expand": "Mostrar detalles",
+      "collapse": "Ocultar detalles"
+    },
+    "divider": {
+      "today": "Hoy {{time}}",
+      "yesterday": "Ayer {{time}}"
+    },
+    "specialists": {
+      "heading_one": "Delegado a {{count}} especialista",
+      "heading_other": "Delegado a {{count}} especialistas"
+    },
+    "loadEarlier": "Cargar anteriores"
   },
   "aiChatSidebar": {
     "history": "Historial",
@@ -682,9 +697,6 @@
       "checkingUnnamed": "Revisando un cliente…"
     },
     "thread": {
-      "title": "Hilo de Wisp",
-      "openChat": "Abrir en el chat",
-      "openChatInactive": "Wisp debe estar activo para chatear en este hilo.",
       "notFound": "Este hilo de Wisp no existe o no es tuyo.",
       "loadFailed": "No se pudo cargar este hilo de Wisp.",
       "retry": "Intentar de nuevo",
@@ -704,11 +716,13 @@
         "memory": "Memoria",
         "nudge": "Aviso",
         "brief": "Resumen"
-      }
+      },
+      "show": "Mostrar",
+      "hide": "Ocultar",
+      "count_one": "{{count}} reciente",
+      "count_other": "{{count}} recientes"
     },
     "home": {
-      "briefTitle": "Resumen de esta mañana",
-      "briefEmpty": "Aún no hay resumen. Wisp envía uno cada mañana después de revisar todo.",
       "briefSentAt": "Enviado {{time}}",
       "briefStale": "De un día anterior",
       "needsYouTitle": "Requiere tu atención",
@@ -716,7 +730,6 @@
       "needsYouCount_other": "{{count}} elementos",
       "needsYouApprovals_one": "{{count}} espera tu aprobación",
       "needsYouApprovals_other": "{{count}} esperan tu aprobación",
-      "threadTitle": "Habla con Wisp",
       "threadPaused": "Wisp está en pausa. Reanúdalo desde el encabezado para seguir conversando.",
       "threadEnded": "Este permiso terminó. Inicia uno nuevo para hablar con Wisp.",
       "threadOpening": "Abriendo la conversación…",
@@ -731,7 +744,10 @@
       "disabledBody": "Un administrador del partner desactivó Wisp en Configuración → Agentes de IA. Tus chats siguen funcionando.",
       "disabledSettings": "Abrir la configuración de Agentes de IA",
       "loadFailed": "No se pudo cargar el inicio de Wisp.",
-      "noAccess": "No tiene acceso a Wisp"
+      "noAccess": "No tiene acceso a Wisp",
+      "historyFailed": "No se pudo cargar esta conversación.",
+      "refreshFailed": "No se pudieron buscar publicaciones nuevas.",
+      "earlierFailed": "No se pudieron cargar los mensajes anteriores."
     },
     "links": {
       "title": "Elementos vinculados",
@@ -785,6 +801,46 @@
       "saveFailed": "No se pudo cambiar la configuración de Wisp.",
       "adminOnly": "Solo los administradores del partner pueden cambiar esto.",
       "loadFailed": "No se pudo cargar la configuración de Wisp."
+    },
+    "post": {
+      "brief": "Resumen matutino",
+      "nudge": "Aviso",
+      "digest": "Compendio",
+      "summary": "Resumen",
+      "open": "Abrir",
+      "unread": "No leído"
+    },
+    "welcome": {
+      "title": "Estoy revisando {{scope}}.",
+      "body": "Tu primer resumen llega cada mañana, una vez que haya echado un vistazo. Mientras tanto, pregúntame lo que quieras.",
+      "suggestions": {
+        "needsMe": {
+          "label": "¿Qué requiere mi atención hoy?",
+          "prompt": "¿Qué requiere mi atención hoy? Sé breve."
+        },
+        "offline": {
+          "label": "¿Qué dispositivos están sin conexión?",
+          "prompt": "¿Cuáles de mis dispositivos están sin conexión ahora mismo?"
+        },
+        "sweep": {
+          "label": "Ejecutar una revisión de estado",
+          "prompt": "Ejecuta ahora una revisión de estado en {{scope}}."
+        },
+        "overnight": {
+          "label": "¿Qué pasó durante la noche?",
+          "prompt": "¿Qué pasó durante la noche con mis clientes?"
+        }
+      }
+    },
+    "rail": {
+      "workersTitle": "Trabajadores",
+      "workersEmpty": "No hay especialistas en ejecución.",
+      "allRuns": "Todas las ejecuciones",
+      "details": "Detalles"
+    },
+    "composer": {
+      "placeholder": "Enviar mensaje a Wisp",
+      "link": "Vincular un elemento"
     }
   },
   "wispConcerns": {

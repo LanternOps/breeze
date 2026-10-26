@@ -718,6 +718,23 @@ These tools read a site's network map and manage its manual entries, recurring c
 | `apply_topology_template (apply)` | 3 | Apply a previewed template to its sites, replacing their monitoring configuration. Needs approval. Sites outside the approving session's organization report their own outcome |
 | `apply_topology_template (status)` | 1 | See how an application is progressing, site by site |
 
+#### SNMP and network monitoring
+
+These tools read and manage SNMP monitoring templates, read SNMP metric history, check a discovered asset on demand, keep the shared known-guest list, and read or sync the partner's UniFi integration. Template, metric and asset-check tools follow your organization and site access and are also available to AI agents. The known-guest and UniFi tools act on partner-wide state, so they need full partner access and are available in AI chat and over MCP only. Every write needs a signed-in session that has satisfied MFA, the same as the matching page.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_snmp_templates (list/get/browse_oids/validate_oids)` | 1 | View SNMP templates (the OIDs polled per device class), search known OIDs, and check an OID list. Names and descriptions are treated as untrusted text |
+| `manage_snmp_templates (create/update/delete)` | 2 | Create, change or delete a custom template. Built-in templates are read-only, a template still used by a device cannot be deleted, and the delete result keeps the old row so it can be recreated. A session limited to some sites or devices cannot change a template, because every site in the organization reads it |
+| `get_snmp_metrics (history/dashboard)` | 1 | Bucketed SNMP history (interface traffic, uptime and other OIDs) for one discovered asset, with a capped number of series, or the SNMP dashboard |
+| `probe_network_asset` | 2 | Check now: ping a discovered asset from an online agent in the same site and report reachable or not. One probe per asset at a time; waits a few seconds, otherwise reports pending |
+| `manage_known_guests (list)` | 1 | View the partner-wide list of known guest MAC addresses that discovery does not flag |
+| `manage_known_guests (add/delete)` | 2 | Add or remove a known guest MAC address for every organization of the partner |
+| `get_unifi_status (status/hosts/collectors/mappings/telemetry/sync_runs/controller_sites)` | 1 | Read the partner's UniFi integration: connection, consoles and sites (a read-only call to the vendor), collectors, site mappings, device and client telemetry for one site, and the last 20 sync runs. Vendor payloads, keys and error bodies are not returned |
+| `trigger_unifi_sync` | 2 | Queue a manual sync of the UniFi integration, then read the outcome with `get_unifi_status` `sync_runs` |
+
+Connecting or disconnecting UniFi, editing site mappings and collectors, and the retired per-device SNMP polling, test and threshold pages are not available as tools. The old SNMP device and threshold endpoints are deprecated; per-asset SNMP settings and network-monitor alert rules replace them.
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.

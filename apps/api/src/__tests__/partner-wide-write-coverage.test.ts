@@ -300,6 +300,15 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // full-partner-admin surfaces gated at the route.
   'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
   'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
+  // #8318 wave 1b — reinstall reattach. device_reattach_intents and
+  // device_reattachments are partner-axis tables, but no row is partner-wide
+  // config: each names two devices of one partner, and every write runs in
+  // system scope behind its own authorization.
+  'services/deviceReattach/requestIntent.ts': 'reattach intent creation and admin cancel (system scope): the §8 access rule (./access.ts canActorReattach) gates every request on canManagePartnerWidePolicies for full partner admins and on per-org access + devices:write/delete for technicians, re-read under the holding-area lock',
+  'services/deviceReattach/stage.ts': 'phase 1 of the rebind (POST /agents/:id/rebind): the SOURCE agent stages hashes on the ONE intent naming it as source, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule',
+  'services/deviceReattach/confirm.ts': 'rebind-confirm (confirm-only token): settles the ONE intent the token matches, writes its ledger row and the parked source\'s `reattached` exit, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule (canManagePartnerWidePolicies for full partner admins)',
+  'services/deviceReattach/expirySweep.ts': 'the per-minute system job (jobs/deviceReattachIntentSweep.ts): expires open intents past their deadline and prunes terminal ones after 30 days; no caller, no partner-wide config',
+  'services/deviceReattach/intentStore.ts': 'shared locked reads and state transitions of ONE intent (cancel/expire: discard the staged set, demote its pending certificate), called only by the reattach services and parked housekeeping, which hold the authorization',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
