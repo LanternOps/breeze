@@ -23,8 +23,9 @@ import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth'
 import { resolveFlowToolForCall, resolveFlowTools } from '../../services/flows/flowTools';
 import { startToolRun } from '../../services/flows/toolRuns';
 import { releaseFlowToolIntent } from '../../services/flows/flowToolRelease';
+import { buildFlowToolApproverAuthContext } from '../../services/actionIntents/actorContext';
 import {
-  assignUserToOrganization, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
+  assignUserToOrganization, assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
 } from './db-utils';
 import { seedEnabledFlow } from './helpers/flowSeed';
 
@@ -151,12 +152,16 @@ describe('flows as tools (real Postgres)', () => {
       decidedByUserId: t.userA,
     } as never).returning());
 
-    const released = await releaseFlowToolIntent(intent as ActionIntent, orgAuth(t.userA, t.orgA, t.partnerId));
+    // The REAL release-time approver rebuild, for an ORG-axis approver (an
+    // internal-IT org admin): the worker's builder must not require the partner axis.
+    const approver = await buildFlowToolApproverAuthContext(intent as ActionIntent, t.userA);
+    expect(approver, 'an org-axis approver must rebuild').not.toBeNull();
+    const released = await releaseFlowToolIntent(intent as ActionIntent, approver!);
     expect(released).toMatchObject({ ok: true });
     const [row] = await runsOf(own.flowId);
     expect(row).toMatchObject({ orgId: t.orgA, triggerKind: 'tool', triggeredVia: 'ai_tool', triggeredByUserId: t.userA, preApprovalsHonored: false });
     // A redelivered release dedupes onto the same run (the intent id is the key).
-    const again = await releaseFlowToolIntent(intent as ActionIntent, orgAuth(t.userA, t.orgA, t.partnerId));
+    const again = await releaseFlowToolIntent(intent as ActionIntent, approver!);
     expect(again).toMatchObject({ ok: true, result: { runId: (released as { result: { runId: string } }).result.runId, duplicate: true } });
 
     let caught: unknown;
@@ -166,6 +171,29 @@ describe('flows as tools (real Postgres)', () => {
       caught = err;
     }
     expect(caught, 'invoked_flow_id must be immutable').toBeDefined();
+  });
+
+  runDb('a PARTNER-axis approver (all-orgs partner staff) also releases a flow-tool intent', async () => {
+    const t = await tenant();
+    const own = await seedEnabledFlow({ orgId: t.orgA, partnerId: t.partnerId, delegatorUserId: t.userA, definition: manualDoc('Partner approved'), pins: [PIN] });
+    const staff = await createUser({ partnerId: t.partnerId, orgId: null, email: `staff-${randomUUID()}@flowtools.test` });
+    const role = await createRole({ scope: 'partner', partnerId: t.partnerId });
+    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+    await assignUserToPartner(staff.id, t.partnerId, role.id, 'all');
+    const toolName = `flow__${await slugOf(own.flowId)}`;
+    const [intent] = await withSystemDbAccessContext(() => db.insert(actionIntents).values({
+      orgId: t.orgA, partnerId: t.partnerId, requestedByUserId: t.userA, requestingApiKeyId: null, source: 'chat',
+      originPrincipalKind: 'user_session', originPrincipalId: t.userA, actionName: toolName, actionVersion: 1,
+      arguments: { inputs: {}, orgId: t.orgA, idempotencyKey: null }, argumentDigest: 'c'.repeat(64),
+      targetSummary: `Run flow (${toolName})`, impactSummary: 'Starts a flow.', reason: null, riskTier: 3, approvalScope: 'supervised',
+      invokedFlowId: own.flowId, toolRevision: `flowpub:${own.publicationId}`, idempotencyKey: `flowtool-${randomUUID()}`,
+      correlationId: randomUUID(), expiresAt: new Date(Date.now() + 60 * 60 * 1000), decidedByUserId: staff.id,
+    } as never).returning());
+    const approver = await buildFlowToolApproverAuthContext(intent as ActionIntent, staff.id);
+    expect(approver, 'a partner-axis approver must rebuild').not.toBeNull();
+    expect(await releaseFlowToolIntent(intent as ActionIntent, approver!)).toMatchObject({ ok: true });
+    const [row] = await runsOf(own.flowId);
+    expect(row).toMatchObject({ orgId: t.orgA, triggerKind: 'tool', triggeredVia: 'ai_tool', triggeredByUserId: staff.id });
   });
 
   runDb('an agent tier-1 call creates a tool run with triggered_via ai_agent and its parent run', async () => {

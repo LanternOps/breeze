@@ -26,6 +26,7 @@ import { flows } from '../../db/schema/flows';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { captureException } from '../sentry';
 import { hasExactDeviceCeiling } from '../siteCeilingAccess';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flowTools';
 import type { FlowToolRunStarter } from './sdkFlowTools';
@@ -74,6 +75,8 @@ export async function resolveAgentFlowTools(
       if (d && d.tier === 1) out.push(d);
     } catch (err) {
       console.warn(`[flows] agent run ${run.id}: flow tool '${name}' could not be resolved; not exposed`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+        { flow_site: 'agent.flow_tool_exposure', org_id: run.orgId }, { fingerprint: ['flow', 'agent.flow_tool_exposure'] });
     }
   }
   return out;
@@ -103,6 +106,8 @@ export async function gateAgentFlowToolCall(args: {
     descriptor = await resolveFlowToolForCall(agentAuth, toolName, run.orgId);
   } catch (err) {
     console.error(`[flows] agent run ${run.id}: flow tool '${toolName}' could not be resolved; denying`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_site: 'agent.flow_tool_gate', org_id: run.orgId }, { fingerprint: ['flow', 'agent.flow_tool_gate'] });
     return { ok: false, reason: 'The flow could not be verified. Stop and do not retry.' };
   }
   if (!descriptor) return { ok: false, reason: `Flow tool "${toolName}" is not available (flow_tool_unavailable)` };

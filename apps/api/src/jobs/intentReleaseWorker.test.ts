@@ -61,7 +61,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
       selectApprovalRequestsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
-    actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
+    actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn(), buildFlowToolApproverAuthContext: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: {
       getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn(),
@@ -417,6 +417,7 @@ vi.mock('../services/mcpPrincipalAuth', () => ({
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
   buildApproverAuthContextForIntent: actorContextMock.buildApproverAuthContextForIntent,
+  buildFlowToolApproverAuthContext: actorContextMock.buildFlowToolApproverAuthContext,
 }));
 vi.mock('../services/actionIntents/effectDigest', () => ({
   computeEffectDigestForRelease: effectDigestMock.computeEffectDigestForRelease,
@@ -6005,6 +6006,7 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
     intentServiceMock.transitionIntent.mockReset();
     aiToolsMock.executeTool.mockReset();
     actorContextMock.buildApproverAuthContextForIntent.mockReset();
+    actorContextMock.buildFlowToolApproverAuthContext.mockReset();
     flowToolReleaseMock.releaseFlowToolIntent.mockReset();
     aiToolsMock.getToolTier.mockReturnValue(undefined);
   });
@@ -6012,7 +6014,7 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
   it('flow tool intent takes the flow branch and never calls executeTool', async () => {
     const intent = flowIntent();
     primeFlow(intent);
-    actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+    actorContextMock.buildFlowToolApproverAuthContext.mockResolvedValueOnce(approverAuth);
     flowToolReleaseMock.releaseFlowToolIntent.mockResolvedValueOnce({ ok: true, result: { runId: 'run-1', runPath: '/flows/runs/run-1', duplicate: false } });
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
@@ -6020,7 +6022,9 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
 
     expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
-    expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id }), 'approver-1');
+    // The flow-tool approver may be on the org axis: never the partner-axis-only builder.
+    expect(actorContextMock.buildFlowToolApproverAuthContext).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id }), 'approver-1');
+    expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
     expect(flowToolReleaseMock.releaseFlowToolIntent).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id }), approverAuth);
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id, 'executing', 'completed',
@@ -6031,7 +6035,7 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
   it('a refused flow release fails the intent with its code and starts nothing', async () => {
     const intent = flowIntent();
     primeFlow(intent);
-    actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+    actorContextMock.buildFlowToolApproverAuthContext.mockResolvedValueOnce(approverAuth);
     flowToolReleaseMock.releaseFlowToolIntent.mockResolvedValueOnce({ ok: false, code: 'flow_tool_changed' });
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
 
@@ -6054,7 +6058,7 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
 
     const intent = flowIntent();
     primeFlow(intent);
-    actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(null);
+    actorContextMock.buildFlowToolApproverAuthContext.mockResolvedValueOnce(null);
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
     await releaseApprovedIntent(intent.id);
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -6063,10 +6067,22 @@ describe('releaseApprovedIntent — flow-tool intents (#5220 C2)', () => {
     expect(flowToolReleaseMock.releaseFlowToolIntent).not.toHaveBeenCalled();
   });
 
+  it('a thrown approver rebuild fails execution_error, never stranding the claimed intent', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    actorContextMock.buildFlowToolApproverAuthContext.mockRejectedValueOnce(new Error('db down'));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    await releaseApprovedIntent(intent.id);
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'execution_error' }),
+    );
+    expect(flowToolReleaseMock.releaseFlowToolIntent).not.toHaveBeenCalled();
+  });
+
   it('a thrown release fails execution_error, never stranding the claimed intent', async () => {
     const intent = flowIntent();
     primeFlow(intent);
-    actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+    actorContextMock.buildFlowToolApproverAuthContext.mockResolvedValueOnce(approverAuth);
     flowToolReleaseMock.releaseFlowToolIntent.mockRejectedValueOnce(new Error('db down'));
     intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
     await releaseApprovedIntent(intent.id);

@@ -1093,6 +1093,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       flowTool = gate.descriptor;
       flowCall = gate.call;
       verifiedToolContext = { flowToolGate: { descriptor: gate.descriptor, call: gate.call } };
+      (session.flowToolGatedTiers ??= new Map()).set(toolName, gate.descriptor.tier);
     }
     const tenant = flowTool || isFlowToolName(toolName) ? undefined : session.tenantTools?.get(toolName);
 
@@ -2197,9 +2198,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             // owns the ledger write and the intent's final result/error_code.
             //
             // Same APPROVAL HANDOFF as the durable-release branch above, and
-            // the one that actually fires today (DURABLE_RELEASE_ONLY_TOOLS is
-            // still empty, so a human-approved intent reaches the user as
-            // "FAILED" through THIS exit — #5107's recording). Losing the CAS
+            // the one that fires for most tools (DURABLE_RELEASE_ONLY_TOOLS is
+            // still empty — only flow tools, W5 PR C, take the branch above —
+            // so a human-approved intent reaches the user as "FAILED" through
+            // THIS exit — #5107's recording). Losing the CAS
             // is the mutual-exclusion working, not an error: the action is
             // approved and running under the worker. `handoff` is what stops
             // the chat painting it deny-red.
@@ -3028,8 +3030,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // Canonical session org (always set) — `auth.orgId` is null for partner-
     // scope logins, which left tool audit rows without an org attribution.
     const orgId = session.orgId;
-    const guardrailContext = chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId));
-    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
+    // W5 PR C (#5220): a flow tool is not in the core registry (the
+    // classifier would answer tier 4); its tier is the one the pre hook GATED
+    // the call on, and an ungated flow call is treated as Tier 3.
+    const guardrailCheck: { tier: number } = isFlowToolName(toolName)
+      ? { tier: session.flowToolGatedTiers?.get(toolName) ?? 3 }
+      : checkGuardrails(toolName, input, chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId)));
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.

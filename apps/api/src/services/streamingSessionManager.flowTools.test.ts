@@ -88,7 +88,8 @@ vi.mock('./toolSources/resolver', () => ({
   resolveTenantTools: (...args: unknown[]) => resolveTenantToolsMock(...args),
 }));
 
-vi.mock('../config/env', async (orig) => ({ ...(await orig<typeof import('../config/env')>()), flowsEnabled: () => true }));
+const flagState = vi.hoisted(() => ({ on: true }));
+vi.mock('../config/env', async (orig) => ({ ...(await orig<typeof import('../config/env')>()), flowsEnabled: () => flagState.on }));
 vi.mock('./flows/flowTools', () => ({
   resolveFlowTools: (...args: unknown[]) => resolveFlowToolsMock(...args),
 }));
@@ -169,10 +170,16 @@ describe('getOrCreate — flow tools (W5 PR C)', () => {
     expect(resolveFlowToolsMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }), ORG_ID);
   });
 
-  it('an empty resolution leaves no flow tools (flag off is never resolved: flowsEnabled() gates the import)', async () => {
-    resolveFlowToolsMock.mockResolvedValue([]);
-    const session = await create(manager, 'sess-flow-tools-off');
-    expect(session.flowTools?.size).toBe(0);
+  it('flag off ⇒ no flow tools in the session, and the resolver is never reached', async () => {
+    flagState.on = false;
+    try {
+      resolveFlowToolsMock.mockResolvedValue([{ name: 'flow__disk', flowId: 'f1', definition: { name: 'flow__disk', description: 'x', input_schema: { type: 'object', properties: {} } } }]);
+      const session = await create(manager, 'sess-flow-tools-off');
+      expect(session.flowTools?.size).toBe(0);
+      expect(resolveFlowToolsMock).not.toHaveBeenCalled();
+    } finally {
+      flagState.on = true;
+    }
   });
 
   it('degrades to no flow tools instead of failing the chat session', async () => {

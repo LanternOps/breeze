@@ -9,7 +9,8 @@
  * publication, everything the run depends on:
  *
  *  1. lane ↔ triggerer pairing (a mismatch is a caller bug, thrown);
- *  2. the live publication is the one the descriptor resolved
+ *  2. the live publication is the one the descriptor resolved, and its live
+ *     invocation tier is not above the one the surface gated on
  *     (`flow_tool_changed` otherwise — the caller re-resolves);
  *  3. the inputs coerce against its declarations;
  *  4. the run org: an org flow's own org; a partner-wide flow's `orgId`
@@ -35,7 +36,7 @@ import { flowsEnabled } from '../../config/env';
 import { isAutomationPrincipal, isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { hasPermission } from '../permissions';
 import { hasExactDeviceCeiling, hasSiteCeiling } from '../siteCeilingAccess';
-import type { FlowToolDescriptor } from './flowTools';
+import { flowInvocationTier, type FlowToolDescriptor } from './flowTools';
 import type { FlowRunAdmissionRefusal } from './runAdmission';
 import { authorizeRunTriggerer, createFlowRun, parsePins } from './runService';
 
@@ -121,7 +122,7 @@ export async function startToolRun(
     if (!flow || flow.status !== 'enabled' || flow.enabledPublicationSeq === null) return { flow: null, publication: null };
     const seq = flow.enabledPublicationSeq;
     const [publication] = await db
-      .select({ id: flowVersions.id, definition: flowVersions.definition, stepPins: flowVersions.stepPins })
+      .select({ id: flowVersions.id, definition: flowVersions.definition, stepPins: flowVersions.stepPins, effectiveTier: flowVersions.effectiveTier })
       .from(flowVersions)
       .where(and(eq(flowVersions.flowId, flow.id), eq(flowVersions.publicationSeq, seq)))
       .limit(1);
@@ -134,6 +135,12 @@ export async function startToolRun(
   const pins = parsePins(publication.stepPins);
   if (!parsedDoc.success || !pins || parsedDoc.data.trigger.type !== 'manual') return { ok: false, error: 'not_enabled' };
   const doc = parsedDoc.data;
+  // 2b. The tier the surface gated on must still hold: the live part of the
+  // invocation tier (a tenant tool's tier, a core tool's classification) can
+  // rise WITHOUT a new publication, e.g. during a Tier-2 confirmation wait.
+  // Higher now ⇒ the caller re-resolves and gates again.
+  const liveTier = await flowInvocationTier({ effectiveTier: publication.effectiveTier, definition: doc }, d.owner);
+  if (liveTier > d.tier) return { ok: false, error: 'flow_tool_changed' };
 
   // 3. Inputs.
   const validated = d.validate(rawInput);
@@ -199,8 +206,23 @@ export async function startToolRun(
   });
   if (created.created) return { ok: true, runId: created.runId, duplicate: false, runPath: `/flows/runs/${created.runId}` };
   if (created.reason === 'duplicate') return { ok: true, runId: created.runId, duplicate: true, runPath: `/flows/runs/${created.runId}` };
-  // The publication was live a moment ago: a refusal for it now means it was
-  // re-enabled (or disabled) in between — the caller re-resolves.
-  if (created.reason === 'not_enabled') return { ok: false, error: 'flow_tool_changed' };
+  if (created.reason === 'not_enabled') return { ok: false, error: await insertRefusalReason(d) };
   return { ok: false, error: created.reason };
+}
+
+/**
+ * The insert refused a publication that was live a moment ago. Only a
+ * RE-ENABLE (the flow live on another publication) is `flow_tool_changed` —
+ * the caller re-resolves and gates the new one. A disable, or a refusal on the
+ * same publication (it no longer parses, the run org lost its partner), is
+ * `not_enabled`: re-resolving would only meet the same refusal.
+ */
+async function insertRefusalReason(d: FlowToolDescriptor): Promise<'flow_tool_changed' | 'not_enabled'> {
+  const [row] = await inSystemTx(
+    async () => db.select({ status: flows.status, enabledPublicationSeq: flows.enabledPublicationSeq }).from(flows).where(eq(flows.id, d.flowId)).limit(1),
+    'flows.toolRuns.refusalReason',
+  );
+  return row?.status === 'enabled' && row.enabledPublicationSeq !== null && row.enabledPublicationSeq !== d.publicationSeq
+    ? 'flow_tool_changed'
+    : 'not_enabled';
 }

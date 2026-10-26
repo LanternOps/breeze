@@ -21,6 +21,8 @@
  */
 import type { AuthContext } from '../../middleware/auth';
 import type { GuardrailCheck } from '../aiGuardrails';
+import { captureException } from '../sentry';
+import { hasExactDeviceCeiling, hasSiteCeiling } from '../siteCeilingAccess';
 import type { FlowToolCallInput, FlowToolDescriptor, FlowToolTier } from './flowTools';
 
 /** The slice of a chat `ActiveSession` the flow gate and handlers read. */
@@ -54,6 +56,12 @@ export async function gateFlowToolCall(
   if (!sessionMayStartFlows(session)) {
     return { ok: false, error: 'Flows cannot be started from this conversation.' };
   }
+  // The run start refuses a site- or device-limited triggerer (the flow
+  // principal is org-wide); refuse here too, before an approval card or an
+  // intent for a call that could never run exists.
+  if ([session.auth, session.toolAuth].some((a) => hasSiteCeiling(a) || hasExactDeviceCeiling(a))) {
+    return { ok: false, error: 'A user limited to specific sites or devices cannot start a flow (delegation_scope_restricted).' };
+  }
   if (!session.flowTools?.has(toolName)) return { ok: false, error: UNAVAILABLE(toolName) };
   let descriptor: FlowToolDescriptor | null;
   try {
@@ -61,6 +69,9 @@ export async function gateFlowToolCall(
     descriptor = await resolveFlowToolForCall(session.toolAuth, toolName, session.orgId);
   } catch (err) {
     console.error(`[flows] flow tool '${toolName}' could not be resolved; denying the call`, err);
+    // A persistent resolver failure denies every flow call: make it visible.
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_site: 'chat.flow_tool_gate', org_id: session.orgId }, { fingerprint: ['flow', 'chat.flow_tool_gate'] });
     return { ok: false, error: 'Unable to verify this flow right now. Please try again.' };
   }
   if (!descriptor) return { ok: false, error: UNAVAILABLE(toolName) };

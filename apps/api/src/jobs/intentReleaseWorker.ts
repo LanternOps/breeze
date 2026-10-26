@@ -51,7 +51,7 @@ import {
   CALLER_VERIFICATION_REQUIRED_CODE,
   type CallerRefusalPayload,
 } from '../services/callerVerification/refusal';
-import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { buildApproverAuthContextForIntent, buildFlowToolApproverAuthContext } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
@@ -1091,24 +1091,28 @@ async function releaseInvokedFlowIntent(intent: ActionIntent): Promise<void> {
     });
     return;
   }
-  const approverAuth = await buildApproverAuthContextForIntent(intent, intent.decidedByUserId);
-  if (!approverAuth) {
-    await failIntent(intent, 'actor_invalid', {
-      details: {
-        reason: 'the approving user is no longer active or can no longer reach the intent org',
-        decidedByUserId: intent.decidedByUserId,
-        actionName: intent.actionName,
-      },
-    });
-    return;
-  }
   let outcome: Awaited<ReturnType<typeof releaseFlowToolIntent>>;
   try {
+    // The approver may be on the ORG axis (an internal-IT org admin): the
+    // partner-axis-only `buildApproverAuthContextForIntent` would refuse them.
+    const approverAuth = await buildFlowToolApproverAuthContext(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
     outcome = await releaseFlowToolIntent(intent, approverAuth);
   } catch (err) {
+    // The intent is already claimed (`executing`): a throw must terminalize
+    // it here, never leave it for the stale-executing reaper. createFlowRun is
+    // one transaction, so a throw means no run was created.
     console.error(`[IntentReleaseWorker] flow-tool release threw for intent ${intent.id}:`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
-    // createFlowRun is one transaction: a throw means no run was created.
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { intent_id: intent.id, area: 'flow_tool_release' });
     await failIntent(intent, 'execution_error', { details: { error: err instanceof Error ? err.message : String(err) } });
     return;
   }
@@ -1118,7 +1122,11 @@ async function releaseInvokedFlowIntent(intent: ActionIntent): Promise<void> {
   }
   const completed = await terminalizeIntent(intent, 'completed', { executedAt: new Date(), result: outcome.result });
   if (!completed) {
-    console.error(`[IntentReleaseWorker] Lost the executing->completed CAS for flow-tool intent ${intent.id} (run ${outcome.result.runId})`);
+    // The run exists (and a redelivery returns it: the intent id is its
+    // idempotency key) but the intent did not record it — say where it is.
+    const message = `[IntentReleaseWorker] Lost the executing->completed CAS for flow-tool intent ${intent.id} (run ${outcome.result.runId})`;
+    console.error(message);
+    captureException(new Error(message), undefined, { intent_id: intent.id, flow_run_id: outcome.result.runId, area: 'flow_tool_release' });
   }
 }
 

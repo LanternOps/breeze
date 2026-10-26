@@ -621,3 +621,110 @@ describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)'
     expect(mockResolveRunFlowGate).not.toHaveBeenCalled();
   });
 });
+
+describe('createSessionPostToolUse — flow tools use the gated tier (W5 PR C)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The core classifier answers tier 4 for an unregistered `flow__` name; the
+    // post hook must never use it for a flow tool.
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 4, requiresApproval: false } as any);
+    mockInsertValues();
+  });
+
+  it('a tier-1 flow call records a completed execution row and audits tier 1 without approval details', async () => {
+    mockResolveFlowToolForCall.mockResolvedValue(flowDescriptor({ tier: 1 }));
+    vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    const session = makeActiveSession({
+      toolAuth: makeAuth({ scope: 'organization', principal: { kind: 'user_session' } } as any),
+      flowTools: new Map([['flow__disk', flowDescriptor()]]),
+      auditSnapshot: {},
+    });
+    expect(await createSessionPreToolUse(session)('flow__disk', {})).toMatchObject({ allowed: true });
+
+    await createSessionPostToolUse(session)('flow__disk', {}, JSON.stringify({ runId: 'run-1', runPath: '/flows/runs/run-1' }), false, 7);
+
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    const valuesMock = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    const rows = (valuesMock?.mock.calls ?? []).map((c: unknown[]) => c[0] as Record<string, unknown>);
+    expect(rows.some((r: Record<string, unknown>) => r.toolName === 'flow__disk' && r.status === 'completed')).toBe(true);
+    const audit = mockWriteAuditEvent.mock.calls.map((c) => c[1] as { details?: Record<string, unknown> })
+      .find((e) => (e.details as { tier?: number } | undefined)?.tier !== undefined);
+    expect(audit?.details).toMatchObject({ tier: 1 });
+    expect(audit?.details).not.toHaveProperty('approved');
+  });
+
+  it('a flow tool the gate never saw is treated as tier 3 (fail closed), never tier 4', async () => {
+    const session = makeActiveSession({ flowTools: new Map(), auditSnapshot: {} });
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    await createSessionPostToolUse(session)('flow__disk', {}, JSON.stringify({ error: 'flow_tool_unavailable' }), true, 1);
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    const audit = mockWriteAuditEvent.mock.calls.map((c) => c[1] as { details?: Record<string, unknown> })
+      .find((e) => (e.details as { tier?: number } | undefined)?.tier !== undefined);
+    expect(audit?.details).toMatchObject({ tier: 3 });
+  });
+});
+
+describe('createSessionPreToolUse — tier-2 flow tools (W5 PR C)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveFlowToolForCall.mockReset();
+    vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockCreateActionIntent.mockReset();
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    mockResolveLiveSessionToolAuthority.mockImplementation(async (session: any) => ({ ok: true, auth: session.auth, toolAuth: session.toolAuth ?? session.auth }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+  });
+
+  const t2Session = () => makeActiveSession({
+    approvalMode: 'per_step',
+    toolAuth: makeAuth({ scope: 'organization', principal: { kind: 'user_session' } } as any),
+    flowTools: new Map([['flow__disk', flowDescriptor()]]),
+  });
+
+  it('a tier-2 flow takes the confirmation path, refreshes live authority as run_flow, and hands the GATED descriptor to the handler', async () => {
+    const gated = flowDescriptor({ tier: 2, publicationId: '99999999-9999-4999-8999-999999999999', publicationSeq: 5 });
+    mockResolveFlowToolForCall.mockResolvedValue(gated);
+    mockInsertReturning({ id: 'exec-t2' });
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = t2Session();
+
+    const result = await createSessionPreToolUse(session)('flow__disk', { count: 1 });
+
+    expect(result).toMatchObject({ allowed: true });
+    expect((result as { context?: { flowToolGate?: { descriptor: unknown } } }).context?.flowToolGate?.descriptor).toBe(gated);
+    expect(waitForApproval).toHaveBeenCalled();
+    expect(publishedApprovalRequired(session)).toMatchObject({ toolName: 'flow__disk', description: 'Run flow "Disk"' });
+    // A flow tool has no RBAC mapping of its own: the live re-check is run_flow's.
+    expect(mockResolveLiveSessionToolAuthority).toHaveBeenCalledWith(session, 'run_flow', {});
+    expect(checkPermissionRequirements).toHaveBeenCalledWith(session.auth, [{ resource: 'automations', action: 'write' }]);
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('authority lost during the confirmation wait denies the call', async () => {
+    mockResolveFlowToolForCall.mockResolvedValue(flowDescriptor({ tier: 2 }));
+    mockInsertReturning({ id: 'exec-t2b' });
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    mockResolveLiveSessionToolAuthority.mockResolvedValue({ ok: false, reason: 'Insufficient permissions: requires automations.write' });
+    const result = await createSessionPreToolUse(t2Session())('flow__disk', {});
+    expect(result).toMatchObject({ allowed: false });
+  });
+
+  it('a site- or device-ceilinged session is refused before any approval card exists', async () => {
+    mockResolveFlowToolForCall.mockResolvedValue(flowDescriptor({ tier: 3 }));
+    for (const ceiling of [{ allowedSiteIds: ['site-1'] }, { allowedDeviceIds: ['dev-1'] }]) {
+      const session = makeActiveSession({
+        auth: makeAuth({ scope: 'organization', ...ceiling } as any),
+        toolAuth: makeAuth({ scope: 'organization', principal: { kind: 'user_session' }, ...ceiling } as any),
+        flowTools: new Map([['flow__disk', flowDescriptor()]]),
+      });
+      const result = await createSessionPreToolUse(session)('flow__disk', {});
+      expect(result).toMatchObject({ allowed: false });
+      expect((result as { error: string }).error).toMatch(/delegation_scope_restricted/);
+    }
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    expect(waitForApproval).not.toHaveBeenCalled();
+  });
+});

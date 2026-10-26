@@ -56,7 +56,6 @@ import {
   resolveFlowToolForCall,
   resolveFlowTools,
   resolveRunFlowGate,
-  resolveRunFlowTier,
 } from './flowTools';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -329,7 +328,7 @@ describe('resolveFlowToolForCall', () => {
   });
 });
 
-describe('resolveRunFlowTier', () => {
+describe('resolveRunFlowGate', () => {
   it('resolveRunFlowGate pins the flow and the live publication seq the tier was computed for', async () => {
     selects.push([row({ publicationSeq: 7 })]);
     vi.mocked(stepPinsFor).mockResolvedValue(pins(1) as never);
@@ -341,25 +340,25 @@ describe('resolveRunFlowTier', () => {
   it('returns the flow\'s live invocation tier', async () => {
     selects.push([row()]);
     vi.mocked(stepPinsFor).mockResolvedValue(pins(1) as never);
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(1);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(1);
   });
 
-  it('resolveRunFlowTier returns 3 on any error and when the flag is off', async () => {
+  it('resolveRunFlowGate returns tier 3 on any error and when the flag is off', async () => {
     selects.push(new Error('db down'));
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(3);
     selects.push([row()]);
     vi.mocked(stepPinsFor).mockRejectedValue(new Error('boom'));
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(3);
     vi.mocked(flowsEnabled).mockReturnValue(false);
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(3);
   });
 
   it('3 for a missing flow, a non-uuid id, or a flow that is not manual', async () => {
     selects.push([]);
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(3);
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: 'x' })).toBe(3);
-    expect(await resolveRunFlowTier(orgAuth(), {})).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: 'x' })).tier).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), {})).tier).toBe(3);
     selects.push([row({ definition: doc({ trigger: { type: 'schedule', cron: '0 * * * *', timezone: 'UTC' } }) })]);
-    expect(await resolveRunFlowTier(orgAuth(), { flowId: FLOW_1 })).toBe(3);
+    expect((await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).tier).toBe(3);
   });
 });

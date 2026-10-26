@@ -675,6 +675,12 @@ export interface ActiveSession {
    * (`sessionMayStartFlows`) or builds its own MCP server.
    */
   flowTools?: ReadonlyMap<string, FlowToolDescriptor>;
+  /**
+   * W5 PR C: the live tier each flow tool's most recent call was GATED on
+   * (written by the pre hook), so the post hook's ledger row and audit record
+   * the gated tier instead of the core classifier's "unknown tool" answer.
+   */
+  flowToolGatedTiers?: Map<string, 1 | 2 | 3>;
 }
 
 /**

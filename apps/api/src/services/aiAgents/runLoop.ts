@@ -2580,6 +2580,7 @@ async function driveSdkLoop(
       flowSdkTools = buildFlowSdkTools(flowDescriptors, agentFlowToolRunStarter(run));
     } catch (error) {
       console.error('[aiAgentRunLoop] flow tools could not be resolved; the run gets none', { runId: run.id, error });
+      captureException(error, undefined, { flow_site: 'agent.flow_tool_exposure', org_id: run.orgId }, { fingerprint: ['flow', 'agent.flow_tool_exposure'] });
       flowDescriptors = [];
       flowSdkTools = [];
     }

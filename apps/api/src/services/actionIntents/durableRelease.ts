@@ -37,20 +37,18 @@ import { isFlowToolName } from '../flows/toolNames';
 export const DURABLE_RELEASE_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([]);
 
 /**
+ * True iff `toolName` must be released by the durable worker only. Callers on
+ * the inline release path MUST check this BEFORE attempting the
+ * `approved -> executing` CAS — checking after would already have claimed the
+ * intent, and releasing the claim is not something the inline path can do
+ * safely once won.
+ *
  * W5 PR C (#5220): every FLOW tool (`flow__<slug>`, dynamic, so not a set
  * member) is durable-release-only too. Its release starts a run with the
  * APPROVER as the triggerer and the approved publication pinned on the insert
  * (`services/flows/flowToolRelease.ts`, called by the worker's flow-tool
  * branch); the inline path would run the SDK handler under the live session
  * instead. `flows/toolNames.ts` is itself a leaf (no imports).
- */
-
-/**
- * True iff `toolName` must be released by the durable worker only. Callers on
- * the inline release path MUST check this BEFORE attempting the
- * `approved -> executing` CAS — checking after would already have claimed the
- * intent, and releasing the claim is not something the inline path can do
- * safely once won.
  */
 export function requiresDurableRelease(toolName: string): boolean {
   return DURABLE_RELEASE_ONLY_TOOLS.has(toolName) || isFlowToolName(toolName);

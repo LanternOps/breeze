@@ -33,11 +33,12 @@ vi.mock('../../config/env', async (orig) => ({ ...(await orig<typeof import('../
 vi.mock('../permissions', async (orig) => ({ ...(await orig<typeof import('../permissions')>()), getUserPermissions: vi.fn() }));
 vi.mock('./runService', async (orig) => ({ ...(await orig<typeof import('./runService')>()), createFlowRun: vi.fn() }));
 vi.mock('./triggererAccess', async (orig) => ({ ...(await orig<typeof import('./triggererAccess')>()), clampToCallerCredential: vi.fn() }));
+vi.mock('./flowTools', async (orig) => ({ ...(await orig<typeof import('./flowTools')>()), flowInvocationTier: vi.fn() }));
 
 import { getUserPermissions, type UserPermissions } from '../permissions';
 import { createFlowRun } from './runService';
 import { clampToCallerCredential } from './triggererAccess';
-import type { FlowToolDescriptor } from './flowTools';
+import { flowInvocationTier, type FlowToolDescriptor } from './flowTools';
 import { startToolRun } from './toolRuns';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -97,6 +98,8 @@ beforeEach(() => {
   vi.mocked(getUserPermissions).mockReset().mockResolvedValue(perms());
   vi.mocked(createFlowRun).mockReset().mockResolvedValue({ created: true, runId: 'run-1', preApprovalsHonored: false });
   vi.mocked(clampToCallerCredential).mockReset().mockImplementation(async (_a, p) => p);
+  // The live tier at start equals the descriptor's unless a test says otherwise.
+  vi.mocked(flowInvocationTier).mockReset().mockImplementation(async () => 1);
 });
 
 const lastCreate = () => vi.mocked(createFlowRun).mock.calls.at(-1)![0] as unknown as Record<string, unknown>;
@@ -190,9 +193,39 @@ describe('startToolRun — publication binding', () => {
   it('re-publish between resolve and insert is flow_tool_changed', async () => {
     queueLive();
     vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason: 'not_enabled' });
+    // The re-read after the refusal: the flow is live on another publication.
+    selects.push([{ status: 'enabled', enabledPublicationSeq: 3 }]);
     expect(await startToolRun(descriptor(), {}, 'ai_tool', { kind: 'user', auth: userAuth() }, {}))
       .toEqual({ ok: false, error: 'flow_tool_changed' });
     expect(lastCreate().expectedPublicationSeq).toBe(2);
+  });
+
+  it('a refusal at insert for a flow that was disabled, or is still on the same publication, is not_enabled (not a retry signal)', async () => {
+    queueLive();
+    vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason: 'not_enabled' });
+    selects.push([{ status: 'disabled', enabledPublicationSeq: null }]);
+    expect(await startToolRun(descriptor(), {}, 'ai_tool', { kind: 'user', auth: userAuth() }, {}))
+      .toEqual({ ok: false, error: 'not_enabled' });
+    selects.length = 0;
+    queueLive();
+    selects.push([{ status: 'enabled', enabledPublicationSeq: 2 }]);
+    expect(await startToolRun(descriptor(), {}, 'ai_tool', { kind: 'user', auth: userAuth() }, {}))
+      .toEqual({ ok: false, error: 'not_enabled' });
+  });
+
+  it('a tier that rose since the gate (same publication, e.g. a tenant tool reclassified) is flow_tool_changed', async () => {
+    queueLive();
+    vi.mocked(flowInvocationTier).mockResolvedValue(3);
+    expect(await startToolRun(descriptor({ tier: 2 }), {}, 'ai_tool', { kind: 'user', auth: userAuth() }, {}))
+      .toEqual({ ok: false, error: 'flow_tool_changed' });
+    expect(createFlowRun).not.toHaveBeenCalled();
+    // A tier at or below the gated one proceeds.
+    selects.length = 0;
+    queueLive();
+    vi.mocked(flowInvocationTier).mockResolvedValue(2);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms());
+    expect(await startToolRun(descriptor({ tier: 2 }), {}, 'ai_tool', { kind: 'user', auth: userAuth() }, {}))
+      .toMatchObject({ ok: true });
   });
 
   it('a flow disabled since resolution is not_enabled', async () => {

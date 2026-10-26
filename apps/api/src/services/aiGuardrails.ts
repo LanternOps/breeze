@@ -3221,24 +3221,21 @@ export function checkAgentGuardrails(
   context?: GuardrailContext,
   /**
    * W5 PR C (#5220, Decision 9): the LIVE invocation tier of a flow tool
-   * (`flow__<slug>`), which has no `TOOL_TIERS` entry. Honoured ONLY for a
-   * flow tool name — any other name is classified by `checkGuardrails` as
-   * before (an unknown name stays tier 4 / denied). Every other gate below
-   * (env flag, kill switch, policy, enabled, mode, allowlist for mutations)
-   * still applies; the agent path additionally requires the allowlist at
-   * every tier and Tier 1 (services/flows/agentFlowTools.ts).
+   * (`flow__<slug>`), which has no `TOOL_TIERS` entry. Agents may start
+   * Tier-1 flows only, so only `1` is accepted, and only for a flow tool name
+   * — any other name is classified by `checkGuardrails` as before (an unknown
+   * name stays tier 4 / denied). Every other gate below (env flag, kill
+   * switch, policy, enabled, mode) still applies; the agent path also
+   * requires the allowlist (services/flows/agentFlowTools.ts).
    */
-  opts: { resolvedTier?: 1 | 2 | 3 } = {},
+  opts: { resolvedTier?: 1 } = {},
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
   const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
-  const flowTier = opts.resolvedTier !== undefined && isFlowToolName(toolName) ? opts.resolvedTier : undefined;
-  const base: GuardrailCheck = flowTier === undefined
-    ? checkGuardrails(toolName, input, agentContext)
-    : flowTier === 3
-      ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: `Run ${toolName}` }
-      : { tier: flowTier, allowed: true, requiresApproval: flowTier >= 2, readOnly: flowTier === 1, description: `Run ${toolName}` };
+  const base: GuardrailCheck = opts.resolvedTier === 1 && isFlowToolName(toolName)
+    ? { tier: 1, allowed: true, requiresApproval: false, readOnly: true, description: `Run ${toolName}` }
+    : checkGuardrails(toolName, input, agentContext);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

@@ -3134,6 +3134,8 @@ async function handleFlowToolCall(
     });
   } catch (err) {
     console.error('[MCP] Flow tool call failed:', toolName, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_site: 'mcp.flow_tool_call', ...(executionOrgId ? { org_id: executionOrgId } : {}) }, { fingerprint: ['flow', 'mcp.flow_tool_call'] });
     return jsonRpcError(id, -32000, 'Unable to start the flow');
   }
 

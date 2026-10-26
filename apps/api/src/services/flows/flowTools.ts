@@ -189,6 +189,7 @@ async function readFlowToolRows(
 // ── the tier ────────────────────────────────────────────────────────────────
 
 function clampTier(t: number): FlowToolTier {
+  if (!Number.isFinite(t)) return 3;
   return t <= 1 ? 1 : t >= 3 ? 3 : 2;
 }
 
@@ -410,13 +411,4 @@ export async function resolveRunFlowGate(
     console.warn('[flows] run_flow tier could not be resolved; keeping tier 3', err);
     return { tier: 3 };
   }
-}
-
-/** The tier alone (see `resolveRunFlowGate`); any failure is 3. */
-export async function resolveRunFlowTier(
-  auth: AuthContext,
-  input: unknown,
-  defaultOrgId?: string | null,
-): Promise<FlowToolTier> {
-  return (await resolveRunFlowGate(auth, input, defaultOrgId)).tier;
 }

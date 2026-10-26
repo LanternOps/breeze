@@ -44,9 +44,9 @@ describe('checkAgentGuardrails — resolved tier for flow tools', () => {
       .toMatchObject({ disposition: 'deny' });
   });
 
-  it('a tier ≥ 2 flow tool is never allowed to execute from a device-less run', () => {
+  it('only a Tier-1 resolved tier exists for agents (Decision 9): a higher one is not expressible', () => {
+    // @ts-expect-error — agents never pass a Tier ≥ 2 flow; the gate refuses it first.
     const check = checkAgentGuardrails('flow__report', {}, policy({ mode: 'act' }), undefined, { resolvedTier: 2 });
-    expect(check.disposition).not.toBe('allow');
-    expect(check.disposition).not.toBe('act');
+    expect(check.disposition).toBe('deny');
   });
 });
