@@ -45,6 +45,7 @@ import { captureException } from '../sentry';
 import { hasExactDeviceCeiling, hasSiteCeiling } from '../siteCeilingAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
+import { chargeFlowRun, lockFlowRunAdmission, recordAdmissionRefusal } from './budgets';
 import { assertFlowRunAdmission, type FlowRunAdmissionRefusal } from './runAdmission';
 import { TERMINAL_FLOW_RUN_STATUSES } from './runStore';
 import type { FlowTriggerScope } from './triggerScope';
@@ -78,6 +79,25 @@ export type CreateFlowRunInput = CreateFlowRunBase & (
        * (re-enabled in between), so a run never executes an unchecked one.
        */
       expectedPublicationSeq: number;
+    }
+  | {
+      /**
+       * W5 (#5220, Decisions 2/4/5). Never honours pre-approvals. The run is bound
+       * to what the ingress VERIFIED: the live publication seq and the secret
+       * generation (`webhook_secret_rotated_at`) are compared under the flow row
+       * lock, so a re-publish or a rotation between verification and insert
+       * refuses the delivery (`not_enabled`) instead of running it on other
+       * configuration.
+       */
+      triggerKind: 'webhook';
+      expectedPublicationSeq: number;
+      expectedSecretRotatedAt: Date;
+      /**
+       * Runs inside the run's system transaction, after the insert and the
+       * charge (the accepted delivery row). A throw rolls back the run, the
+       * charge and anything the hook wrote, and is rethrown to the caller.
+       */
+      onCreated: (runId: string) => Promise<void>;
     });
 
 /** `preApprovalsHonored` (additive to the plan's shape) is the stored value of the run named. */
@@ -153,6 +173,10 @@ function deriveProvenance(i: CreateFlowRunInput): DerivedProvenance {
         triggeredVia: 'event', preApprovalsHonored: true, chainDepth: i.chainDepth, causedByRunId: i.causedByRunId,
         triggeredByUserId: null, aiSessionId: null,
       };
+    case 'webhook':
+      // Decision 4: the sender controls the payload, so a webhook run never
+      // honours a pre-approval (flow_runs_pre_approvals_chk repeats it).
+      return { triggeredVia: 'webhook', preApprovalsHonored: false, chainDepth: 0, causedByRunId: null, triggeredByUserId: null, aiSessionId: null };
     case 'manual': {
       const via = i.triggeredVia;
       if (via !== 'ui' && via !== 'api' && via !== 'ai_tool') throw new Error(`createFlowRun: invalid manual triggeredVia '${String(via)}'`);
@@ -178,95 +202,150 @@ function assertChain(p: DerivedProvenance): void {
   if (p.chainDepth > 0 && !p.causedByRunId) throw new Error('createFlowRun: a chain depth above 0 needs causedByRunId');
 }
 
+/** Thrown inside the run transaction to roll it back (a monthly-cap breach found by the charge). */
+class FlowRunRefused extends Error {
+  constructor(readonly reason: FlowRunAdmissionRefusal) {
+    super(`flow run refused: ${reason}`);
+    this.name = 'FlowRunRefused';
+  }
+}
+
 /**
- * Create one run (spec §6.4/§6.5, plan Task A9). One system transaction:
+ * Create one run (spec §6.4/§6.5, plan W04 Task A9, W05 Task A4). One system
+ * transaction:
  *  1. the run org's partner (organizations) — the owner predicate's anchor;
  *  2. the flow, ENABLED, owned by the run org or partner-wide under its
  *     partner, `FOR SHARE` so a concurrent disable (which cancels queued runs
- *     in its own transaction) waits for this insert instead of missing it;
- *  3. its LIVE publication (the snapshot every slice runs);
- *  4. the dedupe probe — a redelivered trigger returns the first run even
- *     when admission would now refuse;
- *  5. admission (`assertFlowRunAdmission`, joins this transaction);
- *  6. `INSERT … ON CONFLICT ON CONSTRAINT flow_runs_dedupe_uq DO NOTHING`, and
- *     on a lost race the winner's id.
- * After commit: the first slice is enqueued (a failure is logged — the
- * reconciler re-enqueues queued runs after 2 minutes) and a manual run is
+ *     in its own transaction) or a secret rotation waits for this insert
+ *     instead of missing it; a manual or webhook run then checks the
+ *     publication (and, webhook, the secret generation) it was verified
+ *     against;
+ *  3. the owner's admission lock (W05: serializes count → insert → charge per
+ *     flow owner, so the monthly counters are exact);
+ *  4. its LIVE publication (the snapshot every slice runs, and the document
+ *     whose `limits` lower the flow cap);
+ *  5. the dedupe probe — a redelivered trigger returns the first run even
+ *     when admission would now refuse, and never charges;
+ *  6. admission (`assertFlowRunAdmission`, joins this transaction): the
+ *     active cap, then the monthly caps;
+ *  7. `INSERT … ON CONFLICT ON CONSTRAINT flow_runs_dedupe_uq DO NOTHING`, and
+ *     on a lost race the winner's id (no charge);
+ *  8. the charge (`chargeFlowRun`); a breach throws and rolls the whole
+ *     transaction back — run row and counters together;
+ *  9. a webhook's `onCreated` (the accepted delivery row), same transaction.
+ * After a refusal: the flow's banner marker (`recordAdmissionRefusal`, never
+ * a pause). After commit: the first slice is enqueued (a failure is logged —
+ * the reconciler re-enqueues queued runs after 2 minutes) and a manual run is
  * audited `flow.run.create`. Throws on DB failure (event/schedule retry).
  */
 export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRunResult> {
   const p = deriveProvenance(i);
   assertChain(p);
-  const expectedSeq = i.triggerKind === 'manual' ? i.expectedPublicationSeq : null;
-  if (i.triggerKind === 'manual' && !Number.isInteger(expectedSeq)) {
-    throw new Error('createFlowRun: a manual run needs the publication seq it was checked against');
+  const expectedSeq = i.triggerKind === 'manual' || i.triggerKind === 'webhook' ? i.expectedPublicationSeq : null;
+  if ((i.triggerKind === 'manual' || i.triggerKind === 'webhook') && !Number.isInteger(expectedSeq)) {
+    throw new Error(`createFlowRun: a ${i.triggerKind} run needs the publication seq it was checked against`);
+  }
+  if (i.triggerKind === 'webhook') {
+    if (!(i.expectedSecretRotatedAt instanceof Date) || Number.isNaN(i.expectedSecretRotatedAt.getTime())) {
+      throw new Error('createFlowRun: a webhook run needs the secret generation it was verified with');
+    }
+    if (typeof i.onCreated !== 'function') throw new Error('createFlowRun: a webhook run needs its onCreated hook');
   }
   const triggerPayload = { ...i.scope, kind: i.triggerKind, orgId: i.orgId };
 
-  const result = await inSystemTx(async (): Promise<CreateFlowRunResult & { flowName?: string }> => {
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, i.orgId))
-      .limit(1);
-    if (!org?.partnerId) return { created: false, reason: 'not_enabled' };
+  let result: CreateFlowRunResult & { flowName?: string };
+  try {
+    result = await inSystemTx(async (): Promise<CreateFlowRunResult & { flowName?: string }> => {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, i.orgId))
+        .limit(1);
+      if (!org?.partnerId) return { created: false, reason: 'not_enabled' };
 
-    const [flow] = await db
-      .select({
-        id: flows.id,
-        orgId: flows.orgId,
-        partnerId: flows.partnerId,
-        name: flows.name,
-        enabledPublicationSeq: flows.enabledPublicationSeq,
-      })
-      .from(flows)
-      .where(and(
-        eq(flows.id, i.flowId),
-        eq(flows.status, 'enabled'),
-        or(eq(flows.orgId, i.orgId), and(isNull(flows.orgId), eq(flows.partnerId, org.partnerId))),
-      ))
-      .for('share')
-      .limit(1);
-    if (!flow || flow.enabledPublicationSeq === null) return { created: false, reason: 'not_enabled' };
-    // A manual start checked rule 7 and the inputs against one publication;
-    // a re-enable since then (a different live seq) is not that publication.
-    if (expectedSeq !== null && flow.enabledPublicationSeq !== expectedSeq) return { created: false, reason: 'not_enabled' };
+      const [flow] = await db
+        .select({
+          id: flows.id,
+          orgId: flows.orgId,
+          partnerId: flows.partnerId,
+          name: flows.name,
+          enabledPublicationSeq: flows.enabledPublicationSeq,
+          webhookSecretRotatedAt: flows.webhookSecretRotatedAt,
+        })
+        .from(flows)
+        .where(and(
+          eq(flows.id, i.flowId),
+          eq(flows.status, 'enabled'),
+          or(eq(flows.orgId, i.orgId), and(isNull(flows.orgId), eq(flows.partnerId, org.partnerId))),
+        ))
+        .for('share')
+        .limit(1);
+      if (!flow || flow.enabledPublicationSeq === null) return { created: false, reason: 'not_enabled' };
+      // A manual start checked rule 7 and the inputs against one publication;
+      // a re-enable since then (a different live seq) is not that publication.
+      if (expectedSeq !== null && flow.enabledPublicationSeq !== expectedSeq) return { created: false, reason: 'not_enabled' };
+      // A webhook delivery was verified with one secret generation; a rotation
+      // since (or a removed secret) is not that secret.
+      if (i.triggerKind === 'webhook' && flow.webhookSecretRotatedAt?.getTime() !== i.expectedSecretRotatedAt.getTime()) {
+        return { created: false, reason: 'not_enabled' };
+      }
 
-    const [publication] = await db
-      .select({ id: flowVersions.id, definitionVersion: flowVersions.definitionVersion })
-      .from(flowVersions)
-      .where(and(eq(flowVersions.flowId, flow.id), eq(flowVersions.publicationSeq, flow.enabledPublicationSeq)))
-      .limit(1);
-    if (!publication) return { created: false, reason: 'not_enabled' };
+      const owner: ToolOwnerRef = flow.orgId ? { orgId: flow.orgId, partnerId: org.partnerId } : { orgId: null, partnerId: org.partnerId };
+      // Serialize count → insert → charge for this owner (exact monthly counters).
+      await lockFlowRunAdmission(owner);
 
-    const existing = await findDedupedRun(flow.id, i.orgId, i.dedupeKey);
-    if (existing) return { created: false, reason: 'duplicate', runId: existing.id, preApprovalsHonored: existing.preApprovalsHonored };
+      const [publication] = await db
+        .select({ id: flowVersions.id, definitionVersion: flowVersions.definitionVersion, definition: flowVersions.definition })
+        .from(flowVersions)
+        .where(and(eq(flowVersions.flowId, flow.id), eq(flowVersions.publicationSeq, flow.enabledPublicationSeq)))
+        .limit(1);
+      if (!publication) return { created: false, reason: 'not_enabled' };
+      // Validated at enable; one that no longer parses is refused, never run on guessed limits.
+      const doc = flowDocumentV1Schema.safeParse(publication.definition);
+      if (!doc.success) return { created: false, reason: 'not_enabled' };
 
-    const owner: ToolOwnerRef = flow.orgId ? { orgId: flow.orgId, partnerId: org.partnerId } : { orgId: null, partnerId: org.partnerId };
-    const admission = await assertFlowRunAdmission(owner, flow.id);
-    if (!admission.ok) return { created: false, reason: admission.error };
+      const existing = await findDedupedRun(flow.id, i.orgId, i.dedupeKey);
+      if (existing) return { created: false, reason: 'duplicate', runId: existing.id, preApprovalsHonored: existing.preApprovalsHonored };
 
-    const inserted = await db.execute(sql`
-      INSERT INTO flow_runs (
-        org_id, flow_id, flow_version_id, definition_version, trigger_kind, triggered_via,
-        trigger_payload, inputs, status, pre_approvals_honored, dedupe_key, chain_depth,
-        caused_by_run_id, triggered_by_user_id, ai_session_id
-      ) VALUES (
-        ${i.orgId}, ${flow.id}, ${publication.id}, ${publication.definitionVersion}, ${i.triggerKind}, ${p.triggeredVia},
-        ${JSON.stringify(triggerPayload)}::jsonb, ${JSON.stringify(i.inputs)}::jsonb, 'queued', ${p.preApprovalsHonored},
-        ${i.dedupeKey}, ${p.chainDepth}, ${p.causedByRunId}, ${p.triggeredByUserId}, ${p.aiSessionId}
-      )
-      ON CONFLICT ON CONSTRAINT flow_runs_dedupe_uq DO NOTHING
-      RETURNING id`);
-    const row = (inserted as unknown as Array<{ id: string }>)[0];
-    if (row) return { created: true, runId: row.id, preApprovalsHonored: p.preApprovalsHonored, flowName: flow.name };
+      const at = new Date();
+      const admission = await assertFlowRunAdmission(owner, flow.id, { doc: doc.data, at });
+      if (!admission.ok) return { created: false, reason: admission.error };
 
-    const winner = await findDedupedRun(flow.id, i.orgId, i.dedupeKey);
-    if (!winner) throw new Error('createFlowRun: dedupe conflict without a visible run');
-    return { created: false, reason: 'duplicate', runId: winner.id, preApprovalsHonored: winner.preApprovalsHonored };
-  }, 'flows.runService.createFlowRun');
+      const inserted = await db.execute(sql`
+        INSERT INTO flow_runs (
+          org_id, flow_id, flow_version_id, definition_version, trigger_kind, triggered_via,
+          trigger_payload, inputs, status, pre_approvals_honored, dedupe_key, chain_depth,
+          caused_by_run_id, triggered_by_user_id, ai_session_id
+        ) VALUES (
+          ${i.orgId}, ${flow.id}, ${publication.id}, ${publication.definitionVersion}, ${i.triggerKind}, ${p.triggeredVia},
+          ${JSON.stringify(triggerPayload)}::jsonb, ${JSON.stringify(i.inputs)}::jsonb, 'queued', ${p.preApprovalsHonored},
+          ${i.dedupeKey}, ${p.chainDepth}, ${p.causedByRunId}, ${p.triggeredByUserId}, ${p.aiSessionId}
+        )
+        ON CONFLICT ON CONSTRAINT flow_runs_dedupe_uq DO NOTHING
+        RETURNING id`);
+      const row = (inserted as unknown as Array<{ id: string }>)[0];
+      if (!row) {
+        const winner = await findDedupedRun(flow.id, i.orgId, i.dedupeKey);
+        if (!winner) throw new Error('createFlowRun: dedupe conflict without a visible run');
+        return { created: false, reason: 'duplicate', runId: winner.id, preApprovalsHonored: winner.preApprovalsHonored };
+      }
 
-  if (!result.created) return result;
+      // Charged only once the run row exists (a duplicate never charges); a
+      // breach rolls back the run row and both increments.
+      const charge = await chargeFlowRun({ flowId: flow.id, owner, flowCap: admission.caps.flowCap, ownerCap: admission.caps.ownerCap, at });
+      if (!charge.ok) throw new FlowRunRefused(charge.error);
+      if (i.triggerKind === 'webhook') await i.onCreated(row.id);
+      return { created: true, runId: row.id, preApprovalsHonored: p.preApprovalsHonored, flowName: flow.name };
+    }, 'flows.runService.createFlowRun');
+  } catch (err) {
+    if (!(err instanceof FlowRunRefused)) throw err;
+    result = { created: false, reason: err.reason };
+  }
+
+  if (!result.created) {
+    if (result.reason !== 'duplicate' && result.reason !== 'not_enabled') await recordAdmissionRefusal(i.flowId, result.reason);
+    return result;
+  }
   const { flowName, ...created } = result;
 
   // The run row is already committed by the system transaction above, but a

@@ -205,6 +205,7 @@ describe('processFlowScheduleTick', () => {
     vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason: 'flow_queue_full' });
     await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
     expect(recordFlowScheduleAdmissionRefused).toHaveBeenCalledTimes(1);
+    expect(recordFlowScheduleAdmissionRefused).toHaveBeenCalledWith('flow_queue_full');
     expect(cas()).toHaveLength(1);
     const line = warn.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(line).toContain(FLOW);
@@ -212,6 +213,24 @@ describe('processFlowScheduleTick', () => {
     expect(captureException).not.toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it.each(['flow_monthly_cap_reached', 'owner_monthly_cap_reached'] as const)(
+    'monthly cap refusal (%s) counts as handled and advances the key (W5)',
+    async (reason) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      selects.push([flow()], LIVE);
+      updates.push([{ id: FLOW }]);
+      vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason });
+      await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+      expect(recordFlowScheduleAdmissionRefused).toHaveBeenCalledWith(reason);
+      expect(cas()).toHaveLength(1);
+      const line = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(line).toContain(reason);
+      expect(line).toContain(FLOW);
+      expect(captureException).not.toHaveBeenCalled();
+      warn.mockRestore();
+    },
+  );
 
   it('a flow disabled mid-tick is not stamped, and the abort is logged at error with the flow and org', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});

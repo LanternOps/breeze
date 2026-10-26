@@ -27,7 +27,7 @@ import type {
   FlowValidationResult,
   PreApprovalEligibility,
 } from '@breeze/shared';
-import { db, getCurrentDbAccessContext, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { actionIntents, flowRuns, flows, flowVersions, users, type FlowRow, type FlowVersionRow } from '../../db/schema';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
@@ -49,7 +49,7 @@ import { hasSiteCeiling } from '../siteCeilingAccess';
 import { latestCronOccurrence } from '../aiAgents/sweepOccurrence';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import type { ToolOwnerRef } from '../toolSources/resolver';
-import { createNotification } from '../userNotifications';
+import { sendFlowNotice } from './notices';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
 import { assertFlowSlugAvailable, lockFlowSlugsForPartner, toDetailDto } from './service';
@@ -478,28 +478,14 @@ export async function pauseFlow(
     if (!row) return;
     audit('flow.pause', row, null, { reason, publicationSeq: row.enabledPublicationSeq });
 
-    const delegator = row.enabledByUserId;
-    if (!delegator) return;
-    runAfterDbContextCommit('flows.pauseFlow.notify', async () => {
-      try {
-        // Cross-user insert: needs its own system context (see createNotification).
-        await runOutsideDbContext(() => withSystemDbAccessContext(() => createNotification({
-          userId: delegator,
-          orgId: row.orgId,
-          type: 'automation',
-          priority: 'high',
-          title: 'Flow paused',
-          message: `${row.name} was paused because ${PAUSE_REASON_TEXT[reason]}. Review it and enable it again.`,
-          link: `/flows/${row.id}`,
-          metadata: { flowId: row.id, reason },
-          dedupeKey: `flow-paused:${row.id}:${row.enabledPublicationSeq ?? 0}:${reason}`,
-        }), 'flows.pauseFlow.notify'));
-      } catch (err) {
-        captureException(err instanceof Error ? err : new Error(String(err)), undefined,
-          { ...(row.orgId ? { org_id: row.orgId } : {}), flow_id: row.id, flow_site: 'flows.pauseFlow.notify' },
-          { fingerprint: ['flow', 'flows.pauseFlow.notify'] });
-        console.error(`[flows] pause notification failed (flow=${row.id})`, err);
-      }
+    // The delegator's in-app notice, after commit (W5: one sender, notices.ts;
+    // the document's notice channel is PR B's).
+    await sendFlowNotice(row, null, {
+      kind: 'paused',
+      title: 'Flow paused',
+      text: `${row.name} was paused because ${PAUSE_REASON_TEXT[reason]}. Review it and enable it again.`,
+      dedupeKey: `flow-paused:${row.id}:${row.enabledPublicationSeq ?? 0}:${reason}`,
+      metadata: { flowId: row.id, reason },
     });
   }, 'flows.pauseFlow');
 }

@@ -11,6 +11,13 @@ import { z } from 'zod';
 export const FLOW_ADMISSION_REFUSALS = ['flow_queue_full', 'flow_monthly_cap_reached', 'owner_monthly_cap_reached'] as const;
 export type FlowAdmissionRefusal = (typeof FLOW_ADMISSION_REFUSALS)[number];
 
+const ADMISSION_REFUSAL_SET: ReadonlySet<string> = new Set(FLOW_ADMISSION_REFUSALS);
+
+/** True for every admission refusal (handled, never retried); false for `not_enabled` / `duplicate`. */
+export function isFlowAdmissionRefusal(reason: string): reason is FlowAdmissionRefusal {
+  return ADMISSION_REFUSAL_SET.has(reason);
+}
+
 export const FLOW_LIMIT_DEFAULTS = {
   monthlyRunsPerOwner: 100_000,
   monthlyRunsPerFlow: 10_000,

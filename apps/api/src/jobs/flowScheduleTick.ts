@@ -44,6 +44,7 @@ import { flowVersions } from '../db/schema/flowRuns';
 import { flows } from '../db/schema/flows';
 import { organizations } from '../db/schema/orgs';
 import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import { isFlowAdmissionRefusal } from '@breeze/shared';
 import { recordFlowScheduleAdmissionRefused } from '../services/flows/flowTriggerMetrics';
 import { nullFlowInputs } from '../services/flows/inputDefaults';
 import { createFlowRun } from '../services/flows/runService';
@@ -161,9 +162,11 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
       });
       if (result.created) {
         created += 1;
-      } else if (result.reason === 'flow_queue_full') {
-        console.warn(`${LOG} active-run cap reached: flow ${flow.id} occurrence ${occurrence.key} not started in org ${orgId}`);
-        recordFlowScheduleAdmissionRefused();
+      } else if (isFlowAdmissionRefusal(result.reason)) {
+        // Active-run cap or a monthly cap (W5): handled, the key still advances
+        // (a capped occurrence is not retried; the flow is not paused).
+        console.warn(`${LOG} admission refused (${result.reason}): flow ${flow.id} occurrence ${occurrence.key} not started in org ${orgId}`);
+        recordFlowScheduleAdmissionRefused(result.reason);
       } else if (result.reason === 'not_enabled') {
         // Disabled, paused or re-published mid-tick: nothing more to fire, and
         // no stamp. Loud, because it also ends the fan-out for every org after

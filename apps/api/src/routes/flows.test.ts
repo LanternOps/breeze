@@ -235,6 +235,7 @@ describe('flows routes', () => {
     it.each([
       ['flow_not_found', 404], ['not_enabled', 409], ['not_manual', 409], ['org_required', 422], ['org_forbidden', 403],
       ['interactive_user_required', 403], ['delegation_scope_restricted', 403], ['flow_queue_full', 429],
+      ['flow_monthly_cap_reached', 429], ['owner_monthly_cap_reached', 429],
     ])('POST runs maps %s to %i', async (error, status) => {
       vi.mocked(startManualRun).mockResolvedValue({ ok: false, error } as never);
       const res = await post(`/${FLOW_ID}/runs`, {});

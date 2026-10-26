@@ -103,6 +103,9 @@ const RUN_STATUS: Record<string, Status> = {
   inputs_invalid: 422,
   permission_missing: 422,
   flow_queue_full: 429,
+  // W5 (#5220, Decision 15): monthly caps refuse visibly; the flow stays enabled.
+  flow_monthly_cap_reached: 429,
+  owner_monthly_cap_reached: 429,
 };
 
 /** `{ ok:false, error, ...details }` becomes `{ error, ...details }` with the mapped status (unmapped codes: 422). */
