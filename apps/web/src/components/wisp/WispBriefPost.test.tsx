@@ -1,25 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import WispBriefCard from './WispBriefCard';
+import WispBriefPost from './WispBriefPost';
 
 const NOW = Date.parse('2026-10-24T12:00:00Z');
 const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
 
-describe('WispBriefCard', () => {
-  it('renders the empty line for a null brief', () => {
-    render(<WispBriefCard brief={null} now={NOW} />);
-    expect(screen.getByTestId('wisp-brief-empty')).toBeTruthy();
-    expect(screen.queryByTestId('wisp-brief-sent')).toBeNull();
-  });
-
-  it('renders the empty line when there are no sections', () => {
-    render(<WispBriefCard brief={{ sentAt: hoursAgo(1), sections: [] }} now={NOW} />);
-    expect(screen.getByTestId('wisp-brief-empty')).toBeTruthy();
-  });
-
+describe('WispBriefPost', () => {
   it('renders sections with headings and lines in order', () => {
     render(
-      <WispBriefCard
+      <WispBriefPost
         brief={{
           sentAt: hoursAgo(2),
           sections: [
@@ -40,16 +29,25 @@ describe('WispBriefCard', () => {
 
   it('shows the stale badge for a 30-hour-old brief only', () => {
     const sections = [{ heading: 'H', lines: ['l'] }];
-    const { unmount } = render(<WispBriefCard brief={{ sentAt: hoursAgo(30), sections }} now={NOW} />);
+    const { unmount } = render(<WispBriefPost brief={{ sentAt: hoursAgo(30), sections }} now={NOW} />);
     expect(screen.getByTestId('wisp-brief-stale').textContent).toBe('From an earlier day');
     unmount();
-    render(<WispBriefCard brief={{ sentAt: hoursAgo(2), sections }} now={NOW} />);
+    render(<WispBriefPost brief={{ sentAt: hoursAgo(2), sections }} now={NOW} />);
     expect(screen.queryByTestId('wisp-brief-stale')).toBeNull();
   });
 
   it('renders markup in a line as literal text', () => {
-    render(<WispBriefCard brief={{ sentAt: hoursAgo(1), sections: [{ heading: 'H', lines: ['<b>x</b>'] }] }} now={NOW} />);
+    render(<WispBriefPost brief={{ sentAt: hoursAgo(1), sections: [{ heading: 'H', lines: ['<b>x</b>'] }] }} now={NOW} />);
     const li = screen.getByText('<b>x</b>');
     expect(li.querySelector('b')).toBeNull();
+  });
+
+  it('renders the Morning brief eyebrow and no card border', () => {
+    render(<WispBriefPost brief={{ sentAt: hoursAgo(1), sections: [{ heading: 'H', lines: ['l'] }] }} now={NOW} />);
+    const root = screen.getByTestId('wisp-brief-card');
+    expect(root.tagName).toBe('ARTICLE');
+    expect(root.className).not.toMatch(/\bborder\b/);
+    expect(root.className).not.toMatch(/\bbg-card\b/);
+    expect(screen.getByText('Morning brief')).toBeTruthy();
   });
 });

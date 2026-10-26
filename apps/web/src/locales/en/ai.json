@@ -52,8 +52,7 @@
     "waiting": "Waiting for response...",
     "placeholder": "Ask about your devices...",
     "stopResponse": "Stop response",
-    "thinking": "AI is thinking... click stop to cancel",
-    "sendShortcut": "Cmd+Enter to send"
+    "send": "Send message"
   },
   "aiChatMessages": {
     "title": "Breeze AI",
@@ -88,6 +87,23 @@
         "label": "Recent activity",
         "prompt": "Show me the most recent audit log entries — what actions were taken in the last few hours?"
       }
+    },
+    "toolGroup": {
+      "elapsed": "{{seconds}} s",
+      "done": "{{count}} done",
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "expand": "Show details",
+      "collapse": "Hide details"
+    },
+    "divider": {
+      "today": "Today {{time}}",
+      "yesterday": "Yesterday {{time}}",
+      "date": "{{date}}, {{time}}"
+    },
+    "specialists": {
+      "heading_one": "Handed to {{count}} specialist",
+      "heading_other": "Handed to {{count}} specialists"
     }
   },
   "aiChatSidebar": {
@@ -698,11 +714,13 @@
         "memory": "Memory",
         "nudge": "Nudge",
         "brief": "Brief"
-      }
+      },
+      "show": "Show",
+      "hide": "Hide",
+      "count_one": "{{count}} recent",
+      "count_other": "{{count}} recent"
     },
     "home": {
-      "briefTitle": "This morning's brief",
-      "briefEmpty": "No brief yet. Wisp sends one each morning once it has had a look around.",
       "briefSentAt": "Sent {{time}}",
       "briefStale": "From an earlier day",
       "needsYouTitle": "Needs your attention",
@@ -778,6 +796,45 @@
       "saveFailed": "Could not change the Wisp setting.",
       "adminOnly": "Only partner administrators can change this.",
       "loadFailed": "Could not load the Wisp setting."
+    },
+    "name": "Wisp",
+    "post": {
+      "brief": "Morning brief",
+      "nudge": "Nudge",
+      "digest": "Digest",
+      "summary": "Summary"
+    },
+    "welcome": {
+      "title": "I'm looking around {{scope}}.",
+      "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
+      "suggestions": {
+        "needsMe": {
+          "label": "What needs me today?",
+          "prompt": "What needs my attention today? Keep it short."
+        },
+        "offline": {
+          "label": "Which devices are offline?",
+          "prompt": "Which of my devices are offline right now?"
+        },
+        "sweep": {
+          "label": "Run a health sweep",
+          "prompt": "Run a health sweep on {{scope}} now."
+        },
+        "overnight": {
+          "label": "What happened overnight?",
+          "prompt": "What happened across my customers overnight?"
+        }
+      }
+    },
+    "rail": {
+      "workersTitle": "Workers",
+      "workersEmpty": "No specialists running.",
+      "allRuns": "All runs",
+      "details": "Details"
+    },
+    "composer": {
+      "placeholder": "Message Wisp",
+      "link": "Link an item"
     }
   },
   "wispConcerns": {

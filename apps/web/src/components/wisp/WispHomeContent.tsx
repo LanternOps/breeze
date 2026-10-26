@@ -9,7 +9,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import WispThreadHeader from '../ai/WispThreadHeader';
 import WispGrantStepUpModal from '../ai/WispGrantStepUpModal';
 import WispActivityPanel from './WispActivityPanel';
-import WispBriefCard from './WispBriefCard';
+import WispBriefPost from './WispBriefPost';
 import WispNeedsYou from './WispNeedsYou';
 import WispLinksPanel from './WispLinksPanel';
 import WispHomeThread from './WispHomeThread';
@@ -210,7 +210,7 @@ export default function WispHomeContent() {
               onRevoked={onRevoked}
             />
           </section>
-          <WispBriefCard brief={payload.brief} />
+          {payload.brief && <WispBriefPost brief={payload.brief} />}
           <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={payload.needsYou} />
           <section id="activity" className="overflow-hidden rounded-lg border bg-card">
             <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} />

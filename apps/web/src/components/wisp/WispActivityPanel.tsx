@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '@/lib/utils';
 import { formatCurrency } from '@/lib/i18n/format';
@@ -6,7 +7,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import { fetchWispActivity, safeActivityHref } from './wispActivity';
 import type { ActivityItem } from '@breeze/shared';
 
-export default function WispActivityPanel({ threadId, refreshKey = 0 }: { threadId: string; refreshKey?: number }) {
+export default function WispActivityPanel({ threadId, refreshKey = 0, collapsible = false }: { threadId: string; refreshKey?: number; collapsible?: boolean }) {
   const { t } = useTranslation('ai');
   const organizations = useOrgStore((s) => s.organizations);
   const orgNames = useMemo(() => new Map((organizations ?? []).map((o) => [o.id, o.name])), [organizations]);
@@ -15,6 +16,9 @@ export default function WispActivityPanel({ threadId, refreshKey = 0 }: { thread
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const showBody = !collapsible || open;
 
   // Only the newest load may commit (thread switch, refresh, unmount).
   const loadToken = useRef(0);
@@ -45,14 +49,31 @@ export default function WispActivityPanel({ threadId, refreshKey = 0 }: { thread
 
   return (
     <section data-testid="wisp-activity" className="space-y-2 px-4 py-3">
-      <h3 className="text-sm font-semibold">{t('wisp.activity.title')}</h3>
-      {failed && (
+      {collapsible ? (
+        <button
+          type="button"
+          data-testid="wisp-activity-toggle"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2 text-left"
+        >
+          {open ? <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" /> : <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />}
+          <span className="text-sm font-semibold">{t('wisp.activity.title')}</span>
+          {loaded && <span className="text-xs text-muted-foreground">{t('wisp.activity.count', { count: items.length })}</span>}
+          <span className="ml-auto text-xs text-muted-foreground">{open ? t('wisp.activity.hide') : t('wisp.activity.show')}</span>
+        </button>
+      ) : (
+        <h3 className="text-sm font-semibold">{t('wisp.activity.title')}</h3>
+      )}
+      {showBody && failed && (
         <p data-testid="wisp-activity-load-error" className="text-xs text-destructive">{t('wisp.activity.loadFailed')}</p>
       )}
-      {loaded && !failed && items.length === 0 && (
+      {showBody && loaded && !failed && items.length === 0 && (
         <p data-testid="wisp-activity-empty" className="text-xs text-muted-foreground">{t('wisp.activity.empty')}</p>
       )}
-      <ul className="space-y-1.5">
+      {showBody && (
+      <ul id={bodyId} className="space-y-1.5">
         {items.map((item) => {
           const href = safeActivityHref(item.href);
           const orgName = item.orgId ? orgNames.get(item.orgId) : undefined;
@@ -87,7 +108,8 @@ export default function WispActivityPanel({ threadId, refreshKey = 0 }: { thread
           );
         })}
       </ul>
-      {nextCursor && (
+      )}
+      {showBody && nextCursor && (
         <button
           type="button"
           data-testid="wisp-activity-load-more"

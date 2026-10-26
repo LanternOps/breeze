@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
+import { pairToolResults } from "./aiChatGrouping";
 
 interface Message {
   id: string;
@@ -103,54 +104,7 @@ export function scriptProposalHref(
   return typeof id === "string" && UUID_RE.test(id) ? `/approvals#proposal-${id.toLowerCase()}` : null;
 }
 
-/**
- * #9534: one tool call is ONE card. Pairs each tool_result row with the
- * tool_use row it completes so the result renders in the tool_use row's place
- * (same React key, so the pending card is replaced in place) and the result
- * row itself renders nothing. Before, the tool_use row kept its own card next
- * to the result's, so a 4-tool run showed 8 rows.
- *
- * Pairing is by `toolUseId` first. A replayed history row with no id falls
- * back to adjacency — a tool_use immediately followed by an id-less result of
- * the same tool — and never borrows a result already paired by id (a parallel
- * sibling's), which used to stop that sibling's spinner early.
- *
- * Returns tool_use index → its result row, and the set of result indexes so
- * consumed.
- */
-export function pairToolResults<M extends { role: string; toolUseId?: string; toolName?: string }>(
-  messages: readonly M[],
-): { resultForUse: Map<number, M>; pairedResults: Set<number> } {
-  const resultForUse = new Map<number, M>();
-  const pairedResults = new Set<number>();
-  const useIndexById = new Map<string, number>();
-  messages.forEach((m, i) => {
-    if (m.role === "tool_use" && m.toolUseId && !useIndexById.has(m.toolUseId)) {
-      useIndexById.set(m.toolUseId, i);
-    }
-  });
-  messages.forEach((m, i) => {
-    if (m.role !== "tool_result" || !m.toolUseId) return;
-    const useIdx = useIndexById.get(m.toolUseId);
-    if (useIdx === undefined || useIdx > i || resultForUse.has(useIdx)) return;
-    resultForUse.set(useIdx, m);
-    pairedResults.add(i);
-  });
-  messages.forEach((m, i) => {
-    if (m.role !== "tool_use" || resultForUse.has(i)) return;
-    const next = messages[i + 1];
-    if (
-      next?.role === "tool_result" &&
-      (!next.toolUseId || !m.toolUseId) &&
-      !pairedResults.has(i + 1) &&
-      (!next.toolName || next.toolName === m.toolName)
-    ) {
-      resultForUse.set(i, next);
-      pairedResults.add(i + 1);
-    }
-  });
-  return { resultForUse, pairedResults };
-}
+export { pairToolResults } from "./aiChatGrouping";
 
 export default function AiChatMessages({
   messages,
