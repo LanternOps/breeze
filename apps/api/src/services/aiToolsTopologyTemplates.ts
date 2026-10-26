@@ -30,7 +30,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { TOPOLOGY_TEMPLATE_ACTIONS } from './aiToolSchemasTopologyOps';
 import {
-  agentRefusal, boundedJson, defined, hiddenSiteResult, isAgentPrincipal, jsonError, requireFields, topologyPermissions, topologySite, topologyThrown,
+  agentRefusal, boundedJson, committedJson, defined, hiddenSiteResult, isAgentPrincipal, jsonError, requireFields, topologyPermissions, topologySite, topologyThrown,
 } from './aiToolsTopologyShared';
 
 type Action = (typeof TOPOLOGY_TEMPLATE_ACTIONS)[number];
@@ -111,35 +111,35 @@ export function registerTopologyTemplateTools(aiTools: Map<string, AiTool>): voi
           case 'create_template': {
             const missing = requireFields(input, ['ownerScope', 'key', 'name'], action);
             if (missing) return missing;
-            return boundedJson(await createTopologyTemplate(auth, permissions, createTopologyTemplateSchema.parse(defined({
+            return committedJson(await createTopologyTemplate(auth, permissions, createTopologyTemplateSchema.parse(defined({
               ownerScope: input.ownerScope, orgId: input.orgId, key: input.key, name: input.name, description: input.description ?? undefined,
             }))));
           }
           case 'update_template': {
             const missing = requireFields(input, ['templateId', 'expectedRevision'], action);
             if (missing) return missing;
-            return boundedJson(await updateTopologyTemplate(auth, permissions, String(input.templateId), updateTopologyTemplateSchema.parse(defined({
+            return committedJson(await updateTopologyTemplate(auth, permissions, String(input.templateId), updateTopologyTemplateSchema.parse(defined({
               expectedRevision: input.expectedRevision, name: input.name, description: input.description, lifecycle: input.lifecycle,
             }))));
           }
           case 'revoke_template': {
             const missing = requireFields(input, ['templateId', 'expectedRevision'], action);
             if (missing) return missing;
-            return boundedJson(await updateTopologyTemplate(auth, permissions, String(input.templateId), updateTopologyTemplateSchema.parse({
+            return committedJson(await updateTopologyTemplate(auth, permissions, String(input.templateId), updateTopologyTemplateSchema.parse({
               expectedRevision: input.expectedRevision, lifecycle: 'revoked',
             })));
           }
           case 'create_version': {
             const missing = requireFields(input, ['templateId', 'expectedRevision', 'payload'], action);
             if (missing) return missing;
-            return boundedJson(await createTopologyTemplateVersion(auth, permissions, String(input.templateId), createTopologyTemplateVersionSchema.parse({
+            return committedJson(await createTopologyTemplateVersion(auth, permissions, String(input.templateId), createTopologyTemplateVersionSchema.parse({
               expectedRevision: input.expectedRevision, payload: input.payload, schemaVersion: 1, defaultsVersion: 1, resolverVersion: 1,
             })));
           }
           case 'publish_version': {
             const missing = requireFields(input, ['templateId', 'versionId', 'expectedTemplateRevision', 'expectedVersionRevision'], action);
             if (missing) return missing;
-            return boundedJson(await publishTopologyTemplateVersion(
+            return committedJson(await publishTopologyTemplateVersion(
               auth, permissions, String(input.templateId), String(input.versionId),
               publishTopologyTemplateVersionSchema.parse({
                 expectedTemplateRevision: input.expectedTemplateRevision, expectedVersionRevision: input.expectedVersionRevision,

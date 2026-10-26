@@ -126,6 +126,14 @@ describe('site gate: capability per action mirrors the route', () => {
     ['manage_topology_monitoring', { action: 'delete_target', siteId: SITE, id: NODE, expectedRevision: '1' }, 'configure'],
     ['manage_topology_monitoring', { action: 'patch_settings', siteId: SITE, overrides: {}, expectedRevision: '1' }, 'write'],
     ['manage_topology_templates', { action: 'site_options', siteId: SITE }, 'read'],
+    ['manage_topology_manual', { action: 'update_node', siteId: SITE, nodeId: NODE, expectedRevision: '1', label: 'x' }, 'write'],
+    ['manage_topology_manual', { action: 'delete_node', siteId: SITE, nodeId: NODE, expectedRevision: '1' }, 'write'],
+    ['manage_topology_manual', { action: 'create_relationship', siteId: SITE, sourceNodeId: NODE, targetNodeId: REL, kind: 'physical_link' }, 'write'],
+    ['manage_topology_manual', { action: 'delete_relationship', siteId: SITE, relationshipId: REL, expectedRevision: '1' }, 'write'],
+    ['manage_topology_monitoring', { action: 'list_targets', siteId: SITE }, 'read'],
+    ['manage_topology_monitoring', { action: 'upsert_policy', siteId: SITE, key: 'p', definition: {}, expectedRevision: '1' }, 'configure'],
+    ['manage_topology_monitoring', { action: 'delete_policy', siteId: SITE, id: NODE, expectedRevision: '1' }, 'configure'],
+    ['manage_topology_monitoring', { action: 'upsert_target', siteId: SITE, key: 't', definition: {}, expectedRevision: '1' }, 'configure'],
   ];
   it.each(cases)('%s %j -> %s', async (name, input, capability) => {
     svc.getTopologyGraph.mockResolvedValue({ revisions: { graph: '1', health: '1' }, nodes: [], relationships: [], counts: {}, coverage: { state: 'complete', reasons: [] }, frontier: [] });
@@ -212,13 +220,29 @@ describe('get_topology_graph projection', () => {
     svc.listTopologyNodes.mockResolvedValue({ siteId: SITE, graphRevision: '1', total: 400, nodes: big, cursor: null });
     const out = await call('get_topology_graph', { action: 'nodes', siteId: SITE });
     expect(out).toMatchObject({ code: 'result_too_large' });
-    expect(TOPOLOGY_TOOL_MAX_BYTES).toBeGreaterThan(0);
+    expect(JSON.stringify(big).length).toBeGreaterThan(TOPOLOGY_TOOL_MAX_BYTES);
   });
 
   it('node / health / evidence actions require their ids', async () => {
     expect(await call('get_topology_graph', { action: 'node', siteId: SITE })).toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(await call('get_topology_graph', { action: 'relationship', siteId: SITE })).toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(await call('get_topology_graph', { action: 'expansion', siteId: SITE })).toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+});
+
+describe('committed writes never read as failures', () => {
+  it('an oversized apply result degrades to a committed summary instead of result_too_large', async () => {
+    svc.applyTopologyTemplatePreview.mockResolvedValue({ id: VER, state: 'queued', sites: Array.from({ length: 600 }, (_, i) => ({ siteId: `${i}`.repeat(40), pad: 'x'.repeat(200) })) });
+    const out = await call('apply_topology_template', { action: 'apply', token: 'tok' });
+    expect(out).toMatchObject({ committed: true, truncated: true, id: VER, state: 'queued' });
+    expect(out.code).toBeUndefined();
+  });
+
+  it('a failed settings read-back after patch_settings is still reported as saved', async () => {
+    svc.readTopologySiteSettings.mockRejectedValue(new Error('connection reset'));
+    const out = await call('manage_topology_monitoring', { action: 'patch_settings', siteId: SITE, overrides: { outboundEnabled: false }, expectedRevision: '3' });
+    expect(out).toMatchObject({ success: true, committed: true, readBackFailed: true });
+    expect(svc.updateTopologySiteConfiguration).toHaveBeenCalled();
   });
 });
 

@@ -317,6 +317,11 @@ describe('template application admission tier', () => {
     await expect(applyTopologyTemplatePreview(movedAuth, permissions, token, 'moved-epochs'))
       .rejects.toMatchObject({ code: 'permission_changed' });
     expect(accessMock).not.toHaveBeenCalled();
+    // Only the MFA epoch moving is enough on its own.
+    const mfaMoved = { ...previewAuth, token: { ...previewAuth.token, aep: 1, mep: 2 } } as typeof previewAuth;
+    authorityMock.mockResolvedValue({ auth: mfaMoved, permissions, version: 'v1' });
+    await expect(applyTopologyTemplatePreview(mfaMoved, permissions, token, 'mfa-moved'))
+      .rejects.toMatchObject({ code: 'permission_changed' });
     // CONTROL: the same record with unchanged epochs does not trip the check (it proceeds to the site write check).
     accessMock.mockRejectedValue(new TopologyError('topology_permission_denied', 403, 'denied'));
     authorityMock.mockResolvedValue({ auth: previewAuth, permissions, version: 'v1' });

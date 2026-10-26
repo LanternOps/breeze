@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { createTopologyDiagnosticSchema, topologyCollectorsQuerySchema } from '@breeze/shared';
 import type { AiTool } from './aiTools';
 import { TOPOLOGY_DIAGNOSTIC_ACTIONS, TOPOLOGY_RECIPES } from './aiToolSchemasTopologyOps';
-import { agentRefusal, boundedJson, defined, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
+import { agentRefusal, boundedJson, committedJson, defined, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
 import { readTopologyAiDiagnosticRun } from './topology/aiRead';
 import { cancelTopologyDiagnosticRun, createTopologyDiagnosticRun } from './topology/diagnosticRuns';
 import { selectTopologyOrigins } from './topology/originEligibility';
@@ -119,9 +119,9 @@ export function registerTopologyDiagnosticTools(aiTools: Map<string, AiTool>): v
             const request = planRequest(input);
             const key = typeof input.idempotencyKey === 'string'
               ? input.idempotencyKey
-              : `ai-${createHash('sha256').update(JSON.stringify({ u: auth.user.id, s: ctx.scope.siteId, r: request, t: Date.now() })).digest('hex').slice(0, 40)}`;
+              : `ai-${createHash('sha256').update(JSON.stringify({ u: auth.user.id, s: ctx.scope.siteId, r: request, t: Math.floor(Date.now() / 60_000) })).digest('hex').slice(0, 40)}`;
             const run = await createTopologyDiagnosticRun(ctx, request, key);
-            return boundedJson({
+            return committedJson({
               runId: run.id, state: run.state, recipeId: (run.plan as { recipeId?: string }).recipeId ?? request.recipeId,
               queuedAt: run.queuedAt, next: 'Read the outcome with action get and this runId.',
             });

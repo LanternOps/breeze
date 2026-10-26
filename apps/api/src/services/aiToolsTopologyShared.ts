@@ -80,7 +80,9 @@ export function topologyFailure(error: unknown, label: string): string | null {
     const where = issue?.path.length ? `${issue.path.join('.')}: ` : '';
     return jsonError(`${where}${issue?.message ?? 'Invalid topology request'}`, 'invalid_request');
   }
-  if (pgErrorCode(error) === '23505') return jsonError('Topology configuration changed', 'revision_conflict');
+  if (pgErrorCode(error) === '23505') {
+    return jsonError('Topology configuration changed, or a record with this key already exists; re-read the current revision and keys before retrying', 'revision_conflict');
+  }
   void label;
   return null;
 }
@@ -89,7 +91,8 @@ export function topologyFailure(error: unknown, label: string): string | null {
 export function topologyThrown(label: string, error: unknown): string {
   const mapped = topologyFailure(error, label);
   if (mapped) return mapped;
-  console.error(`[${label}]`, sanitizeThrownToolError(label, error), error);
+  // sanitizeThrownToolError logs the full error once; never log the raw driver error object (it can carry tenant parameters).
+  console.error(`[${label}]`, sanitizeThrownToolError(label, error));
   return jsonError('Operation failed. Check server logs for details.');
 }
 
@@ -100,6 +103,23 @@ export function boundedJson(value: unknown): string {
     return jsonError('Result too large; narrow the request (smaller limit, a focusNodeId, or a cursor page).', 'result_too_large');
   }
   return text;
+}
+
+/**
+ * Serialise the result of a WRITE that has already committed. An oversized body must never read as a failure
+ * (the model would retry a single-use or terminal action), so it degrades to a committed summary instead.
+ */
+export function committedJson(value: unknown): string {
+  const text = JSON.stringify(value);
+  if (text.length <= TOPOLOGY_TOOL_MAX_BYTES) return text;
+  const record = (value ?? {}) as Record<string, unknown>;
+  const keep = ['id', 'state', 'revision', 'graphRevision', 'settingsRevision', 'key', 'lifecycle', 'runId', 'success'] as const;
+  return JSON.stringify({
+    committed: true,
+    truncated: true,
+    ...Object.fromEntries(keep.filter((k) => k in record).map((k) => [k, record[k]])),
+    note: 'The change was applied; the full result was too large to return. Read it back with the matching read action.',
+  });
 }
 
 /** First missing required field, as a validation error result (or null). */

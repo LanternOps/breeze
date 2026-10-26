@@ -1201,10 +1201,12 @@ describe('buildAuthContextForIntent — apply_topology_template session epochs (
   ])('%s never carries epochs', async (_label, overrides) => {
     dbState.selectUsersResults.push([withEpochs]);
     permState.getUserPermissions.mockResolvedValueOnce(orgPerms);
-    const result = await buildAuthContextForIntent(applyIntent(overrides as never)).catch(() => null);
-    const token = result?.token as Record<string, unknown> | null | undefined;
-    expect(token?.aep).toBeUndefined();
-    expect(token?.mep).toBeUndefined();
+    const result = await buildAuthContextForIntent(applyIntent(overrides as never));
+    expect(result, 'the context is built (a null here would make this test vacuous)').not.toBeNull();
+    const token = result!.token as unknown as Record<string, unknown>;
+    expect(token.mfa).toBe(true);
+    expect(token.aep).toBeUndefined();
+    expect(token.mep).toBeUndefined();
   });
 
   it('the policy is one entry and pinned', () => {

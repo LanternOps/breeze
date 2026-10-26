@@ -19,7 +19,8 @@
 import { topologySiteSettingsPatchSchema } from '@breeze/shared';
 import type { AiTool } from './aiTools';
 import { TOPOLOGY_MONITORING_ACTIONS } from './aiToolSchemasTopologyOps';
-import { agentRefusal, boundedJson, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
+import { sanitizeThrownToolError } from './aiToolErrors';
+import { agentRefusal, boundedJson, committedJson, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
 import {
   deleteTopologyConfigurationObject, listTopologyConfigurationObjects, topologyConfigurationDeleteSchema,
   topologyConfigurationPageSchema, topologyPolicyWriteSchema, topologyTargetWriteSchema,
@@ -113,13 +114,13 @@ export function registerTopologyMonitoringTools(aiTools: Map<string, AiTool>): v
             const row = action === 'upsert_policy'
               ? await upsertTopologyMonitoringPolicy(ctx, topologyPolicyWriteSchema.parse({ expectedRevision: input.expectedRevision, key: input.key, definition: input.definition }), id)
               : await upsertTopologyProbeTarget(ctx, topologyTargetWriteSchema.parse({ expectedRevision: input.expectedRevision, key: input.key, definition: input.definition }), id);
-            return boundedJson(configurationRowView(row as unknown as Record<string, unknown>));
+            return committedJson(configurationRowView(row as unknown as Record<string, unknown>));
           }
           case 'delete_policy':
           case 'delete_target': {
             const missing = requireFields(input, ['id', 'expectedRevision'], action);
             if (missing) return missing;
-            return boundedJson(await deleteTopologyConfigurationObject(
+            return committedJson(await deleteTopologyConfigurationObject(
               ctx, action === 'delete_policy' ? 'policies' : 'targets', String(input.id),
               topologyConfigurationDeleteSchema.parse({ expectedRevision: input.expectedRevision }),
             ));
@@ -129,7 +130,13 @@ export function registerTopologyMonitoringTools(aiTools: Map<string, AiTool>): v
             if (missing) return missing;
             const patch = topologySiteSettingsPatchSchema.parse({ expectedRevision: input.expectedRevision, overrides: input.overrides });
             await updateTopologySiteConfiguration(ctx, patch.overrides, patch.expectedRevision);
-            return boundedJson(await settingsView(ctx));
+            try {
+              return committedJson(await settingsView(ctx));
+            } catch (readBackError) {
+              // The patch committed; a failed read-back must not read as a failed write (the model would retry on a stale revision).
+              console.error('[manage_topology_monitoring] settings read-back failed after commit', sanitizeThrownToolError('topology-settings-readback', readBackError));
+              return JSON.stringify({ success: true, committed: true, readBackFailed: true, note: 'The settings were saved; read them back with get_settings.' });
+            }
           }
         }
       } catch (error) {

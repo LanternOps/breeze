@@ -27,7 +27,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { TOPOLOGY_APPLY_ACTIONS } from './aiToolSchemasTopologyOps';
 import {
-  agentRefusal, boundedJson, hiddenSiteResult, isAgentPrincipal, jsonError, requireFields, topologyPermissions, topologyThrown,
+  agentRefusal, boundedJson, committedJson, hiddenSiteResult, isAgentPrincipal, jsonError, requireFields, topologyPermissions, topologyThrown,
 } from './aiToolsTopologyShared';
 import { applyTopologyTemplatePreview, getTopologyTemplateApplication, previewTopologyTemplateApplication } from './topology/templateApply';
 
@@ -106,7 +106,7 @@ export function registerTopologyApplyTools(aiTools: Map<string, AiTool>): void {
             const missing = requireFields(input, ['token'], action);
             if (missing) return missing;
             const { token } = topologyTemplateApplyRequestSchema.parse({ token: input.token });
-            return boundedJson(await applyTopologyTemplatePreview(auth, permissions, token, applyIdempotencyKey(token)));
+            return committedJson(await applyTopologyTemplatePreview(auth, permissions, token, applyIdempotencyKey(token)));
           }
           case 'status': {
             const missing = requireFields(input, ['operationId'], action);

@@ -19,7 +19,7 @@ import type { AiTool } from './aiTools';
 import {
   TOPOLOGY_MANUAL_ACTIONS, TOPOLOGY_MANUAL_ROLES, TOPOLOGY_RELATIONSHIP_KINDS_ENUM,
 } from './aiToolSchemasTopologyOps';
-import { agentRefusal, boundedJson, defined, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
+import { agentRefusal, committedJson, boundedJson, defined, isAgentPrincipal, jsonError, requireFields, topologySite, topologyThrown } from './aiToolsTopologyShared';
 
 type Action = (typeof TOPOLOGY_MANUAL_ACTIONS)[number];
 
@@ -70,18 +70,18 @@ export function registerTopologyManualTools(aiTools: Map<string, AiTool>): void 
             const missing = requireFields(input, ['label', 'role'], action);
             if (missing) return missing;
             const body = parseWrite(createManualNodeSchema, defined({ label: input.label, role: input.role, notes: input.notes, prefix: input.prefix }));
-            return boundedJson(await createTopologyManualNode(ctx, body));
+            return committedJson(await createTopologyManualNode(ctx, body));
           }
           case 'update_node': {
             const missing = requireFields(input, ['nodeId', 'expectedRevision'], action);
             if (missing) return missing;
             const body = parseWrite(updateManualNodeSchema, defined({ expectedRevision: input.expectedRevision, label: input.label, role: input.role, notes: input.notes }));
-            return boundedJson(await updateTopologyManualNode(ctx, String(input.nodeId), body));
+            return committedJson(await updateTopologyManualNode(ctx, String(input.nodeId), body));
           }
           case 'delete_node': {
             const missing = requireFields(input, ['nodeId', 'expectedRevision'], action);
             if (missing) return missing;
-            return boundedJson(await deleteTopologyManualNode(ctx, String(input.nodeId), parseWrite(deleteManualSchema, { expectedRevision: input.expectedRevision })));
+            return committedJson(await deleteTopologyManualNode(ctx, String(input.nodeId), parseWrite(deleteManualSchema, { expectedRevision: input.expectedRevision })));
           }
           case 'create_relationship': {
             const missing = requireFields(input, ['sourceNodeId', 'targetNodeId', 'kind'], action);
@@ -91,12 +91,12 @@ export function registerTopologyManualTools(aiTools: Map<string, AiTool>): void 
               sourceInterfaceId: input.sourceInterfaceId, targetInterfaceId: input.targetInterfaceId,
               label: input.label, notes: input.notes,
             }));
-            return boundedJson(await createTopologyManualRelationship(ctx, body));
+            return committedJson(await createTopologyManualRelationship(ctx, body));
           }
           case 'delete_relationship': {
             const missing = requireFields(input, ['relationshipId', 'expectedRevision'], action);
             if (missing) return missing;
-            return boundedJson(await deleteTopologyManualRelationship(
+            return committedJson(await deleteTopologyManualRelationship(
               ctx, String(input.relationshipId), parseWrite(deleteManualSchema, { expectedRevision: input.expectedRevision }),
             ));
           }

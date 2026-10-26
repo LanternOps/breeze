@@ -280,7 +280,7 @@ export async function applyTopologyTemplatePreview(
               record.actor.authEpoch !== actor.authEpoch ||
               record.actor.mfaEpoch !== actor.mfaEpoch
             )
-              throw new TopologyOperationError('permission_changed', 403);
+              throw new TopologyOperationError('permission_changed', 403, 'Your session changed since the preview was read; run preview again and re-approve.');
             let code = record.preview.errors[0]?.code ?? null;
             if (!code && record.effect) {
               try {
