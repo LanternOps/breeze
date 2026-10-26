@@ -296,7 +296,13 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
           {fields.map((f) => (
             <div key={f.key}>
               <dt className="text-xs text-muted-foreground">{f.label}</dt>
-              <dd className="text-sm font-medium" data-testid={`physical-placement-value-${f.key}`}>{f.value}</dd>
+              <dd
+                className="text-sm font-medium"
+                data-testid={`physical-placement-value-${f.key}`}
+                aria-label={f.value === DASH ? t('common:states.unknown') : undefined}
+              >
+                {f.value}
+              </dd>
             </div>
           ))}
         </dl>

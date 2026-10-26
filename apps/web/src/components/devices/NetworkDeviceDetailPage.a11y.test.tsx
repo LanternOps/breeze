@@ -10,6 +10,7 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ permissions: [], can: () => false }) }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
@@ -65,6 +66,13 @@ function openMonitoringTab() {
 
 async function renderLoaded(assetOverrides: Record<string, unknown> = {}) {
   fetchWithAuthMock.mockImplementation((url: string) => {
+    if (url.endsWith('/placement')) {
+      return Promise.resolve(makeJsonResponse({
+        subject: { kind: 'asset', id: ASSET_ID },
+        authority: { kind: 'asset', id: ASSET_ID, linked: false },
+        placement: null,
+      }));
+    }
     if (url === `/discovery/assets/${ASSET_ID}`) {
       return Promise.resolve(makeJsonResponse({ data: { ...baseAsset, ...assetOverrides } }));
     }
