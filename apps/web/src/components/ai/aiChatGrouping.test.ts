@@ -234,6 +234,59 @@ describe('groupChatUnits', () => {
   });
 });
 
+describe('groupChatUnits extras (Wisp companion W02b)', () => {
+  const extra = (id: string, minutes: number) => ({ id, at: at(minutes) });
+  const ids = (units: ChatUnit[]) =>
+    units.map((u) => (u.kind === 'extra' ? `x:${u.id}` : u.kind === 'divider' ? 'div' : 'msg' in u ? u.msg.id : u.kind));
+
+  it('extras interleave by time and do not reset the run', () => {
+    const units = groupChatUnits(
+      [user('u1', 0), assistant('a1', 'one', 1), assistant('a2', 'two', 5)],
+      { ...noCards, extras: [extra('late', 9), extra('mid', 3), extra('early', -1)] },
+    );
+    expect(ids(units)).toEqual(['x:early', 'u1', 'a1', 'x:mid', 'a2', 'x:late']);
+    const firsts = units
+      .filter((u): u is Extract<ChatUnit, { kind: 'assistant' }> => u.kind === 'assistant')
+      .map((u) => [u.msg.id, u.firstOfRun]);
+    expect(firsts).toEqual([['a1', true], ['a2', false]]);
+    expect(units[0]).toEqual({ kind: 'extra', id: 'early', at: at(-1) });
+  });
+
+  it('dividers apply to an extra, and an extra moves the clock', () => {
+    const units = groupChatUnits(
+      [user('u1', 0), assistant('a1', 'one', 50)],
+      { dividers: true, isCard: () => false, extras: [extra('yesterday', -24 * 60), extra('gap', 30)] },
+    );
+    // A divider before yesterday's extra and another on the day change; the
+    // extra at +30 is past the 20-minute gap, a1 at +50 is not (it counts from the extra).
+    expect(ids(units)).toEqual(['div', 'x:yesterday', 'div', 'u1', 'div', 'x:gap', 'a1']);
+    // The divider before the extra starts a new run, so a1 still carries the label.
+    expect((units[6] as Extract<ChatUnit, { kind: 'assistant' }>).firstOfRun).toBe(true);
+  });
+
+  it('an extra between two tool calls splits the group', () => {
+    const units = groupChatUnits(
+      [use('t1', 'a', 'query_devices', 0), result('r1', 'a', 'query_devices', 0), use('t2', 'b', 'list_sites', 2), result('r2', 'b', 'list_sites', 2)],
+      { ...noCards, extras: [extra('post', 1)] },
+    );
+    expect(kinds(units)).toEqual(['tools', 'extra', 'tools']);
+  });
+
+  it('a tie with a message puts the extra after it (the server orders a post newer on equal milliseconds)', () => {
+    const units = groupChatUnits([user('u1', 0), assistant('a1', 'one', 4)], { ...noCards, extras: [extra('tie', 4)] });
+    expect(ids(units)).toEqual(['u1', 'a1', 'x:tie']);
+  });
+
+  it('rows without a usable time never place an extra; leftovers come last', () => {
+    const undated = [{ id: 'u1', role: 'user', content: 'q' } as ChatRow, { id: 'a1', role: 'assistant', content: 'a' } as ChatRow];
+    expect(ids(groupChatUnits(undated, { ...noCards, extras: [extra('x1', 0)] }))).toEqual(['u1', 'a1', 'x:x1']);
+  });
+
+  it('extras alone (no messages) still render in time order', () => {
+    expect(ids(groupChatUnits([], { ...noCards, extras: [extra('b', 2), extra('a', 1)] }))).toEqual(['x:a', 'x:b']);
+  });
+});
+
 describe('dividerParts', () => {
   const now = new Date(2026, 9, 25, 15, 0);
 

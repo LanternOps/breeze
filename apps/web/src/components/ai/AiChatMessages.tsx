@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { shouldAutoScroll } from "./aiChatScroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot } from "lucide-react";
+import { Bot, Loader2 } from "lucide-react";
 import AiToolCallCard from "./AiToolCallCard";
 import AiToolActivityGroup from "./AiToolActivityGroup";
 import FlowDraftCard, { parseFlowToolResult } from "../flows/FlowDraftCard";
@@ -22,6 +22,9 @@ import { useTranslation } from "react-i18next";
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
 import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
+
+/** A caller-rendered item placed in the thread by time (Wisp companion W02b: a thread post). */
+export type ChatExtra = { id: string; at: Date; render: () => ReactNode };
 
 export { pairToolResults } from "./aiChatGrouping";
 
@@ -73,6 +76,34 @@ interface AiChatMessagesProps {
   leading?: ReactNode;
   /** Replaces the built-in quick-actions empty state. */
   emptyState?: ReactNode;
+  /**
+   * Wisp companion W02b (#10213): items rendered in the thread by time (Wisp's
+   * posts), merged with the messages by `at`. Absent = none.
+   */
+  extras?: ChatExtra[];
+  /**
+   * "Load earlier" at the top of the list, shown when `hasEarlier` and a
+   * handler are both given. Content it prepends keeps the reader's viewport
+   * where it was (never jumps to the bottom).
+   */
+  onLoadEarlier?: () => void;
+  hasEarlier?: boolean;
+  /** An earlier page is loading: the button is disabled and shows a spinner. */
+  loadingEarlier?: boolean;
+}
+
+const NO_EXTRAS: ChatExtra[] = [];
+
+/** A unit's identity, to tell when content was prepended above it. */
+function unitKey(unit: ChatUnit | undefined): string | null {
+  if (!unit) return null;
+  switch (unit.kind) {
+    case "divider": return `divider-${unit.at.getTime()}`;
+    case "user":
+    case "assistant": return unit.msg.id;
+    case "card": return unit.call.key;
+    default: return unit.id;
+  }
 }
 
 const SCRIPT_PROPOSAL_TOOLS = new Set(["run_script", "propose_script", "get_script_proposal"]);
@@ -137,6 +168,10 @@ export default function AiChatMessages({
   showTimeDividers = false,
   leading,
   emptyState,
+  extras = NO_EXTRAS,
+  onLoadEarlier,
+  hasEarlier = false,
+  loadingEarlier = false,
 }: AiChatMessagesProps) {
   const { t, i18n } = useTranslation("ai");
   const quickActions = [
@@ -172,9 +207,11 @@ export default function AiChatMessages({
     },
   ];
   const units = useMemo(
-    () => groupChatUnits(messages, { dividers: showTimeDividers, isCard: isCardCall }),
-    [messages, showTimeDividers],
+    () => groupChatUnits(messages, { dividers: showTimeDividers, isCard: isCardCall, extras }),
+    [messages, showTimeDividers, extras],
   );
+  const extrasById = useMemo(() => new Map(extras.map((e) => [e.id, e])), [extras]);
+  const showLoadEarlier = hasEarlier && onLoadEarlier !== undefined;
   const label = assistantLabel ?? t("aiChatMessages.title");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned near the bottom. Seeded `true` so
@@ -184,6 +221,37 @@ export default function AiChatMessages({
   // Holds the pending rAF id so a burst of streaming re-renders coalesces into a
   // single post-paint scroll instead of issuing a redundant scroll per delta.
   const scrollFrameRef = useRef<number | null>(null);
+  // W02b: the scroll geometry when "Load earlier" was clicked, until the older
+  // page lands (or the load ends with nothing new); and a one-shot that keeps
+  // the bottom-pin effect from undoing the anchor in that same commit.
+  const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
+  const skipAutoScrollRef = useRef(false);
+  const firstKey = unitKey(units[0]);
+  const lastFirstKeyRef = useRef(firstKey);
+  const wasLoadingEarlierRef = useRef(loadingEarlier);
+
+  // Older content prepended above the reader: shift scrollTop by exactly the
+  // height it added, before paint, so what they were reading stays put (a rAF
+  // after paint would flash the new content first). The container opts out of
+  // the browser's own scroll anchoring so the shift is never applied twice.
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    const prepended = firstKey !== lastFirstKeyRef.current;
+    const loadEnded = wasLoadingEarlierRef.current && !loadingEarlier;
+    lastFirstKeyRef.current = firstKey;
+    wasLoadingEarlierRef.current = loadingEarlier;
+    if (!anchor) return;
+    if (prepended) {
+      prependAnchorRef.current = null;
+      skipAutoScrollRef.current = true;
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+    } else if (loadEnded) {
+      // The load failed or found nothing: forget the anchor so a later,
+      // unrelated change at the top (a rebind) is never shifted by it.
+      prependAnchorRef.current = null;
+    }
+  }, [firstKey, loadingEarlier]);
 
   // #1713: keep the conversation anchored to the bottom on submit + streaming.
   // The previous implementation called `scrollIntoView({ behavior: 'smooth' })`
@@ -198,6 +266,10 @@ export default function AiChatMessages({
   // pending-approval / pending-plan / active-plan cards — so the anchor tracks
   // every content growth, not just streamed text.
   useEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false;
+      return;
+    }
     const container = scrollContainerRef.current;
     if (!container || !pinnedToBottomRef.current) return;
 
@@ -216,7 +288,13 @@ export default function AiChatMessages({
         scrollFrameRef.current = null;
       }
     };
-  }, [messages, pendingApproval, pendingPlan, activePlan]);
+  }, [messages, extras, pendingApproval, pendingPlan, activePlan]);
+
+  const handleLoadEarlier = () => {
+    const el = scrollContainerRef.current;
+    if (el) prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    onLoadEarlier?.();
+  };
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -379,6 +457,10 @@ export default function AiChatMessages({
         return <AiToolActivityGroup key={unit.id} group={unit} renderCall={renderCall} />;
       case "card":
         return renderCall(unit.call);
+      case "extra": {
+        const extra = extrasById.get(unit.id);
+        return extra ? <Fragment key={`extra-${unit.id}`}>{extra.render()}</Fragment> : null;
+      }
       case "specialists":
         return (
           <div key={unit.id} className="space-y-2" data-testid="ai-specialist-runs">
@@ -397,7 +479,7 @@ export default function AiChatMessages({
     }
   };
 
-  if (messages.length === 0 && !leading) {
+  if (messages.length === 0 && !leading && extras.length === 0 && !showLoadEarlier) {
     if (emptyState) {
       return (
         <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
@@ -441,6 +523,21 @@ export default function AiChatMessages({
   const now = new Date();
   const body = (
     <>
+      {showLoadEarlier && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            data-testid="ai-chat-load-earlier"
+            onClick={handleLoadEarlier}
+            disabled={loadingEarlier}
+            aria-busy={loadingEarlier}
+            className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
+          >
+            {loadingEarlier && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+            {t("aiChatMessages.loadEarlier")}
+          </button>
+        </div>
+      )}
       {leading}
       {units.map((unit) => renderUnit(unit, now))}
       {messages.length === 0 && emptyState}
@@ -502,14 +599,14 @@ export default function AiChatMessages({
 
   if (layout === "page") {
     return (
-      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-6">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className={`flex-1 overflow-y-auto px-4 py-6${onLoadEarlier ? " [overflow-anchor:none]" : ""}`}>
         {/* Short threads sit just above the composer; long ones scroll. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end space-y-5">{body}</div>
       </div>
     );
   }
   return (
-    <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
+    <div ref={scrollContainerRef} onScroll={handleScroll} className={`flex-1 overflow-y-auto p-3 space-y-3${onLoadEarlier ? " [overflow-anchor:none]" : ""}`}>
       {body}
     </div>
   );

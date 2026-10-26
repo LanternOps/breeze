@@ -2,7 +2,8 @@
  * Wisp companion W01 (#10211): turns the store's flat message array into the
  * units the chat kit renders — time dividers, user bubbles, assistant prose,
  * folded tool-activity groups, and the cards that never fold (flow, run,
- * unattended note, specialist runs). Pure: no React, no i18n.
+ * unattended note, specialist runs). W02b (#10213) adds timed extras (Wisp's
+ * thread posts) merged in by time. Pure: no React, no i18n.
  */
 import { aiToolHandoffIsError, isAiToolHandoffOutput } from '@breeze/shared';
 import type { AiMessage } from '@/stores/processStreamEvent';
@@ -44,7 +45,12 @@ export type ChatUnit =
       finishedAt: Date | null;
     }
   | { kind: 'card'; call: ToolCall }
-  | { kind: 'specialists'; id: string; runs: Array<{ key: string; runId: string }> };
+  | { kind: 'specialists'; id: string; runs: Array<{ key: string; runId: string }> }
+  /** A caller-rendered item placed by time (a Wisp post); the kit renders it by id. */
+  | { kind: 'extra'; id: string; at: Date };
+
+/** What grouping needs of an extra: its identity and when it happened. */
+export type TimedExtra = { id: string; at: Date };
 
 export const DIVIDER_GAP_MS = 20 * 60_000;
 
@@ -175,12 +181,28 @@ function finishToolsUnit(calls: ToolCall[]): ToolsUnit {
   };
 }
 
+/**
+ * `extras` are merged in by time: each is emitted before the first message
+ * row that is strictly later (on equal milliseconds the message comes first,
+ * as the timeline's keyset orders a post newer than a message), splits an open
+ * tool group, gets a divider like any row, and leaves the assistant name label
+ * as it was. Rows without a usable time never place an extra; extras still
+ * pending after the last row, or without a usable time, come last.
+ */
 export function groupChatUnits(
   messages: readonly ChatRow[],
-  opts: { dividers: boolean; isCard: (call: ToolCall) => boolean },
+  opts: { dividers: boolean; isCard: (call: ToolCall) => boolean; extras?: readonly TimedExtra[] },
 ): ChatUnit[] {
   const { resultForUse, pairedResults } = pairToolResults(messages);
   const units: ChatUnit[] = [];
+  const extraMs = (e: TimedExtra): number | null => {
+    const ms = e.at.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  };
+  const extras = [...(opts.extras ?? [])].sort(
+    (a, b) => (extraMs(a) ?? Number.POSITIVE_INFINITY) - (extraMs(b) ?? Number.POSITIVE_INFINITY),
+  );
+  let nextExtra = 0;
   let openTools: ToolCall[] | null = null;
   let openSpecialists: SpecialistsUnit | null = null;
   let lastMs: number | null = null;
@@ -215,6 +237,24 @@ export function groupChatUnits(
     if (ms !== null && (lastMs === null || ms > lastMs)) lastMs = ms;
   };
 
+  const emitExtra = (extra: TimedExtra) => {
+    flush();
+    const ms = extraMs(extra);
+    maybeDivider(ms);
+    units.push({ kind: 'extra', id: extra.id, at: extra.at });
+    if (ms !== null && (lastMs === null || ms > lastMs)) lastMs = ms;
+  };
+  /** Every extra strictly older than a row at `ms` goes before it. */
+  const emitExtrasBefore = (ms: number | null) => {
+    if (ms === null) return;
+    for (let e = extras[nextExtra]; e !== undefined; e = extras[nextExtra]) {
+      const eMs = extraMs(e);
+      if (eMs === null || eMs >= ms) return;
+      nextExtra += 1;
+      emitExtra(e);
+    }
+  };
+
   const addCall = (call: ToolCall) => {
     const callMs = timeOf(call.use) ?? timeOf(call.result);
     const runId = call.result ? specialistRunIdOf(call.toolName, toolOutputOf(call.result)) : null;
@@ -246,6 +286,7 @@ export function groupChatUnits(
   messages.forEach((msg, idx) => {
     switch (msg.role) {
       case 'user': {
+        emitExtrasBefore(timeOf(msg));
         flush();
         maybeDivider(timeOf(msg));
         units.push({ kind: 'user', msg });
@@ -255,6 +296,7 @@ export function groupChatUnits(
       }
       case 'assistant': {
         if (isBlankAssistant(msg)) return;
+        emitExtrasBefore(timeOf(msg));
         flush();
         maybeDivider(timeOf(msg));
         units.push({ kind: 'assistant', msg, firstOfRun: labelNext });
@@ -263,6 +305,7 @@ export function groupChatUnits(
         return;
       }
       case 'tool_use': {
+        emitExtrasBefore(timeOf(msg));
         addCall({
           key: msg.id,
           toolName: msg.toolName ?? '',
@@ -275,6 +318,7 @@ export function groupChatUnits(
       case 'tool_result': {
         // Already folded into its tool_use row's call (#9534).
         if (pairedResults.has(idx)) return;
+        emitExtrasBefore(timeOf(msg));
         addCall({ key: msg.id, toolName: msg.toolName ?? '', input: undefined, use: null, result: msg });
         return;
       }
@@ -282,6 +326,10 @@ export function groupChatUnits(
         return;
     }
   });
+  for (let e = extras[nextExtra]; e !== undefined; e = extras[nextExtra]) {
+    nextExtra += 1;
+    emitExtra(e);
+  }
   flush();
   return units;
 }

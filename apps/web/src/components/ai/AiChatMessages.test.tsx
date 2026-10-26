@@ -793,3 +793,136 @@ describe('chat kit units (Wisp companion W01)', () => {
     expect(lead.compareDocumentPosition(getByTestId('custom-empty')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+describe('timed extras and Load earlier (Wisp companion W02b)', () => {
+  const T0 = new Date(2026, 9, 26, 9, 0);
+  const atMin = (m: number) => new Date(T0.getTime() + m * 60_000);
+  const u = (id: string, m: number) => ({ id, role: 'user', content: `question ${id}`, createdAt: atMin(m) });
+  const a = (id: string, m: number) => ({ id, role: 'assistant', content: `answer ${id}`, createdAt: atMin(m) });
+  const post = (id: string, m: number) => ({ id, at: atMin(m), render: () => <article data-testid={`post-${id}`}>post {id}</article> });
+  const view = (messages: unknown[], props: Record<string, unknown> = {}) =>
+    render(<AiChatMessages {...baseProps} messages={messages as never} {...props} />);
+
+  let rafCallbacks: FrameRequestCallback[];
+  beforeEach(() => {
+    rafCallbacks = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      rafCallbacks[id - 1] = () => {};
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+  const flushRaf = () => act(() => rafCallbacks.splice(0).forEach((cb) => cb(0)));
+
+  it('renders an extra via its render fn in time order', () => {
+    const { getByTestId } = view([u('u1', 0), a('a1', 5)], { extras: [post('p1', 2)] });
+    const bubble = getByTestId('ai-msg-user');
+    const p1 = getByTestId('post-p1');
+    const reply = getByTestId('ai-msg-assistant');
+    expect(bubble.compareDocumentPosition(p1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(p1.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('extras without messages render instead of the empty state', () => {
+    const { getByTestId, queryByText } = view([], { extras: [post('p1', 0)] });
+    expect(getByTestId('post-p1')).toBeTruthy();
+    expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('Load earlier renders above leading only with hasEarlier and a handler, and calls it', () => {
+    const onLoadEarlier = vi.fn();
+    const { getByTestId, queryByTestId, rerender } = view([u('u1', 0)], {
+      hasEarlier: true, onLoadEarlier, leading: <article data-testid="lead">lead</article>,
+    });
+    const button = getByTestId('ai-chat-load-earlier');
+    expect(button.textContent).toBe('Load earlier');
+    expect(button.compareDocumentPosition(getByTestId('lead')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
+
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    expect(getByTestId('ai-chat-load-earlier')).toBeDisabled();
+    expect(getByTestId('ai-chat-load-earlier')).toHaveAttribute('aria-busy', 'true');
+
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier={false} onLoadEarlier={onLoadEarlier} />);
+    expect(queryByTestId('ai-chat-load-earlier')).toBeNull();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier />);
+    expect(queryByTestId('ai-chat-load-earlier')).toBeNull();
+  });
+
+  it('a prepend keeps the viewport anchored: scrollTop moves by the height delta, never to the bottom', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30), a('a2', 31)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    // Reading at the top, where the button is.
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 0 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+
+    // The older page lands: 600 px of content above what the reader was looking at.
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
+    rerender(
+      <AiChatMessages
+        {...baseProps}
+        messages={[u('u1', 0), a('a1', 1), ...newer] as never}
+        extras={[post('p0', -5)]}
+        hasEarlier={false}
+        onLoadEarlier={onLoadEarlier}
+      />,
+    );
+    expect(el.scrollTop).toBe(600);
+    flushRaf();
+    expect(el.scrollTop).toBe(600);
+  });
+
+  it('a prepend on a short (pinned) thread is anchored too, and the next append still follows the bottom', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 700 });
+    const all = [u('u1', 0), ...newer];
+    rerender(<AiChatMessages {...baseProps} messages={all as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    flushRaf();
+    // 700 + 600, not the auto-scroll's scrollHeight (1600).
+    expect(el.scrollTop).toBe(1300);
+
+    fireEvent.scroll(el);
+    stampGeometry(el, { scrollHeight: 1800, clientHeight: 300, scrollTop: 1300 });
+    rerender(<AiChatMessages {...baseProps} messages={[...all, a('a2', 31)] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    flushRaf();
+    expect(el.scrollTop).toBe(1800);
+  });
+
+  it('a load that adds nothing leaves no stale anchor behind', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 0 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    // The fetch failed: loading ends with nothing prepended.
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    // Later the thread is replaced wholesale (a rebind): no stale anchor shifts it.
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
+    rerender(<AiChatMessages {...baseProps} messages={[u('u0', -60), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    expect(el.scrollTop).toBe(0);
+  });
+});
