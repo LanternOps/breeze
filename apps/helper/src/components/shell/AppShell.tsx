@@ -6,6 +6,7 @@ import type { SessionSummary, PendingApproval, PendingApprovalScriptProposal, De
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import WorkspacePanel from '../workspace/WorkspacePanel';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { NotificationsTab, usePromptList } from '../../prompt/NotificationsTab';
 import ChatView from './ChatView';
 
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -13,7 +14,9 @@ const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.incl
 // The shell's single main region shows one of these at a time. Files/Chat/
 // History are reachable from the nav; device-info arrives only via the tray
 // menu. The shell header persists across every value — none of these unmount it.
-export type MainView = 'files' | 'chat' | 'history' | 'device-info';
+// Notifications (#10190) is reachable from the nav while the list has entries,
+// and from the tray's "Notifications (N)" item.
+export type MainView = 'files' | 'chat' | 'history' | 'device-info' | 'notifications';
 
 // At or above this inner width the chat rides as a right-side panel next to the
 // main region; below it there's no room, so the chat toggle full-swaps the main
@@ -411,6 +414,8 @@ export default function AppShell() {
     flagSession,
   } = useChatStore();
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
+  // Prompt notification list (#10190), kept by Rust; empty outside Tauri.
+  const prompts = usePromptList();
 
   // Files when the capability is known-available at first render, else chat.
   // The probe may still be pending (null) here, so an effect below promotes to
@@ -487,10 +492,24 @@ export default function AppShell() {
     return () => { unlisten?.(); };
   }, []);
 
+  // Tray menu "Notifications (N)" click (#10190); the tray shows the window.
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    listen('show-notifications', () => {
+      enter('notifications');
+    }).then((fn: () => void) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // The tab exists only while there is something in the list (or the user is
+  // on it), so a build that advertises no prompt kind looks unchanged (W02).
+  const showNotifications = prompts.entries.length > 0 || mainView === 'notifications';
   const navOptions = [
     ...(workspaceAvailable === true ? [{ key: 'files', label: 'Files' }] : []),
     { key: 'chat', label: 'Chat' },
     { key: 'history', label: 'History' },
+    ...(showNotifications ? [{ key: 'notifications', label: 'Notifications' }] : []),
   ];
 
   // The chat toggle only makes sense from Files (the one primary view that can
@@ -609,6 +628,8 @@ export default function AppShell() {
           />
         ) : mainView === 'device-info' ? (
           <DeviceInfoView onClose={goBack} />
+        ) : mainView === 'notifications' ? (
+          <NotificationsTab entries={prompts.entries} onAction={prompts.act} error={prompts.error} />
         ) : mainView === 'files' && workspaceAvailable === true ? (
           <WorkspacePanel embedded onClose={goBack} />
         ) : (

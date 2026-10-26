@@ -40,6 +40,15 @@ vi.mock('../../stores/workspaceStore', () => {
   return { useWorkspaceStore };
 });
 
+// The prompt notification list (#10190) comes from Rust; tests set it here.
+const promptList = vi.hoisted(() => ({ entries: [] as unknown[] }));
+vi.mock('../../prompt/NotificationsTab', () => ({
+  usePromptList: () => ({ entries: promptList.entries, act: vi.fn(), error: null }),
+  NotificationsTab: ({ entries }: { entries: unknown[] }) => (
+    <div data-testid="notifications-tab">{entries.length} notifications</div>
+  ),
+}));
+
 import AppShell from './AppShell';
 import { useChatStore } from '../../stores/chatStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -352,4 +361,28 @@ it('routes to the chat view when a past conversation is selected from History', 
 
   expect(screen.getByTestId('chat-view')).toBeInTheDocument();
   expect(screen.queryByTestId('workspace-panel')).not.toBeInTheDocument();
+});
+
+// #10190 (W02, dormant): the Notifications tab appears only while the list
+// has entries, so a build that advertises no prompt kind looks unchanged.
+it('hides the Notifications tab while the notification list is empty', () => {
+  promptList.entries = [];
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+
+  expect(screen.queryByRole('tab', { name: 'Notifications' })).not.toBeInTheDocument();
+  expect(screen.queryByTestId('notifications-tab')).not.toBeInTheDocument();
+});
+
+it('shows the Notifications tab while the list has entries and opens the list', () => {
+  promptList.entries = [{ promptId: 'notice:a:1' }];
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+
+  expect(screen.getByTestId('notifications-tab')).toHaveTextContent('1 notifications');
+  expect(document.querySelectorAll('.helper-header')).toHaveLength(1);
+  promptList.entries = [];
 });

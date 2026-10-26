@@ -25,6 +25,10 @@ use super::message::{
     MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
 };
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
+use super::prompt::{
+    self as prompt, Addressed, ClosedReason, CloseOutcome, Decoded, PromptBridge, PromptClose, PromptRef, PromptShow,
+    PromptUpdate, ShowOutcome, UpdateOutcome, ADVERTISED_PROMPT_KINDS, PROMPT_PROTOCOL_VERSION,
+};
 use super::token::HelperToken;
 use super::transport::{
     self_binary_hash, PeerIdentity,
@@ -115,6 +119,17 @@ struct AuthRequest {
     /// grants the `chat` scope only to an assist helper that says so.
     #[serde(rename = "supportsChat")]
     supports_chat: bool,
+    /// The prompt host envelope version this helper speaks (#10190). The
+    /// broker clamps it to its own; absent (an older helper) means 0.
+    #[serde(rename = "promptProtocolVersion")]
+    prompt_protocol_version: u32,
+    /// The `"<kind>@<n>"` prompt kinds this helper draws. W02: none, so the
+    /// key is omitted and no `prompt` scope is granted.
+    #[serde(rename = "promptKinds", skip_serializing_if = "Vec::is_empty")]
+    prompt_kinds: Vec<String>,
+    /// This helper's version, reported in the live renderer observation.
+    #[serde(rename = "rendererVersion")]
+    renderer_version: String,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -170,6 +185,9 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         consent_protocol_version: CONSENT_PROTOCOL_VERSION,
         supports_messaging: true,
         supports_chat: true,
+        prompt_protocol_version: PROMPT_PROTOCOL_VERSION,
+        prompt_kinds: ADVERTISED_PROMPT_KINDS.iter().map(|k| k.to_string()).collect(),
+        renderer_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
@@ -209,6 +227,7 @@ pub struct DesktopCtx {
     pub caller_verify: std::sync::Arc<super::caller_verify::CallerVerifyBridge>,
     pub messages: std::sync::Arc<super::message::MessageBridge>,
     pub chat: std::sync::Arc<ChatBridge>,
+    pub prompts: std::sync::Arc<PromptBridge>,
 }
 
 /// Run a single IPC session over an already-connected `stream` with an explicit
@@ -303,6 +322,14 @@ where
         Some(ctx) => ctx.caller_verify.connect(),
         None => idle_rx,
     };
+    // Prompt host (#10190). Without a desktop context (protocol tests) a
+    // session-local bridge still answers every prompt_* it cannot draw.
+    let prompts: std::sync::Arc<PromptBridge> = match desktop_ctx {
+        Some(ctx) => ctx.prompts.clone(),
+        None => std::sync::Arc::new(PromptBridge::default()),
+    };
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::unbounded_channel::<Outbound>();
+    prompts.set_sender(prompt_tx);
     // Constructed before the capabilities write so a failed write still cleans up.
     let _bridge_guard = BridgeClearGuard {
         bridge: desktop_ctx.map(|c| c.bridge.clone()),
@@ -310,6 +337,7 @@ where
         app: desktop_ctx.map(|c| c.app.clone()),
         messages: desktop_ctx.map(|c| c.messages.clone()),
         chat: desktop_ctx.map(|c| c.chat.clone()),
+        prompts: Some(prompts.clone()),
     };
     // Endpoint messages (#8293): card events (ack / closed) arrive here.
     let (msg_tx, mut msg_rx) = tokio::sync::mpsc::unbounded_channel::<MsgEvent>();
@@ -359,6 +387,12 @@ where
                 }
                 continue;
             }
+            // A prompt card / list frame (prompt_action, prompt_closed{hidden}),
+            // already recorded by the tracker.
+            Some(frame) = prompt_rx.recv() => {
+                write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                continue;
+            }
             // A reply typed in the chat window, already validated and recorded.
             Some(event) = chat_rx.recv() => {
                 match event {
@@ -403,6 +437,15 @@ where
                     for (id, frame) in due {
                         desktop::close_message_window(&ctx.app, &id);
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                    // Prompts: stuck actions are released, lapsed list
+                    // entries dropped. Never a deadline: expiry is the agent's.
+                    let report = prompts.tracker().expire_due(now_unix_ms());
+                    for id in &report.views {
+                        desktop::publish_prompt_state(&ctx.app, Some(id));
+                    }
+                    if report.list_changed && report.views.is_empty() {
+                        desktop::publish_prompt_state(&ctx.app, None);
                     }
                 }
                 continue;
@@ -634,6 +677,35 @@ where
                     desktop::hide_banner_window(&ctx.app);
                 }
             }
+            // Prompt host (#10190). Rule 4: a prompt_* this helper cannot draw
+            // is answered prompt_closed{render_failed}, never dropped. None of
+            // these arms (or their handlers) can reach the main window (#8138).
+            "prompt_show" => {
+                let frames = handle_prompt_show(desktop_ctx, &prompts, &env.id, &env.payload);
+                for frame in frames {
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+            }
+            "prompt_update" => {
+                let frames = handle_prompt_update(desktop_ctx, &prompts, &env.id, &env.payload);
+                for frame in frames {
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+            }
+            "prompt_close" => {
+                let frames = handle_prompt_close(desktop_ctx, &prompts, &env.id, &env.payload);
+                for frame in frames {
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+            }
+            "prompt_action_result" => handle_prompt_action_result(desktop_ctx, &prompts, &env.payload),
+            "prompt_branding_sync" => handle_prompt_branding_sync(&prompts, &env.payload),
+            other if other.starts_with("prompt_") => {
+                let frames = handle_prompt_unknown(desktop_ctx, &prompts, other, &env.id, &env.payload);
+                for frame in frames {
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+            }
             "ping" => {
                 write_frame(
                     &mut stream,
@@ -694,6 +766,7 @@ struct BridgeClearGuard {
     app: Option<AppHandle>,
     messages: Option<std::sync::Arc<super::message::MessageBridge>>,
     chat: Option<std::sync::Arc<ChatBridge>>,
+    prompts: Option<std::sync::Arc<PromptBridge>>,
 }
 
 /// `chat_presented` for a live `chat_open` / `chat_message`: the SAME envelope
@@ -745,8 +818,203 @@ fn apply_chat_action(ctx: &DesktopCtx, env_id: &str, show: &ChatShow, action: Ch
     }
 }
 
+// ---------------------------------------------------------------------------
+// Prompt host (#10190)
+// ---------------------------------------------------------------------------
+
+/// The raw JSON of an envelope payload, if any.
+fn payload_str(payload: &Option<Box<RawValue>>) -> Option<&str> {
+    payload.as_ref().map(|p| p.get())
+}
+
+/// Take down whatever this helper had for a prompt it just refused, so no card
+/// with a lease the agent no longer honours stays on screen.
+fn drop_prompt(ctx: Option<&DesktopCtx>, prompts: &PromptBridge, prompt_id: &str) {
+    prompts.tracker().forget(prompt_id);
+    if let Some(ctx) = ctx {
+        desktop::close_prompt_window(&ctx.app, prompt_id);
+        desktop::publish_prompt_state(&ctx.app, None);
+    }
+}
+
+/// `prompt_closed{render_failed, <detail>}` on the inbound envelope id. Never
+/// logs prompt copy.
+fn refuse(env_id: &str, r: &PromptRef, detail: &str) -> Outbound {
+    eprintln!("[helper] prompt refused: {detail}");
+    prompt::closed_frame(env_id, r, ClosedReason::RenderFailed, Some(detail))
+}
+
+/// `prompt_show`: the ONLY place a prompt card window is built. The reply
+/// (`prompt_presented`, or `prompt_closed{render_failed}`) reuses the show's
+/// envelope id, like `message_presented`.
+fn handle_prompt_show(
+    ctx: Option<&DesktopCtx>,
+    prompts: &PromptBridge,
+    env_id: &str,
+    payload: &Option<Box<RawValue>>,
+) -> Vec<Outbound> {
+    let show: PromptShow = match prompt::decode(payload_str(payload)) {
+        Decoded::Ok(s) => s,
+        Decoded::Malformed(r) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            return vec![refuse(env_id, &r, prompt::DETAIL_MALFORMED)];
+        }
+        Decoded::Unaddressable => {
+            eprintln!("[helper] prompt_show without a valid reference; ignored");
+            return Vec::new();
+        }
+    };
+    let r = show.reference();
+    let outcome = prompts.tracker().on_show(now_unix_ms(), &show);
+    let frame = match outcome {
+        ShowOutcome::DropStale => return Vec::new(),
+        ShowOutcome::RenderFailed(detail) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            return vec![refuse(env_id, &r, detail)];
+        }
+        // List only (list_only, or every visible slot taken): rendered, not on screen.
+        ShowOutcome::Render { window: None } => prompt::presented_frame(env_id, &r, false),
+        ShowOutcome::Render { window: Some(plan) } => match ctx {
+            Some(ctx) => match desktop::show_prompt_window(&ctx.app, &plan) {
+                Ok(()) => prompt::presented_frame(env_id, &r, true),
+                Err(e) => {
+                    eprintln!("[helper] prompt card could not be shown: {}", e);
+                    prompts.tracker().on_window_failed(&r.prompt_id);
+                    refuse(env_id, &r, prompt::DETAIL_WINDOW_FAILED)
+                }
+            },
+            None => {
+                prompts.tracker().on_window_failed(&r.prompt_id);
+                refuse(env_id, &r, prompt::DETAIL_WINDOW_FAILED)
+            }
+        },
+        // A newer rev of a prompt already shown: refreshed in place (below).
+        ShowOutcome::Replace { card_open } => prompt::presented_frame(env_id, &r, card_open),
+    };
+    if let Some(ctx) = ctx {
+        desktop::publish_prompt_state(&ctx.app, Some(&r.prompt_id));
+    }
+    vec![frame]
+}
+
+/// `prompt_update`: applied in place; a merged state that is no longer valid
+/// is refused and its card taken down.
+fn handle_prompt_update(
+    ctx: Option<&DesktopCtx>,
+    prompts: &PromptBridge,
+    env_id: &str,
+    payload: &Option<Box<RawValue>>,
+) -> Vec<Outbound> {
+    let update: PromptUpdate = match prompt::decode(payload_str(payload)) {
+        Decoded::Ok(u) => u,
+        Decoded::Malformed(r) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            return vec![refuse(env_id, &r, prompt::DETAIL_MALFORMED)];
+        }
+        Decoded::Unaddressable => {
+            eprintln!("[helper] prompt_update without a valid reference; ignored");
+            return Vec::new();
+        }
+    };
+    let r = update.reference();
+    let outcome = prompts.tracker().on_update(now_unix_ms(), &update);
+    match outcome {
+        UpdateOutcome::Applied { .. } => {
+            if let Some(ctx) = ctx {
+                desktop::publish_prompt_state(&ctx.app, Some(&r.prompt_id));
+            }
+            Vec::new()
+        }
+        UpdateOutcome::DropStale => Vec::new(),
+        UpdateOutcome::RenderFailed(detail) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            vec![refuse(env_id, &r, detail)]
+        }
+    }
+}
+
+/// `prompt_close`. An unreadable close still takes the card down.
+fn handle_prompt_close(
+    ctx: Option<&DesktopCtx>,
+    prompts: &PromptBridge,
+    env_id: &str,
+    payload: &Option<Box<RawValue>>,
+) -> Vec<Outbound> {
+    let close: PromptClose = match prompt::decode(payload_str(payload)) {
+        Decoded::Ok(c) => c,
+        Decoded::Malformed(r) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            return vec![refuse(env_id, &r, prompt::DETAIL_MALFORMED)];
+        }
+        Decoded::Unaddressable => {
+            eprintln!("[helper] prompt_close without a valid reference; ignored");
+            return Vec::new();
+        }
+    };
+    let outcome = prompts.tracker().on_close(now_unix_ms(), &close);
+    if let (CloseOutcome::Closed { had_card }, Some(ctx)) = (outcome, ctx) {
+        if had_card {
+            desktop::close_prompt_window(&ctx.app, &close.prompt_id);
+        }
+        desktop::publish_prompt_state(&ctx.app, None);
+    }
+    Vec::new()
+}
+
+/// `prompt_action_result`: releases the card's "working" state.
+fn handle_prompt_action_result(ctx: Option<&DesktopCtx>, prompts: &PromptBridge, payload: &Option<Box<RawValue>>) {
+    match payload_str(payload).map(serde_json::from_str::<prompt::PromptActionResult>) {
+        Some(Ok(result)) => {
+            let changed = prompts.tracker().on_action_result(&result);
+            if let (true, Some(ctx)) = (changed, ctx) {
+                desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
+            }
+        }
+        _ => eprintln!("[helper] bad prompt_action_result payload"),
+    }
+}
+
+/// `prompt_branding_sync`: the MSP identity, kept in memory (W03 renders it).
+fn handle_prompt_branding_sync(prompts: &PromptBridge, payload: &Option<Box<RawValue>>) {
+    match payload_str(payload).map(serde_json::from_str::<prompt::PromptBrandingSync>) {
+        Some(Ok(sync)) => {
+            let stored = prompts.tracker().on_branding_sync(sync);
+            if !stored {
+                eprintln!("[helper] prompt_branding_sync ignored: incomplete identity");
+            }
+        }
+        _ => eprintln!("[helper] bad prompt_branding_sync payload"),
+    }
+}
+
+/// A `prompt_*` type this build does not know. Addressable ones are refused
+/// (and anything shown for that prompt taken down); the renderer's own types
+/// echoed back are ignored.
+fn handle_prompt_unknown(
+    ctx: Option<&DesktopCtx>,
+    prompts: &PromptBridge,
+    typ: &str,
+    env_id: &str,
+    payload: &Option<Box<RawValue>>,
+) -> Vec<Outbound> {
+    if prompt::is_renderer_type(typ) {
+        eprintln!("[helper] renderer-side prompt message from the agent; ignored");
+        return Vec::new();
+    }
+    match prompt::decode::<PromptRef>(payload_str(payload)) {
+        Decoded::Ok(r) => {
+            drop_prompt(ctx, prompts, &r.prompt_id);
+            vec![refuse(env_id, &r, prompt::DETAIL_UNSUPPORTED_TYPE)]
+        }
+        _ => {
+            eprintln!("[helper] unknown prompt message type without a valid reference; ignored");
+            Vec::new()
+        }
+    }
+}
+
 /// Wall-clock milliseconds since the Unix epoch.
-fn now_unix_ms() -> i64 {
+pub(crate) fn now_unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -777,6 +1045,24 @@ impl Drop for BridgeClearGuard {
                     if let Some(view) = chat.view(&id) {
                         desktop::emit_chat_update(app, &view);
                     }
+                }
+            }
+        }
+        // Prompts (#10190) die with the session too: cards close, and an
+        // action still waiting for its result is dropped, never replayed on a
+        // later session. The agent replays open prompts after the next auth.
+        if let Some(prompts) = &self.prompts {
+            prompts.clear_sender();
+            let had_list = prompts.tracker().list_len(now_unix_ms()) > 0;
+            let cards = prompts.tracker().on_disconnect();
+            if let Some(app) = &self.app {
+                // Nothing tracked (always, in W02): leave the tray and the
+                // main window untouched.
+                if had_list || !cards.is_empty() {
+                    for id in cards {
+                        desktop::close_prompt_window(app, &id);
+                    }
+                    desktop::publish_prompt_state(app, None);
                 }
             }
         }
@@ -1388,6 +1674,129 @@ mod tests {
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
     }
 
+    // --- Prompt host (#10190) ---
+
+    /// Handshake a session with no desktop context; returns the broker side.
+    async fn prompt_session() -> (
+        tokio::task::JoinHandle<Result<(), SessionError>>,
+        tokio::io::DuplexStream,
+        [u8; 32],
+        u64,
+        u64,
+    ) {
+        let (client_half, mut broker_half) = tokio::io::duplex(65536);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move { run_session_with_identity(client_half, &token, &id, None).await });
+        let mut broker_send = 0u64;
+        let mut broker_recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv).await.expect("auth_request");
+        let session_key = [3u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(session_key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut broker_send, &env.id, "auth_response", Some(raw(&resp)))
+            .await
+            .expect("auth_response");
+        (session, broker_half, session_key, broker_send, broker_recv)
+    }
+
+    /// A reply the helper owes: fails fast (never hangs) when it is not sent.
+    async fn read_reply(broker: &mut tokio::io::DuplexStream, key: &[u8; 32], recv: &mut u64) -> crate::ipc::envelope::Envelope {
+        tokio::time::timeout(Duration::from_secs(5), read_frame(broker, key, recv))
+            .await
+            .expect("the helper sent no reply within 5 s")
+            .expect("read reply")
+    }
+
+    const SHOW_NOTICE: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/show.notice.json");
+    const CLOSED_FAILED: &str =
+        include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
+
+    /// Rule 4: W02 advertises no kind, so a prompt_show that arrives anyway is
+    /// answered `prompt_closed{render_failed, unadvertised_kind}` on the same
+    /// envelope id -- never dropped silently.
+    #[tokio::test]
+    async fn test_prompt_show_without_advertisement_is_answered_render_failed() {
+        let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
+        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(SHOW_NOTICE)))
+            .await
+            .expect("write prompt_show");
+        let reply = read_reply(&mut broker, &key, &mut recv).await;
+        assert_eq!(reply.typ, "prompt_closed");
+        assert_eq!(reply.id, "show-1");
+        let p: serde_json::Value = serde_json::from_str(reply.payload.as_ref().unwrap().get()).unwrap();
+        assert_eq!(p, serde_json::from_str::<serde_json::Value>(CLOSED_FAILED).unwrap());
+        write_frame(&mut broker, &key, &mut send, "bye", "disconnect", None).await.expect("disconnect");
+        assert!(matches!(session.await.expect("join"), Ok(())));
+    }
+
+    /// A prompt_show / prompt_update the helper cannot decode, or an unknown
+    /// prompt_* type, is refused with render_failed when it can be addressed.
+    /// Unknown non-prompt types (and the renderer's own types) stay silent.
+    #[tokio::test]
+    async fn test_unrenderable_prompt_messages_are_refused_and_other_types_stay_silent() {
+        let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
+        let mut bad = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
+        bad["state"] = serde_json::json!("pondering");
+        let cases = [
+            ("show-bad", "prompt_show", bad.to_string(), "malformed"),
+            (
+                "upd-1",
+                "prompt_update",
+                r#"{"promptId":"restart:7","rev":3,"lease":{"rendererSession":"assist-tester-12345","epoch":1}}"#.to_string(),
+                "unknown_prompt",
+            ),
+            (
+                "future-1",
+                "prompt_focus",
+                r#"{"promptId":"restart:7","rev":3,"lease":{"rendererSession":"assist-tester-12345","epoch":1}}"#.to_string(),
+                "unsupported_type",
+            ),
+        ];
+        for (env_id, typ, payload, detail) in &cases {
+            write_frame(&mut broker, &key, &mut send, env_id, typ, Some(raw(payload))).await.expect("write");
+            let reply = read_reply(&mut broker, &key, &mut recv).await;
+            assert_eq!(reply.typ, "prompt_closed", "{typ}");
+            assert_eq!(reply.id, *env_id, "{typ}");
+            let p: serde_json::Value = serde_json::from_str(reply.payload.as_ref().unwrap().get()).unwrap();
+            assert_eq!(p["reason"], "render_failed", "{typ}");
+            assert_eq!(p["detail"], *detail, "{typ}");
+        }
+        // Silent: an unknown non-prompt type, the renderer's own type echoed
+        // back, an unaddressable prompt_show, a stray close, a stray result.
+        for (typ, payload) in [
+            ("frobnicate", "{}"),
+            ("prompt_closed", r#"{"promptId":"restart:7","rev":3,"lease":{"rendererSession":"x","epoch":1},"reason":"hidden"}"#),
+            ("prompt_show", r#"{"promptId":"bad id","rev":1}"#),
+            ("prompt_close", r#"{"promptId":"restart:8","rev":1,"lease":{"rendererSession":"x","epoch":1},"reason":"resolved"}"#),
+            ("prompt_action_result", r#"{"promptId":"restart:8","actionId":"ok","result":"accepted","rev":2}"#),
+            ("prompt_branding_sync", r#"{"cleared":true,"locale":"en"}"#),
+        ] {
+            write_frame(&mut broker, &key, &mut send, "silent", typ, Some(raw(payload))).await.expect("write");
+        }
+        write_frame(&mut broker, &key, &mut send, "p1", "ping", None).await.expect("ping");
+        let next = read_reply(&mut broker, &key, &mut recv).await;
+        assert_eq!(next.typ, "pong", "nothing answered the silent frames");
+        write_frame(&mut broker, &key, &mut send, "bye", "disconnect", None).await.expect("disconnect");
+        assert!(matches!(session.await.expect("join"), Ok(())));
+    }
+
+    /// W02 auth: speaks prompt protocol 1, advertises no kind, names its version.
+    #[tokio::test]
+    async fn test_auth_request_carries_the_prompt_advertisement() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move { run_session_with_identity(client_half, &token, &id, None).await });
+        let mut recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
+        let v: serde_json::Value = serde_json::from_str(env.payload.as_ref().unwrap().get()).unwrap();
+        assert_eq!(v["promptProtocolVersion"], 1);
+        assert!(v.get("promptKinds").is_none(), "W02 advertises no kind: the key is omitted");
+        assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
+        drop(broker_half);
+        let _ = session.await;
+    }
+
     // --- Reconnect-driver core ---
 
     /// `next_backoff` doubles from the floor, caps at `BACKOFF_MAX`, and never
@@ -1465,5 +1874,70 @@ mod tests {
         tokio::time::advance(Duration::from_secs(2)).await;
         let stopped = waiter.await.expect("join");
         assert!(!stopped, "expected false when stop stayed unset");
+    }
+}
+
+/// The prompt additions to `auth_request` against the shared golden fixtures
+/// (not gated on unix: the wire shape is the same on every OS).
+#[cfg(test)]
+mod prompt_auth_tests {
+    use super::*;
+
+    const AUTH_PROMPT_V1: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/auth.prompt_v1.json");
+    const AUTH_LEGACY: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/auth.legacy.json");
+
+    /// An `AuthRequest` carrying the fixture's identity and advertisement.
+    fn request(kinds: Vec<String>, renderer_version: &str) -> AuthRequest {
+        AuthRequest {
+            protocol_version: PROTOCOL_VERSION,
+            uid: 0,
+            sid: "S-1-5-21-1000000000-1000000000-1000000000-1001".into(),
+            username: "user".into(),
+            session_id: "assist-user-4242".into(),
+            display_env: String::new(),
+            pid: 4242,
+            binary_hash: "0f343b0931126a20f133d67c2b018a3b5b0ebf6b7c1a9d2a3e1f6f6a4c2b7e10".into(),
+            win_session_id: 0,
+            helper_role: "assist".into(),
+            binary_kind: "assist_helper".into(),
+            desktop_context: String::new(),
+            consent_protocol_version: CONSENT_PROTOCOL_VERSION,
+            supports_messaging: true,
+            supports_chat: true,
+            prompt_protocol_version: super::super::prompt::PROMPT_PROTOCOL_VERSION,
+            prompt_kinds: kinds,
+            renderer_version: renderer_version.into(),
+        }
+    }
+
+    #[test]
+    fn prompt_auth_fixtures_match_the_built_request() {
+        let fixture: serde_json::Value = serde_json::from_str(AUTH_PROMPT_V1).unwrap();
+        let kinds: Vec<String> = fixture["promptKinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect();
+        let got = serde_json::to_value(request(kinds, "0.2.0")).unwrap();
+        assert_eq!(got, fixture, "AuthRequest serializes the prompt keys exactly as the fixture names them");
+
+        // The additions are purely additive to the legacy request.
+        let mut w02 = serde_json::to_value(request(Vec::new(), "0.2.0")).unwrap();
+        let obj = w02.as_object_mut().unwrap();
+        assert!(!obj.contains_key("promptKinds"), "an empty advertisement is omitted");
+        assert_eq!(obj.remove("promptProtocolVersion"), Some(serde_json::json!(1)));
+        assert_eq!(obj.remove("rendererVersion"), Some(serde_json::json!("0.2.0")));
+        assert_eq!(w02, serde_json::from_str::<serde_json::Value>(AUTH_LEGACY).unwrap());
+    }
+
+    #[test]
+    fn build_auth_request_advertises_the_w02_prompt_kinds() {
+        let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
+        let req = build_auth_request(&id);
+        assert_eq!(req.prompt_protocol_version, 1);
+        let want: Vec<String> = super::super::prompt::ADVERTISED_PROMPT_KINDS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(req.prompt_kinds, want);
+        assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
     }
 }

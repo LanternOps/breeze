@@ -302,6 +302,178 @@ pub fn hide_banner_window(app: &AppHandle) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Prompt cards (#10190): placement
+// ---------------------------------------------------------------------------
+
+/// A rectangle in logical pixels (a monitor's work area).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A window size in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Size {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A window position (top-left) in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Gap between a card and the work-area edge, and between stacked cards.
+pub const CARD_MARGIN: f64 = 16.0;
+pub const CARD_GAP: f64 = 12.0;
+
+/// Where card `index` (0 = bottom) goes: bottom-right of the work area,
+/// stacked upward, at most [`super::prompt::MAX_VISIBLE_CARDS`] high, and
+/// always clamped inside the work area (a small screen or a large card never
+/// puts any part of a card off screen or under the taskbar).
+pub fn place_card(work_area: Rect, size: Size, index: usize) -> Position {
+    let index = index.min(super::prompt::MAX_VISIBLE_CARDS - 1) as f64;
+    let x = work_area.x + work_area.width - size.width - CARD_MARGIN;
+    let y = work_area.y + work_area.height - CARD_MARGIN - size.height - index * (size.height + CARD_GAP);
+    // The top-left bound wins when the card is larger than the work area.
+    let max_x = (work_area.x + work_area.width - size.width).max(work_area.x);
+    let max_y = (work_area.y + work_area.height - size.height).max(work_area.y);
+    Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt cards (#10190): windows
+// ---------------------------------------------------------------------------
+
+/// The event a card window listens for; carries its `PromptView`. Sent only
+/// to that card's label, never broadcast.
+pub const PROMPT_UPDATED_EVENT: &str = "prompt-updated";
+/// The event the Notifications tab listens for; carries the list.
+pub const PROMPT_LIST_EVENT: &str = "prompt-list-updated";
+
+const PROMPT_CARD: Size = Size { width: 400.0, height: 300.0 };
+
+/// Create the card window for a prompt: its own small `prompt-<hash>` webview,
+/// NEVER the main Assist window (#8138). Always on top, out of the taskbar and
+/// non-activating; `plan.focused` (rate limited, eligible kinds only) is the
+/// only way it takes keyboard focus. Placed bottom-right of the work area of
+/// the monitor holding the cursor, stacked by `plan.slot`.
+///
+/// The close box / Alt+F4 is the same as Esc: the safe action on a pending
+/// decision (the card stays up), "hide" otherwise.
+pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> Result<(), String> {
+    use super::prompt::{ActionVia, DismissEffect, PromptBridge};
+
+    if app.get_webview_window(&plan.label).is_some() {
+        // The tracker never plans a second window for one label.
+        return Err("a prompt card with this label is already open".into());
+    }
+    let builder = WebviewWindowBuilder::new(app, plan.label.clone(), WebviewUrl::App(plan.url.clone().into()))
+        .title("Notification from your IT provider")
+        .inner_size(PROMPT_CARD.width, PROMPT_CARD.height)
+        .decorations(false)
+        .always_on_top(true)
+        .focused(plan.focused)
+        .skip_taskbar(true)
+        .resizable(false);
+    let builder = match cursor_work_area(app) {
+        Some(area) => {
+            let p = place_card(area, PROMPT_CARD, plan.slot);
+            builder.position(p.x, p.y)
+        }
+        None => builder.center(),
+    };
+    let win = builder.build().map_err(|e| format!("create prompt window: {}", e))?;
+
+    let handle = app.clone();
+    let id = plan.prompt_id.clone();
+    win.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            let Some(bridge) = handle.try_state::<std::sync::Arc<PromptBridge>>() else { return };
+            match bridge.dismiss(super::client::now_unix_ms(), &id, ActionVia::Keyboard) {
+                // A decision keeps its card: the safe action is on its way, or
+                // could not be sent and the person must be able to retry.
+                Ok(DismissEffect::ActionSent) | Err(_) => api.prevent_close(),
+                Ok(DismissEffect::Hidden) | Ok(DismissEffect::Nothing) => {}
+            }
+            publish_prompt_state(&handle, Some(&id));
+        }
+        tauri::WindowEvent::Destroyed => {
+            // Reported only when the tracker did not close it itself.
+            if let Some(bridge) = handle.try_state::<std::sync::Arc<PromptBridge>>() {
+                bridge.window_gone(&id);
+            }
+            publish_prompt_state(&handle, None);
+        }
+        _ => {}
+    });
+    Ok(())
+}
+
+/// Take a prompt's card down (close, refusal, hide, session end). `destroy`
+/// rather than `close`, so it is not mistaken for the person's close box.
+pub fn close_prompt_window(app: &AppHandle, prompt_id: &str) {
+    if let Some(win) = app.get_webview_window(&super::prompt::window_label(prompt_id)) {
+        if let Err(e) = win.destroy() {
+            eprintln!("[helper] failed to close prompt window: {}", e);
+        }
+    }
+}
+
+/// Push a prompt's current view to its card (no-op when it has none).
+pub fn emit_prompt_view(app: &AppHandle, view: &super::prompt::PromptView) {
+    let label = super::prompt::window_label(&view.prompt_id);
+    if app.get_webview_window(&label).is_none() {
+        return;
+    }
+    if let Err(e) = app.emit_to(label.as_str(), PROMPT_UPDATED_EVENT, view) {
+        eprintln!("[helper] failed to emit {}: {}", PROMPT_UPDATED_EVENT, e);
+    }
+}
+
+/// Push the notification list to the main window's Notifications tab. An
+/// event only: this never shows, focuses or un-minimises the main window.
+pub fn emit_prompt_list(app: &AppHandle, list: &[super::prompt::PromptView]) {
+    if let Err(e) = app.emit_to("main", PROMPT_LIST_EVENT, list) {
+        eprintln!("[helper] failed to emit {}: {}", PROMPT_LIST_EVENT, e);
+    }
+}
+
+/// After any prompt change: refresh that prompt's card (if open), the
+/// Notifications tab and the tray entry. Never shows or focuses a window.
+pub fn publish_prompt_state(app: &AppHandle, prompt_id: Option<&str>) {
+    let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
+    let now = super::client::now_unix_ms();
+    // Snapshots first; the tracker lock is never held across a window call.
+    let view = prompt_id.and_then(|id| bridge.tracker().view(id, now));
+    let list = bridge.tracker().list(now);
+    if let Some(view) = view {
+        emit_prompt_view(app, &view);
+    }
+    emit_prompt_list(app, &list);
+    crate::refresh_tray_menu(app);
+}
+
+/// The logical work area of the monitor holding the cursor (else the primary).
+fn cursor_work_area(app: &AppHandle) -> Option<Rect> {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let pos = area.position.to_logical::<f64>(scale);
+    let size = area.size.to_logical::<f64>(scale);
+    Some(Rect { x: pos.x, y: pos.y, width: size.width, height: size.height })
+}
+
 /// Create the small dedicated card window for an endpoint message (#8293).
 /// NEVER the main Assist window (#8138): the card is its own
 /// `message-<messageId>` webview, so a user who has not opened Assist does not
@@ -451,4 +623,49 @@ fn primary_bottom_right(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
     let pos = monitor.position().to_logical::<f64>(scale);
     // 16px in from the right, clear of a bottom taskbar (~48px).
     Some((pos.x + size.width - w - 16.0, pos.y + size.height - h - 64.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WA: Rect = Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1040.0 };
+    const CARD: Size = Size { width: 380.0, height: 260.0 };
+
+    fn inside(wa: Rect, size: Size, p: Position) -> bool {
+        p.x >= wa.x
+            && p.y >= wa.y
+            && p.x + size.width <= wa.x + wa.width + 1e-9
+            && p.y + size.height <= wa.y + wa.height + 1e-9
+    }
+
+    #[test]
+    fn place_card_clamps_to_work_area() {
+        // Bottom-right, inset by the margin.
+        let p0 = place_card(WA, CARD, 0);
+        assert_eq!(p0, Position { x: 1920.0 - 380.0 - CARD_MARGIN, y: 1040.0 - 260.0 - CARD_MARGIN });
+        // Stacked upward with a gap.
+        let p1 = place_card(WA, CARD, 1);
+        assert_eq!(p1.x, p0.x);
+        assert_eq!(p1.y, p0.y - 260.0 - CARD_GAP);
+        // At most three high: index 3+ stays on the top slot.
+        let p2 = place_card(WA, CARD, 2);
+        assert_eq!(place_card(WA, CARD, 3), p2);
+        assert_eq!(place_card(WA, CARD, 99), p2);
+        // A work area that does not start at 0,0 (second monitor, top/left taskbar).
+        let wa = Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 };
+        for i in 0..4 {
+            assert!(inside(wa, CARD, place_card(wa, CARD, i)), "index {i}");
+        }
+        assert_eq!(place_card(wa, CARD, 0).x, -1280.0 + 1280.0 - 380.0 - CARD_MARGIN);
+        // A short screen: the stack is clamped inside rather than off the top.
+        let short = Rect { x: 0.0, y: 0.0, width: 1024.0, height: 600.0 };
+        for i in 0..3 {
+            assert!(inside(short, CARD, place_card(short, CARD, i)), "index {i}");
+        }
+        // A card larger than the work area pins to its top-left corner.
+        let tiny = Rect { x: 10.0, y: 20.0, width: 300.0, height: 200.0 };
+        assert_eq!(place_card(tiny, CARD, 0), Position { x: 10.0, y: 20.0 });
+        assert_eq!(place_card(tiny, CARD, 2), Position { x: 10.0, y: 20.0 });
+    }
 }
