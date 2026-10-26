@@ -28,13 +28,24 @@ vi.mock('../../../db', () => {
     });
     return proxy;
   };
-  return { db: { select: () => chain('select'), update: () => chain('update') } };
+  return {
+    db: { select: () => chain('select'), update: () => chain('update') },
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
 });
 vi.mock('../../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('../../partnerWideAccess', () => ({ canManagePartnerWidePolicies: vi.fn() }));
+vi.mock('../../permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../permissions')>()),
+  getUserPermissions: vi.fn(),
+}));
+vi.mock('../repository', () => ({ ownerForFlowRow: vi.fn() }));
 
 import { writeAuditEvent } from '../../auditEvents';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import { getUserPermissions, type UserPermissions } from '../../permissions';
+import { ownerForFlowRow } from '../repository';
 import { createOrRotateWebhookSecret, decryptFlowWebhookSecret, encryptFlowWebhookSecret } from './secret';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -46,8 +57,19 @@ const USER = '44444444-4444-4444-8444-444444444444';
 const WEBHOOK_DOC = { version: 1, name: 'Inbound', trigger: { type: 'webhook', auth: 'hmac' }, inputs: [], steps: [] };
 
 function flowRow(over: Record<string, unknown> = {}) {
-  return { id: FLOW_A, orgId: ORG, partnerId: null, name: 'Inbound', definition: WEBHOOK_DOC, webhookSecretFingerprint: null, ...over };
+  return {
+    id: FLOW_A, orgId: ORG, partnerId: null, name: 'Inbound', definition: WEBHOOK_DOC, webhookSecretFingerprint: null,
+    enabledPublicationSeq: null, ...over,
+  };
 }
+function perms(over: Partial<UserPermissions> = {}): UserPermissions {
+  return { permissions: [{ resource: '*', action: '*' }], partnerId: null, orgId: ORG, roleId: 'r', scope: 'organization', ...over };
+}
+const RUN_DOC = {
+  version: 1, name: 'Inbound', trigger: { type: 'webhook', auth: 'hmac' }, inputs: [],
+  steps: [{ id: 'run', tool: 'run_script', input: { scriptId: '55555555-5555-4555-8555-555555555555', deviceIds: [] }, approval: 'default', onFailure: 'stop', timeoutSec: 300 }],
+};
+const RUN_PINS = [{ stepId: 'run', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' }];
 function auth(over: Partial<AuthContext> = {}): AuthContext {
   return {
     principal: { kind: 'user_session' }, scope: 'organization', orgId: ORG, partnerId: PARTNER, partnerOrgAccess: null,
@@ -62,6 +84,9 @@ beforeEach(() => {
   calls.length = 0;
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(canManagePartnerWidePolicies).mockReset().mockReturnValue(true);
+  vi.mocked(getUserPermissions).mockReset().mockResolvedValue(perms());
+  vi.mocked(ownerForFlowRow).mockReset().mockImplementation(async (r: { orgId: string | null }) =>
+    (r.orgId ? { orgId: r.orgId, partnerId: PARTNER } : { orgId: null, partnerId: PARTNER }));
 });
 
 describe('flow webhook secret encryption', () => {
@@ -119,6 +144,7 @@ describe('createOrRotateWebhookSecret', () => {
 
   it('partner-wide rotate needs canManagePartnerWidePolicies', async () => {
     const partner = auth({ scope: 'partner', orgId: null, partnerOrgAccess: 'all' } as Partial<AuthContext>);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
     vi.mocked(canManagePartnerWidePolicies).mockReturnValue(false);
     selects.push([flowRow({ orgId: null, partnerId: PARTNER })]);
     expect(await createOrRotateWebhookSecret(partner, FLOW_A)).toEqual({ ok: false, error: 'partner_wide_forbidden' });
@@ -133,6 +159,42 @@ describe('createOrRotateWebhookSecret', () => {
   it('an org token never rotates a partner-wide flow it can read (not found)', async () => {
     selects.push([flowRow({ orgId: null, partnerId: PARTNER })]);
     expect(await createOrRotateWebhookSecret(auth(), FLOW_A)).toEqual({ ok: false, error: 'flow_not_found' });
+  });
+
+  // Commit security review (gate parity): whoever holds the secret starts runs
+  // under the delegator's authority, so rotating needs what enabling needs.
+  it('a site-limited member cannot rotate (delegation_scope_restricted)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: ['site-1'] }));
+    selects.push([flowRow()]);
+    expect(await createOrRotateWebhookSecret(auth(), FLOW_A)).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
+  });
+
+  it('a site-limited token cannot rotate', async () => {
+    selects.push([flowRow()]);
+    const limited = auth({ allowedSiteIds: [] } as Partial<AuthContext>);
+    expect(await createOrRotateWebhookSecret(limited, FLOW_A)).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+  });
+
+  it('a selected-access partner user cannot rotate a partner-wide flow', async () => {
+    const partner = auth({ scope: 'partner', orgId: null, partnerOrgAccess: 'selected' } as Partial<AuthContext>);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'selected', allowedOrgIds: [ORG] }));
+    selects.push([flowRow({ orgId: null, partnerId: PARTNER })]);
+    expect(await createOrRotateWebhookSecret(partner, FLOW_A)).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+  });
+
+  it('rotating an enabled flow requires rule 7 for its live publication', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'automations', action: 'write' }] }));
+    selects.push([flowRow({ enabledPublicationSeq: 2 })], [{ definition: RUN_DOC, stepPins: RUN_PINS }]);
+    const r = await createOrRotateWebhookSecret(auth(), FLOW_A);
+    expect(r).toMatchObject({ ok: false, error: 'permission_missing' });
+    expect((r as { missing: Array<{ permission: string }> }).missing).toContainEqual({ stepId: 'run', permission: 'scripts.execute' });
+    expect(calls.some((c) => c.kind === 'update')).toBe(false);
+
+    vi.mocked(getUserPermissions).mockResolvedValue(perms());
+    selects.push([flowRow({ enabledPublicationSeq: 2 })], [{ definition: RUN_DOC, stepPins: RUN_PINS }]);
+    updates.push([{ id: FLOW_A }]);
+    expect((await createOrRotateWebhookSecret(auth(), FLOW_A)).ok).toBe(true);
   });
 
   it('non-webhook flow is not_webhook', async () => {

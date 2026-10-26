@@ -75,7 +75,7 @@ const LIVE_STATUSES: readonly FlowStatus[] = ['enabled', 'paused'];
 
 // ── delegation ceiling (Decision 13) ───────────────────────────────────────
 
-function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: string | undefined; scope: 'organization' | 'partner' } {
+export function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: string | undefined; scope: 'organization' | 'partner' } {
   return { partnerId: owner.partnerId, orgId: owner.orgId ?? undefined, scope: owner.orgId ? 'organization' : 'partner' };
 }
 
@@ -86,7 +86,7 @@ function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: 
  * partner-wide flow, partner membership with all-orgs access. The flow
  * principal is org-wide; a restricted user must not mint one.
  */
-function ceilingAllowsDelegation(perms: UserPermissions | null, owner: ToolOwnerRef): perms is UserPermissions {
+export function ceilingAllowsDelegation(perms: UserPermissions | null, owner: ToolOwnerRef): perms is UserPermissions {
   if (!perms) return false;
   if (perms.allowedSiteIds !== undefined) return false;
   if (owner.orgId) return canAccessOrg(perms, owner.orgId);

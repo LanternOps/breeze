@@ -180,6 +180,8 @@ const WEBHOOK_SECRET_STATUS: Record<string, Status> = {
   not_webhook: 409,
   interactive_session_required: 403,
   partner_wide_forbidden: 403,
+  delegation_scope_restricted: 403,
+  permission_missing: 422,
 };
 
 flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {

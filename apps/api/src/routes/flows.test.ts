@@ -351,7 +351,10 @@ describe('flows routes', () => {
       expect(createOrRotateWebhookSecret).toHaveBeenCalledWith(expect.anything(), FLOW_ID);
     });
 
-    it.each([['flow_not_found', 404], ['not_webhook', 409], ['interactive_session_required', 403], ['partner_wide_forbidden', 403]])(
+    it.each([
+      ['flow_not_found', 404], ['not_webhook', 409], ['interactive_session_required', 403], ['partner_wide_forbidden', 403],
+      ['delegation_scope_restricted', 403],
+    ])(
       'maps %s to %i and never returns a secret',
       async (error, status) => {
         vi.mocked(createOrRotateWebhookSecret).mockResolvedValue({ ok: false, error } as never);

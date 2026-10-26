@@ -16,14 +16,21 @@
  *  - The audit carries the flow id and fingerprint, never the secret.
  */
 import { randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { db } from '../../../db';
+import { and, eq } from 'drizzle-orm';
+import { flowDocumentV1Schema } from '@breeze/shared';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import { flows } from '../../../db/schema/flows';
+import { flowVersions } from '../../../db/schema/flowRuns';
 import { isInteractiveUserSession, type AuthContext } from '../../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../../auditEvents';
 import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from '../../encryptedColumnRegistry';
+import { flowStepPinSchema } from '../../flowValidator';
 import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
+import { getUserPermissions } from '../../permissions';
 import { decryptSecret, encryptSecret, hmacFingerprint, isEncryptedSecret } from '../../secretCrypto';
+import { hasSiteCeiling } from '../../siteCeilingAccess';
+import { ownerForFlowRow } from '../repository';
+import { ceilingAllowsDelegation, missingPermissionsFor, permissionContextFor } from '../versions';
 
 export const FLOW_WEBHOOK_SECRET_SPEC: EncryptedColumnSpec = (() => {
   const spec = encryptedColumnRegistry.find((e) => e.table === 'flows' && e.column === 'webhook_secret_encrypted');
@@ -58,7 +65,27 @@ function draftTriggerType(definition: unknown): unknown {
 
 export type RotateWebhookSecretResult =
   | { ok: true; secret: string; fingerprint: string; rotatedAt: string }
-  | { ok: false; error: 'flow_not_found' | 'not_webhook' | 'interactive_session_required' | 'partner_wide_forbidden' };
+  | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> }
+  | {
+      ok: false;
+      error: 'flow_not_found' | 'not_webhook' | 'interactive_session_required' | 'partner_wide_forbidden' | 'delegation_scope_restricted';
+    };
+
+/** The live publication's document and pins (system read, explicit predicates), or null when unreadable. */
+async function livePublication(flowId: string, seq: number) {
+  const [pub] = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => db
+      .select({ definition: flowVersions.definition, stepPins: flowVersions.stepPins })
+      .from(flowVersions)
+      .where(and(eq(flowVersions.flowId, flowId), eq(flowVersions.publicationSeq, seq)))
+      .limit(1),
+    'flows.webhookSecret.livePublication',
+  ));
+  if (!pub) return null;
+  const doc = flowDocumentV1Schema.safeParse(pub.definition);
+  const pins = flowStepPinSchema.array().safeParse(pub.stepPins);
+  return doc.success && pins.success ? { doc: doc.data, pins: pins.data } : null;
+}
 
 /**
  * Create or rotate the flow's webhook secret, in the CALLER's DB context:
@@ -71,7 +98,10 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
   if (!isInteractiveUserSession(auth)) return { ok: false, error: 'interactive_session_required' };
 
   const [row] = await db
-    .select({ id: flows.id, orgId: flows.orgId, partnerId: flows.partnerId, name: flows.name, definition: flows.definition })
+    .select({
+      id: flows.id, orgId: flows.orgId, partnerId: flows.partnerId, name: flows.name, definition: flows.definition,
+      enabledPublicationSeq: flows.enabledPublicationSeq,
+    })
     .from(flows)
     .where(eq(flows.id, flowId))
     .for('update')
@@ -84,6 +114,25 @@ export async function createOrRotateWebhookSecret(auth: AuthContext, flowId: str
     if (!canManagePartnerWidePolicies(auth)) return { ok: false, error: 'partner_wide_forbidden' };
   }
   if (draftTriggerType(row.definition) !== 'webhook') return { ok: false, error: 'not_webhook' };
+
+  // Gate parity with enable and manual start: whoever holds the secret starts
+  // runs under the delegator's org-wide (or all-orgs) authority, so the person
+  // who mints it must clear the same delegation ceiling — no site ceiling on
+  // the membership or the token, all-orgs access for a partner-wide flow —
+  // and, when a publication is live, hold every permission its steps need
+  // (rule 7, the manual-run triggerer check).
+  const owner = await ownerForFlowRow(row);
+  if (!owner || !auth.user) return { ok: false, error: 'flow_not_found' };
+  const perms = await getUserPermissions(auth.user.id, permissionContextFor(owner));
+  if (!ceilingAllowsDelegation(perms, owner) || hasSiteCeiling(auth) || (!owner.orgId && auth.partnerOrgAccess !== 'all')) {
+    return { ok: false, error: 'delegation_scope_restricted' };
+  }
+  if (row.enabledPublicationSeq !== null) {
+    const live = await livePublication(row.id, row.enabledPublicationSeq);
+    if (!live) return { ok: false, error: 'flow_not_found' };
+    const missing = missingPermissionsFor(live.doc, live.pins, perms);
+    if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  }
 
   const secret = `${FLOW_WEBHOOK_SECRET_PREFIX}${randomBytes(32).toString('base64url')}`;
   const fingerprint = hmacFingerprint(secret);
