@@ -57,6 +57,7 @@ import type { FlowRunJobData } from '../../jobs/queueSchemas';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
 import { approvalRoutes } from '../../routes/approvals';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
+import { countRunBuiltinCalls } from '../../services/flows/builtins/runCounters';
 import { findOwnedNotificationChannel } from '../../services/flows/ownedReferences';
 import { acquireRunLease, reserveRunAiTokens, settleRunAiTokens } from '../../services/flows/runLease';
 import { startManualRun } from '../../services/flows/runService';
@@ -340,6 +341,31 @@ describe('W5 built-in SQL on a real database', () => {
     const both = await Promise.all([reserveRunAiTokens(runId, lease!.token, 500, 1_000), reserveRunAiTokens(runId, lease!.token, 500, 1_000)]);
     expect(both.filter(Boolean)).toHaveLength(1);
     expect((await readRun(runId)).aiTokensUsed).toBe(650);
+  });
+
+  runDb('countRunBuiltinCalls counts this run\'s notify/http_request attempts (the in-flight row included), never skipped rows or other runs', async () => {
+    const f = await fixture();
+    const flowId = await enabledFlow(f, {
+      version: 1, name: 'Counts', trigger: { type: 'manual' }, inputs: [], steps: [{ id: 'a', tool: 'set', input: { values: { x: 1 } }, ...STEP }],
+    });
+    const runId = await startRun(f, flowId);
+    const otherRunId = await startRun(f, flowId);
+    const row = (run: string, stepId: string, tool: string, status: string, attempt = 1) => ({
+      id: randomUUID(), runId: run, orgId: f.orgId, stepId, itemIndex: null, attempt, tool,
+      toolSource: tool === 'run_script' ? 'core' : 'builtin', tier: tool === 'notify' ? 2 : 3, status, startedAt: new Date(),
+      ...(status === 'running' || status === 'awaiting_approval' ? {} : { finishedAt: new Date() }),
+      ...(status === 'failed' ? { errorCode: 'http_status', error: 'The server answered 500.' } : {}),
+    }) as typeof flowRunSteps.$inferInsert;
+    await withSystemDbAccessContext(() => db.insert(flowRunSteps).values([
+      row(runId, 'n1', 'notify', 'completed'),
+      row(runId, 'n2', 'notify', 'running'),            // the call being made
+      row(runId, 'n3', 'notify', 'skipped'),            // `when` false: nothing sent
+      row(runId, 'h1', 'http_request', 'completed'),
+      row(runId, 'h1', 'http_request', 'failed', 2),
+      row(otherRunId, 'n1', 'notify', 'completed'),     // another run
+    ]));
+    expect(await countRunBuiltinCalls(runId)).toEqual({ notify: 2, http: 2 });
+    expect(await countRunBuiltinCalls(otherRunId)).toEqual({ notify: 1, http: 0 });
   });
 
   runDb('findOwnedNotificationChannel: an org flow sees its org\'s and its partner\'s partner-wide channels; a partner-wide flow only partner-wide ones', async () => {

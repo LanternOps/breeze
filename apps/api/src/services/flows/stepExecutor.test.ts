@@ -278,6 +278,23 @@ describe('executeFlowStep — W5 built-ins', () => {
     expect(executeFlowBuiltin).not.toHaveBeenCalled();
   });
 
+  // Review round: an approver is never asked to approve a request that is
+  // certain to be refused at release (policy is checked before parking).
+  it('a tier-3 http_request that the egress policy would refuse fails before it parks (no intent)', async () => {
+    vi.stubEnv('PUBLIC_API_URL', 'https://api.example.com');
+    try {
+      expect(await executeFlowStep(input({ step: step('call', 'http_request', { method: 'POST', url: 'https://api.example.com/x' }), pin: HTTP_POST_PIN })))
+        .toMatchObject({ kind: 'failed', code: 'egress_blocked', policy: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    // (An oversized templated body never gets this far: the render bound refuses it first.)
+    vi.mocked(countRunBuiltinCalls).mockResolvedValueOnce({ notify: 0, http: 101 });
+    expect(await executeFlowStep(input({ step: step('call', 'http_request', { method: 'DELETE', url: 'https://api.example.com/x' }), pin: HTTP_POST_PIN })))
+      .toMatchObject({ kind: 'failed', policy: true });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
   it('rendered built-in input is schema-checked at run time', async () => {
     const out = await executeFlowStep(input({
       step: step('call', 'http_request', { method: 'GET', url: 'https://api.example.com/x', timeout: '{{inputs.t}}' }),

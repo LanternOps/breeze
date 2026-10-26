@@ -105,6 +105,15 @@ async function claimChannelNotice(dedupeKey: string): Promise<boolean> {
   return (await redis.set(`flow-notice-channel:${dedupeKey}`, '1', 'EX', CHANNEL_NOTICE_DEDUPE_TTL_SECONDS, 'NX')) === 'OK';
 }
 
+/** Hand a claimed slot back after a failed send (best effort: a lost DEL only delays the retry to the TTL). */
+async function releaseChannelNotice(dedupeKey: string): Promise<void> {
+  try {
+    await getRedis()?.del(`flow-notice-channel:${dedupeKey}`);
+  } catch (err) {
+    console.warn(`[flows] could not release the channel notice slot ${dedupeKey}`, err);
+  }
+}
+
 /**
  * The channel half of a flow notice (Decision 14): to the live publication's
  * `notices.channelId`, after commit, once per dedupe key. Best effort — a
@@ -125,13 +134,22 @@ export async function sendFlowNoticeToChannel(
         if (!getRedis()) console.warn(`[flows] ${notice.kind} notice channel send skipped: Redis unavailable for its dedupe (flow=${flow.id})`);
         return;
       }
-      const result = await sendChannelMessage(target.channelId, {
-        title: notice.title,
-        body: notice.text,
-        severity: notice.kind === 'paused' || notice.kind === 'unknown_outcome' ? 'warning' : 'info',
-        link: `/flows/${flow.id}`,
-      }, target.owner);
+      let result: Awaited<ReturnType<typeof sendChannelMessage>>;
+      try {
+        result = await sendChannelMessage(target.channelId, {
+          title: notice.title,
+          body: notice.text,
+          severity: notice.kind === 'paused' || notice.kind === 'unknown_outcome' ? 'warning' : 'info',
+          link: `/flows/${flow.id}`,
+        }, target.owner);
+      } catch (err) {
+        // Not delivered: give the slot back so the next notice of this key retries.
+        await releaseChannelNotice(notice.dedupeKey);
+        throw err;
+      }
       if (!result.ok) {
+        // A throttled channel enforced its own cap: that is its answer, keep the slot.
+        if (result.code !== 'throttled') await releaseChannelNotice(notice.dedupeKey);
         reportNoticeFailure(flow, new Error(`flow notice channel send failed: ${result.code}`), channelLabel);
         console.error(`[flows] ${notice.kind} notice channel send failed (flow=${flow.id}): ${result.code}`);
       }

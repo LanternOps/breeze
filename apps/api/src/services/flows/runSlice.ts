@@ -854,7 +854,7 @@ async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, it
  * W5 (#5220, Decision 13): an `ai` step's model usage on its step row
  * (`flow_run_steps_ai_usage_chk`: all three set, or none). Whole cents.
  */
-function aiUsageColumns(outcome: StepOutcome): Pick<StepRowValues, 'aiInputTokens' | 'aiOutputTokens' | 'aiCostCents'> {
+export function aiUsageColumns(outcome: StepOutcome): Pick<StepRowValues, 'aiInputTokens' | 'aiOutputTokens' | 'aiCostCents'> {
   const u = outcome.kind === 'skipped' ? undefined : outcome.aiUsage;
   if (!u) return {};
   return {

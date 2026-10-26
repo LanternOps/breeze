@@ -56,6 +56,7 @@ import { messagesUsage, messagesUsageAfterDispatchError } from '../../aiModels/i
 import { resolveModel } from '../../aiModels/resolveModel';
 import { costEstimator, settleInvocation } from '../../aiModels/settleInvocation';
 import { turnBindingFrom, type TurnBinding } from '../../aiModels/turnBinding';
+import { legacyThinksWhenOmitted } from '../../aiModel';
 import { aiTools, executeTool, toolManagesDbContext } from '../../aiTools';
 import { redactSecretsFromOutput } from '../../secretRedaction';
 import { captureException } from '../../sentry';
@@ -185,10 +186,14 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
     // migration; W5 PR B adds none): catalog-endpoint egress is not audited.
     client = anthropicClientFor(resolved, null);
   } catch (err) {
+    report(err, ctx, 'flows.aiStep.client');
     return failed('ai_budget_exhausted', messageOf(err));
   }
   const binding: TurnBinding = turnBindingFrom(resolved);
-  const thinks = 'thinking' in messagesModelParams(resolved);
+  // A model that thinks — by its wire params, or by default when the param is
+  // omitted (Opus/Sonnet 5+, Fable) — can be neither forced to a tool nor given
+  // a temperature: the API refuses both with extended thinking.
+  const thinks = 'thinking' in messagesModelParams(resolved) || legacyThinksWhenOmitted(resolved.wireModel);
   const worstCaseCents = costEstimator(resolved);
 
   const toolDefinitions: Anthropic.Tool[] = [
@@ -239,6 +244,8 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
       toolCalls.push({ tool: tool.name, ok: !isError });
       return { type: 'tool_result', tool_use_id: tu.id, content: asToolData(text), ...(isError ? { is_error: true } : {}) };
     } catch (err) {
+      // The model gets an error result; operators get the throw.
+      report(err, ctx, 'flows.aiStep.tool');
       toolCalls.push({ tool: tool.name, ok: false });
       return { type: 'tool_result', tool_use_id: tu.id, is_error: true, content: asToolData(`The tool failed: ${messageOf(err)}`) };
     }
@@ -264,7 +271,7 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
     if (!(await reserveRunAiTokens(runId, leaseToken, reservedTokens, tokenCap))) {
       return failed('ai_token_cap_reached', `This run reached its AI token limit (${tokenCap} tokens).`);
     }
-    const releaseRunTokens = () => settleRunAiTokens(runId, leaseToken, reservedTokens, 0);
+    const releaseRunTokens = () => settleRunAiTokens(runId, leaseToken, reservedTokens, 0).catch((e: unknown) => report(e, ctx, 'flows.aiStep.runTokens'));
     let reservationId: string;
     try {
       const reservation = await reserveAiBudget({
@@ -364,7 +371,7 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
         report(err, ctx, 'flows.aiStep.settle');
         await markAiBudgetReservationIndeterminate({ orgId, reservationId }).catch((e: unknown) => report(e, ctx, 'flows.aiStep.indeterminate'));
       }
-      await settleRunAiTokens(runId, leaseToken!, reservedTokens, inTokens + outTokens);
+      await settleRunAiTokens(runId, leaseToken!, reservedTokens, inTokens + outTokens).catch((e: unknown) => report(e, ctx, 'flows.aiStep.runTokens'));
     }
   }
   return failed('ai_output_invalid', `The AI did not return a result within ${input.maxTurns} turns.`);

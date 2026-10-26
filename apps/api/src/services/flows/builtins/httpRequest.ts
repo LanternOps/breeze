@@ -120,15 +120,23 @@ function keptHeaders(res: Response): Record<string, string> {
   return out;
 }
 
-export async function executeHttpRequestStep(input: HttpRequestInput, ctx: BuiltinContext & { literalOrigin: string }): Promise<StepOutcome> {
-  const tier = flowBuiltinTierFor('http_request', input);
-  const mayHaveRun = (message: string): StepOutcome => (tier >= 2
-    ? { kind: 'unknown_outcome', message }
-    : { kind: 'failed', code: 'step_failed', message, policy: false });
+export type HttpPreflight =
+  | { ok: true; url: URL; body: string | undefined; headers: Record<string, string> }
+  | { ok: false; outcome: StepOutcome };
+
+/**
+ * Steps 1–3: everything decidable before a byte is sent — the per-run cap,
+ * the rendered URL staying on the literal origin, the scheme and own-host
+ * rules, the body cap and the header deny-list. The runner applies it before
+ * parking a Tier-3 request too, so an approver is never asked to approve a
+ * request that is certain to be refused at release.
+ */
+export function preflightHttpRequest(input: HttpRequestInput, ctx: { literalOrigin: string; httpCalls: number }): HttpPreflight {
+  const refuse = (code: 'egress_blocked' | 'input_invalid', message: string): HttpPreflight => ({ ok: false, outcome: policy(code, message) });
 
   // 1. per-run cap
-  if (ctx.counters.http > FLOW_RUN_LIMITS.httpPerRunMax) {
-    return policy('egress_blocked', `A flow run may make at most ${FLOW_RUN_LIMITS.httpPerRunMax} HTTP requests.`);
+  if (ctx.httpCalls > FLOW_RUN_LIMITS.httpPerRunMax) {
+    return refuse('egress_blocked', `A flow run may make at most ${FLOW_RUN_LIMITS.httpPerRunMax} HTTP requests.`);
   }
 
   // 2. the rendered URL stays on the literal origin
@@ -136,23 +144,23 @@ export async function executeHttpRequestStep(input: HttpRequestInput, ctx: Built
   try {
     url = new URL(input.url);
   } catch {
-    return policy('input_invalid', 'The rendered URL is not a valid URL.');
+    return refuse('input_invalid', 'The rendered URL is not a valid URL.');
   }
-  if (url.username || url.password) return policy('egress_blocked', 'The rendered URL carries credentials; requests are anonymous.');
-  if (url.origin !== ctx.literalOrigin) return policy('egress_blocked', 'The rendered URL does not stay on the origin fixed in the flow.');
+  if (url.username || url.password) return refuse('egress_blocked', 'The rendered URL carries credentials; requests are anonymous.');
+  if (url.origin !== ctx.literalOrigin) return refuse('egress_blocked', 'The rendered URL does not stay on the origin fixed in the flow.');
   const protocol = url.protocol === 'https:' || url.protocol === 'http:' ? url.protocol : null;
-  if (!protocol || !isAllowedHttpProtocol(protocol)) return policy('egress_blocked', 'Only https:// requests are allowed.');
-  if (isBreezeOwnHostname(url.hostname)) return policy('egress_blocked', 'A flow cannot call Breeze itself.');
+  if (!protocol || !isAllowedHttpProtocol(protocol)) return refuse('egress_blocked', 'Only https:// requests are allowed.');
+  if (isBreezeOwnHostname(url.hostname)) return refuse('egress_blocked', 'A flow cannot call Breeze itself.');
   url.hash = '';
 
   // 3. query, body, headers
   for (const [key, value] of Object.entries(input.query ?? {})) url.searchParams.append(key, String(value));
   let body: string | undefined;
   if (input.body !== undefined) {
-    if (input.method === 'GET' || input.method === 'HEAD') return policy('input_invalid', `A ${input.method} request carries no body.`);
+    if (input.method === 'GET' || input.method === 'HEAD') return refuse('input_invalid', `A ${input.method} request carries no body.`);
     body = JSON.stringify(input.body);
     if (utf8Length(body) > FLOW_RUN_LIMITS.httpMaxRequestBodyBytes) {
-      return policy('input_invalid', `The request body is larger than ${FLOW_RUN_LIMITS.httpMaxRequestBodyBytes} bytes.`);
+      return refuse('input_invalid', `The request body is larger than ${FLOW_RUN_LIMITS.httpMaxRequestBodyBytes} bytes.`);
     }
   }
   const headers: Record<string, string> = {};
@@ -161,6 +169,18 @@ export async function executeHttpRequestStep(input: HttpRequestInput, ctx: Built
     headers[name.toLowerCase()] = value;
   }
   if (body !== undefined && !headers['content-type']) headers['content-type'] = 'application/json';
+  return { ok: true, url, body, headers };
+}
+
+export async function executeHttpRequestStep(input: HttpRequestInput, ctx: BuiltinContext & { literalOrigin: string }): Promise<StepOutcome> {
+  const tier = flowBuiltinTierFor('http_request', input);
+  const mayHaveRun = (message: string): StepOutcome => (tier >= 2
+    ? { kind: 'unknown_outcome', message }
+    : { kind: 'failed', code: 'step_failed', message, policy: false });
+
+  const pre = preflightHttpRequest(input, { literalOrigin: ctx.literalOrigin, httpCalls: ctx.counters.http });
+  if (!pre.ok) return pre.outcome;
+  const { url, body, headers } = pre;
 
   // 4. the call, under an absolute deadline
   const budgetMs = Math.min(ctx.step.timeoutSec * 1000, FLOW_RUN_LIMITS.httpTimeoutMs, ctx.deadline - Date.now());

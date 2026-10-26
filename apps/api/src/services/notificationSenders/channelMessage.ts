@@ -73,7 +73,14 @@ function absoluteLink(link: string | undefined): string | undefined {
 const NOT_FOUND = 'Notification channel not found.';
 
 export async function sendChannelMessage(channelId: string, msg: ChannelMessage, owner: ToolOwnerRef): Promise<ChannelMessageResult> {
-  const visible = await findOwnedNotificationChannel(owner, channelId);
+  // Nothing has been sent until the transport call below: any error before it
+  // is a definite failure, never a throw a caller could read as "may have run".
+  let visible: Awaited<ReturnType<typeof findOwnedNotificationChannel>>;
+  try {
+    visible = await findOwnedNotificationChannel(owner, channelId);
+  } catch (err) {
+    return failed(err instanceof Error ? err.message : 'Could not look up the channel.');
+  }
   if (!visible) return { ok: false, code: 'channel_not_found', message: NOT_FOUND };
   if (!visible.enabled) return { ok: false, code: 'channel_disabled', message: 'Notification channel is disabled.' };
   if (!isChannelMessageType(visible.type)) {
@@ -107,7 +114,12 @@ export async function sendChannelMessage(channelId: string, msg: ChannelMessage,
 
   if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
     const windowSeconds = channel.throttleWindowSeconds ?? 3600;
-    const throttle = await checkNotificationThrottle(channel.id, 'flow-notice', channel.throttleMaxPerWindow, windowSeconds);
+    let throttle: Awaited<ReturnType<typeof checkNotificationThrottle>>;
+    try {
+      throttle = await checkNotificationThrottle(channel.id, 'flow-notice', channel.throttleMaxPerWindow, windowSeconds);
+    } catch (err) {
+      return failed(err instanceof Error ? err.message : 'Could not check the channel throttle.');
+    }
     if (!throttle.allowed) {
       return { ok: false, code: 'throttled', message: `The channel's delivery cap was reached (${channel.throttleMaxPerWindow} per ${windowSeconds}s).` };
     }

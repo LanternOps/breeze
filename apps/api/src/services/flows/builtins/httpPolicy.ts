@@ -79,10 +79,30 @@ export function isAllowedHttpProtocol(protocol: 'https:' | 'http:'): boolean {
   return protocol === 'https:' || toolSourcesAllowPrivateEgress();
 }
 
-/** Env vars whose origin serves Breeze itself (the API, the app that proxies it, the portal). */
+/**
+ * Env vars whose origin serves Breeze itself: the API, the app that proxies
+ * it, the portal, the MCP resource and consent pages, and the origins the app
+ * already trusts (the same set config/tunnelOrigin.ts treats as Breeze's own).
+ * The comma-list vars may hold several origins; `*` names none.
+ */
 const OWN_ORIGIN_ENV_VARS = [
   'PUBLIC_API_URL', 'API_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL', 'PUBLIC_URL', 'PUBLIC_PORTAL_URL', 'PUBLIC_WEB_URL',
+  'OAUTH_RESOURCE_URL', 'OAUTH_CONSENT_URL_BASE', 'TUNNEL_FRAME_ANCESTOR',
 ] as const;
+const OWN_ORIGIN_LIST_ENV_VARS = ['WEBAUTHN_ORIGIN', 'CORS_ALLOWED_ORIGINS'] as const;
+
+/** A configured origin's hostname, also for a value written without a scheme (`host`, `host:port`). */
+function hostnameOfConfiguredOrigin(raw: string): string | null {
+  for (const candidate of /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw) ? [raw] : [`https://${raw}`]) {
+    try {
+      const host = canonicalHostname(new URL(candidate).hostname);
+      if (host && !/\s/.test(host)) return host;
+    } catch {
+      // not an origin
+    }
+  }
+  return null;
+}
 
 /**
  * One spelling per host: lowercased, without the trailing dot(s) of an
@@ -96,15 +116,14 @@ function canonicalHostname(hostname: string): string {
 /** Hostnames of Breeze's own configured origins, canonicalized. Read at call time. */
 export function breezeOwnHostnames(env: NodeJS.ProcessEnv = process.env): Set<string> {
   const out = new Set<string>();
-  for (const key of OWN_ORIGIN_ENV_VARS) {
-    const raw = env[key]?.trim();
-    if (!raw) continue;
-    try {
-      const host = canonicalHostname(new URL(raw).hostname);
-      if (host) out.add(host);
-    } catch {
-      // A malformed URL var names no origin; boot validation reports it.
-    }
+  const values: string[] = [];
+  for (const key of OWN_ORIGIN_ENV_VARS) values.push(env[key] ?? '');
+  for (const key of OWN_ORIGIN_LIST_ENV_VARS) values.push(...(env[key] ?? '').split(','));
+  for (const value of values) {
+    const raw = value.trim();
+    if (!raw || raw === '*') continue;
+    const host = hostnameOfConfiguredOrigin(raw);
+    if (host) out.add(host);
   }
   return out;
 }

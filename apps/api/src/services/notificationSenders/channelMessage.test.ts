@@ -129,6 +129,17 @@ describe('sendChannelMessage', () => {
     expect(m.webhook).not.toHaveBeenCalled();
   });
 
+  // Review round: a lookup or throttle error happens before any send — it is a
+  // definite failure, never a throw the notify step would read as "may have run".
+  it('a channel lookup or throttle error before the send is a definite send_failed, never a throw', async () => {
+    m.findOwned.mockRejectedValueOnce(new Error('db down'));
+    await expect(sendChannelMessage(CH, msg, owner)).resolves.toMatchObject({ ok: false, code: 'send_failed' });
+    setChannel('email', { throttleMaxPerWindow: 5 });
+    m.throttle.mockRejectedValueOnce(new Error('redis down'));
+    await expect(sendChannelMessage(CH, msg, owner)).resolves.toMatchObject({ ok: false, code: 'send_failed' });
+    expect(m.email).not.toHaveBeenCalled();
+  });
+
   it('disabled channel is refused', async () => {
     setChannel('email', { enabled: false });
     const r = await sendChannelMessage(CH, msg, owner);

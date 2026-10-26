@@ -30,6 +30,7 @@ vi.mock('../redis', () => ({
           redisState.claimed.add(key);
           return 'OK';
         },
+        del: async (key: string) => (redisState.claimed.delete(key) ? 1 : 0),
       }
     : null),
 }));
@@ -181,6 +182,34 @@ describe('sendFlowNotice', () => {
     }
     expect(sendChannelMessage).toHaveBeenCalledTimes(1);
     expect(createNotification).toHaveBeenCalledTimes(3); // the DB dedupes these
+  });
+
+  // Review round: a failed send must not burn the once-per-key slot for 35 days.
+  it('a failed or throwing channel send releases its dedupe key so the next notice retries; a throttled one keeps it', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cap = { kind: 'cap_reached' as const, title: 't', text: 'x', dedupeKey: 'flow-cap:k1' };
+    sendChannelMessage.mockResolvedValueOnce({ ok: false, code: 'send_failed', message: 'Slack 503' });
+    queueLive(CHANNEL);
+    await sendFlowNotice(flow(), null, cap);
+    await flush();
+    expect(redisState.claimed.has('flow-notice-channel:flow-cap:k1')).toBe(false);
+    sendChannelMessage.mockRejectedValueOnce(new Error('boom'));
+    queueLive(CHANNEL);
+    await sendFlowNotice(flow(), null, cap);
+    await flush();
+    expect(redisState.claimed.has('flow-notice-channel:flow-cap:k1')).toBe(false);
+    queueLive(CHANNEL);
+    await sendFlowNotice(flow(), null, cap);
+    await flush();
+    expect(sendChannelMessage).toHaveBeenCalledTimes(3);
+    expect(redisState.claimed.has('flow-notice-channel:flow-cap:k1')).toBe(true);
+    // A throttled channel did its job (its own cap): the slot stays claimed.
+    sendChannelMessage.mockResolvedValueOnce({ ok: false, code: 'throttled', message: 'cap' });
+    queueLive(CHANNEL);
+    await sendFlowNotice(flow(), null, { ...cap, dedupeKey: 'flow-cap:k2' });
+    await flush();
+    expect(redisState.claimed.has('flow-notice-channel:flow-cap:k2')).toBe(true);
+    err.mockRestore();
   });
 
   it('without Redis the channel send is skipped (never spam), the in-app notice still goes', async () => {

@@ -58,6 +58,9 @@ import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin 
 import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
+import { captureException } from '../sentry';
+import { literalOriginOf } from './builtins/httpPolicy';
+import { preflightHttpRequest, type HttpRequestInput } from './builtins/httpRequest';
 import { executeFlowBuiltin } from './builtins/index';
 import { countRunBuiltinCalls } from './builtins/runCounters';
 import type { BuiltinContext } from './builtins/types';
@@ -479,12 +482,26 @@ async function runBuiltin(
       : { kind: 'unknown_outcome', message: 'The step did not finish before its timeout; it may have taken effect.', ...meta };
   }
   if (settled.kind === 'threw') {
+    // Built-ins answer for their own failures; a throw is unexpected — report it.
+    captureException(settled.error instanceof Error ? settled.error : new Error(String(settled.error)), undefined,
+      { org_id: i.run.orgId, flow_id: i.run.flowId, flow_run_id: i.run.id, flow_site: `flows.builtin.${name}` },
+      { fingerprint: ['flow', `flows.builtin.${name}`] });
     return tier === 1
       ? { kind: 'failed', code: 'step_failed', message: messageOf(settled.error), policy: false, ...meta }
       : { kind: 'unknown_outcome', message: `The step failed unexpectedly and may have taken effect: ${messageOf(settled.error)}`, ...meta };
   }
   const outcome = settled.value;
   return outcome.kind === 'skipped' || outcome.renderedInput ? outcome : { ...outcome, ...meta };
+}
+
+/** The http_request preflight (cap, origin pin, scheme, own host, body cap) at park time; null ⇒ may park. */
+async function httpRequestRefusedBeforeSend(i: StepExecutionInput, input: Record<string, FlowValue>): Promise<StepOutcome | null> {
+  const meta: StepOutcomeMeta = { renderedInput: input };
+  const literal = typeof i.step.input.url === 'string' ? literalOriginOf(i.step.input.url) : null;
+  if (!literal?.ok) return failedPolicy('egress_blocked', 'This step has no fixed origin to call.', meta);
+  const counters = await countRunBuiltinCalls(i.run.id);
+  const pre = preflightHttpRequest(input as unknown as HttpRequestInput, { literalOrigin: literal.origin, httpCalls: counters.http });
+  return pre.ok ? null : { ...pre.outcome, ...meta };
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -528,7 +545,14 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
   if (i.pin.source === 'builtin' && isFlowBuiltin(i.pin.tool)) {
     const name = i.pin.tool;
     const input = FLOW_BUILTIN_STEPS[name].inputSchema.parse(rendered) as Record<string, FlowValue>;
-    if (check.tier === 3) return parkForApproval(i, input, { builtin: true });
+    if (check.tier === 3) {
+      // Never ask an approver to approve a request certain to be refused at release.
+      if (name === 'http_request') {
+        const refused = await httpRequestRefusedBeforeSend(i, input);
+        if (refused) return refused;
+      }
+      return parkForApproval(i, input, { builtin: true });
+    }
     return runBuiltin(i, name, input, check.tier, owner);
   }
 
