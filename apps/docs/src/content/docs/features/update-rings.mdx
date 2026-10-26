@@ -55,6 +55,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 | Category rules | object[] | `[]` | Per-category auto-approval and deferral override rules |
 | Auto-approve settings | JSON | `{}` | Auto-approval configuration |
 | Application rules (`appRules`) | object[] | `[]` | Per-application **block** and **pin** rules for the devices this ring covers. Up to 200, one per package. See [Application Rules](/features/patch-management/#application-rules) |
+| Windows feature updates (`featureUpdates`) | object | `{"mode":"block"}` | Whether the ring's devices receive Windows feature releases: `block`, `allow`, or `pin` to one release. See [Windows Feature Updates](#windows-feature-updates) |
 | Device targets | JSON | `{}` | Device targeting rules (device groups, tags, sites, etc.) |
 
 ### Patch Sources
@@ -171,6 +172,28 @@ curl -X POST /api/v1/update-rings \
 </Aside>
 
 ---
+
+## Windows Feature Updates
+
+A ring decides whether the devices it covers receive Windows feature releases (the "Windows 11, version 25H2" upgrades). The setting lives under **Install enforcement** in the ring editor and has three modes:
+
+| Mode | What happens |
+|------|--------------|
+| **Block** (default) | Feature releases are never offered. The agent leaves them out of its scan and a scheduled run denies any that still arrive (`blocked_by_feature_update_policy` on the device's Patches tab). This is how every ring behaved before the control existed, so nothing changes until you opt in. |
+| **Allow the newest release** | The agent reports whatever feature release Windows Update offers the device. It then goes through the ring's approval rules like any other patch. |
+| **Pin to a release** | Only the named release (a Windows version plus a release such as `25H2`) passes. Anything else is denied. The agent also writes the Windows Update for Business target-release policy on the device (`TargetReleaseVersion`, `TargetReleaseVersionInfo`, `ProductVersion` under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`), so Windows Update itself offers that release and holds there; switching to Block or Allow removes the values Breeze wrote. A target-release policy set by your own Group Policy is left as-found and Breeze does not take it over. |
+
+```json
+{ "featureUpdates": { "mode": "pin", "product": "windows-11", "targetVersion": "25H2" } }
+```
+
+`product` is `windows-11` or `windows-10`; `targetVersion` is a release like `25H2` (case-insensitive, stored upper-case). `block` and `allow` take no other fields.
+
+<Aside type="note">
+Feature releases carry no severity rating, so the ring's default auto-approve rule never approves them unless **Also auto-approve unrated patches** is on. To install the allowed or pinned release automatically, add a **Feature Updates** category override with auto-approve enabled; with no severities selected it approves every patch in that category. Otherwise the release waits for a manual approval.
+</Aside>
+
+A device whose patch policy links no ring, or an invalid ring, is treated as **Block**. The agent's local `patch_exclude_feature_updates` setting (default `false` from this release; it used to be `true`) is an operator kill switch: when `true` the agent excludes feature releases regardless of the ring.
 
 ## Category Rules
 
