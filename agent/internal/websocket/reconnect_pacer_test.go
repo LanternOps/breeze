@@ -61,7 +61,7 @@ func TestReconnectPacerMatchesClientPolicy(t *testing.T) {
 					want = b.afterDialFailure(err)
 				default:
 					got = p.AfterDisconnect(ev.closeCode, ev.local, ev.lasted, ev.drainWithin)
-					var readErr error = io.ErrUnexpectedEOF
+					readErr := io.ErrUnexpectedEOF
 					if ev.closeCode != 0 && ev.closeCode != websocket.CloseAbnormalClosure {
 						readErr = &websocket.CloseError{Code: ev.closeCode}
 					}

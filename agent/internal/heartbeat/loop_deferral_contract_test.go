@@ -18,11 +18,12 @@ import (
 // ungated call fails here, so a new periodic sender cannot silently ignore a
 // server's Retry-After, and a heartbeat can never be routed through the gate.
 var loopDeferralExempt = map[string]string{
-	"doHeartbeatPost":      "heartbeat: the watchdog restarts an agent whose LastHeartbeat is 3 min stale; overload answers feed #9146 liveness (D6)",
-	"submitCommandResult":  "command result: never deferred (Global Constraints)",
-	"SendElevationRequest": "elevation: interactive, a user is waiting; W08 protected",
-	"postPamJSON":          "PAM reconciliation: own durable outbox and retry; W08 protected",
-	"postChatReply":        "chat reply: interactive, a user is waiting on it; one attempt per user action",
+	"doHeartbeatPost":        "heartbeat: the watchdog restarts an agent whose LastHeartbeat is 3 min stale; overload answers feed #9146 liveness (D6)",
+	"submitCommandResult":    "command result: never deferred (Global Constraints)",
+	"SendElevationRequest":   "elevation: interactive, a user is waiting; W08 protected",
+	"postPamJSON":            "PAM reconciliation: own durable outbox and retry; W08 protected",
+	"postChatReply":          "chat reply: interactive, a user is waiting on it; one attempt per user action",
+	"sendPamElevationUnable": "PAM elevation-unable report (#9517): one-shot, own bounded retry that honours Retry-After via RetryAfter/AnsweredAt",
 }
 
 // gatedHTTPFuncs are the functions that must gate and record. Listing them
