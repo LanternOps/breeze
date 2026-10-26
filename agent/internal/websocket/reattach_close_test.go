@@ -11,10 +11,11 @@ import (
 // install's socket with 4040 "reattached" (reconnect, no backoff) through the
 // revocation broadcast, and the TARGET's old install's with 4001 (credential
 // denied). 4040 is a plain reconnect: after a healthy connection the agent
-// waits only the server-close spread (1–5 s, the #8841 floor that keeps a
-// fleet closed at one instant from re-dialling at one instant) and the
-// exponential step is reset, not advanced — however often it repeats. 4001
-// escalates like any credential refusal.
+// waits only the server-close spread (from 1 s up to the first-reconnect
+// window, at least 5 s: #8841's floor, widened by W09, that keeps a fleet
+// closed at one instant from re-dialling at one instant) and the exponential
+// step is reset, not advanced — however often it repeats. 4001 escalates like
+// any credential refusal.
 func TestReattachCloseCodes(t *testing.T) {
 	kind, code := classifyDisconnect(&websocket.CloseError{Code: 4040, Text: "reattached"}, false)
 	if kind != disconnectServerNormal || code != 4040 {
@@ -23,10 +24,11 @@ func TestReattachCloseCodes(t *testing.T) {
 	for _, r := range randSamples {
 		b := newReconnectBackoff(fixedRand(r))
 		b.step = maxBackoff // left over from earlier failures
+		spreadMax := max(b.firstWindow, serverCloseSpreadMax)
 		for i := range 5 {
 			d := b.afterDisconnect(kind, stableConnectionThreshold+time.Second)
-			if d < serverCloseSpreadMin || d > serverCloseSpreadMax {
-				t.Fatalf("r=%v close %d: delay = %v, want within [%v, %v]", r, i, d, serverCloseSpreadMin, serverCloseSpreadMax)
+			if d < serverCloseSpreadMin || d > spreadMax {
+				t.Fatalf("r=%v close %d: delay = %v, want within [%v, %v]", r, i, d, serverCloseSpreadMin, spreadMax)
 			}
 			if b.step != initialBackoff {
 				t.Fatalf("r=%v close %d: step = %v, want %v (no exponential backoff)", r, i, b.step, initialBackoff)
