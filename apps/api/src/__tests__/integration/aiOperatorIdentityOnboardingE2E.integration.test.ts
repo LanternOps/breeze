@@ -22,6 +22,7 @@
  */
 import './setup';
 
+import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -71,7 +72,8 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (orig)
 import { taskCheckpointSchema } from '@breeze/shared';
 import { db } from '../../db';
 import {
-  actionIntents, aiOperatorOperations, aiOperatorTaskTargetAccounts, contacts, ticketChecklistItems,
+  actionIntents, aiOperatorOperations, aiOperatorTaskTargetAccounts, aiSessions, aiToolExecutions, auditLogs, contacts,
+  ticketChecklistItems,
 } from '../../db/schema';
 import { bumpPlanRevision, checkPlanEffectMembershipSystem } from '../../services/aiOperator/planApproval';
 import { createActionIntent } from '../../services/actionIntents/intentService';
@@ -99,7 +101,12 @@ beforeEach(() => {
   vi.stubEnv('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', 'true');
   resetFakes();
 });
-afterEach(() => { vi.unstubAllEnvs(); });
+/** The happy path's console spies; restored here too, so a failed case never leaves console spied. */
+const logSpies: Array<{ mockRestore: () => void }> = [];
+function restoreLogSpies(): void {
+  for (const sp of logSpies.splice(0)) sp.mockRestore();
+}
+afterEach(() => { restoreLogSpies(); vi.unstubAllEnvs(); });
 
 async function readIntent(id: string) {
   const [row] = await system(() => db.select().from(actionIntents).where(eq(actionIntents.id, id)));
@@ -124,6 +131,18 @@ async function mintAsApprover(a: Admitted, args: {
 
 describe('identity_onboarding end to end (R2a)', () => {
   runDb('happy path: admit → confirm → discover → review → create (four-eyes, sealed) → manual Google → resolve (r→r+1) → provision → manual work → verify → document', async () => {
+    // Every console line the run emits (the API's logger is console), so the
+    // secret assertion below covers LOGS as well as rows. Passed through.
+    // util.inspect, not JSON.stringify: an Error's message, stack and cause
+    // are kept (JSON.stringify(err) is "{}"). Restored in afterEach on failure.
+    const logged: string[] = [];
+    for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      const real = console[m].bind(console);
+      logSpies.push(vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+        logged.push(args.map((x) => (typeof x === 'string' ? x : inspect(x, { depth: 6, breakLength: Infinity }))).join(' '));
+        real(...args);
+      }));
+    }
     const t = await seedTenant();
     const a = await admit(t, { google: true });
 
@@ -342,6 +361,32 @@ describe('identity_onboarding end to end (R2a)', () => {
     expect(record).not.toContain('enc:v3:');
     for (const i of await childIntents(a)) expect(JSON.stringify(i.result ?? null)).not.toContain(FAKE_PASSWORD);
     for (const o of await operations(a)) expect(JSON.stringify(o.result ?? null)).not.toContain(FAKE_PASSWORD);
+
+    // R2c (#10150's reveal surface): the approved create has exactly ONE
+    // ledger row, on its own synthetic `ai_operator` session owned by the
+    // approver, and the ledger holds no credential and no result body.
+    const createLedger = await system(() => db.select({ execution: aiToolExecutions, session: aiSessions })
+      .from(aiToolExecutions).innerJoin(aiSessions, eq(aiSessions.id, aiToolExecutions.sessionId))
+      .where(eq(aiToolExecutions.intentId, createChild!.id)));
+    expect(createLedger, 'one ledger row for the minted credential intent').toHaveLength(1);
+    expect(createLedger[0]!.execution).toMatchObject({ toolName: 'm365_create_user', status: 'completed' });
+    expect(createLedger[0]!.session).toMatchObject({
+      orgId: t.orgId, userId: t.approverId, type: 'ai_operator',
+      contextSnapshot: expect.objectContaining({ taskId: a.taskId, stepKey: CREATE_STEP, intentId: createChild!.id }),
+    });
+    expect((createLedger[0]!.execution.toolOutput as Record<string, unknown> | null)?.result).toBeUndefined();
+    const allLedger = await system(() => db.select({ execution: aiToolExecutions, session: aiSessions })
+      .from(aiToolExecutions).innerJoin(aiSessions, eq(aiSessions.id, aiToolExecutions.sessionId))
+      .where(eq(aiSessions.orgId, t.orgId)));
+    expect(allLedger.length, 'control: the ledger scan reads real rows').toBeGreaterThan(1);
+    expect(JSON.stringify(allLedger)).not.toContain(FAKE_PASSWORD);
+    // The org's audit log (which plaintextLeaks does not scan).
+    const audit = await system(() => db.select().from(auditLogs).where(eq(auditLogs.orgId, t.orgId)));
+    expect(JSON.stringify(audit)).not.toContain(FAKE_PASSWORD);
+    // And the run's logs. Control: the logs were captured at all.
+    restoreLogSpies();
+    expect(logged.length, 'control: the run logged something').toBeGreaterThan(0);
+    expect(logged.filter((line) => line.includes(FAKE_PASSWORD)), 'the sealed value in a log line').toEqual([]);
   }, 180_000);
 
   // -------------------------------------------------------------------------

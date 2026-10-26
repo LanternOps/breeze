@@ -11,6 +11,7 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { useAiStore } from '../../stores/aiStore';
 import { usePermissions } from '../../lib/permissions';
 import HelpTooltip from '../shared/HelpTooltip';
+import HashLink from '../shared/HashLink';
 import ReliabilityBaselineSection, { type ReliabilityBaselineDetails } from './ReliabilityBaselineSection';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -328,15 +329,15 @@ function OffenderGroup({
                   {formatCount(offender.count)}×
                 </span>
                 {link && (
-                  <a
-                    href={link.href}
+                  <HashLink
+                    hash={link.href}
                     title={link.title}
                     aria-label={link.ariaLabel}
                     data-testid={`reliability-offender-link-${offender.key}`}
                     className={EVENT_LOG_LINK_CLASS}
                   >
                     {link.label}
-                  </a>
+                  </HashLink>
                 )}
               </span>
             </li>
@@ -825,15 +826,15 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                   ? buildEventLogLink({ factor: driver.factor }, driver.label)
                   : null;
               const eventLogLinkEl = factorLink ? (
-                <a
-                  href={factorLink.href}
+                <HashLink
+                  hash={factorLink.href}
                   title={factorLink.title}
                   aria-label={factorLink.ariaLabel}
                   data-testid={`reliability-factor-link-${driver.factor}`}
                   className={EVENT_LOG_LINK_CLASS}
                 >
                   {factorLink.label}
-                </a>
+                </HashLink>
               ) : null;
               const showDetailsLink =
                 problem && OFFENDER_FACTORS.has(driver.factor) && offenderEventTotal > 0 && !offendersOpen;

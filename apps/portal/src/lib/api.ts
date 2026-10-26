@@ -776,6 +776,77 @@ export interface QuoteDetail {
   presentation?: QuotePresentation;
 }
 
+export interface PublicAgreementDetail {
+  request: {
+    id: string;
+    status: 'sent' | 'viewed' | 'signed' | 'declined';
+    label: string | null;
+    coverMessage: string | null;
+    expiresAt: string;            // ISO instant
+    effectiveDate: string | null; // YYYY-MM-DD
+    signedAt: string | null;      // ISO
+    declinedAt: string | null;    // ISO
+  };
+  template: { name: string; versionNumber: number; sourceType: 'authored' | 'uploaded' };
+  /** Server-sanitized agreement HTML (authored templates). */
+  html: string | null;
+  /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
+  fileUrl: string | null;
+  parties: { partnerName: string; orgName: string | null };
+  branding: {
+    partnerName: string;
+    logoUrl: string | null;
+    seller: { name: string | null; lines: string[]; phone: string | null; email: string | null; website: string | null } | null;
+  };
+}
+
+/** Browser-facing URL of an uploaded agreement's file (same-origin, token-scoped). */
+export function publicAgreementFilePath(token: string): PublicApiPath {
+  return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/file`);
+}
+
+/** Browser-facing URL of an uploaded agreement's file for the signed-in portal user. */
+export function portalAgreementFilePath(id: string): PublicApiPath {
+  return publicApiPath(`/portal/agreements/${encodeURIComponent(id)}/file`);
+}
+
+/** Download URL of a signed agreement: the certified PDF (default) or the stored original. */
+export function signedAgreementFilePath(documentId: string, copy: 'certified' | 'original' = 'certified'): PublicApiPath {
+  return publicApiPath(`/portal/signed-agreements/${encodeURIComponent(documentId)}/file?copy=${copy}`);
+}
+
+/** An agreement request still awaiting signature (GET /portal/agreements). */
+export interface PortalAgreementSummary {
+  id: string;
+  name: string;
+  templateName: string | null;
+  status: 'sent' | 'viewed';
+  sentAt: string | null;
+  expiresAt: string;
+  /** The signed-in user's email is on the recipient list. */
+  canSign: boolean;
+}
+
+export type PortalAgreementDetail = PublicAgreementDetail & {
+  canSign: boolean;
+  signedAgreementId: string | null;
+};
+
+export interface PortalSignedAgreement {
+  id: string;
+  name: string;
+  templateName: string | null;
+  versionNumber: number | null;
+  sourceKind: 'quote' | 'request';
+  quoteNumber: string | null;
+  mime: string;
+  byteSize: number;
+  signerName: string | null;
+  signedAt: string | null;
+  acceptanceOrigin: 'customer' | 'on_behalf' | null;
+  createdAt: string;
+}
+
 export interface PublicQuoteDetail {
   quote: PublicQuoteHeader;
   blocks: QuoteBlock[];
@@ -1455,6 +1526,84 @@ export const portalApi = {
   ): Promise<ApiResponse<{ data: { status: string } }>> => {
     return apiPost<{ data: { status: string } }>(
       `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  getAgreements: async (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalAgreementSummary[] }>> => {
+    return apiGet<{ data: PortalAgreementSummary[] }>('/portal/agreements', config);
+  },
+
+  getAgreement: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalAgreementDetail }>> => {
+    return apiGet<{ data: PortalAgreementDetail }>(`/portal/agreements/${encodeURIComponent(id)}`, config);
+  },
+
+  acceptAgreement: async (
+    id: string,
+    signerName: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: 'signed'; signedAt: string; signedAgreementId: string } }>> => {
+    return apiPost<{ data: { status: 'signed'; signedAt: string; signedAgreementId: string } }>(
+      `/portal/agreements/${encodeURIComponent(id)}/accept`,
+      { signerName },
+      config
+    );
+  },
+
+  declineAgreement: async (
+    id: string,
+    reason?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: 'declined' } }>> => {
+    return apiPost<{ data: { status: 'declined' } }>(
+      `/portal/agreements/${encodeURIComponent(id)}/decline`,
+      { reason },
+      config
+    );
+  },
+
+  getSignedAgreements: async (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalSignedAgreement[] }>> => {
+    return apiGet<{ data: PortalSignedAgreement[] }>('/portal/signed-agreements', config);
+  },
+
+  // Public, token-gated agreement signing (no portal account). Hits
+  // /agreements/public/* (NOT /portal/*): a 401 must never bounce to login.
+  getPublicAgreement: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicAgreementDetail }>> => {
+    return apiGet<{ data: PublicAgreementDetail }>(
+      `/agreements/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicAgreement: async (
+    token: string,
+    signerName: string,
+    signerEmail: string
+  ): Promise<ApiResponse<{ data: { status: 'signed'; signedAt: string } }>> => {
+    return apiPost<{ data: { status: 'signed'; signedAt: string } }>(
+      `/agreements/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicAgreement: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: 'declined' } }>> => {
+    return apiPost<{ data: { status: 'declined' } }>(
+      `/agreements/public/${encodeURIComponent(token)}/decline`,
       { reason },
       { redirectOnUnauthorized: false }
     );

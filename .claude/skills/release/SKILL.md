@@ -115,6 +115,41 @@ Add a new entry at the **top** of `WHATS_NEW_ENTRIES` (newest-first):
   or below the shipped release will never auto-show for them. Version the entry as the *next*
   release and fold the missed highlights into it.
 
+## Step 0.45 — Bump the mobile store version (BEFORE tagging)
+
+Xcode Cloud builds the iOS app on every push to `main` and uploads to App Store Connect.
+Apple closes a version "train" the moment App Review approves it; every later upload
+stamped with that version is rejected (`ITMS-90186 Invalid Pre-Release Train` +
+`ITMS-90062 CFBundleShortVersionString must be higher`) and Apple emails Todd on each
+commit. From 10-23 to 10-25 that silently discarded builds 85–93, including the iOS 27
+crash fix. The cure is a new train per Breeze release, so Todd submits the store update at
+release time from a build that already exists.
+
+Bump the **patch** component (store version is independent of the Breeze semver) in the
+two files that carry it, plus the doc, in one commit merged to `main` before the tag:
+
+```bash
+OLD=$(node -p "require('./apps/mobile/app.json').expo.version")
+NEW=$(echo "$OLD" | awk -F. '{print $1"."$2"."$3+1}')
+sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" apps/mobile/app.json apps/mobile/package.json
+sed -i '' "s/^- Store version: \`$OLD\`/- Store version: \`$NEW\`/" apps/mobile/STORE_SUBMISSION.md
+cd apps/mobile && npx vitest run src/config/appJson.test.ts   # app.json shape guards
+```
+
+- `ios.buildNumber` and `android.versionCode` are **not** part of this step: Xcode Cloud
+  assigns iOS build numbers itself, and Android's `versionCode` is bumped only when a Play
+  upload is actually made (`STORE_SUBMISSION.md`).
+- Skip the bump only if the current version was never approved (check App Store Connect →
+  the version's status is still "Prepare for Submission" or "Waiting for Review"). A train
+  that was never approved is still open and accepts new builds.
+- After the release is tagged and the Xcode Cloud build for the bump commit finishes, the
+  build appears in TestFlight under the new version. Todd then creates that version in App
+  Store Connect, attaches the build, and submits. That submission is **his** step, outside
+  this skill; the skill's job ends at making sure a submittable build exists.
+- Optional hardening (App Store Connect UI, not code): restrict the Xcode Cloud workflow's
+  start condition to tags `v*` instead of every `main` push. Then builds only happen at
+  release cuts and the rejection emails cannot recur between releases.
+
 ## Step 0.5 — After tagging: WAIT for the build, confirm ALL artifacts exist
 
 Pushing the tag kicks off `release.yml`, which is a **long, multi-job build** (~20–40 min): api/web/portal GHCR images, agent binaries for every platform, the **signed** Windows MSI, the **notarized** macOS agent/viewer/helper, watchdog + user-helper, and the signed `release-artifact-manifest.json` (+ `.ed25519`/`.minisig`) and `checksums.txt`. The GitHub Release is created by the **final** job — you cannot `gh release edit` the body until then, and **you must not roll out until every artifact is present**.
@@ -415,6 +450,34 @@ ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
 
 **Why this check exists.** The deploy line names services explicitly (rather than a bare `docker compose pull && up -d`) for two real reasons: `billing` is built from a local `breeze-billing:local` image that has no registry to pull from, and a bare `up -d` would bounce `caddy`/`redis`/`tunnel` unnecessarily. But that makes the service list a **hand-maintained list that goes stale the moment a new first-party service is added** — and nothing else catches it. `portal` was added in v0.94.0, never made it into the deploy line, and silently sat on `0.94.0` through five releases while `/health` cheerfully reported `0.98.1`; a portal fix shipped in v0.97.0 was invisible in production for 11 days until a customer-facing proposal link surfaced it. Watchtower is **not** a safety net here: it runs with `WATCHTOWER_LABEL_ENABLE=true` and no service carries the enable label, so it updates nothing. The parity check is the backstop that does not depend on anyone remembering to update a list.
 
+### Record the deploy (required)
+
+Once a region is running the new build (`/health` 200 and every parity line `OK`), record it before moving on. Read the digest of the image the running api container was started from, on that host:
+
+```bash
+ssh root@<droplet> "docker image inspect --format '{{index .RepoDigests 0}}' \$(docker inspect --format '{{.Image}}' breeze-api)"
+# prints ghcr.io/lanternops/breeze/api@sha256:<64 hex>; keep the part from "sha256:" on
+```
+
+Then append one line for that region, in exactly this form, to the release register at the path given in `internal/ops/release-infra.md` as `SECURITY_RELEASE_REGISTER`:
+
+```
+deploy <EU|US> <tag> <YYYY-MM-DD> <sha256:digest>
+```
+
+for example `deploy EU v0.X.Y 2026-10-24 sha256:<64 hex>`, with the tag as pushed (`v` prefix) and the UTC date of the deploy. One line per region, written after that region's deploy, never ahead of it. The security steward publishes security advisories only against these lines: a tag missing the line for either region holds every advisory for that tag. `/health` is not a substitute.
+
+Then commit and push that line in the register's own repository. The steward may read a different clone, so a line that is only on this machine counts as missing:
+
+```bash
+REG=$(sed -n 's/^SECURITY_RELEASE_REGISTER=//p' ~/breeze/internal/ops/release-infra.md); REG=${REG/#\~/$HOME}
+D=$(dirname "$REG")
+git -C "$D" pull --rebase && git -C "$D" add "$REG" && \
+  git -C "$D" commit -m "register: deploy <EU|US> <tag>" -- "$REG" && git -C "$D" push
+```
+
+Commit only the register file. If `pull --rebase` refuses because that checkout has other local changes, do not stash, commit or discard them: run `git -C "$D" fetch` and, if the branch is not behind its upstream, commit and push as above. If it is behind, stop and ask Todd.
+
 ### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
 
 `autoMigrate` applies each migration file in its own transaction and records success per file. If migration #7 of 10 fails, files #1–6 have **already committed**. Rolling `BREEZE_VERSION` back to `$PREV` restores the old *code* but the DB is now on a **newer-than-$PREV schema**, and the old code can choke on it. This bit us on v0.95.0: the auth-epochs migration committed a `NOT NULL`-no-default column (`refresh_token_families.absolute_expires_at`) before a *later* migration failed; after rolling back, the old version could not `INSERT` a refresh-token family (the column it doesn't know about is `NOT NULL`), so **new logins silently failed while `/health` stayed green**.
@@ -530,6 +593,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] Confirmed rollout with Todd
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
+- [ ] Deploy lines recorded and pushed for EU and US
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
 - [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)

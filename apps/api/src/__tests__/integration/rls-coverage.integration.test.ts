@@ -464,6 +464,18 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // scope on top of the partner-axis policy asserted here.
   // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
   ['device_pool_assignment_events', 'partner_id'],
+  // #8318 wave 1b (reattach, spec §4.3/§4.4). Both partner-axis (Shape 3) with
+  // no org_id column — source/target org ids are authorization snapshots, not
+  // tenancy keys — so no cascade / export / merge registration; the intents'
+  // device FKs cascade, the ledger's device ids are FK-less snapshots.
+  // Both: RESTRICTIVE writes system-only (every writer runs in system scope),
+  // RESTRICTIVE reads narrowed to rows whose target org (and real source org)
+  // the caller can access. device_reattach_intents: source_parked is derived
+  // by a SECURITY DEFINER trigger. device_reattachments: append-only (UPDATE
+  // trigger).
+  // Functional proof: deviceReattachIntentsRls.integration.test.ts.
+  ['device_reattach_intents', 'partner_id'],
+  ['device_reattachments', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
@@ -660,7 +672,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
   // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
   // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  // Its run tables flow_runs / flow_run_steps (W04, #5219) are deliberately
+  // NOT here: they are shape 1 (org_id NOT NULL, breeze_has_org_access only —
+  // plan Open Decision 1), so org-tenant auto-discovery covers them.
   'flows',
+  // flow_versions (Tool Catalog W04, #5219): org_id XOR partner_id
+  // publications of a flow, 2027-01-06-130000-flow-runs.sql
+  // (flow_versions_one_owner_chk; owner copied from the parent flow by the
+  // deferred flow_versions_owner_guard_trg). The flows_isolation predicate
+  // verbatim plus the flow_versions_partner_wide_select branch. Functional
+  // cross-partner forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
   // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
   // partner_id config table plus three children that DENORMALISE the owner
   // pair from their parent (owner-guard constraint triggers, like
@@ -702,6 +724,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // read branch. Functional forge proof:
   // wispThreadLinksRls.integration.test.ts.
   'wisp_thread_links',
+  // Wisp companion W02a (#10212): wisp_thread_posts is the same shape —
+  // partner_id always set, org_id NULL for a partner-level post (brief,
+  // digest, org-less concern), no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispThreadPostsRls.integration.test.ts.
+  'wisp_thread_posts',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR
@@ -1038,6 +1065,10 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
   // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
   'flows',
+  // flow_versions_one_owner_chk, 2027-01-06-130000-flow-runs.sql (#5219); its
+  // partner-wide SELECT branch (flow_versions_partner_wide_select) ships in the
+  // same file. Forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
   // business_calendars_one_owner_chk and the three children's *_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
   // All four partner-wide SELECT branches ship in the same file.

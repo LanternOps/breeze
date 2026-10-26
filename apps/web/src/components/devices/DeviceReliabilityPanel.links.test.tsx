@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceReliabilityPanel from './DeviceReliabilityPanel';
 import { fetchWithAuth } from '../../stores/auth';
 import { eventLogFilterFromHash } from '@/lib/deviceEventLogLink';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -222,5 +223,28 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     const spooler = await screen.findByTestId('reliability-offender-link-Spooler');
     expect(filterOf(spooler)?.source).toBe('Spooler');
     expect(spooler).toHaveTextContent('View in event log');
+  });
+});
+
+describe('DeviceReliabilityPanel event-log links fire hashchange under the Astro router (#4229)', () => {
+  it('clicking a factor link writes the hash and the page hears it', async () => {
+    const router = installAstroClientRouterStandIn();
+    window.location.hash = '';
+    try {
+      route(snapshot());
+      render(<DeviceReliabilityPanel deviceId="dev-1" />);
+      const link = await screen.findByTestId('reliability-factor-link-serviceFailures');
+      const expected = hashOf(link);
+      const changed = new Promise<string>((resolve) => {
+        window.addEventListener('hashchange', (e) => {
+          if ((e as HashChangeEvent).newURL.endsWith(`#${expected}`)) resolve('ok');
+        });
+      });
+      fireEvent.click(link);
+      expect(window.location.hash).toBe(`#${expected}`);
+      await expect(changed).resolves.toBe('ok');
+    } finally {
+      router.uninstall();
+    }
   });
 });

@@ -587,6 +587,34 @@ describe('manage_tickets refuses the three users-FK actions for an ai_agent prin
   }
 });
 
+// Tool catalog W04 (#5219): a flow principal has no agent id (the ai_agent
+// TicketActor and triage lane) and no users row (the user TicketActor), so
+// every manage_tickets WRITE refuses it before any lookup or write — including
+// the comment/update_fields actions that have an AGENT design.
+describe('manage_tickets refuses ticket writes for a flow principal (W04 #5219)', () => {
+  const flowAuth = {
+    ...makeAgentAuth(),
+    principal: { kind: 'flow', flowId: 'flow-1', runId: RUN_ID },
+    user: { id: 'flow-1', email: 'flow+flow-1@breeze.internal', name: 'Nightly cleanup', isPlatformAdmin: false },
+  } as unknown as AuthContext;
+
+  for (const input of [
+    { action: 'create', subject: 'Printer down', orgId: ORG_ID },
+    { action: 'comment', ticketId: TICKET_ID, content: 'note' },
+    { action: 'update_fields', ticketId: TICKET_ID, fields: { priority: 'high' } },
+    { action: 'assign', ticketId: TICKET_ID, assigneeId: 'user-9' },
+    { action: 'update_status', ticketId: TICKET_ID, status: 'resolved' },
+  ]) {
+    it(`${input.action} returns a typed flow refusal and writes nothing`, async () => {
+      queueSelect(tickets, [accessibleTicket()]);
+      const parsed = JSON.parse(await getTool().handler(input as Record<string, unknown>, flowAuth));
+      expect(parsed).toEqual({ error: 'flow_principal_unsupported_action', action: input.action });
+      expect(topUpdateSetMock).not.toHaveBeenCalled();
+      expect(txInsertValuesMock).not.toHaveBeenCalled();
+    });
+  }
+});
+
 // -----------------------------------------------------------------------------
 // #4177 (W04): log_time_entry and the agent principal.
 //

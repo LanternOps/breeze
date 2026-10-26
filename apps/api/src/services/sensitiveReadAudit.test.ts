@@ -2,10 +2,11 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 vi.mock('./auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+  writeAuditEvent: vi.fn(),
 }));
 
-import { writeRouteAudit } from './auditEvents';
-import { auditSensitiveRead } from './sensitiveReadAudit';
+import { writeAuditEvent, writeRouteAudit } from './auditEvents';
+import { auditPortalSensitiveRead, auditSensitiveRead } from './sensitiveReadAudit';
 
 describe('auditSensitiveRead', () => {
   it('emits only the fixed sensitive-read identity and count schema', () => {
@@ -121,6 +122,44 @@ describe('auditSensitiveRead', () => {
       '[audit] sensitive-read audit failed:',
       expect.any(Error),
     );
+    consoleError.mockRestore();
+  });
+});
+
+describe('auditPortalSensitiveRead (#9075 W3a)', () => {
+  const portalUser = { id: '44444444-4444-4444-8444-444444444444', email: 'customer@example.test' };
+  const input = {
+    action: 'contract.document.download' as const,
+    orgId: '22222222-2222-4222-8222-222222222222',
+    partnerId: '55555555-5555-4555-8555-555555555555',
+    resourceType: 'contract_document' as const,
+    resourceId: '33333333-3333-4333-8333-333333333333',
+    format: 'pdf-certified',
+    rowCount: 1,
+    byteCount: 2048,
+  };
+
+  it('names the portal user as the actor (never the anonymous actor) and marks the principal', () => {
+    const c = { req: { header: vi.fn(() => undefined) } };
+    auditPortalSensitiveRead(c as never, portalUser, input);
+    expect(writeAuditEvent).toHaveBeenCalledWith(c, {
+      orgId: input.orgId,
+      partnerId: input.partnerId,
+      actorType: 'user',
+      actorId: portalUser.id,
+      actorEmail: portalUser.email,
+      action: 'contract.document.download',
+      resourceType: 'contract_document',
+      resourceId: input.resourceId,
+      details: { format: 'pdf-certified', rowCount: 1, byteCount: 2048, principal: 'portal_user' },
+    });
+  });
+
+  it('does not propagate a synchronous audit failure', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(writeAuditEvent).mockImplementationOnce(() => { throw new Error('audit backend unavailable'); });
+    expect(() => auditPortalSensitiveRead({ req: { header: () => undefined } } as never, portalUser, input)).not.toThrow();
+    expect(consoleError).toHaveBeenCalledWith('[audit] sensitive-read audit failed:', expect.any(Error));
     consoleError.mockRestore();
   });
 });

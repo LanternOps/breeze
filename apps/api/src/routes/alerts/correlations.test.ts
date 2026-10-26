@@ -779,6 +779,8 @@ describe('/alerts correlation routes', () => {
   it('records dismissed and merged correction feedback with stable replay keys', async () => {
     seedPersistedGroup();
     const targetGroupId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    // W07 (#6777): a merge target must be a real group of the same org (quorum / security review).
+    state.groups.push({ ...state.groups[0]!, id: targetGroupId, groupKey: 'merge-target' });
 
     const dismissed = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
       method: 'POST',
@@ -812,6 +814,22 @@ describe('/alerts correlation routes', () => {
       outcome: 'merged',
       metadata: expect.objectContaining({ targetGroupId }),
     }));
+  });
+
+  it('refuses a merge target that does not exist or belongs to another org (404, nothing recorded)', async () => {
+    seedPersistedGroup();
+    const otherOrgGroup = 'ffffffff-ffff-4fff-8fff-fffffffffff0';
+    state.groups.push({ ...state.groups[0]!, id: otherOrgGroup, orgId: '99999999-9999-4999-8999-999999999999', groupKey: 'other-org' });
+
+    for (const targetGroupId of [otherOrgGroup, 'ffffffff-ffff-4fff-8fff-fffffffffff1']) {
+      const res = await makeApp().request(`/alerts/correlations/${GROUP_1}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventType: 'correlation.merged', outcome: 'merged', targetGroupId }),
+      });
+      expect(res.status).toBe(404);
+    }
+    expect(emitCorrelationFeedbackMock).not.toHaveBeenCalled();
   });
 
   it('rejects invalid correlation correction feedback', async () => {

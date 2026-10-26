@@ -1,10 +1,9 @@
 {
   "title": "Abläufe",
   "subtitle": "Mehrstufige Automatisierungen, die Werkzeuge miteinander verketten.",
-  "previewNotice": "Abläufe sind in dieser Version schreibgeschützt. Entwerfen Sie sie im KI-Chat; Aktivierung und Ausführungen folgen in einer späteren Version.",
   "empty": {
     "title": "Noch keine Abläufe",
-    "body": "Bitten Sie den KI-Assistenten, einen Ablauf zu entwerfen, und prüfen Sie ihn dann hier."
+    "body": "Bitten Sie Breeze AI, einen Flow zu entwerfen, und prüfen Sie ihn dann hier."
   },
   "list": {
     "name": "Name",
@@ -19,7 +18,14 @@
     "draft": "Entwurf",
     "enabled": "Aktiviert",
     "paused": "Pausiert",
-    "disabled": "Deaktiviert"
+    "disabled": "Deaktiviert",
+    "pausedReason": {
+      "drift": "Pausiert, weil der Ablauf nach dem Aktivieren geändert wurde.",
+      "binding_drift": "Pausiert, weil sich ein vorab freigegebenes Skript oder Ziel geändert hat.",
+      "delegator_inactive": "Pausiert, weil die Person, in deren Namen er läuft, nicht mehr aktiv ist.",
+      "org_merged": "Pausiert, weil die Organisation zusammengeführt wurde.",
+      "event_dispatch_not_durable": "Pausiert, weil die Ereigniszustellung auf diesem Server nicht dauerhaft ist."
+    }
   },
   "trigger": {
     "schedule": "Zeitplan",
@@ -33,7 +39,7 @@
     "inputs": "Eingaben",
     "steps": "Schritte",
     "version": "Version {{version}}",
-    "createdInChat": "Im KI-Chat erstellt"
+    "createdInChat": "In Breeze AI erstellt"
   },
   "step": {
     "tool": "Werkzeug",
@@ -50,7 +56,8 @@
       "core": "Kernwerkzeug",
       "tenant": "Werkzeugquelle",
       "builtin": "Integriert"
-    }
+    },
+    "preApprovedBadge": "Vorab genehmigt"
   },
   "issues": {
     "title": "Validierung",
@@ -65,6 +72,191 @@
   },
   "errors": {
     "loadFailed": "Abläufe konnten nicht geladen werden.",
-    "notFound": "Ablauf nicht gefunden."
+    "notFound": "Ablauf nicht gefunden.",
+    "enableFailed": "Der Ablauf konnte nicht aktiviert werden.",
+    "disableFailed": "Der Ablauf konnte nicht deaktiviert werden.",
+    "runFailed": "Die Ausführung konnte nicht gestartet werden.",
+    "cancelFailed": "Die Ausführung konnte nicht abgebrochen werden."
+  },
+  "tabs": {
+    "overview": "Übersicht",
+    "runs": "Ausführungen"
+  },
+  "actions": {
+    "enable": "Aktivieren",
+    "disable": "Deaktivieren",
+    "runNow": "Jetzt ausführen",
+    "cancelRun": "Ausführung abbrechen",
+    "cancel": "Abbrechen"
+  },
+  "enable": {
+    "title": "Ablauf aktivieren",
+    "body": "Beim Aktivieren wird diese Version des Ablaufs veröffentlicht. Danach läuft sie über ihren Auslöser. Schritte, die eine Freigabe brauchen, fragen weiterhin danach, sofern Sie sie unten nicht vorab freigeben.",
+    "preApprove": "Diesen Schritt vorab freigeben",
+    "preApproveHelp": "Ausführungen dieser Version überspringen für diesen Schritt die Freigabeabfrage. Die Vorabfreigabe gilt genau für das hier gezeigte Skript und Ziel und endet, sobald sich der Ablauf ändert.",
+    "notEligible": {
+      "not_tier3": "Nur Schritte, die eine Freigabe brauchen, können vorab freigegeben werden.",
+      "tool_not_supported": "Dieses Werkzeug kann nicht vorab freigegeben werden.",
+      "script_not_literal": "Das Skript wird erst zur Laufzeit gewählt und kann daher nicht vorab freigegeben werden.",
+      "run_context_not_literal": "Das Ausführungskonto wird erst zur Laufzeit gewählt und kann daher nicht vorab freigegeben werden.",
+      "group_target": "Dieser Schritt zielt auf eine Gerätegruppe, deren Mitglieder sich ändern können. Eine Vorabfreigabe braucht feste Geräte.",
+      "variable_dependent": "Dieser Schritt hängt von Werten ab, die erst zur Laufzeit bekannt sind.",
+      "script_not_found": "Das Skript dieses Schritts wurde nicht gefunden.",
+      "four_eyes": "Für diese Aktion ist immer die Freigabe einer zweiten Person nötig.",
+      "tenant_tool": "Eigene Werkzeugquellen können nicht vorab freigegeben werden."
+    },
+    "eventScope": "Ereignisabläufe reagieren auf Plattformereignisse, ganz gleich, was sie ausgelöst hat, auch Aktionen von Personen, anderen Abläufen oder Automatisierungen. Prüfen Sie den Auslöserfilter, bevor Sie aktivieren.",
+    "missingPermissions": "Ihnen fehlen Berechtigungen, die die Schritte dieses Ablaufs brauchen:",
+    "eventNotDurable": "Die Ereigniszustellung ist auf diesem Server nicht dauerhaft, daher können Ereignisabläufe derzeit nicht aktiviert werden.",
+    "forEachConcurrency": "Schritte, die für jedes Element wiederholt werden, verarbeiten immer nur ein Element gleichzeitig.",
+    "confirm": "Ablauf aktivieren",
+    "tier3Heading": "Schritte, die eine Genehmigung benötigen",
+    "noTier3": "Kein Schritt dieses Flows benötigt eine Genehmigung.",
+    "validationFailed": "Der Flow enthält Validierungsfehler. Beheben Sie diese vor dem Aktivieren:",
+    "versionConflict": "Der Flow wurde geändert, seit Sie diese Seite geöffnet haben. Laden Sie die Seite neu und prüfen Sie die Änderungen vor dem Aktivieren.",
+    "alreadyEnabled": "Dieser Flow ist bereits aktiviert.",
+    "preApprovalNotEligible": "Schritt {{stepId}} kann nicht vorab genehmigt werden. {{reason}}",
+    "foreachConcurrencyNotAvailable": "Dieser Flow wiederholt einen Schritt parallel für jedes Element. Das unterstützt dieser Server noch nicht.",
+    "delegationScopeRestricted": "Ihr Zugriff ist auf einzelne Standorte beschränkt. Daher können Sie keinen Flow aktivieren, der in der gesamten Organisation läuft.",
+    "partnerWideForbidden": "Sie haben keine Berechtigung, Flows für alle Organisationen zu aktivieren.",
+    "interactiveRequired": "Flows können nur in einer angemeldeten Browsersitzung aktiviert werden.",
+    "slugUnavailable": "Ein anderer Flow in diesem Bereich verwendet diese Kennung bereits.",
+    "generic": "Der Flow konnte nicht aktiviert werden."
+  },
+  "run": {
+    "title": "Ablauf ausführen",
+    "org": "Organisation",
+    "inputs": "Eingaben",
+    "submit": "Ausführung starten",
+    "queueFull": "Für diesen Ablauf warten zu viele Ausführungen. Versuchen Sie es erneut, wenn einige beendet sind.",
+    "permissionMissing": "Ihnen fehlt die Berechtigung für die Schritte dieses Ablaufs: {{permissions}}",
+    "preApprovalsNotHonored": "Diese Ausführung wurde von jemandem ohne Freigaberechte gestartet. Vorabfreigaben wurden daher nicht angewendet, und jeder Schritt fragt nach einer Freigabe.",
+    "selectOrg": "Organisation auswählen",
+    "orgRequired": "Wählen Sie die Organisation, in der dieser Flow laufen soll.",
+    "requiredInput": "{{name}} ist erforderlich.",
+    "invalidNumber": "{{name}} muss eine Zahl sein.",
+    "invalidUuid": "{{name}} muss eine gültige ID sein.",
+    "inputsInvalid": "Einige Eingaben sind ungültig:",
+    "notEnabled": "Dieser Flow ist nicht aktiviert und kann nicht ausgeführt werden.",
+    "delegationScopeRestricted": "Ihr Zugriff ist auf einzelne Standorte beschränkt. Deshalb können Sie keinen Flow starten, der für die gesamte Organisation läuft.",
+    "interactiveUserRequired": "Nur angemeldete Personen können einen manuellen Lauf starten. Melden Sie sich in der Web-App an und versuchen Sie es erneut.",
+    "orgForbidden": "Sie haben keinen Zugriff auf diese Organisation.",
+    "notManual": "Dieser Flow wird nicht manuell gestartet. Er läuft über seinen Auslöser."
+  },
+  "runs": {
+    "empty": "Noch keine Ausführungen.",
+    "status": {
+      "queued": "In der Warteschlange",
+      "running": "Läuft",
+      "waiting": "Wartet",
+      "awaiting_approval": "Wartet auf Freigabe",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
+    },
+    "trigger": {
+      "manual": "Manuell",
+      "schedule": "Zeitplan",
+      "event": "Ereignis"
+    },
+    "via": {
+      "ui": "Über die Web-App",
+      "api": "Über die API",
+      "ai_tool": "Von Breeze AI",
+      "scheduler": "Durch den Zeitplaner",
+      "event": "Durch ein Ereignis"
+    },
+    "columns": {
+      "started": "Gestartet",
+      "status": "Status",
+      "trigger": "Auslöser",
+      "duration": "Dauer",
+      "org": "Organisation"
+    },
+    "filter": {
+      "label": "Nach Status filtern",
+      "all": "Alle Status"
+    },
+    "loadFailed": "Ausführungen konnten nicht geladen werden."
+  },
+  "runDetail": {
+    "title": "Ablaufausführung",
+    "back": "Zurück zu den Ausführungen",
+    "awaitingApproval": "Diese Ausführung ist angehalten, bis jemand einen Schritt freigibt.",
+    "openApprovals": "Freigaben öffnen",
+    "error": {
+      "step_failed": "Ein Schritt ist fehlgeschlagen.",
+      "rejected": "Eine genehmigende Person hat einen Schritt abgelehnt.",
+      "drift": "Der Ablauf wurde nach dem Aktivieren geändert, daher wurde die Ausführung gestoppt.",
+      "binding_drift": "Ein vorab freigegebenes Skript oder Ziel hat sich geändert, daher wurde die Ausführung gestoppt.",
+      "unknown_outcome": "Das Ergebnis eines Schritts ist unbekannt. Der Schritt wurde möglicherweise ausgeführt. Prüfen Sie das Gerät von Hand, bevor Sie den Ablauf erneut starten.",
+      "step_timeout": "Ein Schritt hat zu lange gedauert und wurde gestoppt.",
+      "input_invalid": "Ein Schritt hat Eingaben erhalten, die er nicht verwenden konnte.",
+      "reference_not_owned": "Ein Schritt hat auf etwas verwiesen, das zu einer anderen Organisation gehört.",
+      "tool_unavailable": "Ein von diesem Ablauf verwendetes Werkzeug ist nicht mehr verfügbar.",
+      "tool_blocked": "Ein von diesem Ablauf verwendetes Werkzeug ist gesperrt.",
+      "too_many_items": "Ein Schritt hätte mehr Elemente wiederholt als erlaubt.",
+      "render_failed": "Die Eingabe eines Schritts konnte nicht aus früheren Ergebnissen erstellt werden.",
+      "no_eligible_approvers": "Niemand kann einen Schritt freigeben, der eine Freigabe braucht.",
+      "worker_lost": "Die Ausführung wurde unterbrochen und konnte nicht fortgesetzt werden.",
+      "cancelled": "Die Ausführung wurde abgebrochen.",
+      "run_timeout": "Die Ausführung hat das Limit von einer Stunde überschritten und wurde gestoppt.",
+      "flow_disabled": "Der Ablauf wurde deaktiviert, während diese Ausführung aktiv war.",
+      "flows_disabled": "Abläufe sind auf diesem Server ausgeschaltet.",
+      "delegator_inactive": "Die Person, für die diese Ausführung handelt, ist nicht mehr aktiv.",
+      "org_merged": "Die Organisation wurde mit einer anderen zusammengeführt."
+    },
+    "step": {
+      "status": {
+        "running": "Läuft",
+        "awaiting_approval": "Wartet auf Freigabe",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "skipped": "Übersprungen",
+        "unknown_outcome": "Ergebnis unbekannt, von Hand prüfen",
+        "cancelled": "Abgebrochen"
+      },
+      "approval": {
+        "none": "Keine Freigabe nötig",
+        "intent": "Benötigt die Freigabe einer Person",
+        "pre_approved": "Vorab freigegeben"
+      },
+      "input": "Eingabe",
+      "output": "Ausgabe",
+      "truncated": "Die Ausgabe wurde gekürzt, weil sie zu groß war.",
+      "notReached": "Nicht erreicht",
+      "pending": "Ausstehend",
+      "item": "Element {{index}}",
+      "approver": "Genehmiger: {{id}}",
+      "attempt": "Versuch {{n}}",
+      "show": "Details anzeigen",
+      "hide": "Details ausblenden",
+      "loading": "Wird geladen...",
+      "loadFailed": "Schrittdetails konnten nicht geladen werden.",
+      "pruned": "Die Details wurden durch die Aufbewahrungsrichtlinie entfernt.",
+      "redacted": "Die Schrittdetails sind mit Ihrem Zugriff nicht verfügbar."
+    },
+    "notFound": "Ausführung nicht gefunden.",
+    "alreadyTerminal": "Diese Ausführung ist bereits beendet.",
+    "loadFailed": "Diese Ausführung konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "version": "Version {{version}} (Veröffentlichung {{seq}})",
+    "org": "Organisation: {{org}}",
+    "waitingUntil": "Wartet bis {{time}}",
+    "queuedNote": "In der Warteschlange. Wartet auf einen freien Ausführungsplatz.",
+    "paused": "Live-Aktualisierungen pausiert.",
+    "lastUpdated": "Zuletzt aktualisiert {{time}}",
+    "timeline": "Schritte"
+  },
+  "toast": {
+    "enabled": "Ablauf aktiviert",
+    "disabled": "Ablauf deaktiviert",
+    "runStarted": "Ausführung gestartet",
+    "runCancelled": "Ausführung abgebrochen"
+  },
+  "disable": {
+    "title": "Flow deaktivieren",
+    "message": "Beim Deaktivieren starten keine neuen Läufe mehr und laufende Läufe werden abgebrochen. Sie können den Flow später wieder aktivieren."
   }
 }

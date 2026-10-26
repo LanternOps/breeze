@@ -194,6 +194,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'generate_incident_report',
   'get_active_users',
   'get_ai_agent_run', // A-W06 Tier-1 read
+  'get_alert_correlations', // W07 (#6777) Tier-1 read: org-scoped correlation views, refused to exact-device runs in the handler
   // W01 (#6755)
   'get_backup_status',
   // W01 (#6755) follow-up
@@ -226,6 +227,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_findings',
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
+  'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -269,6 +271,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // W01 (#6755)
   'get_sla_breaches',
   'get_sla_compliance_report',
+  'get_snmp_metrics',
   'get_software_compliance',
   'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read
@@ -295,6 +298,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_flow_runs', // Tool Catalog W04 (#5219) Tier-1 read
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',

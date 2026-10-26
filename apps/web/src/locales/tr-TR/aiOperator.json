@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Sonraki eylem",
-      "approveInInbox": "Gelen kutusunda onayla",
+      "approveInInbox": "Onaylar bölümünde onayla",
       "answerQuestion": "Bir soruyu yanıtla",
       "waitingForDevice": "Cihaz bekleniyor",
       "waitingForMaintenanceWindow": "Bakım penceresi bekleniyor",
@@ -114,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Operator görevleri yükleniyor...",
-    "loadFailed": "Operator görevleri yüklenemedi.",
-    "empty": "Bu cihaz için Operator görevi yok.",
-    "emptyHint": "Yapay Zekâ Operatörü, bir uyarıyı ona devrettiğinizde cihazdaki sorunları inceler ve çözer. Bu cihaz için devredilen görevler burada görünür.",
-    "learnMore": "Yapay Zekâ Operatörü hakkında bilgi edinin"
+    "loading": "Yapay zekâ görevleri yükleniyor…",
+    "loadFailed": "Yapay zekâ görevleri yüklenemedi.",
+    "empty": "Bu cihaz için yapay zekâ görevi yok.",
+    "emptyHint": "Bir uyarıdan yapay zekâ görevi başlattığınızda yapay zekâ çalışanları cihazdaki sorunları inceler ve çözer. Bu cihazın yapay zekâ görevleri burada görünür.",
+    "learnMore": "Yapay zekâ görevleri hakkında bilgi edinin"
   },
   "delegate": {
-    "button": "Operatöre Devret",
-    "dialogTitle": "Operatöre Devret",
-    "dialogMessage": "Operatör bunu aşağıdaki iş akışını kullanarak inceleyecek ve çözmeye çalışacaktır.",
+    "button": "Yapay zekâ görevi başlat",
+    "dialogTitle": "Yapay zekâ görevi başlat",
+    "dialogMessage": "Yapay zekâ çalışanları bunu aşağıdaki tarifi kullanarak inceleyecek ve çözmeye çalışacaktır.",
     "orgLabel": "Organizasyon",
     "deviceLabel": "Cihaz",
     "serviceNameLabel": "Hizmet adı",
     "serviceNamePlaceholder": "ör. Yazdırma Kuyruğu",
-    "serviceNameError": "Bu görevi devretmek için hizmet adını girin.",
-    "workflowLabel": "İş akışı",
+    "serviceNameError": "Bu yapay zekâ görevini başlatmak için hizmet adını girin.",
+    "workflowLabel": "Tarif",
     "workflowName": "Hizmet kurtarma",
-    "confirmLabel": "Devret",
-    "queued": "Görev Operatöre devredildi.",
-    "failed": "Görev Operatöre devredilemedi."
-  },
-  "nav": {
-    "operator": "Operatör"
+    "confirmLabel": "Başlat",
+    "queued": "Yapay zekâ görevi başlatıldı.",
+    "failed": "Yapay zekâ görevi başlatılamadı."
   },
   "effectTool": {
     "googleSetVacation": "Gmail otomatik yanıtını ayarla",
@@ -162,7 +159,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Operatör bölümleri",
+      "label": "Yapay zekâ görevi bölümleri",
       "tasks": "Görevler",
       "library": "Kitaplık"
     },
@@ -171,7 +168,7 @@
   "taskList": {
     "loading": "Görevler yükleniyor...",
     "loadFailed": "Görevler yüklenemedi.",
-    "empty": "Henüz Operatör görevi yok.",
+    "empty": "Henüz yapay zekâ görevi yok.",
     "emptyHint": "Kitaplıktan, bir talepten, bir kişiden veya bir uyarıdan başlattığınız görevler burada görünür.",
     "loadMore": "Daha fazla yükle",
     "loadMoreFailed": "Daha fazla görev yüklenemedi."

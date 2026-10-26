@@ -273,6 +273,14 @@ export async function applyTopologyTemplatePreview(
                 })
             )
               throw new TopologyOperationError('preview_invalidated', 409);
+            // The preview recorded the requester's session epochs as they were when the person read the preview in
+            // their own session. A release (or any later apply) that carries different epochs means the session was
+            // revoked or its MFA changed since: the approval no longer stands (W08 quorum QW4).
+            if (
+              record.actor.authEpoch !== actor.authEpoch ||
+              record.actor.mfaEpoch !== actor.mfaEpoch
+            )
+              throw new TopologyOperationError('permission_changed', 403, 'Your session changed since the preview was read; run preview again and re-approve.');
             let code = record.preview.errors[0]?.code ?? null;
             if (!code && record.effect) {
               try {

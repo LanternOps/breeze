@@ -61,7 +61,8 @@ describe('wiring', () => {
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
   it('index.ts registers the app-wide secureHeaders through routeReferrerPolicyWins', () => {
-    expect(read('../index.ts')).toMatch(/routeReferrerPolicyWins\(\s*byTrustCrossOriginPath\(/);
+    // Outermost wrapper of every path-selected secureHeaders branch (frame + trust), so no-referrer survives on all.
+    expect(read('../index.ts')).toMatch(/routeReferrerPolicyWins\(\s*bySameOriginFramePath\(\s*byTrustCrossOriginPath\(/);
   });
 
   it('the Caddy site block only defaults Referrer-Policy, so an upstream no-referrer survives', () => {

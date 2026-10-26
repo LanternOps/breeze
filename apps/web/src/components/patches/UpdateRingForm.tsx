@@ -7,6 +7,31 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
+import type { RingFeatureUpdates } from './UpdateRingList';
+
+/** A Windows release token like 25H2. Mirrors the API's ringFeatureUpdatesSchema. */
+const RELEASE_TOKEN = /^\d{2}H[12]$/i;
+
+/** The form keeps the pin fields flat so switching modes never loses typed values. */
+type FeatureUpdatesFormValue = {
+  mode: RingFeatureUpdates['mode'];
+  product: 'windows-11' | 'windows-10';
+  targetVersion: string;
+};
+
+function featureUpdatesToForm(value: RingFeatureUpdates | undefined): FeatureUpdatesFormValue {
+  if (value?.mode === 'pin') {
+    return { mode: 'pin', product: value.product, targetVersion: value.targetVersion };
+  }
+  return { mode: value?.mode ?? 'block', product: 'windows-11', targetVersion: '' };
+}
+
+function featureUpdatesToApi(value: FeatureUpdatesFormValue): RingFeatureUpdates {
+  if (value.mode === 'pin') {
+    return { mode: 'pin', product: value.product, targetVersion: value.targetVersion.trim().toUpperCase() };
+  }
+  return { mode: value.mode };
+}
 
 /** `ringOrder`'s upper bound — shared by the schema and the new-ring default. */
 const MAX_RING_ORDER = 100;
@@ -77,17 +102,36 @@ function makeRingSchema(t: TFunction<'patches'>) {
           });
         }
       }),
+    // Windows feature releases: block (default) | allow | pin to one release.
+    // Flat in the form; onSubmit maps it to the API's discriminated shape.
+    featureUpdates: z
+      .object({
+        mode: z.enum(['block', 'allow', 'pin']),
+        product: z.enum(['windows-11', 'windows-10']),
+        targetVersion: z.string(),
+      })
+      .superRefine((value, ctx) => {
+        if (value.mode === 'pin' && !RELEASE_TOKEN.test(value.targetVersion.trim())) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['targetVersion'],
+            message: t('updateRingForm.featureUpdates.validation.release'),
+          });
+        }
+      }),
   });
 }
 
 type RingSchema = ReturnType<typeof makeRingSchema>;
-export type UpdateRingFormValues = z.infer<RingSchema>;
+/** What onSubmit receives: the form values with featureUpdates in the API shape. */
+export type UpdateRingFormValues = Omit<z.infer<RingSchema>, 'featureUpdates'> & { featureUpdates: RingFeatureUpdates };
 
 /** Defaults arrive from the API, which may omit the third-party fields (older
  *  rings) or send `thirdPartyDeferralDays: null` meaning "inherit the ring
  *  hold". Both are normalized to concrete form values in `initialValues`. */
-export type UpdateRingFormDefaults = Partial<Omit<UpdateRingFormValues, 'autoApprove' | 'appRules'>> & {
+export type UpdateRingFormDefaults = Partial<Omit<UpdateRingFormValues, 'autoApprove' | 'appRules' | 'featureUpdates'>> & {
   appRules?: RingAppRule[];
+  featureUpdates?: RingFeatureUpdates;
   autoApprove?: Partial<Omit<UpdateRingFormValues['autoApprove'], 'thirdPartyDeferralDays'>> & {
     thirdPartyDeferralDays?: number | null;
   };
@@ -271,6 +315,7 @@ export default function UpdateRingForm({
       autoApprove: { enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: 0, autoApproveUnrated: false },
       categoryRules: [],
       appRules: [],
+      featureUpdates: undefined as RingFeatureUpdates | undefined,
       ...defaultValues,
     } satisfies UpdateRingFormDefaults;
     const inheritedHold = merged.autoApprove?.deferralDays ?? merged.deferralDays ?? 0;
@@ -297,6 +342,7 @@ export default function UpdateRingForm({
         deferralDaysOverride: r.deferralDaysOverride ?? inheritedHold,
       })),
       appRules: merged.appRules ?? [],
+      featureUpdates: featureUpdatesToForm(merged.featureUpdates),
     };
     // defaultValues is only read on mount by react-hook-form, so the empty
     // dependency array is intentional.
@@ -321,6 +367,7 @@ export default function UpdateRingForm({
   const availableCategories = categoryOptions.filter((c) => !usedCategories.includes(c.value));
 
   const autoApprove = watch('autoApprove');
+  const featureUpdatesMode = watch('featureUpdates.mode');
   const isLoading = loading ?? isSubmitting;
 
   const toggleDefaultSeverity = (severity: Severity) => {
@@ -363,6 +410,7 @@ export default function UpdateRingForm({
           ...values,
           deferralDays: hold,
           autoApprove: { ...values.autoApprove, deferralDays: hold },
+          featureUpdates: featureUpdatesToApi(values.featureUpdates),
         });
       })}
       className="space-y-6"
@@ -416,6 +464,54 @@ export default function UpdateRingForm({
             <label htmlFor="ring-grace-period-hours" className={labelClass}>{t('updateRingForm.fields.rebootGraceHours')}</label>
             <input id="ring-grace-period-hours" type="number" min={0} max={168} {...register('gracePeriodHours')} className={cn(inputClass, 'mt-1.5')} />
           </div>
+        </div>
+
+        {/* Windows feature releases: block (default) | allow newest | pin to one release. */}
+        <div className="mt-4 rounded-md border bg-muted/30 p-4" data-testid="ring-feature-updates-section">
+          <label htmlFor="ring-feature-updates-mode" className={labelClass}>{t('updateRingForm.featureUpdates.title')}</label>
+          <p className="mt-1 text-xs text-muted-foreground">{t('updateRingForm.featureUpdates.description')}</p>
+          <select
+            id="ring-feature-updates-mode"
+            data-testid="ring-feature-updates-mode"
+            {...register('featureUpdates.mode')}
+            className={cn(inputClass, 'mt-2')}
+          >
+            <option value="block">{t('updateRingForm.featureUpdates.modeBlock')}</option>
+            <option value="allow">{t('updateRingForm.featureUpdates.modeAllow')}</option>
+            <option value="pin">{t('updateRingForm.featureUpdates.modePin')}</option>
+          </select>
+          {featureUpdatesMode === 'pin' && (
+            <>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="ring-feature-updates-product" className={labelClass}>{t('updateRingForm.featureUpdates.productLabel')}</label>
+                  <select
+                    id="ring-feature-updates-product"
+                    data-testid="ring-feature-updates-product"
+                    {...register('featureUpdates.product')}
+                    className={cn(inputClass, 'mt-1.5')}
+                  >
+                    <option value="windows-11">{t('updateRingForm.featureUpdates.productWindows11')}</option>
+                    <option value="windows-10">{t('updateRingForm.featureUpdates.productWindows10')}</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="ring-feature-updates-version" className={labelClass}>{t('updateRingForm.featureUpdates.releaseLabel')}</label>
+                  <input
+                    id="ring-feature-updates-version"
+                    data-testid="ring-feature-updates-version"
+                    {...register('featureUpdates.targetVersion')}
+                    className={cn(inputClass, 'mt-1.5')}
+                    placeholder={t('updateRingForm.featureUpdates.releasePlaceholder')}
+                  />
+                  {errors.featureUpdates?.targetVersion && (
+                    <p className="mt-1 text-xs text-destructive">{errors.featureUpdates.targetVersion.message}</p>
+                  )}
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">{t('updateRingForm.featureUpdates.pinNote')}</p>
+            </>
+          )}
         </div>
       </div>
 

@@ -33,7 +33,7 @@ const captureMock = vi.fn();
 vi.mock('./acceptanceProvider', () => ({ getAcceptanceProvider: () => ({ kind: 'builtin', capture: captureMock }) }));
 
 import { db } from '../db';
-import { acceptAgreementRequest, declineAgreementRequest, type AcceptAgreementRequestParams } from './agreementRequestAcceptService';
+import { acceptAgreementRequest, declineAgreementRequest, markAgreementRequestViewed, type AcceptAgreementRequestParams } from './agreementRequestAcceptService';
 import { computeAgreementSha256 } from './agreementContentHash';
 import type { TemplateVersionRenderData } from './contractTemplateRender';
 
@@ -351,5 +351,23 @@ describe('declineAgreementRequest', () => {
     queue([row({ status: 'declined' })]);
     await declineAgreementRequest(dparams({ reason: undefined }));
     expect(updated[1]!.declineReason).toBeNull();
+  });
+});
+
+describe('markAgreementRequestViewed (#9075 W2b)', () => {
+  it('stamps sent → viewed with first_viewed_at kept if already set (COALESCE), conditional on status=sent', async () => {
+    queue([{ id: REQ }]);
+    await expect(markAgreementRequestViewed(REQ, ORG, NOW)).resolves.toBe(true);
+    expect(events).toEqual(['update']);
+    expect(updated[0]!.status).toBe('viewed');
+    expect(updated[0]!.updatedAt).toBe(NOW);
+    // COALESCE(first_viewed_at, now) — an SQL expression, never a bare overwrite.
+    expect(updated[0]!.firstViewedAt).not.toBe(NOW);
+    expect(updated[0]!.firstViewedAt).toBeTypeOf('object');
+  });
+
+  it('matching zero rows (already viewed / signed / other org) is a quiet no-op', async () => {
+    queue([]);
+    await expect(markAgreementRequestViewed(REQ, ORG, NOW)).resolves.toBe(false);
   });
 });

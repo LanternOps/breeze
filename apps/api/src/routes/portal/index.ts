@@ -7,6 +7,8 @@ import { assetRoutes } from './assets';
 import { profileRoutes } from './profile';
 import { invoiceRoutes as portalInvoiceRoutes } from './invoices';
 import { quoteRoutes as portalQuoteRoutes } from './quotes';
+import { portalAgreementRoutes } from './agreements';
+import { portalSignedAgreementRoutes } from './signedAgreements';
 import {
   portalAssetCheckoutEnabledMiddleware,
   portalDevicesEnabledMiddleware,
@@ -59,6 +61,11 @@ portalRoutes.use('/assets/*', portalAssetCheckoutEnabledMiddleware);
 portalRoutes.use('/profile/*', portalAuthMiddleware);
 portalRoutes.use('/invoices/*', portalAuthMiddleware);
 portalRoutes.use('/quotes/*', portalAuthMiddleware);
+// Agreement signing (#9075 W3a): always on, like proposals and invoices — a
+// legal document the MSP sent to this org has no visibility flag to hide it.
+// `/x/*` also matches the bare `/x` list path (agreements.gate.test.ts).
+portalRoutes.use('/agreements/*', portalAuthMiddleware);
+portalRoutes.use('/signed-agreements/*', portalAuthMiddleware);
 
 // Strict visibility gates (W03 Task 3.3 and every later section): fail closed
 // on a missing portal_branding row or an explicit false. Auth first, then the
@@ -123,6 +130,8 @@ portalRoutes.route('/', assetRoutes);
 portalRoutes.route('/', profileRoutes);
 portalRoutes.route('/', portalInvoiceRoutes);
 portalRoutes.route('/', portalQuoteRoutes);
+portalRoutes.route('/', portalAgreementRoutes);
+portalRoutes.route('/', portalSignedAgreementRoutes);
 portalRoutes.route('/', portalDashboardRoutes);
 portalRoutes.route('/dashboard', portalTrustPageLinkRoutes); // under the /dashboard/* auth + enableDashboard gate
 portalRoutes.route('/', portalSecurityRoutes);

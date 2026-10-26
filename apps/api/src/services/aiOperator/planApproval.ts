@@ -923,9 +923,18 @@ export async function bumpPlanRevisionInTx(
         inArray(actionIntents.id, candidateIds),
         inArray(actionIntents.status, ['pending_approval', 'approved']),
       ))
-      .returning({ id: actionIntents.id, orgId: actionIntents.orgId, taskId: actionIntents.taskId });
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        taskId: actionIntents.taskId,
+        requestingFlowRunId: actionIntents.requestingFlowRunId,
+      });
     for (const c of cancelled) {
-      await publishIntentTerminalOutbox(dbh, c, 'intent_cancelled');
+      await publishIntentTerminalOutbox(
+        dbh,
+        { id: c.id, orgId: c.orgId, taskId: c.taskId, requestingFlowRunId: c.requestingFlowRunId },
+        'intent_cancelled',
+      );
     }
     cancelledIntentIds = cancelled.map((c) => c.id);
     if (cancelledIntentIds.length > 0) {

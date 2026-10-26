@@ -14,7 +14,7 @@ import {
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   TOOL_ACTION_INPUT_KEYS,
-  checkGuardrails, resolveApprovalScope, isInputAwareTier3,
+  checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
@@ -889,6 +889,8 @@ const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
     edit_comment: 'supervised', delete_comment: 'supervised',
     move_org: 'four_eyes',
     merge: 'supervised',
+    // W06 (#6776, W06-D4): assign/status/priority over <= 50 tickets of one org; never a delete.
+    bulk_update: 't2',
   },
   manage_quotes: {
     create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',
@@ -1111,3 +1113,283 @@ describe('W03 class rows (#6757)', () => {
   });
 });
 
+
+// ── W06 class rows (#6776, spec checklist item 3) ──────────────────────────
+// Copied from the W06 plan's "Final per-action classes" table, NOT derived from
+// the guardrail tables. Every action-enum member of the seven tools has a row,
+// so a new action reds here until someone classifies it. The input-aware
+// manage_ticket_checklist_templates:create is pinned on EMPTY input (its
+// org/partner arms are below).
+// manage_tickets:bulk_update is pinned in W02_EXPECTED (it is a manage_tickets action).
+const W06_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ticket_config: {
+    get_config: 't1', get_org_settings: 't1', list_categories: 't1', list_domains: 't1',
+    update_org_settings: 'supervised',
+    create_category: 'supervised', update_category: 'supervised', delete_category: 'supervised', reorder_categories: 'supervised',
+    create_status: 'supervised', update_status: 'supervised', reorder_statuses: 'supervised',
+    set_priorities: 'supervised',
+    create_domain: 'supervised', update_domain: 'supervised', delete_domain: 'four_eyes',
+  },
+  manage_ticket_checklist_templates: {
+    list: 't1', get: 't1',
+    create: 't2', // empty input = org-owned (the partner-wide arm is pinned below)
+    update: 'supervised', add_item: 'supervised', update_item: 'supervised', remove_item: 'supervised', reorder_items: 'supervised',
+    delete: 'four_eyes',
+  },
+  manage_ticket_inbox: { list: 't2', convert: 'supervised', dismiss: 'supervised' },
+  manage_ticket_attachments: { list: 't1', read_content: 't2', attach_from_artifact: 't2', delete: 'supervised' },
+  manage_ticket_forms: { list: 't1', available: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_ticket_response_templates: { list: 't1', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_time_suggestions: { list: 't1', confirm: 't2', dismiss: 't2', undo: 't2' },
+};
+
+describe('W06 class rows (#6776)', () => {
+  it('covers all seven W06 tools exactly once', () => {
+    expect(Object.keys(W06_EXPECTED).sort()).toEqual([
+      'manage_ticket_attachments', 'manage_ticket_checklist_templates', 'manage_ticket_config', 'manage_ticket_forms',
+      'manage_ticket_inbox', 'manage_ticket_response_templates', 'manage_time_suggestions',
+    ]);
+  });
+
+  it.each(Object.keys(W06_EXPECTED))('%s: W06_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W06_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('the registry tier of every W06 tool is 1 (the per-action maps carry the class)', () => {
+    for (const tool of Object.keys(W06_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  // manage_ticket_checklist_templates:create — W06-D2, precedent manage_backup_profiles:create.
+  it.each([
+    ['org-owned (ownerScope omitted)', { name: 'Onboarding', orgId: '11111111-1111-4111-8111-111111111111' }, 't2'],
+    ['org-owned (explicit organization)', { name: 'Onboarding', ownerScope: 'organization' }, 't2'],
+    ['partner-wide', { name: 'Onboarding', ownerScope: 'partner' }, 'supervised'],
+  ] as const)('checklist template create, %s → %s', (_label, data, cls) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe(cls);
+  });
+
+  // A non-object `data` is rejected by the handler's schema before any write, so it stays at the base tier.
+  it.each([[undefined], ['partner'], [['partner']], [null]])('checklist template create with unreadable data %j stays at the base tier 2', (data) => {
+    expect(classOf('manage_ticket_checklist_templates', { action: 'create', data })).toBe('t2');
+  });
+
+  it('only create is input-aware; a partner ownerScope on another action does not change its class', () => {
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'create', { data: { ownerScope: 'partner' } })).toBe(true);
+    expect(isInputAwareTier3('manage_ticket_checklist_templates', 'list', { data: { ownerScope: 'partner' } })).toBe(false);
+    expect(classOf('manage_ticket_checklist_templates', { action: 'list', data: { ownerScope: 'partner' } })).toBe('t1');
+  });
+
+  it('every W06 four-eyes row is an irreversible delete (spec Class rule: irreversible AND partner-wide)', () => {
+    const fourEyes = Object.entries(W06_EXPECTED).flatMap(([tool, m]) => Object.entries(m).filter(([, c]) => c === 'four_eyes').map(([a]) => `${tool}:${a}`));
+    expect(fourEyes.sort()).toEqual([
+      'manage_ticket_checklist_templates:delete', 'manage_ticket_config:delete_domain',
+      'manage_ticket_forms:delete', 'manage_ticket_response_templates:delete',
+    ]);
+  });
+});
+
+// ── W07 class rows (#6777, spec checklist item 3) ──────────────────────────
+// Copied from the W07 plan's "Final per-action classes" table, NOT derived from the guardrail tables.
+// Every action-enum member of the W07 multiplexers has a row, so a new action reds here until someone
+// classifies it. reliability_feedback has no action enum: it is a single-purpose tier-2 tool.
+const W07_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_alert_correlations: {
+    groups: 't1', get: 't1', by_alert: 't1', links: 't1', analyze: 't1', evaluation: 't1', explain: 't1',
+  },
+  manage_alert_correlations: {
+    acknowledge_group: 't2', resolve_group: 't2', acknowledge_related: 't2', feedback: 't2', rca_feedback: 't2',
+  },
+  // promote raises a real alert and publishes alert.triggered (reaches notification channels): supervised.
+  manage_device_anomalies: { list: 't1', dismiss: 't2', resolve: 't2', promote: 'supervised' },
+  get_fleet_health: { list: 't1', history: 't1', offenders: 't1', evaluation: 't1', org_summary: 't1' },
+};
+
+describe('W07 class rows (#6777)', () => {
+  it('covers the four W07 multiplexers exactly once', () => {
+    expect(Object.keys(W07_EXPECTED).sort()).toEqual([
+      'get_alert_correlations', 'get_fleet_health', 'manage_alert_correlations', 'manage_device_anomalies',
+    ]);
+  });
+
+  it.each(Object.keys(W07_EXPECTED))('%s: W07_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W07_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('get_fleet_health with no action is still the tier-1 fleet list', () => {
+    expect(classOf('get_fleet_health', {})).toBe('t1');
+  });
+
+  it('reliability_feedback is a single-purpose tier-2 write (a label; nothing on the device changes)', () => {
+    expect(getToolTier('reliability_feedback')).toBe(2);
+    expect(classOf('reliability_feedback', {})).toBe('t2');
+  });
+
+  it('registry tiers: reads and the anomaly multiplexer are 1, the correlation writes and the label are 2', () => {
+    expect(getToolTier('get_alert_correlations')).toBe(1);
+    expect(getToolTier('get_fleet_health')).toBe(1);
+    expect(getToolTier('manage_device_anomalies')).toBe(1);
+    expect(getToolTier('manage_alert_correlations')).toBe(2);
+  });
+
+  it('exactly one W07 action is supervised (promote) and none is four-eyes', () => {
+    const rows = Object.entries(W07_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k)).toEqual(['manage_device_anomalies:promote']);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('the group-level correlation writes are agent-human-only: an agent reads correlations but never proposes a group write (QW3)', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_alert_correlations')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('get_alert_correlations')).toBe(false);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_device_anomalies')).toBe(false);
+  });
+});
+
+// ── W08 class rows (#6778, spec checklist item 3) ──────────────────────────
+// Copied from the W08 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the six W08 tools has a row, so a new action reds here until someone classifies it.
+const W08_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_topology_graph: {
+    graph: 't1', nodes: 't1', node: 't1', relationship: 't1', evidence: 't1', group_members: 't1', expansion: 't1', health: 't1',
+  },
+  // start dispatches a bounded probe from a device (inline, in the person's own session): tier 2, never supervised (W08-D3).
+  run_topology_diagnostic: { collectors: 't1', get: 't1', start: 't2', cancel: 't2' },
+  manage_topology_manual: {
+    create_node: 't2', update_node: 't2', delete_node: 't2', create_relationship: 't2', delete_relationship: 't2',
+  },
+  manage_topology_monitoring: {
+    list_policies: 't1', list_targets: 't1', get_settings: 't1',
+    upsert_policy: 't2', delete_policy: 't2', upsert_target: 't2', delete_target: 't2', patch_settings: 't2',
+  },
+  // publish makes a version appliable partner/org-wide; revoke is terminal and disables every referencing policy.
+  manage_topology_templates: {
+    list_templates: 't1', list_versions: 't1', site_options: 't1',
+    create_template: 't2', update_template: 't2', create_version: 't2',
+    publish_version: 'supervised', revoke_template: 'supervised',
+  },
+  apply_topology_template: { preview: 't2', apply: 'supervised', status: 't1' },
+};
+
+describe('W08 class rows (#6778)', () => {
+  it('covers the six W08 tools exactly once', () => {
+    expect(Object.keys(W08_EXPECTED).sort()).toEqual([
+      'apply_topology_template', 'get_topology_graph', 'manage_topology_manual',
+      'manage_topology_monitoring', 'manage_topology_templates', 'run_topology_diagnostic',
+    ]);
+  });
+
+  it.each(Object.keys(W08_EXPECTED))('%s: W08_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W08_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('registry tiers: manual is 2, the other five multiplexers start at 1', () => {
+    expect(getToolTier('manage_topology_manual')).toBe(2);
+    for (const tool of ['get_topology_graph', 'run_topology_diagnostic', 'manage_topology_monitoring', 'manage_topology_templates', 'apply_topology_template']) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+  });
+
+  it('exactly three W08 actions are supervised (publish, revoke, apply) and none is four-eyes', () => {
+    const rows = Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k).sort()).toEqual([
+      'apply_topology_template:apply', 'manage_topology_templates:publish_version', 'manage_topology_templates:revoke_template',
+    ]);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('every W08 tool is agent-human-only (W08-D1): its callers are people, resolved through user permissions', () => {
+    for (const tool of Object.keys(W08_EXPECTED)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+  });
+});
+
+// ── W09 class rows (#6779, spec checklist item 3) ──────────────────────────
+// Copied from the W09 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the multiplexed W09 tools has a row, so a new action reds here until someone classifies it.
+const W09_EXPECTED: Record<string, Record<string, W02Class>> = {
+  // SNMP template rows are tenant-internal and reversible (an edit can be edited back); the OID rows are reads.
+  manage_snmp_templates: {
+    list: 't1', get: 't1', browse_oids: 't1', validate_oids: 't1',
+    create: 't2', update: 't2', delete: 't2',
+  },
+  get_snmp_metrics: { history: 't1', dashboard: 't1' },
+  manage_known_guests: { list: 't1', add: 't2', delete: 't2' },
+  get_unifi_status: {
+    status: 't1', hosts: 't1', collectors: 't1', mappings: 't1', telemetry: 't1', sync_runs: 't1', controller_sites: 't1',
+  },
+};
+// Single-purpose tools: no action enum, one class for the whole tool.
+const W09_WHOLE_TOOL: Record<string, W02Class> = {
+  probe_network_asset: 't2',
+  trigger_unifi_sync: 't2',
+};
+
+describe('W09 class rows (#6779)', () => {
+  it('covers the six W09 tools exactly once', () => {
+    expect([...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)].sort()).toEqual([
+      'get_snmp_metrics', 'get_unifi_status', 'manage_known_guests', 'manage_snmp_templates',
+      'probe_network_asset', 'trigger_unifi_sync',
+    ]);
+  });
+
+  it.each(Object.keys(W09_EXPECTED))('%s: W09_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W09_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W09_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W09_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+
+  it('registry tiers: the probe and the sync are 2, the four multiplexers start at 1', () => {
+    expect(getToolTier('probe_network_asset')).toBe(2);
+    expect(getToolTier('trigger_unifi_sync')).toBe(2);
+    for (const tool of Object.keys(W09_EXPECTED)) expect(getToolTier(tool), tool).toBe(1);
+  });
+
+  it('nothing in W09 is supervised or four-eyes (every action is reversible, tenant-internal or a read)', () => {
+    for (const tool of [...Object.keys(W09_EXPECTED), ...Object.keys(W09_WHOLE_TOOL)]) {
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('the partner-wide tools (known guests, UniFi) are agent-human-only: an agent has no partner-wide authority', () => {
+    for (const tool of ['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+    }
+    for (const tool of ['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});

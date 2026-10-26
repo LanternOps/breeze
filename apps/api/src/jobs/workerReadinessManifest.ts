@@ -212,6 +212,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeReconcileSweep'),
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
+  consumers('agreementRequestExpiryReaper'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
   // Caller verification (#6354 W01) — post-commit effects publisher; one
@@ -328,6 +329,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // under its registry name.
   consumers('parkedDeviceExpiry'),
   consumers('parkedDevicePurge'),
+  // #8318 wave 1b — reinstall reattach: the per-minute intent expiry sweep.
+  // One Worker, unconditional, attached under its registry name.
+  consumers('deviceReattachIntentSweep'),
   consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
@@ -349,6 +353,14 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
   // skipped), not whether the Worker itself constructs and attaches.
   consumers('toolSourceDiscoveryWorker'),
+  // Tool catalog W04 (#5219), Task A8 — each constructs and attaches one
+  // Worker unconditionally under its registry name (FLOWS_ENABLED gates
+  // what a slice does, not whether the Worker exists).
+  consumers('flowRunner'),
+  consumers('flowRunReconciler'),
+  consumers('flowRunRetention'),
+  // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
+  consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
   // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
   // every self-hosted install and on hosted until W05 — so a plain-required row

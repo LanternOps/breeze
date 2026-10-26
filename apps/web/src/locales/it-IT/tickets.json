@@ -530,7 +530,7 @@
         "device_vulnerabilities": "Vulnerabilità: {{count}}",
         "organization_key_dates": "Promemoria delle date chiave: {{count}}",
         "service_deliverable_occurrences": "Occorrenze dei deliverable: {{count}}",
-        "ai_operator_task_targets": "Destinazioni dell’operatore IA: {{count}}",
+        "ai_operator_task_targets": "Destinazioni dell’attività IA: {{count}}",
         "ticket_drafts": "Bozze scartate: {{count}}"
       },
       "droppedHeading": "Collegamenti rimossi",

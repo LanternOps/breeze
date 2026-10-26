@@ -1,10 +1,9 @@
 {
   "title": "Flujos",
   "subtitle": "Automatizaciones de varios pasos que encadenan herramientas.",
-  "previewNotice": "Los flujos son de solo lectura en esta versión. Redáctalos en el chat de IA; la activación y las ejecuciones llegarán en una versión posterior.",
   "empty": {
     "title": "Aún no hay flujos",
-    "body": "Pídele al asistente de IA que redacte un flujo y luego revísalo aquí."
+    "body": "Pide a Breeze AI que redacte un flujo y luego revísalo aquí."
   },
   "list": {
     "name": "Nombre",
@@ -19,7 +18,14 @@
     "draft": "Borrador",
     "enabled": "Habilitado",
     "paused": "En pausa",
-    "disabled": "Deshabilitado"
+    "disabled": "Deshabilitado",
+    "pausedReason": {
+      "drift": "En pausa porque el flujo cambió después de habilitarse.",
+      "binding_drift": "En pausa porque cambió un script o destino preaprobado.",
+      "delegator_inactive": "En pausa porque la persona en cuyo nombre se ejecuta ya no está activa.",
+      "org_merged": "En pausa porque la organización se fusionó.",
+      "event_dispatch_not_durable": "En pausa porque la entrega de eventos no es duradera en este servidor."
+    }
   },
   "trigger": {
     "schedule": "Programación",
@@ -33,7 +39,7 @@
     "inputs": "Entradas",
     "steps": "Pasos",
     "version": "Versión {{version}}",
-    "createdInChat": "Creado en el chat de IA"
+    "createdInChat": "Creado en Breeze AI"
   },
   "step": {
     "tool": "Herramienta",
@@ -50,7 +56,8 @@
       "core": "Herramienta base",
       "tenant": "Fuente de herramientas",
       "builtin": "Integrada"
-    }
+    },
+    "preApprovedBadge": "Preaprobado"
   },
   "issues": {
     "title": "Validación",
@@ -65,6 +72,191 @@
   },
   "errors": {
     "loadFailed": "No se pudieron cargar los flujos.",
-    "notFound": "Flujo no encontrado."
+    "notFound": "Flujo no encontrado.",
+    "enableFailed": "No se pudo habilitar el flujo.",
+    "disableFailed": "No se pudo deshabilitar el flujo.",
+    "runFailed": "No se pudo iniciar la ejecución.",
+    "cancelFailed": "No se pudo cancelar la ejecución."
+  },
+  "tabs": {
+    "overview": "Resumen",
+    "runs": "Ejecuciones"
+  },
+  "actions": {
+    "enable": "Habilitar",
+    "disable": "Deshabilitar",
+    "runNow": "Ejecutar ahora",
+    "cancelRun": "Cancelar ejecución",
+    "cancel": "Cancelar"
+  },
+  "enable": {
+    "title": "Habilitar flujo",
+    "body": "Al habilitar se publica esta versión del flujo, que luego se ejecuta con su disparador. Los pasos que requieren aprobación seguirán pidiéndola, a menos que los preapruebe abajo.",
+    "preApprove": "Preaprobar este paso",
+    "preApproveHelp": "Las ejecuciones de esta versión omiten la solicitud de aprobación para este paso. La preaprobación cubre exactamente el script y el destino que se muestran aquí y deja de aplicarse si el flujo cambia.",
+    "notEligible": {
+      "not_tier3": "Solo se pueden preaprobar los pasos que requieren aprobación.",
+      "tool_not_supported": "Esta herramienta no se puede preaprobar.",
+      "script_not_literal": "El script se elige al momento de ejecutar, por lo que no se puede preaprobar.",
+      "run_context_not_literal": "La cuenta de ejecución se elige al momento de ejecutar, por lo que no se puede preaprobar.",
+      "group_target": "Este paso apunta a un grupo de dispositivos, que puede cambiar. La preaprobación requiere dispositivos fijos.",
+      "variable_dependent": "Este paso depende de valores que solo se conocen al ejecutar.",
+      "script_not_found": "No se encontró el script que usa este paso.",
+      "four_eyes": "Esta acción siempre necesita la aprobación de una segunda persona.",
+      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar."
+    },
+    "eventScope": "Los flujos por evento reaccionan a los eventos de la plataforma sin importar qué los causó, incluidas acciones de personas, de otros flujos o de automatizaciones. Revise el filtro del disparador antes de habilitar.",
+    "missingPermissions": "Le faltan permisos que necesitan los pasos de este flujo:",
+    "eventNotDurable": "La entrega de eventos no es duradera en este servidor, por lo que los flujos por evento no se pueden habilitar por ahora.",
+    "forEachConcurrency": "Los pasos que se repiten para cada elemento procesan un elemento a la vez.",
+    "confirm": "Habilitar flujo",
+    "tier3Heading": "Pasos que requieren aprobación",
+    "noTier3": "Ningún paso de este flujo requiere aprobación.",
+    "validationFailed": "El flujo tiene errores de validación. Corríjalos antes de activarlo:",
+    "versionConflict": "El flujo cambió desde que abrió esta página. Vuelva a cargarla y revise los cambios antes de activarlo.",
+    "alreadyEnabled": "Este flujo ya está activado.",
+    "preApprovalNotEligible": "El paso {{stepId}} no se puede preaprobar. {{reason}}",
+    "foreachConcurrencyNotAvailable": "Este flujo repite un paso para cada elemento en paralelo, algo que este servidor aún no admite.",
+    "delegationScopeRestricted": "Su acceso está limitado a algunos sitios, por lo que no puede activar un flujo que se ejecuta en toda la organización.",
+    "partnerWideForbidden": "No tiene permiso para activar flujos para todas las organizaciones.",
+    "interactiveRequired": "Los flujos solo se pueden activar desde una sesión de navegador iniciada.",
+    "slugUnavailable": "Otro flujo de este ámbito ya usa este identificador.",
+    "generic": "No se pudo activar el flujo."
+  },
+  "run": {
+    "title": "Ejecutar flujo",
+    "org": "Organización",
+    "inputs": "Entradas",
+    "submit": "Iniciar ejecución",
+    "queueFull": "Este flujo tiene demasiadas ejecuciones en espera. Intente de nuevo cuando algunas hayan terminado.",
+    "permissionMissing": "No tiene permiso para ejecutar los pasos de este flujo: {{permissions}}",
+    "preApprovalsNotHonored": "Esta ejecución la inició alguien sin derechos de aprobación, por lo que no se aplicaron las preaprobaciones y cada paso pide aprobación.",
+    "selectOrg": "Seleccione una organización",
+    "orgRequired": "Elija la organización en la que se ejecutará este flujo.",
+    "requiredInput": "{{name}} es obligatorio.",
+    "invalidNumber": "{{name}} debe ser un número.",
+    "invalidUuid": "{{name}} debe ser un ID válido.",
+    "inputsInvalid": "Algunas entradas no son válidas:",
+    "notEnabled": "Este flujo no está activado, por lo que no se puede ejecutar.",
+    "delegationScopeRestricted": "Su acceso está limitado a algunos sitios, por lo que no puede ejecutar un flujo que opera en toda la organización.",
+    "interactiveUserRequired": "Solo una persona con sesión iniciada puede iniciar una ejecución manual. Inicie sesión en la aplicación web e inténtelo de nuevo.",
+    "orgForbidden": "No tiene acceso a esa organización.",
+    "notManual": "Este flujo no se ejecuta manualmente. Se inicia con su disparador."
+  },
+  "runs": {
+    "empty": "Aún no hay ejecuciones.",
+    "status": {
+      "queued": "En cola",
+      "running": "En ejecución",
+      "waiting": "En espera",
+      "awaiting_approval": "Esperando aprobación",
+      "completed": "Completada",
+      "failed": "Fallida",
+      "cancelled": "Cancelada",
+      "expired": "Vencida"
+    },
+    "trigger": {
+      "manual": "Manual",
+      "schedule": "Programación",
+      "event": "Evento"
+    },
+    "via": {
+      "ui": "Desde la app web",
+      "api": "Desde la API",
+      "ai_tool": "Desde Breeze AI",
+      "scheduler": "Por el programador",
+      "event": "Por un evento"
+    },
+    "columns": {
+      "started": "Inicio",
+      "status": "Estado",
+      "trigger": "Disparador",
+      "duration": "Duración",
+      "org": "Organización"
+    },
+    "filter": {
+      "label": "Estado",
+      "all": "Todos los estados"
+    },
+    "loadFailed": "No se pudieron cargar las ejecuciones."
+  },
+  "runDetail": {
+    "title": "Ejecución del flujo",
+    "back": "Volver a las ejecuciones",
+    "awaitingApproval": "Esta ejecución está en pausa hasta que alguien apruebe un paso.",
+    "openApprovals": "Abrir aprobaciones",
+    "error": {
+      "step_failed": "Un paso falló.",
+      "rejected": "Un aprobador rechazó un paso.",
+      "drift": "El flujo cambió después de habilitarse, por lo que se detuvo la ejecución.",
+      "binding_drift": "Cambió un script o destino preaprobado, por lo que se detuvo la ejecución.",
+      "unknown_outcome": "Se desconoce el resultado de un paso. Es posible que se haya ejecutado. Revise el dispositivo manualmente antes de volver a ejecutar el flujo.",
+      "step_timeout": "Un paso tardó demasiado y se detuvo.",
+      "input_invalid": "Un paso recibió una entrada que no pudo usar.",
+      "reference_not_owned": "Un paso hizo referencia a algo que pertenece a otra organización.",
+      "tool_unavailable": "Una herramienta que usa este flujo ya no está disponible.",
+      "tool_blocked": "Una herramienta que usa este flujo está bloqueada.",
+      "too_many_items": "Un paso habría repetido más elementos de los permitidos.",
+      "render_failed": "No se pudo armar la entrada de un paso a partir de resultados anteriores.",
+      "no_eligible_approvers": "Nadie puede aprobar un paso que requiere aprobación.",
+      "worker_lost": "La ejecución se interrumpió y no pudo continuar.",
+      "cancelled": "La ejecución fue cancelada.",
+      "run_timeout": "La ejecución superó el límite de una hora y se detuvo.",
+      "flow_disabled": "El flujo se deshabilitó mientras esta ejecución estaba activa.",
+      "flows_disabled": "Los flujos están desactivados en este servidor.",
+      "delegator_inactive": "La persona en cuyo nombre actúa esta ejecución ya no está activa.",
+      "org_merged": "La organización se fusionó con otra."
+    },
+    "step": {
+      "status": {
+        "running": "En ejecución",
+        "awaiting_approval": "Esperando aprobación",
+        "completed": "Completado",
+        "failed": "Fallido",
+        "skipped": "Omitido",
+        "unknown_outcome": "Resultado desconocido, revisar manualmente",
+        "cancelled": "Cancelado"
+      },
+      "approval": {
+        "none": "No requiere aprobación",
+        "intent": "Requiere la aprobación de una persona",
+        "pre_approved": "Preaprobado"
+      },
+      "input": "Entrada",
+      "output": "Salida",
+      "truncated": "La salida se acortó porque era demasiado grande.",
+      "notReached": "No alcanzado",
+      "pending": "Pendiente",
+      "item": "Elemento {{index}}",
+      "approver": "Aprobador: {{id}}",
+      "attempt": "Intento {{n}}",
+      "show": "Mostrar detalles",
+      "hide": "Ocultar detalles",
+      "loading": "Cargando...",
+      "loadFailed": "No se pudieron cargar los detalles del paso.",
+      "pruned": "La política de retención eliminó los detalles.",
+      "redacted": "Los detalles del paso no están disponibles con su nivel de acceso."
+    },
+    "notFound": "Ejecución no encontrada.",
+    "alreadyTerminal": "Esta ejecución ya terminó.",
+    "loadFailed": "No se pudo cargar esta ejecución.",
+    "retry": "Reintentar",
+    "version": "Versión {{version}} (publicación {{seq}})",
+    "org": "Organización: {{org}}",
+    "waitingUntil": "En espera hasta {{time}}",
+    "queuedNote": "En cola. Esperando un espacio de ejecución libre.",
+    "paused": "Actualizaciones en vivo en pausa.",
+    "lastUpdated": "Última actualización {{time}}",
+    "timeline": "Pasos"
+  },
+  "toast": {
+    "enabled": "Flujo habilitado",
+    "disabled": "Flujo deshabilitado",
+    "runStarted": "Ejecución iniciada",
+    "runCancelled": "Ejecución cancelada"
+  },
+  "disable": {
+    "title": "Desactivar flujo",
+    "message": "Al desactivarlo se detienen las nuevas ejecuciones y se cancelan las que están en curso. Puede volver a activar el flujo más tarde."
   }
 }

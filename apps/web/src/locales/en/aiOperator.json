@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Next action",
-      "approveInInbox": "Approve in inbox",
+      "approveInInbox": "Approve in Approvals",
       "answerQuestion": "Answer a question",
       "waitingForDevice": "Waiting for device",
       "waitingForMaintenanceWindow": "Waiting for maintenance window",
@@ -114,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Loading Operator tasks...",
-    "loadFailed": "Operator tasks failed to load.",
-    "empty": "No Operator tasks for this device.",
-    "emptyHint": "The AI Operator investigates and resolves issues on a device when you delegate an alert to it. Tasks delegated for this device will appear here.",
-    "learnMore": "Learn about the AI Operator"
+    "loading": "Loading AI tasks…",
+    "loadFailed": "AI tasks failed to load.",
+    "empty": "No AI tasks for this device.",
+    "emptyHint": "The workers investigate and resolve issues on a device when you start an AI task from an alert. AI tasks for this device appear here.",
+    "learnMore": "Learn about AI tasks"
   },
   "delegate": {
-    "button": "Delegate to Operator",
-    "dialogTitle": "Delegate to Operator",
-    "dialogMessage": "The Operator will investigate and attempt to resolve this using the workflow below.",
+    "button": "Start an AI task",
+    "dialogTitle": "Start an AI task",
+    "dialogMessage": "The workers will investigate and try to resolve this with the recipe below.",
     "orgLabel": "Organization",
     "deviceLabel": "Device",
     "serviceNameLabel": "Service name",
     "serviceNamePlaceholder": "e.g. Spooler",
-    "serviceNameError": "Enter the service name to delegate this task.",
-    "workflowLabel": "Workflow",
+    "serviceNameError": "Enter the service name to start this AI task.",
+    "workflowLabel": "Recipe",
     "workflowName": "Service recovery",
-    "confirmLabel": "Delegate",
-    "queued": "Task delegated to the Operator.",
-    "failed": "Failed to delegate to the Operator."
-  },
-  "nav": {
-    "operator": "Operator"
+    "confirmLabel": "Start",
+    "queued": "AI task started.",
+    "failed": "Could not start the AI task."
   },
   "effectTool": {
     "googleSetVacation": "Set the Gmail auto-reply",
@@ -162,7 +159,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Operator sections",
+      "label": "AI task sections",
       "tasks": "Tasks",
       "library": "Library"
     },
@@ -171,7 +168,7 @@
   "taskList": {
     "loading": "Loading tasks...",
     "loadFailed": "Tasks failed to load.",
-    "empty": "No Operator tasks yet.",
+    "empty": "No AI tasks yet.",
     "emptyHint": "Tasks you start from the Library, a ticket, a contact or an alert appear here.",
     "loadMore": "Load more",
     "loadMoreFailed": "More tasks failed to load."
@@ -467,7 +464,7 @@
       "state": {
         "pending": "Waiting for approval",
         "approved": "Approved",
-        "rejected": "Rejected",
+        "rejected": "Denied",
         "expired": "Expired",
         "superseded": "Superseded"
       },

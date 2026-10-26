@@ -30,9 +30,12 @@ describe('getDocsForPath', () => {
       expect(getDocsForPath('/admin/wisp').url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
     });
 
-    it('maps the Wisp home to the Wisp docs and /wisp/chat to the AI chat docs (W08 #9921)', () => {
+    it('maps the Wisp home to the Wisp docs and the Breeze AI chat page (and its redirect hops) to the Breeze AI docs (W05 #10136)', () => {
       expect(getDocsForPath('/wisp')).toEqual({ url: `${DOCS_BASE_URL}/features/wisp/`, label: 'Wisp' });
-      expect(getDocsForPath('/wisp/chat')).toEqual({ url: `${DOCS_BASE_URL}/features/ai/`, label: 'AI chat' });
+      const breezeAi = { url: `${DOCS_BASE_URL}/features/breeze-ai/`, label: 'Breeze AI' };
+      expect(getDocsForPath('/ai/chat')).toEqual(breezeAi);
+      expect(getDocsForPath('/wisp/chat')).toEqual(breezeAi);
+      expect(getDocsForPath('/workspace')).toEqual(breezeAi);
     });
 
     it('/approvals maps to AI Agents docs', () => {

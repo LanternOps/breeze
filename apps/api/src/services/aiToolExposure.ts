@@ -47,10 +47,35 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // Tool Catalog W03 (#5218, Decision 6): an operator agent authoring flows
   // needs the managed_by_agent_id story first, not a side door.
   'draft_flow',
+  // W04 (#5219): starting or cancelling a flow run is a human decision (run_flow
+  // is Tier 3 chat-only; a flow must not be started by an agent before W05).
+  'run_flow',
+  'cancel_flow_run',
   // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.
   'send_endpoint_message',
+  // Full-control W07 (#6777, quorum QW3): acknowledging / resolving a correlation GROUP spans devices,
+  // and a supervised release rebuilds the approver's auth, which drops the originating run's exact-device
+  // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
+  // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
+  'manage_alert_correlations',
+  // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
+  // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
+  // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the
+  // topology template and diagnostic services also refuse an ai_agent principal by name. An agent keeps the
+  // pinned-session investigation reads (topology/aiToolGate.ts). Follow-up: a principal-aware resolver.
+  'get_topology_graph',
+  'run_topology_diagnostic',
+  'manage_topology_manual',
+  'manage_topology_monitoring',
+  'manage_topology_templates',
+  'apply_topology_template',
+  // Full-control W09 (#6779): partner-wide state. The routes are gated on canManagePartnerWidePolicies, which reads
+  // partnerOrgAccess; an agent / helper / MCP-key context never carries one, so these would be offered and refused every time.
+  'manage_known_guests',
+  'get_unifi_status',
+  'trigger_unifi_sync',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one

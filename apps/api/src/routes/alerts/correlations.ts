@@ -17,19 +17,21 @@ import { emitAlertStateFeedback, emitCorrelationFeedback, emitRcaFeedback } from
 import { shouldProduceMlOutput } from '../../services/mlFeatureFlags';
 import { PERMISSIONS } from '../../services/permissions';
 import { alertInSiteScope, filterAlertsBySiteScope } from '../tickets/siteScope';
+import { normalizeSiteAllowlist } from '../../services/siteAllowlist';
+import { resolveSiteAllowedDeviceIds } from '../../services/aiToolsSiteScope';
 
 export const alertCorrelationRoutes = new Hono();
 
 const alertIdParamSchema = z.object({ alertId: z.string().uuid() });
-const groupIdParamSchema = z.object({ groupId: z.string().uuid() });
-const evaluationQuerySchema = z.object({
+export const groupIdParamSchema = z.object({ groupId: z.string().uuid() });
+export const evaluationQuerySchema = z.object({
   labelWindowDays: z.coerce.number().int().min(1).max(365).default(90),
 });
-const explainGroupSchema = z.object({
+export const explainGroupSchema = z.object({
   windowHours: z.number().int().min(1).max(24).optional(),
   maxEvidenceItems: z.number().int().min(5).max(100).optional(),
 }).optional().default({});
-const rcaFeedbackSchema = z.object({
+export const rcaFeedbackSchema = z.object({
   eventType: z.enum(['rca.helpful', 'rca.not_helpful', 'rca.edited', 'rca.used_in_ticket']),
   outcome: z.enum(['helpful', 'not_helpful', 'edited', 'used_in_ticket']),
   metadata: z.record(z.string(), z.unknown()).optional().default({}),
@@ -43,7 +45,7 @@ const rcaFeedbackSchema = z.object({
     });
   }
 });
-const correlationFeedbackSchema = z.object({
+export const correlationFeedbackSchema = z.object({
   eventType: z.enum(['correlation.split', 'correlation.merged', 'correlation.dismissed']),
   outcome: z.enum(['split', 'merged', 'dismissed']),
   alertIds: z.array(z.string().uuid()).max(100).optional().default([]),
@@ -85,7 +87,7 @@ const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PER
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
-type AuthContext = {
+export type AuthContext = {
   scope: 'organization' | 'partner' | 'system';
   orgId?: string | null;
   accessibleOrgIds?: string[] | null;
@@ -96,10 +98,10 @@ type AuthContext = {
   allowedSiteIds?: string[];
 };
 
-type AlertRow = typeof alerts.$inferSelect;
-type AlertWithDeviceHostname = AlertRow & { deviceHostname: string | null };
-type CorrelationRow = typeof alertCorrelations.$inferSelect;
-type CorrelationGroupRow = typeof alertCorrelationGroups.$inferSelect;
+export type AlertRow = typeof alerts.$inferSelect;
+export type AlertWithDeviceHostname = AlertRow & { deviceHostname: string | null };
+export type CorrelationRow = typeof alertCorrelations.$inferSelect;
+export type CorrelationGroupRow = typeof alertCorrelationGroups.$inferSelect;
 
 function orgConditionsForAuth(auth: AuthContext): SQL[] | null {
   if (auth.scope === 'organization') {
@@ -140,7 +142,7 @@ function feedbackOrgConditionsForAuth(auth: AuthContext): SQL[] | null {
   return [];
 }
 
-async function getAccessibleAlert(alertId: string, auth: AuthContext): Promise<AlertRow | null> {
+export async function getAccessibleAlert(alertId: string, auth: AuthContext): Promise<AlertRow | null> {
   const [alert] = await db
     .select()
     .from(alerts)
@@ -190,9 +192,9 @@ function toGroupAlert(alert: AlertRow & { deviceHostname?: string | null }) {
   };
 }
 
-type GroupAlert = ReturnType<typeof toGroupAlert>;
+export type GroupAlert = ReturnType<typeof toGroupAlert>;
 
-interface CorrelationGroupForUi {
+export interface CorrelationGroupForUi {
   id: string;
   // Phase 2 wave P2-1 (alert verdicts), Task 14 — needed by the `:groupId`
   // detail handler to call `latestVerdictForGroup(orgId, id)`. Additive on
@@ -220,7 +222,7 @@ function correlationTypeForUi(link: CorrelationRow): 'causal' | 'symptom' | 'dup
   return 'symptom';
 }
 
-async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGroupForUi[]> {
+export async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGroupForUi[]> {
   const orgAlerts = await listAccessibleAlerts(auth);
   const orgAlertIds = orgAlerts.map((alert) => alert.id);
   if (orgAlertIds.length === 0) {
@@ -306,7 +308,7 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
   }).filter((group): group is CorrelationGroupForUi => group !== null);
 }
 
-async function getAccessiblePersistedGroup(groupId: string, auth: AuthContext): Promise<CorrelationGroupRow | null> {
+export async function getAccessiblePersistedGroup(groupId: string, auth: AuthContext): Promise<CorrelationGroupRow | null> {
   const groupOrgConditions = groupOrgConditionsForAuth(auth);
   if (groupOrgConditions === null) {
     return null;
@@ -326,7 +328,7 @@ async function getAccessiblePersistedGroup(groupId: string, auth: AuthContext): 
   return group ?? null;
 }
 
-async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: string): Promise<CorrelationGroupForUi[]> {
+export async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: string): Promise<CorrelationGroupForUi[]> {
   const groupOrgConditions = groupOrgConditionsForAuth(auth);
   if (groupOrgConditions === null) {
     return [];
@@ -409,7 +411,7 @@ function roundMetric(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-function rcaFeedbackDedupeKey(
+export function rcaFeedbackDedupeKey(
   eventType: z.infer<typeof rcaFeedbackSchema>['eventType'],
   metadata: Record<string, unknown>,
 ): string | undefined {
@@ -417,7 +419,7 @@ function rcaFeedbackDedupeKey(
   return typeof metadata.editId === 'string' ? `edit:${metadata.editId}` : undefined;
 }
 
-function correlationFeedbackDedupeKey(body: z.infer<typeof correlationFeedbackSchema>): string {
+export function correlationFeedbackDedupeKey(body: z.infer<typeof correlationFeedbackSchema>): string {
   if (body.eventType === 'correlation.dismissed') return 'correction:dismissed';
   if (body.eventType === 'correlation.merged') return `merge:${body.targetGroupId}`;
   const alertIds = [...body.alertIds].sort();
@@ -504,7 +506,7 @@ async function getRcaFeedbackCounts(auth: AuthContext, since: Date) {
   };
 }
 
-async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: number) {
+export async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: number) {
   const persistedGroups = await buildPersistedCorrelationGroups(auth);
   const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
   const groupedAlertIds = new Set<string>();
@@ -553,7 +555,7 @@ async function buildCorrelationEvaluation(auth: AuthContext, labelWindowDays: nu
   };
 }
 
-async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Promise<AlertRow[] | null> {
+export async function getPersistedGroupAlerts(groupId: string, auth: AuthContext): Promise<AlertRow[] | null> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
   if (!group) return null;
 
@@ -658,7 +660,7 @@ async function reportUnwrittenAlerts(action: 'acknowledge' | 'resolve', unwritte
   }
 }
 
-async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
+export async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
   const now = new Date();
   const eligible = action === 'acknowledge'
     ? alertRows.filter((alert) => alert.status === 'active')
@@ -734,14 +736,335 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   return { updated: writtenIds.size, skipped: alertRows.length - writtenIds.size };
 }
 
+// ── Shared operations ────────────────────────────────────────────────────
+// One implementation for the REST routes below AND the AI tools
+// (`get_alert_correlations`, `manage_alert_correlations`, full-control W07
+// #6777). A tool that re-derived any of this would drift from the route's site
+// axis, its compare-and-swap, or its feedback dedupe keys.
+
+/** Group-or-alert ack/resolve fan-out result, as the routes return it. */
+export type CorrelationMutationResult = { updated: number; skipped: number };
+
+export type CorrelationGroupMutation = {
+  result: CorrelationMutationResult;
+  groupAlerts: AlertRow[];
+  groupAlertIds: string[];
+};
+
+/**
+ * Acknowledge or resolve every (site-visible) member of a correlation group.
+ * Returns null when the group does not exist for this caller (no oracle for
+ * other orgs' or out-of-site groups).
+ */
+export async function mutateCorrelationGroup(
+  auth: AuthContext,
+  groupId: string,
+  action: 'acknowledge' | 'resolve',
+): Promise<CorrelationGroupMutation | null> {
+  const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
+  // A restricted caller who can see none of a persisted group's members gets the same answer as for a
+  // group that does not exist, not a quiet 0/0 success (no existence oracle).
+  if (persistedGroupAlerts !== null && persistedGroupAlerts.length === 0 && isSiteRestricted(auth)) return null;
+  const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
+  const group = groups.find((candidate) => candidate.id === groupId);
+  if (persistedGroupAlerts === null && !group) return null;
+
+  const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
+  // Defense-in-depth: persistedGroupAlerts is already site-filtered, but the
+  // in-memory fallback re-fetches by id unfiltered, so re-apply the site axis
+  // (RLS does NOT enforce it). No-op for in-scope ids / unrestricted callers.
+  const groupAlerts = persistedGroupAlerts ?? await filterAlertsBySiteScope(auth, await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds)));
+  const result = await mutateAlerts(groupAlerts, action, auth.user.id);
+  if (persistedGroupAlerts !== null && groupAlerts[0]) {
+    await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, action === 'acknowledge' ? 'acknowledged' : 'resolved');
+  }
+  return { result, groupAlerts, groupAlertIds };
+}
+
+/** The `correlation.accepted` label a group ack/resolve emits (fire-and-forget, as the route did). */
+export function emitGroupAcceptedFeedback(
+  auth: Pick<AuthContext, 'user'>,
+  groupId: string,
+  action: 'acknowledge' | 'resolve',
+  mutation: CorrelationGroupMutation,
+): void {
+  const first = mutation.groupAlerts[0];
+  if (!first) return;
+  void emitCorrelationFeedback({
+    orgId: first.orgId,
+    correlationId: groupId,
+    eventType: 'correlation.accepted',
+    dedupeKey: action === 'acknowledge' ? 'group:acknowledge' : 'group:resolve',
+    outcome: 'accepted',
+    actorUserId: auth.user.id,
+    metadata: {
+      action: action === 'acknowledge' ? 'acknowledge_group' : 'resolve_group',
+      alertIds: mutation.groupAlertIds,
+      updated: mutation.result.updated,
+      skipped: mutation.result.skipped,
+    },
+  });
+}
+
+export type RelatedAlertsMutation = { alert: AlertRow; relatedAlerts: AlertRow[]; result: CorrelationMutationResult };
+
+/** Acknowledge an alert plus every site-visible alert correlated with it. Null when the alert is not visible. */
+export async function acknowledgeAlertWithRelated(auth: AuthContext, alertId: string): Promise<RelatedAlertsMutation | null> {
+  const alert = await getAccessibleAlert(alertId, auth);
+  if (!alert) return null;
+
+  const links = await db
+    .select()
+    .from(alertCorrelations)
+    .where(or(eq(alertCorrelations.parentAlertId, alertId), eq(alertCorrelations.childAlertId, alertId)));
+  const relatedIdsForMutation = links.map((link) => link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId);
+  const relatedAlertsRaw = relatedIdsForMutation.length > 0
+    ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIdsForMutation)))
+    : [];
+  // Site axis: a restricted caller must not acknowledge related alerts on
+  // out-of-site devices via the correlation fan-out.
+  const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
+  const result = await mutateAlerts([alert, ...relatedAlerts], 'acknowledge', auth.user.id);
+
+  void emitCorrelationFeedback({
+    orgId: alert.orgId,
+    correlationId: alert.id,
+    eventType: 'correlation.accepted',
+    dedupeKey: 'alert:acknowledge_related',
+    outcome: 'accepted',
+    actorUserId: auth.user.id,
+    metadata: {
+      action: 'acknowledge_related',
+      relatedAlertIds: relatedAlerts.map((relatedAlert) => relatedAlert.id),
+      updated: result.updated,
+      skipped: result.skipped,
+    },
+  });
+  return { alert, relatedAlerts, result };
+}
+
+/** A site-restricted caller (RLS does NOT enforce the site axis). */
+function isSiteRestricted(auth: AuthContext): boolean {
+  return normalizeSiteAllowlist(auth.allowedSiteIds) !== undefined;
+}
+
+/**
+ * A group is visible to a site-restricted caller only when at least one member
+ * alert is on a site they can reach. The org-only group lookup alone let a
+ * site-A caller label (or probe) a site-B group by UUID (quorum QW4).
+ */
+async function groupHasVisibleMember(auth: AuthContext, group: CorrelationGroupRow): Promise<boolean> {
+  if (!isSiteRestricted(auth)) return true;
+  const visible = await getPersistedGroupAlerts(group.id, auth);
+  return !!visible && visible.length > 0;
+}
+
+/** True when every id is an alert of `orgId` the (restricted) caller can see. */
+async function allAlertIdsAreVisible(auth: AuthContext, orgId: string, alertIds: readonly string[]): Promise<boolean> {
+  const unique = [...new Set(alertIds)];
+  if (unique.length === 0) return true;
+  const rows = await db.select().from(alerts).where(and(eq(alerts.orgId, orgId), inArray(alerts.id, unique)));
+  const visible = await filterAlertsBySiteScope(auth, rows);
+  return visible.length === unique.length;
+}
+
+/** Record a correlation-quality label. Null when the group (or a referenced alert / target group) is not visible to the caller. */
+export async function recordCorrelationFeedback(
+  auth: AuthContext,
+  groupId: string,
+  body: z.infer<typeof correlationFeedbackSchema>,
+): Promise<CorrelationGroupRow | null> {
+  const group = await getAccessiblePersistedGroup(groupId, auth);
+  if (!group || !(await groupHasVisibleMember(auth, group))) return null;
+  // Every caller may only cite alerts of THIS group's org that they can see, and merge into a visible
+  // group of the same org (a label must not reference another tenant's rows).
+  if (!(await allAlertIdsAreVisible(auth, group.orgId, body.alertIds))) return null;
+  if (body.targetGroupId) {
+    const target = await getAccessiblePersistedGroup(body.targetGroupId, auth);
+    if (!target || target.orgId !== group.orgId || !(await groupHasVisibleMember(auth, target))) return null;
+  }
+  await emitCorrelationFeedback({
+    orgId: group.orgId,
+    correlationId: group.id,
+    eventType: body.eventType,
+    dedupeKey: correlationFeedbackDedupeKey(body),
+    outcome: body.outcome,
+    actorUserId: auth.user.id,
+    metadata: {
+      ...body.metadata,
+      groupId: group.id,
+      rootAlertId: group.rootAlertId,
+      alertIds: body.alertIds,
+      targetGroupId: body.targetGroupId ?? null,
+      note: body.note ?? null,
+    },
+  });
+  return group;
+}
+
+/** Record a root-cause-analysis label. Null when the group is not visible to the caller. */
+export async function recordRcaFeedback(
+  auth: AuthContext,
+  groupId: string,
+  body: z.infer<typeof rcaFeedbackSchema>,
+): Promise<CorrelationGroupRow | null> {
+  const group = await getAccessiblePersistedGroup(groupId, auth);
+  if (!group || !(await groupHasVisibleMember(auth, group))) return null;
+  await emitRcaFeedback({
+    orgId: group.orgId,
+    rcaId: group.id,
+    eventType: body.eventType,
+    dedupeKey: rcaFeedbackDedupeKey(body.eventType, body.metadata),
+    outcome: body.outcome,
+    actorUserId: auth.user.id,
+    metadata: {
+      ...body.metadata,
+      groupId: group.id,
+      rootAlertId: group.rootAlertId,
+    },
+  });
+  return group;
+}
+
+export type ExplainGroupOutcome =
+  | { status: 'not_found' }
+  | { status: 'disabled' }
+  | { status: 'ok'; group: CorrelationGroupRow; rca: Awaited<ReturnType<typeof buildAlertCorrelationRca>> };
+
+/** Deterministic root-cause evidence for a group (no model call; reads alerts + event logs the caller may see). */
+export async function explainCorrelationGroup(
+  auth: FullAuthContext,
+  groupId: string,
+  body: z.infer<typeof explainGroupSchema>,
+): Promise<ExplainGroupOutcome> {
+  const group = await getAccessiblePersistedGroup(groupId, auth);
+  // Visibility first: a feature-flag answer for a group the caller cannot see would be an existence oracle.
+  if (!group || !(await groupHasVisibleMember(auth, group))) return { status: 'not_found' };
+  if (!(await shouldProduceMlOutput(group.orgId, 'ml.rca.enabled'))) return { status: 'disabled' };
+
+  const memberAlerts = await getPersistedGroupAlerts(groupId, auth);
+  if (memberAlerts === null) return { status: 'not_found' };
+
+  // Site axis (quorum QW6): an alert's visibility can follow its owning TOPOLOGY site while its device
+  // has since moved elsewhere, and the evidence queries below read that device's logs. A restricted caller
+  // therefore gets evidence only for alerts whose device is on a site they can reach NOW; a group with
+  // nothing left is not found (no existence oracle).
+  let groupAlerts = memberAlerts;
+  if (isSiteRestricted(auth)) {
+    const allowedDevices = await resolveSiteAllowedDeviceIds(group.orgId, auth);
+    if (allowedDevices) {
+      const allowed = new Set(allowedDevices);
+      groupAlerts = memberAlerts.filter((alert) => allowed.has(alert.deviceId));
+    }
+    if (groupAlerts.length === 0) return { status: 'not_found' };
+  }
+
+  const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
+  const rca = await buildAlertCorrelationRca({
+    orgId: group.orgId,
+    groupId: group.id,
+    groupScore: group.score === null ? null : Number(group.score),
+    alerts: groupAlerts,
+    windowHours: body.windowHours,
+    maxEvidenceItems: body.maxEvidenceItems,
+    canReadSensitiveCategory,
+  });
+  return { status: 'ok', group, rca };
+}
+
+/** `GET /:alertId/correlations` body: the alert, its visible links, related alerts and a timeline. Null = not found. */
+export async function buildAlertCorrelationView(auth: AuthContext, alertId: string) {
+  const alert = await getAccessibleAlert(alertId, auth);
+  if (!alert) return null;
+
+  const links = await db
+    .select()
+    .from(alertCorrelations)
+    .where(
+      or(
+        eq(alertCorrelations.parentAlertId, alertId),
+        eq(alertCorrelations.childAlertId, alertId)
+      )
+    )
+    .orderBy(desc(alertCorrelations.createdAt));
+
+  const relatedIds = [...new Set(links.map((link) =>
+    link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId
+  ))];
+  const relatedAlertsRaw = relatedIds.length > 0
+    ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIds)))
+    : [];
+  // Site axis: drop related alerts on out-of-site devices from a restricted caller.
+  const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
+  const relatedById = new Map(relatedAlerts.map((relatedAlert) => [relatedAlert.id, relatedAlert]));
+
+  const visibleLinks: CorrelationRow[] = [];
+  const correlations = links
+    .map((link) => {
+      const relatedId = link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId;
+      const relatedAlert = relatedById.get(relatedId);
+      if (!relatedAlert) return null;
+      visibleLinks.push(link);
+      return {
+        id: link.id,
+        title: relatedAlert.title,
+        type: correlationTypeForUi(link),
+        confidence: Number(link.confidence ?? 0),
+      };
+    })
+    .filter((item): item is { id: string; title: string; type: 'causal' | 'symptom' | 'duplicate'; confidence: number } => Boolean(item));
+
+  const timelineAlerts = [alert, ...relatedAlerts].sort((a, b) => a.triggeredAt.getTime() - b.triggeredAt.getTime());
+  const timeline = timelineAlerts.map((timelineAlert) => ({
+    id: timelineAlert.id,
+    label: timelineAlert.title,
+    time: timelineAlert.triggeredAt.toISOString(),
+    severity: timelineAlert.severity,
+  }));
+  const maxConfidence = correlations.reduce((max, correlation) => Math.max(max, correlation.confidence), 0);
+
+  return {
+    alert,
+    correlations,
+    correlationLinks: visibleLinks,
+    relatedAlerts,
+    timeline,
+    summary: {
+      relatedCount: relatedAlerts.length,
+      rootCauseConfidence: maxConfidence,
+      lastUpdate: (visibleLinks[0]?.createdAt ?? alert.createdAt).toISOString(),
+    },
+    data: { alert, correlations: visibleLinks, relatedAlerts },
+  };
+}
+
+/** `GET /correlations` body: persisted groups, else groups derived from the alert links. */
+export async function listCorrelationGroups(auth: AuthContext): Promise<CorrelationGroupForUi[]> {
+  const persistedGroups = await buildPersistedCorrelationGroups(auth);
+  return persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
+}
+
+/** `GET /correlations/:groupId` body (group + latest AI verdict). Null = not found. */
+export async function getCorrelationGroupDetail(auth: AuthContext, groupId: string) {
+  const [group] = await buildPersistedCorrelationGroups(auth, groupId);
+  if (!group) return null;
+  // Detail-only: NOT added to the list mapping, which would N+1 a
+  // `latestVerdictForGroup` call per row of `GET /correlations`.
+  // The verdict was reasoned over the WHOLE group. A site-restricted caller who sees only part of it
+  // does not get the rationale (quorum QW5): it can name alerts and devices on sites they cannot reach.
+  const partialView = isSiteRestricted(auth) && group.memberCount !== undefined && group.alerts.length < group.memberCount;
+  if (partialView) return { ...group, aiVerdict: null, aiVerdictWithheld: true };
+  const verdict = await latestVerdictForGroup(group.orgId, group.id);
+  return { ...group, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+}
+
 alertCorrelationRoutes.get(
   '/correlations',
   requireScope('organization', 'partner', 'system'),
   requireAlertRead,
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const persistedGroups = await buildPersistedCorrelationGroups(auth);
-    const groups = persistedGroups.length > 0 ? persistedGroups : await buildCorrelationGroups(auth);
+    const groups = await listCorrelationGroups(auth);
     return c.json({ groups, data: groups });
   }
 );
@@ -767,16 +1090,10 @@ alertCorrelationRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
-    const [group] = await buildPersistedCorrelationGroups(auth, groupId);
-    if (!group) {
+    const groupWithVerdict = await getCorrelationGroupDetail(auth, groupId);
+    if (!groupWithVerdict) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
-
-    // Phase 2 wave P2-1 (alert verdicts), Task 14 — detail-only: NOT added to
-    // the list mapping above, which would N+1 a `latestVerdictForGroup` call
-    // per row of `GET /correlations`.
-    const verdict = await latestVerdictForGroup(group.orgId, group.id);
-    const groupWithVerdict = { ...group, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
 
     return c.json({ group: groupWithVerdict, data: groupWithVerdict });
   }
@@ -794,31 +1111,14 @@ alertCorrelationRoutes.post(
     if (!parsedBody.success) {
       return c.json({ error: 'Invalid RCA options', details: parsedBody.error.flatten() }, 400);
     }
-    const body = parsedBody.data;
-    const group = await getAccessiblePersistedGroup(groupId, auth);
-    if (!group) {
+    const outcome = await explainCorrelationGroup(auth, groupId, parsedBody.data);
+    if (outcome.status === 'not_found') {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
-
-    if (!(await shouldProduceMlOutput(group.orgId, 'ml.rca.enabled'))) {
+    if (outcome.status === 'disabled') {
       return c.json({ error: 'RCA is disabled for this organization' }, 403);
     }
-
-    const groupAlerts = await getPersistedGroupAlerts(groupId, auth);
-    if (groupAlerts === null) {
-      return c.json({ error: 'Correlation group not found' }, 404);
-    }
-
-    const canReadSensitiveCategory = await canReadSensitiveEventLogCategory(auth);
-    const rca = await buildAlertCorrelationRca({
-      orgId: group.orgId,
-      groupId: group.id,
-      groupScore: group.score === null ? null : Number(group.score),
-      alerts: groupAlerts,
-      windowHours: body.windowHours,
-      maxEvidenceItems: body.maxEvidenceItems,
-      canReadSensitiveCategory,
-    });
+    const { group, rca } = outcome;
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -847,27 +1147,10 @@ alertCorrelationRoutes.post(
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
     const body = c.req.valid('json');
-    const group = await getAccessiblePersistedGroup(groupId, auth);
+    const group = await recordCorrelationFeedback(auth, groupId, body);
     if (!group) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
-
-    await emitCorrelationFeedback({
-      orgId: group.orgId,
-      correlationId: group.id,
-      eventType: body.eventType,
-      dedupeKey: correlationFeedbackDedupeKey(body),
-      outcome: body.outcome,
-      actorUserId: auth.user.id,
-      metadata: {
-        ...body.metadata,
-        groupId: group.id,
-        rootAlertId: group.rootAlertId,
-        alertIds: body.alertIds,
-        targetGroupId: body.targetGroupId ?? null,
-        note: body.note ?? null,
-      },
-    });
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -896,24 +1179,10 @@ alertCorrelationRoutes.post(
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
     const body = c.req.valid('json');
-    const group = await getAccessiblePersistedGroup(groupId, auth);
+    const group = await recordRcaFeedback(auth, groupId, body);
     if (!group) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
-
-    await emitRcaFeedback({
-      orgId: group.orgId,
-      rcaId: group.id,
-      eventType: body.eventType,
-      dedupeKey: rcaFeedbackDedupeKey(body.eventType, body.metadata),
-      outcome: body.outcome,
-      actorUserId: auth.user.id,
-      metadata: {
-        ...body.metadata,
-        groupId: group.id,
-        rootAlertId: group.rootAlertId,
-      },
-    });
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -938,49 +1207,22 @@ alertCorrelationRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
-    const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
-    const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
-    const group = groups.find((candidate) => candidate.id === groupId);
-    if (persistedGroupAlerts === null && !group) {
+    const mutation = await mutateCorrelationGroup(auth, groupId, 'acknowledge');
+    if (!mutation) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
-    // Defense-in-depth: persistedGroupAlerts is already site-filtered, but the
-    // in-memory fallback re-fetches by id unfiltered, so re-apply the site axis
-    // (RLS does NOT enforce it). No-op for in-scope ids / unrestricted callers.
-    const groupAlerts = persistedGroupAlerts ?? await filterAlertsBySiteScope(auth, await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds)));
-    const result = await mutateAlerts(groupAlerts, 'acknowledge', auth.user.id);
-    if (persistedGroupAlerts !== null && groupAlerts[0]) {
-      await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'acknowledged');
-    }
-
     writeRouteAudit(c, {
-      orgId: groupAlerts[0]?.orgId,
+      orgId: mutation.groupAlerts[0]?.orgId,
       action: 'alert_correlation.acknowledge_group',
       resourceType: 'alert_correlation',
       resourceId: groupId,
-      details: { alertIds: groupAlertIds, ...result },
+      details: { alertIds: mutation.groupAlertIds, ...mutation.result },
     });
 
-    if (groupAlerts[0]) {
-      void emitCorrelationFeedback({
-        orgId: groupAlerts[0].orgId,
-        correlationId: groupId,
-        eventType: 'correlation.accepted',
-        dedupeKey: 'group:acknowledge',
-        outcome: 'accepted',
-        actorUserId: auth.user.id,
-        metadata: {
-          action: 'acknowledge_group',
-          alertIds: groupAlertIds,
-          updated: result.updated,
-          skipped: result.skipped,
-        },
-      });
-    }
+    emitGroupAcceptedFeedback(auth, groupId, 'acknowledge', mutation);
 
-    return c.json(result);
+    return c.json(mutation.result);
   }
 );
 
@@ -992,49 +1234,22 @@ alertCorrelationRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { groupId } = c.req.valid('param');
-    const persistedGroupAlerts = await getPersistedGroupAlerts(groupId, auth);
-    const groups = persistedGroupAlerts === null ? await buildCorrelationGroups(auth) : [];
-    const group = groups.find((candidate) => candidate.id === groupId);
-    if (persistedGroupAlerts === null && !group) {
+    const mutation = await mutateCorrelationGroup(auth, groupId, 'resolve');
+    if (!mutation) {
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    const groupAlertIds = persistedGroupAlerts !== null ? persistedGroupAlerts.map((alert) => alert.id) : group!.alerts.map((alert) => alert.id);
-    // Defense-in-depth: persistedGroupAlerts is already site-filtered, but the
-    // in-memory fallback re-fetches by id unfiltered, so re-apply the site axis
-    // (RLS does NOT enforce it). No-op for in-scope ids / unrestricted callers.
-    const groupAlerts = persistedGroupAlerts ?? await filterAlertsBySiteScope(auth, await db.select().from(alerts).where(inArray(alerts.id, groupAlertIds)));
-    const result = await mutateAlerts(groupAlerts, 'resolve', auth.user.id);
-    if (persistedGroupAlerts !== null && groupAlerts[0]) {
-      await updatePersistedGroupStatus(groupId, groupAlerts[0].orgId, 'resolved');
-    }
-
     writeRouteAudit(c, {
-      orgId: groupAlerts[0]?.orgId,
+      orgId: mutation.groupAlerts[0]?.orgId,
       action: 'alert_correlation.resolve_group',
       resourceType: 'alert_correlation',
       resourceId: groupId,
-      details: { alertIds: groupAlertIds, ...result },
+      details: { alertIds: mutation.groupAlertIds, ...mutation.result },
     });
 
-    if (groupAlerts[0]) {
-      void emitCorrelationFeedback({
-        orgId: groupAlerts[0].orgId,
-        correlationId: groupId,
-        eventType: 'correlation.accepted',
-        dedupeKey: 'group:resolve',
-        outcome: 'accepted',
-        actorUserId: auth.user.id,
-        metadata: {
-          action: 'resolve_group',
-          alertIds: groupAlertIds,
-          updated: result.updated,
-          skipped: result.skipped,
-        },
-      });
-    }
+    emitGroupAcceptedFeedback(auth, groupId, 'resolve', mutation);
 
-    return c.json(result);
+    return c.json(mutation.result);
   }
 );
 
@@ -1047,70 +1262,12 @@ alertCorrelationRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { alertId } = c.req.valid('param');
 
-    const alert = await getAccessibleAlert(alertId, auth);
-    if (!alert) {
+    const view = await buildAlertCorrelationView(auth, alertId);
+    if (!view) {
       return c.json({ error: 'Alert not found' }, 404);
     }
 
-    const links = await db
-      .select()
-      .from(alertCorrelations)
-      .where(
-        or(
-          eq(alertCorrelations.parentAlertId, alertId),
-          eq(alertCorrelations.childAlertId, alertId)
-        )
-      )
-      .orderBy(desc(alertCorrelations.createdAt));
-
-    const relatedIds = [...new Set(links.map((link) =>
-      link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId
-    ))];
-    const relatedAlertsRaw = relatedIds.length > 0
-      ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIds)))
-      : [];
-    // Site axis: drop related alerts on out-of-site devices from a restricted caller.
-    const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
-    const relatedById = new Map(relatedAlerts.map((relatedAlert) => [relatedAlert.id, relatedAlert]));
-
-    const visibleLinks: CorrelationRow[] = [];
-    const correlations = links
-      .map((link) => {
-        const relatedId = link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId;
-        const relatedAlert = relatedById.get(relatedId);
-        if (!relatedAlert) return null;
-        visibleLinks.push(link);
-        return {
-          id: link.id,
-          title: relatedAlert.title,
-          type: correlationTypeForUi(link),
-          confidence: Number(link.confidence ?? 0),
-        };
-      })
-      .filter((item): item is { id: string; title: string; type: 'causal' | 'symptom' | 'duplicate'; confidence: number } => Boolean(item));
-
-    const timelineAlerts = [alert, ...relatedAlerts].sort((a, b) => a.triggeredAt.getTime() - b.triggeredAt.getTime());
-    const timeline = timelineAlerts.map((timelineAlert) => ({
-      id: timelineAlert.id,
-      label: timelineAlert.title,
-      time: timelineAlert.triggeredAt.toISOString(),
-      severity: timelineAlert.severity,
-    }));
-    const maxConfidence = correlations.reduce((max, correlation) => Math.max(max, correlation.confidence), 0);
-
-    return c.json({
-      alert,
-      correlations,
-      correlationLinks: visibleLinks,
-      relatedAlerts,
-      timeline,
-      summary: {
-        relatedCount: relatedAlerts.length,
-        rootCauseConfidence: maxConfidence,
-        lastUpdate: (visibleLinks[0]?.createdAt ?? alert.createdAt).toISOString(),
-      },
-      data: { alert, correlations: visibleLinks, relatedAlerts },
-    });
+    return c.json(view);
   }
 );
 
@@ -1122,23 +1279,11 @@ alertCorrelationRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { alertId } = c.req.valid('param');
-    const alert = await getAccessibleAlert(alertId, auth);
-    if (!alert) {
+    const outcome = await acknowledgeAlertWithRelated(auth, alertId);
+    if (!outcome) {
       return c.json({ error: 'Alert not found' }, 404);
     }
-
-    const links = await db
-      .select()
-      .from(alertCorrelations)
-      .where(or(eq(alertCorrelations.parentAlertId, alertId), eq(alertCorrelations.childAlertId, alertId)));
-    const relatedIdsForMutation = links.map((link) => link.parentAlertId === alertId ? link.childAlertId : link.parentAlertId);
-    const relatedAlertsRaw = relatedIdsForMutation.length > 0
-      ? await db.select().from(alerts).where(and(eq(alerts.orgId, alert.orgId), inArray(alerts.id, relatedIdsForMutation)))
-      : [];
-    // Site axis: a restricted caller must not acknowledge related alerts on
-    // out-of-site devices via the correlation fan-out.
-    const relatedAlerts = await filterAlertsBySiteScope(auth, relatedAlertsRaw);
-    const result = await mutateAlerts([alert, ...relatedAlerts], 'acknowledge', auth.user.id);
+    const { alert, relatedAlerts, result } = outcome;
 
     writeRouteAudit(c, {
       orgId: alert.orgId,
@@ -1147,21 +1292,6 @@ alertCorrelationRoutes.post(
       resourceId: alert.id,
       resourceName: alert.title,
       details: { relatedAlertIds: relatedAlerts.map((relatedAlert) => relatedAlert.id), ...result },
-    });
-
-    void emitCorrelationFeedback({
-      orgId: alert.orgId,
-      correlationId: alert.id,
-      eventType: 'correlation.accepted',
-      dedupeKey: 'alert:acknowledge_related',
-      outcome: 'accepted',
-      actorUserId: auth.user.id,
-      metadata: {
-        action: 'acknowledge_related',
-        relatedAlertIds: relatedAlerts.map((relatedAlert) => relatedAlert.id),
-        updated: result.updated,
-        skipped: result.skipped,
-      },
     });
 
     return c.json(result);

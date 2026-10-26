@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Próxima ação",
-      "approveInInbox": "Aprovar na caixa de entrada",
+      "approveInInbox": "Aprovar em Aprovações",
       "answerQuestion": "Responder a uma pergunta",
       "waitingForDevice": "Aguardando o dispositivo",
       "waitingForMaintenanceWindow": "Aguardando a janela de manutenção",
@@ -114,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Carregando tarefas do Operator...",
-    "loadFailed": "Falha ao carregar as tarefas do Operator.",
-    "empty": "Nenhuma tarefa do Operator para este dispositivo.",
-    "emptyHint": "O Operador de IA investiga e resolve problemas em um dispositivo quando você delega um alerta a ele. As tarefas delegadas para este dispositivo aparecerão aqui.",
-    "learnMore": "Saiba mais sobre o Operador de IA"
+    "loading": "Carregando tarefas de IA…",
+    "loadFailed": "Falha ao carregar as tarefas de IA.",
+    "empty": "Nenhuma tarefa de IA para este dispositivo.",
+    "emptyHint": "Os trabalhadores de IA investigam e resolvem problemas em um dispositivo quando você inicia uma tarefa de IA a partir de um alerta. As tarefas de IA deste dispositivo aparecem aqui.",
+    "learnMore": "Saiba mais sobre as tarefas de IA"
   },
   "delegate": {
-    "button": "Delegar ao Operador",
-    "dialogTitle": "Delegar ao Operador",
-    "dialogMessage": "O Operador vai investigar e tentar resolver isso usando o fluxo de trabalho abaixo.",
+    "button": "Iniciar uma tarefa de IA",
+    "dialogTitle": "Iniciar uma tarefa de IA",
+    "dialogMessage": "Os trabalhadores de IA vão investigar e tentar resolver isso usando a receita abaixo.",
     "orgLabel": "Organização",
     "deviceLabel": "Dispositivo",
     "serviceNameLabel": "Nome do serviço",
     "serviceNamePlaceholder": "ex.: Spooler",
-    "serviceNameError": "Informe o nome do serviço para delegar esta tarefa.",
-    "workflowLabel": "Fluxo de trabalho",
+    "serviceNameError": "Informe o nome do serviço para iniciar esta tarefa de IA.",
+    "workflowLabel": "Receita",
     "workflowName": "Recuperação de serviço",
-    "confirmLabel": "Delegar",
-    "queued": "Tarefa delegada ao Operador.",
-    "failed": "Falha ao delegar a tarefa ao Operador."
-  },
-  "nav": {
-    "operator": "Operador"
+    "confirmLabel": "Iniciar",
+    "queued": "Tarefa de IA iniciada.",
+    "failed": "Não foi possível iniciar a tarefa de IA."
   },
   "effectTool": {
     "googleSetVacation": "Definir a resposta automática do Gmail",
@@ -162,7 +159,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Seções do Operador",
+      "label": "Seções da tarefa de IA",
       "tasks": "Tarefas",
       "library": "Biblioteca"
     },
@@ -171,7 +168,7 @@
   "taskList": {
     "loading": "Carregando tarefas...",
     "loadFailed": "Falha ao carregar as tarefas.",
-    "empty": "Ainda não há tarefas do Operador.",
+    "empty": "Ainda não há tarefas de IA.",
     "emptyHint": "As tarefas que você inicia pela Biblioteca, por um chamado, um contato ou um alerta aparecem aqui.",
     "loadMore": "Carregar mais",
     "loadMoreFailed": "Falha ao carregar mais tarefas."
@@ -467,7 +464,7 @@
       "state": {
         "pending": "Aguardando aprovação",
         "approved": "Aprovado",
-        "rejected": "Rejeitado",
+        "rejected": "Negado",
         "expired": "Expirado",
         "superseded": "Substituído"
       },

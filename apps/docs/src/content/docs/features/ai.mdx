@@ -151,7 +151,7 @@ When other users are eligible to approve, the inline button does not appear: som
 
 #### Who can approve
 
-Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button, the **Wisp** sidebar entry, or the `/wisp` and `/wisp/chat` pages. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
+Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button, the **Wisp** sidebar entry, or the `/wisp` and `/ai/chat` pages. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
 
 Approving or rejecting a **four-eyes** action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer. Approving a **supervised** action needs no extra permission — only the requester's own permission for the underlying action, which was already checked when the AI proposed it.
 
@@ -634,6 +634,7 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_tickets (list/get/list_work_types/list_links/merge_preview)` | 1 | Search and read tickets, work types, and ticket links |
 | `manage_tickets (create/assign/link_alert/unlink_alert/create_from_alert/link_device/draft/link_ticket/unlink_ticket)` | 2 | Open and assign tickets, link alerts, devices, and related tickets, and store a draft reply for human review |
 | `manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)` | 2 | Track time against tickets |
+| `manage_tickets (bulk_update)` | 2 | Assign, change the status of (not resolve), or set the priority of up to 50 tickets that all belong to one organization. A batch spanning organizations is refused whole, and there is no bulk delete |
 | `manage_tickets (comment/update_status/update_fields)` | 2 | Internal notes and ticket updates. A public comment (`isPublic: true`), resolving a ticket or setting a custom status, and changing the requester need approval (Tier 3) |
 | `manage_tickets (edit_comment/delete_comment)` | 3 | Edit or delete a comment — customer-visible text with no restore |
 | `manage_tickets (merge)` | 3 | Merge two tickets of one organization — irreversible, one approver |
@@ -651,6 +652,88 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+#### PSA configuration and ticket operations
+
+These tools configure the ticketing side of the platform. They are available in AI chat, and AI agents get the read actions. Partner-wide configuration is changed for every organization at once, so every write needs approval; deleting configuration needs a second approver (four-eyes).
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)` | 1 | Read ticket statuses, priorities, an organization's SLA overrides, categories, and customer email domain mappings |
+| `manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain)` | 3 | Change categories, statuses, priority and SLA settings, an organization's SLA overrides, and which organization a sender's domain routes to. Needs full partner access; statuses, priorities and domains also need an admin role |
+| `manage_ticket_config (delete_domain)` | 3 | Remove a customer email domain mapping (four-eyes) |
+| `manage_ticket_checklist_templates (list/get)` | 1 | Read checklist templates and their steps |
+| `manage_ticket_checklist_templates (create)` | 2 | Create an organization checklist template. A partner-wide template needs approval (Tier 3) |
+| `manage_ticket_checklist_templates (update/add_item/update_item/remove_item/reorder_items)` | 3 | Edit a template or its steps |
+| `manage_ticket_checklist_templates (delete)` | 3 | Delete a template (four-eyes). A template still used by a deliverable is refused |
+| `manage_ticket_inbox (list)` | 2 | Review inbound email the router could not place. The sender, subject and error text come from outside and are treated as untrusted |
+| `manage_ticket_inbox (convert/dismiss)` | 3 | Turn one email into a ticket in an organization you choose (the sender becomes the requester), or dismiss it. Neither can be undone |
+| `manage_ticket_attachments (list)` | 1 | List the files on a ticket |
+| `manage_ticket_attachments (read_content/attach_from_artifact)` | 2 | Read the text of an attachment (images, PDFs and other binary files return their details only), or attach an AI run artifact to a ticket. The attachment stays pending until a person posts a comment with it |
+| `manage_ticket_attachments (delete)` | 3 | Permanently delete an attachment |
+| `manage_ticket_forms (list/available)` | 1 | Read ticket intake forms, and the forms an organization can use |
+| `manage_ticket_forms (create/update)` | 3 | Create or change a customer-visible intake form |
+| `manage_ticket_forms (delete)` | 3 | Delete an intake form (four-eyes) |
+| `manage_ticket_response_templates (list)` | 1 | Read the partner's canned ticket replies |
+| `manage_ticket_response_templates (create/update)` | 3 | Create or change a canned reply |
+| `manage_ticket_response_templates (delete)` | 3 | Delete a canned reply (four-eyes) |
+| `manage_time_suggestions (list)` | 1 | See your own time-entry suggestions from remote sessions for a day |
+| `manage_time_suggestions (confirm/dismiss/undo)` | 2 | Log a suggestion as a time entry, dismiss it, or restore a dismissed one. Your own suggestions only |
+
+AI agents can use the read actions. A write an agent attempts becomes a proposal that waits for a person to approve it. Most of these write actions refuse to run under an agent identity, because the record they create or change needs a signed-in person as its author; creating a ticket form and converting an inbound email are the two that run as the approver once approved. Make the other changes in chat or in the web app. Writing the same settings from the web app is unchanged.
+
+#### Alert correlation and signal triage
+
+These tools read how alerts group together and what is behind a device's unusual behaviour, and record the outcome. They are available in AI chat; AI agents get the read actions and can propose the device-level writes.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_alert_correlations (groups/get/by_alert/links/analyze/evaluation/explain)` | 1 | See groups of correlated alerts, the correlations around one alert, how well grouping is working, and root-cause evidence for a group (built from the group's alerts and logs, with no AI model call). Log text comes from the device and is treated as untrusted. Not available to a run that is limited to specific devices |
+| `manage_alert_correlations (acknowledge_group/resolve_group/acknowledge_related)` | 2 | Acknowledge or resolve every alert in a correlation group you can see, or an alert and its related alerts. Chat and MCP only: an AI agent cannot act on a whole group |
+| `manage_alert_correlations (feedback/rca_feedback)` | 2 | Tell Breeze a correlation was split, merged or dismissed, or that a root-cause analysis was helpful, not helpful, edited or used in a ticket |
+| `manage_device_anomalies (list)` | 1 | List unusual metric behaviour detected on a device |
+| `manage_device_anomalies (dismiss/resolve)` | 2 | Set an anomaly's status. There is no way back to open |
+| `manage_device_anomalies (promote)` | 3 | Raise a real alert from an anomaly. The alert notifies your alert channels, so it needs approval |
+| `get_fleet_health (history/offenders/evaluation/org_summary)` | 1 | A device's reliability score over time, the services and components behind its score, how well the scores predict real failures, and an organization rollup with its worst devices |
+| `reliability_feedback` | 2 | Label a device's reliability score as a confirmed failure, a replaced device, or a false alarm. Changes nothing on the device |
+
+A dry run of an alert rule is not available: the old per-rule test was retired with the previous alerting model.
+
+#### Network topology
+
+These tools read a site's network map and manage its manual entries, recurring checks and monitoring templates. They are available in AI chat and over MCP for people with the topology permissions; AI agents do not get them (an agent keeps the read-only topology investigation tools). Every call names a site and is limited to the sites you can already see.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_topology_graph (graph/nodes/node/relationship/evidence/group_members/expansion/health)` | 1 | Read a site's network map: devices and links, one device or link in detail, the evidence behind a link, the members of a group, and health. Addresses and raw collector data are not returned, and names collected from the network are treated as untrusted text |
+| `run_topology_diagnostic (collectors/get)` | 1 | See which devices can run a connectivity check, and read a check's result |
+| `run_topology_diagnostic (start/cancel)` | 2 | Start a fixed gateway, DNS, internet or trace-route check from a device at the site, or stop one. Runs in your own signed-in session and is rate limited per user, site and organization |
+| `manage_topology_manual` | 2 | Add, change or remove a hand-drawn switch, router, access point or link. A stale revision is refused. Nothing here binds a device or moves one between sites |
+| `manage_topology_monitoring (list_policies/list_targets/get_settings)` | 1 | View a site's recurring checks, probe targets and effective topology settings |
+| `manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)` | 2 | Change a site's recurring checks, probe targets or settings. Arming a recurring check stays a person's action in the topology page, and changing a check that is already armed disarms it |
+| `manage_topology_templates (list_templates/list_versions/site_options)` | 1 | View monitoring templates (partner-wide or one organization's), their versions, and the published versions a site can apply |
+| `manage_topology_templates (create_template/update_template/create_version)` | 2 | Draft a template or a new version. Nothing takes effect until a version is published. Partner-wide templates need full partner access |
+| `manage_topology_templates (publish_version/revoke_template)` | 3 | Publish a version so sites can apply it, or revoke a template permanently (this disables every check that uses it). Needs approval |
+| `apply_topology_template (preview)` | 2 | Preview what applying a template would change on named sites. Changes nothing |
+| `apply_topology_template (apply)` | 3 | Apply a previewed template to its sites, replacing their monitoring configuration. Needs approval. Sites outside the approving session's organization report their own outcome |
+| `apply_topology_template (status)` | 1 | See how an application is progressing, site by site |
+
+#### SNMP and network monitoring
+
+These tools read and manage SNMP monitoring templates, read SNMP metric history, check a discovered asset on demand, keep the shared known-guest list, and read or sync the partner's UniFi integration. Template, metric and asset-check tools follow your organization and site access and are also available to AI agents. The known-guest and UniFi tools act on partner-wide state, so they need full partner access and are available in AI chat and over MCP only. Every write needs a signed-in session that has satisfied MFA, the same as the matching page.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_snmp_templates (list/get/browse_oids/validate_oids)` | 1 | View SNMP templates (the OIDs polled per device class), search known OIDs, and check an OID list. Names and descriptions are treated as untrusted text |
+| `manage_snmp_templates (create/update/delete)` | 2 | Create, change or delete a custom template. Built-in templates are read-only, a template still used by a device cannot be deleted, and the delete result keeps the old row so it can be recreated. A session limited to some sites or devices cannot change a template, because every site in the organization reads it |
+| `get_snmp_metrics (history/dashboard)` | 1 | Bucketed SNMP history (interface traffic, uptime and other OIDs) for one discovered asset, with a capped number of series, or the SNMP dashboard |
+| `probe_network_asset` | 2 | Check now: ping a discovered asset from an online agent in the same site and report reachable or not. One probe per asset at a time; waits a few seconds, otherwise reports pending |
+| `manage_known_guests (list)` | 1 | View the partner-wide list of known guest MAC addresses that discovery does not flag |
+| `manage_known_guests (add/delete)` | 2 | Add or remove a known guest MAC address for every organization of the partner |
+| `get_unifi_status (status/hosts/collectors/mappings/telemetry/sync_runs/controller_sites)` | 1 | Read the partner's UniFi integration: connection, consoles and sites (a read-only call to the vendor), collectors, site mappings, device and client telemetry for one site, and the last 20 sync runs. Vendor payloads, keys and error bodies are not returned |
+| `trigger_unifi_sync` | 2 | Queue a manual sync of the UniFi integration, then read the outcome with `get_unifi_status` `sync_runs` |
+
+Connecting or disconnecting UniFi, editing site mappings and collectors, and the retired per-device SNMP polling, test and threshold pages are not available as tools. The old SNMP device and threshold endpoints are deprecated; per-asset SNMP settings and network-monitor alert rules replace them.
 
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 

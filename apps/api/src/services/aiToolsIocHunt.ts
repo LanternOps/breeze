@@ -66,6 +66,10 @@ const RELEASE_SOURCES: Record<ActionIntentSource, { origin: 'ai_chat' | 'mcp'; i
   chat: { origin: 'ai_chat', initiatedBy: 'ai' },
   mcp_api: { origin: 'mcp', initiatedBy: 'integration' },
   ai_agent: null,
+  // Tool catalog W04 (#5219): a flow-originated release has no sweep origin
+  // vocabulary yet ('ai_chat' | 'mcp'); refused until a flow origin exists,
+  // never defaulted to chat.
+  flow: null,
 };
 
 function releaseSource(context: ToolExecutionContext | undefined) {

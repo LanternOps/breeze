@@ -977,8 +977,8 @@
     "strip": "Streifen",
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
-    "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "operatorTasks": "KI-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Aufgaben für dieses Gerät",
     "tabGroups": {
       "monitoring": "Überwachung",
       "inventory": "Inventar",
@@ -2096,6 +2096,7 @@
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
       "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
+      "excludedFeatureUpdateTitle": "Update-Ring {{ring}} blockiert diese Windows-Funktionsversion (oder heftet Geräte an eine andere an), daher überspringen geplante Patch-Läufe sie.",
       "excludedDeclinedTitle": "Abgelehnt: Dieser Patch wurde ausdrücklich abgelehnt, daher installiert ihn die automatische Genehmigung des Rings nicht. Genehmigen Sie ihn erneut, um ihn zuzulassen.",
       "pending": "Genehmigung ausstehend",
       "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",
@@ -2176,7 +2177,7 @@
   "devicePlaybookHistory": {
     "duration": "Dauer: {{duration}}",
     "empty": "Für dieses Gerät wurden keine Playbook-Ausführungen gefunden.",
-    "emptyHelp": "Playbooks können über den KI-Assistenten ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
+    "emptyHelp": "Playbooks können über Breeze AI ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
     "loading": "Playbook-Verlauf wird geladen...",
     "noStepResults": "Es wurden keine Schrittergebnisse aufgezeichnet.",
     "rollbackExecuted": "Rollback wurde ausgeführt",

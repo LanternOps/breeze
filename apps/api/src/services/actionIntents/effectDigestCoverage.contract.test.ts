@@ -87,6 +87,11 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   'manage_policy_feature_link:add':
     'NEW-OBJECT: inserts a `config_policy_feature_links` row (RMM-QA-176 D9). `configPolicyId` addresses the PARENT policy, which is not the thing being created — there is no pre-existing link row whose content the approver signed off on. The sibling `update`, which DOES address an existing link, is pinned by an EFFECT_DIGEST_RESOLVERS entry rather than exempted here.',
 
+  'manage_ticket_checklist_templates:create':
+    'NEW-OBJECT, input-aware four_eyes arm (full-control W06, #6776): inserts a new `ticket_checklist_templates` row (and its items). `orgId` addresses the OWNER, not the thing being created, so there is no pre-existing row whose content the approver signed off on; the name, scope and full item list travel in the intent input the approver reviews.',
+  'manage_ticket_config:delete_domain':
+    'IMMUTABLE reference (full-control W06, #6776): `id` addresses a `ticket_inbound_domains` row that carries only the domain string the approver saw in the intent input plus verification bookkeeping; there is no editable content for the approver to have signed off on that could drift between approval and release, and a verification-state bump must not fail the delete closed.',
+
   // --- EXTERNAL: the drift happens in another system -----------------------
   ...sharedReason(
     ['manage_hyperv_checkpoints:delete', 'manage_hyperv_checkpoints:apply'],

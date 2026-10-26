@@ -43,6 +43,15 @@ describe('loadFlowCatalog', () => {
     expect(listFlowEligibleCoreTools()).not.toContain('manage_ai_agents');
   });
 
+  it('run_flow is not flow-eligible (a flow must not start or cancel flows)', () => {
+    const eligible = listFlowEligibleCoreTools();
+    for (const name of ['run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']) {
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      expect(isRegisteredCoreTool(name), name).toBe(true);
+      expect(eligible, name).not.toContain(name);
+    }
+  });
+
   it('excludes the Wisp memory tools: agent-reachable, but a flow step never carries a Wisp grant', async () => {
     const reachable = listAgentReachableTools();
     const eligible = listFlowEligibleCoreTools();

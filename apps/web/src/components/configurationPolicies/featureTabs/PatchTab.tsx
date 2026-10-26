@@ -458,6 +458,7 @@ export default function PatchTab({
           autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
           appRules: values.appRules,
+          featureUpdates: values.featureUpdates,
         }),
       });
       if (!response.ok) {
@@ -1271,6 +1272,7 @@ export default function PatchTab({
                     },
                     categoryRules: selectedRing.categoryRules,
                     appRules: selectedRing.appRules ?? [],
+                    featureUpdates: selectedRing.featureUpdates,
                   }
                 : undefined
             }

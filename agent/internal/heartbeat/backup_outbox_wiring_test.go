@@ -149,9 +149,10 @@ func TestSetWebSocketClient_ReconnectFlushesBackupOutbox(t *testing.T) {
 
 	h := &Heartbeat{backupOutbox: outbox}
 	cfg := &websocket.Config{
-		ServerURL: srv.URL,
-		AgentID:   "a",
-		AuthToken: secmem.NewSecureString("tok"),
+		ServerURL:       srv.URL,
+		AgentID:         "a",
+		AuthToken:       secmem.NewSecureString("tok"),
+		StartDialWindow: noStartDialJitter(),
 	}
 	ws := websocket.New(cfg, func(websocket.Command) websocket.CommandResult {
 		return websocket.CommandResult{}

@@ -52,7 +52,7 @@
     },
     "nextAction": {
       "label": "Prochaine action",
-      "approveInInbox": "Approuver dans la boîte de réception",
+      "approveInInbox": "Approuver dans Approbations",
       "answerQuestion": "Répondre à une question",
       "waitingForDevice": "En attente de l'appareil",
       "waitingForMaintenanceWindow": "En attente de la fenêtre de maintenance",
@@ -114,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Chargement des tâches Operator...",
-    "loadFailed": "Échec du chargement des tâches Operator.",
-    "empty": "Aucune tâche Operator pour cet appareil.",
-    "emptyHint": "L'Opérateur IA examine et résout les problèmes d'un appareil lorsque vous lui déléguez une alerte. Les tâches déléguées pour cet appareil apparaîtront ici.",
-    "learnMore": "En savoir plus sur l'Opérateur IA"
+    "loading": "Chargement des tâches IA…",
+    "loadFailed": "Échec du chargement des tâches IA.",
+    "empty": "Aucune tâche IA pour cet appareil.",
+    "emptyHint": "Les travailleurs IA examinent et résolvent les problèmes d'un appareil lorsque vous lancez une tâche IA à partir d'une alerte. Les tâches IA de cet appareil apparaissent ici.",
+    "learnMore": "En savoir plus sur les tâches IA"
   },
   "delegate": {
-    "button": "Déléguer à l'Opérateur",
-    "dialogTitle": "Déléguer à l'Opérateur",
-    "dialogMessage": "L'Opérateur va enquêter et tenter de résoudre ce problème à l'aide du flux de travail ci-dessous.",
+    "button": "Lancer une tâche IA",
+    "dialogTitle": "Lancer une tâche IA",
+    "dialogMessage": "Les travailleurs IA vont enquêter et tenter de résoudre ce problème à l'aide de la recette ci-dessous.",
     "orgLabel": "Organisation",
     "deviceLabel": "Appareil",
     "serviceNameLabel": "Nom du service",
     "serviceNamePlaceholder": "p. ex. Spouleur",
-    "serviceNameError": "Entrez le nom du service pour déléguer cette tâche.",
-    "workflowLabel": "Flux de travail",
+    "serviceNameError": "Entrez le nom du service pour démarrer cette tâche IA.",
+    "workflowLabel": "Recette",
     "workflowName": "Récupération de service",
-    "confirmLabel": "Déléguer",
-    "queued": "Tâche déléguée à l'Opérateur.",
-    "failed": "Échec de la délégation à l'Opérateur."
-  },
-  "nav": {
-    "operator": "Opérateur"
+    "confirmLabel": "Démarrer",
+    "queued": "Tâche IA lancée.",
+    "failed": "Impossible de lancer la tâche IA."
   },
   "effectTool": {
     "googleSetVacation": "Définir la réponse automatique de Gmail",
@@ -162,7 +159,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Sections de l'Opérateur",
+      "label": "Sections de la tâche IA",
       "tasks": "Tâches",
       "library": "Bibliothèque"
     },
@@ -171,7 +168,7 @@
   "taskList": {
     "loading": "Chargement des tâches...",
     "loadFailed": "Échec du chargement des tâches.",
-    "empty": "Aucune tâche de l'Opérateur pour l'instant.",
+    "empty": "Aucune tâche IA pour l'instant.",
     "emptyHint": "Les tâches que vous lancez depuis la Bibliothèque, un billet, un contact ou une alerte apparaissent ici.",
     "loadMore": "Charger plus",
     "loadMoreFailed": "Échec du chargement de tâches supplémentaires."
@@ -467,7 +464,7 @@
       "state": {
         "pending": "En attente d'approbation",
         "approved": "Approuvé",
-        "rejected": "Rejeté",
+        "rejected": "Refusé",
         "expired": "Expiré",
         "superseded": "Remplacé"
       },

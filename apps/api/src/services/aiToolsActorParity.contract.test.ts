@@ -269,6 +269,10 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   OrgImportActor: 'org import provenance — { userId } only, no allowlist',
   ValueImportActor: 'custom-field value import provenance — { userId } only',
   WarrantyConsentActor: 'a `{ userId } | null` consent stamp, not an authorization struct',
+  // #5219 (flow runner). The audit-row actor derived from an AI/flow origin
+  // (aiOriginColumns.ts aiOriginAuditActor): who to record on the audit row for
+  // a dispatched command. Authorization already happened upstream.
+  AiOriginAuditActor: 'audit-row attribution derived from aiOrigin — no allowlist of any axis, not an authorization struct',
   // `GET /devices/:id/billing` is the only caller and it enforces BOTH axes at
   // the door (`getDeviceWithOrgAndSiteCheck`) before calling the service, and is
   // `requireScope('partner','system')` — a scope that never carries

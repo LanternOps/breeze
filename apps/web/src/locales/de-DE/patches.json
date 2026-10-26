@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Noch keine Patch-Jobs. Von Richtlinien, Update-Ringen oder dem KI-Assistenten erstellte Jobs werden hier angezeigt.",
+    "empty": "Noch keine Patch-Aufträge. Aufträge, die durch Richtlinien, Update-Ringe oder Breeze AI erstellt werden, erscheinen hier.",
     "loading": "Patch-Jobs werden geladen...",
     "columns": {
       "name": "Job",
@@ -549,6 +549,22 @@
       "title": "Durchsetzung der Installation",
       "description": "Legt fest, wie lange Geräte freigegebene Patches installieren müssen und wie lange Benutzer den Neustart zurückstellen können. Das Neustartverhalten selbst wird pro Richtlinie auf der Registerkarte „Patch“ festgelegt."
     },
+    "featureUpdates": {
+      "title": "Windows-Funktionsupdates",
+      "description": "Ob Geräte in diesem Ring Windows-Funktionsversionen erhalten (zum Beispiel 25H2). Breeze installiert sie nur über die Freigaberegeln unten; fügen Sie eine Überschreibung für Funktionsupdates hinzu, um sie automatisch freizugeben.",
+      "modeBlock": "Blockieren",
+      "modeAllow": "Neueste Version zulassen",
+      "modePin": "An eine Version anheften",
+      "productLabel": "Windows-Version",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Version",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Windows Update wird auf jedem Gerät auf diese Version ausgerichtet (Windows Update for Business-Zielversionsrichtlinie). Sofern die Einstellung „Breeze ist die einzige Windows Update-Quelle“ der Richtlinie nicht aktiv ist, kann Windows die Version nach eigenem Zeitplan außerhalb der Breeze-Freigabe herunterladen und installieren.",
+      "validation": {
+        "release": "Geben Sie eine Version wie 25H2 ein."
+      }
+    },
     "approvalPolicy": {
       "title": "Freigaberichtlinie",
       "description": "Legt fest, welche Patches in diesem Ring automatisch freigegeben und wie lange sie nach der Veröffentlichung durch den Anbieter zurückgehalten werden. Der Standard gilt für jede Kategorie; mit einer Überschreibung kann eine Kategorie abweichend behandelt werden.",
@@ -606,7 +622,9 @@
       "os": "OS: {{severities}}",
       "thirdParty": "Drittanbieter-Apps",
       "appRules_one": "{{count}} App-Regel",
-      "appRules_other": "{{count}} App-Regeln"
+      "appRules_other": "{{count}} App-Regeln",
+      "featureUpdatesNewest": "Funktionsupdates: neueste",
+      "featureUpdatesPinned": "Funktionsupdates: {{release}}"
     }
   },
   "ringAppRules": {

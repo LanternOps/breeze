@@ -24,7 +24,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, type GuardrailContext } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
 import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
 import {
   guardrailCheckForTenantTool,
@@ -666,7 +666,9 @@ async function transitionIntentAndPublish(
   return withSystemDbAccessContext(async () => {
     const won = await transitionIntent(intentId, 'executing', to, patch);
     if (won) {
-      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null }, event);
+      // Chat intents are never flow-originated (this path only transitions
+      // intents its own session minted), so there is no run to wake.
+      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null, requestingFlowRunId: null }, event);
     }
     return won;
   });
@@ -973,6 +975,52 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10144 — the coordinator's cheap, deterministic gates for one
+ * `launch_specialist` call, run after RBAC and the rate limit but before any
+ * approval card: a call the coordinator would refuse (`wisp_grant_required`,
+ * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
+ * …) is refused here with the SAME code the tool's handler returns, and nobody
+ * is asked to approve a request that cannot run. Runs after the Wisp ceiling
+ * gate, so the target org is already inside the grant; on a pass it returns
+ * that org's name for the card.
+ *
+ * Advisory, never authority: `requestSpecialist` re-runs every gate when the
+ * approved call executes. So a precheck that cannot run (DB hiccup) is
+ * reported and the call proceeds to its normal approval — failing it closed
+ * would block a request the coordinator may well admit.
+ */
+async function specialistPreApprovalGate(
+  session: ActiveSession,
+  input: Record<string, unknown>,
+  wispState: WispCallState | null,
+): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string } }> {
+  // The tool is inert without a grant (aiToolsWisp: GRANT_REQUIRED) — a plain
+  // chat session must not ask for approval first.
+  if (!session.wispGrant || !wispState) {
+    return { ok: false, denial: { allowed: false, error: 'wisp_grant_required' } };
+  }
+  try {
+    // Lazy, as aiToolsWisp does: the coordinator's closure reaches the tool registry.
+    const { precheckSpecialistRequest } = await import('./wisp/coordinator');
+    const result = await precheckSpecialistRequest({
+      orgId: String(input.orgId),
+      partnerId: wispState.ceiling.partnerId,
+      kind: String(input.kind),
+      params: input.params && typeof input.params === 'object' ? input.params as Record<string, unknown> : {},
+    });
+    if (result.ok) return { ok: true, orgName: result.orgName };
+    return {
+      ok: false,
+      denial: { allowed: false, error: result.refused, ...(result.detail ? { detail: result.detail } : {}) },
+    };
+  } catch (err) {
+    console.error(`[AI-SDK] launch_specialist precheck failed (session ${session.breezeSessionId}); asking for approval as before`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+    return { ok: true, orgName: null };
+  }
+}
+
+/**
  * The chat pre-tool gate. For a Wisp session (`session.wispGrant` set — always
  * resolved by streamingSessionManager.getOrCreate from the ai_sessions row),
  * every allowed exit carries `toolAuth`: the session's current tool auth cut
@@ -1144,6 +1192,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     } catch (err) {
       console.error('[AI-SDK] Tool rate limit check failed for:', toolName, err);
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
+    }
+
+    // #10144: a launch_specialist call the coordinator would refuse
+    // deterministically never reaches an approval card; an admitted one gets
+    // the org's name on its card. After RBAC and the rate limit (so its reads
+    // are permissioned and metered), before any approval below.
+    let specialistOrgName: string | null = null;
+    if (toolName === 'launch_specialist' && !tenant) {
+      const gate = await specialistPreApprovalGate(session, input, wispCall.current);
+      if (!gate.ok) return gate.denial;
+      specialistOrgName = gate.orgName;
     }
 
     // Tier 2+: Requires user approval (mutating and destructive tools)
@@ -1729,7 +1788,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         ? await loadProposalApprovalSummary(input as Record<string, unknown>, session.orgId)
         : null;
 
-      const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
+      const baseDescription = specialistOrgName
+        ? describeSpecialistRequest(input, specialistOrgName)
+        : guardrailCheck.description ?? `Execute ${toolName}`;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
       // stored reason, the /approvals queue, and the mobile push.

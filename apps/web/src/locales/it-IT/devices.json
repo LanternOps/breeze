@@ -977,8 +977,8 @@
     "strip": "striscia",
     "networkAsset": "Asset di rete",
     "networkAssets": "Asset di rete (elenco)",
-    "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
+    "operatorTasks": "Attività IA",
+    "operatorTasksForThisDevice": "Attività IA per questo dispositivo",
     "tabGroups": {
       "monitoring": "Monitoraggio",
       "inventory": "Inventario",
@@ -2096,6 +2096,7 @@
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedRingReferenceTitle": "Trattenuta: il criterio patch di questo dispositivo collega un anello di aggiornamento che non esiste più o non è disponibile per questo partner. Correggi l'anello di aggiornamento del criterio per riprendere l'applicazione delle patch.",
+      "excludedFeatureUpdateTitle": "L'anello di aggiornamento {{ring}} blocca questa versione delle funzionalità di Windows (o fissa i dispositivi su un'altra), quindi le esecuzioni di patch pianificate la ignorano.",
       "excludedDeclinedTitle": "Rifiutata: questa patch è stata rifiutata esplicitamente, quindi l'approvazione automatica dell'anello non la installerà. Approvala di nuovo per consentirla.",
       "pending": "Approvazione in sospeso",
       "needsApprovalRingTitle": "L'anello di aggiornamento {{ring}} non approva automaticamente questa patch. Approvala manualmente per installarla.",
@@ -2176,7 +2177,7 @@
   "devicePlaybookHistory": {
     "duration": "Durata: {{duration}}",
     "empty": "Nessuna esecuzione di playbook trovata per questo dispositivo.",
-    "emptyHelp": "I playbook possono essere avviati tramite l'assistente AI per automatizzare gli interventi di correzione.",
+    "emptyHelp": "I playbook possono essere avviati tramite Breeze AI per automatizzare gli interventi di correzione.",
     "loading": "Caricamento della cronologia dei playbook...",
     "noStepResults": "Nessun risultato dei passaggi registrato.",
     "rollbackExecuted": "Rollback eseguito",

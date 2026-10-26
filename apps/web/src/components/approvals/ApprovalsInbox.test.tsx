@@ -187,6 +187,27 @@ describe('ApprovalsInbox', () => {
     expect(row).toHaveTextContent(/high/i);
   });
 
+  it('shows the flow context labels the server sends on a flow-origin card', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [
+          {
+            ...pendingApproval,
+            requestingClientLabel: 'Flow Disk cleanup',
+            actionLabel: 'Step cleanup: run_script',
+            actionToolName: 'run_script',
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+    render(<ApprovalsInbox />);
+
+    const row = await screen.findByTestId('approval-row-approval-1');
+    expect(row).toHaveTextContent('Step cleanup: run_script');
+    expect(row).toHaveTextContent('Flow Disk cleanup');
+  });
+
   it('marks an agent-originated approval with the agent badge and attribution', async () => {
     fetchMock.mockResolvedValue(
       response({
@@ -551,7 +572,7 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
       'Approve all (2)',
     );
     expect(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`)).toHaveTextContent(
-      'Decline all (2)',
+      'Deny all (2)',
     );
   });
 

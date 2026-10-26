@@ -977,8 +977,8 @@
     "strip": "strip",
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
-    "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "operatorTasks": "AI Tasks",
+    "operatorTasksForThisDevice": "AI tasks for this device",
     "tabGroups": {
       "monitoring": "Monitoring",
       "inventory": "Inventory",
@@ -2096,6 +2096,7 @@
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedFeatureUpdateTitle": "Update ring {{ring}} blocks this Windows feature release (or pins devices to a different one), so scheduled patch runs skip it.",
       "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
@@ -2176,7 +2177,7 @@
   "devicePlaybookHistory": {
     "duration": "Duration: {{duration}}",
     "empty": "No playbook executions found for this device.",
-    "emptyHelp": "Playbooks can be triggered via the AI assistant to automate remediation tasks.",
+    "emptyHelp": "Playbooks can be triggered via Breeze AI to automate remediation tasks.",
     "loading": "Loading playbook history...",
     "noStepResults": "No step results recorded.",
     "rollbackExecuted": "Rollback was executed",

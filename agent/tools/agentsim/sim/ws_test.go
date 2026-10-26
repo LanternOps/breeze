@@ -83,21 +83,22 @@ func TestAppPingIsAnsweredWithPong(t *testing.T) {
 	eventually(t, 2*time.Second, func() bool { return f.pongs() >= 3 }, "server app pings were not answered with pong frames (the API closes with 4008)")
 }
 
-func TestEstablishedDropReconnectsImmediately(t *testing.T) {
+func TestEstablishedDropReconnects(t *testing.T) {
 	f := newFakeAPI(t)
 	_, id, rec, _ := runAgent(t, f, nil)
 	eventually(t, 2*time.Second, func() bool { return f.socketFor(id.AgentID) }, "no first connection")
 	f.dropSockets()
-	// No backoff after an established drop: well under the 700 ms floor a
-	// failed connect would cost (1 s − 30 %).
-	eventually(t, 500*ms, func() bool { return f.socketFor(id.AgentID) && rec.wsReconnects.Load() >= 1 },
-		"an established socket that dropped was not redialled at once")
+	// The shipped agent paces every redial (TestSimRunUsesAgentReconnectPolicy
+	// pins the waits); here the pacing is scaled to milliseconds.
+	eventually(t, time.Second, func() bool { return f.socketFor(id.AgentID) && rec.wsReconnects.Load() >= 1 },
+		"an established socket that dropped was never redialled")
 }
 
 func TestFailedUpgradeBacksOff(t *testing.T) {
 	f := newFakeAPI(t)
 	f.setRejectWS(true)
-	_, _, rec, _ := runAgent(t, f, nil)
+	// The pre-W09 cohort has no start jitter, so attempt 1 is immediate; real-time pacing.
+	_, _, rec, _ := runAgent(t, f, func(c *Config) { c.PreW09Fraction, c.wsPaceScale = 1, 0 })
 	time.Sleep(1600 * ms)
 	// Attempt 1 at ~first beat, attempt 2 after 1 s ± 30 %, attempt 3 only
 	// after a further 2 s ± 30 %: at most 2 attempts in 1.6 s.

@@ -933,6 +933,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8318 reinstall reattach: every minute, expires reattach intents past
+    // their deadline (discarding the staged set, revoking the pending
+    // certificate) and prunes terminal ones older than 30 days. `global`: its
+    // closure is db + the certificate lifecycle + the audit service, never
+    // routes/agentWs.ts.
+    name: 'deviceReattachIntentSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceReattachIntentSweep');
+      return { init: m.initializeDeviceReattachIntentSweep, shutdown: m.shutdownDeviceReattachIntentSweep };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -1525,6 +1538,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'agreementRequestExpiryReaper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agreementRequestExpiryReaper');
+      return { init: m.initializeAgreementRequestExpiryReaper, shutdown: m.shutdownAgreementRequestExpiryReaper };
+    },
+  },
+  {
     name: 'suppressionExpiryReaper',
     placement: 'global',
     load: async () => {
@@ -1938,6 +1959,55 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/toolSourceDiscoveryWorker');
       return { init: m.initializeToolSourceDiscoveryWorkers, shutdown: m.shutdownToolSourceDiscoveryWorkers };
+    },
+  },
+  {
+    // Tool catalog W04 (#5219), Task A8 — executes flow run slices
+    // (flow-runs queue). socket-owner: a step dispatches device commands
+    // (run_script), like automationWorker and aiAgentRunner. Runs with the
+    // flag off too, so a queued run ends `flows_disabled` instead of waiting.
+    name: 'flowRunner',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowRunner');
+      return { init: m.initializeFlowRunner, shutdown: m.shutdownFlowRunner };
+    },
+  },
+  {
+    // Task A8 — 60 s sweep re-enqueueing runs whose wake was lost and
+    // pausing event flows when event delivery stops being durable.
+    // socket-owner, not the plan's `global`: clause (e) calls pauseFlow
+    // (services/flows/versions.ts), whose runtime closure reaches
+    // routes/agentWs.ts through the guardrails/tool catalog
+    // (workerEntrypointClosure.contract.test.ts).
+    name: 'flowRunReconciler',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowRunReconciler');
+      return { init: m.initializeFlowRunReconciler, shutdown: m.shutdownFlowRunReconciler };
+    },
+  },
+  {
+    // Task A8 — daily flow run body pruning (rows are kept).
+    name: 'flowRunRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/flowRunRetention');
+      return { init: m.initializeFlowRunRetention, shutdown: m.shutdownFlowRunRetention };
+    },
+  },
+  {
+    // Task A9 — 60 s schedule-trigger tick (one global repeatable over the
+    // enabled schedule flows; partner-wide flows fan out per live org).
+    // socket-owner, not `global`: createFlowRun's module (runService.ts)
+    // imports the rule-7 helper and intent cancel from versions.ts, whose
+    // runtime closure reaches routes/agentWs.ts (the flowRunReconciler note
+    // above; workerEntrypointClosure.contract.test.ts).
+    name: 'flowScheduleTick',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/flowScheduleTick');
+      return { init: m.initializeFlowScheduleTick, shutdown: m.shutdownFlowScheduleTick };
     },
   },
   {

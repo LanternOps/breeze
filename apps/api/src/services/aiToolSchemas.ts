@@ -40,6 +40,7 @@ import {
   proposeScriptInputSchema,
   ringAutoApproveSchema,
   ringAppRulesSchema,
+  ringFeatureUpdatesSchema,
   scriptVerificationClaimSchema,
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
@@ -53,6 +54,10 @@ import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
+import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
+import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
+import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
+import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -415,7 +420,13 @@ const ls = launchSpecialistInputSchema.shape;
 export const launchSpecialistShape = {
   orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
   kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
-  params: ls.params.describe('Kind-specific: analysis {goal}; remediation_research {deviceId}; bulk_ticket_reply {concernId, ticketIds, message}; operator_recipe {workflowKey, ...}'),
+  // #10144: every kind's exact keys — the params schemas in
+  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+  // invalid_params. The two long kinds are listed in the tool description
+  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
+  params: ls.params.describe(
+    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+  ),
   reason: ls.reason.describe('Why, in one sentence a technician would accept'),
 };
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
@@ -571,6 +582,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
   ...messagingToolSchemas,
+  // Full-control W06 (#6776): PSA configuration + ticket operations.
+  ...ticketOpsToolSchemas,
+  // Full-control W07 (#6777): alert correlation + signal triage.
+  ...alertTriageToolSchemas,
+  // Full-control W08 (#6778): network topology tools.
+  ...topologyOpsToolSchemas,
+  // Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
+  ...networkMonitoringToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -679,8 +698,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'list_links',
       'link_ticket',
       'unlink_ticket',
+      // W06 (#6776): assign/status/priority over up to 50 tickets of one org.
+      'bulk_update',
     ]),
     ticketId: uuid.optional(),
+    ticketIds: z.array(uuid).min(1).max(50).optional(),
     // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
     targetTicketId: uuid.optional(),
@@ -693,7 +715,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     targetOrgId: uuid.optional(),
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
-    assigneeId: uuid.optional(),
+    assigneeId: uuid.nullable().optional(),
     subject: z.string().min(1).max(255).optional(),
     description: z.string().max(50_000).optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
@@ -1543,6 +1565,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
     issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
     includeTopIssues: z.boolean().optional(),
+    ...fleetHealthActionShape,
     ...pageZodShape(15, 100),
   }),
 
@@ -1965,6 +1988,21 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
+  // Tool Catalog W04 (#5219, Task A11): flow runs.
+  run_flow: z.object({
+    flowId: uuid,
+    orgId: uuid.optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  }),
+  list_flow_runs: z.object({
+    flowId: uuid.optional(),
+    orgId: uuid.optional(),
+    status: z.enum(['queued', 'running', 'waiting', 'awaiting_approval', 'succeeded', 'failed', 'cancelled', 'timed_out']).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_flow_run: z.object({ runId: uuid }),
+  cancel_flow_run: z.object({ runId: uuid }),
   // #8973 W4: read-only business-hours calendars (spec §5.7).
   list_business_calendars: z.object({
     orgId: uuid.optional(),
@@ -2399,6 +2437,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     excludeCategories: z.array(z.string().max(100)).max(50).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
     appRules: ringAppRulesSchema.optional(),
+    featureUpdates: ringFeatureUpdatesSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),

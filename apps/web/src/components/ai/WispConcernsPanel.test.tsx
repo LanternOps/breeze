@@ -162,6 +162,21 @@ describe('WispConcernsPanel', () => {
     expect(screen.queryAllByTestId('wisp-concern-row')).toHaveLength(0);
   });
 
+  it('#10143: a system readiness concern with a same-origin href renders an open link; unsafe hrefs and model-raised concerns do not', async () => {
+    await mountWith([
+      concern('a', 'low', { signature: 'wisp-readiness:no-effective-agent:o1', evidence: { href: '/settings/ai-agents' } }),
+      concern('b', 'low', { signature: 'wisp-readiness:x', evidence: { href: 'https://evil.example/x' } }),
+      concern('c', 'low', { signature: 'wisp-readiness:x', evidence: { href: '//evil.example' } }),
+      concern('d', 'low', { signature: 'wisp-readiness:x', evidence: { href: 'javascript:alert(1)' } }),
+      concern('e', 'low', { signature: 'wisp-readiness:x', evidence: { href: 5 } }),
+      concern('f', 'low'),
+      // Model-authored evidence (raise_concern) never links, even to a same-origin path.
+      concern('g', 'low', { evidence: { href: '/settings/ai-agents' } }),
+    ]);
+    expect(screen.getByTestId('wisp-concern-link-a').getAttribute('href')).toBe('/settings/ai-agents');
+    for (const id of ['b', 'c', 'd', 'e', 'f', 'g']) expect(screen.queryByTestId(`wisp-concern-link-${id}`)).toBeNull();
+  });
+
   it('W06 T7: a concern with an approval intent links to its approval card', async () => {
     await mountWith([concern('a', 'high', { approvalIntentId: 'int-1' }), concern('b', 'low')]);
     expect(screen.getByTestId('wisp-concern-approval-a').getAttribute('href')).toBe('/approvals#intent-int-1');
@@ -176,6 +191,13 @@ describe('WispConcernsPanel', () => {
       expect(screen.getByTestId('wisp-concern-useful-a')).toBeTruthy();
       expect(screen.queryByTestId('wisp-concern-useful-b')).toBeNull();
       expect(screen.queryByTestId('wisp-concern-useful-c')).toBeNull();
+    });
+
+    it('a recorded choice stays visible after the server resets nudgeCount to 0 (QA sweep 2026-10-24)', async () => {
+      // recordFeedback zeroes nudge_count; the row must still show the answer, not drop to nothing.
+      await mountWith([concern('a', 'high', { recipient: { ...nudged('useful'), nudgeCount: 0 } })]);
+      expect(screen.getByTestId('wisp-concern-feedback-given-a')).toBeTruthy();
+      expect(screen.queryByTestId('wisp-concern-useful-a')).toBeNull();
     });
 
     it('Useful posts at once and the row shows the choice from the server recipient', async () => {

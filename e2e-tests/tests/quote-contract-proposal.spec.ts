@@ -131,7 +131,10 @@ test.describe('quote + contract proposal lifecycle', () => {
     const orgName = ((await orgSelect.locator('option:checked').textContent()) ?? '').trim();
     expect(orgName.length).toBeGreaterThan(0);
 
-    await page.getByTestId('quotes-create-title').fill(`E2E Proposal ${Date.now()}`);
+    // The auto-created billing contract is named after the quote title
+    // ("<title> — <org> (Monthly)"), so the title is what finds it later.
+    const quoteTitle = `E2E Proposal ${Date.now()}`;
+    await page.getByTestId('quotes-create-title').fill(quoteTitle);
     await page.getByTestId('quotes-create-submit').click();
     await page.waitForURL(/\/billing\/quotes\/[^/#]+$/, { timeout: 20_000 });
     const quoteId = new URL(page.url()).pathname.split('/').filter(Boolean).pop()!;
@@ -313,12 +316,14 @@ test.describe('quote + contract proposal lifecycle', () => {
     await page.goto('/contracts');
     await page.getByTestId('contracts-tabs').waitFor();
     await waitForHydration(page, 'contracts-tabs');
-    // Contracts tab is the default — filter to the org used above so the
-    // auto-created "<quoteNumber> — Monthly" contract from acceptQuote's
+    // Contracts tab is the default — filter by the quote title so the
+    // auto-created "<title> — <org> (Monthly)" contract from acceptQuote's
     // Phase 4 is easy to isolate even if other contracts exist for the org.
+    // (#9304 stopped writing the quote number into the contract's notes, so
+    // the number no longer finds it.)
     const contractsSearch = page.getByTestId('contracts-search');
     await contractsSearch.waitFor();
-    await contractsSearch.fill(quoteNumber!);
+    await contractsSearch.fill(quoteTitle);
 
     const contractLinks = page.locator('[data-testid^="contract-row-link-"]');
     await expect(contractLinks.first()).toBeVisible({ timeout: 20_000 });
@@ -327,7 +332,7 @@ test.describe('quote + contract proposal lifecycle', () => {
     for (let i = 0; i < linkCount; i++) {
       const link = contractLinks.nth(i);
       const text = (await link.textContent()) ?? '';
-      if (text.includes(quoteNumber!)) {
+      if (text.includes(quoteTitle)) {
         contractHref = await link.getAttribute('href');
         break;
       }
@@ -342,6 +347,11 @@ test.describe('quote + contract proposal lifecycle', () => {
     await page.getByTestId('contract-workspace').waitFor({ timeout: 15_000 });
     await waitForHydration(page, 'contract-workspace');
     await page.getByTestId('activate-contract-btn').click();
+    // A stack that already holds a same-schedule contract for this org (a
+    // prior run, another spec) asks to confirm the double billing first.
+    const overlapConfirm = page.getByTestId('contract-activate-overlap-confirm-btn');
+    await expect(page.getByTestId('contract-detail').or(overlapConfirm)).toBeVisible({ timeout: 15_000 });
+    if (await overlapConfirm.isVisible()) await overlapConfirm.click();
 
     await page.getByTestId('contract-detail').waitFor({ timeout: 15_000 });
     const docsSection = page.getByTestId('contract-documents-section');
@@ -350,7 +360,11 @@ test.describe('quote + contract proposal lifecycle', () => {
     // The row names the template + pinned version (v1, the only published one).
     await expect(docsSection).toContainText(templateName);
 
-    const downloadBtn = page.locator('[data-testid^="contract-document-download-"]');
+    // The certified-copy button (#9075 W2c) — not its "Original" sibling,
+    // whose testid shares the prefix.
+    const downloadBtn = page.locator(
+      '[data-testid^="contract-document-download-"]:not([data-testid^="contract-document-download-original-"])',
+    );
     await downloadBtn.waitFor();
     const [pdfResponse] = await Promise.all([
       page.waitForResponse(

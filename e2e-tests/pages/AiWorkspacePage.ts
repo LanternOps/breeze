@@ -3,7 +3,7 @@ import { BasePage } from './BasePage';
 import { waitForAppReady } from './hydration';
 
 /**
- * The full-page multi-tab chat (Wisp chats) at /wisp/chat — /workspace redirects there since W08 #9921 (`WorkspacePage.tsx`, up to five
+ * The full-page Breeze AI chat at /ai/chat; /workspace and /wisp/chat redirect there (`WorkspacePage.tsx`, up to five
  * tabs). Named AiWorkspacePage to keep it apart from the React component.
  *
  * Composer and conversation-row locators are scoped to their surface: the side
@@ -11,7 +11,7 @@ import { waitForAppReady } from './hydration';
  * `ai-conversation-row` renders in both the panel History and the picker.
  */
 export class AiWorkspacePage extends BasePage {
-  url = '/wisp/chat';
+  url = '/ai/chat';
 
   constructor(page: Page) {
     super(page);

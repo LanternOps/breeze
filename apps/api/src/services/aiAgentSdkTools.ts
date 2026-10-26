@@ -47,6 +47,7 @@ import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
+import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import {
@@ -118,8 +119,12 @@ export type PreToolUseResult =
    * `error` carries the model-facing text in both cases; when `handoff` is set
    * it is a status message, not a failure, and it never reaches an `error`
    * field on the wire. See services/aiToolHandoff.ts (#5107).
+   *
+   * `detail`: an optional model-actionable elaboration of a denial, published
+   * beside `error` as `{ error, detail }` — the same shape the tool's own
+   * handler returns (#10144, the launch_specialist pre-approval refusal).
    */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -365,6 +370,12 @@ export const TOOL_TIERS = {
   validate_flow: 1,
   get_flow: 1,
   list_flows: 1,
+  // Tool Catalog W04 (#5219, Decision 11): run_flow takes the upper bound
+  // (Tier 3, supervised) until W05 resolves a per-flow tier.
+  run_flow: 3,
+  list_flow_runs: 1,
+  get_flow_run: 1,
+  cancel_flow_run: 2,
   // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
   list_business_calendars: 1,
   // #8883 W5: ticket routing rules. Reads Tier 1; the manage tool is Tier 3 (supervised).
@@ -627,6 +638,42 @@ export const TOOL_TIERS = {
   assign_security_training: 2,
   configure_network_baseline: 3,
   acknowledge_network_device: 2,
+  // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket ops. Registry tier 1 for all seven
+  // multiplexers (like manage_backup_profiles); the real per-action classes live in aiGuardrails
+  // (partner-wide config and customer-visible forms supervised, hard deletes four-eyes, inbox
+  // convert/dismiss supervised, org checklist-template create and the ticket-ops writes tier 2).
+  manage_ticket_config: 1,
+  manage_ticket_checklist_templates: 1,
+  manage_ticket_inbox: 1,
+  manage_ticket_attachments: 1,
+  manage_ticket_forms: 1,
+  manage_ticket_response_templates: 1,
+  manage_time_suggestions: 1,
+  // Spec 2026-09-23 W07 (#6777): alert correlation + signal triage. Reads are tier 1; the correlation
+  // writes and the reliability label are tier 2 (a status or ML label on tenant-internal rows);
+  // manage_device_anomalies is a tier-1 multiplexer whose `promote` is supervised (aiGuardrails).
+  get_alert_correlations: 1,
+  manage_alert_correlations: 2,
+  manage_device_anomalies: 1,
+  reliability_feedback: 2,
+  // Spec 2026-09-23 W08 (#6778): network topology. Reads are tier 1; the multiplexers keep tier 1 as
+  // their base with per-action tier 2 / supervised classes in aiGuardrails; manage_topology_manual is
+  // tier 2 throughout (a manual assertion is a tenant-internal row).
+  get_topology_graph: 1,
+  run_topology_diagnostic: 1,
+  manage_topology_manual: 2,
+  manage_topology_monitoring: 1,
+  manage_topology_templates: 1,
+  apply_topology_template: 1,
+  // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. The multiplexers keep tier 1 as their base with
+  // per-action tier 2 writes in aiGuardrails; the probe (dispatches a ping from a site agent) and the UniFi sync
+  // (queues a vendor pull) are tier 2 throughout.
+  manage_snmp_templates: 1,
+  get_snmp_metrics: 1,
+  probe_network_asset: 2,
+  manage_known_guests: 1,
+  get_unifi_status: 1,
+  trigger_unifi_sync: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -726,12 +773,13 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
+        ...(check.detail ? { detail: check.detail } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),
@@ -1513,6 +1561,10 @@ export function flowToolDefinitions(
     tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow', getAuth, onPreToolUse, onPostToolUse)),
     tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow', getAuth, onPreToolUse, onPostToolUse)),
     tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows', getAuth, onPreToolUse, onPostToolUse)),
+    tool('run_flow', registryDescription('run_flow'), inputShape('run_flow'), makeHandler('run_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_flow_runs', registryDescription('list_flow_runs'), inputShape('list_flow_runs'), makeHandler('list_flow_runs', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_flow_run', registryDescription('get_flow_run'), inputShape('get_flow_run'), makeHandler('get_flow_run', getAuth, onPreToolUse, onPostToolUse)),
+    tool('cancel_flow_run', registryDescription('cancel_flow_run'), inputShape('cancel_flow_run'), makeHandler('cancel_flow_run', getAuth, onPreToolUse, onPostToolUse)),
   ];
 }
 
@@ -2587,6 +2639,7 @@ export function buildBreezeSdkTools(
         trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
         issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
         includeTopIssues: z.boolean().optional(),
+        ...fleetHealthActionShape,
         ...pageZodShape(15, 100),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
@@ -3367,6 +3420,13 @@ export function buildBreezeSdkTools(
         })).max(200).optional().describe(
           'Per-app block/pin rules on the ring; pin requires pinnedVersion. Overrides manual approvals in patch jobs. Update replaces the list.'
         ),
+        featureUpdates: z.object({
+          mode: z.enum(['block', 'allow', 'pin']),
+          product: z.enum(['windows-11', 'windows-10']).optional(),
+          targetVersion: z.string().min(4).max(4).optional(),
+        }).optional().describe(
+          'Windows feature releases: block (default), allow newest, or pin (product + targetVersion like "25H2"; sets the WUfB target-release policy).'
+        ),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
@@ -3453,6 +3513,174 @@ export function buildBreezeSdkTools(
       registryDescription('get_user_risk_detail'),
       inputShape('get_user_risk_detail'),
       makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket operations. Classes live in
+    // aiGuardrails (W06 class review): partner-wide config and customer-visible forms supervised,
+    // hard deletes four-eyes. The shapes are the toolInputSchemas entries (inputShape).
+
+    tool(
+      'manage_ticket_config',
+      registryDescription('manage_ticket_config'),
+      inputShape('manage_ticket_config'),
+      makeHandler('manage_ticket_config', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_checklist_templates',
+      registryDescription('manage_ticket_checklist_templates'),
+      inputShape('manage_ticket_checklist_templates'),
+      makeHandler('manage_ticket_checklist_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_inbox',
+      registryDescription('manage_ticket_inbox'),
+      inputShape('manage_ticket_inbox'),
+      makeHandler('manage_ticket_inbox', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_attachments',
+      registryDescription('manage_ticket_attachments'),
+      inputShape('manage_ticket_attachments'),
+      makeHandler('manage_ticket_attachments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_forms',
+      registryDescription('manage_ticket_forms'),
+      inputShape('manage_ticket_forms'),
+      makeHandler('manage_ticket_forms', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_response_templates',
+      registryDescription('manage_ticket_response_templates'),
+      inputShape('manage_ticket_response_templates'),
+      makeHandler('manage_ticket_response_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_time_suggestions',
+      registryDescription('manage_time_suggestions'),
+      inputShape('manage_time_suggestions'),
+      makeHandler('manage_time_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W07 (#6777): alert correlation + signal triage. Classes live in aiGuardrails.
+    tool(
+      'get_alert_correlations',
+      registryDescription('get_alert_correlations'),
+      inputShape('get_alert_correlations'),
+      makeHandler('get_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_alert_correlations',
+      registryDescription('manage_alert_correlations'),
+      inputShape('manage_alert_correlations'),
+      makeHandler('manage_alert_correlations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_anomalies',
+      registryDescription('manage_device_anomalies'),
+      inputShape('manage_device_anomalies'),
+      makeHandler('manage_device_anomalies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'reliability_feedback',
+      registryDescription('reliability_feedback'),
+      inputShape('reliability_feedback'),
+      makeHandler('reliability_feedback', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W08 (#6778): network topology. Classes live in aiGuardrails.
+    tool(
+      'get_topology_graph',
+      registryDescription('get_topology_graph'),
+      inputShape('get_topology_graph'),
+      makeHandler('get_topology_graph', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'run_topology_diagnostic',
+      registryDescription('run_topology_diagnostic'),
+      inputShape('run_topology_diagnostic'),
+      makeHandler('run_topology_diagnostic', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_manual',
+      registryDescription('manage_topology_manual'),
+      inputShape('manage_topology_manual'),
+      makeHandler('manage_topology_manual', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_monitoring',
+      registryDescription('manage_topology_monitoring'),
+      inputShape('manage_topology_monitoring'),
+      makeHandler('manage_topology_monitoring', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_topology_templates',
+      registryDescription('manage_topology_templates'),
+      inputShape('manage_topology_templates'),
+      makeHandler('manage_topology_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'apply_topology_template',
+      registryDescription('apply_topology_template'),
+      inputShape('apply_topology_template'),
+      makeHandler('apply_topology_template', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. Classes live in aiGuardrails.
+    tool(
+      'manage_snmp_templates',
+      registryDescription('manage_snmp_templates'),
+      inputShape('manage_snmp_templates'),
+      makeHandler('manage_snmp_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_snmp_metrics',
+      registryDescription('get_snmp_metrics'),
+      inputShape('get_snmp_metrics'),
+      makeHandler('get_snmp_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'probe_network_asset',
+      registryDescription('probe_network_asset'),
+      inputShape('probe_network_asset'),
+      makeHandler('probe_network_asset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_known_guests',
+      registryDescription('manage_known_guests'),
+      inputShape('manage_known_guests'),
+      makeHandler('manage_known_guests', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_unifi_status',
+      registryDescription('get_unifi_status'),
+      inputShape('get_unifi_status'),
+      makeHandler('get_unifi_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_unifi_sync',
+      registryDescription('trigger_unifi_sync'),
+      inputShape('trigger_unifi_sync'),
+      makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
