@@ -129,6 +129,16 @@ Everything below is behind `FLOWS_ENABLED` (default off); with the flag off the 
 - **New optional environment variables:** `FLOW_WEBHOOK_RATE_PER_MINUTE` (default 120, 1–6000; per flow, after authentication), `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS` (default 30, 1–365), `FLOW_FOREACH_MAX_PARALLEL` (default 5, 1–10).
 - **Migration** `2027-01-07-140000-flow-webhooks-tools-budgets.sql`: creates `flow_webhook_deliveries` and `flow_usage_counters` (empty at upgrade, forced row-level security), adds nullable columns to `flows` (webhook secret and markers), `flow_runs` (`ai_tokens_used` defaulted 0, `parent_agent_run_id`, `triggered_by_api_key_id`), `flow_run_steps` (AI usage), `action_intents.invoked_flow_id` and `ai_invocations.flow_run_id`, and widens the flow-run CHECKs by name; DDL only, no backfill.
 
+### Flows W05 (#5215 / #5220, PR B — built-in steps)
+
+Behind `FLOWS_ENABLED` (default off). No migration, no new environment variables.
+
+- **Webhook-triggered flows can now be saved and enabled.** A partner-wide webhook flow must name its organization resolver; an organization's flow must not.
+- **`http_request` step.** One anonymous HTTPS call to an origin fixed in the flow (path, query and a JSON body ≤ 256 KB may use templates). Redirects are never followed; responses over 1 MB are kept up to 1 MB and marked truncated; secrets are redacted before anything is stored. Breeze's own hostnames, private and metadata addresses are refused (`http:` and private targets only on a self-hosted install with `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS`). GET/HEAD run unattended (Tier 2); POST/PUT/PATCH/DELETE ask for one approval on every run (Tier 3) and run only once approved. Credential-looking literal headers or query values are refused at save; at most 100 requests per run. Enabling needs `external_tools.write`.
+- **`notify` step.** A short notice to an email, Slack, Teams, SMS or Pushover channel the flow's owner can see (a partner-wide flow: a partner-wide channel); webhook and PagerDuty channels are refused. At most 20 per run. Enabling needs `alerts.write`. A flow's `notices.channelId` now also receives its pause, cap-refusal and "needs review" notices (once per notice).
+- **`ai` step.** One bounded question answered as a structured result, over read-only (Tier-1) tools only. Its cost is charged to the run organization's AI budget (shown on the run step) and counted against the per-run AI token limit; enabling an organization's flow with an `ai` step is refused when AI is switched off for it (`ai_budget_unavailable`). Enabling needs `ai_sessions.use` plus each listed tool's permission.
+- **Built-ins are authorized like any step.** Enabling, a manual run and every run start check the permissions above; built-in inputs are re-validated when they run. A flow cannot use another flow as a step (`flow_step_not_supported`).
+
 ### Flows W05 (#5215 / #5220, PR C)
 
 Behind `FLOWS_ENABLED` (default off). No migration, no new environment variables.

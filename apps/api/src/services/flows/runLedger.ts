@@ -12,7 +12,7 @@
  * timed wake, stalled redelivery, slot retry — re-execute nothing that
  * already happened.
  */
-import type { FlowRunErrorCode, FlowRunStatus, FlowValue } from '@breeze/shared';
+import { FLOW_STEP_ERROR_CODES, type FlowRunErrorCode, type FlowRunStatus, type FlowStepErrorCode, type FlowValue } from '@breeze/shared';
 import type { FlowRunStepRow } from '../../db/schema/flowRuns';
 import type { ParkedIntentRow } from './runStore';
 import { toStoredFlowOutput } from './storedOutput';
@@ -141,6 +141,22 @@ const INTENT_IN_FLIGHT: ReadonlySet<string> = new Set(['pending_approval', 'appr
 
 function clipText(text: string): string {
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+}
+
+const FLOW_STEP_ERROR_CODE_SET: ReadonlySet<string> = new Set(FLOW_STEP_ERROR_CODES);
+
+/**
+ * W5 (#5220): the step error a released built-in recorded on its failed
+ * intent (`{ error, flowStepError: { code, policy } }`, builtins/release.ts).
+ * Null for anything else — an unknown code falls back to W04's generic path.
+ */
+function builtinStepErrorOf(result: Record<string, unknown> | null): { code: FlowStepErrorCode; message: string; policy: boolean } | null {
+  const e = result?.flowStepError;
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+  const { code, policy } = e as { code?: unknown; policy?: unknown };
+  if (typeof code !== 'string' || !FLOW_STEP_ERROR_CODE_SET.has(code) || typeof policy !== 'boolean') return null;
+  const message = typeof result?.error === 'string' && result.error.length > 0 ? clipText(result.error) : 'The approved step failed.';
+  return { code: code as FlowStepErrorCode, message, policy };
 }
 
 /** The error a returned tool result carries, for the step row. */
@@ -319,6 +335,18 @@ export function resolveParkedIntent(
           run: { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${ctx.stepId} may or may not have taken effect.` },
           unknownOutcome: true,
         };
+      }
+      // W5 (#5220, Decision 12): a released built-in answered with its own
+      // step error (builtins/release.ts). Keep its code, and end the run on a
+      // policy failure whatever onFailure says — as the runner would have.
+      const builtinError = ctx.toolSource === 'builtin' ? builtinStepErrorOf(intent.result) : null;
+      if (builtinError) {
+        const step: StepRowValues = {
+          status: 'failed', errorCode: builtinError.code, error: builtinError.message, approvedByUserId: intent.decidedByUserId, finishedAt,
+        };
+        return ctx.onFailure === 'continue' && !builtinError.policy
+          ? { kind: 'continue', status: 'failed', output: null, step }
+          : { kind: 'end', step, run: { status: 'failed', errorCode: builtinError.code, error: `Step ${ctx.stepId}: ${builtinError.message}` }, unknownOutcome: false };
       }
       const step: StepRowValues = {
         status: 'failed',

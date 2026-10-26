@@ -676,6 +676,7 @@ async function runStepExecutor(
       scope: scopeFor(s),
       auth: s.auth!,
       deadline: t0 + step.timeoutSec * 1000,
+      leaseToken: s.token,
       stepRowId,
     });
   } catch (err) {
@@ -735,8 +736,9 @@ async function executeUnitRow(
   const { outcome, elapsed: durationMs } = exec;
   const finishedAt = new Date();
   const rendered = outcome.kind === 'skipped' ? null : (outcome.renderedInput ?? null);
+  const ai = aiUsageColumns(outcome);
   const write = (values: StepRowValues) => checkpoint(s.runId, s.token, {}, {
-    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...values } },
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...ai, ...values } },
   });
 
   switch (outcome.kind) {
@@ -848,6 +850,20 @@ async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, it
   return 'continue';
 }
 
+/**
+ * W5 (#5220, Decision 13): an `ai` step's model usage on its step row
+ * (`flow_run_steps_ai_usage_chk`: all three set, or none). Whole cents.
+ */
+export function aiUsageColumns(outcome: StepOutcome): Pick<StepRowValues, 'aiInputTokens' | 'aiOutputTokens' | 'aiCostCents'> {
+  const u = outcome.kind === 'skipped' ? undefined : outcome.aiUsage;
+  if (!u) return {};
+  return {
+    aiInputTokens: Math.max(0, Math.round(u.inputTokens)),
+    aiOutputTokens: Math.max(0, Math.round(u.outputTokens)),
+    aiCostCents: Math.max(0, Math.round(u.costCents)),
+  };
+}
+
 async function applyOutcome(
   s: Slice,
   step: FlowStep,
@@ -863,8 +879,9 @@ async function applyOutcome(
   const approvalMode = outcome.kind !== 'skipped' && outcome.approvalMode === 'pre_approved' ? 'pre_approved' as const : undefined;
   const cursor = nextCursor(s, index, itemIndex, itemCount);
   const advance = { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs };
+  const ai = aiUsageColumns(outcome);
   const write = (values: StepRowValues): FlowRunCheckpointStep => ({
-    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...values } },
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...ai, ...values } },
   });
 
   switch (outcome.kind) {

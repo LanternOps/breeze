@@ -12,6 +12,8 @@ import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { checkFlowReleaseAuthority } from '../flows/releaseAuthority';
 import { isFlowToolName } from '../flows/toolNames';
+import { isFlowBuiltinIntent } from '../flows/builtins/intentKind';
+import { flowBuiltinTierFor } from '@breeze/shared';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { IntentScopeLostError } from './intentTargetScope';
@@ -482,6 +484,14 @@ async function revalidateApprovedIntentCore(
   } else if (isExternalTool) {
     const binding = await revalidateExternalToolBinding(intent);
     if (!binding.ok) return binding;
+  } else if (isFlowBuiltinIntent(intent)) {
+    // Tool catalog W05 (#5220), Decision 12: a flow built-in step (an
+    // http_request write) is not a registered tool — its tier is its own
+    // `tierFor` on the stored arguments, and must not exceed the approved tier.
+    const currentTier = flowBuiltinTierFor(intent.actionName as Parameters<typeof flowBuiltinTierFor>[0], intent.arguments);
+    if (currentTier > intent.riskTier) {
+      return { ok: false, errorCode: 'tier_escalated', details: { currentTier, intentRiskTier: intent.riskTier } };
+    }
   } else {
     const currentTier = getToolTier(intent.actionName);
     if (currentTier === undefined || currentTier > intent.riskTier) {

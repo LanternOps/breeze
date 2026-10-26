@@ -5762,6 +5762,13 @@ const { flowClaimMock, flowAuthorityMock } = vi.hoisted(() => ({
 }));
 vi.mock('../services/flows/intentClaim', () => flowClaimMock);
 vi.mock('../services/flows/releaseAuthority', () => flowAuthorityMock);
+const { flowBuiltinReleaseMock } = vi.hoisted(() => ({
+  flowBuiltinReleaseMock: { executeReleasedFlowBuiltin: vi.fn() },
+}));
+vi.mock('../services/flows/builtins/release', () => ({
+  executeReleasedFlowBuiltin: flowBuiltinReleaseMock.executeReleasedFlowBuiltin,
+  FlowBuiltinNotRunError: class FlowBuiltinNotRunError extends Error {},
+}));
 
 describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
   const RUN_ID = '77777777-7777-4777-8777-777777777777';
@@ -5956,6 +5963,107 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
 
     expect(notifyMock.createNotification).not.toHaveBeenCalled();
     expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
+  });
+
+  // W5 PR B (#5220, Decision 12): an approved Tier-3 built-in step (an
+  // http_request write) is executed by the flow branch through
+  // executeFlowBuiltin — built-ins are not registered tools.
+  describe('built-in flow steps (#5220)', () => {
+    const POST_ARGS = { method: 'POST', url: 'https://api.example.com/tickets', body: { title: 'x' } };
+    const builtinIntent = () => flowIntent({
+      actionName: 'http_request',
+      arguments: POST_ARGS,
+      argumentDigest: computeArgumentDigest(canonicalizeArguments(POST_ARGS)),
+      riskTier: 3,
+    } as Partial<ActionIntent>);
+
+    beforeEach(() => {
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockReset();
+    });
+
+    it('tier-3 http_request releases through executeFlowBuiltin inside the run frame (executeTool is never called)', async () => {
+      const intent = builtinIntent();
+      primeFlow(intent);
+      // A built-in is not in the core registry: the tier check must not need it.
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      let frame: unknown;
+      const { currentFlowExecutionFrame } = await import('../services/flows/flowExecutionContext');
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockImplementationOnce(async () => {
+        frame = currentFlowExecutionFrame();
+        return JSON.stringify({ status: 201, headers: {}, body: { id: 7 } });
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth);
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(frame).toEqual({ runId: RUN_ID, chainDepth: 2 });
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.objectContaining({ result: { status: 201, headers: {}, body: { id: 7 } } }),
+      );
+    });
+
+    it('a built-in that answered with a failure is a failed release (tool_returned_error), result kept', async () => {
+      const intent = builtinIntent();
+      primeFlow(intent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockResolvedValueOnce(
+        JSON.stringify({ error: 'The server answered 500.', flowStepError: { code: 'http_status', policy: false } }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'tool_returned_error' }),
+      );
+    });
+
+    it('a built-in that may have taken effect (throws) fails execution_error with executedAt set', async () => {
+      const intent = builtinIntent();
+      primeFlow(intent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockRejectedValueOnce(new Error('request timed out after it was sent'));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'execution_error', executedAt: expect.any(Date) }),
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('a built-in refused before it ran (step gone) is a clean failure, never executed', async () => {
+      const intent = builtinIntent();
+      primeFlow(intent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      const { FlowBuiltinNotRunError } = await import('../services/flows/builtins/release');
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockRejectedValueOnce(new FlowBuiltinNotRunError('the parked built-in step no longer exists'));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      const last = intentServiceMock.transitionIntent.mock.calls.at(-1)!;
+      expect(last.slice(0, 3)).toEqual([intent.id, 'executing', 'failed']);
+      expect(last[3]).toMatchObject({ errorCode: 'flow_builtin_not_run' });
+      expect((last[3] as { executedAt?: unknown }).executedAt ?? null).toBeNull();
+    });
+
+    it('a built-in intent whose arguments now classify above its tier is tier_escalated and never executes', async () => {
+      const intent = builtinIntent();
+      primeFlow({ ...intent, riskTier: 2 } as ActionIntent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'tier_escalated' }),
+      );
+    });
   });
 });
 

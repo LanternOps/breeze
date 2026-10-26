@@ -23,18 +23,13 @@ import {
 } from '../toolSources/resolver';
 import { FLOW_TOOL_NAMES } from './toolNames';
 
-/**
- * Built-ins a flow step may name today. The shared registry also lists W5's `notify`,
- * `http_request` and `ai` (#5220), but they stay out of every owner's catalog — and
- * so refuse `builtin_not_available` — until W5 PR B gives built-ins rule 7, run-time
- * revalidation and Tier-3 parking (plan Decision 12). PR B removes this gate.
- */
-export const FLOW_EXECUTABLE_BUILTINS: ReadonlySet<FlowBuiltinName> = new Set<FlowBuiltinName>(['wait', 'set']);
-
 export type FlowCatalogEntry =
   | { source: 'core'; name: string; deviceArgs: readonly string[] }
   | { source: 'tenant'; name: string; descriptor: TenantToolDescriptor; validate: ValidateFunction }
   | { source: 'builtin'; name: FlowBuiltinName };
+
+/** An owner's flow catalog: step tool name → what it resolves to. */
+export type FlowCatalog = Map<string, FlowCatalogEntry>;
 
 /**
  * Core tools that are agent-reachable but never flow-eligible:
@@ -79,10 +74,12 @@ export function listFlowEligibleCoreTools(): string[] {
   return listAgentReachableTools().filter((name) => !FLOW_EXCLUDED_CORE_TOOLS.has(name));
 }
 
-export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<Map<string, FlowCatalogEntry>> {
-  const catalog = new Map<string, FlowCatalogEntry>();
+export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<FlowCatalog> {
+  const catalog: FlowCatalog = new Map();
+  // W5 PR B (#5220): every shared built-in is in the catalog. Built-ins are
+  // authorized by rule 7 (FLOW_BUILTIN_PERMISSIONS), revalidated at run time
+  // and parked at Tier 3 like any other step (plan Decision 12).
   for (const name of Object.keys(FLOW_BUILTIN_STEPS) as FlowBuiltinName[]) {
-    if (!FLOW_EXECUTABLE_BUILTINS.has(name)) continue;
     catalog.set(name, { source: 'builtin', name });
   }
   for (const name of listFlowEligibleCoreTools()) {
