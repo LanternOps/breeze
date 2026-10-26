@@ -62,7 +62,7 @@ Two rows changed after the quorum (below): `revoke_template` is a separate **sup
 | Worst page turn, alert (B3 < 7,040) | 4,731 | 4,731 |
 | Legacy whole index (informational) | 10,015 | 10,331 |
 
-No ceiling, `DOMAIN_NOTES` or vocabulary change. `MCP_TOOL_COUNT_APPROX` 280 → 286 (the ±10 pin went red at registry 294 and is raised by the six new tools).
+No ceiling, `DOMAIN_NOTES` or vocabulary change. `MCP_TOOL_COUNT_APPROX` raised by the six new tools (280 → 286; 290 → 296 after merging main, which had raised it to 290 itself).
 
 ## Quorum (codex `exec`, read-only, xhigh): AGREE WITH CHANGES
 
