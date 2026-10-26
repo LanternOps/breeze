@@ -13,6 +13,7 @@ import { sanitizeAttachmentFilename } from './attachmentFilename';
 import { captureException } from './sentry';
 import { loadCertifiedAgreementInput, renderCertifiedAgreementPdf } from './agreementCertificate';
 import { PdfMergeError } from './pdfMerge';
+import { portalBase } from './portalUrl';
 
 /**
  * "Your signed copy" (#9075 W2b, spec §3.6): after a client signs an agreement
@@ -108,8 +109,24 @@ export async function loadSignedCopyAttachment(documentId: string): Promise<Sign
 }
 
 export type SignedCopyOutcome =
-  | { sent: true; recipients: string[]; attached: boolean; certified: boolean }
+  | { sent: true; recipients: string[]; attached: boolean; certified: boolean; portalLink: boolean }
   | { sent: false; reason: 'not_found' | 'no_recipients' | 'no_email_service' | 'send_failed' };
+
+/**
+ * The client-portal page that lists the org's signed agreements with the
+ * certified download (#9075 W3a). Null when no usable portal URL is
+ * configured: portalBase() throws rather than emit a dead link, and a missing
+ * link must never block the mail (logged + captured instead).
+ */
+function signedAgreementsPortalUrl(requestId: string): string | null {
+  try {
+    return `${portalBase()}/agreements`;
+  } catch (err) {
+    console.error('[agreementSignedCopyEmail] no portal URL for the signed-copy fallback — sending without it', { requestId, err });
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
 
 function normalize(email: string | null | undefined): string | null {
   const e = email?.trim().toLowerCase();
@@ -207,6 +224,11 @@ export async function sendSignedAgreementCopy(input: {
       attachment = null;
     }
 
+    // Spec §3.6/§3.8: when the certified copy did not ride along (only the
+    // original fit, or nothing could be attached), point at the client portal,
+    // where the certified copy is always downloadable (#9075 W3a).
+    const portalUrl = attachment === null || !attachment.certified ? signedAgreementsPortalUrl(input.requestId) : null;
+
     const partnerName = req.partnerName?.trim() || 'your provider';
     const template = buildSignedCopyTemplate({
       partnerName,
@@ -215,6 +237,7 @@ export async function sendSignedAgreementCopy(input: {
       signedDate: formatSignedDate(doc?.signedAt ?? null),
       attached: attachment !== null,
       tooLarge,
+      portalUrl,
       signature: req.emailSignature,
     });
 
@@ -233,7 +256,9 @@ export async function sendSignedAgreementCopy(input: {
         ? [{ filename: attachment.filename, content: attachment.content, contentType: attachment.contentType }]
         : undefined,
     });
-    return { sent: true, recipients: to, attached: attachment !== null, certified: attachment?.certified ?? false };
+    return {
+      sent: true, recipients: to, attached: attachment !== null, certified: attachment?.certified ?? false, portalLink: portalUrl !== null,
+    };
   } catch (err) {
     console.error('[agreementSignedCopyEmail] failed', { requestId: input.requestId }, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -250,6 +275,9 @@ export interface SignedCopyEmailParams {
   attached: boolean;
   /** The file existed but was over the attachment limit. */
   tooLarge?: boolean;
+  /** The client-portal signed-agreements page, when the certified copy is not
+   *  attached (#9075 W3a). Omitted/null = no portal line. */
+  portalUrl?: string | null;
   signature?: string | null;
 }
 
@@ -266,9 +294,13 @@ export function buildSignedCopyTemplate(params: SignedCopyEmailParams): EmailTem
       ? 'The signed agreement is too large to attach to this email.'
       : 'The signed agreement could not be attached to this email.';
   const contactLine = `Need another copy? Please contact ${params.partnerName}.`;
+  const portalUrl = params.portalUrl?.trim() || null;
+  const portalLead = 'If you have a client portal account, you can download the signed agreement from your client portal:';
+  const portalLine = portalUrl ? `${portalLead} ${portalUrl}` : null;
   const body = `
       <p style="${BODY_PARA}">${escapeHtml(acceptedLine)}</p>
       <p style="${BODY_PARA}">${escapeHtml(fileLine)}</p>
+      ${portalUrl ? `<p style="${BODY_PARA}">${escapeHtml(portalLead)} <a href="${escapeHtml(portalUrl)}">${escapeHtml(portalUrl)}</a></p>` : ''}
       <p style="${BODY_PARA}">${escapeHtml(contactLine)}</p>
       ${signature ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>` : ''}
   `;
@@ -280,6 +312,6 @@ export function buildSignedCopyTemplate(params: SignedCopyEmailParams): EmailTem
     // Customer-facing: the brand line names their provider, not Breeze.
     brandName: params.partnerName,
   });
-  const text = [acceptedLine, fileLine, contactLine, signature].filter(Boolean).join('\n');
+  const text = [acceptedLine, fileLine, portalLine, contactLine, signature].filter(Boolean).join('\n');
   return { subject, html, text };
 }
