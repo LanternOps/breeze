@@ -39,3 +39,16 @@ describe('dashboard page visibility gate', () => {
     expect(pageSource).not.toMatch(/redirect\([^)]*\/dashboard/);
   });
 });
+
+describe('dashboard page agreements card', () => {
+  it('starts the agreements read alongside the dashboard read and never lets it fail the page', () => {
+    expect(pageSource).toContain('portalApi.getAgreements');
+    expect(pageSource.indexOf('agreementsPromise')).toBeLessThan(pageSource.indexOf('portalApi.getDashboard'));
+    expect(pageSource).toMatch(/\.catch\(\(\) => \[\]\)/);
+  });
+
+  it('renders the awaiting-signature card above the tiles, in the success branch only', () => {
+    expect(pageSource).toContain('<AgreementsAwaitingSignature');
+    expect(pageSource.indexOf('<AgreementsAwaitingSignature')).toBeLessThan(pageSource.indexOf('<DashboardTiles'));
+  });
+});
