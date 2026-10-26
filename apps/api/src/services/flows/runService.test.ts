@@ -738,6 +738,62 @@ describe('createFlowRun — webhook runs (#5220 A4/A6)', () => {
   });
 });
 
+describe('createFlowRun — tool runs (#5220 C2)', () => {
+  const AGENT_RUN = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const KEY_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const tool = (over: Record<string, unknown> = {}) => ({
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {}, dedupeKey: 'tool:ai_tool:u:k1',
+    triggerKind: 'tool' as const, triggeredVia: 'ai_tool' as const, triggeredByUserId: USER, triggeredByApiKeyId: null,
+    parentAgentRunId: null, aiSessionId: 'sess-1', expectedPublicationSeq: 2,
+    ...over,
+  });
+
+  it('tool run never honours pre-approvals and records its lane', async () => {
+    queueCreate();
+    expect(await createFlowRun(tool() as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID, preApprovalsHonored: false });
+    const values = insertValues();
+    expect(values).toEqual(expect.arrayContaining(['tool', 'ai_tool', false, 'tool:ai_tool:u:k1', USER, 'sess-1']));
+    expect(values).not.toContain(true);
+  });
+
+  it('an agent tool run records its parent agent run and no user', async () => {
+    queueCreate();
+    await createFlowRun(tool({ triggeredVia: 'ai_agent', triggeredByUserId: null, aiSessionId: null, parentAgentRunId: AGENT_RUN }) as CreateFlowRunInput);
+    expect(insertValues()).toEqual(expect.arrayContaining(['tool', 'ai_agent', AGENT_RUN]));
+    expect(insertValues()).not.toContain(USER);
+  });
+
+  it('an MCP tool run records the API key', async () => {
+    queueCreate();
+    await createFlowRun(tool({ triggeredVia: 'mcp', triggeredByApiKeyId: KEY_ID, aiSessionId: null }) as CreateFlowRunInput);
+    expect(insertValues()).toEqual(expect.arrayContaining(['tool', 'mcp', KEY_ID]));
+  });
+
+  it('a tool run pins the publication it was resolved against', async () => {
+    queues.select.push([{ partnerId: PARTNER }], [flowRow({ enabledPublicationSeq: 3 })]);
+    expect(await createFlowRun(tool() as CreateFlowRunInput)).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+  });
+
+  it('kind/via/parent mismatches are caller bugs, refused before any read', async () => {
+    await expect(createFlowRun(tool({ triggeredVia: 'ui' }) as unknown as CreateFlowRunInput)).rejects.toThrow(/triggeredVia/);
+    await expect(createFlowRun(tool({ triggeredVia: 'ai_agent', parentAgentRunId: null }) as unknown as CreateFlowRunInput)).rejects.toThrow(/parentAgentRunId/);
+    await expect(createFlowRun(tool({ parentAgentRunId: AGENT_RUN }) as unknown as CreateFlowRunInput)).rejects.toThrow(/parentAgentRunId/);
+    await expect(createFlowRun(tool({ triggeredByApiKeyId: KEY_ID }) as unknown as CreateFlowRunInput)).rejects.toThrow(/api key/i);
+    await expect(createFlowRun(tool({ expectedPublicationSeq: undefined }) as unknown as CreateFlowRunInput)).rejects.toThrow(/publication seq/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a tool run is audited with the AI initiator', async () => {
+    queueCreate();
+    await createFlowRun(tool() as CreateFlowRunInput);
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'flow.run.create', actorId: USER, initiatedBy: 'ai',
+      details: expect.objectContaining({ triggerKind: 'tool', triggeredVia: 'ai_tool' }),
+    }));
+  });
+});
+
 describe('cancelFlowRun', () => {
   it('cancel queued', async () => {
     queues.select.push([{ id: RUN_ID, orgId: ORG, flowId: FLOW_ID, status: 'queued' }]);

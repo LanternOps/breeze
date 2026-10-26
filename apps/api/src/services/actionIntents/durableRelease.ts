@@ -4,7 +4,8 @@
 // tests `vi.mock('../db/schema')` with a PARTIAL mock. Widening that module's
 // import graph — even transitively, even by one symbol — breaks them with
 // "No <x> export is defined on the mock". Keep this module a leaf: no schema,
-// no db, no service imports.
+// no db, no service imports. (flows/toolNames.ts is a leaf too.)
+import { isFlowToolName } from '../flows/toolNames';
 
 /**
  * Tools that must be released ONLY by the durable worker, never claimed and
@@ -36,6 +37,15 @@
 export const DURABLE_RELEASE_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([]);
 
 /**
+ * W5 PR C (#5220): every FLOW tool (`flow__<slug>`, dynamic, so not a set
+ * member) is durable-release-only too. Its release starts a run with the
+ * APPROVER as the triggerer and the approved publication pinned on the insert
+ * (`services/flows/flowToolRelease.ts`, called by the worker's flow-tool
+ * branch); the inline path would run the SDK handler under the live session
+ * instead. `flows/toolNames.ts` is itself a leaf (no imports).
+ */
+
+/**
  * True iff `toolName` must be released by the durable worker only. Callers on
  * the inline release path MUST check this BEFORE attempting the
  * `approved -> executing` CAS — checking after would already have claimed the
@@ -43,6 +53,6 @@ export const DURABLE_RELEASE_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
  * safely once won.
  */
 export function requiresDurableRelease(toolName: string): boolean {
-  return DURABLE_RELEASE_ONLY_TOOLS.has(toolName);
+  return DURABLE_RELEASE_ONLY_TOOLS.has(toolName) || isFlowToolName(toolName);
 }
 
