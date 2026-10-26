@@ -23,6 +23,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
 vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
+vi.mock('../services/flows/webhook/deliveries', () => ({ listWebhookDeliveries: vi.fn() }));
 vi.mock('../services/flows/runService', () => ({
   startManualRun: vi.fn(),
   cancelFlowRun: vi.fn(),
@@ -36,6 +37,7 @@ import { getFlow, listFlows } from '../services/flows/service';
 import { enableFlow, disableFlow } from '../services/flows/versions';
 import { startManualRun, cancelFlowRun, listFlowRuns, getFlowRun, getFlowRunStep } from '../services/flows/runService';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
+import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 import { flowsRoutes } from './flows';
 
 const FLOW_ID = '11111111-1111-4111-8111-111111111111';
@@ -369,6 +371,36 @@ describe('flows routes', () => {
     it('rejects a non-uuid id', async () => {
       expect((await flowsRoutes.request('/nope/webhook-secret', { method: 'POST' })).status).toBe(400);
       expect(createOrRotateWebhookSecret).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('W05 webhook deliveries route (#5220 A6)', () => {
+    const list = (q = '') => flowsRoutes.request(`/${FLOW_ID}/webhook-deliveries${q}`);
+    beforeEach(() => {
+      vi.mocked(listWebhookDeliveries).mockReset().mockResolvedValue([]);
+    });
+
+    it('reads with automations.read in the caller context and passes limit / before', async () => {
+      const res = await list('?limit=20&before=2027-03-01T00:00:00.000Z');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:read');
+      expect(await res.json()).toEqual({ deliveries: [] });
+      expect(listWebhookDeliveries).toHaveBeenCalledWith(expect.anything(), FLOW_ID, { limit: 20, before: '2027-03-01T00:00:00.000Z' });
+    });
+
+    it('404s with the flag off and 403s without automations.read', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      expect((await list()).status).toBe(404);
+      vi.stubEnv('FLOWS_ENABLED', 'true');
+      setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:read'] } as never);
+      expect((await list()).status).toBe(403);
+      expect(listWebhookDeliveries).not.toHaveBeenCalled();
+    });
+
+    it('rejects a limit over 100 and a bad cursor', async () => {
+      expect((await list('?limit=101')).status).toBe(400);
+      expect((await list('?before=yesterday')).status).toBe(400);
+      expect(listWebhookDeliveries).not.toHaveBeenCalled();
     });
   });
 });

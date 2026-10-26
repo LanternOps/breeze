@@ -21,6 +21,7 @@ import { getFlow, listFlows } from '../services/flows/service';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
+import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 
 export const flowsRoutes = new Hono();
 
@@ -195,6 +196,20 @@ flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('p
     rotatedAt: result.rotatedAt,
     warning: 'Store this secret now. It will not be shown again.',
   });
+});
+
+// ── W05 (#5220): the webhook delivery log (Decision 2) ─────────────────────
+// Caller context: RLS (the conditional connection_health_incidents policy)
+// shows an org token only its org's rows, never a partner-level one.
+const deliveriesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime({ offset: true }).optional(),
+});
+
+flowsRoutes.get('/:id/webhook-deliveries', zValidator('param', idParamSchema), zValidator('query', deliveriesQuerySchema), async (c) => {
+  const { id } = c.req.valid('param');
+  const q = c.req.valid('query');
+  return c.json({ deliveries: await listWebhookDeliveries(c.get('auth'), id, { limit: q.limit, before: q.before }) });
 });
 
 flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
