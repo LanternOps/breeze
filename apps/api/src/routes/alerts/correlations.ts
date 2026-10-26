@@ -876,13 +876,12 @@ export async function recordCorrelationFeedback(
 ): Promise<CorrelationGroupRow | null> {
   const group = await getAccessiblePersistedGroup(groupId, auth);
   if (!group || !(await groupHasVisibleMember(auth, group))) return null;
-  if (isSiteRestricted(auth)) {
-    // A restricted caller may only reference alerts and a merge target they can see.
-    if (!(await allAlertsVisible(auth, group.orgId, body.alertIds))) return null;
-    if (body.targetGroupId) {
-      const target = await getAccessiblePersistedGroup(body.targetGroupId, auth);
-      if (!target || !(await groupHasVisibleMember(auth, target))) return null;
-    }
+  // Every caller may only cite alerts of THIS group's org that they can see, and merge into a visible
+  // group of the same org (a label must not reference another tenant's rows).
+  if (!(await allAlertsVisible(auth, group.orgId, body.alertIds))) return null;
+  if (body.targetGroupId) {
+    const target = await getAccessiblePersistedGroup(body.targetGroupId, auth);
+    if (!target || target.orgId !== group.orgId || !(await groupHasVisibleMember(auth, target))) return null;
   }
   await emitCorrelationFeedback({
     orgId: group.orgId,
