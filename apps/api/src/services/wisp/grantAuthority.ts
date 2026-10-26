@@ -541,8 +541,19 @@ export const wispCeilingSnapshotSchema = z.object({
  * `expires_at`, the revision is not this grant's, the snapshot is malformed,
  * or the grantor's live term fails (the reconciler persists that pause; this
  * function fails closed without writing).
+ *
+ * `allowPaused` (READ-ONLY callers only; today the thread timeline): a
+ * `paused` grant resolves from its stored revision ∩ the grantor's live term,
+ * with `status: 'paused'`, so its history stays readable. Every other refusal
+ * still throws (revoked, expired, Wisp off, corrupt pin, failed live term, no
+ * orgs left), and `assertWithinCeiling` refuses the returned ceiling with
+ * `inactive`, so it can never authorise an action.
  */
-export async function resolveGrantCeiling(grantId: string, revisionId: string): Promise<GrantCeiling> {
+export async function resolveGrantCeiling(
+  grantId: string,
+  revisionId: string,
+  opts: { allowPaused?: boolean } = {},
+): Promise<GrantCeiling> {
   // Deployment switch: with Wisp off nothing runs under a grant, including
   // work admitted before the flag flipped. Runs and releases treat it as a
   // pause (kind 'paused'); an Operator task reaching its requester gate is
@@ -573,7 +584,8 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
   if (!revision || revision.grantId !== grantId) {
     throw new GrantInactiveError(grantId, grant.status, `revision ${revisionId} does not belong to this grant`, 'corrupt');
   }
-  if (grant.status !== 'active') throw new GrantInactiveError(grantId, grant.status);
+  const readablePause = opts.allowPaused === true && grant.status === 'paused';
+  if (grant.status !== 'active' && !readablePause) throw new GrantInactiveError(grantId, grant.status);
   if (!(grant.expiresAt instanceof Date) || grant.expiresAt.getTime() <= Date.now()) {
     throw new GrantInactiveError(grantId, 'expired');
   }
@@ -608,6 +620,7 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
     toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
     deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
     orgTerms: buildOrgTerms({ ...reach, orgIds }, live.orgMemberships),
-    status: 'active',
+    // 'paused' only for an allowPaused read; assertWithinCeiling refuses it.
+    status: readablePause ? 'paused' : 'active',
   };
 }
