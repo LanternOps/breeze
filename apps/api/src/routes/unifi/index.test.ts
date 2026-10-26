@@ -18,6 +18,12 @@ const { authState } = vi.hoisted(() => {
   return { authState };
 });
 
+// The real module drags in the whole sync stack (and its schema imports); the route only needs the pure predicate,
+// which telemetryReadModel.test.ts exercises against the real implementation.
+vi.mock('../../services/unifi/unifiSyncService', () => ({
+  isUnifiDeviceOnline: (s: string | null | undefined) => ['connected', 'online'].includes((s ?? '').trim().toLowerCase()),
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -977,6 +983,24 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ devices: [{ id: 'dt1' }], clients: [{ id: 'cl1' }] });
+  });
+
+  it('GET /telemetry keeps the raw columns and adds the Wi-Fi read model fields', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => [{
+        id: 'dt1', siteId: SITE_ID, raw: { a: 1 }, poePorts: [], txBytes: 7, rxBytes: 8, isStale: false,
+        controllerState: 'ONLINE', cpuPct: 0, numClients: 0, uplinkRxRateBps: 0, wifiRadioStatistics: [{ frequencyGHz: 5, txRetriesPct: 0 }],
+        wifiRadioOverview: 'bad', wifiStatisticsObservedAt: new Date('2026-10-15T12:00:00Z'),
+      }]) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(async () => []) })) } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    const body = await res.json() as { devices: Record<string, unknown>[] };
+    expect(body.devices[0]).toMatchObject({
+      raw: { a: 1 }, txBytes: 7, rxBytes: 8, isStale: false, numClients: 0,
+      online: true, controllerState: 'ONLINE', cpuPct: 0, wirelessClientCount: 0, uplinkRxRateBps: 0, uplinkTxRateBps: null,
+      radioOverview: null, radioStatistics: [{ frequencyGHz: 5, txRetriesPct: 0 }], wifiStatisticsObservedAt: '2026-10-15T12:00:00.000Z',
+    });
   });
 
   it('GET /telemetry returns 400 when siteId is missing', async () => {

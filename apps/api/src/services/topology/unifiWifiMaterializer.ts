@@ -100,6 +100,7 @@ export function buildUnifiWifiRows(input: { scope: TopologyScope; capturedAt: Da
     row.radioOverview = detail.radios;
   }
   for (const stats of (byKind('statistics')?.rows ?? []) as RowsOf<'statistics'>) {
+    if (!capable.has(stats.deviceId)) continue;
     const row = rowFor(stats.deviceId);
     row.statisticsObservedAt = input.capturedAt;
     row.uptimeSeconds = stats.uptimeSeconds;

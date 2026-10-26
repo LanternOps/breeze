@@ -1,11 +1,22 @@
 // Live per-device PoE health + connected clients viewer (cloud). Split out of
 // UnifiIntegration.tsx (#2382) — verbatim move, no behavior change.
 
+import { Fragment } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { formatNumber } from "@/lib/i18n/format";
+import { formatUptime } from "@/lib/utils";
+import { formatLastSeen } from "@/lib/formatTime";
+import { joinRadios } from "./telemetryRadios";
 import type { SiteGroup, TelemetryClient, TelemetryDevice } from "./unifiTypes";
+
+const DASH = "—";
+// null/undefined -> dash; a measured 0 is preserved.
+const num = (v: number | null | undefined, suffix = "") =>
+  v == null ? DASH : `${formatNumber(v, { maximumFractionDigits: 2 })}${suffix}`;
+const mbps = (bps: number | null | undefined) =>
+  bps == null ? DASH : `${formatNumber(bps / 1_000_000, { maximumFractionDigits: 2 })} Mbps`;
 
 interface TelemetryViewerCardProps {
   telemetrySite: string;
@@ -109,9 +120,16 @@ export default function TelemetryViewerCard({
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {telemetry.devices.map((d) => (
+                    {telemetry.devices.map((d) => {
+                      const radios = joinRadios(d.radioOverview, d.radioStatistics);
+                      const staleAt =
+                        d.wifiStatisticsObservedAt ?? d.statisticsLastHeartbeatAt ?? null;
+                      const showStale =
+                        d.online === false &&
+                        ((d.uplinkRxRateBps ?? 0) > 0 || (d.uplinkTxRateBps ?? 0) > 0);
+                      return (
+                      <Fragment key={d.id}>
                       <tr
-                        key={d.id}
                         className={d.isStale ? "text-muted-foreground" : ""}
                         data-testid="unifi-telemetry-device-row"
                       >
@@ -140,7 +158,62 @@ export default function TelemetryViewerCard({
                             : "—"}
                         </td>
                       </tr>
-                    ))}
+                      <tr data-testid="unifi-telemetry-device-detail">
+                        <td colSpan={4} className="px-3 pb-3 text-xs text-muted-foreground">
+                          <div className="flex flex-wrap gap-x-4 gap-y-1">
+                            <span data-testid="unifi-telemetry-online">
+                              {d.online == null
+                                ? DASH
+                                : d.online
+                                  ? t("unifiIntegration.online")
+                                  : t("unifiIntegration.offline")}
+                            </span>
+                            <span data-testid="unifi-telemetry-controller-state">
+                              {t("unifiIntegration.controllerState")}: {d.controllerState ?? DASH}
+                            </span>
+                            <span data-testid="unifi-telemetry-uptime">
+                              {t("unifiIntegration.uptime")}: {formatUptime(d.uptimeSeconds)}
+                            </span>
+                            <span data-testid="unifi-telemetry-wireless-clients">
+                              {t("unifiIntegration.wirelessClients")}: {num(d.wirelessClientCount)}
+                            </span>
+                            <span data-testid="unifi-telemetry-cpu">
+                              {t("unifiIntegration.cpu")}: {num(d.cpuPct, "%")}
+                            </span>
+                            <span data-testid="unifi-telemetry-mem">
+                              {t("unifiIntegration.memory")}: {num(d.memPct, "%")}
+                            </span>
+                            <span data-testid="unifi-telemetry-uplink">
+                              {t("unifiIntegration.uplinkRx")}: {mbps(d.uplinkRxRateBps)} ·{" "}
+                              {t("unifiIntegration.uplinkTx")}: {mbps(d.uplinkTxRateBps)}
+                            </span>
+                          </div>
+                          {showStale && (
+                            <p className="mt-1" data-testid="unifi-telemetry-stale-uplink">
+                              {t("unifiIntegration.lastReportedStale")}
+                              {staleAt ? ` · ${formatLastSeen(staleAt)}` : ""}
+                            </p>
+                          )}
+                          {radios.length > 0 && (
+                            <ul className="mt-1 space-y-0.5" data-testid="unifi-telemetry-radios">
+                              {radios.map((r, i) => (
+                                <li key={`${r.frequencyGHz}-${i}`} data-testid="unifi-telemetry-radio">
+                                  {num(r.frequencyGHz, " GHz")} · {t("unifiIntegration.channel")}{" "}
+                                  {r.channel ?? DASH} · {t("unifiIntegration.width")}{" "}
+                                  {num(r.channelWidthMHz, " MHz")} · {t("unifiIntegration.wlanStandard")}{" "}
+                                  {r.wlanStandard ?? DASH} · {t("unifiIntegration.txRetries")}{" "}
+                                  <span data-testid="unifi-telemetry-radio-retries">
+                                    {num(r.txRetriesPct, "%")}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </td>
+                      </tr>
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

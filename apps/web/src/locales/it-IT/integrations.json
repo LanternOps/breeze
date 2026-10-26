@@ -1160,7 +1160,21 @@
     "updateCollector": "Aggiorna agente di raccolta",
     "enableDeepTelemetry": "Abilita telemetria approfondita",
     "wired": "Cablato",
-    "agentListTruncated": "Questo elenco di agenti è stato troncato a un limite di sicurezza e potrebbe essere incompleto."
+    "agentListTruncated": "Questo elenco di agenti è stato troncato a un limite di sicurezza e potrebbe essere incompleto.",
+    "online": "Online",
+    "offline": "Offline",
+    "controllerState": "Stato del controller",
+    "uptime": "Uptime",
+    "wirelessClients": "client wireless",
+    "cpu": "CPU",
+    "memory": "Memoria",
+    "uplinkRx": "Uplink RX",
+    "uplinkTx": "Uplink TX",
+    "lastReportedStale": "Ultimo report / obsoleto",
+    "channel": "Canale",
+    "width": "Larghezza",
+    "wlanStandard": "Standard WLAN",
+    "txRetries": "Ritrasmissioni TX"
   },
   "webhookEditor": {
     "failedToSaveWebhook": "Impossibile salvare il webhook",

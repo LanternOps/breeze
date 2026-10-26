@@ -120,6 +120,21 @@ describe('UniFi Wi-Fi current-state materializer', () => {
     expect(ap1).toMatchObject({ org_id: f.scope.orgId, site_id: f.scope.siteId });
   });
 
+  it('ignores statistics reported for a non-AP: its statistics columns stay null while the AP still writes', async () => {
+    const f = await fixture();
+    const poll = await f.report([
+      f.resource('device_list', [apRow('ap-1'), switchRow('sw-1')]),
+      f.resource('statistics', [statRow('ap-1'), statRow('sw-1', { cpuUtilizationPct: 0, uplinkRxRateBps: 0 })]),
+    ], -30_000);
+    expect((await f.adapt(poll)).accepted).toBe(true);
+    const rows = await f.rows();
+    expect(rows.get('ap-1')!.wifi_statistics_observed_at).not.toBeNull();
+    expect(rows.get('sw-1')).toMatchObject({
+      wifi_capable: false, uptime_seconds: null, cpu_pct: null, mem_pct: null, uplink_rx_rate_bps: null, uplink_tx_rate_bps: null,
+      wifi_radio_statistics: null, wifi_statistics_observed_at: null, statistics_last_heartbeat_at: null, statistics_next_heartbeat_at: null,
+    });
+  });
+
   it('is one batched statement for the whole poll, not one per AP', async () => {
     const f = await fixture();
     const aps = Array.from({ length: 25 }, (_, i) => `ap-${i}`);
