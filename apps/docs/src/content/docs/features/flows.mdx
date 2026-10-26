@@ -119,4 +119,7 @@ There is no AI tool for enabling a flow. Enabling is the delegation decision and
 | `FLOW_APPROVAL_TTL_HOURS` | 24 | How long a parked step waits for approval. |
 | `FLOW_MAX_RUNNING_PER_OWNER` | 20 | Concurrent running runs per owner. |
 | `FLOW_RUN_RETENTION_DAYS` | 90 | Age at which run bodies are cleared. |
+| `FLOW_WEBHOOK_RATE_PER_MINUTE` | 120 | Inbound webhook deliveries accepted per flow per minute (1-6000); over it the request gets a 429. |
+| `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS` | 30 | Days a webhook delivery that was not accepted (refused, org unresolved, invalid body) is kept (1-365); accepted deliveries live as long as their run. |
+| `FLOW_FOREACH_MAX_PARALLEL` | 5 | Most for-each items one flow step runs at once (1-10); a step's own `forEach.concurrency` is capped by this. |
 | `EVENT_DISPATCH_MODE` / `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` | see above | Required for event triggers. |
