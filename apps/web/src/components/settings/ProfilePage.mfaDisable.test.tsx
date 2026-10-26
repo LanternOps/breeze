@@ -123,6 +123,9 @@ describe('ProfilePage — disabling MFA adopts the replacement session (#4934)',
       );
     });
     expect(await screen.findByText(/Multi-factor authentication disabled/i)).toBeTruthy();
+    expect(screen.getByText('Disabled')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Enable$/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Disable$/i })).toBeNull();
   });
 
   it('still reports the disable when the session moved on and the replacement is refused', async () => {
