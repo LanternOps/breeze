@@ -244,6 +244,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/tenantExport.ts': { exempt: 'platform_admin' },
   'admin/trust.ts': { exempt: 'platform_admin' },
   'admin/trustAct.ts': { exempt: 'platform_admin' },
+  'admin/wisp.ts': { exempt: 'platform_admin' },
   'agentRollback.ts': { exempt: 'human_only_agent_rollback', note: 'Spec standing exclusion (docs/superpowers/specs/ai-mcp/2026-09-23-ai-full-control-design.md).' },
   'agentVersions.ts': { tools: ['query_agent_versions', 'trigger_agent_upgrade'] },
   'agentWs.ts': { exempt: 'agent_transport', note: 'Agent WebSocket command and telemetry transport.' },
