@@ -216,8 +216,9 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
   if (!block) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
   if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
-  // c.body, not a bare `new Response`: Hono only merges the headers app-wide middleware set before next() (the
-  // path-selected CSP with `frame-ancestors 'self'`, #10192) into a response built through the context.
+  // c.body, not a bare `new Response`: headers middleware sets via c.header() before next() (the path-selected CSP
+  // with `frame-ancestors 'self'`, #10192) are held as prepared headers and only applied to a response built through
+  // the context.
   const bytes = new Uint8Array(renderData.fileData);
   return c.body(bytes, 200, { 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.byteLength), 'Cache-Control': 'private, max-age=300' });
 });

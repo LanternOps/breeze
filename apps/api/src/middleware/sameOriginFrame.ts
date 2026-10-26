@@ -4,16 +4,17 @@ import type { MiddlewareHandler } from 'hono';
  * The token-gated public PDF responses the customer portal embeds in an `<iframe>` (#10192).
  *
  * - `/api/v1/agreements/public/<token>/file` — the uploaded agreement on the public signing page (#9075).
- * - `/api/v1/quotes/public/<token>/contract-file/<blockId>` — the uploaded contract in a quote's contract block.
+ * - `/api/v1/quotes/public/<token>/contract-file/<blockId>` — the uploaded contract in a public quote link's
+ *   contract block.
  *
  * Everything else forbids framing (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`). These two responses get
- * `SAMEORIGIN` / `frame-ancestors 'self'` instead. `'self'` is the exact set of legitimate embedders on every
- * deployment shape: the portal always renders the iframe `src` as a same-origin relative path (`publicApiPath` in
- * apps/portal/src/lib/api.ts), and the reverse proxy routes `/api/*` and `/portal/*` on the same host. So the page
- * and the PDF share one origin wherever the portal is served, and no other origin may frame the PDF.
+ * `SAMEORIGIN` / `frame-ancestors 'self'` instead. The portal renders the iframe `src` as a relative path
+ * (`publicApiPath` in apps/portal/src/lib/api.ts), so the browser fetches the PDF from the embedding page's own
+ * origin; the iframe can only load where that origin routes `/api/*` to the API (docker/Caddyfile.prod serves
+ * `/api/*` and `/portal*` on one host). `'self'` therefore admits the portal page and no other origin.
  *
  * Anchored patterns, exactly these two (sameOriginFrame.test.ts pins the list). The JSON views and every other asset
- * on the same token keep DENY.
+ * on the same token keep DENY, and so do the session-authenticated routes that serve the same bytes.
  */
 export const SAME_ORIGIN_FRAME_PATHS: readonly RegExp[] = Object.freeze([
   // routes/agreementsPublic.ts — GET /:token/file
