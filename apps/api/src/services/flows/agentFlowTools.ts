@@ -170,9 +170,12 @@ export async function unknownFlowToolNames(
   if (names.length === 0) return [];
   if (!flowsEnabled()) return names;
   const slugs = names.map((n) => n.slice(FLOW_TOOL_PREFIX.length));
-  const query = buildKnownFlowSlugsQuery(owner, slugs);
-  if (!query) return names;
-  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(async () => query, 'flows.agentFlowTools.knownSlugs'));
+  if (!owner.orgId && !owner.partnerId) return names;
+  // Built INSIDE the system context (the `db` proxy binds at build time).
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
+    async () => (await buildKnownFlowSlugsQuery(owner, slugs)) ?? [],
+    'flows.agentFlowTools.knownSlugs',
+  ));
   const known = new Set(rows.map((r) => r.slug));
   return names.filter((n) => !known.has(n.slice(FLOW_TOOL_PREFIX.length)));
 }

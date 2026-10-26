@@ -9,11 +9,12 @@ import type { AuthContext } from '../../middleware/auth';
  * database in flowToolsRls.integration.test.ts.
  */
 
-const { selects, selectCalls } = vi.hoisted(() => ({ selects: [] as unknown[], selectCalls: { n: 0 } }));
+const { selects, selectCalls } = vi.hoisted(() => ({ selects: [] as unknown[], selectCalls: { n: 0, inSystem: 0, depth: 0 } }));
 
 vi.mock('../../db', () => {
   function chain() {
     selectCalls.n += 1;
+    if (selectCalls.depth > 0) selectCalls.inSystem += 1;
     const proxy: unknown = new Proxy(() => {}, {
       get(_t, prop) {
         if (prop === 'then') {
@@ -30,7 +31,10 @@ vi.mock('../../db', () => {
   return {
     db: { select: () => chain() },
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: async (fn: () => unknown) => {
+      selectCalls.depth += 1;
+      try { return await fn(); } finally { selectCalls.depth -= 1; }
+    },
   };
 });
 vi.mock('../../config/env', async (orig) => ({ ...(await orig<typeof import('../../config/env')>()), flowsEnabled: vi.fn(() => true) }));
@@ -103,6 +107,7 @@ function pins(...tiers: Array<1 | 2 | 3>) {
 beforeEach(() => {
   selects.length = 0;
   selectCalls.n = 0;
+  selectCalls.inSystem = 0;
   vi.mocked(flowsEnabled).mockReturnValue(true);
   vi.mocked(stepPinsFor).mockReset();
   vi.mocked(stepPinsFor).mockResolvedValue(pins(1) as never);
@@ -139,6 +144,15 @@ describe('flow tool names', () => {
 });
 
 describe('resolveFlowTools', () => {
+  it('the read is BUILT inside the system context (the db proxy binds at build time; built outside, it reads nothing under forced RLS)', async () => {
+    selects.push([row()]);
+    await resolveFlowTools(orgAuth(), ORG_A);
+    selects.push([row()]);
+    await resolveFlowToolForCall(orgAuth(), 'flow__triage_disk', ORG_A);
+    expect(selectCalls.n).toBe(2);
+    expect(selectCalls.inSystem).toBe(2);
+  });
+
   it('org caller sees its org flows and partner-wide flows of its partner', async () => {
     selects.push([row({ lastRunAt: new Date() }), row({ flowId: 'f2', orgId: null, flowPartnerId: PARTNER_A, slug: 'sweep', name: 'Sweep', publicationId: 'p2' })]);
     const tools = await resolveFlowTools(orgAuth(), ORG_A);

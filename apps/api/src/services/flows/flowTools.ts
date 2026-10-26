@@ -175,10 +175,13 @@ async function readFlowToolRows(
   targetOrgId: string | null,
   opts: { slug?: string; flowId?: string; limit?: number },
 ): Promise<FlowToolRow[]> {
-  const query = buildFlowToolsQuery(auth, targetOrgId, opts);
-  if (!query) return [];
+  if (!flowOwnerPredicate(auth, targetOrgId)) return [];
+  // Built INSIDE the system context: the `db` proxy binds a query to the
+  // context it is built in (toolSources/resolver.ts has the same rule), so a
+  // query built outside would run contextless and, under forced RLS, read
+  // nothing.
   return runOutsideDbContext(() => withSystemDbAccessContext(
-    async () => (await query) as unknown as FlowToolRow[],
+    async () => ((await buildFlowToolsQuery(auth, targetOrgId, opts)) ?? []) as unknown as FlowToolRow[],
     'flows.flowTools.read',
   ));
 }
