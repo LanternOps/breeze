@@ -19,6 +19,11 @@
  *      every enabled event-triggered flow is paused
  *      `event_dispatch_not_durable` (also once at worker start).
  *
+ * Each clause runs in its own try/catch, so one failing clause never starves
+ * the rest; any clause, enqueue or pause failure then fails the pass as a
+ * whole (FlowRunReconcileError), so the job is visibly red rather than a
+ * silent partial success.
+ *
  * Enqueues are idempotent: `enqueueFlowRunSlice` keys the job by
  * (run, resume_seq) and reuses a pending job, so a reconcile racing a real
  * wake collapses onto one slice.
@@ -48,29 +53,67 @@ export interface FlowRunReconcileSummary {
   overdueWaits: number;
   pausedEventFlows: number;
   enqueueFailures: number;
+  pauseFailures: number;
 }
+
+/**
+ * A pass that hit any failure. Every clause still ran; `summary` is what the
+ * pass did get done and `errors` the clause failures (enqueue and pause
+ * failures are counted in the summary and reported per row).
+ */
+export class FlowRunReconcileError extends AggregateError {
+  readonly summary: FlowRunReconcileSummary;
+
+  constructor(errors: unknown[], summary: FlowRunReconcileSummary) {
+    super(
+      errors,
+      `${LOG} pass failed: ${errors.length} clause error(s), ${summary.enqueueFailures} enqueue failure(s), ${summary.pauseFailures} pause failure(s)`,
+    );
+    this.name = 'FlowRunReconcileError';
+    this.summary = summary;
+  }
+}
+
+interface ReconcileRow {
+  id: string;
+  org_id?: string | null;
+  flow_id?: string | null;
+  partner_id?: string | null;
+}
+
+/** Sentry tags with the absent ids left out. */
+function flowTags(tags: Record<string, string | null | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(tags)) if (typeof v === 'string' && v) out[k] = v;
+  return out;
+}
+
+const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 function inFreshSystemTx<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 }
 
-async function selectIds(query: SQL, label: string): Promise<string[]> {
+async function selectRows(query: SQL, label: string): Promise<ReconcileRow[]> {
   const rows = await inFreshSystemTx(() => db.execute(query), label);
-  return (rows as unknown as Array<{ id: string }>).map((r) => r.id);
+  return rows as unknown as ReconcileRow[];
 }
 
 const LIMIT = sql.raw(String(FLOW_RUN_RECONCILE_LIMIT));
 
+// The run clauses select org_id and flow_id beside the id only so a failed
+// enqueue can be reported against its run; nothing acts on them.
+
 /** (a) */
 const queuedStale = (): SQL => sql`
-  SELECT id FROM flow_runs
+  SELECT id, org_id, flow_id FROM flow_runs
   WHERE status = 'queued' AND updated_at < now() - interval '2 minutes'
   ORDER BY updated_at
   LIMIT ${LIMIT} FOR UPDATE SKIP LOCKED`;
 
 /** (b) */
 const awaitingWithTerminalIntent = (): SQL => sql`
-  SELECT r.id FROM flow_runs r
+  SELECT r.id, r.org_id, r.flow_id FROM flow_runs r
   JOIN flow_run_steps s ON s.run_id = r.id AND s.org_id = r.org_id
   JOIN action_intents i ON i.id = s.action_intent_id AND i.requesting_flow_run_id = r.id
   WHERE r.status = 'awaiting_approval'
@@ -80,73 +123,125 @@ const awaitingWithTerminalIntent = (): SQL => sql`
 
 /** (c) — a `running` run always holds a lease; a missing pair is treated as expired. */
 const runningLeaseExpired = (): SQL => sql`
-  SELECT id FROM flow_runs
+  SELECT id, org_id, flow_id FROM flow_runs
   WHERE status = 'running' AND (lease_expires_at < now() OR lease_token IS NULL)
   ORDER BY updated_at
   LIMIT ${LIMIT} FOR UPDATE SKIP LOCKED`;
 
 /** (d) */
 const waitingOverdue = (): SQL => sql`
-  SELECT id FROM flow_runs
+  SELECT id, org_id, flow_id FROM flow_runs
   WHERE status = 'waiting' AND wake_at < now() - interval '2 minutes'
   ORDER BY wake_at
   LIMIT ${LIMIT} FOR UPDATE SKIP LOCKED`;
 
 /** (e) */
 const enabledEventFlows = (): SQL => sql`
-  SELECT id FROM flows
+  SELECT id, org_id, partner_id FROM flows
   WHERE status = 'enabled' AND definition->'trigger'->>'type' = 'event'
   LIMIT ${LIMIT} FOR UPDATE SKIP LOCKED`;
 
-async function enqueueAll(ids: string[], summary: FlowRunReconcileSummary): Promise<void> {
-  for (const runId of ids) {
+async function enqueueAll(rows: ReconcileRow[], summary: FlowRunReconcileSummary): Promise<void> {
+  for (const row of rows) {
     try {
-      await enqueueFlowRunSlice(runId);
+      await enqueueFlowRunSlice(row.id);
     } catch (err) {
       summary.enqueueFailures += 1;
-      console.error(`${LOG} enqueue failed (run=${runId})`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error(`${LOG} enqueue failed (run=${row.id} flow=${row.flow_id ?? '?'} org=${row.org_id ?? '?'})`, err);
+      // Fingerprinted: a Redis outage fails every row of every 60 s pass.
+      captureException(
+        asError(err),
+        undefined,
+        flowTags({ org_id: row.org_id, flow_id: row.flow_id, flow_run_id: row.id, flow_site: 'reconciler.enqueue' }),
+        { fingerprint: ['flow', 'reconciler.enqueue'] },
+      );
     }
   }
 }
 
-/** Clause (e) alone; also run once at worker start. Returns how many flows were paused. */
-export async function pauseEventFlowsIfNotDurable(): Promise<number> {
-  if (isFlowEventDeliveryDurable()) return 0;
+export interface PauseEventFlowsResult {
+  paused: number;
+  failures: number;
+}
+
+/**
+ * Clause (e) alone; also run once at worker start. A failing SELECT throws; a
+ * failing per-flow pause is reported and counted, and the others still pause.
+ */
+export async function pauseEventFlowsIfNotDurable(): Promise<PauseEventFlowsResult> {
+  if (isFlowEventDeliveryDurable()) return { paused: 0, failures: 0 };
   // Select under SKIP LOCKED, then pause after that transaction ends:
   // pauseFlow opens its own and must not run while this one holds the rows.
-  const flowIds = await selectIds(enabledEventFlows(), 'flowRunReconciler.eventFlows');
+  const flowRows = await selectRows(enabledEventFlows(), 'flowRunReconciler.eventFlows');
   let paused = 0;
-  for (const flowId of flowIds) {
+  let failures = 0;
+  for (const flow of flowRows) {
     try {
-      await pauseFlow(flowId, 'event_dispatch_not_durable');
+      await pauseFlow(flow.id, 'event_dispatch_not_durable');
       paused += 1;
     } catch (err) {
-      console.error(`${LOG} pause failed (flow=${flowId})`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      failures += 1;
+      console.error(`${LOG} pause failed (flow=${flow.id} org=${flow.org_id ?? '-'} partner=${flow.partner_id ?? '-'})`, err);
+      // Fingerprinted: a flow that cannot be paused fails again every 60 s.
+      captureException(
+        asError(err),
+        undefined,
+        flowTags({ org_id: flow.org_id, partner_id: flow.partner_id, flow_id: flow.id, flow_site: 'reconciler.pause_event_flow' }),
+        { fingerprint: ['flow', 'reconciler.pause_event_flow'] },
+      );
     }
   }
   if (paused > 0) console.warn(`${LOG} paused ${paused} event flow(s): event delivery is not durable on this deployment`);
-  return paused;
+  return { paused, failures };
 }
+
+type RunClauseKey = 'queued' | 'awaitingApproval' | 'leaseExpired' | 'overdueWaits';
+
+/** Each clause's Sentry `flow_site` (tag and fingerprint) is a fixed literal. */
+const RUN_CLAUSES: ReadonlyArray<readonly [RunClauseKey, () => SQL, string]> = [
+  ['queued', queuedStale, 'reconciler.queued'],
+  ['awaitingApproval', awaitingWithTerminalIntent, 'reconciler.awaiting_approval'],
+  ['leaseExpired', runningLeaseExpired, 'reconciler.lease_expired'],
+  ['overdueWaits', waitingOverdue, 'reconciler.overdue_waits'],
+];
 
 export async function reconcileFlowRuns(): Promise<FlowRunReconcileSummary> {
   const summary: FlowRunReconcileSummary = {
-    queued: 0, awaitingApproval: 0, leaseExpired: 0, overdueWaits: 0, pausedEventFlows: 0, enqueueFailures: 0,
+    queued: 0, awaitingApproval: 0, leaseExpired: 0, overdueWaits: 0, pausedEventFlows: 0, enqueueFailures: 0, pauseFailures: 0,
   };
-  const clauses: Array<[keyof Omit<FlowRunReconcileSummary, 'pausedEventFlows' | 'enqueueFailures'>, () => SQL]> = [
-    ['queued', queuedStale],
-    ['awaitingApproval', awaitingWithTerminalIntent],
-    ['leaseExpired', runningLeaseExpired],
-    ['overdueWaits', waitingOverdue],
-  ];
-  for (const [key, query] of clauses) {
-    const ids = await selectIds(query(), `flowRunReconciler.${key}`);
-    summary[key] = ids.length;
-    await enqueueAll(ids, summary);
+  const errors: unknown[] = [];
+  const clauseFailed = (err: unknown, site: string): void => {
+    errors.push(err);
+    console.error(`${LOG} clause failed (${site})`, err);
+    captureException(asError(err), undefined, { flow_site: site }, { fingerprint: ['flow', site] });
+  };
+
+  for (const [key, query, site] of RUN_CLAUSES) {
+    try {
+      const rows = await selectRows(query(), `flowRunReconciler.${key}`);
+      summary[key] = rows.length;
+      await enqueueAll(rows, summary);
+    } catch (err) {
+      clauseFailed(err, site);
+    }
   }
-  summary.pausedEventFlows = await pauseEventFlowsIfNotDurable();
+  try {
+    const { paused, failures } = await pauseEventFlowsIfNotDurable();
+    summary.pausedEventFlows = paused;
+    summary.pauseFailures = failures;
+  } catch (err) {
+    clauseFailed(err, 'reconciler.event_flows');
+  }
+
+  const failed = errors.length > 0 || summary.enqueueFailures > 0 || summary.pauseFailures > 0;
   const acted = summary.queued + summary.awaitingApproval + summary.leaseExpired + summary.overdueWaits + summary.pausedEventFlows;
+  if (failed) {
+    console.error(
+      `${LOG} pass failed: ${errors.length} clause error(s), ${summary.enqueueFailures} enqueue failure(s) (retried next pass), ${summary.pauseFailures} pause failure(s)`,
+      summary,
+    );
+    throw new FlowRunReconcileError(errors, summary);
+  }
   if (acted > 0) console.log(`${LOG} pass`, summary);
   return summary;
 }
@@ -183,7 +278,9 @@ export async function initializeFlowRunReconciler(): Promise<void> {
     await pauseEventFlowsIfNotDurable();
   } catch (err) {
     console.error(`${LOG} start-up event delivery check failed`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    captureException(asError(err), undefined, { flow_site: 'reconciler.startup_event_flows' }, {
+      fingerprint: ['flow', 'reconciler.startup_event_flows'],
+    });
   }
   console.log(`${LOG} initialized`);
 }

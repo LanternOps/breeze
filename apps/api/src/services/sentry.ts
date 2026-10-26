@@ -511,6 +511,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // rather than `period_start` for the same reason as the mobile pair above:
   // the allowlist is keyed by NAME.
   'ai_charge_period_start',
+  // Tool Catalog W04 (#5219): the flow runner. Every flow capture carries the
+  // run it is about, because `scrubEvent` deletes message/extra and a flow
+  // failure with no ids cannot be found again. `flow_id` = flows.id and
+  // `flow_run_id` = flow_runs.id are local row UUIDs (the `schedule_id` /
+  // `attempt_id` precedent); `flow_site` is a hardcoded string literal at each
+  // call site (e.g. 'reconciler.enqueue', 'runEvents.publish'), the
+  // `cas_label` precedent. None carries free text, a device or host id.
+  'flow_id',
+  'flow_run_id',
+  'flow_site',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

@@ -14,7 +14,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { flowRuns, flowRunSteps } from '../../db/schema';
 import { acquireRunLease, checkpoint, releaseRunLease } from '../../services/flows/runLease';
-import { assertActiveCapacity, claimRunSlot } from '../../services/flows/runAdmission';
+import { assertActiveCapacity, assertFlowRunAdmission, claimRunSlot, FLOW_MAX_ACTIVE_RUNS_PER_OWNER } from '../../services/flows/runAdmission';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { readFlowRunState, seedEnabledFlowRun, type SeededFlowRun } from './helpers/flowSeed';
 
@@ -200,6 +200,50 @@ describe('claimRunSlot (real Postgres)', () => {
     await expect(claimRunSlot({ id: s.runId, flowId: s.flowId, orgId }, { orgId, partnerId }, lease!.token)).resolves.toBe(true);
     const { run } = await readFlowRunState(s);
     expect(run).toMatchObject({ status: 'running', wakeAt: null });
+  });
+
+  runDb('assertActiveCapacity refuses flow_queue_full at FLOW_MAX_ACTIVE_RUNS_PER_OWNER active runs; parked runs count, finished ones do not', async () => {
+    const { seed: s, orgId, partnerId } = await seed();
+    // The seed run is `running` (1 active). Fill the owner to the cap minus
+    // one with every active status — the PARKED ones (waiting,
+    // awaiting_approval) count too — plus finished runs that must not.
+    const fill = FLOW_MAX_ACTIVE_RUNS_PER_OWNER - 2;
+    await system(() => db.execute(sql`
+      INSERT INTO flow_runs (org_id, flow_id, flow_version_id, definition_version, trigger_kind, triggered_via,
+                             trigger_payload, inputs, status, pre_approvals_honored, dedupe_key,
+                             wake_at, current_step_id, started_at, finished_at)
+      SELECT ${orgId}::uuid, ${s.flowId}::uuid, ${s.publicationId}::uuid, 1, 'schedule', 'scheduler', '{}'::jsonb, '{}'::jsonb,
+             st.status, false, 'schedule:cap-' || g::text,
+             CASE WHEN st.status = 'waiting' THEN now() + interval '1 hour' END,
+             CASE WHEN st.status = 'awaiting_approval' THEN 'gate' END,
+             CASE WHEN st.status IN ('running', 'waiting', 'awaiting_approval', 'completed', 'cancelled') THEN now() END,
+             CASE WHEN st.status IN ('completed', 'cancelled') THEN now() END
+        FROM generate_series(1, ${fill + 50}) AS g
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN g > ${fill} THEN (CASE WHEN g % 2 = 0 THEN 'completed' ELSE 'cancelled' END)
+            ELSE (ARRAY['queued', 'waiting', 'awaiting_approval'])[1 + g % 3]
+          END AS status
+        ) AS st`));
+    const owner = { orgId, partnerId };
+    // 1 seed + fill active = cap - 1: still admitted; the 50 finished runs are not counted.
+    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: true });
+
+    // One more run reaches the cap exactly: refused. (Two thirds of the fill
+    // is parked, so this only refuses if parked runs are counted.)
+    await insertSiblingRun(s, orgId);
+    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    // The seam every run creation calls refuses the same way.
+    await expect(assertFlowRunAdmission(owner, s.flowId)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+
+    // Another org of the same partner (a different owner) is unaffected.
+    const otherOrg = await createOrganization({ partnerId });
+    await expect(assertActiveCapacity({ orgId: otherOrg.id, partnerId })).resolves.toEqual({ ok: true });
+
+    // Finishing one active run frees a slot.
+    await system(() => db.update(flowRuns).set({ status: 'cancelled', finishedAt: new Date(), errorCode: 'cancelled' })
+      .where(eq(flowRuns.id, s.runId)));
+    await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: true });
   });
 
   runDb('assertActiveCapacity counts the owner’s active runs', async () => {

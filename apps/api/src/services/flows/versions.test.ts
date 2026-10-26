@@ -542,46 +542,64 @@ describe('assertDelegatorAuthority', () => {
   const pub = (over: Record<string, unknown> = {}) => ({ id: VERSION_ID, flowId: FLOW_ID, enabledByUserId: USER, ...over }) as never;
   const ORG_OWNER = { orgId: ORG, partnerId: PARTNER };
   const PARTNER_OWNER = { orgId: null, partnerId: PARTNER };
+  const RULE7 = { doc: MANUAL_DOC as never, pins: PINS };
 
   it('an active, unrestricted delegator passes', async () => {
     queues.select.push([{ status: 'active' }]);
-    expect(await assertDelegatorAuthority(pub(), ORG_OWNER)).toBe(true);
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(true);
     expect(getUserPermissions).toHaveBeenCalledWith(USER, { partnerId: PARTNER, orgId: ORG, scope: 'organization' });
   });
 
   it('a deleted delegator (NULL tombstone) fails without a lookup', async () => {
-    expect(await assertDelegatorAuthority(pub({ enabledByUserId: null }), ORG_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub({ enabledByUserId: null }), ORG_OWNER, RULE7)).toBe(false);
     expect(callsOf('select')).toHaveLength(0);
   });
 
   it.each(['disabled', 'invited'])('a %s delegator fails', async (status) => {
     queues.select.push([{ status }]);
-    expect(await assertDelegatorAuthority(pub(), ORG_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(false);
   });
 
   it('a delegator removed from the owner scope fails', async () => {
     queues.select.push([{ status: 'active' }]);
     vi.mocked(getUserPermissions).mockResolvedValue(null);
-    expect(await assertDelegatorAuthority(pub(), ORG_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(false);
   });
 
   it('a delegator narrowed to a site allowlist fails', async () => {
     queues.select.push([{ status: 'active' }]);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: [] }));
-    expect(await assertDelegatorAuthority(pub(), ORG_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(false);
   });
 
   it('a partner delegator whose access to the flow org was deselected fails', async () => {
     queues.select.push([{ status: 'active' }]);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: ORG, partnerId: PARTNER, orgAccess: 'selected', allowedOrgIds: [] }));
-    expect(await assertDelegatorAuthority(pub(), ORG_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(false);
   });
 
   it('partner-wide requires live orgAccess all', async () => {
     queues.select.push([{ status: 'active' }], [{ status: 'active' }]);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'selected', allowedOrgIds: [ORG] }));
-    expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER)).toBe(false);
+    expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(false);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
-    expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER)).toBe(true);
+    expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(true);
+  });
+
+  // Review finding 6: rule 7 re-applied at run time. A delegator who is still
+  // active and unrestricted but was DEMOTED (lost a permission a step needs)
+  // must not keep delegating it.
+  it('a demoted-but-active delegator who no longer holds a step\'s permissions fails (rule 7)', async () => {
+    queues.select.push([{ status: 'active' }]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({
+      permissions: [{ resource: 'devices', action: 'read' }, { resource: 'scripts', action: 'read' }],
+    }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(false);
+  });
+
+  it('a delegator who still holds every step\'s permissions passes rule 7', async () => {
+    queues.select.push([{ status: 'active' }]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: ALL_PERMS }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, RULE7)).toBe(true);
   });
 });

@@ -83,6 +83,18 @@ describe(`${MIGRATION} CHECK lists match the shared arrays`, () => {
     expect(sql).not.toMatch(/ai_origin_kind\s*=\s*'flow'/i);
   });
 
+  it('guards run ownership with a BEFORE INSERT-only SECURITY DEFINER trigger (post-merge runs may mismatch)', () => {
+    const flat = sql.replace(/\s+/g, ' ');
+    expect(flat).toContain('CREATE TRIGGER flow_runs_flow_owner_guard_trg BEFORE INSERT ON flow_runs FOR EACH ROW EXECUTE FUNCTION public.flow_runs_flow_owner_guard();');
+    const fn = flat.slice(flat.indexOf('CREATE OR REPLACE FUNCTION public.flow_runs_flow_owner_guard()'));
+    expect(fn).toMatch(/^CREATE OR REPLACE FUNCTION public\.flow_runs_flow_owner_guard\(\) RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS/);
+    expect(fn.slice(0, fn.indexOf('END $$;'))).toContain("CONSTRAINT = 'flow_runs_flow_owner_chk'");
+  });
+
+  it('indexes flow_run_steps by org_id', () => {
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS flow_run_steps_org_id_idx ON flow_run_steps \(org_id\);/);
+  });
+
   it('writes no rows (no DML ⇒ no system-scope election) and opens no inner transaction', () => {
     expect(sql).not.toMatch(/^\s*(INSERT|UPDATE|DELETE|MERGE)\b/im);
     expect(sql).not.toMatch(/set_config\(\s*'breeze\.scope'/i);

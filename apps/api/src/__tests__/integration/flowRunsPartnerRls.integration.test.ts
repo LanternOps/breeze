@@ -14,7 +14,7 @@
  * The runner end to end lives in flowRunnerEndToEnd.integration.test.ts.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -145,6 +145,65 @@ describe('flow_runs / flow_run_steps RLS + constraints (real Postgres)', () => {
     const [own] = await withDbAccessContext(orgContext(t.orgB, t.partnerId), () =>
       db.insert(flowRuns).values(runValues(s, t.orgB)).returning({ id: flowRuns.id }));
     expect(own?.id).toBeDefined();
+  });
+
+  // flow_runs_flow_owner_guard_trg (BEFORE INSERT): a run executes in an org
+  // that owns its flow — the org itself, or (partner-wide flow) an org of the
+  // flow's partner. It fires even in system scope, where RLS admits anything.
+  runDb("a run in another org of the same partner for an ORG-owned flow raises 23514 flow_runs_flow_owner_chk, even in system scope", async () => {
+    const t = await tenant();
+    const s = await seedRun(t); // org A's own flow
+    const raised = await expectSqlState(() => insertRun(s, t.orgB), '23514');
+    expect(pgErrorConstraint(raised)).toBe('flow_runs_flow_owner_chk');
+    // Control: the identical row in the owning org is admitted.
+    expect(await insertRun(s, t.orgA)).toBeDefined();
+  });
+
+  runDb('a run of a partner-wide flow in an org of ANOTHER partner raises 23514 flow_runs_flow_owner_chk', async () => {
+    const t = await tenant();
+    const s = await seedRun(t, { owner: 'partner' });
+    const other = await tenant();
+    const raised = await expectSqlState(() => insertRun(s, other.orgA), '23514');
+    expect(pgErrorConstraint(raised)).toBe('flow_runs_flow_owner_chk');
+    // Control: every org of the flow's own partner is admitted.
+    expect(await insertRun(s, t.orgB)).toBeDefined();
+  });
+
+  runDb('an org token inserting its own run of its partner-wide flow passes the owner guard (DEFINER read of the flow)', async () => {
+    const t = await tenant();
+    const s = await seedRun(t, { owner: 'partner' });
+    const [own] = await withDbAccessContext(orgContext(t.orgB, t.partnerId), () =>
+      db.insert(flowRuns).values(runValues(s, t.orgB)).returning({ id: flowRuns.id }));
+    expect(own?.id).toBeDefined();
+    // ...and an org token of ANOTHER partner is refused even for its own org_id.
+    const other = await tenant();
+    const raised = await expectSqlState(() => withDbAccessContext(orgContext(other.orgA, other.partnerId), () =>
+      db.insert(flowRuns).values(runValues(s, other.orgA))), '23514');
+    expect(pgErrorConstraint(raised)).toBe('flow_runs_flow_owner_chk');
+  });
+
+  runDb('the owner guard is insert-only: a post-merge owner mismatch on an existing run is untouched', async () => {
+    const t = await tenant();
+    const s = await seedRun(t); // org A's flow, run in org A
+    // Org merge repoints the flow (and its publication) to the survivor while
+    // the loser's runs stay put; the guard must not re-check on UPDATE.
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await db.update(flows).set({ orgId: t.orgB }).where(eq(flows.id, s.flowId));
+      await db.update(flowVersions).set({ orgId: t.orgB }).where(eq(flowVersions.flowId, s.flowId));
+      await db.update(flowRuns).set({ cancelRequestedAt: new Date() }).where(eq(flowRuns.id, s.runId));
+    });
+    const state = await readFlowRunState(s);
+    expect(state.run.orgId).toBe(t.orgA);
+    expect(state.run.cancelRequestedAt).not.toBeNull();
+  });
+
+  runDb('flow_run_steps has an org_id index (erasure + FK checks)', async () => {
+    const rows = await getTestDb().execute(sql`
+      SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'flow_run_steps' AND indexname = 'flow_run_steps_org_id_idx'`);
+    const defs = (rows as unknown as Array<{ indexdef: string }>).map((r) => r.indexdef);
+    expect(defs).toHaveLength(1);
+    expect(defs[0]).toMatch(/\(org_id\)$/);
   });
 
   runDb("a flow_run_steps row whose org_id differs from its run's violates the composite FK (23503)", async () => {
@@ -407,6 +466,18 @@ async function readIntent(intentId: string) {
 }
 
 describe('claimFlowLinkedIntentForDispatch on real rows', () => {
+  // The claim refuses `flows_disabled` while FLOWS_ENABLED is off (the
+  // deployment kill switch), so these cases run with the flag on.
+  let savedFlowsEnabled: string | undefined;
+  beforeAll(() => {
+    savedFlowsEnabled = process.env.FLOWS_ENABLED;
+    process.env.FLOWS_ENABLED = 'true';
+  });
+  afterAll(() => {
+    if (savedFlowsEnabled === undefined) delete process.env.FLOWS_ENABLED;
+    else process.env.FLOWS_ENABLED = savedFlowsEnabled;
+  });
+
   runDb('after the flow is re-enabled (new publication) the claim refuses publication_moved: intent cancelled, run failed drift', async () => {
     const c = await seedApprovedFlowIntent();
     // The flow is edited and re-enabled while the step waits: a paused flow

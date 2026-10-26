@@ -3,6 +3,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 
 vi.mock('./flows/service', () => ({ saveDraftFlow: vi.fn(), getFlow: vi.fn(), listFlows: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./flows/owner', () => ({ resolveFlowOwnerForCaller: vi.fn() }));
 vi.mock('./flowValidator', () => ({ validateFlowDocument: vi.fn() }));
 // The cap below is a stand-in with the real contract (runService.test.ts pins
@@ -21,6 +22,7 @@ import { validateFlowDocument } from './flowValidator';
 import { cancelFlowRun, capFlowRunToolOutput, getFlowRun, listFlowRuns, startManualRun } from './flows/runService';
 import { FLOW_TOOL_NAMES, registerFlowTools } from './aiToolsFlows';
 import { isToolEnvGatedOff } from './aiToolEnvGates';
+import { captureException } from './sentry';
 
 const FLOW_ID = '33333333-3333-4333-8333-333333333333';
 const auth = { scope: 'organization', orgId: 'o', user: { id: 'u' } } as unknown as AuthContext;
@@ -209,6 +211,55 @@ describe('flow run AI tools (W04)', () => {
     vi.mocked(getFlowRun).mockResolvedValue({ id: RUN_ID, steps: [{ stepId: 's', output: { blob: 'y'.repeat(10_000) } }] } as never);
     const out = await callAs(userAuth, 'get_flow_run', { runId: RUN_ID });
     expect(out.steps[0].output.truncated).toBe(true);
+  });
+
+  // Review finding: runs have no site column and W04 no site model, so a
+  // site-limited user or a device-bound agent never reads a run body through
+  // the tools either (the service redacts; the handler holds the line too).
+  const siteLimited = { ...(userAuth as object), allowedSiteIds: ['s1'] } as unknown as AuthContext;
+  const deviceBound = { scope: 'organization', orgId: 'o', principal: { kind: 'ai_agent' }, allowedDeviceIds: ['d1'] } as unknown as AuthContext;
+  const fullRun = () => ({
+    id: RUN_ID, triggerPayload: { payload: { secret: 1 } }, inputs: { host: 'pc-1' },
+    steps: [{ stepId: 's', bodiesPruned: false, output: { secret: 2 } }],
+  });
+
+  it.each([['a site-limited user', siteLimited], ['a device-bound agent', deviceBound]])(
+    'get_flow_run for %s returns no trigger payload, inputs or step outputs',
+    async (_label, who) => {
+      vi.mocked(getFlowRun).mockResolvedValue(fullRun() as never);
+      const out = await callAs(who, 'get_flow_run', { runId: RUN_ID });
+      expect(getFlowRun).toHaveBeenCalledWith(who, RUN_ID, { stepBodies: 'capped' });
+      expect(out).toMatchObject({ id: RUN_ID, triggerPayload: null, inputs: null });
+      expect(out.steps[0]).not.toHaveProperty('output');
+      expect(out.steps[0].bodiesPruned).toBe(true);
+    },
+  );
+
+  it('get_flow_run for an unrestricted user keeps the bodies', async () => {
+    vi.mocked(getFlowRun).mockResolvedValue(fullRun() as never);
+    const out = await callAs(userAuth, 'get_flow_run', { runId: RUN_ID });
+    expect(out).toMatchObject({ triggerPayload: { payload: { secret: 1 } }, inputs: { host: 'pc-1' } });
+    expect(out.steps[0].output).toEqual({ secret: 2 });
+  });
+
+  it.each([['a site-limited user', siteLimited], ['a device-bound agent', deviceBound]])(
+    'list_flow_runs for %s passes its auth to the service (summaries carry no bodies)',
+    async (_label, who) => {
+      vi.mocked(listFlowRuns).mockResolvedValue({ runs: [], total: 0 });
+      expect(await callAs(who, 'list_flow_runs', {})).toEqual({ runs: [], total: 0 });
+      expect(listFlowRuns).toHaveBeenCalledWith(who, { flowId: undefined, orgId: undefined, status: undefined, limit: undefined });
+    },
+  );
+
+  it('a handler failure is captured with the flow tags and a bounded fingerprint', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(captureException).mockReset();
+    vi.mocked(listFlowRuns).mockRejectedValue(new Error('db down'));
+    expect(await callAs(userAuth, 'list_flow_runs', {})).toEqual({ error: 'Operation failed. Check server logs for details.' });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error), undefined, { flow_site: 'ai_tool.list_flow_runs' }, { fingerprint: ['flow', 'ai_tool.list_flow_runs'] },
+    );
+    err.mockRestore();
   });
 
   it('cancel_flow_run of a terminal run returns already_terminal; a hidden run is run_not_found', async () => {

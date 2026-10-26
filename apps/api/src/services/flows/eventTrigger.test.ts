@@ -41,12 +41,14 @@ vi.mock('../../config/env', async (importOriginal) => ({
 }));
 vi.mock('./runService', () => ({ createFlowRun: vi.fn() }));
 vi.mock('./triggerScope', () => ({ buildTriggerScope: vi.fn() }));
-vi.mock('./flowTriggerMetrics', () => ({ recordFlowChainDepthRefused: vi.fn(), recordFlowScheduleAdmissionRefused: vi.fn() }));
+vi.mock('./flowTriggerMetrics', () => ({
+  recordFlowChainDepthRefused: vi.fn(), recordFlowScheduleAdmissionRefused: vi.fn(), recordFlowEventAdmissionRefused: vi.fn(),
+}));
 
 import { flowsEnabled } from '../../config/env';
 import { createFlowRun } from './runService';
 import { buildTriggerScope } from './triggerScope';
-import { recordFlowChainDepthRefused } from './flowTriggerMetrics';
+import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { eventMatchesFilter, flowEventTriggerSubscriber } from './eventTrigger';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -55,6 +57,8 @@ const FLOW_A = '33333333-3333-4333-8333-333333333333';
 const FLOW_B = '33333333-3333-4333-8333-444444444444';
 const RUN_X = '88888888-8888-4888-8888-888888888888';
 const EVENT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+/** The org-owned-flow liveness read (organizations: active/trial, not deleted) — the event's org is live. */
+const LIVE = [{ id: ORG }];
 
 function event(over: Partial<BreezeEvent> = {}): BreezeEvent {
   return {
@@ -98,6 +102,7 @@ beforeEach(() => {
     kind, orgId, firedAt: '2026-10-25T10:00:00.000Z', event: { id: e!.id, type: e!.type }, payload: e!.payload as never,
   }));
   vi.mocked(recordFlowChainDepthRefused).mockReset();
+  vi.mocked(recordFlowEventAdmissionRefused).mockReset();
 });
 
 describe('flowEventTriggerSubscriber', () => {
@@ -108,7 +113,7 @@ describe('flowEventTriggerSubscriber', () => {
   });
 
   it('matching filter creates a run', async () => {
-    selects.push([candidate()]);
+    selects.push([candidate()], LIVE);
     await handle(event());
     expect(createFlowRun).toHaveBeenCalledTimes(1);
     expect(vi.mocked(createFlowRun).mock.calls[0]![0]).toEqual({
@@ -152,7 +157,7 @@ describe('flowEventTriggerSubscriber', () => {
   });
 
   it('redelivered event creates no second run', async () => {
-    selects.push([candidate()], [candidate()]);
+    selects.push([candidate()], LIVE, [candidate()], LIVE);
     vi.mocked(createFlowRun)
       .mockResolvedValueOnce({ created: true, runId: RUN_X, preApprovalsHonored: true })
       .mockResolvedValueOnce({ created: false, reason: 'duplicate', runId: RUN_X, preApprovalsHonored: true });
@@ -179,6 +184,7 @@ describe('flowEventTriggerSubscriber', () => {
     selects.push(
       [candidate({ id: FLOW_B, trigger: { type: 'event', event: 'flow.run.failed', filter: { status: 'failed' } } })],
       [{ flowId: FLOW_A, chainDepth: 1 }],
+      LIVE,
     );
     await handle(event({
       type: 'flow.run.failed' as BreezeEvent['type'],
@@ -199,7 +205,7 @@ describe('flowEventTriggerSubscriber', () => {
   });
 
   it('alert event published by a flow step inherits its depth', async () => {
-    selects.push([candidate({ id: FLOW_B, trigger: { type: 'event', event: 'alert.resolved', filter: {} } })], [{ flowId: FLOW_A, chainDepth: 1 }]);
+    selects.push([candidate({ id: FLOW_B, trigger: { type: 'event', event: 'alert.resolved', filter: {} } })], [{ flowId: FLOW_A, chainDepth: 1 }], LIVE);
     await handle(event({
       type: 'alert.resolved',
       metadata: { timestamp: '2026-10-25T10:00:00.000Z', flowRunId: RUN_X, flowChainDepth: 1 },
@@ -230,19 +236,56 @@ describe('flowEventTriggerSubscriber', () => {
   });
 
   it('a createFlowRun failure throws after the other flows were tried', async () => {
-    selects.push([candidate(), candidate({ id: FLOW_B })]);
+    selects.push([candidate(), candidate({ id: FLOW_B })], LIVE);
     vi.mocked(createFlowRun).mockRejectedValueOnce(new Error('insert failed')).mockResolvedValueOnce({ created: true, runId: RUN_X, preApprovalsHonored: true });
     await expect(handle(event())).rejects.toThrow('insert failed');
     expect(createFlowRun).toHaveBeenCalledTimes(2);
   });
 
-  it('a full queue is logged, not retried', async () => {
+  it('a full queue is logged, counted, not retried', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    selects.push([candidate()]);
+    selects.push([candidate()], LIVE);
     vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason: 'flow_queue_full' });
     await expect(handle(event())).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+    expect(recordFlowEventAdmissionRefused).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('a malformed trigger filter is skipped with a warn naming the flow', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warn.mockClear();
+    selects.push([candidate({ trigger: { type: 'event', event: 'alert.triggered', filter: ['severity'] } })]);
+    await handle(event());
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(FLOW_A);
+    warn.mockRestore();
+  });
+
+  // Review finding: liveness applies to the org of EVERY flow, org-owned included.
+  it('a suspended (or deleted) org\'s own event flow does not fire', async () => {
+    selects.push([candidate()], []);
+    await expect(handle(event())).resolves.toBeUndefined();
+    expect(createFlowRun).not.toHaveBeenCalled();
+    // The liveness read is the event org under the shared live-org predicate,
+    // without the partner-wide type exclusions.
+    // (selectCalls[1] is the candidate read's organizations subquery.)
+    const where = selectCalls.at(-1)!.find((o) => o.op === 'where')!.args[0];
+    const values = sqlValues(where);
+    expect(values).toEqual(expect.arrayContaining([ORG, 'active', 'trial']));
+    expect(values).not.toContain('quick_support');
+  });
+
+  it('a non-live org skips its own flows but a partner-wide candidate is decided by the candidate read alone', async () => {
+    selects.push([candidate(), candidate({ id: FLOW_B, orgId: null, partnerId: PARTNER })], []);
+    await handle(event());
+    expect(vi.mocked(createFlowRun).mock.calls.map(([i]) => i.flowId)).toEqual([FLOW_B]);
+  });
+
+  it('a liveness read failure throws for retry', async () => {
+    selects.push([candidate()], new Error('connection terminated'));
+    await expect(handle(event())).rejects.toThrow('connection terminated');
+    expect(createFlowRun).not.toHaveBeenCalled();
   });
 
   it('flag off returns without reading', async () => {

@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { FLOW_RUN_STATUSES, flowEnableRequestSchema, flowManualRunRequestSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { flowsEnabled } from '../config/env';
-import { authMiddleware, isInteractiveUserSession, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { getFlow, listFlows } from '../services/flows/service';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
@@ -56,10 +56,16 @@ flowsRoutes.get('/:id', zValidator('param', idParamSchema), async (c) => {
 });
 
 // ── W04 (#5219): enable / disable, manual runs, run ledger, cancel ─────────
-// `/runs/:runId…` is declared BEFORE `/:id` so `runs` is never parsed as a
-// flow id (and the polled run endpoints are never shadowed by `GET /:id`).
+// No shadowing between `/runs/:runId…` and `/:id…`: Hono's `:id` matches ONE
+// path segment, so `GET /:id` never sees `/runs/<uuid>` (two segments), and a
+// literal `GET /runs` would 400 on the uuid param schema anyway. Declaration
+// order is not what keeps them apart.
+//
+// Every write is gated like the automations/scripts write routes: the
+// permission first, then `requireMfa()` (an MFA-unsatisfied session is 403
+// MFA_REQUIRED; an automation principal is refused by the same gate).
 
-const requireAutomationWrite = requirePermission('automations', 'write');
+const requireAutomationWrite = [requirePermission('automations', 'write'), requireMfa()] as const;
 const runIdParamSchema = z.object({ runId: z.string().uuid() });
 const stepParamSchema = z.object({ runId: z.string().uuid(), stepRowId: z.string().uuid() });
 const runsQuerySchema = z.object({
@@ -119,7 +125,7 @@ flowsRoutes.get('/runs/:runId/steps/:stepRowId', zValidator('param', stepParamSc
   return c.json(step);
 });
 
-flowsRoutes.post('/runs/:runId/cancel', requireAutomationWrite, zValidator('param', runIdParamSchema), async (c) => {
+flowsRoutes.post('/runs/:runId/cancel', ...requireAutomationWrite, zValidator('param', runIdParamSchema), async (c) => {
   const { runId } = c.req.valid('param');
   const result = await cancelFlowRun(c.get('auth'), runId);
   if (!result.ok) return c.json({ error: result.error }, result.error === 'run_not_found' ? 404 : 409);
@@ -134,7 +140,7 @@ flowsRoutes.get('/:id/runs', zValidator('param', idParamSchema), zValidator('que
 
 flowsRoutes.post(
   '/:id/runs',
-  requireAutomationWrite,
+  ...requireAutomationWrite,
   zValidator('param', idParamSchema),
   zValidator('json', flowManualRunRequestSchema),
   async (c) => {
@@ -148,7 +154,7 @@ flowsRoutes.post(
 
 flowsRoutes.post(
   '/:id/enable',
-  requireAutomationWrite,
+  ...requireAutomationWrite,
   zValidator('param', idParamSchema),
   zValidator('json', flowEnableRequestSchema),
   async (c) => {
@@ -159,7 +165,7 @@ flowsRoutes.post(
   },
 );
 
-flowsRoutes.post('/:id/disable', requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
+flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
   const { id } = c.req.valid('param');
   const result = await disableFlow(c.get('auth'), id);
   if (!result.ok) return failure(c, DISABLE_STATUS, result);

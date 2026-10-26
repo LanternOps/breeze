@@ -39,7 +39,7 @@
  * integration.test.ts` uses).
  */
 import './setup';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -509,14 +509,30 @@ describe('tier3-supervised-four-eyes split: end-to-end coverage (real Postgres, 
 describe('four-eyes flow step (#5219): delegator refused, claim, release', () => {
   const PIN = { stepId: 'offboard', tool: TOOL_NAME, source: 'core', tier: 3, approvalScope: 'four_eyes' } as const;
 
-  async function seedFlowScenario() {
+  // The flow dispatch claim refuses `flows_disabled` while the FLOWS_ENABLED
+  // deployment kill switch is off, so these cases run with it on.
+  let savedFlowsEnabled: string | undefined;
+  beforeAll(() => {
+    savedFlowsEnabled = process.env.FLOWS_ENABLED;
+    process.env.FLOWS_ENABLED = 'true';
+  });
+  afterAll(() => {
+    if (savedFlowsEnabled === undefined) delete process.env.FLOWS_ENABLED;
+    else process.env.FLOWS_ENABLED = savedFlowsEnabled;
+  });
+
+  async function seedFlowScenario(opts: { triggerer?: (s: TwoAdminScenario) => Promise<{ id: string }> } = {}) {
     const s = await seedTwoAdminScenario();
+    // The dispatch claim re-checks rule 7: the delegator must still hold every
+    // permission a step needs, so the admins' role also carries the step's own.
+    await grantRolePermissions(s.adminRoleId, [GOOGLE_EXECUTE]);
     // admin1 enabled the flow (the delegator); admin2 is the independent approver.
+    const triggeredByUserId = opts.triggerer ? (await opts.triggerer(s)).id : s.requester.id;
     const seed = await seedEnabledFlowRun({
       orgId: s.orgId,
       partnerId: s.partnerId,
       delegatorUserId: s.admin1.id,
-      triggeredByUserId: s.requester.id,
+      triggeredByUserId,
       stepId: PIN.stepId,
       tool: TOOL_NAME,
       stepInput: { userEmail: 'target@customer.example', reason: 'offboarding' },
@@ -535,7 +551,7 @@ describe('four-eyes flow step (#5219): delegator refused, claim, release', () =>
         runId: seed.runId,
         stepRowId: seed.stepRowId,
         delegatorUserId: s.admin1.id,
-        triggeredByUserId: s.requester.id,
+        triggeredByUserId,
         flowName: seed.flowName,
         stepId: seed.stepId,
       },
@@ -613,6 +629,44 @@ describe('four-eyes flow step (#5219): delegator refused, claim, release', () =>
 
     // A duplicate delivery is a silent no-op.
     await expect(claimFlowLinkedIntentForDispatch(snapshot.id)).resolves.toEqual({ claimed: false, reason: 'lost_race' });
+  });
+
+  runDb("the manual run's triggerer is refused at decide time (self_approval_forbidden) even holding approvals:decide; the intent stays pending", async () => {
+    // A third admin with the SAME decide-capable role started the run by hand,
+    // so a refusal can only be the four-eyes triggerer exclusion — never a
+    // missing permission.
+    let triggerer: { id: string; email: string } | undefined;
+    const { s, seed, snapshot } = await seedFlowScenario({
+      triggerer: async (sc) => {
+        const u = await createUser({ partnerId: sc.partnerId, orgId: sc.orgId, email: `admin3-${randomUUID()}@fourEyes.test` });
+        await assignUserToOrganization(u.id, sc.orgId, sc.adminRoleId);
+        triggerer = { id: u.id, email: u.email };
+        return u;
+      },
+    });
+    expect((await readFlowRunState(seed)).run.triggeredByUserId).toBe(triggerer!.id);
+    // Fan-out already leaves the triggerer out of the pool.
+    const owners = await withSystemDbAccessContext(() =>
+      db.select({ userId: approvalRequests.userId }).from(approvalRequests).where(eq(approvalRequests.intentId, snapshot.id)),
+    );
+    expect(owners.map((r) => r.userId)).toEqual([s.admin2.id]);
+
+    // A row for the triggerer can only exist by defect or tampering — the
+    // decide-time exclusion (read from the run, not the caller) still refuses it.
+    const triggererRow = await insertApprovalRowFor(triggerer!.id, snapshot.id);
+    const refused = await approveViaRoute(triggerer!, s.orgId, s.partnerId, s.adminRoleId, triggererRow);
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toBe('self_approval_forbidden');
+    expect((await readIntent(snapshot.id)).status).toBe('pending_approval');
+    expect((await readFlowRunState(seed)).run.status).toBe('awaiting_approval');
+
+    // Control: the independent admin with the identical role approves.
+    const [admin2Row] = await withSystemDbAccessContext(() =>
+      db.select({ id: approvalRequests.id }).from(approvalRequests)
+        .where(and(eq(approvalRequests.intentId, snapshot.id), eq(approvalRequests.userId, s.admin2.id))),
+    );
+    expect((await approveViaRoute(s.admin2, s.orgId, s.partnerId, s.adminRoleId, admin2Row!.id)).status).toBe(200);
+    expect((await readIntent(snapshot.id)).status).toBe('approved');
   });
 
   runDb('a delegator deactivated while the step waited: the claim cancels the intent, fails the run and pauses the flow', async () => {

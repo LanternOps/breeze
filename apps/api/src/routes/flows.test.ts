@@ -12,6 +12,13 @@ vi.mock('../middleware/auth', () => ({
     if (a?.denyAll || a?.deny?.includes(`${resource}:${action}`)) return c.json({ error: 'Forbidden' }, 403);
     return next();
   }),
+  // A session without satisfied MFA is refused the way the real gate refuses it.
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    c.header('X-Test-Mfa-Checked', '1');
+    const a = c.get('auth') as { mfaUnsatisfied?: boolean } | undefined;
+    if (a?.mfaUnsatisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    return next();
+  }),
 }));
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
@@ -131,6 +138,31 @@ describe('flows routes', () => {
       setAuth({ scope: 'organization', orgId: ORG_ID, deny: [perm] } as never);
       expect((await call()).status).toBe(403);
       for (const f of allServices()) expect(f).not.toHaveBeenCalled();
+    });
+
+    const writeRoutes = routes.filter(([, perm]) => perm === 'automations:write');
+
+    it('there are exactly four write routes (enable, disable, run, cancel)', () => {
+      expect(writeRoutes.map(([n]) => n)).toEqual(['POST /:id/enable', 'POST /:id/disable', 'POST /:id/runs', 'POST cancel']);
+    });
+
+    it.each(writeRoutes)('%s 403s MFA_REQUIRED for a session without satisfied MFA', async (_n, _p, call) => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, principal: { kind: 'user_session' }, mfaUnsatisfied: true } as never);
+      const res = await call();
+      expect(res.status).toBe(403);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:write');
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      for (const f of allServices()) expect(f).not.toHaveBeenCalled();
+    });
+
+    it.each(routes.filter(([, perm]) => perm === 'automations:read'))('%s (a read) never asks for MFA', async (_n, _p, call) => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, mfaUnsatisfied: true } as never);
+      vi.mocked(listFlowRuns).mockResolvedValue({ runs: [], total: 0 });
+      vi.mocked(getFlowRun).mockResolvedValue({ id: RUN_ID, steps: [] } as never);
+      vi.mocked(getFlowRunStep).mockResolvedValue({ id: STEP_ID } as never);
+      const res = await call();
+      expect(res.status).toBe(200);
+      expect(res.headers.get('X-Test-Mfa-Checked')).toBeNull();
     });
 
     it('write routes are stamped automations:write', async () => {

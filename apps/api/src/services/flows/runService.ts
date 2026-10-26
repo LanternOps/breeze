@@ -42,7 +42,7 @@ import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { flowStepPinSchema, type FlowStepPin } from '../flowValidator';
 import { canAccessOrg } from '../permissions';
 import { captureException } from '../sentry';
-import { hasSiteCeiling } from '../siteCeilingAccess';
+import { hasExactDeviceCeiling, hasSiteCeiling } from '../siteCeilingAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
 import { assertFlowRunAdmission, type FlowRunAdmissionRefusal } from './runAdmission';
@@ -72,6 +72,12 @@ export type CreateFlowRunInput = CreateFlowRunBase & (
       aiSessionId: string | null;
       /** startManualRun's verdict: no site ceiling (and all-orgs access for a partner-wide flow). */
       triggererCleared: boolean;
+      /**
+       * The publication rule 7 and the inputs were checked against. The insert
+       * refuses `not_enabled` when the LIVE publication is no longer this one
+       * (re-enabled in between), so a run never executes an unchecked one.
+       */
+      expectedPublicationSeq: number;
     });
 
 /** `preApprovalsHonored` (additive to the plan's shape) is the stored value of the run named. */
@@ -113,8 +119,17 @@ function inSystemTx<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 }
 
-function reportError(err: unknown, context: Record<string, unknown>): void {
-  captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'flows', ...context });
+/**
+ * Sentry with the flow tag names the scrubber keeps (`org_id`, `flow_id`,
+ * `flow_run_id`, `flow_site`) and a bounded fingerprint (a literal site,
+ * never an id).
+ */
+function reportError(err: unknown, site: string, ids: { orgId?: string; flowId?: string; runId?: string }): void {
+  const tags: Record<string, string> = { flow_site: site };
+  if (ids.orgId) tags.org_id = ids.orgId;
+  if (ids.flowId) tags.flow_id = ids.flowId;
+  if (ids.runId) tags.flow_run_id = ids.runId;
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, tags, { fingerprint: ['flow', site] });
 }
 
 // ── createFlowRun ───────────────────────────────────────────────────────────
@@ -182,6 +197,10 @@ function assertChain(p: DerivedProvenance): void {
 export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRunResult> {
   const p = deriveProvenance(i);
   assertChain(p);
+  const expectedSeq = i.triggerKind === 'manual' ? i.expectedPublicationSeq : null;
+  if (i.triggerKind === 'manual' && !Number.isInteger(expectedSeq)) {
+    throw new Error('createFlowRun: a manual run needs the publication seq it was checked against');
+  }
   const triggerPayload = { ...i.scope, kind: i.triggerKind, orgId: i.orgId };
 
   const result = await inSystemTx(async (): Promise<CreateFlowRunResult & { flowName?: string }> => {
@@ -209,6 +228,9 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
       .for('share')
       .limit(1);
     if (!flow || flow.enabledPublicationSeq === null) return { created: false, reason: 'not_enabled' };
+    // A manual start checked rule 7 and the inputs against one publication;
+    // a re-enable since then (a different live seq) is not that publication.
+    if (expectedSeq !== null && flow.enabledPublicationSeq !== expectedSeq) return { created: false, reason: 'not_enabled' };
 
     const [publication] = await db
       .select({ id: flowVersions.id, definitionVersion: flowVersions.definitionVersion })
@@ -251,7 +273,7 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
     await enqueueFlowRunSlice(created.runId);
   } catch (err) {
     console.error(`[flows] first slice enqueue failed (run=${created.runId}); the reconciler will retry`, err);
-    reportError(err, { runId: created.runId });
+    reportError(err, 'run_service.first_slice_enqueue', { orgId: i.orgId, flowId: i.flowId, runId: created.runId });
   }
 
   if (i.triggerKind === 'manual') {
@@ -274,7 +296,7 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
       });
     } catch (err) {
       console.error('[flows] run audit write failed', err);
-      reportError(err, { runId: created.runId });
+      reportError(err, 'run_service.run_audit', { orgId: i.orgId, flowId: i.flowId, runId: created.runId });
     }
   }
   return created;
@@ -306,9 +328,10 @@ function parsePins(raw: unknown): FlowStepPin[] | null {
  * Start a manual run for the caller (plan Task A9; routes A10, `run_flow` A11).
  *
  * Authorization, in order, every refusal before any write:
- *  1. a person: automation principals never start runs; the `ui` lane needs an
- *     interactive user session. API keys and MCP act as the key's creator
- *     (`auth.user.id`, buildAuthFromApiKey), like every other user-RBAC gate.
+ *  1. a person: automation principals never start runs; the `ui` and
+ *     `ai_tool` lanes need an interactive user session. API keys and MCP act
+ *     as the key's creator (`auth.user.id`, buildAuthFromApiKey), like every
+ *     other user-RBAC gate.
  *  2. the flow is visible in the CALLER's context and enabled; its LIVE
  *     publication is a manual flow;
  *  3. the run org: an org flow's own org; a partner-wide flow needs
@@ -317,7 +340,10 @@ function parsePins(raw: unknown): FlowStepPin[] | null {
  *     clamped to the credential (an API key's scopes; an unclampable
  *     credential holds nothing, `clampToCallerCredential`) — pass rule 7
  *     for every step of the live publication;
- *  5. inputs coerce against the publication's declarations.
+ *  5. inputs coerce against the publication's declarations;
+ *  6. the insert pins THAT publication (`expectedPublicationSeq`): a flow
+ *     re-enabled in between is `not_enabled`, never a run on a publication
+ *     nobody checked.
  * A site-limited triggerer (a site ceiling on the membership in the run org
  * or on the token, `[]` included; for an API key, its creator's) is refused
  * `delegation_scope_restricted` before any write: the flow principal is
@@ -335,7 +361,10 @@ export async function startManualRun(
   aiSessionId: string | null = null,
 ): Promise<StartManualRunResult> {
   if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };
-  if (via === 'ui' && !isInteractiveUserSession(auth)) return { ok: false, error: 'interactive_user_required' };
+  // The `ui` lane and the `ai_tool` lane (run_flow, a chat session that passed
+  // the Tier-3 card) are interactive sessions only. The tool handler enforces
+  // this too; the service is the last line, whatever the caller.
+  if (via !== 'api' && !isInteractiveUserSession(auth)) return { ok: false, error: 'interactive_user_required' };
 
   const [flow] = await db
     .select({ id: flows.id, orgId: flows.orgId, partnerId: flows.partnerId, status: flows.status, enabledPublicationSeq: flows.enabledPublicationSeq })
@@ -400,6 +429,7 @@ export async function startManualRun(
     triggeredByUserId: auth.user.id,
     aiSessionId: aiSessionId ?? null,
     triggererCleared,
+    expectedPublicationSeq: seq,
     flowId: flow.id,
     orgId,
     scope: { firedAt: new Date().toISOString() },
@@ -480,12 +510,28 @@ export async function cancelFlowRun(auth: AuthContext, runId: string): Promise<C
     });
   } catch (err) {
     console.error('[flows] cancel audit write failed', err);
-    reportError(err, { runId: run.id });
+    reportError(err, 'run_service.cancel_audit', { orgId: run.orgId, flowId: run.flowId, runId: run.id });
   }
   return { ok: true, status };
 }
 
 // ── reads ──────────────────────────────────────────────────────────────────
+
+/**
+ * Whether the caller may see run BODIES (trigger payload, inputs, rendered
+ * step inputs and outputs). Runs carry no site column and W04 has no site
+ * model, so a body cannot be checked against a site or device ceiling: a
+ * site-limited caller (`hasSiteCeiling`, `[]` included) or a device-bound
+ * agent (`allowedDeviceIds` set) sees the ledger's shape only — summaries,
+ * statuses and errors — never a body. The shared DTO has no "restricted"
+ * flag, so the redaction reuses the retention-pruning semantics: run
+ * `triggerPayload` / `inputs` are null, each step reports `bodiesPruned:
+ * true` and carries no `output`, and the step-body read is not found.
+ * Site-limited users cannot START a run either (startManualRun).
+ */
+function runBodiesRestricted(auth: AuthContext): boolean {
+  return hasSiteCeiling(auth) || hasExactDeviceCeiling(auth);
+}
 
 const iso = (d: Date | string | null | undefined): string | null => (d == null ? null : new Date(d).toISOString());
 
@@ -638,7 +684,8 @@ export async function listFlowRuns(auth: AuthContext, f: ListFlowRunsFilter): Pr
 /**
  * One run with its step ledger. `stepBodies: 'none'` (the polled route)
  * omits rendered inputs and outputs; `'capped'` (the `get_flow_run` tool)
- * inlines each step's output through `capFlowRunToolOutput`.
+ * inlines each step's output through `capFlowRunToolOutput`. A caller who may
+ * not see bodies (`runBodiesRestricted`) gets the shape without any.
  */
 export async function getFlowRun(
   auth: AuthContext,
@@ -663,18 +710,19 @@ export async function getFlowRun(
   if (!run) return null;
 
   const pub = (await loadPublications([run], true)).get(run.flowVersionId);
-  const capped = opts.stepBodies === 'capped';
+  const restricted = runBodiesRestricted(auth);
+  const capped = opts.stepBodies === 'capped' && !restricted;
   const steps = await db
     .select(capped ? { ...STEP_SUMMARY_COLUMNS, output: flowRunSteps.output } : STEP_SUMMARY_COLUMNS)
     .from(flowRunSteps)
     .where(and(eq(flowRunSteps.runId, run.id), eq(flowRunSteps.orgId, run.orgId)))
     .orderBy(asc(flowRunSteps.startedAt), asc(flowRunSteps.stepId), asc(flowRunSteps.itemIndex), asc(flowRunSteps.attempt));
-  const pruned = run.bodiesPrunedAt != null;
+  const pruned = restricted || run.bodiesPrunedAt != null;
 
   return {
     ...toRunSummaryDto(run, pub?.name ?? ''),
-    triggerPayload: run.triggerPayload ?? null,
-    inputs: run.inputs ?? null,
+    triggerPayload: restricted ? null : run.triggerPayload ?? null,
+    inputs: restricted ? null : run.inputs ?? null,
     error: run.error ?? null,
     preApprovalsHonored: run.preApprovalsHonored,
     chainDepth: run.chainDepth,
@@ -689,8 +737,12 @@ export async function getFlowRun(
   };
 }
 
-/** One step row with its bodies (redacted at write time; null after retention). */
+/**
+ * One step row with its bodies (redacted at write time; null after retention).
+ * Not found for a caller who may not see bodies (`runBodiesRestricted`).
+ */
 export async function getFlowRunStep(auth: AuthContext, runId: string, stepRowId: string): Promise<FlowRunStepDetailDto | null> {
+  if (runBodiesRestricted(auth)) return null;
   const reach = auth.orgCondition?.(flowRuns.orgId);
   const [run] = await db
     .select({ bodiesPrunedAt: flowRuns.bodiesPrunedAt })

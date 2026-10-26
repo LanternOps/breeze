@@ -107,6 +107,13 @@ export const flowVersions = pgTable(
  * chain_depth, caused_by_run_id, created_at never change; triggered_by_user_id
  * may only tombstone to NULL.
  *
+ * `flow_runs_flow_owner_guard_trg` (BEFORE INSERT only, SECURITY DEFINER)
+ * raises 23514 `flow_runs_flow_owner_chk` unless the run's org owns its flow:
+ * flows.org_id = org_id, or — partner-wide flow (flows.org_id NULL) —
+ * flows.partner_id = the run org's partner_id. Fires in system scope too; an
+ * unreadable flow or org fails closed. Insert-only because org merge repoints
+ * a moved flow while the loser's runs stay put.
+ *
  * CHECKs (SQL): flow_runs_status_chk, flow_runs_trigger_kind_chk (+ webhook,
  * tool for W05), flow_runs_triggered_via_chk, flow_runs_via_matches_kind_chk,
  * flow_runs_pre_approvals_chk (Decision 4), flow_runs_error_code_chk,
@@ -247,6 +254,8 @@ export const flowRunSteps = pgTable(
       table.attempt,
     ),
     runStartedIdx: index('flow_run_steps_run_started_idx').on(table.runId, table.startedAt),
+    /** Org erasure and the organizations / composite-FK checks look rows up by org_id alone. */
+    orgIdIdx: index('flow_run_steps_org_id_idx').on(table.orgId),
   }),
 );
 

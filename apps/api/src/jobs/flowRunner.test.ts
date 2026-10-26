@@ -468,6 +468,65 @@ describe('processFlowRunJob — approvals', () => {
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
   });
 
+  // Review finding 4: a COMPLETED intent whose result reports an error (the
+  // release worker exempts `{ success: false, error }`) is not a completed step.
+  it('a completed intent whose result is { success: false, error } fails the step (onFailure stop)', async () => {
+    seed({ steps: [{ id: 'b' }, { id: 'c' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { success: false, error: 'Service not found' }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(stepRow('b')).toMatchObject({ status: 'failed', errorCode: 'step_failed', approvedByUserId: APPROVER });
+    expect(stepRow('b')!.error).toContain('Service not found');
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('a completed intent whose result is an error continues under onFailure continue', async () => {
+    seed({ steps: [{ id: 'b', onFailure: 'continue' }, { id: 'c' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { success: false, error: 'nope' }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('b')).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+    expect(execOrder()).toEqual(['c']);
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('a completed TENANT-tool intent is not re-classified (its own isError already decided it)', async () => {
+    seed({ steps: [{ id: 'b', tool: 'acme__restart' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', tool: 'acme__restart', toolSource: 'tenant', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { error: 'partial', restarted: 2 }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('b')).toMatchObject({ status: 'completed', output: { error: 'partial', restarted: 2 } });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('a completed run_script intent whose device the server timed out is unknown_outcome', async () => {
+    seed({ steps: [{ id: 'b', tool: 'run_script', onFailure: 'continue' }, { id: 'c' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', tool: 'run_script', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, {
+      id: INTENT_1, status: 'completed', errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER,
+      result: { results: { d1: { status: 'timeout', error: 'Command timed out', timedOutBy: 'server' } } },
+    });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(stepRow('b')).toMatchObject({ status: 'unknown_outcome', errorCode: 'unknown_outcome' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+    expect(h.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: DELEGATOR }));
+  });
+
+  it('a completed run_script intent where every device sat in a maintenance window fails the step', async () => {
+    seed({ steps: [{ id: 'b', tool: 'run_script' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
+    ledger({ stepId: 'b', tool: 'run_script', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, {
+      id: INTENT_1, status: 'completed', errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER,
+      result: { results: { d1: { status: 'suppressed', suppressedBy: 'maintenance_window', message: 'window open' } } },
+    });
+    await run();
+    expect(stepRow('b')).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+    expect(stepRow('b')!.error).toMatch(/maintenance window/i);
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
   it('a spurious wake (intent still pending) releases the lease and returns', async () => {
     seed({ steps: [{ id: 'b' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
     ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
@@ -783,6 +842,7 @@ describe('processFlowRunJob — slice preconditions', () => {
     expect(h.assertDelegatorAuthority).toHaveBeenCalledWith(
       expect.objectContaining({ enabledByUserId: DELEGATOR }),
       { orgId: ORG_ID, partnerId: PARTNER_ID },
+      expect.anything(),
     );
     expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
   });
@@ -790,7 +850,7 @@ describe('processFlowRunJob — slice preconditions', () => {
   it('a partner-wide flow checks the delegator in the partner scope', async () => {
     seed({ steps: [{ id: 'a' }], flow: { orgId: null, partnerId: PARTNER_ID }, publication: { orgId: null, partnerId: PARTNER_ID } });
     await run();
-    expect(h.assertDelegatorAuthority).toHaveBeenCalledWith(expect.anything(), { orgId: null, partnerId: PARTNER_ID });
+    expect(h.assertDelegatorAuthority).toHaveBeenCalledWith(expect.anything(), { orgId: null, partnerId: PARTNER_ID }, expect.anything());
     expect(h.state.run!.status).toBe('completed');
   });
 
@@ -798,11 +858,106 @@ describe('processFlowRunJob — slice preconditions', () => {
     h.assertDelegatorAuthority.mockResolvedValue(false);
     seed({ steps: [{ id: 'b' }, { id: 'c' }], tiers: { b: 3 }, run: { status: 'awaiting_approval', currentStepId: 'b', resumeSeq: 1 } });
     ledger({ stepId: 'b', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
-    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: {}, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { cleaned: 3 }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
     await run();
     expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'delegator_inactive' });
     expect(h.execute).not.toHaveBeenCalled();
+    // Review finding 3: the approved step EXECUTED - its row records that
+    // (result + approver), never `cancelled`.
+    expect(stepRow('b')).toMatchObject({ status: 'completed', output: { cleaned: 3 }, approvedByUserId: APPROVER });
+    expect(stepRow('c')).toBeUndefined();
+  });
+
+  // Review finding 6: the slice hands the PARSED publication to the delegator
+  // check so rule 7 (still holds every step's permissions) is re-applied.
+  it('the delegator check receives the parsed publication (rule 7); a demoted delegator pauses the flow', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    seed({ steps: [{ id: 'a' }] });
+    await run();
+    expect(h.assertDelegatorAuthority).toHaveBeenCalledWith(
+      expect.objectContaining({ enabledByUserId: DELEGATOR }),
+      { orgId: ORG_ID, partnerId: PARTNER_ID },
+      {
+        doc: expect.objectContaining({ steps: [expect.objectContaining({ id: 'a', tool: 'tool_a' })] }),
+        pins: [expect.objectContaining({ stepId: 'a', tool: 'tool_a' })],
+      },
+    );
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'delegator_inactive' });
+  });
+
+  // Review finding 3: an early end (cancel, flag, drift, delegator) must not
+  // overwrite what a TERMINAL parked intent says happened.
+  it('cancel requested + a completed parked intent: step completed with output and approver, run cancelled', async () => {
+    seed({
+      steps: [{ id: 'a' }, { id: 'b' }], tiers: { a: 3 },
+      run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1, cancelRequestedAt: new Date() },
+    });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { cleaned: 12 }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(stepRow('a')).toMatchObject({ status: 'completed', output: { cleaned: 12 }, approvedByUserId: APPROVER });
+    expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
+    expect(h.createNotification).not.toHaveBeenCalled();
+  });
+
+  it('cancel requested + execution_lost parked intent: step unknown_outcome, run failed unknown_outcome with the notification', async () => {
+    seed({
+      steps: [{ id: 'a' }, { id: 'b' }], tiers: { a: 3 },
+      run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1, cancelRequestedAt: new Date() },
+    });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'failed', result: null, errorCode: 'execution_lost', executedAt: null, decidedByUserId: APPROVER });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(stepRow('a')).toMatchObject({ status: 'unknown_outcome', errorCode: 'unknown_outcome', approvedByUserId: APPROVER });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+    expect(h.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: DELEGATOR, orgId: ORG_ID }));
+  });
+
+  it('an inactive delegator + a may-have-run parked intent: unknown_outcome outranks delegator_inactive (the flow still pauses)', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    seed({ steps: [{ id: 'a' }], tiers: { a: 3 }, run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1 } });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'failed', result: null, errorCode: 'execution_error', executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('a')).toMatchObject({ status: 'unknown_outcome' });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+  });
+
+  it('flag off + a completed parked intent: step completed, run failed flows_disabled', async () => {
+    h.flowsEnabled.mockReturnValue(false);
+    seed({ steps: [{ id: 'a' }, { id: 'b' }], tiers: { a: 3 }, run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1 } });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'completed', result: { ok: 1 }, errorCode: null, executedAt: new Date(), decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('a')).toMatchObject({ status: 'completed', output: { ok: 1 } });
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'flows_disabled' });
+  });
+
+  it('flag off never ends a run whose parked intent is still executing (the release worker owns it)', async () => {
+    h.flowsEnabled.mockReturnValue(false);
+    seed({ steps: [{ id: 'a' }], tiers: { a: 3 }, run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1 } });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'executing', result: null, errorCode: null, executedAt: null, decidedByUserId: APPROVER });
+    await run();
+    expect(stepRow('a')!.status).toBe('awaiting_approval');
+    expect(h.state.run).toMatchObject({ status: 'awaiting_approval', leaseToken: null });
+  });
+
+  it('cancel requested + a pending (never-run) parked intent: step cancelled, run cancelled', async () => {
+    seed({
+      steps: [{ id: 'a' }], tiers: { a: 3 },
+      run: { status: 'awaiting_approval', currentStepId: 'a', resumeSeq: 1, cancelRequestedAt: new Date() },
+    });
+    ledger({ stepId: 'a', status: 'awaiting_approval', tier: 3, approvalMode: 'intent', actionIntentId: INTENT_1 });
+    h.state.intents.set(INTENT_1, { id: INTENT_1, status: 'pending_approval', result: null, errorCode: null, executedAt: null, decidedByUserId: null });
+    await run();
+    expect(stepRow('a')).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
+    expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
   });
 
   it('disabled flow cancels a queued run', async () => {
@@ -922,6 +1077,29 @@ describe('processFlowRunJob — cancellation and fencing', () => {
     expect(stepRow('a')).toMatchObject({ status: 'running', output: null });
     expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'org_merged' });
     expect(h.publishEvent).not.toHaveBeenCalled();
+  });
+
+  // Review finding 7: a result dropped because the heartbeat lost the lease is
+  // logged with the run and step, never discarded silently.
+  it('a heartbeat that loses the lease mid-step drops the result and logs the run and step', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seed({ steps: [{ id: 'slow', timeoutSec: 600 }, { id: 'next' }] });
+    h.execute.mockImplementation(async () => {
+      h.state.run!.leaseToken = 'aaaaaaaa-0000-4000-8000-0000000000ee'; // another slice took over
+      await new Promise((r) => setTimeout(r, 61_000)); // one renewal tick: it finds the lease gone
+      return completed({ late: true });
+    });
+    const job = makeJob();
+    const done = processFlowRunJob(job as never, job.token);
+    await vi.advanceTimersByTimeAsync(62_000);
+    await done;
+    expect(execOrder()).toEqual(['slow']);
+    expect(stepRow('slow')).toMatchObject({ status: 'running', output: null });
+    const dropped = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('dropped'));
+    expect(dropped).toContain(RUN_ID);
+    expect(dropped).toContain('step=slow');
+    warn.mockRestore();
   });
 
   it('a superseded lease discards the late result', async () => {

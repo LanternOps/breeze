@@ -26,6 +26,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { captureException } from './sentry';
+import { hasExactDeviceCeiling, hasSiteCeiling } from './siteCeilingAccess';
 import { FLOW_TOOL_NAMES } from './flows/toolNames';
 
 export { FLOW_TOOL_NAMES };
@@ -49,7 +50,8 @@ function guarded(name: string, fn: (input: Record<string, unknown>, auth: AuthCo
       return json(await fn(input, auth, context));
     } catch (err) {
       console.error(`[${name}]`, err);
-      captureException(err, undefined, { tool: name });
+      // `name` is one of the fixed flow tool names: a bounded fingerprint.
+      captureException(err, undefined, { flow_site: `ai_tool.${name}` }, { fingerprint: ['flow', `ai_tool.${name}`] });
       return json({ error: 'Operation failed. Check server logs for details.' });
     }
   };
@@ -265,6 +267,20 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
       const runId = str(input.runId);
       const run = runId ? await getFlowRun(auth, runId, { stepBodies: 'capped' }) : null;
       if (!run) return { error: 'run_not_found' };
+      // A site-limited user or a device-bound agent never sees a run body
+      // (runs carry no site column; W04 has no site model). The service
+      // already redacts for them; this holds the line whatever it returned.
+      if (hasSiteCeiling(auth) || hasExactDeviceCeiling(auth)) {
+        return {
+          ...run,
+          triggerPayload: null,
+          inputs: null,
+          steps: run.steps.map((s) => {
+            const { output: _output, ...rest } = s as typeof s & { output?: unknown };
+            return { ...rest, bodiesPruned: true };
+          }),
+        };
+      }
       // The service already caps; re-capping is idempotent and keeps the 4 KB
       // promise independent of the caller that built the detail.
       return {

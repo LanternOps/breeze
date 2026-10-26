@@ -113,6 +113,8 @@ describe('flow triggers (real Postgres)', () => {
     const r = await createFlowRun({
       triggerKind: 'manual', triggeredVia: 'api', triggeredByUserId: t.delegatorId, aiSessionId: null, triggererCleared: true,
       flowId, orgId: t.orgA, scope: { firedAt: new Date().toISOString() }, inputs: {}, dedupeKey: `manual:${randomUUID()}`,
+      // The live publication the caller checked against (seedEnabledFlow publishes seq 1).
+      expectedPublicationSeq: 1,
     });
     expect(r).toMatchObject({ created: true, preApprovalsHonored: false });
     const [row] = await runsOf(flowId);

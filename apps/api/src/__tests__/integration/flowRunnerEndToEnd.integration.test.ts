@@ -79,6 +79,7 @@ import { createAccessToken } from '../../services/jwt';
 import { getTestDb } from './setup';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createDevice,
   createOrganization,
   createPartner,
@@ -331,6 +332,124 @@ describe('flow runner end to end (real Postgres)', () => {
     const raised = await withSystemDbAccessContext(() => db.update(flowRuns).set({ status: 'running', finishedAt: null }).where(eq(flowRuns.id, runId)))
       .then(() => null, (err: unknown) => err);
     expect(pgMessage(raised)).toMatch(/flow_runs: terminal status is final/);
+  });
+});
+
+// ── a partner-wide flow never reaches a sibling org's device (spec §6.3 rule 6 at run time) ──
+
+describe('partner-wide flow run: references are owned by the RUN org (real Postgres)', () => {
+  /**
+   * One partner, org A (an online device + a script) and sibling org B (an
+   * online device); the delegator is a partner-scope, all-orgs user holding
+   * every permission the steps need. The flow is partner-wide, so its run in
+   * org A is the case where a templated id from the trigger can name org B.
+   */
+  async function partnerFixture() {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteA = await createSite({ orgId: orgA.id });
+    const siteB = await createSite({ orgId: orgB.id });
+    const deviceA = await createDevice({ orgId: orgA.id, siteId: siteA!.id });
+    const deviceB = await createDevice({ orgId: orgB.id, siteId: siteB!.id });
+    await getTestDb().execute(sql`UPDATE devices SET status = 'online' WHERE id IN (${deviceA.id}::uuid, ${deviceB.id}::uuid)`);
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(role.id, [
+      { resource: 'scripts', action: 'read' },
+      { resource: 'scripts', action: 'execute' },
+      { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'execute' },
+      { resource: 'automations', action: 'read' },
+      { resource: 'automations', action: 'write' },
+    ]);
+    const delegator = await createUser({ partnerId: partner.id, email: `pw-delegator-${randomUUID()}@flowe2e.test` });
+    await assignUserToPartner(delegator.id, partner.id, role.id, 'all');
+    // A partner-library script (org_id NULL): the only kind a partner-wide flow owns.
+    const rows = (await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO scripts (org_id, partner_id, name, os_types, language, content)
+      VALUES (NULL, ${partner.id}, ${`flow-pw-${randomUUID().slice(0, 8)}`}, ARRAY['windows'], 'powershell', 'Write-Output "flow"')
+      RETURNING id`))) as unknown as Array<{ id: string }>;
+    return { partnerId: partner.id, orgA: orgA.id, orgB: orgB.id, deviceA: deviceA.id, deviceB: deviceB.id, scriptId: rows[0]!.id, delegatorId: delegator.id };
+  }
+
+  type PartnerFixture = Awaited<ReturnType<typeof partnerFixture>>;
+
+  /** A queued event run of the partner-wide flow in org A, carrying `payload` as the trigger payload. */
+  async function queuedEventRun(pf: PartnerFixture, flow: { flowId: string; publicationId: string }, payload: Record<string, unknown>): Promise<string> {
+    const [row] = await withSystemDbAccessContext(() => db.insert(flowRuns).values({
+      orgId: pf.orgA, flowId: flow.flowId, flowVersionId: flow.publicationId, definitionVersion: 1,
+      triggerKind: 'event', triggeredVia: 'event',
+      triggerPayload: { kind: 'event', orgId: pf.orgA, firedAt: new Date().toISOString(), event: { id: randomUUID(), type: 'alert.triggered' }, payload },
+      inputs: {}, status: 'queued', preApprovalsHonored: true, dedupeKey: `event:${randomUUID()}`,
+    }).returning({ id: flowRuns.id }));
+    return row!.id;
+  }
+
+  const eventDoc = (name: string, steps: unknown[]) => ({
+    version: 1, name, trigger: { type: 'event', event: 'alert.triggered', filter: {} }, inputs: [], steps,
+  });
+
+  async function intentsOf(runId: string) {
+    return withSystemDbAccessContext(() => db.select().from(actionIntents).where(eq(actionIntents.requestingFlowRunId, runId)));
+  }
+
+  runDb('get_device_details with {{trigger.payload.deviceId}} naming an org-B device fails reference_not_owned; nothing runs', async () => {
+    const pf = await partnerFixture();
+    const flow = await seedEnabledFlow({
+      owner: 'partner', partnerId: pf.partnerId, delegatorUserId: pf.delegatorId,
+      definition: eventDoc('Look up the alerting device', [
+        { id: 'look', tool: 'get_device_details', input: { deviceId: '{{trigger.payload.deviceId}}' } },
+      ]),
+      pins: [{ stepId: 'look', tool: 'get_device_details', source: 'core', tier: 1, approvalScope: null }],
+    });
+
+    // Control: the same flow's run naming an org-A device completes.
+    const okRun = await queuedEventRun(pf, flow, { deviceId: pf.deviceA });
+    await slice(okRun);
+    const ok = await readRun(okRun);
+    expect(ok, JSON.stringify({ error: ok.error })).toMatchObject({ status: 'completed', errorCode: null });
+
+    const runId = await queuedEventRun(pf, flow, { deviceId: pf.deviceB });
+    await slice(runId);
+    const run = await readRun(runId);
+    expect(run, JSON.stringify({ error: run.error })).toMatchObject({ status: 'failed', errorCode: 'reference_not_owned', leaseToken: null });
+    const steps = await readSteps(runId);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ stepId: 'look', status: 'failed', errorCode: 'reference_not_owned', output: null });
+    expect(await commandsFor(pf.deviceB)).toHaveLength(0);
+    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(await intentsOf(runId)).toHaveLength(0);
+  });
+
+  runDb('run_script whose deviceIds mix an org-A and an org-B device is refused as a whole: no intent, no command on either device', async () => {
+    const pf = await partnerFixture();
+    const flow = await seedEnabledFlow({
+      owner: 'partner', partnerId: pf.partnerId, delegatorUserId: pf.delegatorId,
+      definition: eventDoc('Fix both', [
+        { id: 'script', tool: 'run_script', input: { scriptId: pf.scriptId, deviceIds: ['{{trigger.payload.a}}', '{{trigger.payload.b}}'] } },
+      ]),
+      pins: [{ stepId: 'script', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' }],
+    });
+    // Control: the same step naming org-A devices only is accepted — it parks
+    // on a supervised intent — so the refusal below is the org-B device alone.
+    const okRun = await queuedEventRun(pf, flow, { a: pf.deviceA, b: pf.deviceA });
+    await slice(okRun);
+    const parked = await readRun(okRun);
+    expect(parked, JSON.stringify({ error: parked.error })).toMatchObject({ status: 'awaiting_approval', errorCode: null });
+    expect(await intentsOf(okRun)).toHaveLength(1);
+
+    const runId = await queuedEventRun(pf, flow, { a: pf.deviceA, b: pf.deviceB });
+    await slice(runId);
+
+    const run = await readRun(runId);
+    expect(run, JSON.stringify({ error: run.error })).toMatchObject({ status: 'failed', errorCode: 'reference_not_owned' });
+    const [step] = await readSteps(runId);
+    expect(step).toMatchObject({ stepId: 'script', status: 'failed', errorCode: 'reference_not_owned', approvalMode: 'none', actionIntentId: null });
+    // Refused before an intent is minted: the owned org-A device is not run either.
+    expect(await intentsOf(runId)).toHaveLength(0);
+    expect(await commandsFor(pf.deviceA)).toHaveLength(0);
+    expect(await commandsFor(pf.deviceB)).toHaveLength(0);
+    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
   });
 });
 

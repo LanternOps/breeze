@@ -17,6 +17,12 @@
  *
  * Both are best effort: the run is already terminal, so a failure here is
  * reported, never thrown into the caller's state machine.
+ *
+ * Known gap (W05 follow-up): a terminal event whose publish fails is LOST —
+ * there is no outbox and no reconciler republish, so an event flow chained on
+ * `flow.run.*` silently never fires for that run. Until the outbox lands the
+ * failure is at least loud and findable: an error log naming the run, flow
+ * and org, and a fingerprinted capture tagged with the same ids.
  */
 import type { FlowRunTerminalStatus } from '@breeze/shared';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -43,8 +49,16 @@ export async function publishFlowRunTerminalEvent(run: FlowRunEventRef, status: 
       { flowRunId: run.id, flowChainDepth: run.chainDepth },
     );
   } catch (err) {
-    console.error(`[FlowRunner] failed to publish ${type} (run=${run.id})`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(
+      `[FlowRunner] failed to publish ${type}; the event is lost (run=${run.id} flow=${run.flowId} org=${run.orgId} status=${status})`,
+      err,
+    );
+    captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      undefined,
+      { org_id: run.orgId, flow_id: run.flowId, flow_run_id: run.id, flow_site: 'runEvents.publish_terminal' },
+      { fingerprint: ['flow', 'runEvents.publish_terminal'] },
+    );
   }
 }
 
@@ -72,7 +86,12 @@ export async function notifyFlowRunUnknownOutcome(input: {
       dedupeKey: `flow-run-unknown:${input.runId}`,
     }), 'flows.runEvents.notifyUnknownOutcome'));
   } catch (err) {
-    console.error(`[FlowRunner] unknown-outcome notification failed (run=${input.runId})`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[FlowRunner] unknown-outcome notification failed (run=${input.runId} flow=${input.flowId} org=${input.orgId})`, err);
+    captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      undefined,
+      { org_id: input.orgId, flow_id: input.flowId, flow_run_id: input.runId, flow_site: 'runEvents.notify_unknown_outcome' },
+      { fingerprint: ['flow', 'runEvents.notify_unknown_outcome'] },
+    );
   }
 }

@@ -17,6 +17,12 @@ const scheduleAdmissionRefused = new Counter({
   registers: [metricsRegistry],
 });
 
+const eventAdmissionRefused = new Counter({
+  name: 'flow_event_admission_refused_total',
+  help: 'Event-triggered flow runs refused at admission (active-run cap) for one org; the event is not retried for that flow',
+  registers: [metricsRegistry],
+});
+
 const chainDepthRefused = new Counter({
   name: 'flow_chain_depth_refused_total',
   help: 'Events that would have started a flow run past the maximum chain depth (loop guard)',
@@ -25,6 +31,10 @@ const chainDepthRefused = new Counter({
 
 export function recordFlowScheduleAdmissionRefused(): void {
   scheduleAdmissionRefused.inc();
+}
+
+export function recordFlowEventAdmissionRefused(): void {
+  eventAdmissionRefused.inc();
 }
 
 export function recordFlowChainDepthRefused(): void {

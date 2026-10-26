@@ -135,6 +135,8 @@ export interface ClaimPublicationRow {
   flowId: string;
   publicationSeq: number;
   enabledByUserId: string | null;
+  /** The flow document as published — parsed by the claim for the rule-7 delegator re-check. */
+  definition: unknown;
   stepPins: unknown;
 }
 
@@ -145,6 +147,7 @@ export async function loadPublicationBySeq(flowId: string, publicationSeq: numbe
       flowId: flowVersions.flowId,
       publicationSeq: flowVersions.publicationSeq,
       enabledByUserId: flowVersions.enabledByUserId,
+      definition: flowVersions.definition,
       stepPins: flowVersions.stepPins,
     })
     .from(flowVersions)

@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
     publishIntentTerminalOutbox: vi.fn(async () => {}),
     publishFlowRunTerminalEvent: vi.fn(async () => {}),
     checkGuardrails: vi.fn(),
+    flowsEnabled: vi.fn(() => true),
     order: [] as string[],
   };
 });
@@ -58,6 +59,7 @@ vi.mock('./runEvents', () => ({
   },
 }));
 vi.mock('../aiGuardrails', () => ({ checkGuardrails: h.checkGuardrails }));
+vi.mock('../../config/env', () => ({ flowsEnabled: () => h.flowsEnabled() }));
 vi.mock('../flowValidator', async () => {
   const { z } = await import('zod');
   const tier = z.union([z.literal(1), z.literal(2), z.literal(3)]);
@@ -101,8 +103,12 @@ function run(over: Record<string, unknown> = {}) {
   };
 }
 const corePin = { stepId: 'cleanup', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' };
+const DEFINITION = {
+  version: 1, name: 'Disk cleanup', trigger: { type: 'manual' }, inputs: [],
+  steps: [{ id: 'cleanup', tool: 'run_script', input: { scriptId: 's', deviceIds: ['d'] }, approval: 'default', onFailure: 'stop', timeoutSec: 300 }],
+};
 function publication(over: Record<string, unknown> = {}) {
-  return { id: PUB_ID, flowId: FLOW_ID, publicationSeq: 2, enabledByUserId: DELEGATOR, stepPins: [corePin], ...over };
+  return { id: PUB_ID, flowId: FLOW_ID, publicationSeq: 2, enabledByUserId: DELEGATOR, definition: DEFINITION, stepPins: [corePin], ...over };
 }
 
 function untouched(): void {
@@ -118,6 +124,7 @@ function untouched(): void {
   h.store.closeStepForRefusal.mockResolvedValue(undefined);
   h.store.terminalizeRunForRefusal.mockResolvedValue(true);
   h.assertDelegatorAuthority.mockResolvedValue(true);
+  h.flowsEnabled.mockReturnValue(true);
   h.checkGuardrails.mockReturnValue({ allowed: true, tier: 3, approvalScope: 'supervised', requiresApproval: true, readOnly: false });
 }
 
@@ -154,11 +161,55 @@ describe('claimFlowLinkedIntentForDispatch', () => {
     expect(h.store.casIntentApprovedToCancelled).not.toHaveBeenCalled();
     expect(h.store.terminalizeRunForRefusal).not.toHaveBeenCalled();
     expect(h.publishIntentTerminalOutbox).not.toHaveBeenCalled();
-    // Delegator re-checked against the flow OWNER scope (Decision 7).
+    // Delegator re-checked against the flow OWNER scope (Decision 7), with
+    // the PARSED publication so rule 7 is re-applied (review finding 6).
     expect(h.assertDelegatorAuthority).toHaveBeenCalledWith(
       expect.objectContaining({ enabledByUserId: DELEGATOR }),
       { orgId: ORG_ID, partnerId: PARTNER_ID },
+      {
+        doc: expect.objectContaining({ steps: [expect.objectContaining({ id: 'cleanup', tool: 'run_script' })] }),
+        pins: [corePin],
+      },
     );
+  });
+
+  // Review finding 6: a delegator demoted since enable (rule 7 now fails) is refused.
+  it('a demoted-but-active delegator (rule 7) refuses delegator_inactive and pauses the flow', async () => {
+    h.assertDelegatorAuthority.mockResolvedValue(false);
+    await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'delegator_inactive' });
+    expectIntentCancelledWithWake();
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'delegator_inactive');
+  });
+
+  it('an unreadable publication definition is pin_invalid (drift + pause), never a delegator check on garbage', async () => {
+    h.store.loadPublicationBySeq.mockResolvedValue(publication({ definition: { version: 1, steps: 'nope' } }));
+    await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'pin_invalid' });
+    expectIntentCancelledWithWake();
+    expect(h.assertDelegatorAuthority).not.toHaveBeenCalled();
+    expect(h.pauseFlow).toHaveBeenCalledWith(FLOW_ID, 'drift');
+  });
+
+  // Review finding 2: with FLOWS_ENABLED off an approved flow step must never
+  // execute. The run fails flows_disabled (the runner's own flag-off ending);
+  // the flow is NOT paused (the deployment flag, not the flow, changed).
+  it('FLOWS_ENABLED off refuses the claim: intent cancelled, run failed flows_disabled, no pause', async () => {
+    h.flowsEnabled.mockReturnValue(false);
+    await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'flows_disabled' });
+    expectIntentCancelledWithWake();
+    expect(h.store.casIntentApprovedToCancelled).toHaveBeenCalledWith(
+      INTENT_ID, 'flow_drift', expect.objectContaining({ flowClaimRefusal: 'flows_disabled', error: expect.any(String) }),
+    );
+    expect(h.store.closeStepForRefusal).toHaveBeenCalledWith(STEP_ROW_ID, expect.objectContaining({ status: 'cancelled', errorCode: 'cancelled' }));
+    expect(h.store.terminalizeRunForRefusal).toHaveBeenCalledWith(RUN_ID, expect.objectContaining({ status: 'failed', errorCode: 'flows_disabled' }));
+    expect(h.pauseFlow).not.toHaveBeenCalled();
+    expect(h.publishFlowRunTerminalEvent).toHaveBeenCalledWith({ id: RUN_ID, orgId: ORG_ID, flowId: FLOW_ID, chainDepth: 1 }, 'failed');
+  });
+
+  it('FLOWS_ENABLED off still returns lost_race for a duplicate delivery (no writes)', async () => {
+    h.flowsEnabled.mockReturnValue(false);
+    h.store.loadIntentForClaim.mockResolvedValue(intent({ status: 'executing' }));
+    await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'lost_race' });
+    expectNoWrites();
   });
 
   it('locks the run before re-reading the intent FOR UPDATE (disableFlow lock order: run → intent)', async () => {

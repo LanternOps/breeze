@@ -140,6 +140,11 @@ type LiveAuthzIntent = Pick<
   | 'orgId'
   | 'requestedByUserId'
   | 'requestingAgentRunId'
+  // Tool catalog W04 (#5219): a FLOW-originated intent is the other
+  // requester-less shape. `isAgentIntentDecideAuthorized` dispatches on
+  // `requestingFlowRunId` and reads `toolSourceToolId` for a tenant-tool step.
+  | 'requestingFlowRunId'
+  | 'toolSourceToolId'
   | 'actionName'
   | 'arguments'
   // P2-2 (#4189): `isAgentIntentDecideAuthorized` resolves the intent's
@@ -283,7 +288,13 @@ async function isIntentRowVisibleToUser(
   // per user here; four_eyes agent rows keep the unchanged org
   // approvals:decide rule. (`!= null` on purpose: never routes a legacy row
   // whose projection lacks the column into the agent branch.)
-  if (intent.requestingAgentRunId != null) {
+  //
+  // Tool catalog W04 (#5219): a FLOW-originated intent (`requestingFlowRunId`
+  // set) is the same requester-less shape and takes the same branch —
+  // supervised → the action-and-target pool (the decide core's own branch,
+  // decideApprovalRequest.ts), four_eyes → org approvals:decide. Left on the
+  // human rule it matched `requestedByUserId (NULL) === userId` for nobody.
+  if (intent.requestingAgentRunId != null || intent.requestingFlowRunId != null) {
     if (intent.approvalScope !== 'supervised') return orgDecideAuthorizer(intent.orgId);
     return agentDecideAuthorizer(intent);
   }

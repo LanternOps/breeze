@@ -142,13 +142,71 @@ describe('startLeaseHeartbeat', () => {
     hb.stop();
   });
 
-  it('a throwing renewal also marks the slice lost', async () => {
+  // Review finding 7: a transient DB error must not silently lose a step that
+  // may run for an hour. The lease is 6 min and renews every 60 s, so two
+  // missed renewals still leave it live; the third consecutive one does not.
+  it('tolerates two consecutive throwing renewals, retrying on the next tick', async () => {
     vi.useFakeTimers();
-    h.store.renewLease.mockRejectedValueOnce(new Error('db down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.store.renewLease
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValue(true);
+    const hb = startLeaseHeartbeat(RUN_ID, TOKEN, { stepId: 'cleanup' });
+    await vi.advanceTimersByTimeAsync(60_000 * 2);
+    expect(hb.lost()).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.store.renewLease).toHaveBeenCalledTimes(3);
+    expect(hb.lost()).toBe(false);
+    hb.stop();
+    warn.mockRestore();
+  });
+
+  it('a success resets the count: error, ok, error, error never loses the slice', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.store.renewLease
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValue(true);
     const hb = startLeaseHeartbeat(RUN_ID, TOKEN);
+    await vi.advanceTimersByTimeAsync(60_000 * 5);
+    expect(hb.lost()).toBe(false);
+    hb.stop();
+    warn.mockRestore();
+  });
+
+  it('a third consecutive throwing renewal marks the slice lost and logs the run and step', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.store.renewLease.mockRejectedValue(new Error('db down'));
+    const hb = startLeaseHeartbeat(RUN_ID, TOKEN, { stepId: 'cleanup' });
+    await vi.advanceTimersByTimeAsync(60_000 * 2);
+    expect(hb.lost()).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(hb.lost()).toBe(true);
+    const lostLog = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('slice is lost'));
+    expect(lostLog).toContain(RUN_ID);
+    expect(lostLog).toContain('cleanup');
+    // Lost is final: no further renewals.
+    await vi.advanceTimersByTimeAsync(60_000 * 2);
+    expect(h.store.renewLease).toHaveBeenCalledTimes(3);
     hb.stop();
+    warn.mockRestore();
+  });
+
+  it('a renewal that matches no row is lost immediately (no retry) and logs the run', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.store.renewLease.mockResolvedValueOnce(false);
+    const hb = startLeaseHeartbeat(RUN_ID, TOKEN, { stepId: 'cleanup' });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(hb.lost()).toBe(true);
+    expect(warn.mock.calls.map((c) => String(c[0])).some((m) => m.includes(RUN_ID) && m.includes('cleanup'))).toBe(true);
+    hb.stop();
+    warn.mockRestore();
   });
 });
 

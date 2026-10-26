@@ -17,8 +17,7 @@
  *     from the event) when the event's org passes `partnerFanoutOrgCondition`
  *     — an org the partner-wide schedule fan-out skips (quick_support, the
  *     holding org, deleted, not active/trial) never starts a partner-wide
- *     run. Org-owned flows still fire for their own org. Most events match
- *     nothing and stop here;
+ *     run. Most events match nothing and stop here;
  *  3. ancestry (Decision 14): `metadata.flowRunId` / `flowChainDepth`
  *     (stamped by publishEvent inside a flow execution frame) for any event
  *     type, and the payload of `flow.run.*`. The flow that owns the causing
@@ -26,11 +25,17 @@
  *     and past MAX_FLOW_CHAIN_DEPTH no run starts (warn + metric). A depth
  *     without a run id is malformed ancestry and is refused rather than read
  *     as depth 0 — a loop guard must fail closed;
- *  4. per flow: the trigger filter (`eventMatchesFilter`), then
- *     `createFlowRun` with dedupe `event:<event.id>` — a redelivered event is
- *     a duplicate, never a second run.
+ *  4. per flow: the trigger filter (`eventMatchesFilter`; a malformed filter
+ *     is skipped with a warn), then — for an ORG-OWNED flow — the event org's
+ *     liveness (`liveOrgCondition`: active/trial, not deleted; read once per
+ *     event, only when an org-owned flow would start): a suspended or deleted
+ *     org's own flows stop with it, its org type does not matter (the type
+ *     exclusions are partner-wide fan-out only). Then `createFlowRun` with
+ *     dedupe `event:<event.id>` — a redelivered event is a duplicate, never a
+ *     second run.
  * Throws on DB failure (the queue retries; dedupe makes the retry idempotent
- * per flow), never on a non-match. A full queue is logged, not retried.
+ * per flow), never on a non-match. A full queue is logged and counted
+ * (`flow_event_admission_refused_total`), not retried.
  */
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { flowsEnabled } from '../../config/env';
@@ -39,10 +44,10 @@ import { flowRuns, flowVersions } from '../../db/schema/flowRuns';
 import { flows } from '../../db/schema/flows';
 import { organizations } from '../../db/schema/orgs';
 import type { BreezeEvent } from '../eventBus';
-import { partnerFanoutOrgCondition } from '../partnerFanoutOrgs';
+import { liveOrgCondition, partnerFanoutOrgCondition } from '../partnerFanoutOrgs';
 import type { DurableEventSubscriber } from '../eventSubscriberRegistry';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
-import { recordFlowChainDepthRefused } from './flowTriggerMetrics';
+import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { nullFlowInputs } from './inputDefaults';
 import { createFlowRun } from './runService';
 import { buildTriggerScope, type FlowTriggerScope } from './triggerScope';
@@ -174,6 +179,19 @@ async function loadCausingRun(runId: string): Promise<{ flowId: string; chainDep
   return row ?? null;
 }
 
+/** Whether the org is live (active/trial, not deleted) — the gate for its own flows. */
+async function isLiveOrg(orgId: string): Promise<boolean> {
+  const rows = await system(
+    async () => db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), liveOrgCondition()))
+      .limit(1),
+    'flows.eventTrigger.orgLiveness',
+  );
+  return rows.length > 0;
+}
+
 function eventFilterOf(trigger: unknown): Record<string, string | number | boolean | null> | null {
   if (!isPlainContainer(trigger)) return null;
   const filter = (trigger as { filter?: unknown }).filter;
@@ -206,16 +224,28 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
   }
 
   let scope: Omit<FlowTriggerScope, 'kind' | 'orgId'> | null = null;
+  let orgLive: boolean | null = null;
   let firstError: unknown = null;
   for (const flow of candidates) {
     // No self-trigger, whatever the event type (Decision 14).
     if (causingFlowId && flow.id === causingFlowId) continue;
     const filter = eventFilterOf(flow.trigger);
-    if (!filter || !eventMatchesFilter(filter, event.payload)) continue;
+    if (!filter) {
+      console.warn(`${LOG} flow ${flow.id} has a malformed trigger filter; not started for event ${event.id} (${event.type})`);
+      continue;
+    }
+    if (!eventMatchesFilter(filter, event.payload)) continue;
     if (chainDepth > MAX_FLOW_CHAIN_DEPTH) {
       console.warn(`${LOG} chain depth ${chainDepth} > ${MAX_FLOW_CHAIN_DEPTH}: flow ${flow.id} not started for event ${event.id} (caused by run ${causedByRunId})`);
       recordFlowChainDepthRefused();
       continue;
+    }
+    // An org-owned flow runs only in a live org (a DB failure here throws: the
+    // queue retries the event). Partner-wide candidates were already gated by
+    // the stricter fan-out predicate in the candidate read.
+    if (flow.orgId) {
+      orgLive ??= await isLiveOrg(event.orgId);
+      if (!orgLive) continue;
     }
     try {
       if (!scope) {
@@ -234,6 +264,7 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
       });
       if (!result.created && result.reason === 'flow_queue_full') {
         console.warn(`${LOG} active-run cap reached: flow ${flow.id} not started for event ${event.id} in org ${event.orgId}`);
+        recordFlowEventAdmissionRefused();
       }
     } catch (err) {
       console.error(`${LOG} run creation failed (flow=${flow.id}, event=${event.id})`, err);

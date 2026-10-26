@@ -35,10 +35,11 @@ describe('scheduleFlowRunWake', () => {
     enqueueFlowRunSlice.mockClear();
   });
 
-  it('defers the enqueue to after commit under the flow-run-wake label', async () => {
+  it('defers the enqueue to after commit under a label naming the run', async () => {
     scheduleFlowRunWake(RUN_ID);
     expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
-    expect(deferred.map((d) => d.label)).toEqual(['flow-run-wake']);
+    // A failed post-commit enqueue is logged with the label: it must name the run.
+    expect(deferred.map((d) => d.label)).toEqual([`flow-run-wake:${RUN_ID}`]);
     await commit();
     expect(enqueueFlowRunSlice).toHaveBeenCalledTimes(1);
     expect(enqueueFlowRunSlice).toHaveBeenCalledWith(RUN_ID);

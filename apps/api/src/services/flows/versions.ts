@@ -149,7 +149,9 @@ function audit(
     });
   } catch (err) {
     console.error('[flows] audit write failed', err);
-    captureException(err, undefined, { service: 'flows', flowId: row.id });
+    captureException(err, undefined,
+      { ...(row.orgId ? { org_id: row.orgId } : {}), flow_id: row.id, flow_site: 'flows.audit' },
+      { fingerprint: ['flow', 'flows.audit'] });
   }
 }
 
@@ -480,7 +482,9 @@ export async function pauseFlow(flowId: string, reason: FlowPausedReason): Promi
           dedupeKey: `flow-paused:${row.id}:${row.enabledPublicationSeq ?? 0}:${reason}`,
         }), 'flows.pauseFlow.notify'));
       } catch (err) {
-        captureException(err instanceof Error ? err : new Error(String(err)));
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+          { ...(row.orgId ? { org_id: row.orgId } : {}), flow_id: row.id, flow_site: 'flows.pauseFlow.notify' },
+          { fingerprint: ['flow', 'flows.pauseFlow.notify'] });
         console.error(`[flows] pause notification failed (flow=${row.id})`, err);
       }
     });
@@ -496,10 +500,19 @@ export async function pauseFlow(flowId: string, reason: FlowPausedReason): Promi
  * reaches the flow's org, and — for a partner-wide flow — still has
  * all-orgs partner access. False ⇒ the caller pauses the flow
  * `delegator_inactive`.
+ *
+ * Rule 7 is re-applied too (review finding 6): the delegator must STILL hold
+ * every permission the publication's steps need (`missingPermissionsFor`, the
+ * enable-time check). A delegator demoted after enabling — still active and
+ * unrestricted, but no longer holding, say, `scripts.execute` — would
+ * otherwise keep delegating authority they no longer have. `rule7` is the
+ * caller's PARSED publication (definition + pins): jsonb that decides
+ * unattended work is parsed by the caller, never trusted here.
  */
 export async function assertDelegatorAuthority(
   publication: Pick<FlowVersionRow, 'enabledByUserId'>,
   owner: ToolOwnerRef,
+  rule7: { doc: FlowDocumentV1; pins: readonly FlowStepPin[] },
 ): Promise<boolean> {
   const userId = publication.enabledByUserId;
   if (!userId) return false;
@@ -509,5 +522,6 @@ export async function assertDelegatorAuthority(
   );
   if (user?.status !== 'active') return false;
   const perms = await getUserPermissions(userId, permissionContextFor(owner));
-  return ceilingAllowsDelegation(perms, owner);
+  if (!ceilingAllowsDelegation(perms, owner)) return false;
+  return missingPermissionsFor(rule7.doc, [...rule7.pins], perms).length === 0;
 }

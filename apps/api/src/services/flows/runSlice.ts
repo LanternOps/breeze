@@ -3,13 +3,20 @@
  * BullMQ job to the next park, the end of the run, or a slot refusal.
  *
  * Order (plan Task A8 `processFlowRunJob`, steps 1–8):
- *   1. read; terminal ⇒ return; flag off ⇒ failed `flows_disabled`; an early
- *      wake of a `waiting` run ⇒ return; acquire the lease (null ⇒ another
- *      slice owns the run ⇒ return). From here every write is a fenced
- *      `checkpoint`; a `false` ends the slice silently.
- *   2. the delegator still holds what they delegated (every slice, resumes
- *      included) else pause `delegator_inactive`; pins / bindings / the
- *      document parse, else failed `drift` + pause `drift`.
+ *   1. read; terminal ⇒ return; acquire the lease (null ⇒ another slice
+ *      owns the run ⇒ return). From here every write is a fenced
+ *      `checkpoint`; a `false` ends the slice silently. A parked intent the
+ *      release worker owns (approved / executing) ⇒ release and return —
+ *      BEFORE the flag, so no early end ever records a running step as not
+ *      run. Flag off ⇒ failed `flows_disabled`; an early wake of a `waiting`
+ *      run ⇒ return.
+ *   2. pins / bindings / the document parse, else failed `drift` + pause
+ *      `drift`; the delegator still holds what they delegated, rule 7
+ *      included (every slice, resumes included) else pause
+ *      `delegator_inactive`.
+ *   Every early end (1–3) records a parked step whose intent already
+ *   executed from that intent (runLedger.parkedRowOnEarlyEnd): completed
+ *   stays completed; may-have-run is `unknown_outcome` and ends the run so.
  *   3. the flow is enabled on THIS publication, else cancelled
  *      `flow_disabled` (disabled) / failed `drift`; `cancel_requested_at` ⇒
  *      cancelled.
@@ -61,7 +68,9 @@ import {
   isRetryMarker,
   latestAttempts,
   ledgerKey,
+  parkedRowOnEarlyEnd,
   resolveParkedIntent,
+  type ParkedEarlyEnd,
   WORKER_LOST_RETRY_TEXT,
   WORKER_LOST_UNKNOWN_TEXT,
   type ParkedResolution,
@@ -101,14 +110,24 @@ function messageOf(err: unknown): string {
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
 
-async function safePause(flowId: string, reason: FlowPausedReason): Promise<void> {
+/** Sentry tags for a flow run (convention: ids as tags, a literal call-site name, bounded fingerprint). */
+function captureFlow(err: unknown, site: string, ids: { orgId?: string; flowId?: string; runId?: string }): void {
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+    ...(ids.orgId ? { org_id: ids.orgId } : {}),
+    ...(ids.flowId ? { flow_id: ids.flowId } : {}),
+    ...(ids.runId ? { flow_run_id: ids.runId } : {}),
+    flow_site: site,
+  }, { fingerprint: ['flow', site] });
+}
+
+async function safePause(run: Pick<FlowRunRow, 'id' | 'orgId' | 'flowId'>, reason: FlowPausedReason): Promise<void> {
   try {
-    await pauseFlow(flowId, reason);
+    await pauseFlow(run.flowId, reason);
   } catch (err) {
     // The run is already terminal; the next slice of any run of this flow
     // re-checks and pauses again.
-    console.error(`[FlowRunner] pause failed (flow=${flowId}, reason=${reason})`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[FlowRunner] pause failed (flow=${run.flowId}, reason=${reason})`, err);
+    captureFlow(err, 'flows.runSlice.pause', { orgId: run.orgId, flowId: run.flowId, runId: run.id });
   }
 }
 
@@ -153,7 +172,7 @@ async function finish(
     wakeAt: null,
     activeMs: s.activeMs,
   }, step);
-  if (after.pause) await safePause(s.run.flowId, after.pause);
+  if (after.pause) await safePause(s.run, after.pause);
   if (!ok) return false;
   if (after.unknownStepId) {
     await notifyFlowRunUnknownOutcome({
@@ -169,11 +188,29 @@ async function finish(
   return true;
 }
 
-/** End the run before any step ran in this slice, closing whatever rows are open. */
-async function finishEarly(s: Slice, rows: readonly FlowRunStepRow[], end: RunEnd, pause?: FlowPausedReason): Promise<FlowSliceResult> {
+/**
+ * End the run before any step ran in this slice, closing whatever rows are
+ * open. `parked` (review finding 3): the parked row's own outcome when its
+ * intent already executed — a completed step stays completed, a may-have-run
+ * one is `unknown_outcome`. Any `unknown_outcome` row ends the run
+ * `unknown_outcome`, outranking the precondition's code (cancelled, drift,
+ * flows_disabled, delegator_inactive): "it may have taken effect" is the fact
+ * an operator must act on. A pause still happens.
+ */
+async function finishEarly(
+  s: Slice,
+  rows: readonly FlowRunStepRow[],
+  end: RunEnd,
+  pause?: FlowPausedReason,
+  parked: ParkedEarlyEnd | null = null,
+): Promise<FlowSliceResult> {
   const latest = latestAttempts(rows);
-  const { updates, unknownStepIds } = closeOpenRows(latest.values(), new Date());
-  await finish(s, end, updates.length > 0 ? { updates } : undefined, { pause: pause ?? null, unknownStepId: unknownStepIds[0] ?? null });
+  const { updates, unknownStepIds } = closeOpenRows(latest.values(), new Date(), parked);
+  const unknownStepId = unknownStepIds[0] ?? null;
+  const runEnd: RunEnd = unknownStepId
+    ? { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${unknownStepId} may or may not have taken effect.` }
+    : end;
+  await finish(s, runEnd, updates.length > 0 ? { updates } : undefined, { pause: pause ?? null, unknownStepId });
   return DONE;
 }
 
@@ -237,17 +274,12 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
   };
   const rows = await read(() => store.loadStepRows(runId), 'flows.runSlice.steps');
 
-  if (!flowsEnabled()) {
-    return finishEarly(s, rows, { status: 'failed', errorCode: 'flows_disabled', error: 'Flows are turned off on this deployment.' });
-  }
-  if (s.run.status === 'waiting' && snap.wakePending) {
-    await releaseRunLease(runId, s.token);
-    return DONE;
-  }
-
   // An approved/executing parked intent belongs to the release worker right
-  // now; deciding anything (cancel, drift, delegator) under it would record a
-  // step as not-run while it may be running. Its terminal transition wakes us.
+  // now; deciding anything (flag, cancel, drift, delegator) under it would
+  // record a step as not-run while it may be running. Its terminal transition
+  // wakes us. Checked BEFORE the flag: with FLOWS_ENABLED off the dispatch
+  // claim refuses an approved intent and ends the run itself (intentClaim.ts),
+  // and an executing one finishes and wakes this run into the flag-off end.
   const parked = s.run.status === 'awaiting_approval' ? parkedRowOf(rows) : null;
   const parkedIntent = parked?.actionIntentId
     ? await read(() => store.loadParkedIntent(runId, parked.actionIntentId!), 'flows.runSlice.intent')
@@ -256,21 +288,41 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
     await releaseRunLease(runId, s.token);
     return DONE;
   }
+  // Review finding 3: what a TERMINAL parked intent already decided, so an
+  // early end below records an executed step as executed (never `cancelled`).
+  // `onFailure` cannot change which intents executed, so 'stop' stands in
+  // before the document is parsed.
+  const parkedEnd = parked
+    ? parkedRowOnEarlyEnd(parked.id, parkedIntent, resolveParkedIntent(parkedIntent, {
+      stepId: parked.stepId, tool: parked.tool, toolSource: parked.toolSource, onFailure: 'stop', cancelRequested: false, now: new Date(),
+    }))
+    : null;
+  const endEarly = (end: RunEnd, pause?: FlowPausedReason) => finishEarly(s, rows, end, pause, parkedEnd);
+
+  if (!flowsEnabled()) {
+    return endEarly({ status: 'failed', errorCode: 'flows_disabled', error: 'Flows are turned off on this deployment.' });
+  }
+  if (s.run.status === 'waiting' && snap.wakePending) {
+    await releaseRunLease(runId, s.token);
+    return DONE;
+  }
 
   // ── 2. delegator + publication ───────────────────────────────────────────
   const owner = ownerOf(s.flow, snap.orgPartnerId);
   if (!owner) {
-    return finishEarly(s, rows, { status: 'failed', errorCode: 'drift', error: "The flow's owner could not be resolved." });
+    return endEarly({ status: 'failed', errorCode: 'drift', error: "The flow's owner could not be resolved." });
   }
-  if (!(await assertDelegatorAuthority(s.publication, owner))) {
-    return finishEarly(s, rows, {
+  // Parsed BEFORE the delegator check: rule 7 (review finding 6) measures the
+  // delegator against the publication's steps.
+  const parsed = parsePublication(s.publication);
+  if (!parsed) {
+    return endEarly({ status: 'failed', errorCode: 'drift', error: "The flow's enable-time record could not be read." }, 'drift');
+  }
+  if (!(await assertDelegatorAuthority(s.publication, owner, { doc: parsed.doc, pins: [...parsed.pins.values()] }))) {
+    return endEarly({
       status: 'failed', errorCode: 'delegator_inactive',
       error: 'The person who enabled this flow no longer has the access it delegates.',
     }, 'delegator_inactive');
-  }
-  const parsed = parsePublication(s.publication);
-  if (!parsed) {
-    return finishEarly(s, rows, { status: 'failed', errorCode: 'drift', error: "The flow's enable-time record could not be read." }, 'drift');
   }
   s.doc = parsed.doc;
   s.pins = parsed.pins;
@@ -278,14 +330,14 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
   // ── 3. flow live on this publication; cancel ─────────────────────────────
   if (s.flow.status !== 'enabled') {
     return s.flow.status === 'paused'
-      ? finishEarly(s, rows, { status: 'failed', errorCode: 'drift', error: 'The flow was paused.' })
-      : finishEarly(s, rows, { status: 'cancelled', errorCode: 'flow_disabled', error: 'The flow was disabled.' });
+      ? endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was paused.' })
+      : endEarly({ status: 'cancelled', errorCode: 'flow_disabled', error: 'The flow was disabled.' });
   }
   if (s.flow.enabledPublicationSeq !== s.publication.publicationSeq) {
-    return finishEarly(s, rows, { status: 'failed', errorCode: 'drift', error: 'The flow was re-published after this run started.' });
+    return endEarly({ status: 'failed', errorCode: 'drift', error: 'The flow was re-published after this run started.' });
   }
   if (s.run.cancelRequestedAt) {
-    return finishEarly(s, rows, { status: 'cancelled', errorCode: 'cancelled', error: 'The run was cancelled.' });
+    return endEarly({ status: 'cancelled', errorCode: 'cancelled', error: 'The run was cancelled.' });
   }
 
   try {
@@ -295,7 +347,7 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
       { id: s.run.orgId, partnerId: snap.orgPartnerId ?? '' },
     );
   } catch (err) {
-    return finishEarly(s, rows, { status: 'failed', errorCode: 'drift', error: `This run no longer belongs to the flow's owner (${messageOf(err)}).` });
+    return endEarly({ status: 'failed', errorCode: 'drift', error: `This run no longer belongs to the flow's owner (${messageOf(err)}).` });
   }
 
   // ── 4. a parked step's intent ────────────────────────────────────────────
@@ -303,6 +355,8 @@ export async function runFlowSlice(runId: string): Promise<FlowSliceResult> {
     const stepDef = s.doc.steps.find((st) => st.id === parked.stepId);
     const resolution = resolveParkedIntent(parkedIntent, {
       stepId: parked.stepId,
+      tool: parked.tool,
+      toolSource: parked.toolSource,
       onFailure: stepDef?.onFailure ?? 'stop',
       cancelRequested: false,
       now: new Date(),
@@ -507,7 +561,7 @@ async function resumeParkedUnit(
 ): Promise<UnitResult> {
   const intent = await read(() => store.loadParkedIntent(s.runId, row.actionIntentId!), 'flows.runSlice.intent');
   const resolution: ParkedResolution = resolveParkedIntent(intent, {
-    stepId: step.id, onFailure: step.onFailure, cancelRequested: false, now: new Date(),
+    stepId: step.id, tool: row.tool, toolSource: row.toolSource, onFailure: step.onFailure, cancelRequested: false, now: new Date(),
   });
   if (resolution.kind === 'pending') {
     // Unreachable after step 4 (terminal intent statuses are final); park again rather than guess.
@@ -561,7 +615,7 @@ async function executeUnit(
   });
   if (!inserted) return STOP;
 
-  const heartbeat = startLeaseHeartbeat(s.runId, s.token);
+  const heartbeat = startLeaseHeartbeat(s.runId, s.token, { stepId: step.id });
   const t0 = Date.now();
   let outcome: StepOutcome;
   try {
@@ -581,14 +635,20 @@ async function executeUnit(
     // The executor catches every tool-call failure itself; what escapes is a
     // revalidation/DB error before any effect. Never skippable by 'continue'.
     console.error(`[FlowRunner] step executor threw (run=${s.runId}, step=${step.id})`, err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    captureFlow(err, 'flows.runSlice.executeStep', { orgId: s.run.orgId, flowId: s.run.flowId, runId: s.runId });
     outcome = { kind: 'failed', code: 'step_failed', message: `The step could not be executed: ${messageOf(err)}`, policy: true };
   } finally {
     heartbeat.stop();
   }
   const elapsed = Math.max(0, Date.now() - t0);
   // A lost heartbeat means another slice may own the run: never write a late result.
-  if (heartbeat.lost()) return STOP;
+  if (heartbeat.lost()) {
+    console.warn(
+      `[FlowRunner] lease lost while the step ran; its result (${outcome.kind}) is dropped `
+      + `(run=${s.runId}, step=${step.id}${itemIndex === null ? '' : `, item=${itemIndex}`})`,
+    );
+    return STOP;
+  }
   s.activeMs += elapsed;
   return applyOutcome(s, step, index, itemIndex, itemCount, stepRowId, outcome, elapsed);
 }
@@ -630,7 +690,7 @@ async function applyOutcome(
         return STOP;
       }
       const ok = await checkpoint(s.runId, s.token, advance, stepWrite);
-      if (pause) await safePause(s.run.flowId, pause);
+      if (pause) await safePause(s.run, pause);
       return ok ? { flow: 'continue', status: 'failed', output: null } : STOP;
     }
     case 'unknown_outcome':
@@ -657,7 +717,7 @@ async function applyOutcome(
         } catch (err) {
           // Reconciler clause (d) re-enqueues an overdue wait.
           console.error(`[FlowRunner] timed wake enqueue failed (run=${s.runId})`, err);
-          captureException(err instanceof Error ? err : new Error(String(err)));
+          captureFlow(err, 'flows.runSlice.enqueueTimedWake', { orgId: s.run.orgId, flowId: s.run.flowId, runId: s.runId });
         }
       }
       return STOP;

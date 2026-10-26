@@ -42,17 +42,24 @@
  *  - every other refusal cancels the intent (error_code `flow_drift`), closes
  *    the step and terminalizes the run:
  *      run_cancel_requested ⇒ step + run `cancelled` (`cancelled`);
+ *      flows_disabled       ⇒ FLOWS_ENABLED is off on this deployment: step
+ *                             `cancelled`, run `failed` (`flows_disabled`) —
+ *                             the runner's own flag-off ending; the flow is
+ *                             NOT paused (the deployment changed, not it);
  *      flow_not_enabled     ⇒ disabled flow: `cancelled` (`flow_disabled`),
  *                             otherwise `failed` (`drift`);
  *      publication_moved    ⇒ `failed` (`drift`);
- *      delegator_inactive   ⇒ `failed` (`delegator_inactive`) + pause the flow;
+ *      delegator_inactive   ⇒ `failed` (`delegator_inactive`) + pause the flow
+ *                             (inactive, restricted, or — rule 7 — no longer
+ *                             holding a permission a step needs);
  *      tool_revision_changed | approval_scope_changed | pin_invalid
  *                           ⇒ `failed` (`drift`) + pause the flow `drift`
  *                             (spec §6.4: a drifted tool pauses the flow
  *                             instead of failing every later run).
  *  Every intent cancel publishes the terminal outbox, which wakes the run.
  */
-import type { FlowPausedReason, FlowRunErrorCode, FlowStepErrorCode } from '@breeze/shared';
+import { flowDocumentV1Schema, type FlowDocumentV1, type FlowPausedReason, type FlowRunErrorCode, type FlowStepErrorCode } from '@breeze/shared';
+import { flowsEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { checkGuardrails } from '../aiGuardrails';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
@@ -65,6 +72,7 @@ import { assertDelegatorAuthority, pauseFlow } from './versions';
 
 export type FlowClaimRefusalReason =
   | 'run_not_waiting'
+  | 'flows_disabled'
   | 'flow_not_enabled'
   | 'publication_moved'
   | 'tool_revision_changed'
@@ -87,6 +95,8 @@ export const FLOW_CLAIM_INTENT_ERROR_CODE = 'flow_drift';
 
 interface RunOutcome {
   status: 'failed' | 'cancelled';
+  /** The step's status when it differs from the run's (flag off: a never-run step is cancelled, the run failed). */
+  stepStatus?: 'failed' | 'cancelled';
   runErrorCode: FlowRunErrorCode;
   stepErrorCode: FlowStepErrorCode;
   error: string;
@@ -97,6 +107,7 @@ const REFUSAL_TEXT: Record<FlowClaimRefusalReason | 'run_terminal', string> = {
   run_terminal: 'The run had already finished when the step was approved.',
   run_not_waiting: 'The run was no longer waiting on this approval.',
   run_cancel_requested: 'The run was cancelled while the step waited for approval.',
+  flows_disabled: 'Flows are turned off on this deployment.',
   flow_not_enabled: 'The flow is no longer enabled.',
   publication_moved: 'The flow was re-published while the step waited for approval; the approved step no longer matches.',
   delegator_inactive: 'The person who enabled the flow no longer has the access it delegates.',
@@ -112,6 +123,8 @@ function runOutcomeFor(reason: FlowClaimRefusalReason, flowStatus: string | null
       return null;
     case 'run_cancel_requested':
       return { status: 'cancelled', runErrorCode: 'cancelled', stepErrorCode: 'cancelled', error, pause: null };
+    case 'flows_disabled':
+      return { status: 'failed', stepStatus: 'cancelled', runErrorCode: 'flows_disabled', stepErrorCode: 'cancelled', error, pause: null };
     case 'flow_not_enabled':
       return flowStatus === 'disabled'
         ? { status: 'cancelled', runErrorCode: 'flow_disabled', stepErrorCode: 'cancelled', error, pause: null }
@@ -131,15 +144,21 @@ function runOutcomeFor(reason: FlowClaimRefusalReason, flowStatus: string | null
   }
 }
 
-/** Pins come back from jsonb and decide unattended Tier-3 execution: parse, never trust. */
-function pinForStep(stepPins: unknown, stepId: string): FlowStepPin | null {
-  if (!Array.isArray(stepPins)) return null;
+/**
+ * The publication's document and pins, parsed — they decide unattended Tier-3
+ * execution and feed the rule-7 delegator re-check, so jsonb is never
+ * trusted. Null on ANY unreadable entry (⇒ `pin_invalid`).
+ */
+function parsePublication(definition: unknown, stepPins: unknown): { doc: FlowDocumentV1; pins: FlowStepPin[] } | null {
+  const doc = flowDocumentV1Schema.safeParse(definition);
+  if (!doc.success || !Array.isArray(stepPins)) return null;
+  const pins: FlowStepPin[] = [];
   for (const raw of stepPins) {
     const parsed = flowStepPinSchema.safeParse(raw);
     if (!parsed.success) return null;
-    if (parsed.data.stepId === stepId) return parsed.data;
+    pins.push(parsed.data);
   }
-  return null;
+  return { doc: doc.data, pins };
 }
 
 /** The tenant-tool half of drift: same tool row, same revision, still usable. */
@@ -164,7 +183,7 @@ type Decision =
   | {
       kind: 'refused';
       result: FlowClaimResult;
-      pause: { flowId: string; reason: FlowPausedReason } | null;
+      pause: { flowId: string; orgId: string; runId: string; reason: FlowPausedReason } | null;
       /** The run this refusal FAILED (not cancelled), when the terminal write actually landed. */
       failedRun: FlowRunEventRef | null;
     };
@@ -201,7 +220,9 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
       let failedRun: FlowRunEventRef | null = null;
       if (outcome) {
         if (ctx.stepRowId) {
-          await store.closeStepForRefusal(ctx.stepRowId, { status: outcome.status, errorCode: outcome.stepErrorCode, error: outcome.error });
+          await store.closeStepForRefusal(ctx.stepRowId, {
+            status: outcome.stepStatus ?? outcome.status, errorCode: outcome.stepErrorCode, error: outcome.error,
+          });
         }
         const ended = await store.terminalizeRunForRefusal(runId, { status: outcome.status, errorCode: outcome.runErrorCode, error: outcome.error });
         if (ended && outcome.status === 'failed' && run) {
@@ -216,7 +237,7 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
       return {
         kind: 'refused',
         result: { claimed: false, reason },
-        pause: outcome?.pause && ctx.flowId ? { flowId: ctx.flowId, reason: outcome.pause } : null,
+        pause: outcome?.pause && ctx.flowId ? { flowId: ctx.flowId, orgId: intent.orgId, runId, reason: outcome.pause } : null,
         failedRun,
       };
     };
@@ -235,6 +256,12 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
       return refuse('run_not_waiting', stepCtx);
     }
 
+    // Review finding 2: FLOWS_ENABLED off ⇒ an approved flow step never
+    // executes. Checked once the run is known to be parked on THIS intent
+    // (so the run write below is ours to make), before anything about the
+    // flow is read. The runner ends a flag-off run the same way.
+    if (!flowsEnabled()) return refuse('flows_disabled', stepCtx);
+
     // 4. The flow is still enabled and its LIVE publication is the run's.
     const flow = await store.loadFlowForClaim(run.flowId);
     stepCtx.flowStatus = flow?.status ?? null;
@@ -243,15 +270,17 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
     }
     const publication = await store.loadPublicationBySeq(flow.id, flow.enabledPublicationSeq);
     if (!publication || publication.id !== run.flowVersionId) return refuse('publication_moved', stepCtx);
+    const parsed = parsePublication(publication.definition, publication.stepPins);
+    if (!parsed) return refuse('pin_invalid', stepCtx);
 
-    // 5. The delegator still holds what they delegated (Decision 7), resolved
-    //    in the flow OWNER's scope.
+    // 5. The delegator still holds what they delegated (Decision 7, rule 7
+    //    included — review finding 6), resolved in the flow OWNER's scope.
     const ownerPartnerId = flow.orgId ? await store.loadOrgPartnerId(flow.orgId) : flow.partnerId;
     const owner: ToolOwnerRef | null = ownerPartnerId ? { orgId: flow.orgId, partnerId: ownerPartnerId } : null;
-    if (!owner || !(await assertDelegatorAuthority(publication, owner))) return refuse('delegator_inactive', stepCtx);
+    if (!owner || !(await assertDelegatorAuthority(publication, owner, parsed))) return refuse('delegator_inactive', stepCtx);
 
     // 6. The approved step still matches its enable-time pin.
-    const pin = pinForStep(publication.stepPins, step.stepId);
+    const pin = parsed.pins.find((p) => p.stepId === step.stepId) ?? null;
     if (!pin) return refuse('pin_invalid', stepCtx);
     if (intent.toolSourceToolId) {
       if (!(await tenantStepStillPinned(intent, pin))) return refuse('tool_revision_changed', stepCtx);
@@ -278,7 +307,9 @@ export async function claimFlowLinkedIntentForDispatch(intentId: string): Promis
     try {
       await pauseFlow(decision.pause.flowId, decision.pause.reason);
     } catch (err) {
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+        { org_id: decision.pause.orgId, flow_id: decision.pause.flowId, flow_run_id: decision.pause.runId, flow_site: 'flows.intentClaim.pause' },
+        { fingerprint: ['flow', 'flows.intentClaim.pause'] });
       console.error(`[flows] pause after refused dispatch claim failed (flow=${decision.pause.flowId})`, err);
     }
   }

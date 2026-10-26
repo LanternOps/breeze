@@ -43,15 +43,17 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../flowValidator', async (importOriginal) => {
-  const { flowPreApprovalBindingSchema } = await importOriginal<typeof import('../flowValidator')>();
-  return { validateFlowDocument: vi.fn(), stepPinsFor: vi.fn(), flowPreApprovalBindingSchema };
+  const { flowPreApprovalBindingSchema, FlowStepPinError } = await importOriginal<typeof import('../flowValidator')>();
+  return { validateFlowDocument: vi.fn(), stepPinsFor: vi.fn(), flowPreApprovalBindingSchema, FlowStepPinError };
 });
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./preApproval', () => ({ assessPreApprovals: vi.fn() }));
 vi.mock('./owner', () => ({ resolveFlowOwnerForCaller: vi.fn() }));
 vi.mock('./repository', () => ({ takenFlowSlugs: vi.fn(), ownerForFlowRow: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 
-import { stepPinsFor, validateFlowDocument } from '../flowValidator';
+import { FlowStepPinError, stepPinsFor, validateFlowDocument } from '../flowValidator';
+import { captureException } from '../sentry';
 import { assessPreApprovals } from './preApproval';
 import { resolveFlowOwnerForCaller } from './owner';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
@@ -188,6 +190,19 @@ describe('saveDraftFlow — create', () => {
     expect(callsOf('insert')).toHaveLength(0);
   });
 
+  it('an audit write failure is captured with the flow tags and a bounded fingerprint', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queues.insert.push([row()]);
+    vi.mocked(writeAuditEvent).mockImplementationOnce(() => { throw new Error('audit down'); });
+    expect((await saveDraftFlow(auth(), { document: DOC })).saved).toBe(true);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error), undefined,
+      { org_id: ORG, flow_id: FLOW_ID, flow_site: 'service.draft_audit' },
+      { fingerprint: ['flow', 'service.draft_audit'] },
+    );
+    err.mockRestore();
+  });
+
   it('audit details never contain the definition', async () => {
     queues.insert.push([row()]);
     await saveDraftFlow(auth(), { document: DOC });
@@ -300,6 +315,22 @@ describe('getFlow — pre-approval eligibility', () => {
     expect(r?.flow.preApprovalEligibility).toEqual({ run: { eligible: true } });
     expect(r?.flow.preApprovedStepIds).toEqual(['run']);
     expect(assessPreApprovals).toHaveBeenCalledWith(T3_DOC, [PIN], { orgId: ORG, partnerId: PARTNER });
+  });
+
+  it('a step that stopped resolving between the two catalog reads reports no eligibility', async () => {
+    queues.select.push([row({ definition: T3_DOC })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(T3_VALID as never);
+    vi.mocked(stepPinsFor).mockRejectedValue(new FlowStepPinError('run'));
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.preApprovalEligibility).toEqual({});
+    expect(assessPreApprovals).not.toHaveBeenCalled();
+  });
+
+  it('a DB or catalog failure while pinning propagates (never read as "nothing eligible")', async () => {
+    queues.select.push([row({ definition: T3_DOC })]);
+    vi.mocked(validateFlowDocument).mockResolvedValue(T3_VALID as never);
+    vi.mocked(stepPinsFor).mockRejectedValue(new Error('connection terminated'));
+    await expect(getFlow(auth(), FLOW_ID)).rejects.toThrow('connection terminated');
   });
 
   it('an invalid document reports no eligibility (enable would refuse it anyway)', async () => {

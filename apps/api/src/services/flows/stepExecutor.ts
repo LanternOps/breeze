@@ -57,6 +57,11 @@ import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/re
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
+import { classifyToolResult } from './runLedger';
+
+// The result classifier lives with the ledger (pure, no I/O) so the approval
+// wake can apply it without importing this module's tool graph.
+export { classifyToolResult, isErrorResult, type ToolResultClass } from './runLedger';
 
 /** Fields every non-skipped outcome may carry for the runner's step row. */
 interface StepOutcomeMeta {
@@ -187,18 +192,30 @@ function parseToolText(text: string): FlowValue {
   }
 }
 
-/** A parsed core-tool result that reports failure. */
-function isErrorResult(tool: string, value: FlowValue): boolean {
-  if (!isRecord(value)) return false;
-  if ('error' in value && value.error !== null && value.error !== undefined && value.error !== false) return true;
-  // run_script answers per device; a call where EVERY targeted device was
-  // refused or failed to dispatch did nothing, and an unattended flow must not
-  // record that as a completed step.
-  if (tool === 'run_script' && isRecord(value.results)) {
-    const perDevice = Object.values(value.results);
-    return perDevice.length > 0 && perDevice.every((r) => isRecord(r) && typeof r.error === 'string');
+/**
+ * A parsed core-tool result as a call outcome (runLedger.classifyToolResult —
+ * the rule the approval wake applies to a released step too). run_script
+ * answers per device: a call where EVERY targeted device was refused, failed
+ * to dispatch or sat in a maintenance window did nothing, and an unattended
+ * flow must not record that as a completed step; a device the server stopped
+ * waiting on may still be running the script (`mayStillRun`).
+ */
+function callResultOf(tool: string, value: FlowValue): CallResult {
+  const verdict = classifyToolResult(tool, value);
+  switch (verdict.kind) {
+    case 'ok':
+      return { ok: true, value };
+    case 'error':
+      return { ok: false, failure: value };
+    case 'may_still_run':
+      return { ok: false, failure: { error: verdict.message }, mayStillRun: verdict.message };
+    case 'nothing_ran':
+      return { ok: false, failure: { error: verdict.message } };
+    default: {
+      const exhaustive: never = verdict;
+      throw new Error(`unhandled tool result class ${JSON.stringify(exhaustive)}`);
+    }
   }
-  return false;
 }
 
 /**
@@ -257,8 +274,12 @@ function raceDeadline<T>(start: () => Promise<T>, deadline: number): Promise<Set
   });
 }
 
-/** One attempt's normalized result. */
-type CallResult = { ok: true; value: FlowValue } | { ok: false; failure: unknown };
+/**
+ * One attempt's normalized result. `mayStillRun` (a message) marks a failure
+ * whose effect may still be in progress — tier >= 2 records it
+ * `unknown_outcome`, never a definite failure.
+ */
+type CallResult = { ok: true; value: FlowValue } | { ok: false; failure: unknown; mayStillRun?: string };
 
 interface ToolCallPlan {
   tier: 1 | 2 | 3;
@@ -289,6 +310,11 @@ async function runToolCall(i: StepExecutionInput, plan: ToolCallPlan, sleep: (ms
     } else if (settled.value.ok) {
       return { kind: 'completed', ...storedOutput(settled.value.value), ...meta };
     } else {
+      // Review finding 5: before the generic error handling — a tier >= 2
+      // call that may still be running is never a definite failure.
+      if (tier !== 1 && settled.value.mayStillRun !== undefined) {
+        return { kind: 'unknown_outcome', message: settled.value.mayStillRun, ...meta };
+      }
       failure = settled.value.failure;
     }
 
@@ -362,8 +388,7 @@ async function executePreApproved(
     call: async () => {
       const text = await inToolDbContext('run_script', rendered, i.auth,
         () => executeTool('run_script', rendered, i.auth, { context: { verifiedRunScript } }));
-      const value = parseToolText(text);
-      return isErrorResult('run_script', value) ? { ok: false, failure: value } : { ok: true, value };
+      return callResultOf('run_script', parseToolText(text));
     },
   }, sleep);
 }
@@ -505,8 +530,7 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
     tier: check.tier,
     meta,
     call: async () => {
-      const value = parseToolText(await inToolDbContext(tool, rendered, i.auth, () => executeTool(tool, rendered, i.auth)));
-      return isErrorResult(tool, value) ? { ok: false, failure: value } : { ok: true, value };
+      return callResultOf(tool, parseToolText(await inToolDbContext(tool, rendered, i.auth, () => executeTool(tool, rendered, i.auth))));
     },
   }, sleep);
 }

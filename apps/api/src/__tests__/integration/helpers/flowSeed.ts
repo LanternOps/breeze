@@ -43,9 +43,13 @@ export async function seedEnabledFlowRun(opts: SeedFlowRunOptions): Promise<Seed
   const stepId = opts.stepId ?? 'cleanup';
   const flowName = opts.flowName ?? 'Disk cleanup';
   const partnerWide = opts.owner === 'partner';
+  // A schema-valid FlowDocumentV1: the dispatch claim parses the publication
+  // (flowDocumentV1Schema) and refuses `pin_invalid` on anything else.
   const definition = {
     version: 1,
-    trigger: { kind: 'manual' },
+    name: flowName,
+    trigger: { type: 'manual' },
+    inputs: [],
     steps: [{ id: stepId, tool: opts.tool, input: opts.stepInput ?? {} }],
   };
   return withSystemDbAccessContext(async () => {

@@ -44,8 +44,22 @@ describe('publishFlowRunTerminalEvent', () => {
 
   it('a publish failure is reported, never thrown (the run is already terminal)', async () => {
     h.publishEvent.mockRejectedValueOnce(new Error('redis down'));
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     await expect(publishFlowRunTerminalEvent(RUN, 'failed')).resolves.toBeUndefined();
-    expect(h.captureException).toHaveBeenCalledTimes(1);
+    // The event is lost (no outbox in W04), so the log line and the capture
+    // must both name the run, its flow and its org.
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { org_id: RUN.orgId, flow_id: RUN.flowId, flow_run_id: RUN.id, flow_site: 'runEvents.publish_terminal' },
+      { fingerprint: ['flow', 'runEvents.publish_terminal'] },
+    );
+    const line = String(errorLog.mock.calls[0]?.[0]);
+    expect(line).toContain(RUN.id);
+    expect(line).toContain(RUN.flowId);
+    expect(line).toContain(RUN.orgId);
+    expect(line).toContain('flow.run.failed');
+    errorLog.mockRestore();
   });
 });
 
@@ -55,6 +69,20 @@ describe('notifyFlowRunUnknownOutcome', () => {
     expect(h.createNotification).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'u1', orgId: RUN.orgId, priority: 'high', link: `/flows/runs/${RUN.id}`, dedupeKey: `flow-run-unknown:${RUN.id}`,
     }));
+  });
+
+  it('a notification failure is reported with the run ids, never thrown', async () => {
+    h.createNotification.mockRejectedValueOnce(new Error('db down'));
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(notifyFlowRunUnknownOutcome({ delegatorUserId: 'u1', orgId: RUN.orgId, flowId: RUN.flowId, flowName: 'x', runId: RUN.id, stepId: 'fix' }))
+      .resolves.toBeUndefined();
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { org_id: RUN.orgId, flow_id: RUN.flowId, flow_run_id: RUN.id, flow_site: 'runEvents.notify_unknown_outcome' },
+      { fingerprint: ['flow', 'runEvents.notify_unknown_outcome'] },
+    );
+    errorLog.mockRestore();
   });
 
   it('no delegator (erased user) ⇒ nothing to notify', async () => {

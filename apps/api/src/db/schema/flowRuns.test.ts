@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns, getTableName } from 'drizzle-orm';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import { flowVersions, flowRuns, flowRunSteps } from './flowRuns';
 import { flows } from './flows';
 import { actionIntents } from './actionIntents';
@@ -84,6 +85,13 @@ describe('columns W04 adds to existing tables', () => {
     expect(cols.enabledPublicationSeq.notNull).toBe(false);
     expect(cols.scheduleLastOccurrenceKey).toBeDefined();
     expect(cols.scheduleLastOccurrenceKey.name).toBe('schedule_last_occurrence_key');
+  });
+
+  it('flow_run_steps has an org_id index (org erasure and FK checks look rows up by org_id alone)', () => {
+    const idx = getTableConfig(flowRunSteps).indexes.find((i) => i.config.name === 'flow_run_steps_org_id_idx');
+    expect(idx).toBeDefined();
+    expect(idx!.config.columns.map((c) => (c as { name: string }).name)).toEqual(['org_id']);
+    expect(idx!.config.where).toBeUndefined();
   });
 
   it('action_intents gains requesting_flow_run_id (nullable; one-actor CHECK in SQL)', () => {

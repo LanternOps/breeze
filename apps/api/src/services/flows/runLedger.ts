@@ -19,6 +19,75 @@ import { toStoredFlowOutput } from './storedOutput';
 
 export type LedgerKey = string;
 
+// ── what a tool result means ────────────────────────────────────────────────
+
+/**
+ * What a core tool's parsed result says happened. Shared by the step executor
+ * (stepExecutor.ts re-exports it) and the approval wake below, so a step that
+ * ran directly and the same step released by an approver are recorded the
+ * same way.
+ *  - `ok`            — the call did what it was asked.
+ *  - `error`         — the tool reported a definite failure.
+ *  - `may_still_run` — the call returned but the effect may still be in
+ *                      progress (run_script: the server stopped waiting on a
+ *                      device — `waitForCommandResult` writes `timedOutBy:
+ *                      'server'` — or the device reported `status: 'timeout'`).
+ *                      Tier >= 2 records it `unknown_outcome`.
+ *  - `nothing_ran`   — the call did nothing: every run_script device was
+ *                      suppressed by a maintenance window (or refused). Not
+ *                      an error shape on the tool side (#4919), but an
+ *                      unattended flow must not record it as completed.
+ */
+export type ToolResultClass =
+  | { kind: 'ok' }
+  | { kind: 'error' }
+  | { kind: 'may_still_run'; message: string }
+  | { kind: 'nothing_ran'; message: string };
+
+const RESULT_OK: ToolResultClass = { kind: 'ok' };
+const RESULT_ERROR: ToolResultClass = { kind: 'error' };
+export const MAY_STILL_RUN_TEXT =
+  'The script did not report back before the server stopped waiting; it may still be running on the device.';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function classifyToolResult(tool: string, value: unknown): ToolResultClass {
+  if (!isRecord(value)) return RESULT_OK;
+  // `{ success: false, error }` lands here too: the release worker's
+  // `isReturnedToolError` exempts any result carrying `success`/`data`/
+  // `configured`, so such a result can arrive on a COMPLETED intent.
+  if ('error' in value && value.error !== null && value.error !== undefined && value.error !== false) return RESULT_ERROR;
+  if (tool === 'run_script' && isRecord(value.results)) {
+    const perDevice = Object.values(value.results);
+    if (perDevice.length === 0) return RESULT_OK;
+    // Checked BEFORE the all-errored rule: a timed-out device also carries an
+    // `error` string, but its script may still be running.
+    if (perDevice.some((r) => isRecord(r) && (r.timedOutBy === 'server' || r.status === 'timeout'))) {
+      return { kind: 'may_still_run', message: MAY_STILL_RUN_TEXT };
+    }
+    const refused = (r: unknown) => isRecord(r) && typeof r.error === 'string';
+    const suppressed = (r: unknown) => isRecord(r) && r.status === 'suppressed';
+    // Every targeted device refused or failed to dispatch: the call did nothing.
+    if (perDevice.every(refused)) return RESULT_ERROR;
+    if (perDevice.every((r) => refused(r) || suppressed(r))) {
+      return {
+        kind: 'nothing_ran',
+        message: perDevice.every(suppressed)
+          ? 'The script did not run: every targeted device is in a maintenance window.'
+          : 'The script did not run: every targeted device was in a maintenance window or refused it.',
+      };
+    }
+  }
+  return RESULT_OK;
+}
+
+/** A parsed core-tool result that reports a definite failure. */
+export function isErrorResult(tool: string, value: unknown): boolean {
+  return classifyToolResult(tool, value).kind === 'error';
+}
+
 export function ledgerKey(stepId: string, itemIndex: number | null): LedgerKey {
   return `${stepId}\u0000${itemIndex ?? -1}`;
 }
@@ -66,9 +135,37 @@ export type ParkedResolution =
 
 const INTENT_IN_FLIGHT: ReadonlySet<string> = new Set(['pending_approval', 'approved', 'executing']);
 
+function clipText(text: string): string {
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+}
+
+/** The error a returned tool result carries, for the step row. */
+function resultErrorText(result: Record<string, unknown> | null): string {
+  const err = result?.error;
+  if (typeof err === 'string' && err.length > 0) return clipText(err);
+  if (typeof err === 'object' && err !== null && typeof (err as { message?: unknown }).message === 'string') {
+    return clipText((err as { message: string }).message);
+  }
+  return 'every targeted device refused it';
+}
+
+/**
+ * `tool` / `toolSource` are the parked step row's: they decide how a released
+ * result is read (run_script answers per device). A TENANT tool's result is
+ * never re-classified — its own `isError` already decided the intent's status
+ * (the release worker's `externalIsError`), exactly as the executor trusts it
+ * on the direct path.
+ */
 export function resolveParkedIntent(
   intent: ParkedIntentRow | null,
-  ctx: { stepId: string; onFailure: 'stop' | 'continue'; cancelRequested: boolean; now: Date },
+  ctx: {
+    stepId: string;
+    tool: string;
+    toolSource: string;
+    onFailure: 'stop' | 'continue';
+    cancelRequested: boolean;
+    now: Date;
+  },
 ): ParkedResolution {
   const finishedAt = ctx.now;
   if (!intent) {
@@ -83,6 +180,49 @@ export function resolveParkedIntent(
 
   switch (intent.status) {
     case 'completed': {
+      // Review finding 4: `completed` is the release worker's verdict, not
+      // ours — its `isReturnedToolError` exempts any result carrying
+      // `success`/`data`/`configured`, so `{ success: false, error }` (and a
+      // run_script whose every device failed, timed out or sat in a
+      // maintenance window) arrive here as COMPLETED. Read the result with
+      // the executor's own classifier so a released step is recorded exactly
+      // as the same step executed directly would be. Only tier-3 steps park,
+      // so tier >= 2 always applies:
+      //   error / nothing_ran ⇒ a definite failure (`step_failed`; the tool
+      //                         answered — onFailure applies, as in the
+      //                         executor);
+      //   may_still_run       ⇒ `unknown_outcome` (the run fails regardless
+      //                         of onFailure, Decision 5).
+      const verdict: ToolResultClass = ctx.toolSource === 'tenant' ? RESULT_OK : classifyToolResult(ctx.tool, intent.result);
+      if (verdict.kind === 'may_still_run') {
+        return {
+          kind: 'end',
+          step: {
+            status: 'unknown_outcome',
+            errorCode: 'unknown_outcome',
+            error: verdict.message,
+            approvedByUserId: intent.decidedByUserId,
+            finishedAt,
+          },
+          run: { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${ctx.stepId} may or may not have taken effect.` },
+          unknownOutcome: true,
+        };
+      }
+      if (verdict.kind === 'error' || verdict.kind === 'nothing_ran') {
+        const message = verdict.kind === 'nothing_ran'
+          ? verdict.message
+          : `The approved step ran and reported an error: ${resultErrorText(intent.result)}`;
+        const step: StepRowValues = {
+          status: 'failed',
+          errorCode: 'step_failed',
+          error: message,
+          approvedByUserId: intent.decidedByUserId,
+          finishedAt,
+        };
+        return ctx.onFailure === 'continue'
+          ? { kind: 'continue', status: 'failed', output: null, step }
+          : { kind: 'end', step, run: { status: 'failed', errorCode: 'step_failed', error: `Step ${ctx.stepId}: ${message}` }, unknownOutcome: false };
+      }
       const stored = toStoredFlowOutput((intent.result ?? {}) as FlowValue);
       return {
         kind: 'continue',
@@ -168,7 +308,9 @@ export function resolveParkedIntent(
       const step: StepRowValues = {
         status: 'failed',
         errorCode: 'step_failed',
-        error: `The approved step failed before it ran (${intent.errorCode ?? 'unknown'}).`,
+        error: intent.executedAt !== null
+          ? `The approved step ran and failed (${intent.errorCode ?? 'unknown'}).`
+          : `The approved step failed before it ran (${intent.errorCode ?? 'unknown'}).`,
         approvedByUserId: intent.decidedByUserId,
         finishedAt,
       };
@@ -182,19 +324,55 @@ export function resolveParkedIntent(
 }
 
 /**
+ * What a parked row records when the run ends EARLY (a precondition — flag
+ * off, delegator, drift, disable, cancel — fires before the parked step is
+ * resolved) while its intent is already TERMINAL (review finding 3).
+ *
+ * An intent that executed, or may have, is recorded from its own resolution:
+ * `completed` keeps its result and approver; a may-have-run failure is
+ * `unknown_outcome` (and the run ends `unknown_outcome`, see
+ * `closeOpenRows`); one that ran and failed keeps its failure. Null ⇒ the
+ * intent never executed (still pending, rejected, expired, cancelled, failed
+ * before it ran, or gone), and `closeOpenRows` writes the row `cancelled`.
+ */
+export interface ParkedEarlyEnd {
+  rowId: string;
+  values: StepRowValues;
+  unknownOutcome: boolean;
+}
+
+export function parkedRowOnEarlyEnd(
+  rowId: string,
+  intent: ParkedIntentRow | null,
+  resolution: ParkedResolution,
+): ParkedEarlyEnd | null {
+  if (!intent || resolution.kind === 'pending') return null;
+  const unknownOutcome = resolution.kind === 'end' && resolution.unknownOutcome;
+  const executed = intent.status === 'completed' || intent.executedAt !== null || unknownOutcome;
+  return executed ? { rowId, values: resolution.step, unknownOutcome } : null;
+}
+
+/**
  * Step-row writes that close every OPEN row when a run ends before its next
  * step (preconditions: flag off, delegator, drift, disable, cancel). A parked
- * row is cancelled; a `running` row of a dead slice is `worker_lost` (tier 1)
- * or `unknown_outcome` (tier ≥ 2 — it may have taken effect).
+ * row is cancelled — unless `parked` says its intent executed (see
+ * `parkedRowOnEarlyEnd`); a `running` row of a dead slice is `worker_lost`
+ * (tier 1) or `unknown_outcome` (tier ≥ 2 — it may have taken effect).
+ * `unknownStepIds` non-empty ⇒ the caller ends the run `unknown_outcome`,
+ * outranking the precondition's own code, and notifies.
  */
 export function closeOpenRows(
   rows: Iterable<FlowRunStepRow>,
   now: Date,
+  parked: ParkedEarlyEnd | null = null,
 ): { updates: Array<{ id: string; values: StepRowValues }>; unknownStepIds: string[] } {
   const updates: Array<{ id: string; values: StepRowValues }> = [];
   const unknownStepIds: string[] = [];
   for (const row of rows) {
-    if (row.status === 'awaiting_approval') {
+    if (row.status === 'awaiting_approval' && parked && parked.rowId === row.id) {
+      updates.push({ id: row.id, values: { ...parked.values, finishedAt: parked.values.finishedAt ?? now } });
+      if (parked.unknownOutcome) unknownStepIds.push(row.stepId);
+    } else if (row.status === 'awaiting_approval') {
       updates.push({ id: row.id, values: { status: 'cancelled', errorCode: 'cancelled', error: 'The run ended while the step waited for approval.', finishedAt: now } });
     } else if (row.status === 'running') {
       if (row.tier === 1) {

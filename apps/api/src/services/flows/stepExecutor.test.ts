@@ -56,7 +56,7 @@ import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { buildFlowAuthContext } from './flowAuthContext';
 import { currentFlowExecutionFrame } from './flowExecutionContext';
 import { preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
-import { executeFlowStep, isTransientFlowToolError, type StepExecutionInput } from './stepExecutor';
+import { classifyToolResult, executeFlowStep, isErrorResult, isTransientFlowToolError, type StepExecutionInput } from './stepExecutor';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -367,6 +367,33 @@ describe('executeFlowStep — tier 3', () => {
     expect(out).toMatchObject({ kind: 'failed', code: 'no_eligible_approvers', policy: true });
   });
 
+  // Review finding 5: a SERVER-side command timeout means the script may
+  // still be running on the device — never a definite failure for tier >= 2.
+  it('a run_script device the server timed out is unknown_outcome, not a failure', async () => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({
+      results: { [DEVICE]: { status: 'timeout', error: 'Command timed out after 60000ms', timedOutBy: 'server', commandId: 'c1' } },
+    }));
+    const out = await executeFlowStep(input(), noSleep);
+    expect(out).toMatchObject({ kind: 'unknown_outcome', approvalMode: 'pre_approved' });
+  });
+
+  it('a run_script device reporting status timeout is unknown_outcome', async () => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({
+      results: { [DEVICE]: { status: 'timeout', error: 'Script timed out' } },
+    }));
+    const out = await executeFlowStep(input(), noSleep);
+    expect(out).toMatchObject({ kind: 'unknown_outcome' });
+  });
+
+  it('a run_script call where every device was suppressed by a maintenance window is a failed step, not completed', async () => {
+    vi.mocked(executeTool).mockResolvedValue(JSON.stringify({
+      results: { [DEVICE]: { status: 'suppressed', suppressedBy: 'maintenance_window', message: 'Device is in a maintenance window' } },
+    }));
+    const out = await executeFlowStep(input(), noSleep);
+    expect(out).toMatchObject({ kind: 'failed', code: 'step_failed', policy: false });
+    expect((out as { message: string }).message).toMatch(/maintenance window/i);
+  });
+
   it('tier-3 timeout is unknown_outcome', async () => {
     vi.useFakeTimers();
     vi.mocked(executeTool).mockReturnValue(new Promise<string>(() => {}));
@@ -521,6 +548,37 @@ describe('executeFlowStep — tier 1/2 and tenant', () => {
     if (out.kind !== 'completed') return;
     expect(out.truncated).toBe(true);
     expect(out.output).toEqual({ truncated: true, preview: big.slice(0, 8_192) });
+  });
+});
+
+describe('classifyToolResult / isErrorResult', () => {
+  it('a top-level error is an error', () => {
+    expect(classifyToolResult('get_device_details', { error: 'nope' })).toEqual({ kind: 'error' });
+    expect(isErrorResult('get_device_details', { error: 'nope' })).toBe(true);
+  });
+
+  it('{ success: false, error } is an error (the release worker records it completed)', () => {
+    expect(isErrorResult('manage_services', { success: false, error: 'Service not found' })).toBe(true);
+  });
+
+  it('a plain result is ok', () => {
+    expect(classifyToolResult('get_device_details', { hostname: 'h' })).toEqual({ kind: 'ok' });
+    expect(classifyToolResult('run_script', { results: { a: { exitCode: 0 } } })).toEqual({ kind: 'ok' });
+  });
+
+  it('run_script: every device errored is an error; one timed out is may_still_run (outranks errors)', () => {
+    expect(classifyToolResult('run_script', { results: { a: { error: 'x' }, b: { error: 'y' } } })).toEqual({ kind: 'error' });
+    expect(classifyToolResult('run_script', { results: { a: { error: 'x' }, b: { status: 'timeout', error: 't', timedOutBy: 'server' } } }))
+      .toMatchObject({ kind: 'may_still_run' });
+    expect(isErrorResult('run_script', { results: { b: { status: 'timeout', error: 't', timedOutBy: 'server' } } })).toBe(false);
+  });
+
+  it('run_script: nothing ran when every device was suppressed or refused; anything that ran is ok', () => {
+    expect(classifyToolResult('run_script', { results: { a: { status: 'suppressed', suppressedBy: 'maintenance_window' } } }))
+      .toMatchObject({ kind: 'nothing_ran' });
+    expect(classifyToolResult('run_script', { results: { a: { status: 'suppressed' }, b: { error: 'offline' } } }))
+      .toMatchObject({ kind: 'nothing_ran' });
+    expect(classifyToolResult('run_script', { results: { a: { status: 'suppressed' }, b: { exitCode: 0 } } })).toEqual({ kind: 'ok' });
   });
 });
 

@@ -72,6 +72,7 @@ import { assertFlowRunAdmission } from './runAdmission';
 import { enqueueFlowRunSlice } from '../../jobs/flowRunQueue';
 import { writeAuditEvent } from '../auditEvents';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import { captureException } from '../sentry';
 import {
   cancelFlowRun,
   createFlowRun,
@@ -175,6 +176,7 @@ beforeEach(() => {
   vi.mocked(enqueueFlowRunSlice).mockReset().mockResolvedValue('job');
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
+  vi.mocked(captureException).mockReset();
 });
 
 describe('startManualRun', () => {
@@ -428,7 +430,63 @@ describe('startManualRun', () => {
     queueStart();
     queueCreate();
     vi.mocked(enqueueFlowRunSlice).mockRejectedValue(new Error('redis down'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toMatchObject({ ok: true, runId: RUN_ID });
+    // The scrubber keeps only allow-listed tag names: org_id / flow_id /
+    // flow_run_id / flow_site, grouped under a bounded fingerprint.
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { org_id: ORG, flow_id: FLOW_ID, flow_run_id: RUN_ID, flow_site: 'run_service.first_slice_enqueue' },
+      { fingerprint: ['flow', 'run_service.first_slice_enqueue'] },
+    );
+    err.mockRestore();
+  });
+
+  // Review finding: rule 7 and the inputs were checked against publication N;
+  // the insert must snapshot THAT publication, never a newer live one.
+  it('a flow re-published between the checks and the insert is not_enabled (no run on an unchecked publication)', async () => {
+    queueStart();
+    queues.select.push([{ partnerId: PARTNER }], [flowRow({ enabledPublicationSeq: 3 })], [publication({ id: 'pub-3', publicationSeq: 3 })], []);
+    queues.execute.push([{ id: RUN_ID }]);
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toEqual({ ok: false, error: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+  });
+
+  it('the insert pins the checked publication seq', async () => {
+    queueStart();
+    queueCreate();
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toMatchObject({ ok: true });
+    const pubRead = callsOf('select')[5]!;
+    expect(sqlValues(pubRead.ops.find((o) => o.op === 'where')!.args[0])).toContain(2);
+  });
+
+  // Defence in depth behind the run_flow handler: the ai_tool lane is a chat
+  // session's, never a key's.
+  it('ai_tool with an api_key principal is interactive_user_required, before any read', async () => {
+    expect(await startManualRun(apiKeyAuth(), FLOW_ID, { inputs: {} }, 'ai_tool', 'sess-1')).toEqual({ ok: false, error: 'interactive_user_required' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('ai_tool with a user session runs without pre-approvals and records the lane and the session', async () => {
+    const SESSION = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    queueStart();
+    queueCreate();
+    const r = await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ai_tool', SESSION);
+    expect(r).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: false });
+    const values = insertValues();
+    expect(values).toEqual(expect.arrayContaining(['ai_tool', SESSION, USER]));
+    expect(values).not.toContain(true);
+    expect(vi.mocked(writeAuditEvent).mock.calls[0]![1]).toMatchObject({ initiatedBy: 'ai', details: { aiSessionId: SESSION } });
+  });
+
+  it('a token-level site ceiling on an API key whose creator is unrestricted is delegation_scope_restricted', async () => {
+    queueStart();
+    const keyWithCeiling = auth({ principal: { kind: 'api_key', apiKeyId: 'k' }, allowedSiteIds: ['s1'] } as Partial<AuthContext>);
+    const r = await startManualRun(keyWithCeiling, FLOW_ID, { inputs: {} }, 'api');
+    expect(r).toEqual({ ok: false, error: 'delegation_scope_restricted' });
+    expect(callsOf('execute')).toHaveLength(0);
   });
 });
 
@@ -438,7 +496,7 @@ describe('createFlowRun', () => {
   it('createFlowRun never accepts preApprovalsHonored from the caller', async () => {
     // Type level: neither derived column is part of the input.
     // @ts-expect-error preApprovalsHonored is derived, never passed
-    const typed: CreateFlowRunInput = { ...base, triggerKind: 'manual', triggeredVia: 'api', triggeredByUserId: USER, aiSessionId: null, triggererCleared: true, preApprovalsHonored: true };
+    const typed: CreateFlowRunInput = { ...base, triggerKind: 'manual', triggeredVia: 'api', triggeredByUserId: USER, aiSessionId: null, triggererCleared: true, expectedPublicationSeq: 2, preApprovalsHonored: true };
     // @ts-expect-error triggeredVia is derived for schedule runs
     const typedSchedule: CreateFlowRunInput = { ...base, triggerKind: 'schedule', triggeredVia: 'ui' };
     void typedSchedule;
@@ -485,6 +543,12 @@ describe('createFlowRun', () => {
   it('a run org without a partner (gone) is not_enabled', async () => {
     queues.select.push([]);
     expect(await createFlowRun({ ...base, triggerKind: 'schedule' })).toEqual({ created: false, reason: 'not_enabled' });
+  });
+
+  it('a manual run without the checked publication seq is a caller bug', async () => {
+    const manual = { ...base, triggerKind: 'manual', triggeredVia: 'api', triggeredByUserId: USER, aiSessionId: null, triggererCleared: false };
+    await expect(createFlowRun(manual as unknown as CreateFlowRunInput)).rejects.toThrow(/publication/i);
+    expect(calls).toHaveLength(0);
   });
 
   it('a DB failure throws (callers retry)', async () => {
@@ -604,6 +668,49 @@ describe('run reads', () => {
     expect(step).toMatchObject({ id: STEP_ROW, renderedInput: { deviceId: DEVICE }, output: { ok: true } });
     queues.select.push([]);
     expect(await getFlowRunStep(auth(), RUN_ID, STEP_ROW)).toBeNull();
+  });
+
+  // Review finding: runs carry no site column and W04 has no site model, so a
+  // site-limited reader or a device-bound agent sees the ledger's shape
+  // (status, step summaries) but never a body.
+  const restrictedReaders: Array<[string, () => AuthContext]> = [
+    ['a site-limited user', () => auth({ allowedSiteIds: ['s1'] } as Partial<AuthContext>)],
+    ['a user with an empty site list', () => auth({ allowedSiteIds: [] } as Partial<AuthContext>)],
+    ['a device-bound agent', () => auth({ principal: { kind: 'ai_agent' }, allowedDeviceIds: [DEVICE] } as unknown as Partial<AuthContext>)],
+  ];
+
+  it.each(restrictedReaders)('getFlowRun for %s redacts the trigger payload, inputs and step outputs', async (_label, who) => {
+    queues.select.push(
+      [runRow({ triggerPayload: { payload: { secret: 'x' } }, inputs: { host: 'pc-1' } })],
+      [{ id: PUB_ID, publicationSeq: 2, definition: MANUAL_DOC }],
+      [stepRow({ output: { secret: 'y' } })],
+    );
+    const dto = await getFlowRun(who(), RUN_ID, { stepBodies: 'capped' });
+    expect(dto).toMatchObject({ id: RUN_ID, status: 'completed', triggerPayload: null, inputs: null });
+    expect(dto!.steps[0]).toMatchObject({ id: STEP_ROW, status: 'completed', bodiesPruned: true });
+    expect(dto!.steps[0]).not.toHaveProperty('output');
+    // The output column is never read for such a caller.
+    const stepRead = callsOf('select')[2]!;
+    expect(Object.keys(stepRead.ops.find((o) => o.op === 'select')?.args[0] as object ?? {})).not.toContain('output');
+  });
+
+  it.each(restrictedReaders)('getFlowRunStep for %s is null without a read', async (_label, who) => {
+    expect(await getFlowRunStep(who(), RUN_ID, STEP_ROW)).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each(restrictedReaders)('listFlowRuns for %s still lists the body-less summaries', async (_label, who) => {
+    queues.select.push([runRow()], [{ n: 1 }], [{ id: PUB_ID, name: 'Disk Cleanup' }]);
+    const r = await listFlowRuns(who(), {});
+    expect(r.runs[0]).toMatchObject({ id: RUN_ID, status: 'completed' });
+    expect(r.runs[0]).not.toHaveProperty('triggerPayload');
+    expect(r.runs[0]).not.toHaveProperty('inputs');
+  });
+
+  it('a partner-scope reader is not site-limited (partner scope never carries a site ceiling)', async () => {
+    queues.select.push([runRow({ inputs: { host: 'pc-1' } })], [{ id: PUB_ID, publicationSeq: 2, definition: MANUAL_DOC }], []);
+    const dto = await getFlowRun(partnerAuth(), RUN_ID);
+    expect(dto!.inputs).toEqual({ host: 'pc-1' });
   });
 
   it('listFlowRuns maps names from the publications and caps the limit at 100', async () => {

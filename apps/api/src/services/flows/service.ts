@@ -30,7 +30,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { captureException } from '../sentry';
-import { flowPreApprovalBindingSchema, stepPinsFor, validateFlowDocument, type FlowDocumentValidation } from '../flowValidator';
+import { FlowStepPinError, flowPreApprovalBindingSchema, stepPinsFor, validateFlowDocument, type FlowDocumentValidation } from '../flowValidator';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { resolveFlowOwnerForCaller } from './owner';
@@ -184,7 +184,12 @@ function auditDraftSave(auth: AuthContext, row: FlowRow, stepCount: number): voi
     });
   } catch (err) {
     console.error('[flows] audit write failed', err);
-    captureException(err, undefined, { service: 'flows', flowId: row.id });
+    captureException(
+      err,
+      undefined,
+      { ...(row.orgId ? { org_id: row.orgId } : {}), flow_id: row.id, flow_site: 'service.draft_audit' },
+      { fingerprint: ['flow', 'service.draft_audit'] },
+    );
   }
 }
 
@@ -374,14 +379,17 @@ export async function getFlow(
 /**
  * Rule-4 eligibility of every tier-3 step, so the enable dialog never
  * guesses. Only for a document that validates now — enable refuses any other
- * — and empty if a step stopped resolving between the two catalog reads.
+ * — and empty if a step stopped resolving between the two catalog reads
+ * (`FlowStepPinError`). Any other failure (DB, catalog) propagates: "nothing
+ * eligible" would be a wrong answer, not a degraded one.
  */
 async function liveEligibility(validated: FlowDocumentValidation, owner: ToolOwnerRef): Promise<Record<string, PreApprovalEligibility>> {
   if (!validated.valid || !validated.document) return {};
   let pins;
   try {
     pins = await stepPinsFor(validated.document, { owner });
-  } catch {
+  } catch (err) {
+    if (!(err instanceof FlowStepPinError)) throw err;
     return {};
   }
   return (await assessPreApprovals(validated.document, pins, owner)).eligibility;

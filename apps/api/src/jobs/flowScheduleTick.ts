@@ -12,9 +12,11 @@
  *     fired; also how a DST fall-back hour fires once — the key is the LOCAL
  *     wall clock) or the occurrence is before `enabled_at` (enable stamps the
  *     current occurrence too);
- *  3. target orgs: the flow's org, or for a partner-wide flow every live org
- *     of the partner (`loadPartnerOrgIds`: active/trial, not quick_support,
- *     not the holding org, not deleted, capped at 500);
+ *  3. target orgs: the flow's org when it is live (`liveOrgCondition`:
+ *     active/trial, not deleted — a suspended or deleted org's own flows stop
+ *     firing; its occurrence is consumed, not retried), or for a partner-wide
+ *     flow every live org of the partner (`loadPartnerOrgIds`: also not
+ *     quick_support, not the holding org; capped at 500);
  *  4. `createFlowRun` per org with dedupe `schedule:<key>` — the dedupe
  *     constraint makes a re-fire of the same occurrence a per-org no-op;
  *  5. ONLY when every org returned created / duplicate / flow_queue_full,
@@ -22,8 +24,12 @@
  *     <the key read>`. Any other failure leaves the key unadvanced, so the
  *     next tick retries the same occurrence and fills only the orgs that
  *     missed (quorum Q3: the sweeper's catch-and-continue would silently drop
- *     that org's fire). `flow_queue_full` is handled, not retried: logged and
- *     counted (`flow_schedule_admission_refused_total`).
+ *     that org's fire). `flow_queue_full` is handled, not retried: logged
+ *     (warn, flow + org) and counted (`flow_schedule_admission_refused_total`).
+ *     `not_enabled` (disabled / re-published mid-fan-out) ends the flow's
+ *     fan-out unstamped and is logged at error with a capture.
+ * A schedule that cannot be evaluated (malformed trigger, unknown timezone) is
+ * skipped and logged at error every tick; it is captured once per process.
  * Inserts first, CAS second (the sweeper's jobId-then-claim order): a crash
  * between them re-fires the same occurrence next tick, which dedupe absorbs.
  *
@@ -36,10 +42,12 @@ import { flowsEnabled } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { flowVersions } from '../db/schema/flowRuns';
 import { flows } from '../db/schema/flows';
+import { organizations } from '../db/schema/orgs';
 import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
 import { recordFlowScheduleAdmissionRefused } from '../services/flows/flowTriggerMetrics';
 import { nullFlowInputs } from '../services/flows/inputDefaults';
 import { createFlowRun } from '../services/flows/runService';
+import { liveOrgCondition } from '../services/partnerFanoutOrgs';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { loadPartnerOrgIds } from './aiAgentSweepScheduler';
@@ -72,6 +80,17 @@ function system<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 }
 
+/** Sentry with the flow tags the scrubber keeps and a bounded fingerprint (a literal site). */
+function report(err: unknown, site: string, flow: { id: string; orgId: string | null }, orgId?: string): void {
+  const tags: Record<string, string> = { flow_id: flow.id, flow_site: site };
+  const org = orgId ?? flow.orgId;
+  if (org) tags.org_id = org;
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, tags, { fingerprint: ['flow', site] });
+}
+
+/** Unevaluable schedules already captured by this process (flow + cron + tz): logged every tick, captured once. */
+const reportedUnevaluable = new Set<string>();
+
 function loadScheduleFlows(): Promise<ScheduleFlowRow[]> {
   return system(
     async () => db
@@ -99,7 +118,22 @@ function scheduleOf(trigger: unknown): { cron: string; timezone: string } | null
 }
 
 async function targetOrgs(flow: ScheduleFlowRow): Promise<string[]> {
-  if (flow.orgId) return [flow.orgId];
+  if (flow.orgId) {
+    const orgId = flow.orgId;
+    const live = await system(
+      async () => db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(eq(organizations.id, orgId), liveOrgCondition()))
+        .limit(1),
+      'flowScheduleTick.orgLiveness',
+    );
+    if (live.length === 0) {
+      console.log(`${LOG} flow ${flow.id}: org ${orgId} is not live (suspended, churned or deleted); the occurrence is skipped`);
+      return [];
+    }
+    return [orgId];
+  }
   if (!flow.partnerId) return [];
   const partnerId = flow.partnerId;
   const { orgIds, capped } = await system(() => loadPartnerOrgIds(partnerId), 'flowScheduleTick.partnerOrgs');
@@ -131,13 +165,21 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
         console.warn(`${LOG} active-run cap reached: flow ${flow.id} occurrence ${occurrence.key} not started in org ${orgId}`);
         recordFlowScheduleAdmissionRefused();
       } else if (result.reason === 'not_enabled') {
-        // Disabled or paused mid-tick: nothing more to fire, and no stamp.
+        // Disabled, paused or re-published mid-tick: nothing more to fire, and
+        // no stamp. Loud, because it also ends the fan-out for every org after
+        // this one.
+        const remaining = orgIds.length - orgIds.indexOf(orgId) - 1;
+        console.error(
+          `${LOG} flow ${flow.id} is no longer enabled at org ${orgId} (occurrence ${occurrence.key}); `
+          + `fan-out stopped with ${remaining} org(s) not attempted, key not advanced`,
+        );
+        report(new Error('flow schedule fan-out stopped: flow not enabled'), 'schedule_tick.not_enabled_mid_fanout', flow, orgId);
         return created;
       }
     } catch (err) {
       allHandled = false;
       console.error(`${LOG} run creation failed (flow=${flow.id}, org=${orgId}, occurrence=${occurrence.key}); retried next tick`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      report(err, 'schedule_tick.create_run', flow, orgId);
     }
   }
   if (!allHandled) return created;
@@ -160,10 +202,25 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
   for (const flow of await loadScheduleFlows()) {
     const schedule = scheduleOf(flow.trigger);
     let occurrence: { at: Date; key: string } | null = null;
-    try {
-      occurrence = schedule ? latestCronOccurrence(schedule.cron, schedule.timezone, now) : null;
-    } catch (err) {
-      console.error(`${LOG} flow ${flow.id}: schedule could not be evaluated`, err);
+    let unevaluable: unknown = schedule ? null : new Error('malformed schedule trigger');
+    if (schedule) {
+      try {
+        occurrence = latestCronOccurrence(schedule.cron, schedule.timezone, now);
+      } catch (err) {
+        unevaluable = err;
+      }
+    }
+    if (unevaluable) {
+      // Never fires until the flow is fixed: loud every tick, captured once.
+      console.error(
+        `${LOG} flow ${flow.id} (org=${flow.orgId ?? 'partner-wide'}, partner=${flow.partnerId ?? '-'}): schedule could not be evaluated; it does not fire`,
+        unevaluable,
+      );
+      const memo = `${flow.id}|${schedule?.cron ?? ''}|${schedule?.timezone ?? ''}`;
+      if (!reportedUnevaluable.has(memo)) {
+        reportedUnevaluable.add(memo);
+        report(unevaluable, 'schedule_tick.cron_unevaluable', flow);
+      }
     }
     if (
       !occurrence
@@ -178,7 +235,7 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
     } catch (err) {
       // One flow's org enumeration or stamp failing never starves the others.
       console.error(`${LOG} flow ${flow.id} occurrence ${occurrence.key} failed; retried next tick`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      report(err, 'schedule_tick.fire_flow', flow);
     }
   }
   if (result.fired > 0) console.log(`${LOG} tick`, result);

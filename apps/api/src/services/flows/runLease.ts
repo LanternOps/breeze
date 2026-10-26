@@ -13,8 +13,9 @@
  * the same transaction.
  *
  * A step may run up to 3,600 s, far past the 6-minute lease, so the slice
- * renews it with `startLeaseHeartbeat` while the step executes; a failed
- * renewal marks the slice lost and its result is never written.
+ * renews it with `startLeaseHeartbeat` while the step executes; a renewal
+ * that finds the lease gone (or a third consecutive renewal error) marks the
+ * slice lost and its result is never written.
  *
  * Every write is its own short SYSTEM transaction opened outside any ambient
  * context (the runner is a background job; explicit predicates are the only
@@ -97,22 +98,54 @@ export async function checkpoint(
 }
 
 /**
+ * Consecutive THROWN renewals tolerated before the slice is declared lost
+ * (review finding 7). The lease runs 6 minutes and renews every 60 s, so two
+ * missed renewals still leave it live; a transient DB error must not discard
+ * the result of a step that may run for an hour.
+ */
+export const LEASE_RENEWAL_ERRORS_TOLERATED = 2;
+
+/**
  * Renew the lease every `leaseRenewEveryMs` while a step executes. A renewal
  * that matches no row (lease taken over, run finished by an outside writer)
- * or that throws marks the slice lost: the caller must not write the step's
- * result.
+ * marks the slice lost at once: the caller must not write the step's result.
+ * A renewal that THROWS is retried on the next tick; only the
+ * (LEASE_RENEWAL_ERRORS_TOLERATED + 1)th consecutive throw marks it lost. A
+ * renewal still in flight when the next tick fires is not doubled up.
  */
-export function startLeaseHeartbeat(runId: string, token: string): { stop(): void; lost(): boolean } {
+export function startLeaseHeartbeat(
+  runId: string,
+  token: string,
+  ctx: { stepId?: string } = {},
+): { stop(): void; lost(): boolean } {
   let lost = false;
   let stopped = false;
+  let inFlight = false;
+  let consecutiveErrors = 0;
+  const where = `run=${runId}${ctx.stepId ? `, step=${ctx.stepId}` : ''}`;
+  const markLost = (why: string, err?: unknown) => {
+    if (lost) return;
+    lost = true;
+    console.warn(`[FlowRunner] lease heartbeat: ${why} (${where}); the slice is lost`, ...(err === undefined ? [] : [err]));
+  };
   const timer = setInterval(() => {
-    if (stopped || lost) return;
+    if (stopped || lost || inFlight) return;
+    inFlight = true;
     inSystemTx(() => store.renewLease(runId, token), 'flows.runLease.heartbeat')
-      .then((ok) => { if (!ok) lost = true; })
+      .then((ok) => {
+        consecutiveErrors = 0;
+        if (!ok && !stopped) markLost('the lease was taken over or the run finished');
+      })
       .catch((err: unknown) => {
-        lost = true;
-        console.warn(`[FlowRunner] lease renewal failed (run=${runId}); the slice is lost`, err);
-      });
+        consecutiveErrors += 1;
+        if (stopped) return;
+        if (consecutiveErrors > LEASE_RENEWAL_ERRORS_TOLERATED) {
+          markLost(`${consecutiveErrors} consecutive renewals failed`, err);
+        } else {
+          console.warn(`[FlowRunner] lease renewal failed (${where}); retrying on the next tick (${consecutiveErrors}/${LEASE_RENEWAL_ERRORS_TOLERATED})`, err);
+        }
+      })
+      .finally(() => { inFlight = false; });
   }, FLOW_RUN_LIMITS.leaseRenewEveryMs);
   timer.unref?.();
   return {

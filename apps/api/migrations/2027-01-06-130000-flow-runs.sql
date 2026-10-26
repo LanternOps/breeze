@@ -13,6 +13,9 @@
 --                    DEFERRED, so org merge may repoint flows and their
 --                    publications in either order inside one transaction).
 --   flow_runs      — shape 1: org_id NOT NULL, no partner axis (Decision 1).
+--                    flow_runs_flow_owner_guard_trg (BEFORE INSERT) admits a
+--                    run only in an org that owns its flow (the flow's org, or
+--                    an org of a partner-wide flow's partner).
 --   flow_run_steps — shape 1, child of flow_runs via the composite
 --                    (run_id, org_id) FK.
 --   A run always executes in exactly one org under an org-scoped principal
@@ -403,6 +406,63 @@ CREATE TRIGGER flow_runs_immutable_trg
   BEFORE UPDATE ON flow_runs
   FOR EACH ROW EXECUTE FUNCTION public.flow_runs_immutable_guard();
 
+-- A run executes in an org that owns its flow: the flow's own org, or — for a
+-- partner-wide flow — an org of the flow's partner. RLS cannot say this (it
+-- admits any row in system scope, where every run is normally created), so a
+-- BEFORE INSERT trigger does, raising 23514 flow_runs_flow_owner_chk.
+--
+-- INSERT only, on purpose: org merge repoints a moved flow to the survivor
+-- while the loser's runs stay put (leave-for-erasure, flow_runs.org_id is
+-- immutable), so an existing run may legitimately mismatch its flow afterwards.
+--
+-- SECURITY DEFINER: BEFORE ROW triggers fire before the RLS WITH CHECK, so an
+-- invoker read would turn an org token's cross-org insert (refused 42501 by
+-- the policy) into this 23514, and it could not read a sibling org's
+-- partner. On an install whose migration role neither is SUPERUSER nor has
+-- BYPASSRLS the definer still sees only what the session's GUCs admit
+-- (every flows / organizations policy is role-agnostic) — then an unreadable
+-- flow or org is NOT FOUND and refused: fail closed, never open.
+CREATE OR REPLACE FUNCTION public.flow_runs_flow_owner_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  flow_org_id uuid;
+  flow_partner_id uuid;
+  run_partner_id uuid;
+BEGIN
+  SELECT f.org_id, f.partner_id
+  INTO flow_org_id, flow_partner_id
+  FROM public.flows AS f
+  WHERE f.id = NEW.flow_id;
+
+  IF FOUND THEN
+    IF flow_org_id IS NOT NULL THEN
+      IF flow_org_id = NEW.org_id THEN
+        RETURN NEW;
+      END IF;
+    ELSIF flow_partner_id IS NOT NULL THEN
+      SELECT o.partner_id INTO run_partner_id
+      FROM public.organizations AS o
+      WHERE o.id = NEW.org_id;
+      IF run_partner_id = flow_partner_id THEN
+        RETURN NEW;
+      END IF;
+    END IF;
+  END IF;
+
+  RAISE EXCEPTION 'flow run org does not own its flow'
+    USING ERRCODE = '23514',
+          CONSTRAINT = 'flow_runs_flow_owner_chk';
+END $$;
+
+DROP TRIGGER IF EXISTS flow_runs_flow_owner_guard_trg ON flow_runs;
+CREATE TRIGGER flow_runs_flow_owner_guard_trg
+  BEFORE INSERT ON flow_runs
+  FOR EACH ROW EXECUTE FUNCTION public.flow_runs_flow_owner_guard();
+
 -- ============================================
 -- 4. flow_run_steps — the step ledger
 -- ============================================
@@ -503,6 +563,9 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS flow_run_steps_attempt_uq
   ON flow_run_steps (run_id, step_id, COALESCE(item_index, -1), attempt);
 CREATE INDEX IF NOT EXISTS flow_run_steps_run_started_idx ON flow_run_steps (run_id, started_at);
+-- Org erasure and the organizations / composite-FK checks look rows up by
+-- org_id alone; without this they scan an unbounded ledger.
+CREATE INDEX IF NOT EXISTS flow_run_steps_org_id_idx ON flow_run_steps (org_id);
 
 -- ============================================
 -- 5. RLS

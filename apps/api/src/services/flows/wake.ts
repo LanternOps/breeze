@@ -10,8 +10,8 @@
  * run, and the queue round trip never holds the transaction's connection
  * (#1105). Outside any DB context it starts immediately.
  *
- * Fire-and-forget: a failed enqueue is reported under the `flow-run-wake`
- * label by db/index.ts; the run reconciler (Task A8, clause b) re-enqueues
+ * Fire-and-forget: a failed enqueue is reported under the per-run label
+ * `flow-run-wake:<runId>` by db/index.ts (the label is only a log string); the run reconciler (Task A8, clause b) re-enqueues
  * any `awaiting_approval` run whose intent is terminal, so a lost wake delays
  * a run rather than stranding it.
  *
@@ -27,7 +27,7 @@ export function scheduleFlowRunWake(runId: string): void {
   if (!UUID_RE.test(runId)) {
     throw new Error(`scheduleFlowRunWake: runId must be a uuid (got '${runId}')`);
   }
-  runAfterDbContextCommit('flow-run-wake', async () => {
+  runAfterDbContextCommit(`flow-run-wake:${runId}`, async () => {
     const { enqueueFlowRunSlice } = await import('../../jobs/flowRunQueue');
     await enqueueFlowRunSlice(runId);
   });

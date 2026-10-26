@@ -58,6 +58,7 @@ export function triggererPermsCleared(perms: UserPermissions, partnerWide: boole
  * the bearer, not in the AuthContext), a partner service principal, a
  * service-principal key (no human creator), a key row that is gone, revoked,
  * of another creator or another org, or scopes the creator no longer backs.
+ * A failed api_keys READ is not one of those: it throws.
  *
  * Step time never widens past this: rule 7 is a START-time check (the
  * delegator's authority governs execution, Decision 7) and nothing about the
@@ -75,25 +76,24 @@ export async function clampToCallerCredential(
   if (principal.kind === 'user_session') return perms;
   if (principal.kind !== 'api_key' || !principal.apiKeyId || principal.partnerServicePrincipalId) return null;
   const keyId = principal.apiKeyId;
-  let row: { scopes: string[] | null; principalType: string; createdBy: string; orgId: string; status: string } | undefined;
-  try {
-    [row] = await runOutsideDbContext(() => withSystemDbAccessContext(
-      async () => db
-        .select({
-          scopes: apiKeys.scopes,
-          principalType: apiKeys.principalType,
-          createdBy: apiKeys.createdBy,
-          orgId: apiKeys.orgId,
-          status: apiKeys.status,
-        })
-        .from(apiKeys)
-        .where(eq(apiKeys.id, keyId))
-        .limit(1),
-      'flows.triggererAccess.apiKeyScopes',
-    ));
-  } catch {
-    return null;
-  }
+  // A read failure PROPAGATES (the route answers 500): only a missing,
+  // revoked or mismatched row means "this credential holds nothing". Mapping
+  // a DB error to null would tell the caller `permission_missing` — a wrong,
+  // unlogged answer to an infrastructure fault.
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(
+    async () => db
+      .select({
+        scopes: apiKeys.scopes,
+        principalType: apiKeys.principalType,
+        createdBy: apiKeys.createdBy,
+        orgId: apiKeys.orgId,
+        status: apiKeys.status,
+      })
+      .from(apiKeys)
+      .where(eq(apiKeys.id, keyId))
+      .limit(1),
+    'flows.triggererAccess.apiKeyScopes',
+  ));
   if (!row || row.status !== 'active' || row.principalType !== 'human' || row.createdBy !== auth.user?.id || row.orgId !== runOrgId) {
     return null;
   }
