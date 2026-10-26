@@ -1934,7 +1934,7 @@ export function rewriteFlowStepTools(
  * slice owns it and stops at its next `cancel_requested_at` check. The pending
  * intents of a cancelled run stay with the loser (action_intents is
  * leave-for-erasure) — a later approval hits the dispatch claim's
- * `run_cancelled`.
+ * `run_terminal`.
  */
 async function cancelLoserFlowRuns(loser: string): Promise<string[]> {
   const active = await run(sql`

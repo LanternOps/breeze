@@ -28,6 +28,7 @@ import type {
   PreApprovalEligibility,
 } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { sqlTimestamptz } from '../../db/sqlValues';
 import { actionIntents, flowRuns, flows, flowVersions, users, type FlowRow, type FlowVersionRow } from '../../db/schema';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { checkToolPermissionForResolvedUser, resolveToolPermissionRequirements } from '../aiGuardrails';
@@ -375,7 +376,7 @@ export async function disableFlow(auth: AuthContext, flowId: string): Promise<Di
   // finds the run already marked and ends it cancelled.
   const parked = await db
     .update(flowRuns)
-    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${now})`, updatedAt: now })
+    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${sqlTimestamptz(now)})`, updatedAt: now })
     .where(and(eq(flowRuns.flowId, flowId), eq(flowRuns.status, 'awaiting_approval')))
     .returning({ id: flowRuns.id });
 
@@ -383,7 +384,7 @@ export async function disableFlow(auth: AuthContext, flowId: string): Promise<Di
 
   const running = await db
     .update(flowRuns)
-    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${now})`, updatedAt: now })
+    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${sqlTimestamptz(now)})`, updatedAt: now })
     .where(and(eq(flowRuns.flowId, flowId), eq(flowRuns.status, 'running')))
     .returning({ id: flowRuns.id });
 

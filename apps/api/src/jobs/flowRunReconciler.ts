@@ -70,7 +70,7 @@ const queuedStale = (): SQL => sql`
 
 /** (b) */
 const awaitingWithTerminalIntent = (): SQL => sql`
-  SELECT DISTINCT r.id FROM flow_runs r
+  SELECT r.id FROM flow_runs r
   JOIN flow_run_steps s ON s.run_id = r.id AND s.org_id = r.org_id
   JOIN action_intents i ON i.id = s.action_intent_id AND i.requesting_flow_run_id = r.id
   WHERE r.status = 'awaiting_approval'

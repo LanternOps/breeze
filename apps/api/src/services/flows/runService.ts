@@ -32,6 +32,7 @@ import {
   type FlowValue,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { sqlTimestamptz } from '../../db/sqlValues';
 import { organizations } from '../../db/schema/orgs';
 import { flows } from '../../db/schema/flows';
 import { flowRuns, flowRunSteps, flowVersions, type FlowRunRow, type FlowRunStepRow } from '../../db/schema/flowRuns';
@@ -439,7 +440,7 @@ export async function cancelFlowRun(auth: AuthContext, runId: string): Promise<C
   const now = new Date();
   const [flagged] = await db
     .update(flowRuns)
-    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${now})`, updatedAt: now })
+    .set({ cancelRequestedAt: sql`COALESCE(${flowRuns.cancelRequestedAt}, ${sqlTimestamptz(now)})`, updatedAt: now })
     .where(and(eq(flowRuns.id, run.id), notInArray(flowRuns.status, [...TERMINAL_FLOW_RUN_STATUSES])))
     .returning({ id: flowRuns.id, status: flowRuns.status });
   if (!flagged) return { ok: false, error: 'already_terminal' };
