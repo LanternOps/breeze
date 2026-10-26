@@ -180,9 +180,9 @@ The prompt asks the user to allow or deny the remote session, naming the technic
 
 Consent mode therefore works without Breeze Assist. Both renderers show a **30-second countdown** (the API ships the length with the session start). The countdown starts only once the prompt is confirmed on screen, and the technician's view does not start until the user answers.
 
-**Deny is the default button on both renderers**, so a stray Enter keypress never grants access. (Native dialogs defaulted to Yes / Allow on agents released before this was changed in [#10187](https://github.com/LanternOps/breeze/issues/10187); update the agent to get the Deny default.) If the user doesn't answer in time, the dialog closes itself and Breeze applies the policy's fallback (see *When consent can't be asked* below). A prompt that expired while the session was locked or disconnected counts as "could not be shown", not as unanswered.
+**Deny is the default button on both renderers**, so a stray Enter keypress never grants access. (Native dialogs defaulted to Yes / Allow on agents released before this was changed in [#10187](https://github.com/LanternOps/breeze/issues/10187); update the agent to get the Deny default.) If the user doesn't answer in time, the dialog closes itself and Breeze applies the policy's fallback on Windows (see *When consent can't be asked* below); on macOS and Linux an unanswered prompt is refused, because they can't tell whether the screen was locked. A prompt that expired while the session was locked or disconnected counts as "could not be shown", not as unanswered.
 
-A session is refused outright only when someone is signed in and **neither** renderer can reach them: Breeze Assist is not running and the user helper cannot draw a native dialog (for example a Linux session with no display or without `zenity`).
+A session is refused most commonly when someone is signed in and **neither** renderer can reach them: Breeze Assist is not running and the user helper cannot draw a native dialog (for example a Linux session with no display or without `zenity`).
 
 **Settings (per Configuration Policy → Remote Access)**
 
