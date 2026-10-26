@@ -62,6 +62,7 @@ export type EnableFlowResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'version_conflict' | 'already_enabled' | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available'
+        | 'webhook_secret_missing'
         | 'slug_unavailable' | 'interactive_session_required' | 'delegation_scope_restricted' | 'partner_wide_forbidden';
     };
 
@@ -218,6 +219,8 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   if (!validation.valid || !document) return { ok: false, error: 'invalid', validation };
 
   if (document.trigger.type === 'event' && !isFlowEventDeliveryDurable()) return { ok: false, error: 'event_dispatch_not_durable' };
+  // W5 (#5220, Decision 3): a webhook flow goes live only with a secret to verify against.
+  if (document.trigger.type === 'webhook' && !row.webhookSecretEncrypted) return { ok: false, error: 'webhook_secret_missing' };
   if (document.steps.some((s) => (s.forEach?.concurrency ?? 1) > 1)) return { ok: false, error: 'foreach_concurrency_not_available' };
 
   let pins: FlowStepPin[];

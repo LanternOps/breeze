@@ -302,6 +302,24 @@ describe('enableFlow — refusals', () => {
       .toEqual({ ok: false, error: 'foreach_concurrency_not_available' });
   });
 
+  // W05 (#5220) Task A5, validator mocked (B1 adds the webhook trigger rules).
+  it('webhook flow without a secret is webhook_secret_missing', async () => {
+    const doc = { ...MANUAL_DOC, trigger: { type: 'webhook', auth: 'hmac' } };
+    queues.select.push([row({ definition: doc, webhookSecretEncrypted: null, webhookSecretFingerprint: null, webhookSecretRotatedAt: null })]);
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+      .toEqual({ ok: false, error: 'webhook_secret_missing' });
+    expect(callsOf('update')).toHaveLength(0);
+    expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  it('webhook flow with a secret enables', async () => {
+    const doc = { ...MANUAL_DOC, trigger: { type: 'webhook', auth: 'hmac' } };
+    queueEnable(row({
+      definition: doc, webhookSecretEncrypted: 'enc:v3:k:x', webhookSecretFingerprint: 'fp', webhookSecretRotatedAt: new Date('2027-03-01T00:00:00Z'),
+    }));
+    expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+  });
+
   it('missing permissions are all listed', async () => {
     const doc = {
       ...MANUAL_DOC,

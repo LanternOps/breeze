@@ -20,6 +20,7 @@ import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission
 import { getFlow, listFlows } from '../services/flows/service';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
+import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 
 export const flowsRoutes = new Hono();
 
@@ -90,6 +91,8 @@ const ENABLE_STATUS: Record<string, Status> = {
   pre_approval_not_eligible: 422,
   permission_missing: 422,
   invalid: 422,
+  // W5 (#5220, Decision 3): a webhook flow needs a secret before it can go live.
+  webhook_secret_missing: 422,
 };
 const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
 const RUN_STATUS: Record<string, Status> = {
@@ -167,6 +170,30 @@ flowsRoutes.post(
     return c.json(result);
   },
 );
+
+// ── W05 (#5220): the webhook secret, revealed once (Decision 3) ───────────
+// Create or rotate. The plaintext is in this response only (the
+// routes/apiKeys.ts reveal-once pattern); rotation cuts the old secret off at
+// once. `no-store` on every outcome so no cache keeps a reveal.
+const WEBHOOK_SECRET_STATUS: Record<string, Status> = {
+  flow_not_found: 404,
+  not_webhook: 409,
+  interactive_session_required: 403,
+  partner_wide_forbidden: 403,
+};
+
+flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
+  const { id } = c.req.valid('param');
+  c.header('Cache-Control', 'no-store');
+  const result = await createOrRotateWebhookSecret(c.get('auth'), id);
+  if (!result.ok) return failure(c, WEBHOOK_SECRET_STATUS, result);
+  return c.json({
+    secret: result.secret,
+    fingerprint: result.fingerprint,
+    rotatedAt: result.rotatedAt,
+    warning: 'Store this secret now. It will not be shown again.',
+  });
+});
 
 flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
   const { id } = c.req.valid('param');
