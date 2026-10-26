@@ -234,7 +234,7 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
           flowId: { type: 'string', description: 'Only runs of this flow (UUID).' },
           orgId: { type: 'string', description: 'Only runs in this organization (UUID).' },
           status: { type: 'string', enum: RUN_STATUSES },
-          limit: { type: 'integer', description: 'Maximum runs to return (1-50, default 50)' },
+          limit: { type: 'integer', description: 'Maximum runs to return (default 50, max 50)' },
         },
       },
     },
