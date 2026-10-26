@@ -128,7 +128,7 @@ beforeEach(() => {
   });
   vi.mocked(revokeAgreementAcceptJti).mockImplementation(async () => { txSeen.revoke = tx.current; });
   vi.mocked(notifyAgreementOutcome).mockImplementation(async () => { txSeen.notify = tx.current; });
-  vi.mocked(sendSignedAgreementCopy).mockImplementation(async () => { txSeen.copy = tx.current; return { sent: true, recipients: [], attached: true }; });
+  vi.mocked(sendSignedAgreementCopy).mockImplementation(async () => { txSeen.copy = tx.current; return { sent: true, recipients: [], attached: true, certified: true }; });
 });
 
 describe('POST /:token/accept', () => {

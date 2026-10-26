@@ -19,8 +19,11 @@
 // under the caller's RLS; email: the signer just accepted this request).
 //
 // WORDING (vocabulary spec §8): "electronically accepted", never "signed by",
-// and no drawn or handwritten-looking mark. The italic typed name is the typed
-// signature the signer entered, printed again beneath it in plain text.
+// and no drawn or handwritten-looking mark. Only a customer acceptance (the
+// client typed their name into Breeze) gets the italic typed-signature face,
+// printed again beneath it in plain text. A staff-recorded acceptance or an
+// uploaded copy says "as recorded" and never claims an electronic acceptance:
+// the page attests what was recorded (and, for an upload, the upload).
 
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument, PageSizes } from 'pdf-lib';
@@ -140,8 +143,9 @@ function resolveLocale(raw: string | null): string {
   const candidate = raw?.trim() || 'en';
   try {
     return Intl.DateTimeFormat.supportedLocalesOf([candidate]).length > 0 ? candidate : 'en';
-  } catch {
-    return 'en'; // malformed tag → RangeError
+  } catch (err) {
+    if (err instanceof RangeError) return 'en'; // malformed language tag
+    throw err;
   }
 }
 
@@ -212,20 +216,41 @@ export function buildCertificateContent(input: CertifiedAgreementInput): Certifi
     });
   } else {
     const signer = clip(doc.signerName ?? NOT_RECORDED, MAX_NAME);
+    const email = { label: 'Email', value: doc.signerEmail ?? 'Not provided' };
+    if (how.kind === 'customer') {
+      // The client typed this name into Breeze themselves: the typed
+      // signature in the italic face, then printed plainly.
+      sections.push({
+        heading: 'Electronically accepted by',
+        rows: [
+          { label: 'Accepted by', value: signer, style: 'signature' },
+          { label: 'Printed name', value: signer },
+          email,
+        ],
+      });
+    } else {
+      // Staff typed the name and date (record-signed / accept-on-behalf): no
+      // signature face and no claim of an electronic acceptance — the page
+      // attests what was recorded, and for an upload, the upload.
+      sections.push({
+        heading: how.kind === 'external_upload' ? 'Signed outside Breeze' : 'Acceptance recorded by staff',
+        rows: [
+          { label: how.kind === 'external_upload' ? 'Signer (as recorded)' : 'Client signer (as recorded)', value: signer },
+          email,
+        ],
+      });
+    }
     const recorded = how.kind !== 'customer';
-    sections.push({
-      heading: 'Electronically accepted by',
-      rows: [
-        { label: 'Accepted by', value: signer, style: 'signature' },
-        { label: 'Printed name', value: signer },
-        { label: 'Email', value: doc.signerEmail ?? 'Not provided' },
-      ],
-    });
     sections.push({
       heading: 'When and where',
       rows: [
-        { label: 'Accepted at (UTC)', value: doc.signedAt.toISOString() },
+        {
+          label: how.kind === 'customer' ? 'Accepted at (UTC)'
+            : how.kind === 'external_upload' ? 'Signed at, as recorded (UTC)' : 'Accepted at, as recorded (UTC)',
+          value: doc.signedAt.toISOString(),
+        },
         { label: 'Local rendering', value: longDateTime(doc.signedAt, locale) },
+        ...(how.kind === 'external_upload' ? [{ label: 'Uploaded at (UTC)', value: doc.createdAt.toISOString() }] : []),
         // On an MSP-recorded row the network evidence is the recorder's.
         { label: recorded ? 'Recorded from IP' : 'Signer IP', value: doc.signerIp ?? NOT_RECORDED },
         { label: recorded ? 'Recorded with' : 'User agent', value: clip(doc.signerUserAgent ?? NOT_RECORDED, MAX_USER_AGENT) },
@@ -261,9 +286,9 @@ export function buildCertificateContent(input: CertifiedAgreementInput): Certifi
 
   return {
     title: 'Signature certificate',
-    subtitle: parties.seller ? `Electronic acceptance record · ${clip(parties.seller, MAX_NAME)}` : 'Electronic acceptance record',
+    subtitle: parties.seller ? `Acceptance record · ${clip(parties.seller, MAX_NAME)}` : 'Acceptance record',
     sections,
-    footer: 'This page records how the agreement above was electronically accepted. It is not a handwritten or cryptographic signature, and it is not part of the original file.',
+    footer: 'This page records how acceptance of the agreement above was captured in Breeze. It is not a handwritten or cryptographic signature, and it is not part of the original file.',
   };
 }
 
@@ -413,7 +438,14 @@ export async function renderCertifiedAgreementPdf(input: CertifiedAgreementInput
   try {
     return await mergeUploadedContractPdfs(pdf, [{ afterMarker: 'signature-certificate', data: certificate }], { pinDates: pinned });
   } catch (err) {
-    throw toMergeError(err, 'The certified copy could not be assembled');
+    // The original already loaded and passed the page cap in normalizeOriginal,
+    // so a failure HERE is our certificate page or a pdf-lib regression — a
+    // bug, never a "bad original". It must take the loud path (route 500,
+    // email error log), not the quiet PdfMergeError → original fallback.
+    throw new Error(
+      `Signature certificate could not be assembled: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
 }
 

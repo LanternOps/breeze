@@ -90,7 +90,7 @@ describe('sendSignedAgreementCopy', () => {
     queuePrepared(['ops@example.com', 'dana@example.com']);
     queueCertified();
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: ' Dana@Example.com ' });
-    expect(res).toEqual({ sent: true, recipients: ['dana@example.com', 'ops@example.com'], attached: true });
+    expect(res).toEqual({ sent: true, recipients: ['dana@example.com', 'ops@example.com'], attached: true, certified: true });
     const env = sendEmailMock.mock.calls[0]![0];
     expect(env.to).toEqual(['dana@example.com', 'ops@example.com']);
     expect(env.purpose).toBe('agreement.signed_copy');
@@ -109,6 +109,7 @@ describe('sendSignedAgreementCopy', () => {
     expect(att?.contentType).toBe('application/pdf');
     expect(att?.content).toBe(CERTIFIED);
     expect(att?.filename.endsWith('(signed).pdf')).toBe(true);
+    expect(att?.certified).toBe(true);
     expect(att?.filename).not.toMatch(/["\r\n]/);
   });
 
@@ -118,7 +119,8 @@ describe('sendSignedAgreementCopy', () => {
     loadInputMock.mockResolvedValueOnce(certInput({ pdfData: png, mime: 'image/png', name: 'BAA' }));
     renderMock.mockRejectedValueOnce(new PdfMergeError('The signed agreement image could not be read: bad'));
     const att = await loadSignedCopyAttachment(DOC_ID);
-    expect(att).toEqual({ filename: 'BAA (signed).png', content: png, contentType: 'image/png' });
+    // Named as the original so nobody mistakes it for the certified copy.
+    expect(att).toEqual({ filename: 'BAA (signed, original).png', content: png, contentType: 'image/png', certified: false });
     expect(warn).toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledTimes(1);
     warn.mockRestore();
@@ -129,7 +131,7 @@ describe('sendSignedAgreementCopy', () => {
     loadInputMock.mockResolvedValueOnce(certInput());
     renderMock.mockRejectedValueOnce(new Error('document theme font missing'));
     const att = await loadSignedCopyAttachment(DOC_ID);
-    expect(att).toEqual({ filename: 'Business Associate Agreement (signed).pdf', content: Buffer.from('%PDF-signed'), contentType: 'application/pdf' });
+    expect(att).toEqual({ filename: 'Business Associate Agreement (signed, original).pdf', content: Buffer.from('%PDF-signed'), contentType: 'application/pdf', certified: false });
     expect(err).toHaveBeenCalled();
     expect(captureException).toHaveBeenCalledTimes(1);
     err.mockRestore();
@@ -141,17 +143,30 @@ describe('sendSignedAgreementCopy', () => {
     loadInputMock.mockResolvedValueOnce(certInput());
     renderMock.mockRejectedValueOnce(new PdfMergeError('bad xref'));
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: true });
-    expect(sendEmailMock.mock.calls[0]![0].attachments[0].content).toEqual(Buffer.from('%PDF-signed'));
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: true, certified: false });
+    // The transport gets only filename/content/contentType — no internal flags.
+    expect(sendEmailMock.mock.calls[0]![0].attachments).toEqual([
+      { filename: 'Business Associate Agreement (signed, original).pdf', content: Buffer.from('%PDF-signed'), contentType: 'application/pdf' },
+    ]);
+    warn.mockRestore();
+  });
+
+  it('a certified copy over 10 MB whose ORIGINAL fits → the original is attached instead, warned', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queueCertified(certInput({ name: 'BAA' }), Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 1));
+    const att = await loadSignedCopyAttachment(DOC_ID);
+    expect(att).toEqual({ filename: 'BAA (signed, original).pdf', content: Buffer.from('%PDF-signed'), contentType: 'application/pdf', certified: false });
+    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 
   it('over 10 MB → sent WITHOUT the attachment, the body says so, warned + captured', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     queuePrepared(['ops@example.com']);
-    queueCertified(certInput({ name: 'BAA' }), Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 1));
+    // Both the certified copy AND the original are over the limit.
+    queueCertified(certInput({ name: 'BAA', pdfData: Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 1) }), Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 2));
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false });
     const env = sendEmailMock.mock.calls[0]![0];
     expect(env.attachments).toBeUndefined();
     expect(env.text).toContain('too large to attach');
@@ -211,7 +226,7 @@ describe('sendSignedAgreementCopy', () => {
     queuePrepared(['ops@example.com']);
     loadInputMock.mockResolvedValueOnce(null); // the signed agreement row is gone
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false });
     expect(sendEmailMock.mock.calls[0]![0].text).toContain('could not be attached');
     expect(captureException).toHaveBeenCalledTimes(1);
     err.mockRestore();

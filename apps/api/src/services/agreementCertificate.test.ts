@@ -25,6 +25,20 @@ vi.mock('../db', () => {
   };
 });
 
+// Pass-through of the real merge, with a switch to make it fail the way a
+// regression in OUR certificate page / pdf-lib would.
+const { mergeFault } = vi.hoisted(() => ({ mergeFault: { error: null as Error | null } }));
+vi.mock('./pdfMerge', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./pdfMerge')>();
+  return {
+    ...real,
+    mergeUploadedContractPdfs: async (...args: Parameters<typeof real.mergeUploadedContractPdfs>) => {
+      if (mergeFault.error) throw mergeFault.error;
+      return real.mergeUploadedContractPdfs(...args);
+    },
+  };
+});
+
 import {
   buildCertificateContent,
   certificateText,
@@ -142,6 +156,31 @@ describe('renderCertifiedAgreementPdf — determinism and shape', () => {
     expect((await PDFDocument.load(out)).getPageCount()).toBe(4);
   });
 
+  it('keeps every original page first, in order, and appends the certificate LAST', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([600, 800]);
+    doc.addPage([601, 801]);
+    const bytes = Buffer.from(await doc.save());
+    const out = await renderCertifiedAgreementPdf(makeInput(bytes, 'application/pdf'));
+    const loaded = await PDFDocument.load(out);
+    const sizes = loaded.getPages().map((p) => { const s = p.getSize(); return [Math.round(s.width), Math.round(s.height)]; });
+    // Originals untouched and first; the certificate takes the last original page's size.
+    expect(sizes).toEqual([[600, 800], [601, 801], [601, 801]]);
+    const { drawn } = await drawnStrings(() => renderCertifiedAgreementPdf(makeInput(bytes, 'application/pdf')));
+    expect(drawn[0]).toBe('Signature certificate');
+  });
+
+  it('a landscape (non-document) original gets the certificate on the partner page size', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([792, 612]);
+    const out = await renderCertifiedAgreementPdf(makeInput(Buffer.from(await doc.save()), 'application/pdf', { pageSize: 'a4' }));
+    const loaded = await PDFDocument.load(out);
+    const first = loaded.getPage(0).getSize();
+    const last = loaded.getPage(1).getSize();
+    expect([Math.round(first.width), Math.round(first.height)]).toEqual([792, 612]);
+    expect([Math.round(last.width), Math.round(last.height)]).toEqual([595, 842]);
+  });
+
   it('a PNG original becomes one PDF page, then the certificate', async () => {
     const out = await renderCertifiedAgreementPdf(makeInput(PNG_1X1, 'image/png'));
     const loaded = await PDFDocument.load(out);
@@ -188,6 +227,22 @@ describe('renderCertifiedAgreementPdf — merge failures are PdfMergeError', () 
 
   it('an unreadable image throws PdfMergeError', async () => {
     await expect(renderCertifiedAgreementPdf(makeInput(Buffer.from('not a png'), 'image/png'))).rejects.toBeInstanceOf(PdfMergeError);
+  });
+
+  it('a failure assembling OUR certificate page is NOT a PdfMergeError (it must not degrade quietly to the original)', async () => {
+    const original = await makePdf(1);
+    mergeFault.error = new PdfMergeError('An attached contract PDF could not be read: certificate page corrupt');
+    try {
+      const err = await renderCertifiedAgreementPdf(makeInput(original, 'application/pdf')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(PdfMergeError);
+      expect((err as Error).message).toMatch(/certificate/i);
+      mergeFault.error = new TypeError('pdf-lib regression');
+      const err2 = await renderCertifiedAgreementPdf(makeInput(original, 'application/pdf')).catch((e: unknown) => e);
+      expect(err2).not.toBeInstanceOf(PdfMergeError);
+    } finally {
+      mergeFault.error = null;
+    }
   });
 
   it('respects MAX_MERGED_PAGES (original + certificate)', async () => {
@@ -284,6 +339,34 @@ describe('"How" wording — one case per origin, never "signed by"', () => {
       expect(drawn.join('\n')).not.toMatch(SIGNED_BY);
     });
   }
+
+  it('a staff-recorded acceptance is never presented as an electronic acceptance with a typed signature', async () => {
+    const content = buildCertificateContent(makeInput(await makePdf(1), 'application/pdf', {
+      how: { kind: 'on_behalf', recordedByName: 'Sam Tech', method: 'verbal', reference: 'call T-0231' },
+    }));
+    const headings = content.sections.map((s) => s.heading);
+    expect(headings).not.toContain('Electronically accepted by');
+    expect(headings).toContain('Acceptance recorded by staff');
+    const rows = content.sections.flatMap((s) => s.rows);
+    expect(rows.some((r) => r.style === 'signature')).toBe(false);
+    expect(rows.find((r) => r.value === 'Dana Buyer')?.label).toBe('Client signer (as recorded)');
+    expect(rows.find((r) => r.value === SIGNED_AT.toISOString())?.label).toBe('Accepted at, as recorded (UTC)');
+  });
+
+  it('an external upload names the signer and date as recorded, and when the copy was uploaded', async () => {
+    const content = buildCertificateContent(makeInput(await makePdf(1), 'application/pdf', {
+      how: { kind: 'external_upload', recordedByName: 'Sam Tech', method: 'signed_document', reference: 'wet ink' },
+    }));
+    const headings = content.sections.map((s) => s.heading);
+    expect(headings).not.toContain('Electronically accepted by');
+    expect(headings).toContain('Signed outside Breeze');
+    const rows = content.sections.flatMap((s) => s.rows);
+    expect(rows.some((r) => r.style === 'signature')).toBe(false);
+    expect(rows.find((r) => r.value === 'Dana Buyer')?.label).toBe('Signer (as recorded)');
+    expect(rows.find((r) => r.value === SIGNED_AT.toISOString())?.label).toBe('Signed at, as recorded (UTC)');
+    expect(rows.find((r) => r.value === CREATED_AT.toISOString())?.label).toBe('Uploaded at (UTC)');
+    expect(certificateText(content).join('\n')).not.toMatch(/electronically accepted/i);
+  });
 
   it('on-behalf rows label the IP / user agent as the recorder\'s, not the signer\'s', async () => {
     const input = makeInput(await makePdf(1), 'application/pdf', {
@@ -387,6 +470,28 @@ describe('loadCertifiedAgreementInput', () => {
     expect(input.source).toEqual({ kind: 'request', requestId: REQUEST_ID });
     expect(input.agreement).toEqual({ name: 'BAA', templateName: 'BAA', versionNumber: 2 });
     expect(input.pageSize).toBe('letter');
+  });
+
+  it('maps every evidence field from the document row itself (never the version hash or a live row)', async () => {
+    const row = loaderRow();
+    expect(row.versionSha256).not.toBe(row.sha256); // a mix-up would be visible
+    dbResults.push([row]);
+    const input = (await loadCertifiedAgreementInput(DOC_ID))!;
+    expect(input.document).toEqual({
+      id: DOC_ID,
+      pdfData: row.pdfData,
+      mime: 'application/pdf',
+      sha256: row.sha256,
+      createdAt: CREATED_AT,
+      signerName: 'Dana Buyer',
+      signerEmail: 'dana@example.com',
+      signedAt: SIGNED_AT,
+      signerIp: '198.51.100.7',
+      signerUserAgent: 'UA',
+      contentSha256: 'c'.repeat(64),
+      contentHashVersion: 1,
+      acceptanceRenderLocale: 'en',
+    });
   });
 
   it('request label wins over the template name for the agreement name', async () => {

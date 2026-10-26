@@ -324,8 +324,16 @@ describe('contract document routes', () => {
     expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment; filename="signed-agreement-${DOC_ID}-original\\.pdf"`));
     expect(res.headers.get('x-agreement-copy')).toBe('original');
     expect(vi.mocked(auditSensitiveRead).mock.calls[0]![1].format).toBe('original');
+    // A transient failure must not pin the uncertified original in the browser cache.
+    expect(res.headers.get('cache-control')).toBe('no-store');
     expect(warn).toHaveBeenCalled();
-    expect(captureException).toHaveBeenCalled();
+    // Tagged with the document; grouped by a BOUNDED fingerprint (the error code, never the id).
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(PdfMergeError),
+      expect.anything(),
+      expect.objectContaining({ area: 'agreement-certificate', documentId: DOC_ID }),
+      { fingerprint: ['agreement-certificate-fallback', 'CONTRACT_PDF_UNREADABLE'] },
+    );
     warn.mockRestore();
   });
 

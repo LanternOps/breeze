@@ -46,6 +46,9 @@ export interface SignedCopyAttachment {
   filename: string;
   content: Buffer;
   contentType: string;
+  /** True for the certified copy; false when the original went instead. Never
+   *  handed to the mail transport. */
+  certified: boolean;
 }
 
 /**
@@ -55,20 +58,25 @@ export interface SignedCopyAttachment {
  * Fallback (spec §3.8): when the certificate cannot be rendered, the ORIGINAL
  * stored bytes are attached under their stored MIME — warned for a
  * PdfMergeError (an unreadable/oversized original), an error for anything else
- * (a bug), captured either way. A load failure still throws to the caller,
- * which sends the mail without an attachment.
+ * (a bug), captured either way — named "(signed, original)" and flagged
+ * certified:false. A certified copy over the attachment limit whose original
+ * fits also falls back to the original. A load failure still throws to the
+ * caller, which sends the mail without an attachment.
  */
 export async function loadSignedCopyAttachment(documentId: string): Promise<SignedCopyAttachment | null> {
   const input = await loadCertifiedAgreementInput(documentId);
   if (!input) return null;
   const base = input.agreement.name.trim() || 'Agreement';
+  // The original, named so nobody mistakes it for the certified copy.
+  const original = (): SignedCopyAttachment => ({
+    filename: sanitizeAttachmentFilename(`${base} (signed, original).${EXTENSION_BY_MIME[input.document.mime] ?? 'pdf'}`),
+    content: Buffer.from(input.document.pdfData),
+    contentType: input.document.mime,
+    certified: false,
+  });
+  let pdf: Buffer;
   try {
-    const pdf = await renderCertifiedAgreementPdf(input);
-    return {
-      filename: sanitizeAttachmentFilename(`${base} (signed).pdf`),
-      content: pdf,
-      contentType: 'application/pdf',
-    };
+    pdf = await renderCertifiedAgreementPdf(input);
   } catch (err) {
     const detail = { documentId, err: err instanceof Error ? err.message : String(err) };
     if (err instanceof PdfMergeError) {
@@ -76,18 +84,31 @@ export async function loadSignedCopyAttachment(documentId: string): Promise<Sign
     } else {
       console.error('[agreementSignedCopyEmail] certified copy render failed — attaching the original', detail);
     }
-    captureException(err instanceof Error ? err : new Error(String(err)));
-    const ext = EXTENSION_BY_MIME[input.document.mime] ?? 'pdf';
-    return {
-      filename: sanitizeAttachmentFilename(`${base} (signed).${ext}`),
-      content: Buffer.from(input.document.pdfData),
-      contentType: input.document.mime,
-    };
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      area: 'agreement-certificate',
+      path: 'signed-copy-email',
+      documentId,
+    });
+    return original();
   }
+  // The certificate page can push a file that fit over the attachment limit;
+  // the original then still reaches the signer as an attachment.
+  if (pdf.byteLength > SIGNED_COPY_ATTACHMENT_MAX_BYTES && input.document.pdfData.byteLength <= SIGNED_COPY_ATTACHMENT_MAX_BYTES) {
+    console.warn('[agreementSignedCopyEmail] certified copy over the attachment limit — attaching the original', {
+      documentId, certifiedBytes: pdf.byteLength, originalBytes: input.document.pdfData.byteLength,
+    });
+    return original();
+  }
+  return {
+    filename: sanitizeAttachmentFilename(`${base} (signed).pdf`),
+    content: pdf,
+    contentType: 'application/pdf',
+    certified: true,
+  };
 }
 
 export type SignedCopyOutcome =
-  | { sent: true; recipients: string[]; attached: boolean }
+  | { sent: true; recipients: string[]; attached: boolean; certified: boolean }
   | { sent: false; reason: 'not_found' | 'no_recipients' | 'no_email_service' | 'send_failed' };
 
 function normalize(email: string | null | undefined): string | null {
@@ -208,9 +229,11 @@ export async function sendSignedAgreementCopy(input: {
       subject: template.subject,
       html: template.html,
       text: template.text,
-      attachments: attachment ? [attachment] : undefined,
+      attachments: attachment
+        ? [{ filename: attachment.filename, content: attachment.content, contentType: attachment.contentType }]
+        : undefined,
     });
-    return { sent: true, recipients: to, attached: attachment !== null };
+    return { sent: true, recipients: to, attached: attachment !== null, certified: attachment?.certified ?? false };
   } catch (err) {
     console.error('[agreementSignedCopyEmail] failed', { requestId: input.requestId }, err instanceof Error ? err.message : err);
     captureException(err instanceof Error ? err : new Error(String(err)));

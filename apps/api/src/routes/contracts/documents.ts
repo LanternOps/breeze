@@ -134,7 +134,11 @@ contractDocumentRoutes.get(
           // font, a bug) is a loud 500; the Original download still works.
           if (!(err instanceof PdfMergeError)) throw err;
           console.warn('[contractDocuments] certified copy unavailable — serving the original', { id, code: err.code, message: err.message });
-          captureException(err);
+          // Bounded fingerprint (the code, never the id) so one bad document's
+          // retries group as one issue; the id rides in the tags.
+          captureException(err, c, { area: 'agreement-certificate', documentId: id }, {
+            fingerprint: ['agreement-certificate-fallback', err.code],
+          });
           body = new Uint8Array(doc.pdfData);
         }
       } else {
@@ -150,7 +154,9 @@ contractDocumentRoutes.get(
             .replace(/^inline;/, 'attachment;'),
           'X-Agreement-Copy': served,
           'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'private, max-age=300',
+          // A fallback original must not stick in the browser cache in place of
+          // the certified copy once the cause is fixed.
+          'Cache-Control': copy === 'certified' && served === 'original' ? 'no-store' : 'private, max-age=300',
         },
       });
       auditSensitiveRead(c, {
