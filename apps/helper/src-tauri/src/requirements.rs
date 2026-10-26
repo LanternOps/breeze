@@ -85,13 +85,28 @@ mod tests {
 
     // The release job stamps assistVersion from the tag; without it every
     // released sidecar would say the source version and the agent would
-    // always ignore it.
+    // always ignore it. Both helper builds (Windows/Linux matrix, macOS) have
+    // their own "Inject version into helper config" step, and each must
+    // stamp the sidecar and fail when the stamp did not land.
     #[test]
     fn release_workflow_stamps_the_sidecar_version() {
         let release = include_str!("../../../../.github/workflows/release.yml");
-        assert!(
-            release.contains("src-tauri/assist-requirements.json"),
-            "release.yml must stamp assistVersion in assist-requirements.json"
-        );
+        let steps: Vec<&str> = release
+            .split("- name: ")
+            .filter(|s| s.starts_with("Inject version into helper config"))
+            .collect();
+        assert_eq!(steps.len(), 2, "expected the two helper version-inject steps");
+        for step in steps {
+            let stamps = step
+                .lines()
+                .filter(|l| l.contains("sed -i") && l.contains("\"assistVersion\"") && l.contains("src-tauri/assist-requirements.json"))
+                .count();
+            let checks = step
+                .lines()
+                .filter(|l| l.contains("grep -q") && l.contains("\"assistVersion\"") && l.contains("exit 1"))
+                .count();
+            assert_eq!(stamps, 1, "a helper inject step does not stamp assistVersion:\n{step}");
+            assert_eq!(checks, 1, "a helper inject step does not verify the assistVersion stamp:\n{step}");
+        }
     }
 }
