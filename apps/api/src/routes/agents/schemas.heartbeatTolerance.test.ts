@@ -54,6 +54,77 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
+  // #10190 W02 — helperCapabilities.promptHost: the live renderer observation.
+  // Telemetry only: a malformed block drops to absent on its own and never
+  // takes the caller-verification readiness beside it, or the beat, with it.
+  describe('helperCapabilities.promptHost (#10190)', () => {
+    const readiness = { callerVerify: true, usernames: ['alex'] };
+    const good = { protocolVersion: 1, kinds: ['notice.info@1', 'restart.prompt@2'], rendererVersion: '0.2.0' };
+
+    function parsePromptHost(promptHost: unknown) {
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: { ...readiness, promptHost } });
+      expect(r.success).toBe(true);
+      if (!r.success) throw new Error('heartbeat rejected');
+      expect(r.data.helperCapabilities?.callerVerify).toBe(true);
+      expect(r.data.helperCapabilities?.usernames).toEqual(['alex']);
+      return r.data.helperCapabilities?.promptHost;
+    }
+
+    it('keeps a well-formed report', () => {
+      expect(parsePromptHost(good)).toEqual(good);
+    });
+
+    it('keeps a renderer that advertises no kinds (every W02 renderer)', () => {
+      expect(parsePromptHost({ protocolVersion: 1, kinds: [], rendererVersion: '0.2.0' }))
+        .toEqual({ protocolVersion: 1, kinds: [], rendererVersion: '0.2.0' });
+    });
+
+    it('accepts the limits exactly', () => {
+      const kinds = Array.from({ length: 16 }, (_, i) => `notice.info@${i + 1}`);
+      expect(parsePromptHost({ protocolVersion: 16, kinds, rendererVersion: 'v'.repeat(32) })).toEqual({
+        protocolVersion: 16, kinds, rendererVersion: 'v'.repeat(32),
+      });
+      expect(parsePromptHost({ protocolVersion: 0, kinds: [], rendererVersion: '' })).toEqual({
+        protocolVersion: 0, kinds: [], rendererVersion: '',
+      });
+    });
+
+    it('drops an unknown additive key instead of the whole report (a newer agent)', () => {
+      expect(parsePromptHost({ ...good, uiLocale: 'de-DE' })).toEqual(good);
+    });
+
+    it('is absent when the agent sends none (old agent)', () => {
+      expect(parsePromptHost(undefined)).toBeUndefined();
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: readiness });
+      expect(r.success && r.data.helperCapabilities?.promptHost).toBeUndefined();
+    });
+
+    it.each([
+      ['protocolVersion above 16', { ...good, protocolVersion: 17 }],
+      ['negative protocolVersion', { ...good, protocolVersion: -1 }],
+      ['fractional protocolVersion', { ...good, protocolVersion: 1.5 }],
+      ['string protocolVersion', { ...good, protocolVersion: '1' }],
+      ['missing protocolVersion', { kinds: good.kinds, rendererVersion: good.rendererVersion }],
+      ['17 kinds', { ...good, kinds: Array.from({ length: 17 }, (_, i) => `notice.info@${i + 1}`) }],
+      ['a bare kind (no version)', { ...good, kinds: ['notice.info'] }],
+      ['an upper-case kind', { ...good, kinds: ['Notice.Info@1'] }],
+      ['a kind with no namespace', { ...good, kinds: ['notice@1'] }],
+      ['a four-digit version', { ...good, kinds: ['notice.info@1000'] }],
+      ['a leading-zero version', { ...good, kinds: ['notice.info@01'] }],
+      ['version 0', { ...good, kinds: ['notice.info@0'] }],
+      ['kinds not an array', { ...good, kinds: 'notice.info@1' }],
+      ['a non-string kind', { ...good, kinds: [1] }],
+      ['rendererVersion of 33 code points', { ...good, rendererVersion: 'v'.repeat(33) }],
+      ['numeric rendererVersion', { ...good, rendererVersion: 2 }],
+      ['missing rendererVersion', { protocolVersion: 1, kinds: [] }],
+      ['a string', 'assist'],
+      ['null', null],
+      ['an array', [good]],
+    ])('drops %s to absent without failing the beat', (_label, promptHost) => {
+      expect(parsePromptHost(promptHost)).toBeUndefined();
+    });
+  });
+
   // Agents from #8618 W1 send a bounded `watchdogInstall` object; since W2
   // (#8620) the API ingests it. The wire field is z.unknown(), so a beat
   // carrying it — well-formed or not — is always accepted and the value is

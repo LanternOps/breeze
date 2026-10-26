@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 
@@ -236,6 +237,12 @@ export const heartbeatSchema = z.object({
   helperCapabilities: z.object({
     callerVerify: z.boolean(),
     usernames: z.array(z.string().min(1).max(255)).max(32),
+    // #10190 W02 — what the console session's renderer advertised at its live
+    // IPC auth (`kinds` may be [], a W02 renderer advertises none). The
+    // shared contract schema (non-strict, so a newer agent's additive key is
+    // stripped, not fatal). Telemetry only: a malformed block drops to
+    // absent on its own, never the readiness beside it or the beat.
+    promptHost: promptHostTelemetrySchema.optional().catch(undefined),
   }).optional().catch(undefined),
   // #8869 — Encrypted Client Hello telemetry. Both are informational counters
   // only (no DB column): a malformed value drops to absent, never a 400.
