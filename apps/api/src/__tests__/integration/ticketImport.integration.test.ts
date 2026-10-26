@@ -725,7 +725,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await getTestDb().select().from(tickets).where(inArray(tickets.orgId, [other.orgA.id, fx.orgA.id]))).toEqual([]);
   });
 
-  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze; a ref the merge moved is refused; nothing is written or charged', async () => {
+  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze, also when the merge moved its ref; a ref moved with no origin is refused; nothing is written or charged', async () => {
     const fx = await seed();
     const first = await openWindow(fx);
     const open = { assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
@@ -770,6 +770,9 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await refOf(a.sourceId)).toBe(ra.ticketId);
     expect(await refOf(c.sourceId)).toBe(live.id);
     expect(await refOf(e.sourceId)).toBe(rx.ticketId);
+    // E's ref stands for one moved before origin_ticket_id existed (#10120: no backfill).
+    await getTestDb().update(ticketExternalRefs).set({ originTicketId: null })
+      .where(and(eq(ticketExternalRefs.partnerServicePrincipalId, fx.principal.id), eq(ticketExternalRefs.externalId, e.sourceId)));
 
     const touched = [ra.ticketId, rb.ticketId, rc.ticketId, rd.ticketId, re.ticketId, live.id, rx.ticketId];
     const snapshot = async () => ({
@@ -788,10 +791,16 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: rb.ticketId },
       commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED,
     });
-    // A moved ref resolves to a ticket this principal did not import: refused,
-    // never resumed onto it (the known limit: on every pass).
-    await expect(importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id }))
-      .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket', ticketId: live.id } });
+    // A moved ref names its origin, this principal's tombstone C (#10120):
+    // the same answer as a ref still on the tombstone.
+    expect(await importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id })).toEqual({
+      ticketId: rc.ticketId,
+      outcome: 'skipped',
+      skip: { reason: 'merged_in_breeze', mergedIntoTicketId: live.id },
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED,
+    });
+    // A moved ref with no origin resolves to a ticket this principal did not
+    // import: refused, never resumed onto it (on every pass).
     await expect(importTicket(second.id, { ...e, comments: [...e.comments, article(10)] }, { partnerId: fx.partner.id }))
       .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'other_principal_ticket', ticketId: rx.ticketId } });
     expect(await snapshot()).toEqual(before);

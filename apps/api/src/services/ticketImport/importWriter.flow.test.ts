@@ -358,8 +358,41 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     expect(h.writes).toEqual([]);
   });
 
+  it('answers a ref the merge moved onto the survivor from its origin, this principal\'s tombstone (#10120)', async () => {
+    const ORIGIN = '77777777-7777-4777-8777-777777777777';
+    answer('ref', [{ ticketId: SURVIVOR, externalNumber: '#41023', externalUrl: null, originTicketId: ORIGIN }]);
+    // The survivor is a live ticket; the origin is this principal's import, merged into it.
+    answer('storedTicket',
+      [storedRow({ id: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })],
+      [storedRow({ id: ORIGIN, mergedIntoTicketId: SURVIVOR, status: 'closed' })]);
+
+    const result = await run(closedWithNotes);
+
+    expect(result).toMatchObject({
+      ticketId: ORIGIN, outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0,
+    });
+    expect(h.log).toEqual(['ref', 'storedTicket', 'storedTicket']);
+    expect(h.locks).toBe(0);
+    expect(h.charges).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
   it.each([
-    // The merge moved this import's ref onto a live survivor (the known limit: refused on every pass).
+    ["another principal's tombstone", [storedRow({ mergedIntoTicketId: SURVIVOR, windowPrincipalId: '45454545-4545-4545-8545-454545454545' })]],
+    ['a live tombstone', [storedRow({ mergedIntoTicketId: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })]],
+    ['a ticket the window cannot see', []],
+  ])('refuses a moved ref whose origin is %s', async (_label, originRows) => {
+    answer('ref', [{ ticketId: SURVIVOR, externalNumber: '#41023', externalUrl: null, originTicketId: TICKET }]);
+    answer('storedTicket', [storedRow({ id: SURVIVOR, migrationWindowId: null, windowPrincipalId: null })], originRows);
+    await expect(run(closedWithNotes)).rejects.toMatchObject({
+      code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket', ticketId: SURVIVOR },
+    });
+    expect(h.writes).toEqual([]);
+  });
+
+  it.each([
+    // The merge moved this import's ref onto a live survivor before origin_ticket_id existed (refused on every pass).
     ['a live ticket', { migrationWindowId: null, windowPrincipalId: null }, 'live_ticket'],
     // Checked before the tombstone: a never-imported live ticket that was later merged stays a conflict.
     ['a live tombstone', { migrationWindowId: null, windowPrincipalId: null, mergedIntoTicketId: SURVIVOR }, 'live_ticket'],
