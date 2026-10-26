@@ -4787,3 +4787,164 @@ describe('GET /approvals/pending?view=recent (#6022)', () => {
     expect(body.approvals).toHaveLength(2);
   });
 });
+
+// Tool catalog W04 (#5219) review finding 1: a supervised FLOW intent has no
+// requester (requestedByUserId NULL) and no agent run (requestingAgentRunId
+// NULL). Before the fix it fell through to the human `requestedByUserId ===
+// userId` rule and was invisible on every read surface, so nobody could ever
+// see — let alone decide — a flow approval.
+describe('W04 #5219: supervised flow intents are visible to their pool', () => {
+  const FLOW_RUN_ID = 'flow-run-1';
+
+  function buildFlowIntent(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'intent-fl-1',
+      orgId: 'org-9',
+      actionName: 'execute_command',
+      arguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      argumentDigest: 'digest-fl',
+      source: 'flow',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: null,
+      requestingAgentRunId: null,
+      requestingFlowRunId: FLOW_RUN_ID,
+      toolSourceToolId: null,
+      requestingClientLabel: 'Nightly cleanup',
+      scopeKind: null,
+      scopeDeviceId: null,
+      scopeTicketId: null,
+      ...overrides,
+    };
+  }
+
+  function buildFlowApproval(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'appr-fl-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Nightly cleanup',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'Kill process on dev-1',
+      actionToolName: 'execute_command',
+      actionArguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      riskTier: 'high',
+      riskSummary: 'Terminates a process on a managed device.',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: 'intent-fl-1',
+      boundArgumentDigest: 'digest-fl',
+      isRecursive: false,
+      createdAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  /** Every `db.select()` gets its own chain resolving the next queued result
+   *  (or `[]`), whatever builder methods the call site uses. */
+  function queueSelects(results: unknown[][]) {
+    const queue = [...results];
+    vi.mocked(db.select).mockImplementation((() => {
+      const result = queue.shift() ?? [];
+      const node: any = {};
+      for (const m of ['from', 'leftJoin', 'innerJoin', 'where', 'orderBy', 'limit']) {
+        node[m] = vi.fn(() => node);
+      }
+      node.then = (resolve: (v: unknown) => void, reject?: (e: unknown) => void) =>
+        Promise.resolve(result).then(resolve, reject);
+      return node;
+    }) as any);
+  }
+
+  it('GET /pending lists a supervised flow row for a pool member, via the pool authorizer', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
+    expect(body.approvals[0].approvalScope).toBe('supervised');
+    expect(vi.mocked(isAgentIntentDecideAuthorized)).toHaveBeenCalledWith(
+      TEST_USER.id,
+      expect.objectContaining({ id: 'intent-fl-1', requestingFlowRunId: FLOW_RUN_ID }),
+    );
+  });
+
+  it('GET /pending/count counts it', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+
+    const res = await buildApp().request('/approvals/pending/count');
+    expect(await res.json()).toEqual({ count: 1 });
+  });
+
+  it('hides it from a user outside the pool', async () => {
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+    const body = await (await buildApp().request('/approvals/pending')).json();
+    expect(body.approvals).toEqual([]);
+
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+    const count = await (await buildApp().request('/approvals/pending/count')).json();
+    expect(count).toEqual({ count: 0 });
+  });
+
+  it('GET /:id returns it to a pool member and 404s for a non-member', async () => {
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()]]);
+    const res = await buildApp().request('/approvals/appr-fl-1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.id).toBe('appr-fl-1');
+    expect(body.approval.approvalScope).toBe('supervised');
+
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()]]);
+    const denied = await buildApp().request('/approvals/appr-fl-1');
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).not.toContain('kill_process');
+  });
+
+  it('POST /:id/assertion-challenge mints for a pool member and 404s for a non-member', async () => {
+    // approval row, intent, webauthn devices, mobile devices
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()], [], []]);
+    const res = await buildApp().request('/approvals/appr-fl-1/assertion-challenge', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(generateApprovalAssertionOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'appr-fl-1', userId: TEST_USER.id }),
+    );
+
+    vi.mocked(generateApprovalAssertionOptions).mockClear();
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()], [], []]);
+    const denied = await buildApp().request('/approvals/appr-fl-1/assertion-challenge', { method: 'POST' });
+    expect(denied.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+
+  it('a four_eyes flow intent uses the org approvals:decide rule, not the pool', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent({ approvalScope: 'four_eyes' }) }]]);
+    const body = await (await buildApp().request('/approvals/pending')).json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
+    expect(vi.mocked(isAgentIntentDecideAuthorized)).not.toHaveBeenCalled();
+
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent({ approvalScope: 'four_eyes', id: 'intent-fl-2' }) }]]);
+    const hidden = await (await buildApp().request('/approvals/pending')).json();
+    expect(hidden.approvals).toEqual([]);
+  });
+
+  it('the Recent view shows a terminal supervised flow row to a pool member', async () => {
+    queueSelects([[
+      {
+        approval: buildFlowApproval({ status: 'approved', decidedAt: new Date() }),
+        intent: buildFlowIntent({ status: 'completed', errorCode: null, result: null, executedAt: new Date() }),
+      },
+    ]]);
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
+  });
+});

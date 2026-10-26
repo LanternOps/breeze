@@ -28,6 +28,11 @@ vi.mock('../../db', async () => {
   };
 });
 
+// Tool catalog W04 (#5219): the terminal-wake fan-in. Mocked at the module
+// boundary; its own after-commit semantics are pinned by flows/wake.test.ts.
+const { scheduleFlowRunWakeMock } = vi.hoisted(() => ({ scheduleFlowRunWakeMock: vi.fn() }));
+vi.mock('../flows/wake', () => ({ scheduleFlowRunWake: scheduleFlowRunWakeMock }));
+
 vi.mock('../../db/schema/aiOperatorTasks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../db/schema/aiOperatorTasks')>();
   return { ...actual };
@@ -84,7 +89,7 @@ describe('publishIntentTerminalOutbox', () => {
   it('always writes an intent_outbox row with an ids-only payload', async () => {
     await publishIntentTerminalOutbox(
       { insert: insertMock } as never,
-      { id: 'intent-1', orgId: 'org-1', taskId: null },
+      { id: 'intent-1', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_completed',
     );
 
@@ -98,7 +103,7 @@ describe('publishIntentTerminalOutbox', () => {
   it('does NOT enqueue a task_outbox row for a legacy (non-task-linked) intent', async () => {
     await publishIntentTerminalOutbox(
       { insert: insertMock } as never,
-      { id: 'intent-1', orgId: 'org-1', taskId: null },
+      { id: 'intent-1', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
 
@@ -108,7 +113,7 @@ describe('publishIntentTerminalOutbox', () => {
   it('enqueues a task_outbox row for a task-linked intent, with the terminal-status ordinal as transitionSeq', async () => {
     await publishIntentTerminalOutbox(
       { insert: insertMock } as never,
-      { id: 'intent-1', orgId: 'org-1', taskId: 'task-1' },
+      { id: 'intent-1', orgId: 'org-1', taskId: 'task-1', requestingFlowRunId: null },
       'intent_completed',
     );
 
@@ -119,6 +124,27 @@ describe('publishIntentTerminalOutbox', () => {
       sourceId: 'intent-1',
       transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_completed,
     });
+  });
+
+  it('wakes the flow run of a flow-origin intent, once, alongside the intent_outbox row', async () => {
+    const runId = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+    await publishIntentTerminalOutbox(
+      { insert: insertMock } as never,
+      { id: 'intent-1', orgId: 'org-1', taskId: null, requestingFlowRunId: runId },
+      'intent_cancelled',
+    );
+    expect(intentOutboxValuesMock).toHaveBeenCalledTimes(1);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledTimes(1);
+    expect(scheduleFlowRunWakeMock).toHaveBeenCalledWith(runId);
+  });
+
+  it('wakes nothing for a non-flow intent', async () => {
+    await publishIntentTerminalOutbox(
+      { insert: insertMock } as never,
+      { id: 'intent-1', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
+      'intent_completed',
+    );
+    expect(scheduleFlowRunWakeMock).not.toHaveBeenCalled();
   });
 
   it('gives every terminal event a DISTINCT transitionSeq ordinal', () => {

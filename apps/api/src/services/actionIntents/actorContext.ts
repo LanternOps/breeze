@@ -149,12 +149,27 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId/
+  // requestingFlowRunId is set.
   // An agent-originated intent reconstructs the RUN's agent identity (wave
   // 3b): structural, never a user token — checkToolPermission keeps denying
   // the resulting principal, and release authority is checkAgentReleaseAuthority.
   if (intent.requestingAgentRunId) {
     return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
+  }
+  // Tool catalog W04 (#5219): a flow-originated intent (requestingFlowRunId,
+  // the fourth actor root) rebuilds the RUN's flow principal — structural,
+  // never a user token (checkToolPermission keeps denying it). Any refusal
+  // (run gone, run in an org the flow does not own) is `null` ⇒ actor_invalid.
+  // Dynamic import: keeps this module a light leaf (see the MCP branch above).
+  if (intent.requestingFlowRunId) {
+    const { checkFlowReleaseAuthority } = await import('../flows/releaseAuthority');
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      console.error(`[actorContext] intent ${intent.id} flow release authority refused (${authority.code}) — failing closed`);
+      return null;
+    }
+    return authority.auth;
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -198,6 +213,14 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
             agentId: intent.originPrincipalId,
             runId: intent.requestingAgentRunId,
           }
+        : { kind: 'unknown' };
+    case 'flow':
+      // Tool catalog W04 (#5219): the stored origin of a parked Tier-3 flow
+      // step. flowId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — a flow intent without them is
+      // corruption and stays untrusted (`unknown`).
+      return intent.requestingFlowRunId && intent.originPrincipalId
+        ? { kind: 'flow', flowId: intent.originPrincipalId, runId: intent.requestingFlowRunId }
         : { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,

@@ -20,55 +20,31 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { flows } from '../../db/schema';
-import { pgErrorCode } from '../../utils/pgErrors';
-import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { flows, flowVersions } from '../../db/schema';
+import {
+  assignUserToOrganization,
+  assignUserToPartner,
+  createDevice,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+} from './db-utils';
 import { getFlow, listFlows, saveDraftFlow } from '../../services/flows/service';
+import { disableFlow, enableFlow } from '../../services/flows/versions';
 import { validateFlowDocument } from '../../services/flowValidator';
 import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS } from '../../services/orgMergeCustomExecutors';
-import type { AuthContext } from '../../middleware/auth';
-
-const SYSTEM_CTX: DbAccessContext = {
-  scope: 'system',
-  orgId: null,
-  accessibleOrgIds: null,
-  accessiblePartnerIds: null,
-  userId: null,
-};
-
-function partnerContext(partnerId: string, orgIds: string[], userId: string | null = null): DbAccessContext {
-  return { scope: 'partner', orgId: null, accessibleOrgIds: orgIds, accessiblePartnerIds: [partnerId], userId, currentPartnerId: partnerId };
-}
-
-/** Org sessions carry their partner id (the SELECT branch keys on it) but never pass breeze_has_partner_access. */
-function orgContext(orgId: string, partnerId: string, userId: string | null = null): DbAccessContext {
-  return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId, currentPartnerId: partnerId };
-}
-
-function orgAuth(orgId: string, partnerId: string, userId: string): AuthContext {
-  return {
-    scope: 'organization', orgId, partnerId, partnerOrgAccess: null, accessibleOrgIds: [orgId],
-    canAccessOrg: (id: string) => id === orgId, user: { id: userId, email: 'flows-it@example.com' },
-  } as unknown as AuthContext;
-}
-
-function partnerAuth(partnerId: string, orgIds: string[], userId: string): AuthContext {
-  return {
-    scope: 'partner', orgId: null, partnerId, partnerOrgAccess: 'all', accessibleOrgIds: orgIds,
-    canAccessOrg: (id: string) => orgIds.includes(id), user: { id: userId, email: 'flows-it@example.com' },
-  } as unknown as AuthContext;
-}
-
-async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<void> {
-  let raised: unknown;
-  try {
-    await fn();
-  } catch (err) {
-    raised = err;
-  }
-  expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
-  expect(pgErrorCode(raised)).toBe(code);
-}
+import {
+  expectSqlState,
+  interactiveOrgAuth,
+  interactivePartnerAuth,
+  orgAuth,
+  orgContext,
+  partnerAuth,
+  partnerContext,
+  SYSTEM_CTX,
+} from './helpers/flowRls';
 
 const DEFINITION = { version: 1, name: 'Seeded', trigger: { type: 'manual' }, inputs: [], steps: [{ id: 'a', tool: 'wait', input: { minutes: 1 } }] };
 const created: string[] = [];
@@ -443,5 +419,87 @@ describe('org merge flows executor against real Postgres (review follow-up)', ()
       if (!(err instanceof Rollback)) throw err;
     }
     expect(asserted).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool Catalog W04 (#5219), plan Task A12: the enable path. enableFlow writes
+// the flows flip and the flow_versions publication in the CALLER's context,
+// so RLS (a FOR UPDATE read matches only rows the caller may UPDATE) is part
+// of its authorization.
+// ---------------------------------------------------------------------------
+
+const publicationsOf = (flowId: string) =>
+  withDbAccessContext(SYSTEM_CTX, () =>
+    db.select().from(flowVersions).where(eq(flowVersions.flowId, flowId)).orderBy(flowVersions.publicationSeq));
+
+describe('enableFlow against a real database (W04 #5219)', () => {
+  it('an all-orgs partner user publishes a partner-wide flow: partner-owned publication, delegator named', async () => {
+    const p = await createPartner();
+    const org = await createOrganization({ partnerId: p.id });
+    const role = await createRole({ scope: 'partner', partnerId: p.id });
+    const user = await createUser({ partnerId: p.id, email: `pw-enabler-${randomUUID()}@flows.test` });
+    await assignUserToPartner(user.id, p.id, role.id, 'all');
+    const id = await seedFlow({ partnerId: p.id }, 'pw_enable');
+
+    const r = await withDbAccessContext(partnerContext(p.id, [org.id], user.id), () =>
+      enableFlow(interactivePartnerAuth(p.id, [org.id], user), id, { expectedVersion: 1, preApprovedStepIds: [] }));
+    expect(r.ok).toBe(true);
+    const pubs = await publicationsOf(id);
+    expect(pubs).toHaveLength(1);
+    expect(pubs[0]).toMatchObject({ orgId: null, partnerId: p.id, publicationSeq: 1, definitionVersion: 1, enabledByUserId: user.id });
+    const [row] = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(flows).where(eq(flows.id, id)));
+    expect(row).toMatchObject({ status: 'enabled', enabledPublicationSeq: 1, enabledByUserId: user.id });
+  });
+
+  it("an org token enabling its partner's partner-wide flow gets flow_not_found and writes nothing", async () => {
+    const p = await createPartner();
+    const org = await createOrganization({ partnerId: p.id });
+    const role = await createRole({ scope: 'organization', orgId: org.id });
+    const user = await createUser({ partnerId: p.id, orgId: org.id, email: `org-enabler-${randomUUID()}@flows.test` });
+    await assignUserToOrganization(user.id, org.id, role.id);
+    const id = await seedFlow({ partnerId: p.id }, 'pw_org_enable');
+
+    const r = await withDbAccessContext(orgContext(org.id, p.id, user.id), () =>
+      enableFlow(interactiveOrgAuth(org.id, p.id, user), id, { expectedVersion: 1, preApprovedStepIds: [] }));
+    expect(r).toEqual({ ok: false, error: 'flow_not_found' });
+    expect(await publicationsOf(id)).toHaveLength(0);
+    const [row] = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(flows).where(eq(flows.id, id)));
+    expect(row!.status).toBe('draft');
+  });
+
+  it('a selected-access partner user can read the partner-wide flow but is partner_wide_forbidden', async () => {
+    const p = await createPartner();
+    const org = await createOrganization({ partnerId: p.id });
+    const role = await createRole({ scope: 'partner', partnerId: p.id });
+    const user = await createUser({ partnerId: p.id, email: `selected-${randomUUID()}@flows.test` });
+    await assignUserToPartner(user.id, p.id, role.id, 'selected');
+    const id = await seedFlow({ partnerId: p.id }, 'pw_selected');
+
+    const r = await withDbAccessContext(partnerContext(p.id, [org.id], user.id), () =>
+      enableFlow(interactivePartnerAuth(p.id, [org.id], user, 'selected'), id, { expectedVersion: 1, preApprovedStepIds: [] }));
+    expect(r).toEqual({ ok: false, error: 'partner_wide_forbidden' });
+    expect(await publicationsOf(id)).toHaveLength(0);
+  });
+
+  it('disable then re-enable of unchanged content publishes a NEW row (seq 2); both stay as history', async () => {
+    const p = await createPartner();
+    const org = await createOrganization({ partnerId: p.id });
+    const role = await createRole({ scope: 'organization', orgId: org.id });
+    const user = await createUser({ partnerId: p.id, orgId: org.id, email: `reenable-${randomUUID()}@flows.test` });
+    await assignUserToOrganization(user.id, org.id, role.id);
+    const id = await seedFlow({ orgId: org.id }, 'reenable');
+    const ctx = orgContext(org.id, p.id, user.id);
+    const auth = interactiveOrgAuth(org.id, p.id, user);
+    const req = { expectedVersion: 1, preApprovedStepIds: [] };
+
+    expect((await withDbAccessContext(ctx, () => enableFlow(auth, id, req))).ok).toBe(true);
+    expect(await withDbAccessContext(ctx, () => enableFlow(auth, id, req))).toEqual({ ok: false, error: 'already_enabled' });
+    expect((await withDbAccessContext(ctx, () => disableFlow(auth, id))).ok).toBe(true);
+    const again = await withDbAccessContext(ctx, () => enableFlow(auth, id, req));
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.publication.publicationSeq).toBe(2);
+    const pubs = await publicationsOf(id);
+    expect(pubs.map((v) => [v.publicationSeq, v.orgId, v.definitionVersion])).toEqual([[1, org.id, 1], [2, org.id, 1]]);
   });
 });

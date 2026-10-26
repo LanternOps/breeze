@@ -3,6 +3,7 @@
 exports[`agentToolCatalog contract > pins the unreachable set so a reachability change is a deliberate edit (#3300) 1`] = `
 [
   "apply_topology_template",
+  "cancel_flow_run",
   "confirm_memory",
   "diagnostic_list_directory",
   "diagnostic_read_file",
@@ -27,6 +28,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "retract_memory",
   "revoke_diagnostic_access",
   "run_topology_diagnostic",
+  "run_flow",
   "search_c2c_items",
   "send_endpoint_message",
   "wisp_specialist_request",

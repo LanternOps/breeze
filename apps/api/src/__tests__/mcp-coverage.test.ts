@@ -138,4 +138,9 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
     expect((MCP_COVERAGE['discovery.ts'] as { tools: string[] }).tools).toEqual(expect.arrayContaining(['list_network_assets', 'get_network_asset', 'network_discovery']));
     expect(aiTools.size).toBeGreaterThan(150);
   });
+  it('the W04 flow tools cover the flows route module', () => {
+    expect((MCP_COVERAGE['flows.ts'] as { tools: string[] }).tools).toEqual(
+      expect.arrayContaining(['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']),
+    );
+  });
 });

@@ -36,6 +36,7 @@ import { canonicalizeArguments } from '@breeze/shared/canonicalize';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { actionIntents, aiSessions, approvalRequests, devices } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { isFreshApproverFactor } from '../actionIntents/freshApproverFactor';
 import { deviceExecuteAllowedForOrg } from '../partnerTrust.commands';
 import { getUserPermissions } from '../permissions';
@@ -317,7 +318,7 @@ export async function runApprovedTopologyDiagnostic(
     const run = await createVerifiedTopologyDiagnosticRun(ctx, {
       request,
       authorize: async (current) => {
-        if (current.auth.principal?.kind === 'ai_agent') throw new TopologyOperationError('human_approval_required', 403);
+        if (isAutomationPrincipal(current.auth)) throw new TopologyOperationError('human_approval_required', 403);
         // Served from the preconditions the release worker resolved before
         // this transaction opened (review R1); never a second connection here.
         const { flags, readiness } = await loadTopologyAiFlagsAndReadiness(current);

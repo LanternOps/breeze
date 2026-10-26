@@ -2512,6 +2512,28 @@ describe('ai.command.executed (#5022 W01)', () => {
     );
   });
 
+  // Tool catalog W04 (#5219), Decision 16: a flow-origin command is audited as
+  // system automation carrying its run — never as the flow's synthetic user id
+  // with actorType 'user', and never as an AI decision.
+  it('audits a flow origin as system automation with its run id', async () => {
+    mockQueueCommandDb();
+
+    await queueCommand('dev-1', 'get_processes', {}, 'flow-1', {
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ai.command.executed',
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        initiatedBy: 'automation',
+        details: expect.objectContaining({ aiInitiatorKind: 'flow', flowRunId: 'flow-run-1' }),
+      }),
+    );
+  });
+
   it('writes no ai.command.executed row when there is no AI origin', async () => {
     mockQueueCommandDb();
 

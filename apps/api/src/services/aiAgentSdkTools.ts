@@ -370,6 +370,12 @@ export const TOOL_TIERS = {
   validate_flow: 1,
   get_flow: 1,
   list_flows: 1,
+  // Tool Catalog W04 (#5219, Decision 11): run_flow takes the upper bound
+  // (Tier 3, supervised) until W05 resolves a per-flow tier.
+  run_flow: 3,
+  list_flow_runs: 1,
+  get_flow_run: 1,
+  cancel_flow_run: 2,
   // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
   list_business_calendars: 1,
   // #8883 W5: ticket routing rules. Reads Tier 1; the manage tool is Tier 3 (supervised).
@@ -1546,6 +1552,10 @@ export function flowToolDefinitions(
     tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow', getAuth, onPreToolUse, onPostToolUse)),
     tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow', getAuth, onPreToolUse, onPostToolUse)),
     tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows', getAuth, onPreToolUse, onPostToolUse)),
+    tool('run_flow', registryDescription('run_flow'), inputShape('run_flow'), makeHandler('run_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_flow_runs', registryDescription('list_flow_runs'), inputShape('list_flow_runs'), makeHandler('list_flow_runs', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_flow_run', registryDescription('get_flow_run'), inputShape('get_flow_run'), makeHandler('get_flow_run', getAuth, onPreToolUse, onPostToolUse)),
+    tool('cancel_flow_run', registryDescription('cancel_flow_run'), inputShape('cancel_flow_run'), makeHandler('cancel_flow_run', getAuth, onPreToolUse, onPostToolUse)),
   ];
 }
 

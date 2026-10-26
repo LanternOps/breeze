@@ -917,6 +917,43 @@ describe('originPrincipalFor — ai_agent', () => {
   });
 });
 
+// Tool catalog W04 (#5219), plan Task A5: a flow-origin intent rebuilds the
+// RUN's flow principal (flowId = originPrincipalId, runId = the FK column).
+const { flowAuthority } = vi.hoisted(() => ({ flowAuthority: vi.fn() }));
+vi.mock('../flows/releaseAuthority', () => ({ checkFlowReleaseAuthority: flowAuthority }));
+
+describe('flow-origin intents (#5219)', () => {
+  const flowIntent = (over: Partial<ActionIntent> = {}) => baseIntent({
+    requestedByUserId: null,
+    requestingFlowRunId: 'run-f',
+    originPrincipalKind: 'flow',
+    originPrincipalId: 'flow-1',
+    source: 'flow',
+    ...over,
+  } as Partial<ActionIntent>);
+
+  it('originPrincipalFor maps a flow intent to { kind: flow, flowId, runId }', () => {
+    expect(originPrincipalFor(flowIntent())).toEqual({ kind: 'flow', flowId: 'flow-1', runId: 'run-f' });
+  });
+
+  it('originPrincipalFor falls to unknown when the run or flow id is missing', () => {
+    expect(originPrincipalFor(flowIntent({ requestingFlowRunId: null }))).toEqual({ kind: 'unknown' });
+    expect(originPrincipalFor(flowIntent({ originPrincipalId: null }))).toEqual({ kind: 'unknown' });
+  });
+
+  it('buildAuthContextForIntent rebuilds through checkFlowReleaseAuthority', async () => {
+    const auth = { principal: { kind: 'flow', flowId: 'flow-1', runId: 'run-f' } };
+    flowAuthority.mockResolvedValueOnce({ ok: true, auth });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBe(auth);
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('buildAuthContextForIntent fails closed (null) on a refused flow rebuild', async () => {
+    flowAuthority.mockResolvedValueOnce({ ok: false, code: 'ownership_mismatch' });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBeNull();
+  });
+});
+
 // ============================================================================
 // #5022 W01 Task 12 — the AI origin survives the approval boundary.
 //

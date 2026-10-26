@@ -77,6 +77,14 @@ describe('captureContextFrom — run path attributes from the principal (reconci
   });
 });
 
+describe('captureContextFrom — flow principal (W04 #5219)', () => {
+  it('captures nothing for a flow run, even with a chat scope supplied: its run id is not an agent run', () => {
+    const flowAuth = { principal: { kind: 'flow', flowId: 'flow-1', runId: RUN }, orgId: ORG } as never;
+    expect(captureContextFrom(flowAuth, undefined, 't')).toBeNull();
+    expect(captureContextFrom(flowAuth, { capture: { orgId: ORG, sessionId: SESSION } }, 't')).toBeNull();
+  });
+});
+
 describe('captureContextFrom — chat path attributes from ExecuteToolOptions.capture', () => {
   it('anchors on the session, with the session org, when auth.orgId is null (partner-scope login)', () => {
     expect(captureContextFrom(partnerAuth, { capture: { orgId: ORG, sessionId: SESSION } }, 'get_event_logs'))

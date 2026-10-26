@@ -47,6 +47,10 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // Tool Catalog W03 (#5218, Decision 6): an operator agent authoring flows
   // needs the managed_by_agent_id story first, not a side door.
   'draft_flow',
+  // W04 (#5219): starting or cancelling a flow run is a human decision (run_flow
+  // is Tier 3 chat-only; a flow must not be started by an agent before W05).
+  'run_flow',
+  'cancel_flow_run',
   // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.

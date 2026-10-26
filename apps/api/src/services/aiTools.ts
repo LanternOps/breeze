@@ -737,10 +737,16 @@ export async function executeTool(
   // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
   // thread's attachments — the key is added ONLY when the capture scope
   // carries one, so every other anchor keeps its exact shape.
-  const writeAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const writeAnchor = toolName === 'read_artifact' || toolName === 'run_flow' ? captureContextFrom(auth, opts, toolName) : null;
   const wispThreadId = opts?.capture?.wispThreadId;
   const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+  // `run_flow` trusts the anchor's session id, so a caller-supplied anchor is
+  // dropped when the server computed none (no chat session => run_flow refuses).
+  if (toolName === 'run_flow' && !captureAnchor && handlerContext?.captureAnchor) {
+    const { captureAnchor: _dropped, ...rest } = handlerContext;
+    handlerContext = rest;
+  }
 
   // Topology M4-D1 (#6000): every topology tool runs only against the site a
   // server-owned context pins — the active topology session, or a one-site
