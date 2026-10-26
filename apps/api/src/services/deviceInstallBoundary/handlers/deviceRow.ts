@@ -57,6 +57,7 @@ export const deviceRowHandler: BoundaryHandler = {
   tables: ['devices'],
   async run(ctx) {
     const updated = await db
+      // own-device-row-allowlisted: install-boundary-advance-incarnation
       .update(devices)
       .set({
         installIncarnation: ctx.newIncarnation,

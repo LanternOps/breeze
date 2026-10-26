@@ -123,6 +123,8 @@ import {
   signAgentIdentityAssertion,
   type AgentIdentityAssertion,
 } from '../../services/agentIdentityAssertion';
+import { normalizeRebindProtocolVersion } from '../../services/deviceReattach/protocol';
+import { rebindDirectiveForBeat } from '../../services/deviceReattach/rebindDirective';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1168,6 +1170,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // agent that stops reporting it self-heals back to 0.
     workloadInventoryProtocolVersion: normalizeWorkloadInventoryProtocolVersion(
       data.securityCapabilities?.workloadInventoryProtocolVersion,
+    ),
+    // #8318 §6.2 — rebind capability, same non-sticky contract: a downgrade
+    // reports back down to 0, which also stops the `rebind` directive.
+    rebindProtocolVersion: normalizeRebindProtocolVersion(
+      data.securityCapabilities?.rebindProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
@@ -2537,6 +2544,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  // #8318 §6.2 — the signed `rebind` directive, while this device is the
+  // source of an open reattach intent. Only a device that declared the rebind
+  // capability on THIS beat is looked up (one indexed system read, outside
+  // the org transaction like the assertion above, #1105); every other beat
+  // costs nothing. Non-fatal: a missed directive is re-sent next beat.
+  const rebind = await rebindDirectiveForBeat({
+    deviceId: scoped.deviceId,
+    agentId: agent.agentId,
+    rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
+  });
+
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
     manifestTrustKeys = await getActiveTrustKeysetCached();
@@ -2997,6 +3015,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     helperSettings: settingsDecision.helperSettings,
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
+    ...(rebind ? { rebind } : {}),
     ...(settingsDecision.retainState ? { retainState: settingsDecision.retainState } : {}),
   });
 });

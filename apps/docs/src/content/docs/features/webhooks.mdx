@@ -80,6 +80,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `device.online` | A device has come online (heartbeat received) |
 | `device.offline` | A device has stopped sending heartbeats |
 | `device.updated` | Device metadata or configuration has changed |
+| `device.reinstalled` | A reinstalled machine was reattached to its existing device record: the record keeps its id, org, site and history, a new install takes it over, and the install incarnation advances. Payload: `deviceId`, `sourceDeviceId`, `orgId`, `sourceOrgId`, `siteId`, `installIncarnation`, `previousIncarnation`, `evidenceLevel`, `actorUserId`, `reattachmentId` |
 
 ### Alert Events
 

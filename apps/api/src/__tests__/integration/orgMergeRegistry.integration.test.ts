@@ -311,6 +311,7 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
   ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
+  contract_documents: 'signed agreements, append-only (2027-01-06-150000, #9075 W4b); column-level UPDATE (contract_id, org_id): the filing link and the merge re-point, all evidence immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
@@ -427,6 +428,14 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // WHERE org_id = <loser>` (buildRepoint, run under withSystemDbAccessContext
   // after the fence). Proven by aiInvocationsAppendOnly.integration.test.ts.
   'ai_invocations.ai_invocations_block_update': 'admits exactly the system-scope, same-partner org_id-only repoint away from a merging org; blocks everything else',
+  // Agreement signing W4b (#9075, 2027-01-06-150000): contract_documents is
+  // append-only, with the SAME org_id predicate as ai_invocations — an org_id
+  // change passes only in system scope, away from an org fenced 'merging', to
+  // an org of the same partner, which is the REPOINT_TABLES statement the
+  // merge runs after the fence. Proven by
+  // contractDocumentsAppendOnly.integration.test.ts and the merge-shape case in
+  // agreementRequestsRls.integration.test.ts.
+  'contract_documents.contract_documents_block_update': 'admits the system-scope, same-partner org_id-only repoint away from a merging org (plus contract_id and FK SET NULL); freezes all evidence',
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',

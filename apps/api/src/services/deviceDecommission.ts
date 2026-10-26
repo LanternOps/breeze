@@ -25,6 +25,7 @@ export async function decommissionDeviceInTransaction(
 ): Promise<{ updated: typeof devices.$inferSelect | undefined; uninstallQueued: boolean }> {
   const { deviceId } = input;
   const [updated] = await tx
+    // own-device-row-allowlisted: decommission-device
     .update(devices)
     .set({
       status: 'decommissioned',

@@ -57,6 +57,7 @@ import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
 import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
+import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -587,6 +588,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...alertTriageToolSchemas,
   // Full-control W08 (#6778): network topology tools.
   ...topologyOpsToolSchemas,
+  // Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
+  ...networkMonitoringToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

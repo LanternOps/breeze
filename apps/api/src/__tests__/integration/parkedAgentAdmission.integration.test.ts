@@ -12,8 +12,10 @@
  *   1. every agent-authenticated route in the live route table outside the
  *      parked allowlist refuses a parked device (403 device_pending_assignment),
  *      while the same routes do not refuse a device in a regular org;
- *   2. the heartbeat returns commands + credential rotation only, delivers a
- *      queued self_uninstall and nothing else, and records liveness;
+ *   2. the heartbeat returns commands + credential rotation only (plus, for
+ *      the main agent, the trust keyset and delegations it verifies a signed
+ *      reattach directive with, #8318 §6.2), delivers a queued self_uninstall
+ *      and nothing else, and records liveness;
  *   3. the command poll/ack pair is narrowed to self_uninstall;
  *   4. token rotation (mint + confirm) and certificate renewal still work;
  *   5. the agent WebSocket upgrade and the Helper token are refused.
@@ -200,7 +202,9 @@ describe('parked device — agent route admission (live route table)', () => {
     const denied = endpoints.filter((ep) => !isParkedAllowedAgentPath(ep.path.split('/').filter(Boolean), parked.agentId));
     // Floor so a broken enumeration cannot pass vacuously.
     expect(endpoints.length).toBeGreaterThanOrEqual(38);
-    expect(denied.length).toBe(endpoints.length - 6);
+    // Seven allowed: heartbeat, the command poll and result, rotate-token and
+    // its confirm, uninstall-intent, and the reattach phase 1 (#8318 §6.3).
+    expect(denied.length).toBe(endpoints.length - 7);
 
     const admitted: string[] = [];
     for (const ep of denied) {
@@ -237,7 +241,11 @@ describe('parked device — minimal heartbeat', () => {
     expect(res.status, await res.clone().text()).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
 
-    expect(Object.keys(body).sort()).toEqual(['commands', 'renewCert', 'rotateToken']);
+    // #8318 §6.2: the main agent's parked beat also carries the trust keyset
+    // and delegations (a parked device is the typical reattach source, and it
+    // verifies the signed `rebind` directive against them). No directive here:
+    // this device is the source of no reattach intent.
+    expect(Object.keys(body).sort()).toEqual(['commands', 'manifestKeyDelegations', 'manifestTrustKeys', 'renewCert', 'rotateToken']);
     expect(body.renewCert).toBe(true);
     expect(body.rotateToken).toBe(true);
     const delivered = body.commands as Array<{ id: string; type: string }>;

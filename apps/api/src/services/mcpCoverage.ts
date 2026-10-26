@@ -268,6 +268,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/patches.ts': { exempt: 'agent_transport' },
   'agents/peripherals.ts': { exempt: 'agent_transport' },
   'agents/processSample.ts': { exempt: 'agent_transport' },
+  'agents/rebind.ts': { exempt: 'agent_transport' },
   'agents/recoveryKeys.ts': { exempt: 'agent_transport' },
   'agents/reliability.ts': { exempt: 'agent_transport' },
   'agents/security.ts': { exempt: 'agent_transport' },
@@ -505,7 +506,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/workloads.ts': { tools: ['query_device_workloads'] },
   'discovery.ts': { tools: ['list_network_assets', 'get_network_asset', 'network_discovery', 'get_network_asset_reachability'] },
   'discoveryAssetPlacement.ts': { tools: ['get_network_asset'] },
-  'discoveryAssetProbe.ts': { gap: '#6779' },
+  'discoveryAssetProbe.ts': { tools: ['probe_network_asset'] }, // W09 (#6779): "Check now", tier 2, site-strict executor
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
   'docs.ts': { tools: ['search_documentation'] },
   'dr.ts': { tools: ['query_dr_plans', 'get_dr_plan_details', 'get_dr_execution_status', 'execute_dr_plan', 'manage_dr_plan'] },
@@ -557,11 +558,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'monitorDefinitions.conversion.ts': { exempt: 'human_only_migration', note: 'Legacy-to-monitor conversion (#6370): preview/convert/revert/retire are MFA- and governance-gated one-time migration actions a technician runs from the UI; the spec assigns them no AI tool.' },
   'monitorDefinitions.ts': { tools: ['list_monitors', 'get_monitor', 'get_monitor_activity', 'reset_monitor_escalation', 'manage_monitor_definitions'] },
   'monitoring.ts': { tools: ['query_monitors', 'get_service_monitoring_status'] },
-  'monitoringAssetMetrics.ts': { gap: '#6779' },
+  'monitoringAssetMetrics.ts': { tools: ['get_snmp_metrics'] }, // W09 (#6779): bucketed history (action history)
   'monitors.ts': { tools: ['query_monitors', 'manage_monitors'] },
   'networkBaselines.ts': { tools: ['configure_network_baseline'] },
   'networkChanges.ts': { tools: ['get_network_changes', 'acknowledge_network_device'] },
-  'networkKnownGuests.ts': { gap: '#6779' },
+  'networkKnownGuests.ts': { tools: ['manage_known_guests'] }, // W09 (#6779): partner-wide list / add / delete; agent-human-only
   'notifications.ts': { exempt: 'internal_plumbing', note: "The caller's own in-app bell; marginal value for an AI agent. From #6799." },
   'oauth.ts': { exempt: 'identity' },
   'oauthInteraction.ts': { exempt: 'identity' },
@@ -706,7 +707,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'sentinelOne.ts': { tools: ['get_s1_status', 'get_s1_threats', 's1_isolate_device', 's1_threat_action'] },
   'serviceDeliverables.ts': { tools: ['list_deliverables', 'manage_deliverables'] },
   'servicePrincipals.ts': { exempt: 'identity' },
-  'snmp.ts': { gap: '#6779' },
+  // W09 (#6779): templates CRUD, OID browse / validate and the dashboard. The device, per-device metric and threshold routes are
+  // 410 deprecation stubs (no tool mirrors a closed door); on-demand poll / test do not exist in the API.
+  'snmp.ts': { tools: ['manage_snmp_templates', 'get_snmp_metrics'] },
   'software.ts': { gap: '#6782' },
   'softwareBuiltinPackages.ts': { exempt: 'human_only_provisioning', note: 'Provisions Breeze-pinned DNS client packages (scripts run as SYSTEM/root); MFA + devices.execute + partner-wide-manage (#6958 D2).' },
   'softwareInstallMethods.ts': { gap: '#6782' },
@@ -815,6 +818,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnels.ts': { exempt: 'internal_plumbing' },
+  // PARTIAL (W09, #6779): the reads and the manual sync are tools (get_unifi_status, trigger_unifi_sync). connect / connect-self-hosted /
+  // test / disconnect / mappings / collectors / controllers writes stay unbuilt (vendor_console_admin: they take or replace a vendor API key),
+  // so the module stays a frozen gap; the entry cannot carry both a tool list and a remainder.
   'unifi/index.ts': { gap: '#6779' },
   'updateRings.ts': { tools: ['manage_update_rings'] },
   'userRisk.ts': { tools: ['get_fleet_health', 'get_user_risk_scores', 'get_user_risk_detail', 'assign_security_training'] },

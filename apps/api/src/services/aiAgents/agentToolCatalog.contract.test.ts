@@ -363,3 +363,26 @@ describe('W08 network topology in the agent catalog (#6778)', () => {
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
   });
 });
+
+/** Spec 2026-09-23 W09 (#6779, W09-D2): the SNMP and probe tools run on the caller's org / site scope, so an agent can use
+ * them; known guests and both UniFi tools are partner-wide (canManagePartnerWidePolicies), which an agent context never
+ * carries, so they keep a capability row but are never offered to an agent. */
+describe('W09 SNMP and network monitoring in the agent catalog (#6779)', () => {
+  it.each([
+    'manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset',
+    'manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync',
+  ])('%s is mapped to the network capability', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('network');
+  });
+
+  it.each(['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset'])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['manage_known_guests', 'get_unifi_status', 'trigger_unifi_sync'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
