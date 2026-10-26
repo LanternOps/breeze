@@ -77,7 +77,7 @@ const namespaceDuplicateBaselines = {
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
     // +1 #5288: nav.jobs — "Jobs" is the same loanword in pt-BR.
-    'common.json': 106, // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
+    'common.json': 108, // +2 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names); // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // (Datto RMM / NinjaOne / ConnectWise Automate / N-central — proper
     // product names, never translated) and dateFormat.iso's "ISO
@@ -261,7 +261,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is the same word in Spanish.
     // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
     // in Spanish.
-    'common.json': 90, // +2 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
+    'common.json': 92, // +2 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names); // +2 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
     // +5 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
@@ -440,7 +440,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 110, // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
+    'common.json': 114, // +4 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names), nav.agents "Agents" + nav.impact "Impact" (same words in French); // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -649,7 +649,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 112, // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
+    'common.json': 116, // +4 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names), nav.agents "Agents" + nav.impact "Impact" (same words in French); // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -870,7 +870,7 @@ const namespaceDuplicateBaselines = {
     // rendered is a control that says which account a script runs under.
     // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
     // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
-    'common.json': 114, // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +2 #9663: incidents.actors.brain "Breeze AI" (proper noun) + actors.system "System"; // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
+    'common.json': 116, // +2 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names); // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +2 #9663: incidents.actors.brain "Breeze AI" (proper noun) + actors.system "System"; // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
     // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -1052,7 +1052,7 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
     // standard loanword in this locale, already used by the running-timer
     // widget's own copy.
-    'common.json': 110, // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
+    'common.json': 112, // +2 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names); // +3 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
     // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
     // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
     'deliverables.json': 3,
@@ -1197,7 +1197,7 @@ const namespaceDuplicateBaselines = {
     'callerVerificationTech.json': 0,
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,
-    'common.json': 51, // +2 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
+    'common.json': 53, // +2 W04 #10135: nav.breezeAi "Breeze AI" + nav.aiForOffice "Breeze AI for Office" (protected product names); // +2 W01 #10132: "Breeze AI" brand name (header, aiInitiator, onboarding step title); // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder

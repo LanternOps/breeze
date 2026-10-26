@@ -79,6 +79,10 @@
         "categoryLabel": "Categoría",
         "categoryUnresolved": "Sugerido — nombre no disponible en esta vista"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Memoria de correcciones",
+      "fleetDesignReport": "Diseño de flota"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Revisa los parches faltantes y propone qué instalar.",
       "helpdesk": "Toma tickets y propone respuestas y próximos pasos.",
       "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
-      "research": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada."
+      "research": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada.",
+      "researchLink": "Abrir memoria de correcciones",
+      "designerLink": "Abrir diseño de flota"
     },
     "emptyState": {
       "title": "Aún no hay agentes",

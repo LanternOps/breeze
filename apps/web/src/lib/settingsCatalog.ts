@@ -1,6 +1,7 @@
 import {
   BadgeCheck,
   Bell,
+  BookOpen,
   Bot,
   Braces,
   Building,
@@ -32,7 +33,8 @@ import type { NavGate } from './navGates';
 /**
  * The complete catalogue of settings screens (#6220). Single source of truth for
  * BOTH the /settings index page and the sidebar's Settings group: the sidebar
- * shows the `SIDEBAR_SETTINGS_IDS` subset, /settings shows everything. Gates
+ * shows the `SIDEBAR_SETTINGS_IDS` subset, /settings shows everything except
+ * `sidebarOnly` hubs, and a hub page (/settings/ai) shows one group. Gates
  * live here once and are evaluated by `isNavGateVisible` in both places, so the
  * two surfaces can never disagree (settings rule 8: every screen is in the nav,
  * at one URL). Navigation only — no setting changes home.
@@ -60,6 +62,12 @@ export interface SettingsCatalogEntry extends NavGate {
   href: string;
   icon: LucideIcon;
   group: SettingsGroup;
+  /**
+   * A group hub (e.g. Settings → AI), not a settings screen: shown only in the
+   * sidebar Settings group, never as a card on /settings or a hub, and never as
+   * a palette search hit.
+   */
+  sidebarOnly?: boolean;
 }
 
 const card = (id: string, field: 'title' | 'description') => `pages:settingsIndex.cards.${id}.${field}`;
@@ -102,12 +110,20 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'alert-templates', name: 'Alert templates', labelKey: card('alertTemplates', 'title'), href: '/settings/alert-templates', icon: Bell, group: 'data', requiredPermission: { resource: 'alerts', action: 'read' } },
 
   // AI
+  // W04 (#10135): the Settings → AI hub (/settings/ai renders this group). The
+  // sidebar links it; its cards are the entries below. No permission of its
+  // own: the sidebar shows the link while any of those cards passes its gates
+  // (Sidebar isNavItemVisible), so every role that could open one reaches it.
+  { id: 'ai', name: 'AI', labelKey: 'nav.sectionAi', href: '/settings/ai', icon: BrainCircuit, group: 'ai', sidebarOnly: true },
   { id: 'ai-agents', name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
   { id: 'ai-usage', name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, group: 'ai', partnerScopeOnly: true },
   { id: 'ai-models', name: 'AI Providers & Models', labelKey: 'nav.aiProvidersModels', href: '/settings/partner#ai-provider', icon: Cpu, group: 'ai', partnerScopeOnly: true, requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'ai-script-authoring', name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
   { id: 'wisp-memory', name: 'Wisp memory', labelKey: card('wispMemory', 'title'), descriptionKey: card('wispMemory', 'description'), href: '/settings/wisp-memory', icon: BrainCircuit, group: 'ai', requiresWisp: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
   { id: 'tool-sources', name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, group: 'ai', requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
+  // The workspace extension's sources page (ee/workspace); listed only when the
+  // extension is loaded for this user.
+  { id: 'knowledge-sources', name: 'Knowledge sources', labelKey: 'nav.aiKnowledgeSources', href: '/extensions/workspace/sources', icon: BookOpen, group: 'ai', requiresExtension: 'workspace' },
 
   // Integrations
   { id: 'integrations', name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug, group: 'integrations' },
@@ -117,9 +133,10 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
 /**
  * The daily-use subset shown in the sidebar Settings group, in display order.
- * Everything else is reached through the "More settings" entry → /settings.
+ * Everything else is reached through the "More settings" entry → /settings
+ * (or, for the AI group, the Settings → AI hub).
  */
-export const SIDEBAR_SETTINGS_IDS = ['partner', 'billing', 'ticketing', 'users', 'integrations'] as const;
+export const SIDEBAR_SETTINGS_IDS = ['partner', 'billing', 'ticketing', 'users', 'integrations', 'ai'] as const;
 
 export function sidebarSettingsEntries(): SettingsCatalogEntry[] {
   return SIDEBAR_SETTINGS_IDS.map((id) => {

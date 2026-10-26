@@ -79,6 +79,10 @@
         "categoryLabel": "Categoria",
         "categoryUnresolved": "Sugerida — nome não disponível nesta visualização"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Memória de correções",
+      "fleetDesignReport": "Design de frota"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
       "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
-      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada."
+      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+      "researchLink": "Abrir memória de correções",
+      "designerLink": "Abrir design de frota"
     },
     "emptyState": {
       "title": "Nenhum agente ainda",

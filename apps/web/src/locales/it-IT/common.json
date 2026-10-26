@@ -27,7 +27,7 @@
     "patches": "Patch",
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI per Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Rete",
     "jobs": "Attività",
     "flows": "Flussi",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Creazione di script",
     "toolSources": "Fonti degli strumenti",
     "aiAgents": "Agenti AI",
-    "aiAgentRuns": "Esecuzioni agenti IA",
-    "aiImpact": "Impatto IA",
-    "fixMemory": "Memoria delle correzioni",
-    "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
     "moreSettings": "Altre impostazioni",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Gestione flotta",
     "sectionBilling": "Fatturazione",
     "sectionAdministration": "Amministrazione",
-    "fleetOrchestration": "Orchestrazione flotta",
     "software": "Software",
     "softwareInventory": "Inventario software",
     "softwarePolicies": "Criteri software",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Modifiche",
     "endpointMessages": "Messaggi",
     "securityDetectionRules": "Regole di rilevamento",
-    "planAndFeatures": "Piano e funzionalità"
+    "planAndFeatures": "Piano e funzionalità",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Lavoratori",
+    "agents": "Agenti",
+    "runs": "Esecuzioni",
+    "aiTasks": "Attività IA",
+    "findings": "Rilevazioni",
+    "impact": "Impatto",
+    "aiKnowledgeSources": "Fonti di conoscenza",
+    "wispLockedServer": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -807,7 +811,11 @@
         "alertRules": "Regole di avviso",
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
-        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda",
+        "askBreezeAi": "Chiedi a Breeze AI",
+        "askBreezeAiDescription": "Apri il pannello laterale di Breeze AI",
+        "wispHome": "Apri Wisp",
+        "wispHomeDescription": "Vai alla tua home di Wisp"
       },
       "numberHint": "{{mod}}1–9 per aprire"
     },
@@ -1997,8 +2005,8 @@
         "errors": {
           "loadFailed": "Impossibile caricare le statistiche della flotta"
         },
-        "title": "Orchestrazione della flotta",
-        "description": "Gestisci policy, distribuzioni, patch e automazioni nel tuo parco dispositivi",
+        "title": "Rilevazioni",
+        "description": "Schemi tra dispositivi individuati dai lavoratori: un’unica azione invece di molte",
         "partialWarning": "Alcuni dati potrebbero essere incompleti. Impossibile caricare: {{endpoints}}",
         "cards": {
           "policies": "Policy",

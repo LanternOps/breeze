@@ -27,7 +27,7 @@
     "patches": "Parches",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI para Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Red",
     "jobs": "Trabajos",
     "flows": "Flujos",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Creación de scripts",
     "toolSources": "Fuentes de herramientas",
     "aiAgents": "Agentes de IA",
-    "aiAgentRuns": "Ejecuciones de agentes de IA",
-    "aiImpact": "Impacto de IA",
-    "fixMemory": "Memoria de correcciones",
-    "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "moreSettings": "Más configuraciones",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Gestión de flota",
     "sectionBilling": "Facturación",
     "sectionAdministration": "Administración",
-    "fleetOrchestration": "Orquestación de flota",
     "software": "Software",
     "softwareInventory": "Inventario de software",
     "softwarePolicies": "Políticas de software",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Cambios",
     "endpointMessages": "Mensajes",
     "securityDetectionRules": "Reglas de detección",
-    "planAndFeatures": "Plan y funciones"
+    "planAndFeatures": "Plan y funciones",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Trabajadores",
+    "agents": "Agentes",
+    "runs": "Ejecuciones",
+    "aiTasks": "Tareas de IA",
+    "findings": "Hallazgos",
+    "impact": "Impacto",
+    "aiKnowledgeSources": "Fuentes de conocimiento",
+    "wispLockedServer": "Wisp se ejecuta en Breeze Cloud. No está disponible en este servidor."
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -807,7 +811,11 @@
         "alertRules": "Reglas de alerta",
         "alertRulesDescription": "Administrar alertas en Políticas de configuración",
         "keyboardShortcuts": "Atajos de teclado",
-        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta"
+        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta",
+        "askBreezeAi": "Preguntar a Breeze AI",
+        "askBreezeAiDescription": "Abre el panel lateral de Breeze AI",
+        "wispHome": "Abrir Wisp",
+        "wispHomeDescription": "Ir a tu inicio de Wisp"
       },
       "numberHint": "{{mod}}1–9 para abrir"
     },
@@ -1997,8 +2005,8 @@
         "errors": {
           "loadFailed": "No se pudieron cargar las estadísticas de la flota"
         },
-        "title": "Orquestación de flotas",
-        "description": "Administre políticas, implementaciones, parches y automatizaciones en toda su flota",
+        "title": "Hallazgos",
+        "description": "Patrones entre dispositivos que encontraron los trabajadores: una sola acción en lugar de muchas",
         "partialWarning": "Algunos datos pueden estar incompletos. No se pudo cargar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",

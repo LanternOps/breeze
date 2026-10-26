@@ -128,15 +128,12 @@
     "deviceLabel": "Cihaz",
     "serviceNameLabel": "Hizmet adı",
     "serviceNamePlaceholder": "ör. Yazdırma Kuyruğu",
-    "serviceNameError": "Bu görevi devretmek için hizmet adını girin.",
+    "serviceNameError": "Bu yapay zekâ görevini başlatmak için hizmet adını girin.",
     "workflowLabel": "Tarif",
     "workflowName": "Hizmet kurtarma",
-    "confirmLabel": "Devret",
+    "confirmLabel": "Başlat",
     "queued": "Yapay zekâ görevi başlatıldı.",
     "failed": "Yapay zekâ görevi başlatılamadı."
-  },
-  "nav": {
-    "operator": "Yapay Zekâ Görevleri"
   },
   "effectTool": {
     "googleSetVacation": "Gmail otomatik yanıtını ayarla",

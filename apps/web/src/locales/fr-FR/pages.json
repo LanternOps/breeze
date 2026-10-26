@@ -72,7 +72,7 @@
     "dnsSecurity": "DNS Sécurité",
     "dr": "Reprise après sinistre",
     "extensionsNamePath": "Extension",
-    "fleet": "Orchestration de la flotte",
+    "fleet": "Constats",
     "forgotPassword": "Mot de passe oublié",
     "incidentsDetail": "Détail de l'incident",
     "incidents": "Incidents de sécurité",
@@ -188,7 +188,8 @@
     "wisp": "Wisp",
     "wispChat": "Breeze AI",
     "aiTasks": "Tâches IA",
-    "aiTask": "Tâche IA"
+    "aiTask": "Tâche IA",
+    "settingsAi": "Paramètres de l’IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

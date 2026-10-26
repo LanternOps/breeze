@@ -79,6 +79,10 @@
         "categoryLabel": "Category",
         "categoryUnresolved": "Suggested — name not available on this view"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Fix memory",
+      "fleetDesignReport": "Fleet design"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
       "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
-      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+      "researchLink": "Open fix memory",
+      "designerLink": "Open fleet design"
     },
     "emptyState": {
       "title": "No agents yet",
