@@ -58,7 +58,9 @@ vi.mock('@/hooks/useEntitlement', () => ({
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('astro:transitions/client', () => ({ navigate: vi.fn() }));
-vi.mock('./AiChatMessages', () => ({ default: () => null }));
+// Records the last props so the panel's voice (assistantLabel, W01 #10211) can be asserted.
+const kitProps = vi.hoisted(() => ({ messages: null as Record<string, unknown> | null }));
+vi.mock('./AiChatMessages', () => ({ default: (p: Record<string, unknown>) => { kitProps.messages = p; return null; } }));
 vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
@@ -120,6 +122,18 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
   it('plain chat: no Wisp link', () => {
     render(<AiChatSidebar />);
     expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
+  });
+
+  it('labels replies "Wisp" in Wisp mode and leaves the Breeze AI default otherwise; dense panel layout either way', () => {
+    useAiStore.setState({ wisp: wisp(), sessionId: 's1', hydratedSessionId: 's1', messages: [{ id: 'm', role: 'user', content: 'q', createdAt: new Date() }] });
+    const view = render(<AiChatSidebar />);
+    expect(kitProps.messages).toMatchObject({ assistantLabel: 'Wisp' });
+    expect(kitProps.messages?.layout).toBeUndefined();
+    expect(kitProps.messages?.showTimeDividers).toBeUndefined();
+    view.unmount();
+    useAiStore.setState({ wisp: null });
+    render(<AiChatSidebar />);
+    expect(kitProps.messages?.assistantLabel).toBeUndefined();
   });
 });
 

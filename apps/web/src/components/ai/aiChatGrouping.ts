@@ -273,19 +273,30 @@ export function groupChatUnits(
   return units;
 }
 
-/** Locale-formatted pieces of a divider label ("Today 7:22 AM", "Oct 21, 9:10 AM"). */
+/**
+ * Locale-formatted pieces of a divider label: `time` for "Today 7:22 AM" /
+ * "Yesterday 6:24 PM", and `dateTime` ("Oct 21, 9:10 AM", "21. Okt., 9:10")
+ * for an older day, formatted as one value so each locale orders it itself.
+ */
 export function dividerParts(
   at: Date,
   now: Date,
   locale: string,
-): { day: 'today' | 'yesterday' | 'other'; time: string; date: string } {
+): { day: 'today' | 'yesterday' | 'other'; time: string; date: string; dateTime: string } {
   const time = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at);
   const date = new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     ...(at.getFullYear() !== now.getFullYear() ? { year: 'numeric' as const } : {}),
   }).format(at);
+  const dateTime = new Intl.DateTimeFormat(locale, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    ...(at.getFullYear() !== now.getFullYear() ? { year: 'numeric' as const } : {}),
+  }).format(at);
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const day = sameLocalDay(at, now) ? 'today' : sameLocalDay(at, yesterday) ? 'yesterday' : 'other';
-  return { day, time, date };
+  return { day, time, date, dateTime };
 }

@@ -22,7 +22,7 @@ export default function AiToolActivityGroup({
   renderCall: (call: ToolCall) => ReactNode;
   defaultExpanded?: boolean;
 }) {
-  const { t } = useTranslation("ai");
+  const { t, i18n } = useTranslation("ai");
   // null = the user has not chosen; the group follows its own state.
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const expanded = userExpanded ?? (defaultExpanded || group.failed > 0 || group.handoff);
@@ -68,7 +68,7 @@ export default function AiToolActivityGroup({
         )}
         {elapsedSeconds >= 1 && (
           <span className="shrink-0 tabular-nums">
-            {t("aiChatMessages.toolGroup.elapsed", { seconds: elapsedSeconds })}
+            {new Intl.NumberFormat(i18n.language, { style: "unit", unit: "second", unitDisplay: "narrow" }).format(elapsedSeconds)}
           </span>
         )}
         {group.failed > 0 && (

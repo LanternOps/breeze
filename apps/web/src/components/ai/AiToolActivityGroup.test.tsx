@@ -41,7 +41,7 @@ describe('AiToolActivityGroup', () => {
     );
     expect(root().getAttribute('data-state')).toBe('done');
     expect(root().textContent).toContain('Searched devices · Listed organizations · Checked alerts');
-    expect(root().textContent).toContain('4 s');
+    expect(root().textContent).toContain('4s');
     expect(screen.queryByTestId('rendered-call')).toBeNull();
     expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('false');
   });
@@ -58,7 +58,7 @@ describe('AiToolActivityGroup', () => {
 
   it('omits the elapsed time when it rounds below a second', () => {
     render(<AiToolActivityGroup group={group([call('a', 'query_devices')], { finishedAt: T0 })} renderCall={renderCall} />);
-    expect(root().textContent).not.toMatch(/\d s/);
+    expect(root().textContent).not.toMatch(/\ds/);
   });
 
   it('executing shows the current label and the done count', () => {

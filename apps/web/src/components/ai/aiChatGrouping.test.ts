@@ -223,9 +223,14 @@ describe('dividerParts', () => {
   const now = new Date(2026, 9, 25, 15, 0);
 
   it('labels today, yesterday and older days', () => {
-    expect(dividerParts(new Date(2026, 9, 25, 7, 22), now, 'en-US')).toEqual({ day: 'today', time: '7:22 AM', date: 'Oct 25' });
+    expect(dividerParts(new Date(2026, 9, 25, 7, 22), now, 'en-US')).toMatchObject({ day: 'today', time: '7:22 AM', date: 'Oct 25' });
     expect(dividerParts(new Date(2026, 9, 24, 18, 24), now, 'en-US')).toMatchObject({ day: 'yesterday', time: '6:24 PM' });
-    expect(dividerParts(new Date(2026, 9, 21, 9, 10), now, 'en-US')).toEqual({ day: 'other', time: '9:10 AM', date: 'Oct 21' });
+    expect(dividerParts(new Date(2026, 9, 21, 9, 10), now, 'en-US')).toMatchObject({ day: 'other', time: '9:10 AM', date: 'Oct 21' });
+  });
+
+  it('formats an older day and its time as one locale-ordered label', () => {
+    expect(dividerParts(new Date(2026, 9, 21, 9, 10), new Date(2026, 9, 25, 15, 0), 'en-US').dateTime).toBe('Oct 21, 9:10 AM');
+    expect(dividerParts(new Date(2025, 11, 31, 9, 10), new Date(2026, 9, 25, 15, 0), 'en-US').dateTime).toBe('Dec 31, 2025, 9:10 AM');
   });
 
   it('adds the year when it differs from now', () => {

@@ -341,7 +341,7 @@ export default function AiChatMessages({
             ? t("aiChatMessages.divider.today", { time: parts.time })
             : parts.day === "yesterday"
               ? t("aiChatMessages.divider.yesterday", { time: parts.time })
-              : t("aiChatMessages.divider.date", { date: parts.date, time: parts.time });
+              : parts.dateTime;
         return (
           <div
             key={`divider-${unit.at.getTime()}`}
