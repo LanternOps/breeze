@@ -306,6 +306,29 @@ describe('manage_invoices', () => {
     expect(JSON.parse(out)).toEqual({ line: { id: 'line-1' }, pricedFrom: 'contract_snapshot', overages: [] });
   });
 
+  // #9664: an UNRESOLVED estimate line (manual with no quantity, deleted
+  // site/group) has quantity 0 only as a placeholder. Materializing it put a
+  // silent $0 line on the invoice; the tool refuses like generation does.
+  it.each(['manual_quantity_missing', 'site_deleted', 'group_deleted'] as const)(
+    'add_contract_line refuses an unresolved (%s) line without touching the invoice',
+    async (unresolved) => {
+      const line = contractLineRow({ lineType: 'manual', manualQuantity: null });
+      vi.mocked(contractService.getContract).mockResolvedValueOnce({
+        contract: contractRow(), lines: [line], autopayEnabled: false, periods: [],
+      });
+      vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+        currencyCode: 'USD', periodTotal: '0.00',
+        lines: [{ lineId: line.id, lineType: 'manual', quantity: 0, value: '0.00', live: false, counted: 0, included: null, overage: 0, overageMode: null, overageValue: '0.00', unresolved }],
+        uncoveredDevices: null, overages: [], hourBlock: null,
+      });
+      const out = JSON.parse(await getTool().handler({
+        action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: line.id,
+      }, auth));
+      expect(out).toMatchObject({ code: 'CONTRACT_LINE_UNRESOLVED', unresolved });
+      expect(contractService.materializeContractLineOntoInvoice).not.toHaveBeenCalled();
+    },
+  );
+
   it('add_contract_line preserves an unrestricted system producer', async () => {
     const line = contractLineRow({ lineType: 'flat', manualQuantity: '1.00' });
     vi.mocked(contractService.getContract).mockResolvedValueOnce({

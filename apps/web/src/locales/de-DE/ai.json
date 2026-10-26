@@ -621,7 +621,8 @@
         "active": "Aktiv",
         "paused": "Pausiert",
         "revoked": "Widerrufen",
-        "expired": "Abgelaufen"
+        "expired": "Abgelaufen",
+        "budgetReached": "Budget erreicht"
       },
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
@@ -683,7 +684,8 @@
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",
     "paused": {
-      "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen."
+      "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
+      "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten."
     },
     "live": {
       "checking": "{{org}} wird geprüft…",
@@ -736,7 +738,8 @@
       "disabledTitle": "Wisp ist ausgeschaltet",
       "disabledBody": "Ein Partner-Administrator hat Wisp unter Einstellungen → KI-Agenten ausgeschaltet. Ihre Chats funktionieren weiterhin.",
       "disabledSettings": "KI-Agenten-Einstellungen öffnen",
-      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden."
+      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden.",
+      "noAccess": "Sie haben keinen Zugriff auf Wisp"
     },
     "links": {
       "title": "Verknüpfte Einträge",

@@ -104,7 +104,8 @@ export interface ContractLineInvariantIssue {
  *
  * NOT a transcription of the DB CHECKs. Three rules here have NO database
  * counterpart (duplicate roles — `<@` is containment, not set equality;
- * manualQuantity — there is no CHECK on the column at all; siteId on
+ * manualQuantity only on manual lines — contract_lines_manual_quantity_chk
+ * (#9664) enforces only the other half, a manual line's quantity; siteId on
  * flat/manual/per_seat — W02's CHECK covers per_device_group only), and two DB
  * rules are not expressible here (role-set membership, 1-D array shape). Both
  * sides are load-bearing; see the asymmetry matrix in the spec.

@@ -41,6 +41,14 @@ export type RingAutoApprove = {
   autoApproveUnrated?: boolean;
 };
 
+/** The ring's Windows feature-release policy (`patch_policies.feature_updates`). */
+export type RingFeatureUpdates =
+  | { mode: 'block' }
+  | { mode: 'allow' }
+  | { mode: 'pin'; product: 'windows-11' | 'windows-10'; targetVersion: string };
+
+export const DEFAULT_RING_FEATURE_UPDATES: RingFeatureUpdates = { mode: 'block' };
+
 export type UpdateRingItem = {
   id: string;
   name: string;
@@ -54,6 +62,8 @@ export type UpdateRingItem = {
   categoryRules?: CategoryRule[];
   /** Per-app block / pin rules the ring enforces (#8187). */
   appRules?: RingAppRule[];
+  /** Windows feature releases: block (default) | allow | pin. */
+  featureUpdates?: RingFeatureUpdates;
   compliancePercent?: number;
   deviceCount?: number;
   updatedAt?: string;
@@ -103,6 +113,19 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
   const osOn = !!aa?.enabled && aa.severities.length > 0;
   const tpOn = !!aa?.enabled && !!aa.thirdPartyApps;
   const appRuleCount = ring.appRules?.length ?? 0;
+  const featureUpdates = ring.featureUpdates;
+  // Feature releases are blocked unless the ring says otherwise, so only a
+  // ring that allows or pins them gets a badge.
+  const featureUpdatesBadge = featureUpdates && featureUpdates.mode !== 'block' && (
+    <span
+      className="inline-flex items-center rounded-full border bg-muted/40 px-2 py-0.5 text-xs"
+      data-testid="ring-feature-updates-badge"
+    >
+      {featureUpdates.mode === 'pin'
+        ? t('updateRingList.badges.featureUpdatesPinned', { release: featureUpdates.targetVersion })
+        : t('updateRingList.badges.featureUpdatesNewest')}
+    </span>
+  );
   // Block / pin rules are independent of auto-approval: a manual ring can
   // still hold or pin specific applications.
   const appRulesBadge = appRuleCount > 0 && (
@@ -118,6 +141,7 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-muted-foreground">{t('updateRingList.badges.manual')}</span>
         {appRulesBadge}
+        {featureUpdatesBadge}
       </div>
     );
   }
@@ -142,6 +166,7 @@ function AutoApproveBadges({ ring, t }: { ring: UpdateRingItem; t: TFunction<'pa
         </span>
       )}
       {appRulesBadge}
+      {featureUpdatesBadge}
     </div>
   );
 }

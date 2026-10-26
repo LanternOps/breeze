@@ -194,6 +194,15 @@ vi.mock('@hono/zod-validator', () => ({
   },
 }));
 
+vi.mock('./featureUpdateConfig', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./featureUpdateConfig')>();
+  return {
+    ...actual,
+    // Default block, mirroring buildPatchSourceConfigUpdate's default OFF.
+    buildFeatureUpdateConfigUpdate: vi.fn(async () => ({ mode: 'block' as const })),
+  };
+});
+
 vi.mock('./helpers', () => ({
   maybeQueueThresholdFilesystemAnalysis: vi.fn(),
   buildPolicyProbeConfigUpdate: vi.fn(() => undefined),
@@ -1012,6 +1021,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     it('loads the hierarchy for the authenticated device and hands it to every resolver', async () => {
       const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
       const helpers = await import('./helpers');
+      const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
       vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(hierarchy as never);
       arrangeBeat();
 
@@ -1022,7 +1032,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
         helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
-        helpers.buildWorkloadInventoryConfigUpdate,
+        helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
@@ -1088,6 +1098,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       it(`${c.label}: no policy builder runs, nothing is cached, Sentry is told why (#8142)`, async () => {
         const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
         const helpers = await import('./helpers');
+        const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
         const { captureException } = await import('../../services/sentry');
         const { orgPolicyProbeCache, orgHelperSettingsCache, orgPamFallbackCache } = await import('../../services/agentOrgSettingsCache');
         vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(c.hierarchy as never);
@@ -1107,6 +1118,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
           helpers.buildEventLogConfigUpdate, helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
           helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate, helpers.buildTimeSyncConfigUpdate,
           helpers.buildHelperConfigUpdate, helpers.buildPolicyProbeConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+          buildFeatureUpdateConfigUpdate,
         ]) {
           expect(vi.mocked(builder)).not.toHaveBeenCalled();
         }
@@ -4568,6 +4580,38 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown> | null;
     expect(configUpdate?.patch_source_settings).toBeUndefined();
+  });
+
+  it('includes feature_update_settings in configUpdate with snake_case pin fields', async () => {
+    const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
+    vi.mocked(buildFeatureUpdateConfigUpdate).mockResolvedValueOnce({ mode: 'pin', product: 'windows-11', targetVersion: '25H2' });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.feature_update_settings).toEqual({ mode: 'pin', product: 'windows-11', target_version: '25H2' });
+  });
+
+  it('omits feature_update_settings when its resolver throws (the agent keeps its last policy)', async () => {
+    const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
+    vi.mocked(buildFeatureUpdateConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.feature_update_settings).toBeUndefined();
   });
 
   it('includes warranty_settings in configUpdate when HP CMSL collection is enabled (#5511 W02)', async () => {

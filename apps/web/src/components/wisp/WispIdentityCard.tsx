@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
 import type { CurrentActivity } from '@breeze/shared';
 import type { WispState } from '@/stores/aiStore';
+import { spendMeterState } from './wispSpend';
 
 const STATUS_DOT: Record<string, string> = {
   active: 'bg-emerald-500',
@@ -22,6 +23,9 @@ export default function WispIdentityCard({
 }) {
   const { t } = useTranslation('ai');
   const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
+  // Same rule as WispThreadHeader (#10145): the grant stays active when the day's budget is spent, so say so.
+  const budgetReached =
+    wisp.status === 'active' && typeof wisp.spentTodayCents === 'number' && spendMeterState(wisp.spentTodayCents, wisp.budgetCentsPerDay) === 'exhausted';
 
   return (
     <div data-testid="wisp-identity" className="space-y-3 p-4">
@@ -48,11 +52,11 @@ export default function WispIdentityCard({
             ) : (
               <>
                 <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[wisp.status] ?? 'bg-muted-foreground'}`}
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[budgetReached ? 'paused' : wisp.status] ?? 'bg-muted-foreground'}`}
                   aria-hidden="true"
                 />
                 <span>
-                  {t(/* i18n-dynamic */ `wisp.header.status.${wisp.status}`)}
+                  {t(/* i18n-dynamic */ `wisp.header.status.${budgetReached ? 'budgetReached' : wisp.status}`)}
                   {scopeLabel ? ` · ${scopeLabel}` : ''}
                 </span>
               </>

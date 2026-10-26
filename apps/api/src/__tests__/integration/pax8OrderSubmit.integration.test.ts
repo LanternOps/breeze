@@ -89,7 +89,9 @@ async function seedOrder(options: {
       lineType: 'manual',
       description: 'Pax8 seats',
       unitPrice: '10.00',
-      manualQuantity: options.action === 'cancel' ? '7.00' : null,
+      // contract_lines_manual_quantity_chk (#9664): a manual line always carries a
+      // quantity; a not-yet-purchased subscription starts at 0 seats.
+      manualQuantity: options.action === 'cancel' ? '7.00' : '0.00',
     }).returning();
     if (!contractLine) throw new Error('failed to seed contract line');
     const [order] = await db.insert(pax8Orders).values({
@@ -476,7 +478,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     expect(result.status).toBe('failed');
     expect(result.lines).toHaveLength(1);
     expect(result.lines.every((line) => line.submitState === 'failed' && line.error === raw)).toBe(true);
-    expect(contractLine?.manualQuantity).toBeNull();
+    expect(contractLine?.manualQuantity).toBe('0.00');
     expect(rejectedClient.createOrder).toHaveBeenCalledTimes(1);
 
     const cancelFixture = await seedOrder({ action: 'cancel' });
@@ -562,7 +564,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     expect(parentGuardState.order?.pax8OrderId).toBe('captured-parent');
     expect(parentGuardState.line?.submitState).toBe('needs_reconcile');
     expect(parentGuardState.line?.resultSubscriptionId).toBeNull();
-    expect(parentGuardState.contractLine?.manualQuantity).toBeNull();
+    expect(parentGuardState.contractLine?.manualQuantity).toBe('0.00');
     await expect(pax8OrderSubmitRepository.persistReconcileResults(
       parentGuardBundle,
       [{

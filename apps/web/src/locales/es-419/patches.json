@@ -549,6 +549,22 @@
       "title": "Instalar aplicación",
       "description": "Cuánto tiempo tienen los dispositivos para aplicar parches aprobados y cuánto tiempo un usuario puede posponer el reinicio. El comportamiento de reinicio en sí se establece según la política en la pestaña Parche."
     },
+    "featureUpdates": {
+      "title": "Actualizaciones de funciones de Windows",
+      "description": "Si los dispositivos de este anillo reciben versiones de funciones de Windows (por ejemplo, 25H2). Breeze las instala solo mediante las reglas de aprobación de abajo; agregue una anulación de Actualizaciones de funciones para aprobarlas automáticamente.",
+      "modeBlock": "Bloquear",
+      "modeAllow": "Permitir la versión más reciente",
+      "modePin": "Fijar a una versión",
+      "productLabel": "Versión de Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Versión",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Windows Update en cada dispositivo se configura para apuntar a esta versión (política de versión objetivo de Windows Update for Business). A menos que la configuración de la política \"Breeze es la única fuente de Windows Update\" esté activada, Windows puede descargar e instalar la versión según su propio calendario, fuera de la aprobación de Breeze.",
+      "validation": {
+        "release": "Ingrese una versión como 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Política de aprobación",
       "description": "Qué se aprueba automáticamente en este anillo y durante cuánto tiempo se debe retener un parche después del lanzamiento del proveedor. El valor predeterminado se aplica a todas las categorías; agregue una anulación para tratar uno de manera diferente.",
@@ -606,7 +622,9 @@
       "os": "SO: {{severities}}",
       "thirdParty": "Apps de terceros",
       "appRules_one": "{{count}} regla de aplicación",
-      "appRules_other": "{{count}} reglas de aplicación"
+      "appRules_other": "{{count}} reglas de aplicación",
+      "featureUpdatesNewest": "Actualizaciones de funciones: más reciente",
+      "featureUpdatesPinned": "Actualizaciones de funciones: {{release}}"
     }
   },
   "ringAppRules": {

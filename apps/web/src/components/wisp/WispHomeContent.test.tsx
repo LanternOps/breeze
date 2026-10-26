@@ -248,6 +248,14 @@ describe('WispHomeContent', () => {
     expect(h.threadProps?.wisp).toMatchObject({ status: 'paused' });
   });
 
+  it('a permission refusal (Partner Viewer) says there is no access, with no retry (#10145)', async () => {
+    h.fetchWispHome.mockResolvedValue({ kind: 'forbidden' });
+    render(<WispHomeContent />);
+    expect(await screen.findByTestId('wisp-home-forbidden')).toHaveTextContent("You don't have access to Wisp");
+    expect(screen.queryByTestId('wisp-home-retry')).toBeNull();
+    expect(screen.queryByTestId('wisp-home-load-error')).toBeNull();
+  });
+
   it('a broken read is an error with retry, never a guessed state', async () => {
     h.fetchWispHome.mockRejectedValueOnce(new Error('500')).mockResolvedValueOnce({ kind: 'noGrant' });
     render(<WispHomeContent />);

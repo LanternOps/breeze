@@ -58,6 +58,15 @@ type Config struct {
 	AgentID   string
 	AuthToken *secmem.SecureString
 	TLSConfig *tls.Config
+	// FirstReconnectWindow bounds the spread of the redial after a stable
+	// socket the server closed (W09, #8148). nil means
+	// defaultFirstReconnectWindow (30 s); a value is clamped to [0, 300 s],
+	// and any value at or below 5 s gives #9145's 1–5 s spread.
+	FirstReconnectWindow *time.Duration
+	// StartDialWindow bounds the uniform wait before the process's first
+	// dial. nil means defaultStartDialWindow (10 s); a value is clamped to
+	// [0, 10 s]. Tests that start a client set it to 0.
+	StartDialWindow *time.Duration
 }
 
 // Command represents a command received via WebSocket
@@ -211,6 +220,15 @@ type Client struct {
 	// lock.
 	OnResultHandedOff func(CommandResult)
 
+	// PersistResultWhileDisconnected, if set, reports whether a command's
+	// result must go to the outbox (OnResultWriteFailed) when it is produced
+	// while no socket is held (W09, #8148). The heartbeat answers true only
+	// for journaled, server-tracked commands; terminal, tunnel, desktop and
+	// monitor results keep buffering in memory, so a long reconnect window
+	// does not cost them a disk write each. nil keeps today's buffering.
+	// Set once before Start().
+	PersistResultWhileDisconnected func(Command) bool
+
 	// OnRevocationLease, if set, is invoked from the read pump when the server
 	// answers a revocation-lease renewal. `Revoked` is true for a
 	// `revocation_lease_revoked` frame (stop the session NOW).
@@ -236,6 +254,33 @@ type Client struct {
 	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
 	// result_resend.go.
 	resends *sentResultTracker
+
+	// firstWindow and startWindow pace the reconnect loop (W09, #8148): the
+	// spread after a stable socket the server closed, and the wait before the
+	// first dial. Set in New; never mutated after Start.
+	firstWindow time.Duration
+	startWindow time.Duration
+
+	// connStartedAt is when connect() installed the current socket (wsClock).
+	// Written and read only on the reconnect-loop goroutine.
+	connStartedAt time.Time
+
+	// drain is the server's drain hint for the current socket (drain.go).
+	// Loop-goroutine owned, like connStartedAt.
+	drain drainHint
+
+	// testHooks are nil in production; tests set them before Start.
+	testHooks clientTestHooks
+}
+
+// clientTestHooks are synchronisation points for the fake-clock tests.
+type clientTestHooks struct {
+	// connected receives (non-blocking) after connect installed a socket.
+	connected chan<- struct{}
+	// beforeInstall runs between a successful dial and the install.
+	beforeInstall func()
+	// drainStored receives (non-blocking) after readPump stored a drain hint.
+	drainStored chan<- struct{}
 }
 
 // RevocationLeaseMessage is the server's answer to a revocation-lease renewal.
@@ -264,7 +309,21 @@ type RevocationLeaseMessage struct {
 
 // New creates a new WebSocket client
 func New(cfg *Config, handler CommandHandler) *Client {
+	firstWindow := defaultFirstReconnectWindow
+	if cfg.FirstReconnectWindow != nil {
+		firstWindow = clampFirstReconnectWindow(*cfg.FirstReconnectWindow)
+		if firstWindow != *cfg.FirstReconnectWindow {
+			log.Warn("first reconnect window out of range; clamped",
+				"configured", *cfg.FirstReconnectWindow, "using", firstWindow)
+		}
+	}
+	startWindow := defaultStartDialWindow
+	if cfg.StartDialWindow != nil {
+		startWindow = min(max(*cfg.StartDialWindow, 0), defaultStartDialWindow)
+	}
 	return &Client{
+		firstWindow:     firstWindow,
+		startWindow:     startWindow,
 		config:          cfg,
 		cmdHandler:      handler,
 		done:            make(chan struct{}),
@@ -437,12 +496,31 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	if c.testHooks.beforeInstall != nil {
+		c.testHooks.beforeInstall()
+	}
+	// Install only if Stop has not run, checked in the same critical section
+	// Stop's closeCurrentConn takes: either Stop sees this socket and closes
+	// it, or this sees Stop and discards it. The loop's stopped() check after
+	// connect (#9245) stays as the second line of defence.
 	c.connMu.Lock()
+	if c.stopped() {
+		c.connMu.Unlock()
+		_ = conn.Close()
+		return context.Canceled
+	}
 	c.conn = conn
+	c.connStartedAt = wsClock.Now()
 	c.connMu.Unlock()
 
 	conn.SetReadLimit(maxMessageSize)
 	log.Info("connected", "server", c.serverURL())
+	if c.testHooks.connected != nil {
+		select {
+		case c.testHooks.connected <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -471,7 +549,19 @@ func (c *Client) buildWSURL() (string, error) {
 // reconnectBackoff. The step resets only after a connection that lasted past
 // stableConnectionThreshold.
 func (c *Client) reconnectLoop() {
-	backoff := newReconnectBackoff(nil)
+	backoff := newReconnectBackoff(wsRand)
+	backoff.firstWindow = c.firstWindow
+
+	// Spread the first dial of the process (W09, #8148): a fleet restarted
+	// together must not upgrade in the same second.
+	if d := backoff.atStart(c.startWindow); d > 0 {
+		log.Info("initial connect delayed", "delay", d)
+		select {
+		case <-c.done:
+			return
+		case <-wsClock.After(d):
+		}
+	}
 
 	for {
 		if c.stopped() {
@@ -479,7 +569,11 @@ func (c *Client) reconnectLoop() {
 		}
 
 		var sleep time.Duration
+		c.drain = drainHint{} // a hint belongs to one socket
 		if err := c.connect(); err != nil {
+			if c.stopped() {
+				return // a dial cancelled or discarded by Stop is not a failure
+			}
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
 		} else {
@@ -493,7 +587,7 @@ func (c *Client) reconnectLoop() {
 			}
 
 			// Run read/write pumps — track how long the connection lasted
-			connStart := time.Now()
+			connStart := c.connStartedAt
 			pumpDone := make(chan struct{})
 			writerDone := make(chan struct{})
 			go c.writePump(pumpDone, writerDone)
@@ -501,24 +595,29 @@ func (c *Client) reconnectLoop() {
 			close(pumpDone)
 			<-writerDone
 			c.closeCurrentConn(false)
-			lasted := time.Since(connStart)
+			lasted := wsClock.Now().Sub(connStart)
 
 			if c.stopped() {
 				return
 			}
 
 			kind, code := classifyDisconnect(readErr, c.localClose.Swap(false))
-			sleep = backoff.afterDisconnect(kind, lasted)
-			log.Info("disconnected", "kind", kind.String(), "closeCode", code,
-				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			if within, ok := c.takeDrainHint(); ok {
+				sleep = backoff.afterDrainedDisconnect(kind, lasted, within)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep,
+					"drainWithin", within)
+			} else {
+				sleep = backoff.afterDisconnect(kind, lasted)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			}
 		}
 
-		timer := time.NewTimer(sleep)
 		select {
 		case <-c.done:
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-wsClock.After(sleep):
 		}
 	}
 }
@@ -616,6 +715,14 @@ func (c *Client) readPump() error {
 		// agents fall through to the id-less skip below and ignore them.
 		if msg.Type == "desktop_ice_candidate" {
 			c.handleDesktopICECandidateMessage(message)
+			continue
+		}
+
+		// A draining server's reconnect window (W09, #8148). Handled before
+		// the id-less skip (the #3001 trap), and before command dispatch so
+		// a drain frame is never run as a command. Agents before W09 skip it.
+		if msg.Type == "drain" {
+			c.handleDrainMessage(message)
 			continue
 		}
 
@@ -902,6 +1009,33 @@ func (c *Client) processCommand(cmd Command) {
 	result := c.cmdHandler(cmd)
 	result.Type = "command_result"
 	result.CommandID = cmd.ID
+
+	// W09 (#8148, D11): with no socket held, a result queued in memory would
+	// wait out the reconnect window (30 s by default, up to 300 s) or a drain
+	// window (up to 600 s) AFTER OnResultHandedOff cleared its journal entry,
+	// so a hard kill in between lost it. Persist it to the outbox first; the
+	// next OnConnected flush delivers it. If a socket came up while the outbox
+	// write ran, its flush may already have passed, so send directly too: the
+	// server tolerates a duplicate terminal result. Only commands the owner
+	// marks durable take this path (PersistResultWhileDisconnected); direct
+	// SendResult callers (tunnel, clipboard and desktop notices) keep
+	// buffering.
+	if result.Status != "duplicate" && c.OnResultWriteFailed != nil &&
+		c.PersistResultWhileDisconnected != nil && c.PersistResultWhileDisconnected(cmd) &&
+		!c.IsConnected() && !c.stopped() {
+		log.Info("command result held for reconnect; persisting to the outbox", "commandId", cmd.ID)
+		c.handleResultWriteFailure(result)
+		if c.IsConnected() {
+			if err := c.SendResult(result); err != nil {
+				log.Warn("direct send after outbox persist failed; the outbox keeps it",
+					"commandId", cmd.ID, "error", err.Error())
+			}
+		}
+		if c.OnResultHandedOff != nil {
+			c.OnResultHandedOff(result)
+		}
+		return
+	}
 
 	if err := c.SendResult(result); err != nil {
 		// Most often "client is stopped": a long command (install_patches

@@ -230,6 +230,8 @@ export const PATCH_INELIGIBLE_REASONS = [
   'held_by_deferral',
   'blocked_by_category',
   'blocked_by_app_rule',
+  /** The ring's Windows feature-update policy (block, or a pin on another release) excludes this feature release. */
+  'blocked_by_feature_update_policy',
   /** No manual approval and no auto-approve rule admits it. */
   'awaiting_manual_approval',
   /** An operator explicitly declined this patch (`patch_approvals.status='rejected'`) — terminal, beats auto-approve (#9369). */

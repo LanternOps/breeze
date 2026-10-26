@@ -40,6 +40,14 @@ describe('WispIdentityCard', () => {
     expect(line.textContent).toContain('All organizations');
   });
 
+  it('an active grant with the day budget spent reads Budget reached with the amber dot (as the thread header does)', () => {
+    render(<WispIdentityCard wisp={mkWisp({ spentTodayCents: 500, budgetResetsAt: new Date(Date.now() + 3600_000).toISOString() })} orgName="Acme" currentActivity={null} />);
+    const line = screen.getByTestId('wisp-state-line');
+    expect(line.textContent).toContain('Budget reached');
+    expect(line.querySelector('.bg-amber-500')).not.toBeNull();
+    expect(line.querySelector('.bg-emerald-500')).toBeNull();
+  });
+
   it('omits the separator when the scope label is empty', () => {
     render(<WispIdentityCard wisp={mkWisp({ status: 'revoked' })} orgName={null} currentActivity={null} />);
     const line = screen.getByTestId('wisp-state-line');

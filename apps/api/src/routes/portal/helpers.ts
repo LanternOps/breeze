@@ -485,6 +485,7 @@ export const portalFinancialMutationGuard: MiddlewareHandler = async (c, next) =
 
   const requiresJsonBody =
     /\/quotes\/[^/]+\/(?:accept|decline)$/.test(c.req.path)
+    || /\/agreements\/[^/]+\/(?:accept|decline)$/.test(c.req.path)
     || /\/invoices\/[^/]+\/(?:settle|autopay-confirmation)$/.test(c.req.path)
     || /\/payment-methods\/(?:setup-session|setup-return)$/.test(c.req.path)
     || /\/autopay\/stop$/.test(c.req.path);

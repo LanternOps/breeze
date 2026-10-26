@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Erteleme penceresi tarafından tutuluyor",
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
+          "blocked_by_feature_update_policy": "Halkanın Windows özellik güncellemesi ilkesi tarafından dışlandı",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
           "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",

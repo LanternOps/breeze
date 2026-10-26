@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Held by the deferral window",
           "blocked_by_category": "Excluded by the ring's category rules",
           "blocked_by_app_rule": "Blocked by an app rule",
+          "blocked_by_feature_update_policy": "Excluded by the ring's Windows feature-update policy",
           "awaiting_manual_approval": "Awaiting manual approval",
           "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",

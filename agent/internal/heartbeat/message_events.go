@@ -92,6 +92,12 @@ func (h *Heartbeat) postMessageEvent(ev messageEvent) error {
 		return fmt.Errorf("marshal message event: %w", err)
 	}
 	url := fmt.Sprintf("%s/api/v1/agents/%s/message-events", h.serverURL(), h.config.AgentID)
+	// W09: message receipts are re-reported (sticky messages), so a server
+	// deferral is honoured. Chat replies share the route but are exempt:
+	// a user is waiting on them (chat_events.go).
+	if !h.loopReady("POST", url) {
+		return ErrDeferred
+	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -100,6 +106,7 @@ func (h *Heartbeat) postMessageEvent(ev messageEvent) error {
 	defer cancel()
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("POST", url, err)
 		return fmt.Errorf("post message event: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
