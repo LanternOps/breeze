@@ -740,7 +740,8 @@
       "disabledBody": "Bir iş ortağı yöneticisi Wisp’i Ayarlar → Yapay Zeka Aracıları bölümünden kapattı. Sohbetleriniz çalışmaya devam eder.",
       "disabledSettings": "Yapay Zeka Aracıları ayarlarını aç",
       "loadFailed": "Wisp ana sayfası yüklenemedi.",
-      "noAccess": "Wisp'e erişiminiz yok"
+      "noAccess": "Wisp'e erişiminiz yok",
+      "historyFailed": "Önceki konuşma yüklenemedi."
     },
     "links": {
       "title": "Bağlantılı öğeler",

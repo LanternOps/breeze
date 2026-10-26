@@ -10,8 +10,10 @@ import AiThinkingIndicator from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
 import WispEntityPicker from './WispEntityPicker';
+import WispPost from './WispPost';
 import WispWelcome from './WispWelcome';
 import { linkKey } from './wispEntitySources';
+import { useWispThreadTimeline, type TimelineTarget } from './useWispThreadTimeline';
 
 type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed';
@@ -65,14 +67,25 @@ async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promis
 /** The column's reading width, shared by the message list (AiChatMessages `layout="page"`) and everything under it. */
 const COLUMN = 'mx-auto w-full max-w-3xl';
 
+/** A paused thread is read-only: nothing to approve or reject from its history. */
+const noop = () => {};
+
 /**
  * The Wisp conversation, the page's main column (W08 Task 9; W01 #10211 spec
  * §4.1–4.2): the same store the docked panel uses, so leaving the page leaves
- * the session for the panel to continue (unmount touches nothing). `leading`
- * (the morning brief post) opens the thread; an empty thread shows Wisp's
- * welcome and suggestion chips above the composer; a paused or ended grant
- * shows its notice where the composer would be. `links` null hides the
- * composer's Link an item button (the thread page lists no links).
+ * the session for the panel to continue (unmount touches nothing).
+ *
+ * W02b (#10213, spec §6): the column is the whole thread. The live session's
+ * messages come from the store; every older session's messages and Wisp's
+ * posts (briefs, nudges, digests) come from the thread timeline, read without
+ * the live session and paged backwards with Load earlier. `refreshKey` (the
+ * page's poll signal) re-reads the newest page so new posts appear. A paused
+ * grant shows its history read-only; an ended one reads nothing.
+ *
+ * `leading` (the thread page's summary) opens the thread; an empty thread
+ * shows Wisp's welcome and suggestion chips above the composer; a paused or
+ * ended grant shows its notice where the composer would be. `links` null
+ * hides the composer's Link an item button (the thread page lists no links).
  */
 export default function WispHomeThread({
   wisp,
@@ -81,6 +94,7 @@ export default function WispHomeThread({
   scopeLabel,
   links,
   onLinksChange,
+  refreshKey = 0,
 }: {
   wisp: Wisp;
   lastSessionId: string | null;
@@ -88,6 +102,7 @@ export default function WispHomeThread({
   scopeLabel: string;
   links: WispThreadLink[] | null;
   onLinksChange: (links: WispThreadLink[]) => void;
+  refreshKey?: number;
 }) {
   const { t } = useTranslation('ai');
   const active = wisp.status === 'active';
@@ -105,7 +120,7 @@ export default function WispHomeThread({
     pendingApproval, pendingPlan, activePlan, approvalMode, isPaused,
     sendMessage, approveExecution, clearPendingApproval, approvePlan, abortPlan, pauseAi,
     interruptResponse, isInterrupting, composerDraft, setComposerDraft, clearError,
-    wisp: storeWisp,
+    wisp: storeWisp, sessionId: storeSessionId,
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
 
@@ -124,6 +139,37 @@ export default function WispHomeThread({
 
   // The panel (or another tab of the store) moved the chat to another conversation: say so rather than show it here.
   const showingThisThread = storeThreadId === wisp.threadId;
+
+  // Live: everything but the store's session. Paused: the whole history, read-only. Ended or not bound: nothing.
+  const live = active && binding === 'live' && showingThisThread;
+  const target = useMemo<TimelineTarget>(() => {
+    if (wisp.status === 'paused') return { threadId: wisp.threadId, excludeSessionId: null };
+    return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
+  }, [wisp.status, wisp.threadId, live, storeSessionId]);
+  const timeline = useWispThreadTimeline(target, refreshKey);
+  const threadMessages = useMemo(
+    () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
+    [timeline.messages, messages],
+  );
+  const extras = useMemo(
+    () => timeline.posts.map((post) => ({ id: post.id, at: new Date(post.createdAt), render: () => <WispPost post={post} /> })),
+    [timeline.posts],
+  );
+  const hasBrief = timeline.posts.some((p) => p.kind === 'brief');
+  const historyNotice = timeline.failed ? (
+    <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="wisp-home-thread-history-failed" role="status">
+      <span className="text-destructive">{t('wisp.home.historyFailed')}</span>
+      <button
+        type="button"
+        data-testid="wisp-home-thread-history-retry"
+        onClick={timeline.retry}
+        className="font-medium underline underline-offset-2"
+      >
+        {t('wisp.thread.retry')}
+      </button>
+    </div>
+  ) : null;
+  const threadLeading = historyNotice || leading ? <>{historyNotice}{leading}</> : null;
 
   const onLinked = (link: WispThreadLink) => {
     // As WispLinksPanel: the add is idempotent server-side (a re-add returns
@@ -145,7 +191,7 @@ export default function WispHomeThread({
       });
   };
 
-  /** Not live yet (or not live at all): the brief still opens the column, the state line stands where the composer goes. */
+  /** Not live yet (or not live at all): `leading` still opens the column, the state line stands where the composer goes. */
   const withoutChat = (footer: ReactNode) => (
     <>
       <div className="flex-1 overflow-y-auto px-4 py-6">
@@ -155,10 +201,32 @@ export default function WispHomeThread({
     </>
   );
 
+  /** A paused grant: the thread so far, read-only, with the notice where the composer would be. */
+  const historyOnly = (footer: ReactNode) => (
+    <>
+      <AiChatMessages
+        messages={timeline.messages}
+        extras={extras}
+        pendingApproval={null}
+        onApprove={noop}
+        onReject={noop}
+        layout="page"
+        assistantLabel={t('wisp.title')}
+        showTimeDividers
+        leading={threadLeading}
+        emptyState={<span />}
+        hasEarlier={timeline.hasEarlier}
+        onLoadEarlier={timeline.loadEarlier}
+        loadingEarlier={timeline.loadingEarlier}
+      />
+      <div className={`${COLUMN} px-3 pb-3`}>{footer}</div>
+    </>
+  );
+
   return (
     <section id="thread" className="flex min-h-0 flex-1 flex-col" data-testid="wisp-home-thread" aria-label={t('wisp.title')}>
       {!active ? (
-        withoutChat(
+        (wisp.status === 'paused' ? historyOnly : withoutChat)(
           <p className="rounded-2xl border px-4 py-3 text-sm text-muted-foreground" data-testid="wisp-home-thread-inactive">
             {wisp.status === 'paused' ? t('wisp.home.threadPaused') : t('wisp.home.threadEnded')}
           </p>,
@@ -184,7 +252,11 @@ export default function WispHomeThread({
       ) : (
         <>
           <AiChatMessages
-            messages={messages}
+            messages={threadMessages}
+            extras={extras}
+            hasEarlier={timeline.hasEarlier}
+            onLoadEarlier={timeline.loadEarlier}
+            loadingEarlier={timeline.loadingEarlier}
             chatRuns={chatRuns}
             pendingApproval={pendingApproval}
             pendingPlan={pendingPlan}
@@ -201,8 +273,10 @@ export default function WispHomeThread({
             layout="page"
             assistantLabel={t('wisp.title')}
             showTimeDividers
-            leading={leading}
-            emptyState={<WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading} />}
+            leading={threadLeading}
+            emptyState={timeline.settled
+              ? <WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading && !hasBrief} />
+              : <div data-testid="wisp-home-thread-history-loading" aria-busy="true" />}
           />
           <div className={COLUMN}>
             {error && (

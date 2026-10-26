@@ -50,7 +50,9 @@ const ignoreLinks = () => {};
  * (`/ai/wisp/thread/:threadId#concern=:id`). The conversation runs inline in
  * the column, the thread summary as its first post; the rail carries the
  * grant controls and live line, the grant's concerns (WispNeedsYou loads them
- * and expands the hash-selected row), workers and the activity timeline.
+ * and expands the hash-selected row), workers and the activity timeline. The
+ * column renders the thread's timeline (older sessions and Wisp's posts) and
+ * refreshes it with the same key as the rail's activity.
  */
 export default function WispThreadPage({ threadId }: { threadId: string }) {
   const { t } = useTranslation('ai');
@@ -193,6 +195,7 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
           scopeLabel={scopeLabel}
           links={null}
           onLinksChange={ignoreLinks}
+          refreshKey={activityKey}
           leading={wisp.summary ? (
             <article className="space-y-1">
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('wisp.post.summary')}</p>

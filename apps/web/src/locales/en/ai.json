@@ -740,7 +740,8 @@
       "disabledBody": "A partner administrator turned Wisp off under Settings → AI Agents. Your chats still work.",
       "disabledSettings": "Open AI Agents settings",
       "loadFailed": "Could not load the Wisp home.",
-      "noAccess": "You don't have access to Wisp"
+      "noAccess": "You don't have access to Wisp",
+      "historyFailed": "Could not load the earlier conversation."
     },
     "links": {
       "title": "Linked items",

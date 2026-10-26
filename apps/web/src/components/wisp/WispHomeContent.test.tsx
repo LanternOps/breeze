@@ -207,19 +207,45 @@ describe('WispHomeContent', () => {
     expect(h.railProps).toMatchObject({ orgName: 'Acme' });
   });
 
-  it('brief present renders wisp-brief-card inside wisp-home-thread', async () => {
+  it('the brief reaches the thread as a timeline post (W02b), never as a leading post', async () => {
     h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload(), wisp });
-    render(<WispHomeContent />);
-    const thread = await screen.findByTestId('wisp-home-thread');
-    expect(within(thread).getByTestId('wisp-brief-card')).toHaveTextContent('Two backups failed at Acme');
-  });
-
-  it('no brief renders no brief post', async () => {
-    h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null }), wisp });
     render(<WispHomeContent />);
     await screen.findByTestId('wisp-home-thread');
     expect(screen.queryByTestId('wisp-brief-card')).toBeNull();
-    expect(h.threadProps?.leading).toBeNull();
+    expect(h.threadProps?.leading).toBeUndefined();
+    expect(h.threadProps?.refreshKey).toBe(0);
+  });
+
+  it('a newer brief, a new concern or a check starting re-reads the thread timeline, once per change', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const first = payload();
+      h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: first, wisp });
+      render(<WispHomeContent />);
+      await screen.findByTestId('wisp-home-thread');
+      const poll = async (next: WispHomePayload) => {
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: next, wisp });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      };
+
+      await poll(first);
+      expect(h.threadProps?.refreshKey).toBe(0);
+
+      const newerBrief = payload({ brief: { sentAt: new Date(Date.now() + 60_000).toISOString(), sections: [] } });
+      await poll(newerBrief);
+      await waitFor(() => expect(h.threadProps?.refreshKey).toBe(1));
+      await poll(newerBrief);
+      expect(h.threadProps?.refreshKey).toBe(1);
+
+      const withConcern = { ...newerBrief, needsYou: [concern('c-9', 'open')] };
+      await poll(withConcern);
+      await waitFor(() => expect(h.threadProps?.refreshKey).toBe(2));
+
+      await poll({ ...withConcern, current: { orgId: 'o-1', orgName: 'Acme', startedAt: new Date().toISOString() } });
+      await waitFor(() => expect(h.threadProps?.refreshKey).toBe(3));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the rail gets the home payload's needs-you and links; the strip count counts live concerns only", async () => {
@@ -344,7 +370,7 @@ describe('WispHomeContent', () => {
       window.history.replaceState(null, '', window.location.pathname);
     });
 
-    it('#brief lands on the thread column (the brief is its first post); #needs-you lands on the rail section', async () => {
+    it('#brief lands on the thread column (briefs are posts in it); #needs-you lands on the rail section', async () => {
       window.history.replaceState(null, '', '#brief');
       h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload(), wisp });
       render(<WispHomeContent />);

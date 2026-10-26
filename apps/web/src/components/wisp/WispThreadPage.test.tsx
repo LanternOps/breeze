@@ -91,6 +91,7 @@ describe('WispThreadPage (W06 T7, W01 T13 companion layout)', () => {
       activityKey: 0,
       wisp: expect.objectContaining({ grantId: 'g1', threadId: 't1', scopeOrgId: 'org-a', status: 'active', summary: 'All quiet.', spentTodayCents: 42 }),
     });
+    expect(lastThread().refreshKey).toBe(0);
   });
 
   it('a grant over every organization labels its scope "All organizations"', async () => {
@@ -176,6 +177,8 @@ describe('WispThreadPage (W06 T7, W01 T13 companion layout)', () => {
     await waitFor(() => expect(lastRail().current).toEqual(live));
     expect(h.fetchActivity).toHaveBeenLastCalledWith('t1', null, 1);
     expect(lastRail().activityKey).not.toBe(before);
+    expect(lastThread().refreshKey).toBe(lastRail().activityKey);
+    expect(lastThread().refreshKey).not.toBe(before);
 
     // A failed live-line read drops the line (never a stale "Checking …") and keeps the page.
     h.fetchActivity.mockRejectedValue(new Error('activity down'));

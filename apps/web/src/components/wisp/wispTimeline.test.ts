@@ -4,7 +4,7 @@ import type { WispTimelineItem, WispTimelineMessage, WispTimelinePost } from '@b
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchMock }));
 
-import { fetchWispTimeline, splitTimelinePage } from './wispTimeline';
+import { fetchWispTimeline, mergeTimelineItems, splitTimelinePage } from './wispTimeline';
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as Response;
 
@@ -97,11 +97,42 @@ describe('splitTimelinePage', () => {
     expect(messages[2]).toMatchObject({ role: 'tool_result', toolOutput: { ok: true } });
   });
 
+  it('on equal milliseconds a tool call reads in conversation order, whatever the ids say', () => {
+    const same = '2026-10-26T09:00:00.000Z';
+    // Newest first as the server sends it: equal ms fall back to id DESC, so the result can come "after" its use.
+    const items: WispTimelineItem[] = [
+      msg('a-use', same, { role: 'tool_use', toolName: 'q', toolUseId: 'tu' }),
+      msg('z-result', same, { role: 'tool_result', toolName: 'q', toolUseId: 'tu' }),
+      msg('m-text', same, { role: 'assistant' }),
+    ];
+    expect(splitTimelinePage(items).messages.map((m) => m.role)).toEqual(['assistant', 'tool_use', 'tool_result']);
+  });
+
   it('maps null fields to the store shape (empty content, no tool fields)', () => {
     const { messages } = splitTimelinePage([msg('m-1', '2026-10-26T08:00:00.000Z', { content: null })]);
     expect(messages[0]?.content).toBe('');
     expect(messages[0]?.toolName).toBeUndefined();
     expect(messages[0]?.toolUseId).toBeUndefined();
     expect(messages[0]?.toolInput).toBeUndefined();
+  });
+});
+
+describe('mergeTimelineItems', () => {
+  it('unions by source and id, the incoming copy wins, and the result is newest first in the keyset order', () => {
+    const prev: WispTimelineItem[] = [post('p-1', '2026-10-26T09:00:00.000Z', { read: false }), msg('m-1', '2026-10-26T08:00:00.000Z')];
+    const incoming: WispTimelineItem[] = [
+      post('p-2', '2026-10-26T10:00:00.000Z'),
+      post('p-1', '2026-10-26T09:00:00.000Z', { read: true }),
+      // Same millisecond as p-1: the keyset puts the post first (source DESC).
+      msg('m-2', '2026-10-26T09:00:00.000Z'),
+    ];
+    const merged = mergeTimelineItems(prev, incoming);
+    expect(merged.map((i) => i.id)).toEqual(['p-2', 'p-1', 'm-2', 'm-1']);
+    expect((merged[1] as WispTimelinePost).read).toBe(true);
+  });
+
+  it('a message and a post may share an id without colliding', () => {
+    const merged = mergeTimelineItems([msg('x', '2026-10-26T08:00:00.000Z')], [post('x', '2026-10-26T08:00:00.000Z')]);
+    expect(merged.map((i) => i.source)).toEqual(['post', 'message']);
   });
 });

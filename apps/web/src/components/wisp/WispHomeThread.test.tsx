@@ -20,6 +20,18 @@ const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchMock }));
 const sessionRes = (status: string, wispGrantId = 'g-1') =>
   ({ ok: true, status: 200, json: async () => ({ session: { id: 's-old', status, wispGrantId } }) }) as Response;
+const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
+/**
+ * W02b: the column reads `GET /wisp/thread/:id/timeline` once bound. `timeline`
+ * answers it (by default an empty thread); everything else is the session check.
+ */
+const route = (opts: { session?: Response; timeline?: (url: string) => Response | Promise<Response> } = {}) =>
+  async (url: string) => {
+    if (url.includes('/timeline')) return opts.timeline ? opts.timeline(url) : json({ data: { items: [], nextCursor: null } });
+    return opts.session ?? sessionRes('active');
+  };
+const timelineCalls = () => fetchMock.mock.calls.map((c) => c[0] as string).filter((u) => u.includes('/timeline'));
+const paramsOf = (url: string) => new URLSearchParams(url.split('?')[1]);
 // The kit stubs record their props (W01 #10211: page layout, label, dividers,
 // leading, empty state, placeholder, the composer's link button) and render
 // the nodes they are handed so those can be driven from here.
@@ -27,9 +39,11 @@ const kit = vi.hoisted(() => ({ messages: [] as Array<Record<string, unknown>>, 
 vi.mock('../ai/AiChatMessages', () => ({
   default: (p: Record<string, unknown>) => {
     kit.messages.push(p);
+    const extras = (p.extras ?? []) as Array<{ id: string; render: () => React.ReactNode }>;
     return (
       <div data-testid="ai-chat-messages-mock">
         {p.leading as React.ReactNode}
+        {extras.map((e) => <div key={e.id} data-testid="extra-mock">{e.render()}</div>)}
         {(p.messages as unknown[]).length === 0 && (p.emptyState as React.ReactNode)}
       </div>
     );
@@ -79,7 +93,7 @@ describe('WispHomeThread (W08 Task 9)', () => {
   beforeEach(() => {
     reset();
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue(sessionRes('active'));
+    fetchMock.mockImplementation(route());
   });
 
   it('reuses a live session already on this thread: no switch, no new session', async () => {
@@ -128,7 +142,7 @@ describe('WispHomeThread (W08 Task 9)', () => {
   });
 
   it.each(['closed', 'expired'])('a %s last session is not resumed (its first send would fail): a fresh session starts', async (status) => {
-    fetchMock.mockResolvedValue(sessionRes(status));
+    fetchMock.mockImplementation(route({ session: sessionRes(status) }));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
     await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
     expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/s-old');
@@ -137,7 +151,7 @@ describe('WispHomeThread (W08 Task 9)', () => {
 
   it('a failed session check is logged before a fresh session starts', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response);
+    fetchMock.mockImplementation(route({ session: { ok: false, status: 500, json: async () => ({}) } as Response }));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
     await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[WispHomeThread]'), 500);
@@ -145,7 +159,7 @@ describe('WispHomeThread (W08 Task 9)', () => {
   });
 
   it('a last session under another grant is not resumed', async () => {
-    fetchMock.mockResolvedValue(sessionRes('active', 'g-rotated'));
+    fetchMock.mockImplementation(route({ session: sessionRes('active', 'g-rotated') }));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId="s-old" />);
     await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
     expect(h.state.switchSession).not.toHaveBeenCalled();
@@ -196,6 +210,8 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     kit.messages.length = 0;
     kit.input.length = 0;
     onLinksChange.mockReset();
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(route());
   });
 
   it('renders no heading and passes the brief post as leading', async () => {
@@ -213,14 +229,18 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
   it('empty thread shows the welcome and a chip sends its prompt', async () => {
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
     await screen.findByTestId('ai-chat-input-mock');
-    expect(screen.getByText("I'm looking around All organizations.")).toBeInTheDocument();
+    expect(await screen.findByText("I'm looking around All organizations.")).toBeInTheDocument();
+    expect(screen.getByText(/Your first brief arrives/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0] as HTMLElement);
     expect(h.state.sendMessage).toHaveBeenCalledWith('What needs my attention today? Keep it short.');
   });
 
-  it('with a brief on screen the welcome keeps its chips but drops the first-brief intro', async () => {
-    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} leading={brief} />);
-    await screen.findByTestId('ai-chat-input-mock');
+  it('with a brief post in the thread the welcome keeps its chips but drops the first-brief intro', async () => {
+    fetchMock.mockImplementation(route({
+      timeline: () => json({ data: { items: [{ source: 'post', id: 'p-b', kind: 'brief', title: 'Morning brief', body: null, link: null, sections: [{ heading: 'Overnight', lines: ['All quiet'] }], concernId: null, orgId: null, read: null, createdAt: '2026-10-26T07:00:00.000Z' }], nextCursor: null } }),
+    }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-brief-card')).toBeInTheDocument();
     expect(screen.queryByText(/Your first brief arrives/)).toBeNull();
     expect(screen.getAllByTestId('wisp-suggestion')).toHaveLength(4);
   });
@@ -257,5 +277,182 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     expect(screen.getByTestId('brief-post')).toBeInTheDocument();
     expect(screen.getByTestId('wisp-home-thread-inactive')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-chat-input-mock')).toBeNull();
+  });
+});
+
+describe('WispHomeThread reads the thread timeline (W02b #10213)', () => {
+  type Item = Record<string, unknown>;
+  const msg = (id: string, sessionId: string, minute: number, role = 'assistant'): Item => ({
+    source: 'message', id, sessionId, role, content: `text ${id}`, contentBlocks: null, toolName: null,
+    toolInput: null, toolOutput: null, toolUseId: null, createdAt: new Date(Date.UTC(2026, 9, 26, 8, minute)).toISOString(),
+  });
+  const post = (id: string, minute: number, over: Item = {}): Item => ({
+    source: 'post', id, kind: 'nudge', title: `nudge ${id}`, body: null, link: null, sections: null, concernId: null,
+    orgId: null, read: null, createdAt: new Date(Date.UTC(2026, 9, 26, 8, minute)).toISOString(), ...over,
+  });
+  const page = (items: Item[], nextCursor: string | null = null) => json({ data: { items, nextCursor } });
+  /** A timeline answer the test settles by hand (to look at the seam while a fetch is in flight). */
+  const deferred = () => {
+    let resolve!: (r: Response) => void;
+    const promise = new Promise<Response>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const lastKit = () => kit.messages.at(-1) as {
+    messages: Array<{ id: string }>; extras: Array<{ id: string }>; hasEarlier?: boolean; loadingEarlier?: boolean;
+    onLoadEarlier?: () => void; emptyState?: unknown;
+  };
+  const messageIds = () => lastKit().messages.map((m) => m.id);
+  const extraIds = () => lastKit().extras.map((e) => e.id).sort();
+  const live = [{ id: 'live-1', role: 'user', content: 'hello', createdAt: new Date(Date.UTC(2026, 9, 26, 9, 0)) }];
+
+  beforeEach(() => {
+    reset({ wisp, sessionId: 's-live', messages: live });
+    kit.messages.length = 0;
+    kit.input.length = 0;
+    fetchMock.mockReset();
+  });
+
+  it('first page loads after bind with excludeSessionId, older sessions before the live one and posts as extras', async () => {
+    fetchMock.mockImplementation(route({ timeline: () => page([post('p-1', 30), msg('m-2', 's-old', 20), msg('m-1', 's-old', 10, 'user')]) }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(messageIds()).toEqual(['m-1', 'm-2', 'live-1']));
+    expect(extraIds()).toEqual(['p-1']);
+    expect(lastKit().hasEarlier).toBe(false);
+    const calls = timelineCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('/wisp/thread/th-1/timeline?');
+    expect(paramsOf(calls[0] as string).get('excludeSessionId')).toBe('s-live');
+    expect(paramsOf(calls[0] as string).has('cursor')).toBe(false);
+    // The post renders through WispPost.
+    expect(screen.getByTestId('wisp-post')).toHaveAttribute('data-kind', 'nudge');
+  });
+
+  it('load earlier prepends and keeps order, then hides when the thread start is reached', async () => {
+    const second = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => (paramsOf(url).get('cursor') === 'c-1' ? second.promise : page([msg('m-3', 's-old', 30), msg('m-2', 's-old', 20)], 'c-1')),
+    }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(lastKit().hasEarlier).toBe(true));
+    act(() => { lastKit().onLoadEarlier?.(); });
+    expect(lastKit().loadingEarlier).toBe(true);
+    const call = timelineCalls().at(-1) as string;
+    expect(paramsOf(call).get('cursor')).toBe('c-1');
+    expect(paramsOf(call).get('excludeSessionId')).toBe('s-live');
+    await act(async () => { second.resolve(page([post('p-0', 5), msg('m-1', 's-old', 10)])); });
+    expect(messageIds()).toEqual(['m-1', 'm-2', 'm-3', 'live-1']);
+    expect(extraIds()).toEqual(['p-0']);
+    expect(lastKit().hasEarlier).toBe(false);
+    expect(lastKit().loadingEarlier).toBe(false);
+  });
+
+  it('rebind refetches with the new session excluded; the old session now comes from the timeline, never duplicated', async () => {
+    const rebound = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => (paramsOf(url).get('excludeSessionId') === 's-old'
+        ? rebound.promise
+        : page([msg('m-old', 's-old', 10)])),
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(messageIds()).toEqual(['m-old', 'live-1']));
+
+    // The store moves to s-old (its transcript now loads into the store).
+    act(() => { Object.assign(h.state, { sessionId: 's-old', messages: [{ id: 'store-old', role: 'assistant', content: 'from the store', createdAt: new Date() }] }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    // While the refetch is in flight the held page's s-old rows are hidden: s-old is the store's now.
+    expect(messageIds()).toEqual(['store-old']);
+    await waitFor(() => expect(paramsOf(timelineCalls().at(-1) as string).get('excludeSessionId')).toBe('s-old'));
+
+    // The persisted s-live rows arrive from the timeline (their ids differ from the streamed ones).
+    await act(async () => { rebound.resolve(page([msg('m-live-persisted', 's-live', 40)])); });
+    expect(messageIds()).toEqual(['m-live-persisted', 'store-old']);
+  });
+
+  it('a page from before a rebind never lands after it', async () => {
+    const stale = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => (paramsOf(url).get('excludeSessionId') === 's-live' ? stale.promise : page([msg('m-fresh', 's-live', 10)])),
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(timelineCalls()).toHaveLength(1));
+    act(() => { Object.assign(h.state, { sessionId: 's-next', messages: [] }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(messageIds()).toEqual(['m-fresh']));
+    await act(async () => { stale.resolve(page([msg('m-stale', 's-old', 5)])); });
+    expect(messageIds()).toEqual(['m-fresh']);
+  });
+
+  it('poll refresh adds a new post once and keeps the pages already loaded', async () => {
+    let calls = 0;
+    fetchMock.mockImplementation(route({
+      timeline: (url) => {
+        if (paramsOf(url).get('cursor') === 'c-1') return page([msg('m-1', 's-old', 1)]);
+        calls += 1;
+        return calls === 1
+          ? page([post('p-1', 30), msg('m-2', 's-old', 20)], 'c-1')
+          : page([post('p-2', 50, { read: false }), post('p-1', 30, { read: true }), msg('m-2', 's-old', 20)], 'c-2');
+      },
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    await waitFor(() => expect(extraIds()).toEqual(['p-1']));
+    await act(async () => { lastKit().onLoadEarlier?.(); });
+    await waitFor(() => expect(messageIds()).toEqual(['m-1', 'm-2', 'live-1']));
+
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    await waitFor(() => expect(extraIds()).toEqual(['p-1', 'p-2']));
+    // Paged history survives, the cursor still points past the oldest page, a post's read flag updates.
+    expect(messageIds()).toEqual(['m-1', 'm-2', 'live-1']);
+    expect(lastKit().hasEarlier).toBe(false);
+    expect(screen.getAllByTestId('wisp-post-unread')).toHaveLength(1);
+
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={2} />);
+    await waitFor(() => expect(calls).toBe(3));
+    expect(extraIds()).toEqual(['p-1', 'p-2']);
+  });
+
+  it('the welcome waits for the first page instead of flashing over history', async () => {
+    reset({ wisp, sessionId: 's-live', messages: [] });
+    const first = deferred();
+    fetchMock.mockImplementation(route({ timeline: () => first.promise }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await screen.findByTestId('ai-chat-input-mock');
+    expect(screen.queryByTestId('wisp-suggestion')).toBeNull();
+    await act(async () => { first.resolve(page([msg('m-1', 's-old', 1)])); });
+    expect(messageIds()).toEqual(['m-1']);
+  });
+
+  it('a failed first page says so and retries', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let fail = true;
+    fetchMock.mockImplementation(route({ timeline: () => (fail ? json({}, 500) : page([msg('m-1', 's-old', 1)])) }));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    const notice = await screen.findByTestId('wisp-home-thread-history-failed');
+    expect(notice).toHaveTextContent('Could not load the earlier conversation.');
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('[WispHomeThread]'), expect.anything());
+    fail = false;
+    fireEvent.click(screen.getByTestId('wisp-home-thread-history-retry'));
+    await waitFor(() => expect(messageIds()).toEqual(['m-1', 'live-1']));
+    expect(screen.queryByTestId('wisp-home-thread-history-failed')).toBeNull();
+    err.mockRestore();
+  });
+
+  it('a paused grant shows its history read-only (nothing excluded), with no composer', async () => {
+    reset();
+    fetchMock.mockImplementation(route({ timeline: () => page([post('p-1', 30), msg('m-1', 's-old', 10)]) }));
+    render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId="s-old" />);
+    await waitFor(() => expect(messageIds()).toEqual(['m-1']));
+    expect(extraIds()).toEqual(['p-1']);
+    expect(paramsOf(timelineCalls()[0] as string).has('excludeSessionId')).toBe(false);
+    expect(screen.getByTestId('wisp-home-thread-inactive')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-input-mock')).toBeNull();
+    expect(h.state.switchSession).not.toHaveBeenCalled();
+  });
+
+  it('an ended grant reads no timeline', async () => {
+    reset();
+    render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'revoked' }} lastSessionId="s-old" />);
+    expect(screen.getByTestId('wisp-home-thread-inactive')).toBeInTheDocument();
+    await Promise.resolve();
+    expect(timelineCalls()).toHaveLength(0);
   });
 });

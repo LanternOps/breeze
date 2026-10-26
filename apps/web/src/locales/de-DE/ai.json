@@ -740,7 +740,8 @@
       "disabledBody": "Ein Partner-Administrator hat Wisp unter Einstellungen → KI-Agenten ausgeschaltet. Ihre Chats funktionieren weiterhin.",
       "disabledSettings": "KI-Agenten-Einstellungen öffnen",
       "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden.",
-      "noAccess": "Sie haben keinen Zugriff auf Wisp"
+      "noAccess": "Sie haben keinen Zugriff auf Wisp",
+      "historyFailed": "Der frühere Verlauf konnte nicht geladen werden."
     },
     "links": {
       "title": "Verknüpfte Einträge",

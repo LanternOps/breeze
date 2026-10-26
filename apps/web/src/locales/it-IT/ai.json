@@ -740,7 +740,8 @@
       "disabledBody": "Un amministratore partner ha disattivato Wisp in Impostazioni → Agenti AI. Le tue chat continuano a funzionare.",
       "disabledSettings": "Apri le impostazioni degli Agenti AI",
       "loadFailed": "Impossibile caricare la home di Wisp.",
-      "noAccess": "Non hai accesso a Wisp"
+      "noAccess": "Non hai accesso a Wisp",
+      "historyFailed": "Impossibile caricare la conversazione precedente."
     },
     "links": {
       "title": "Elementi collegati",

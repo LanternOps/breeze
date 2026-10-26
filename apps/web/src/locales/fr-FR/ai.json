@@ -740,7 +740,8 @@
       "disabledBody": "Un administrateur partenaire a désactivé Wisp sous Paramètres → Agents IA. Vos conversations fonctionnent toujours.",
       "disabledSettings": "Ouvrir les paramètres des agents IA",
       "loadFailed": "Impossible de charger l’accueil de Wisp.",
-      "noAccess": "Vous n'avez pas accès à Wisp"
+      "noAccess": "Vous n'avez pas accès à Wisp",
+      "historyFailed": "Impossible de charger la conversation précédente."
     },
     "links": {
       "title": "Éléments liés",

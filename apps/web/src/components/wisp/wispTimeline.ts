@@ -82,13 +82,49 @@ export async function fetchWispTimeline(
   return { items: parsed, nextCursor: typeof body?.data?.nextCursor === 'string' ? body.data.nextCursor : null };
 }
 
+const itemMs = (item: Pick<WispTimelineItem, 'createdAt'>): number => Date.parse(item.createdAt);
+
+/**
+ * Negative when `a` is newer: the server's keyset order (created_at DESC at
+ * millisecond precision, source DESC bytewise so 'post' > 'message', id DESC).
+ */
+function newestFirst(a: WispTimelineItem, b: WispTimelineItem): number {
+  const d = itemMs(b) - itemMs(a);
+  if (d !== 0) return d;
+  if (a.source !== b.source) return a.source < b.source ? 1 : -1;
+  if (a.id !== b.id) return a.id < b.id ? 1 : -1;
+  return 0;
+}
+
+/**
+ * Pages held on the client, unioned with a newer read of any page: keyed by
+ * source and id (a refreshed copy wins, so a post's read flag follows the
+ * server), newest first in the server's keyset order.
+ */
+export function mergeTimelineItems(prev: readonly WispTimelineItem[], incoming: readonly WispTimelineItem[]): WispTimelineItem[] {
+  const byKey = new Map<string, WispTimelineItem>();
+  for (const item of prev) byKey.set(`${item.source}:${item.id}`, item);
+  for (const item of incoming) byKey.set(`${item.source}:${item.id}`, item);
+  return [...byKey.values()].sort(newestFirst);
+}
+
+/**
+ * On equal milliseconds the keyset falls back to id order, which can put a
+ * tool_result before its tool_use (the kit would then show the call running
+ * forever). Within one millisecond, read in conversation order instead.
+ */
+const ROLE_ORDER: Record<WispTimelineMessage['role'], number> = { user: 0, assistant: 1, tool_use: 2, tool_result: 3 };
+
 /**
  * Splits a newest-first page into the kit's inputs, both oldest first:
  * messages in the store's shape (`mapMessagesFromApi`, as session history
  * loads) and posts.
  */
 export function splitTimelinePage(items: readonly WispTimelineItem[]): { messages: AiMessage[]; posts: WispTimelinePost[] } {
-  const oldestFirst = [...items].reverse();
+  // A post sorts after every message of its millisecond, as the keyset has it.
+  // Stable: equal-millisecond rows of the same rank keep the server's order.
+  const rank = (i: WispTimelineItem) => (i.source === 'message' ? ROLE_ORDER[i.role] : 4);
+  const oldestFirst = [...items].reverse().sort((a, b) => itemMs(a) - itemMs(b) || rank(a) - rank(b));
   const rows: Record<string, unknown>[] = [];
   const posts: WispTimelinePost[] = [];
   for (const item of oldestFirst) {

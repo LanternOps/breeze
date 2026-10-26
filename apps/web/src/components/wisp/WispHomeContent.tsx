@@ -7,7 +7,6 @@ import { useEntitlement } from '@/hooks/useEntitlement';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from '../ai/WispGrantStepUpModal';
-import WispBriefPost from './WispBriefPost';
 import WispCompanionShell from './WispCompanionShell';
 import WispHomeThread from './WispHomeThread';
 import WispRail from './WispRail';
@@ -38,8 +37,8 @@ const LIVE_STATUSES: readonly string[] = LIVE_CONCERN_STATUSES;
  * The Wisp home's body (W08 Task 9; W01 #10211, companion spec §4.1): one read
  * (`GET /wisp/home`, no model call) for first paint, then a quiet poll.
  * Ready: the conversation is the page. `WispCompanionShell` lays out the
- * thread column at reading width (the latest brief is its first post, the
- * composer anchored at the bottom) and the rail at the right from `lg` up:
+ * thread column at reading width (the thread's timeline with Wisp's briefs
+ * and nudges as posts, W02b; the composer anchored at the bottom) and the rail at the right from `lg` up:
  * identity and grant controls, what needs you, workers, linked items, the
  * activity timeline, and the chats and memory links. Below `lg` the rail
  * collapses to a status strip that opens it in a drawer. No page heading: the
@@ -59,6 +58,7 @@ export default function WispHomeContent() {
   const [view, setView] = useState<View>({ kind: 'loading' });
   const [startOpen, setStartOpen] = useState(false);
   const [activityKey, setActivityKey] = useState(0);
+  const [threadKey, setThreadKey] = useState(0);
 
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -129,6 +129,19 @@ export default function WispHomeContent() {
     lastLiveKey.current = liveKey;
   }, [liveKey]);
 
+  // W02b: Wisp's posts reach the thread through its timeline. A check starting
+  // or finishing, a newer brief, or a change in the concerns is when a new post
+  // can exist: re-read the thread's newest page then, not on every poll.
+  const postsSignal = view.kind === 'ready'
+    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
+    : null;
+  const lastPostsSignal = useRef<string | null>(null);
+  useEffect(() => {
+    if (postsSignal === null) return;
+    if (lastPostsSignal.current !== null && lastPostsSignal.current !== postsSignal) setThreadKey((k) => k + 1);
+    lastPostsSignal.current = postsSignal;
+  }, [postsSignal]);
+
   // `#needs-you`, `#links`, `#concern=<id>` …: bring the section into view once it exists.
   // Below `lg` the rail sections sit in the closed drawer, so a rail hash has nothing to scroll to there.
   const ready = view.kind === 'ready';
@@ -136,7 +149,7 @@ export default function WispHomeContent() {
     if (!ready) return;
     const scroll = () => {
       const section = homeSectionFromHash(window.location.hash);
-      // The brief is the thread's first post now, not a section of its own.
+      // Briefs are posts in the thread now, not a section of their own.
       const id = section === 'brief' ? 'thread' : section;
       if (id) document.getElementById(id)?.scrollIntoView?.({ block: 'start' });
     };
@@ -245,7 +258,7 @@ export default function WispHomeContent() {
           scopeLabel={scopeLabel}
           links={links}
           onLinksChange={onLinksChange}
-          leading={payload.brief ? <WispBriefPost brief={payload.brief} /> : null}
+          refreshKey={threadKey}
         />
       }
       rail={
