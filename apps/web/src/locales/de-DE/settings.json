@@ -79,6 +79,10 @@
         "categoryLabel": "Kategorie",
         "categoryUnresolved": "Vorgeschlagen — Name in dieser Ansicht nicht verfügbar"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Fix-Gedächtnis",
+      "fleetDesignReport": "Flottendesign"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
       "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
-      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus."
+      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+      "researchLink": "Fix-Gedächtnis öffnen",
+      "designerLink": "Flottendesign öffnen"
     },
     "emptyState": {
       "title": "Noch keine Agenten",

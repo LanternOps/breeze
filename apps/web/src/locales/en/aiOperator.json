@@ -128,15 +128,12 @@
     "deviceLabel": "Device",
     "serviceNameLabel": "Service name",
     "serviceNamePlaceholder": "e.g. Spooler",
-    "serviceNameError": "Enter the service name to delegate this task.",
+    "serviceNameError": "Enter the service name to start this AI task.",
     "workflowLabel": "Recipe",
     "workflowName": "Service recovery",
-    "confirmLabel": "Delegate",
+    "confirmLabel": "Start",
     "queued": "AI task started.",
     "failed": "Could not start the AI task."
-  },
-  "nav": {
-    "operator": "AI Tasks"
   },
   "effectTool": {
     "googleSetVacation": "Set the Gmail auto-reply",

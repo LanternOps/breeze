@@ -128,15 +128,12 @@
     "deviceLabel": "Dispositivo",
     "serviceNameLabel": "Nombre del servicio",
     "serviceNamePlaceholder": "p. ej. Spooler",
-    "serviceNameError": "Ingresa el nombre del servicio para delegar esta tarea.",
+    "serviceNameError": "Ingresa el nombre del servicio para iniciar esta tarea de IA.",
     "workflowLabel": "Receta",
     "workflowName": "Recuperación de servicio",
-    "confirmLabel": "Delegar",
+    "confirmLabel": "Iniciar",
     "queued": "Tarea de IA iniciada.",
     "failed": "No se pudo iniciar la tarea de IA."
-  },
-  "nav": {
-    "operator": "Tareas de IA"
   },
   "effectTool": {
     "googleSetVacation": "Configurar la respuesta automática de Gmail",

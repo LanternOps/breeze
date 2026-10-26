@@ -57,11 +57,22 @@ describe('searchSettingsCatalog (#8365)', () => {
   });
 
   it('every catalogue entry is findable by its own name when visible', () => {
-    const c = ctx({ permissions: allPerms, isPlatformAdmin: true });
-    for (const e of SETTINGS_CATALOG) {
+    const c = ctx({ permissions: allPerms, isPlatformAdmin: true, loadedExtensions: ['workspace'] });
+    for (const e of SETTINGS_CATALOG.filter((entry) => !entry.sidebarOnly)) {
       const ids = searchSettingsCatalog(e.name, c, translate).map((r) => r.id);
       expect(ids, e.id).toContain(e.id);
     }
+  });
+
+  // W04 (#10135): the Settings → AI hub is a sidebar group page, not a setting.
+  it('never lists a sidebar-only entry, even when it would otherwise match', () => {
+    const c = ctx({ permissions: allPerms, isPlatformAdmin: true });
+    const sidebarOnly = SETTINGS_CATALOG.filter((e) => e.sidebarOnly);
+    expect(sidebarOnly.map((e) => e.id)).toContain('ai');
+    for (const e of sidebarOnly) {
+      expect(searchSettingsCatalog(e.name, c, translate).map((r) => r.id), e.id).not.toContain(e.id);
+    }
+    expect(searchSettingsCatalog('ai', c, translate).map((r) => r.id)).toContain('ai-agents');
   });
 
   it('returns nothing for a blank query', () => {
@@ -75,7 +86,10 @@ describe('catalogue hrefs resolve to real pages', () => {
   const PAGES = resolve(dirname(fileURLToPath(import.meta.url)), '../pages');
   const serving = (href: string): string | null => {
     const path = href.split(/[?#]/)[0]!.replace(/\/$/, '');
-    for (const f of [`${PAGES}${path}.astro`, `${PAGES}${path}/index.astro`]) {
+    const candidates = [`${PAGES}${path}.astro`, `${PAGES}${path}/index.astro`];
+    // Runtime-extension pages are served by one catch-all route.
+    if (/^\/extensions\/[a-z][a-z0-9-]+\/./.test(path)) candidates.push(`${PAGES}/extensions/[name]/[...path].astro`);
+    for (const f of candidates) {
       if (existsSync(f)) return f;
     }
     return null;

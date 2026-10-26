@@ -128,15 +128,12 @@
     "deviceLabel": "Gerät",
     "serviceNameLabel": "Dienstname",
     "serviceNamePlaceholder": "z. B. Spooler",
-    "serviceNameError": "Geben Sie den Dienstnamen ein, um diese Aufgabe zu delegieren.",
+    "serviceNameError": "Geben Sie den Dienstnamen ein, um diese KI-Aufgabe zu starten.",
     "workflowLabel": "Rezept",
     "workflowName": "Dienstwiederherstellung",
-    "confirmLabel": "Delegieren",
+    "confirmLabel": "Starten",
     "queued": "KI-Aufgabe gestartet.",
     "failed": "KI-Aufgabe konnte nicht gestartet werden."
-  },
-  "nav": {
-    "operator": "KI-Aufgaben"
   },
   "effectTool": {
     "googleSetVacation": "Gmail-Abwesenheitsnotiz einrichten",

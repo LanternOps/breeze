@@ -79,6 +79,10 @@
         "categoryLabel": "Kategori",
         "categoryUnresolved": "Önerildi — bu görünümde ad kullanılamıyor"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Düzeltme belleği",
+      "fleetDesignReport": "Filo tasarımı"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
-      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "researchLink": "Düzeltme belleğini aç",
+      "designerLink": "Filo tasarımını aç"
     },
     "emptyState": {
       "title": "Henüz aracı yok",

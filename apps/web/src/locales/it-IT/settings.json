@@ -79,6 +79,10 @@
         "categoryLabel": "Categoria",
         "categoryUnresolved": "Suggerita — nome non disponibile in questa vista"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Memoria delle correzioni",
+      "fleetDesignReport": "Progettazione flotta"
     }
   },
   "aiDataPolicy": {
@@ -2565,7 +2569,9 @@
       "patch": "Esamina le patch mancanti e propone cosa installare.",
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
       "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
-      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla."
+      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+      "researchLink": "Apri la memoria delle correzioni",
+      "designerLink": "Apri la progettazione flotta"
     },
     "emptyState": {
       "title": "Nessun agente per ora",
