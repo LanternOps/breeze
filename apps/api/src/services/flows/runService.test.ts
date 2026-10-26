@@ -13,9 +13,12 @@ import type { AuthContext } from '../../middleware/auth';
 type Op = { op: string; args: unknown[] };
 type Call = { kind: string; table?: unknown; ops: Op[] };
 
-const { queues, calls } = vi.hoisted(() => ({
+const { queues, calls, deferred } = vi.hoisted(() => ({
   queues: { select: [] as unknown[], insert: [] as unknown[], update: [] as unknown[], execute: [] as unknown[] },
   calls: [] as Call[],
+  // Work handed to runAfterDbContextCommit, keyed by label; run on demand so a
+  // test can tell "deferred past the request transaction" from "run inline".
+  deferred: { hold: false, labels: [] as string[], pending: [] as Array<() => unknown> },
 }));
 
 vi.mock('../../db', () => {
@@ -51,7 +54,11 @@ vi.mock('../../db', () => {
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     getCurrentDbAccessContext: () => undefined,
-    runAfterDbContextCommit: (_label: string, work: () => unknown) => { void work(); },
+    runAfterDbContextCommit: (label: string, work: () => unknown) => {
+      deferred.labels.push(label);
+      if (deferred.hold) deferred.pending.push(work);
+      else void work();
+    },
   };
 });
 
@@ -174,12 +181,27 @@ beforeEach(() => {
   vi.mocked(getUserPermissions).mockReset().mockResolvedValue(perms());
   vi.mocked(assertFlowRunAdmission).mockReset().mockResolvedValue({ ok: true });
   vi.mocked(enqueueFlowRunSlice).mockReset().mockResolvedValue('job');
+  deferred.hold = false;
+  deferred.labels.length = 0;
+  deferred.pending.length = 0;
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
   vi.mocked(captureException).mockReset();
 });
 
 describe('startManualRun', () => {
+  it('enqueues the first slice only after the caller\'s DB context commits (no bullmq.add inside a held request transaction, #1105)', async () => {
+    deferred.hold = true;
+    queueStart();
+    queueCreate();
+    const r = await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui');
+    expect(r).toMatchObject({ ok: true, runId: RUN_ID });
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+    expect(deferred.labels).toContain(`flow-run-first-slice:${RUN_ID}`);
+    for (const work of deferred.pending) await work();
+    expect(enqueueFlowRunSlice).toHaveBeenCalledWith(RUN_ID);
+  });
+
   it('manual run on an org flow', async () => {
     queueStart();
     queueCreate();

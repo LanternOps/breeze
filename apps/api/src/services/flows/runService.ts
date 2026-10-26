@@ -31,7 +31,7 @@ import {
   type FlowRunSummaryDto,
   type FlowValue,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { organizations } from '../../db/schema/orgs';
 import { flows } from '../../db/schema/flows';
@@ -269,12 +269,20 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
   if (!result.created) return result;
   const { flowName, ...created } = result;
 
-  try {
-    await enqueueFlowRunSlice(created.runId);
-  } catch (err) {
-    console.error(`[flows] first slice enqueue failed (run=${created.runId}); the reconciler will retry`, err);
-    reportError(err, 'run_service.first_slice_enqueue', { orgId: i.orgId, flowId: i.flowId, runId: created.runId });
-  }
+  // The run row is already committed by the system transaction above, but a
+  // manual start is called from a request handler whose ambient
+  // withDbAccessContext transaction is still open: enqueueing here would hold
+  // that pooled connection across a Redis round trip (#1105). Defer to after the
+  // caller's context settles (immediate when there is none: schedule tick,
+  // event worker). A lost enqueue is recovered by reconciler clause (a).
+  runAfterDbContextCommit(`flow-run-first-slice:${created.runId}`, async () => {
+    try {
+      await enqueueFlowRunSlice(created.runId);
+    } catch (err) {
+      console.error(`[flows] first slice enqueue failed (run=${created.runId}); the reconciler will retry`, err);
+      reportError(err, 'run_service.first_slice_enqueue', { orgId: i.orgId, flowId: i.flowId, runId: created.runId });
+    }
+  });
 
   if (i.triggerKind === 'manual') {
     try {
