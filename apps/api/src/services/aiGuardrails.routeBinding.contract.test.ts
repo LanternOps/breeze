@@ -275,6 +275,83 @@ const BINDINGS: readonly Binding[] = [
     tool: 'get_fleet_design', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId',
     toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and returns counts plus the design markdown, not the stored outcome with script bodies.' },
   },
+  // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
+  {
+    tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',
+    toolOnly: { extra: [], reason: 'One read over the dashboard, score, trend, status and compliance views (all devices:read); exact-device callers see only their devices and get no org-wide aggregate.' },
+  },
+  { tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/score-breakdown' },
+  { tool: 'get_security_compliance', routeFile: 'security/status.ts', method: 'get', path: '/status' },
+  { tool: 'get_security_compliance', routeFile: 'security/status.ts', method: 'get', path: '/status/:deviceId' },
+  {
+    tool: 'manage_security_recommendations', action: 'complete', routeFile: 'security/recommendations.ts', method: 'post', path: '/recommendations/:id/complete',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions: the status it records is org-wide.' },
+  },
+  {
+    tool: 'manage_security_recommendations', action: 'dismiss', routeFile: 'security/recommendations.ts', method: 'post', path: '/recommendations/:id/dismiss',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions: the status it records is org-wide.' },
+  },
+  { tool: 'manage_access_reviews', action: 'list', routeFile: 'accessReviews.ts', method: 'get', path: '/' },
+  { tool: 'manage_access_reviews', action: 'get', routeFile: 'accessReviews.ts', method: 'get', path: '/:id' },
+  {
+    tool: 'manage_access_reviews', action: 'create', routeFile: 'accessReviews.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'The reviewer must be a member of the review\'s own scope (REST accepts any user id), and restricted sessions are refused.' },
+  },
+  { tool: 'manage_access_reviews', action: 'decide_item', routeFile: 'accessReviews.ts', method: 'patch', path: '/:id/items/:itemId' },
+  { tool: 'manage_audit_baselines', action: 'list', routeFile: 'auditBaselines.ts', method: 'get', path: '/' },
+  {
+    tool: 'manage_audit_baselines', action: 'compliance', routeFile: 'auditBaselines.ts', method: 'get', path: '/compliance',
+    toolOnly: { extra: [], reason: 'Computed over the devices the caller can see (site and exact-device axes); the route aggregates the whole org.' },
+  },
+  { tool: 'manage_audit_baselines', action: 'device_results', routeFile: 'auditBaselines.ts', method: 'get', path: '/devices/:deviceId' },
+  {
+    tool: 'manage_audit_baselines', action: 'create', routeFile: 'auditBaselines.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'Create only (no id upsert), refused to restricted sessions and to automation principals.' },
+  },
+  {
+    tool: 'manage_audit_baselines', action: 'request_apply', routeFile: 'auditBaselines.ts', method: 'post', path: '/apply-requests',
+    toolOnly: { extra: [], reason: 'Every device id must be in the baseline\'s org and not decommissioned or parked; refused to automation principals.' },
+  },
+  { tool: 'manage_compliance_policies', action: 'deactivate', routeFile: 'policyManagement/actions.ts', method: 'post', path: '/:id/deactivate' },
+  {
+    tool: 'manage_security_policies', action: 'create', routeFile: 'security/policies.ts', method: 'post', path: '/policies',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide config; REST has no ceiling check).' },
+  },
+  {
+    tool: 'manage_security_policies', action: 'update', routeFile: 'security/policies.ts', method: 'put', path: '/policies/:id',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide config; REST has no ceiling check).' },
+  },
+  {
+    tool: 'manage_recovery_keys', action: 'list', routeFile: 'security/recoveryKeys.ts', method: 'get', path: '/encryption/devices/:deviceId/recovery-keys',
+    toolOnly: { extra: [], reason: 'The reveal ledger is returned without staff names or emails.' },
+  },
+  {
+    tool: 'manage_recovery_keys', action: 'rotate', routeFile: 'security/recoveryKeys.ts', method: 'post', path: '/encryption/devices/:deviceId/recovery-keys/rotate',
+    toolOnly: { extra: [], reason: 'Windows only: a FileVault rotation needs credentials, which never travel through chat.' },
+  },
+  { tool: 'manage_recovery_keys', action: 'collect', routeFile: 'security/recoveryKeys.ts', method: 'post', path: '/encryption/devices/:deviceId/recovery-keys/collect' },
+  { tool: 'manage_pam_rules', action: 'list_rules', routeFile: 'pam.ts', method: 'get', path: '/rules' },
+  { tool: 'manage_pam_rules', action: 'get_config', routeFile: 'pam.ts', method: 'get', path: '/config' },
+  { tool: 'manage_pam_rules', action: 'list_signer_groups', routeFile: 'pam.ts', method: 'get', path: '/signer-groups' },
+  {
+    tool: 'manage_pam_rules', action: 'create_rule', routeFile: 'pam.ts', method: 'post', path: '/rules',
+    toolOnly: { extra: [], reason: 'Never auto_approve, and a referenced signer group must belong to the rule\'s own org (W11-D3).' },
+  },
+  {
+    tool: 'manage_pam_rules', action: 'update_rule', routeFile: 'pam.ts', method: 'patch', path: '/rules/:id',
+    toolOnly: { extra: [], reason: 'No reapprove, never auto_approve, and no change that could widen an org\'s auto-approval (W11-D3).' },
+  },
+  {
+    tool: 'manage_pam_rules', action: 'delete_rule', routeFile: 'pam.ts', method: 'delete', path: '/rules/:id',
+    toolOnly: { extra: [], reason: 'Refused when deleting the rule could let an elevation fall through to an auto-approve rule (W11-D3).' },
+  },
+  { tool: 'manage_pam_rules', action: 'set_config', routeFile: 'pam.ts', method: 'put', path: '/config' },
+  { tool: 'manage_pam_rules', action: 'create_signer_group', routeFile: 'pam.ts', method: 'post', path: '/signer-groups' },
+  {
+    tool: 'manage_pam_rules', action: 'update_signer_group', routeFile: 'pam.ts', method: 'patch', path: '/signer-groups/:id',
+    toolOnly: { extra: [], reason: 'A membership change is refused in an org with an auto-approve rule (W11-D3).' },
+  },
+  { tool: 'manage_pam_rules', action: 'delete_signer_group', routeFile: 'pam.ts', method: 'delete', path: '/signer-groups/:id' },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -699,6 +776,17 @@ const BINDINGS: readonly Binding[] = [
  * an entry here is a tool whose route evidence is still only a comment.
  */
 const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> = [
+  // Full-control W11 (#6781): these reads are gated by requireSecurityReadAccess (routes/security/readAuthorization.ts),
+  // a helper middleware rather than a requirePermission call, so the binder cannot read it. It requires devices:read
+  // (and a platform admin for system scope); the tool floors are devices:read.
+  {
+    tool: 'manage_security_recommendations', action: 'list',
+    reason: 'GET /security/recommendations is gated by requireSecurityReadAccess (devices:read through a helper), which the binder cannot parse',
+  },
+  {
+    tool: 'manage_security_policies', action: 'list',
+    reason: 'GET /security/policies is gated by requireSecurityReadAccess (devices:read through a helper), which the binder cannot parse',
+  },
   {
     tool: 'get_hyperv_vm_details',
     reason: 'two registrations (routes/backup/hyperv.ts:94 and :124) gate the same tool; the binder refuses an ambiguous method+path rather than picking one',

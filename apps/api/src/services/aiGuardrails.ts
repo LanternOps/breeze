@@ -2467,6 +2467,51 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_ai_agent_schedules: { resource: 'ai_agents', action: 'read' },
   list_fleet_designs: { resource: 'ai_agents', action: 'read' },
   get_fleet_design: { resource: 'ai_agents', action: 'read' },
+  // Full-control W11 (#6781) — each floor is read from its route by the W11 rows of
+  // aiGuardrails.routeBinding.contract.test.ts (the security read routes behind requireSecurityReadAccess
+  // are devices:read too, routes/security/readAuthorization.ts).
+  get_security_compliance: { resource: 'devices', action: 'read' },
+  manage_security_recommendations: {
+    list: { resource: 'devices', action: 'read' },
+    complete: { resource: 'devices', action: 'write' },
+    dismiss: { resource: 'devices', action: 'write' },
+  },
+  manage_access_reviews: {
+    list: { resource: 'users', action: 'read' },
+    get: { resource: 'users', action: 'read' },
+    create: { resource: 'users', action: 'write' },
+    decide_item: { resource: 'users', action: 'write' },
+  },
+  manage_audit_baselines: {
+    list: { resource: 'audit', action: 'read' },
+    compliance: { resource: 'audit', action: 'read' },
+    device_results: { resource: 'audit', action: 'read' },
+    create: { resource: 'organizations', action: 'write' },
+    request_apply: { resource: 'devices', action: 'write' },
+  },
+  manage_compliance_policies: { resource: 'devices', action: 'write' },
+  manage_security_policies: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+  },
+  manage_recovery_keys: {
+    list: { resource: 'devices', action: 'read' },
+    rotate: { resource: 'devices', action: 'execute' },
+    collect: { resource: 'devices', action: 'execute' },
+  },
+  manage_pam_rules: {
+    list_rules: { resource: 'devices', action: 'read' },
+    get_config: { resource: 'devices', action: 'read' },
+    list_signer_groups: { resource: 'devices', action: 'read' },
+    create_rule: { resource: 'pam', action: 'manage_policy' },
+    update_rule: { resource: 'pam', action: 'manage_policy' },
+    delete_rule: { resource: 'pam', action: 'manage_policy' },
+    set_config: { resource: 'pam', action: 'manage_policy' },
+    create_signer_group: { resource: 'pam', action: 'manage_policy' },
+    update_signer_group: { resource: 'pam', action: 'manage_policy' },
+    delete_signer_group: { resource: 'pam', action: 'manage_policy' },
+  },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

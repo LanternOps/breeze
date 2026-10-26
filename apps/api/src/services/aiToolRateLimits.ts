@@ -230,6 +230,16 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   list_ai_agent_schedules: { limit: 40, windowSeconds: 300 },
   list_fleet_designs: { limit: 40, windowSeconds: 300 },
   get_fleet_design: { limit: 30, windowSeconds: 300 },
+  // Full-control W11 (#6781, W11-D11): security policy tools. The status views assemble several queries; the
+  // recovery-key tool reaches a device (rotate / collect queue a command), compliance deactivate is permanent.
+  get_security_compliance: { limit: 40, windowSeconds: 300 },
+  manage_security_recommendations: { limit: 30, windowSeconds: 300 },
+  manage_access_reviews: { limit: 30, windowSeconds: 300 },
+  manage_audit_baselines: { limit: 30, windowSeconds: 300 },
+  manage_compliance_policies: { limit: 10, windowSeconds: 300 },
+  manage_security_policies: { limit: 20, windowSeconds: 300 },
+  manage_recovery_keys: { limit: 10, windowSeconds: 300 },
+  manage_pam_rules: { limit: 30, windowSeconds: 300 },
 };
 
 /**
