@@ -147,12 +147,50 @@ describe('syncLegacyContactRoles', () => {
     expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
   });
 
-  it('is a no-op on contact_roles when the role set is unchanged (e.g. site-only change)', async () => {
-    const f = makeExec([[{ role: 'admin' }, { role: 'admin' }]]);
+  it('is a no-op on contact_roles when roles are unchanged and already scoped to the pinned Site', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
     await sync(f, SITE, ['admin']);
     expect(f.deletes).toHaveLength(0);
     expect(f.inserts).toHaveLength(0);
     expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
+  });
+
+  it('re-pin: moves an Organization-scoped role to the pinned Site and keeps its primacy', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: null, deviceGroupId: null, isPrimary: true }]]);
+    await sync(f, SITE, ['admin']);
+    expect(f.deletes).toHaveLength(1);
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'admin', isPrimary: true, siteId: SITE, deviceGroupId: null },
+    ]);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['admin']);
+  });
+
+  it('re-pin: moves a role from another Site, leaves Device Group rows alone and does not duplicate a row already at the pinned Site', async () => {
+    const OTHER = '88888888-8888-4888-8888-888888888888';
+    const f = makeExec([[
+      { role: 'admin', siteId: OTHER, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: GROUP, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: null, isPrimary: false },
+    ]]);
+    await sync(f, SITE, ['admin', 'technical']);
+    expect(f.inserts[0]!.values.map((v) => [v.role, v.siteId])).toEqual([['admin', SITE]]);
+    const where = compile(f.deletes.at(-1)!.where);
+    expect(where.sql).toMatch(/"device_group_id" is null/);
+    expect(where.params).toEqual(expect.arrayContaining([SITE]));
+  });
+
+  it('un-pin does not widen existing Site-scoped assignments', async () => {
+    const f = makeExec([[{ role: 'admin', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
+    await sync(f, null, ['admin']);
+    expect(f.deletes).toHaveLength(0);
+    expect(f.inserts).toHaveLength(0);
+  });
+
+  it('passes an out-of-vocabulary role through so the role CHECK refuses it, instead of dropping it', async () => {
+    const f = makeExec([[]]);
+    await sync(f, null, ['admin', 'not-a-role']);
+    expect(f.inserts[0]!.values.map((v) => v.role)).toEqual(['admin', 'not-a-role']);
   });
 
   it('clearing all roles deletes all assignments and projects an empty list', async () => {

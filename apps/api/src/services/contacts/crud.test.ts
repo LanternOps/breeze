@@ -683,7 +683,7 @@ describe('updateContact writes only what the patch names', () => {
     expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
   });
 
-  it('re-derives canonical responsibilities when a legacy siteId-only patch changes scope', async () => {
+  it('re-scopes canonical responsibilities when a legacy siteId-only patch re-pins the contact', async () => {
     const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: ['admin'] };
     const updated = { ...stored, siteId: SITE };
     const { exec } = makeExec([
@@ -693,8 +693,10 @@ describe('updateContact writes only what the patch names', () => {
       [stored],          // locked target re-read
     ], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
-    // affiliation-only move: contact_roles is not rewritten (spec §7.4/§28)
-    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
+    // legacy re-pin: the adapter re-derives scope from the new pin (spec §7.4/§8.3)
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(expect.anything(), {
+      contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'],
+    });
   });
 
   it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {

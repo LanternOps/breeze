@@ -702,10 +702,11 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  // Legacy compatibility adapter (spec §7.4/§9): only a `roles[]` change is
-  // applied to `contact_roles`, as a delta. A `siteId`-only change is an
-  // affiliation/primacy move and leaves the canonical assignments untouched.
-  if (patch.roles !== undefined) {
+  // Legacy compatibility adapter (spec §7.4/§8.3): either half of the legacy
+  // shape (`siteId` + `roles`) is applied to `contact_roles` in this same
+  // transaction. A re-pin re-scopes the legacy-derived assignments to the new
+  // Site; it must run before the billing re-projection below, which reads them.
+  if (patch.roles !== undefined || patch.siteId !== undefined) {
     await syncLegacyContactRoles(exec, {
       contactId,
       orgId,

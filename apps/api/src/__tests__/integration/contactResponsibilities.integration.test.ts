@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { contactRoles, contacts, deviceGroups, sites } from '../../db/schema';
+import { contactRoles, contacts, deviceGroups, organizations, sites } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 import { cascadeDeleteOrg, getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
@@ -95,7 +95,7 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(second).toHaveLength(first.length);
   });
 
-  runDb('siteId-only legacy patch is affiliation-only: contact_roles is not rewritten and org admin stays authoritative', async () => {
+  runDb('siteId-only legacy patch re-scopes org admin and removes org-level disable_user authority (spec 7.4, 24.4)', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -103,22 +103,78 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     const [contact] = await testDb.insert(contacts).values({
       orgId: org.id, name: 'Org admin', siteId: null, roles: ['admin'],
     }).returning();
-    const [seeded] = await testDb.insert(contactRoles).values({
+    await testDb.insert(contactRoles).values({
       contactId: contact!.id, orgId: org.id, role: 'admin', siteId: null, deviceGroupId: null,
-    }).returning();
+    });
 
     await withDbAccessContext(orgContext(org.id, partner.id), () =>
       updateContact(db, contact!.id, org.id, { siteId: site.id }, { userId: null }));
 
     const assignments = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, contact!.id));
     expect(assignments).toHaveLength(1);
-    expect(assignments[0]).toMatchObject({ id: seeded!.id, role: 'admin', siteId: null, deviceGroupId: null });
+    expect(assignments[0]).toMatchObject({ role: 'admin', siteId: site.id, deviceGroupId: null });
 
     const requester = { id: randomUUID(), revokedAt: null } as BindingRow;
     const target = { id: randomUUID(), revokedAt: null } as BindingRow;
     const authorized = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       requesterAuthorized('disable_user', requester, target, org.id, contact!.id, ['admin']));
-    expect(authorized).toBe(true);
+    expect(authorized).toBe(false);
+  });
+
+  runDb('legacy re-pin moves Site-scoped roles to the new Site and leaves Device Group assignments alone', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const siteA2 = await createSite({ orgId: f.orgA.id });
+    await testDb.update(contacts).set({ siteId: f.siteA.id, roles: ['technical', 'admin'] }).where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values([
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'admin', siteId: f.siteA.id },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', siteId: f.siteA.id },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', deviceGroupId: f.groupA.id },
+    ]);
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { siteId: siteA2.id }, { userId: null }));
+
+    const rows = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'admin', siteId: siteA2.id, deviceGroupId: null }),
+      expect.objectContaining({ role: 'technical', siteId: siteA2.id, deviceGroupId: null }),
+      expect.objectContaining({ role: 'technical', siteId: null, deviceGroupId: f.groupA.id }),
+    ]));
+    const [after] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(after!.roles).toEqual(['technical', 'admin']);
+  });
+
+  runDb('pinning the org billing contact re-projects organizations.billing_contact and later email edits do not leave it stale', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [contact] = await testDb.insert(contacts).values({
+      orgId: org.id, name: 'Billing', email: 'old@example.test', siteId: null, roles: ['billing'], isPrimary: true,
+    }).returning();
+    await testDb.insert(contactRoles).values({
+      contactId: contact!.id, orgId: org.id, role: 'billing', siteId: null, deviceGroupId: null,
+    });
+    const ctx = orgContext(org.id, partner.id);
+    const billingEmail = async () =>
+      ((await testDb.select().from(organizations).where(eq(organizations.id, org.id)))[0]!.billingContact as { email?: string } | null)?.email ?? null;
+
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, contact!.id, org.id, { email: 'first@example.test' }, { userId: null }));
+    expect(await billingEmail()).toBe('first@example.test');
+
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, contact!.id, org.id, { siteId: site.id }, { userId: null }));
+    const [row] = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, contact!.id));
+    expect(row).toMatchObject({ role: 'billing', siteId: site.id });
+
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, contact!.id, org.id, { email: 'second@example.test' }, { userId: null }));
+    // A Site-scoped billing role is not the org billing contact, so the column
+    // must not keep pointing at an address this contact no longer owns.
+    expect(await billingEmail()).toBeNull();
   });
 
   runDb('legacy roles patch preserves a Device Group assignment and adds new roles at the pin-derived scope', async () => {
