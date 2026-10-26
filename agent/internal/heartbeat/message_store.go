@@ -109,7 +109,25 @@ func messageOwnerKey(s *sessionbroker.Session) string {
 	return o.PrincipalKey()
 }
 
-// Put records a card with no owner yet (bound at its first replay).
+// messageStoreOwner is the owner a newly drawn card is stored under: the
+// session's user principal, or — when the session has none — a sentinel no
+// principal key can equal ("win:..." / "unix:..."), so the card still
+// correlates its ack and close but is never replayed to anyone. It is never
+// "", which would leave the card unowned and bind it to the next user.
+func messageStoreOwner(s *sessionbroker.Session) string {
+	if key := messageOwnerKey(s); key != "" {
+		return key
+	}
+	id := ""
+	if s != nil {
+		id = s.SessionID
+	}
+	return "noprincipal:" + id
+}
+
+// Put records a card with no owner yet (bound at its first replay). Only
+// pre-W02 records and tests use it; new cards go through PutFor with
+// messageStoreOwner.
 func (s *messageStore) Put(m ipc.MessageShow, now time.Time) error {
 	return s.PutFor(m, "", now)
 }

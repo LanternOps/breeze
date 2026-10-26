@@ -52,6 +52,39 @@ func TestEndpointMessageNeverReplayedToAnotherUser(t *testing.T) {
 	}
 }
 
+// A card drawn for a session with no principal is kept (so its ack and close
+// still correlate) under an owner no principal can match: it is never
+// replayed, and never bound to the next user as an unowned card would be.
+func TestEndpointMessageForASessionWithoutAPrincipalIsNeverReplayed(t *testing.T) {
+	prev := messageOwnerGOOS
+	messageOwnerGOOS = "windows"
+	t.Cleanup(func() { messageOwnerGOOS = prev })
+	nobody := newHelperProbe(t, ipc.HelperRoleAssist, "nobody", "1", []string{ipc.ScopeAssist, ipc.ScopeMessaging})
+	nobody.session.IdentityKey = ""
+	alice := newHelperProbe(t, ipc.HelperRoleAssist, "alice", "1", []string{ipc.ScopeAssist, ipc.ScopeMessaging})
+	alice.session.IdentityKey = "S-1-5-21-1001"
+	h, _ := newMessagingHeartbeat(t, nobody.session, alice.session)
+	now := time.Now()
+
+	owner := messageStoreOwner(nobody.session)
+	if owner == "" {
+		t.Fatal("a principal-less session must get a sentinel owner, never the unowned (bind-to-anyone) state")
+	}
+	if err := h.endpointMessages.PutFor(testShow("orphan", now.Add(time.Hour)), owner, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.endpointMessages.Get("orphan"); !ok {
+		t.Fatal("the card must stay retrievable for ack/close correlation")
+	}
+	h.replayEndpointMessages(alice.session)
+	time.Sleep(100 * time.Millisecond)
+	for _, env := range alice.envelopes() {
+		if env.Type == ipc.TypeMessageShow {
+			t.Fatal("a card drawn for a principal-less session was replayed to another user")
+		}
+	}
+}
+
 // A Windows Assist session with no SID has no principal: it gets no cards.
 func TestEndpointMessageReplaySkipsASessionWithoutAPrincipal(t *testing.T) {
 	prev := messageOwnerGOOS
