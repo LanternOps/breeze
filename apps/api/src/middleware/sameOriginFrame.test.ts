@@ -60,6 +60,13 @@ describe('index.ts registration', () => {
     expect(indexSource).toMatch(/xFrameOptions: 'DENY'/);
   });
 
+  it('mounts both routers where the patterns expect them (/api/v1 + /agreements/public, /quotes/public)', () => {
+    // A remount would silently fall back to DENY and re-blank the iframe; the route tests hardcode /api/v1 too.
+    expect(indexSource).toMatch(/^app\.route\('\/api\/v1', api\);$/m);
+    expect(indexSource).toMatch(/^api\.route\('\/agreements\/public', agreementsPublicRoutes\);$/m);
+    expect(indexSource).toMatch(/^api\.route\('\/quotes\/public', quotesPublicRoutes\);$/m);
+  });
+
   it("passes the same predicate to securityMiddleware so the CSP says frame-ancestors 'self' on exactly those paths", () => {
     expect(indexSource).toMatch(
       /app\.use\('\*', securityMiddleware\(\{[^)]*sameOriginFrameWhen: isSameOriginFramePath[^)]*\}\)\);/,
@@ -68,8 +75,8 @@ describe('index.ts registration', () => {
 });
 
 describe('bySameOriginFramePath + securityMiddleware (the index.ts header stack)', () => {
-  // Same shape as index.ts: app-wide registrations ahead of the routers. secureHeaders writes after next(), so the
-  // route handlers cannot pick their own framing headers — the path selector is the only place this can live.
+  // Same shape as index.ts: app-wide registrations ahead of the routers. secureHeaders writes after next(), so a
+  // route handler cannot pick its own X-Frame-Options — the path selector is the only place this can live.
   const OPTIONS = { strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload', xFrameOptions: 'DENY', referrerPolicy: 'strict-origin-when-cross-origin' } as const;
   const app = new Hono();
   app.use('*', bySameOriginFramePath(
