@@ -179,6 +179,12 @@ describe('ingestFlowWebhook — gates', () => {
     expect(h.order).toEqual([]);
   });
 
+  it('a body over 262144 bytes is 413 even if the route-level limit was skipped', async () => {
+    const big = JSON.stringify({ blob: 'x'.repeat(262_144) });
+    expect(await ingest(signed(big), big)).toEqual({ http: 413, body: { error: 'payload_too_large' } });
+    expect(h.order).toEqual([]);
+  });
+
   it('a non-uuid flow id is 401', async () => {
     expect(await ingest(signed(), BODY, 'nope')).toMatchObject({ http: 401 });
     expect(h.order).toEqual([]);
@@ -393,8 +399,12 @@ describe('ingestFlowWebhook — runs and replay protection', () => {
   });
 
   it('redacted envelope over the bound is 413 payload_too_large', async () => {
-    // Under the 256 KB request bound, but the envelope (body + scope) is over it + 4 KB.
-    const big = JSON.stringify({ blob: 'x'.repeat(262_144 - 40), more: 'y'.repeat(5000) });
+    // Under the 256 KB request bound, but redaction GROWS it ("x" ⇒ "[REDACTED]"
+    // for every credential-named key), so the stored envelope is over it + 4 KB.
+    const pairs: Record<string, string> = {};
+    for (let k = 0; k < 15_000; k++) pairs[`token${k}`] = 'x';
+    const big = JSON.stringify(pairs);
+    expect(Buffer.byteLength(big)).toBeLessThanOrEqual(262_144);
     queueFlow();
     const r = await ingest(signed(big), big);
     expect(r).toMatchObject({ http: 413, body: { error: 'payload_too_large' } });

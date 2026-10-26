@@ -71,7 +71,7 @@ export type WebhookIngestResult =
   | { http: 202; body: { status: 'accepted'; runId: string; deliveryId: string } }
   | { http: 200; body: { status: 'duplicate'; runId: string } }
   | { http: 401 | 404 | 415; body: { error: string } }
-  | { http: 413; body: { error: 'payload_too_large'; deliveryId: string } }
+  | { http: 413; body: { error: 'payload_too_large'; deliveryId?: string } }
   | { http: 409; body: { status: 'refused'; code: 'flow_changed' } }
   | { http: 422; body: { status: 'org_unresolved' | 'invalid_body'; deliveryId: string } }
   | { http: 429; body: { status: 'refused'; code: FlowAdmissionRefusal | 'rate_limited'; deliveryId?: string }; retryAfterSec: number };
@@ -144,6 +144,12 @@ export async function ingestFlowWebhook(i: {
   if (!flowsEnabled()) return { http: 404, body: { error: 'Not found' } };
   if (!UUID_RE.test(i.flowId)) return UNAUTHORIZED;
   const flowId = i.flowId.toLowerCase();
+  // The bodyLimit rule refuses this before the body is read; repeated here so a
+  // path variant that skipped the rule can never store an over-size delivery
+  // (flow_webhook_deliveries_lengths_chk caps body_bytes at the same value).
+  if (Buffer.byteLength(i.rawBody, 'utf8') > FLOW_RUN_LIMITS.webhookMaxBodyBytes) {
+    return { http: 413, body: { error: 'payload_too_large' } };
+  }
 
   const preAuth = await limited(`flow-webhook-pre:${flowId}:${i.clientIp || 'unknown'}`);
   if (preAuth) return preAuth;
