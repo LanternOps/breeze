@@ -4647,8 +4647,12 @@
     "cancel": "İptal",
     "remove": "Konumu kaldır",
     "loadFailed": "Fiziksel konum yüklenemedi.",
-    "linkedNotice": "Bu varlık yönetilen bir cihaza bağlı. Konumu şuradan düzenleyin:",
+    "linkedNotice": "Bu varlık yönetilen bir cihaza bağlı. Konumu <deviceLink>{{name}}</deviceLink> üzerinden düzenleyin.",
     "openDevice": "cihaz",
+    "removeConfirm": {
+      "title": "Fiziksel konum kaldırılsın mı?",
+      "message": "Bu varlığın oda, kabin, kabin birimi ve yükseklik bilgileri silinir."
+    },
     "validation": {
       "roomTooLong": "Oda en fazla 255 karakter olabilir.",
       "rackTooLong": "Kabinet en fazla 128 karakter olabilir.",

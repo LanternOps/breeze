@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PhysicalPlacementCard from './PhysicalPlacementCard';
@@ -108,6 +108,7 @@ describe('PhysicalPlacementCard', () => {
     render(<PhysicalPlacementCard subject="device" id={ID} />);
     fireEvent.click(await screen.findByTestId('physical-placement-edit'));
     fireEvent.click(screen.getByTestId('physical-placement-remove'));
+    fireEvent.click(await screen.findByTestId('physical-placement-remove-confirm'));
     await waitFor(() => expect(put).toHaveBeenCalledWith(EMPTY_BODY));
     await waitFor(() => expect(screen.getByTestId('physical-placement-value-room')).toHaveTextContent('—'));
   });
@@ -121,8 +122,32 @@ describe('PhysicalPlacementCard', () => {
       fireEvent.change(screen.getByTestId(`physical-placement-${k}`), { target: { value: '' } });
     }
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByTestId('physical-placement-remove-confirm'));
     await waitFor(() => expect(put).toHaveBeenCalledWith(EMPTY_BODY));
   });
+
+  it('cancelling the remove confirmation does not PUT', async () => {
+    const put = vi.fn(() => res(getPayload(null)));
+    route({ get: () => res(getPayload(FULL)), put });
+    render(<PhysicalPlacementCard subject="device" id={ID} />);
+    fireEvent.click(await screen.findByTestId('physical-placement-edit'));
+    fireEvent.click(screen.getByTestId('physical-placement-remove'));
+    await screen.findByTestId('physical-placement-remove-confirm');
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('physical-placement-remove-confirm')).toBeNull());
+    expect(putCalls()).toHaveLength(0);
+  });
+
+  it.each([[{ data: [] }], [{}], [{ authority: { linked: 'yes', id: 'x' }, placement: null }]])(
+    'malformed 200 response %j shows the error with Retry and does not throw',
+    async (payload) => {
+      route({ get: () => res(payload) });
+      render(<PhysicalPlacementCard subject="device" id={ID} />);
+      expect(await screen.findByText(/Couldn't load physical placement/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    },
+  );
 
   it('validates on the client and does not send', async () => {
     route({ get: () => res(getPayload(null)), put: () => res({}) });

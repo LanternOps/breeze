@@ -4647,8 +4647,12 @@
     "cancel": "Abbrechen",
     "remove": "Standort entfernen",
     "loadFailed": "Physischer Standort konnte nicht geladen werden.",
-    "linkedNotice": "Dieses Asset ist mit einem verwalteten Gerät verknüpft. Bearbeiten Sie den Standort auf",
+    "linkedNotice": "Dieses Asset ist mit einem verwalteten Gerät verknüpft. Bearbeiten Sie den Standort auf <deviceLink>{{name}}</deviceLink>.",
     "openDevice": "dem Gerät",
+    "removeConfirm": {
+      "title": "Physischen Standort entfernen?",
+      "message": "Dadurch werden Raum, Rack, Höheneinheit und Höhe für dieses Asset gelöscht."
+    },
     "validation": {
       "roomTooLong": "Der Raum darf höchstens 255 Zeichen lang sein.",
       "rackTooLong": "Das Rack darf höchstens 128 Zeichen lang sein.",

@@ -4647,8 +4647,12 @@
     "cancel": "Annuler",
     "remove": "Supprimer l'emplacement",
     "loadFailed": "Impossible de charger l'emplacement physique.",
-    "linkedNotice": "Cet actif est lié à un appareil géré. Modifiez l'emplacement sur",
+    "linkedNotice": "Cet actif est lié à un appareil géré. Modifiez l'emplacement sur <deviceLink>{{name}}</deviceLink>.",
     "openDevice": "l'appareil",
+    "removeConfirm": {
+      "title": "Supprimer l'emplacement physique ?",
+      "message": "Cela efface la salle, la baie, l'unité de baie et la hauteur de cet actif."
+    },
     "validation": {
       "roomTooLong": "La salle ne peut pas dépasser 255 caractères.",
       "rackTooLong": "La baie ne peut pas dépasser 128 caractères.",

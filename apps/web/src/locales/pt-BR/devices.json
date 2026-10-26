@@ -4647,8 +4647,12 @@
     "cancel": "Cancelar",
     "remove": "Remover localização",
     "loadFailed": "Não foi possível carregar a localização física.",
-    "linkedNotice": "Este ativo está vinculado a um dispositivo gerenciado. Edite a localização no",
-    "openDevice": "dispositivo",
+    "linkedNotice": "Este ativo está vinculado a um dispositivo gerenciado. Edite a localização em <deviceLink>{{name}}</deviceLink>.",
+    "openDevice": "o dispositivo",
+    "removeConfirm": {
+      "title": "Remover a localização física?",
+      "message": "Isso apaga a sala, o rack, a unidade de rack e a altura deste ativo."
+    },
     "validation": {
       "roomTooLong": "A sala pode ter no máximo 255 caracteres.",
       "rackTooLong": "O rack pode ter no máximo 128 caracteres.",

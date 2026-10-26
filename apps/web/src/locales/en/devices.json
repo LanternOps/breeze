@@ -4647,8 +4647,12 @@
     "cancel": "Cancel",
     "remove": "Remove placement",
     "loadFailed": "Couldn't load physical placement.",
-    "linkedNotice": "This asset is linked to a managed device. Edit the placement on",
+    "linkedNotice": "This asset is linked to a managed device. Edit the placement on <deviceLink>{{name}}</deviceLink>.",
     "openDevice": "the device",
+    "removeConfirm": {
+      "title": "Remove physical placement?",
+      "message": "This clears the room, rack, rack unit and height for this asset."
+    },
     "validation": {
       "roomTooLong": "Room must be at most 255 characters.",
       "rackTooLong": "Rack must be at most 128 characters.",

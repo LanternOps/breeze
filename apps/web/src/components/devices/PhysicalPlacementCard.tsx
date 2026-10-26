@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { MapPin } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
@@ -35,6 +36,15 @@ type FormErrors = Partial<Record<keyof FormState, string>>;
 
 const DASH = '—';
 const UNIT_RE = /^\d+$/;
+
+function isPlacementResponse(v: unknown): v is PlacementResponse {
+  if (!v || typeof v !== 'object') return false;
+  const { authority, placement } = v as Record<string, unknown>;
+  if (!authority || typeof authority !== 'object') return false;
+  const a = authority as Record<string, unknown>;
+  if (typeof a.linked !== 'boolean' || typeof a.id !== 'string') return false;
+  return placement === null || (typeof placement === 'object' && !Array.isArray(placement));
+}
 
 function toForm(p: PlacementFields | null): FormState {
   return {
@@ -78,6 +88,7 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
   const [loadError, setLoadError] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [form, setForm] = useState<FormState>(toForm(null));
   const [errors, setErrors] = useState<FormErrors>({});
   const mountedRef = useRef(true);
@@ -87,8 +98,14 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
       const res = await fetchWithAuth(base);
       if (!mountedRef.current) return;
       if (res.ok) {
-        setData((await res.json()) as PlacementResponse);
-        setLoadError(false);
+        const json: unknown = await res.json();
+        if (!mountedRef.current) return;
+        if (isPlacementResponse(json)) {
+          setData(json);
+          setLoadError(false);
+        } else {
+          setLoadError(true);
+        }
       } else {
         setLoadError(true);
       }
@@ -104,6 +121,7 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
     setLoading(true);
     setData(null);
     setEditing(false);
+    setConfirmRemove(false);
     void load();
     return () => {
       mountedRef.current = false;
@@ -156,7 +174,12 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
     const { errors: errs, body } = validate(form, t);
     setErrors(errs);
     if (!body) return;
-    void save(body, body.room === null && body.rack === null && body.rackUnit === null && body.heightU === null);
+    if (body.room === null && body.rack === null && body.rackUnit === null && body.heightU === null) {
+      // Saving an emptied form removes the placement: same confirmation as Remove.
+      setConfirmRemove(true);
+      return;
+    }
+    void save(body, false);
   };
 
   const startEdit = () => {
@@ -230,13 +253,19 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
 
       {linked && (
         <p className="mt-2 text-xs text-muted-foreground" data-testid="physical-placement-linked">
-          {t('physicalPlacementCard.linkedNotice')}{' '}
-          <a
-            href={`/devices/${data.authority.id}`}
-            className="font-medium text-primary hover:underline"
-          >
-            {linkedDeviceName || t('physicalPlacementCard.openDevice')}
-          </a>
+          <Trans
+            i18nKey="physicalPlacementCard.linkedNotice"
+            t={t}
+            values={{ name: linkedDeviceName || t('physicalPlacementCard.openDevice') }}
+            components={{
+              deviceLink: (
+                <a
+                  href={`/devices/${data.authority.id}`}
+                  className="font-medium text-primary hover:underline"
+                />
+              ),
+            }}
+          />
         </p>
       )}
 
@@ -283,7 +312,7 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
                 type="button"
                 data-testid="physical-placement-remove"
                 disabled={saving}
-                onClick={() => void save({ room: null, rack: null, rackUnit: null, heightU: null }, true)}
+                onClick={() => setConfirmRemove(true)}
                 className="ml-auto h-8 rounded-md border px-3 text-sm font-medium text-destructive hover:bg-muted disabled:opacity-50"
               >
                 {t('physicalPlacementCard.remove')}
@@ -307,6 +336,20 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
           ))}
         </dl>
       )}
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onClose={() => setConfirmRemove(false)}
+        onConfirm={() => {
+          setConfirmRemove(false);
+          void save({ room: null, rack: null, rackUnit: null, heightU: null }, true);
+        }}
+        isLoading={saving}
+        title={t('physicalPlacementCard.removeConfirm.title')}
+        message={t('physicalPlacementCard.removeConfirm.message')}
+        confirmLabel={t('physicalPlacementCard.remove')}
+        confirmTestId="physical-placement-remove-confirm"
+      />
     </div>
   );
 }
