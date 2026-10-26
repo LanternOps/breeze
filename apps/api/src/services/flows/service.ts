@@ -18,6 +18,7 @@ import {
   isValidFlowSlug,
   slugifyFlowName,
   type FlowDetailDto,
+  type FlowUsageDto,
   type FlowDocumentV1,
   type FlowStatus,
   type FlowSummaryDto,
@@ -95,6 +96,8 @@ export interface FlowDetailExtras {
   preApprovalEligibility: Record<string, PreApprovalEligibility>;
   /** The step ids the LIVE publication binds (enabled or paused flows only). */
   preApprovedStepIds: string[];
+  /** W05: this month's usage against the effective caps (getFlow computes it). */
+  usage?: FlowUsageDto | null;
 }
 
 const NO_EXTRAS: FlowDetailExtras = { preApprovalEligibility: {}, preApprovedStepIds: [] };
@@ -113,6 +116,12 @@ export function toDetailDto(row: FlowRow, extras: FlowDetailExtras = NO_EXTRAS):
     pausedReason: row.pausedReason,
     preApprovalEligibility: extras.preApprovalEligibility,
     preApprovedStepIds: extras.preApprovedStepIds,
+    // Never the ciphertext: the webhook block carries the fingerprint only (Task A5).
+    webhook: null,
+    usage: extras.usage ?? null,
+    lastAdmissionRefusal: row.lastAdmissionRefusalAt && row.lastAdmissionRefusalCode
+      ? { at: iso(row.lastAdmissionRefusalAt), code: row.lastAdmissionRefusalCode }
+      : null,
   };
 }
 

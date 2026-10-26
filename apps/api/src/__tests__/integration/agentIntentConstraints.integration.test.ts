@@ -390,6 +390,14 @@ describe('agent-originated action_intents constraints', () => {
       join(__dirname, '../../../migrations/2027-01-06-130000-flow-runs.sql'),
       'utf8',
     )));
+    // ...and that replay CREATE OR REPLACEs action_intents_block_content_update()
+    // and flow_runs_immutable_guard() back to their W04 bodies, dropping
+    // invoked_flow_id / parent_agent_run_id / triggered_by_api_key_id from the
+    // immutable sets (tool catalog W05, #5220). Replay the W05 file too.
+    await getTestDb().execute(sql.raw(readFileSync(
+      join(__dirname, '../../../migrations/2027-01-06-160000-flow-webhooks-tools-budgets.sql'),
+      'utf8',
+    )));
 
     // The re-added composite FK validated existing rows; the pre-existing
     // agent intent must have survived, and the constraints must still fire.

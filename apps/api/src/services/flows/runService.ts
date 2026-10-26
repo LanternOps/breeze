@@ -596,6 +596,9 @@ const STEP_SUMMARY_COLUMNS = {
   startedAt: flowRunSteps.startedAt,
   finishedAt: flowRunSteps.finishedAt,
   durationMs: flowRunSteps.durationMs,
+  aiInputTokens: flowRunSteps.aiInputTokens,
+  aiOutputTokens: flowRunSteps.aiOutputTokens,
+  aiCostCents: flowRunSteps.aiCostCents,
 };
 type StepSummaryRow = Pick<FlowRunStepRow, keyof typeof STEP_SUMMARY_COLUMNS>;
 
@@ -616,6 +619,10 @@ function toStepSummaryDto(row: StepSummaryRow, bodiesPruned: boolean): FlowRunSt
     startedAt: iso(row.startedAt)!,
     finishedAt: iso(row.finishedAt),
     durationMs: row.durationMs ?? null,
+    // flow_run_steps_ai_usage_chk: all three set (an `ai` step) or all three NULL.
+    aiUsage: row.aiInputTokens != null && row.aiOutputTokens != null && row.aiCostCents != null
+      ? { inputTokens: row.aiInputTokens, outputTokens: row.aiOutputTokens, costCents: row.aiCostCents }
+      : null,
   };
   // flow_run_steps_intent_pair_chk: approval_mode 'intent' ⇔ action_intent_id.
   if (row.approvalMode === 'intent' && row.actionIntentId) {
@@ -711,6 +718,8 @@ export async function getFlowRun(
       chainDepth: flowRuns.chainDepth,
       wakeAt: flowRuns.wakeAt,
       bodiesPrunedAt: flowRuns.bodiesPrunedAt,
+      aiTokensUsed: flowRuns.aiTokensUsed,
+      parentAgentRunId: flowRuns.parentAgentRunId,
     })
     .from(flowRuns)
     .where(reach ? and(eq(flowRuns.id, runId), reach) : eq(flowRuns.id, runId))
@@ -737,6 +746,8 @@ export async function getFlowRun(
     publicationSeq: pub?.publicationSeq ?? 0,
     wakeAt: iso(run.wakeAt),
     bodiesPrunedAt: iso(run.bodiesPrunedAt),
+    aiTokensUsed: run.aiTokensUsed,
+    parentAgentRunId: run.parentAgentRunId ?? null,
     definition: (pub?.definition ?? null) as FlowDocumentV1,
     steps: steps.map((s) => {
       const summary = toStepSummaryDto(s, pruned);
