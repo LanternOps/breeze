@@ -1203,6 +1203,10 @@ export async function updatePartnerBillingSettings(
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
     billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
     billingTermsAndConditions?: string | null;
+    // #9075 W4a: agreement-request defaults (read only via agreementRequestDefaults.ts).
+    agreementDefaultExpiryDays?: number;
+    agreementReminderIntervalDays?: number | null;
+    agreementMaxReminders?: number;
   },
   actor: InvoiceActor
 ) {
@@ -1235,6 +1239,8 @@ export async function updatePartnerBillingSettings(
     'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
     'billingAddressCity', 'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
     'billingTermsAndConditions',
+    // null interval = automatic reminders off.
+    'agreementDefaultExpiryDays', 'agreementReminderIntervalDays', 'agreementMaxReminders',
   ] as const) {
     if (patch[key] !== undefined) set[key] = patch[key];
   }
@@ -1249,6 +1255,9 @@ export async function updatePartnerBillingSettings(
     notifyCustomerOnBehalfAcceptance: partners.notifyCustomerOnBehalfAcceptance,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
     documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+    agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
+    agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
+    agreementMaxReminders: partners.agreementMaxReminders,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
   return row;

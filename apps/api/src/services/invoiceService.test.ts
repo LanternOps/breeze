@@ -786,6 +786,26 @@ describe('invoiceService guards', () => {
     expect(row).toMatchObject(detail);
   });
 
+  it('#9075 W4a: updatePartnerBillingSettings writes and returns the agreement defaults; omitted ones are left alone', async () => {
+    const agreements = { agreementDefaultExpiryDays: 14, agreementReminderIntervalDays: null, agreementMaxReminders: 4 };
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...agreements }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, ...agreements },
+      actor,
+    );
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    expect(setMock.mock.calls.at(-1)![0]).toMatchObject(agreements); // null interval = reminders off, written
+    const returning = (db as unknown as { returning: { mock: { calls: unknown[][] } } }).returning;
+    expect(Object.keys(returning.mock.calls.at(-1)![0] as object)).toEqual(expect.arrayContaining(Object.keys(agreements)));
+    expect(row).toMatchObject(agreements);
+
+    queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
+    await svc.updatePartnerBillingSettings({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }, actor);
+    const omitted = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    for (const key of Object.keys(agreements)) expect(omitted).not.toHaveProperty(key);
+  });
+
   it('updatePartnerBillingSettings persists a scale-5 tax rate and a 2-decimal markup', async () => {
     queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };

@@ -54,6 +54,8 @@ import {
   getAgreementRequestDetail,
   sendAgreementRequest,
   remindAgreementRequest,
+  autoRemindAgreementRequest,
+  getAgreementRequestDefaults,
   getAgreementRequestLink,
   voidAgreementRequest,
   previewAgreementRequest,
@@ -191,9 +193,10 @@ describe('createAgreementRequest', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('pins the latest published version (guarded against the ORG partner), defaults expiry to now + 30 days, dedupes recipients, filters manual values', async () => {
+  it('pins the latest published version (guarded against the ORG partner), defaults expiry from the PARTNER setting (#9075 W4a), dedupes recipients, filters manual values', async () => {
     queue([{ partnerId: PARTNER }]);
     queue([{ id: VERSION }]);
+    queue([{ agreementDefaultExpiryDays: 14, agreementReminderIntervalDays: null, agreementMaxReminders: 3 }]); // partner defaults
     queue([row()]);               // insert request .returning()
     queue([]);                    // insert recipients
     queue([row()]);               // detail: load
@@ -205,7 +208,7 @@ describe('createAgreementRequest', () => {
     expect(inserted[0]).toMatchObject({
       orgId: ORG, status: 'draft', templateId: TEMPLATE, templateVersionId: VERSION, contractId: null,
       variableValues: { 'custom.po': 'PO-1' },
-      expiresAt: new Date(NOW.getTime() + 30 * 24 * 3600 * 1000),
+      expiresAt: new Date(NOW.getTime() + 14 * 24 * 3600 * 1000),
       createdBy: 'user-1',
     });
     expect(inserted[1]).toEqual([
@@ -214,6 +217,43 @@ describe('createAgreementRequest', () => {
     ]);
     expect(res.recipients).toEqual(['bob@example.com', 'jane@example.com']);
     expect(res).not.toHaveProperty('acceptTokenJti');
+  });
+
+  it('#9075 W4a: an unreadable partner row (org-scoped token) falls back to the built-in 30 days', async () => {
+    queue([{ partnerId: PARTNER }]);
+    queue([{ id: VERSION }]);
+    queue([]);                    // partner defaults: hidden by RLS
+    queue([row()]);
+    queue([]);
+    queue([row()]);
+    queueDetailTail(['bob@example.com', 'jane@example.com']);
+    await createAgreementRequest(auth, input, NOW);
+    expect(inserted[0]).toMatchObject({ expiresAt: new Date(NOW.getTime() + 30 * 24 * 3600 * 1000) });
+  });
+
+  it('#9075 W4a: an explicit expiresAt is the per-request override — the partner default is not read', async () => {
+    queue([{ partnerId: PARTNER }]);
+    queue([{ id: VERSION }]);
+    queue([row()]);
+    queue([]);
+    queue([row()]);
+    queueDetailTail(['bob@example.com', 'jane@example.com']);
+    await createAgreementRequest(auth, { ...input, expiresAt: LATER }, NOW);
+    expect(inserted[0]).toMatchObject({ expiresAt: LATER });
+  });
+});
+
+describe('getAgreementRequestDefaults (#9075 W4a)', () => {
+  it('an inaccessible org → 404 before any read', async () => {
+    await expect(getAgreementRequestDefaults(auth, OTHER_ORG)).rejects.toMatchObject({ status: 404, code: 'ORG_NOT_FOUND' });
+  });
+
+  it("resolves the org's OWNING partner's defaults", async () => {
+    queue([{ partnerId: PARTNER }]);
+    queue([{ agreementDefaultExpiryDays: 21, agreementReminderIntervalDays: 5, agreementMaxReminders: 1 }]);
+    await expect(getAgreementRequestDefaults(auth, ORG)).resolves.toEqual({
+      defaultExpiryDays: 21, autoReminder: { intervalDays: 5, maxReminders: 1 },
+    });
   });
 });
 
@@ -609,6 +649,110 @@ describe('remindAgreementRequest (#9075 W3b)', () => {
     const res = await remindAgreementRequest(auth, REQ, NOW);
     expect(res.reissued).toBe(true);
     expect(updated[0]!.acceptTokenJti).not.toBe('old-jti');
+  });
+});
+
+/** The mocked chain's `.for()` (the real Drizzle db has no top-level `for`). */
+const dbFor = () => (db as unknown as { for: ReturnType<typeof vi.fn> }).for;
+
+describe('autoRemindAgreementRequest (#9075 W4a — the automatic path through the same remind core)', () => {
+  const DAY = 24 * 3600 * 1000;
+  const SENT_AT = new Date(NOW.getTime() - 5 * DAY);
+  const ON = { agreementDefaultExpiryDays: 30, agreementReminderIntervalDays: 3, agreementMaxReminders: 2 };
+
+  beforeEach(() => {
+    getEmailServiceMock.mockReset().mockReturnValue({ sendEmail: sendEmailMock });
+    sendEmailMock.mockReset().mockResolvedValue(undefined);
+    dbFor().mockClear();
+  });
+
+  async function sentIdentity() {
+    queue([row()]);
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([partnerRow]);
+    queue([row({ status: 'sent' })]);
+    queue([{ emailSignature: null }]);
+    const sent = await sendAgreementRequest(auth, REQ, NOW);
+    const identity = updated[0]!;
+    updated.length = 0;
+    locks.length = 0;
+    vi.mocked(db.update).mockClear();
+    dbFor().mockClear();
+    return { sent, identity };
+  }
+
+  it('a due request: locks it SKIP LOCKED, re-checks due-ness, re-sends the SAME link and bumps the counter', async () => {
+    const { sent, identity } = await sentIdentity();
+    queue([row({ ...identity, status: 'viewed', sentAt: SENT_AT, reminderCount: 0 })]); // locked row
+    queue([{ partnerId: PARTNER }]);
+    queue([ON]);                                                                       // partner defaults
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([partnerRow]);
+    queue([row({ status: 'viewed', reminderCount: 1, lastRemindedAt: NOW })]);
+    queue([{ emailSignature: null }]);
+
+    const out = await autoRemindAgreementRequest(REQ, NOW);
+
+    expect(dbFor()).toHaveBeenCalledWith('update', { skipLocked: true });
+    expect(out.reminded).toBe(true);
+    if (!out.reminded) throw new Error('unreachable');
+    expect(out.result.link).toBe(sent.link);
+    expect(out.result.request).toMatchObject({ reminderCount: 1 });
+    expect(updated).toHaveLength(1);
+    expect(updated[0]).toMatchObject({ lastRemindedAt: NOW });
+    expect(sendEmailMock).not.toHaveBeenCalled(); // post-commit only
+    await out.result.deliverEmail();
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a row another worker holds (or that is gone) is skipped, nothing written', async () => {
+    queue([]);
+    await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'locked_or_gone' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('not due on the locked row (a manual remind just reset the clock) → skipped', async () => {
+    queue([row({ status: 'sent', sentAt: SENT_AT, lastRemindedAt: new Date(NOW.getTime() - DAY), reminderCount: 1 })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([ON]);
+    await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'not_due' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('the partner turned automatic reminders off → skipped', async () => {
+    queue([row({ status: 'sent', sentAt: SENT_AT })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([{ ...ON, agreementReminderIntervalDays: null }]);
+    await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'not_due' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('the cap is reached (manual reminders count) → skipped', async () => {
+    queue([row({ status: 'sent', sentAt: SENT_AT, reminderCount: 2 })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([ON]);
+    await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'not_due' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  for (const status of ['draft', 'signed', 'declined', 'voided', 'expired']) {
+    it(`a ${status} request is never reminded`, async () => {
+      queue([row({ status, sentAt: SENT_AT })]);
+      queue([{ partnerId: PARTNER }]);
+      queue([ON]);
+      await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'not_due' });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  }
+
+  it('an expired-but-unreaped request is never reminded', async () => {
+    queue([row({ status: 'sent', sentAt: SENT_AT, expiresAt: NOW })]);
+    queue([{ partnerId: PARTNER }]);
+    queue([ON]);
+    await expect(autoRemindAgreementRequest(REQ, NOW)).resolves.toEqual({ reminded: false, reason: 'not_due' });
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 

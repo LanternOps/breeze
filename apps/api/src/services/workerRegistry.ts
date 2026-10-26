@@ -1533,6 +1533,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
+    name: 'agreementRequestAutoReminder',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agreementRequestAutoReminder');
+      return { init: m.initializeAgreementRequestAutoReminder, shutdown: m.shutdownAgreementRequestAutoReminder };
+    },
+  },
+  {
     name: 'suppressionExpiryReaper',
     placement: 'global',
     load: async () => {
