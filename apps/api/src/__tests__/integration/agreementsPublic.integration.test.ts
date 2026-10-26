@@ -20,6 +20,7 @@ vi.mock('../../services/email', async (importOriginal) => ({
 }));
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { organizations, partners, orgMergeEvents } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -246,8 +247,16 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect(copy.to).toEqual(['dana@customer.example', 'office@customer.example']);
     const [doc] = await documentsFor(requestId);
     expect(copy.attachments).toHaveLength(1);
-    expect(Buffer.compare(copy.attachments![0]!.content, Buffer.from(doc!.pdf_data as Buffer))).toBe(0);
-    expect(copy.attachments![0]!.contentType).toBe(doc!.mime);
+    // W2c: the emailed copy is the CERTIFIED PDF (original + one certificate
+    // page), not the stored bytes; the stored row itself stays untouched.
+    const stored = Buffer.from(doc!.pdf_data as Buffer);
+    const attached = copy.attachments![0]!.content;
+    expect(Buffer.compare(attached, stored)).not.toBe(0);
+    const originalPages = (await PDFDocument.load(stored)).getPageCount();
+    expect((await PDFDocument.load(attached)).getPageCount()).toBe(originalPages + 1);
+    expect(copy.attachments![0]!.contentType).toBe('application/pdf');
+    const [after] = await documentsFor(requestId);
+    expect(Buffer.compare(Buffer.from(after!.pdf_data as Buffer), stored)).toBe(0);
     expect(copy.attachments![0]!.filename).toBe('BAA 2027 (signed).pdf');
     const staff = mailsFor('staff.agreement_outcome')[0]!;
     expect(staff.to).toBe(s.tech.email);
