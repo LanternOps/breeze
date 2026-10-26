@@ -67,6 +67,7 @@ export interface User {
   email: string;
   name: string;
   mfaEnabled: boolean;
+  mfaMethod?: MfaMethod | null;
   avatarUrl?: string;
   requiresSetup?: boolean;
   // True only for platform operators. Gates platform-admin-only nav (e.g.
@@ -144,7 +145,8 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
-  commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
+  commitMfaEnrollmentIfCurrent: (generation: number, tokens?: Tokens) => boolean;
+  commitMfaDisableIfCurrent: (generation: number, tokens?: Tokens) => boolean;
   commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
@@ -283,8 +285,25 @@ export const useAuthStore = create<AuthState>()(
           ) return state;
           committed = true;
           return {
-            tokens,
-            user: { ...state.user, mfaEnabled: true },
+            ...(tokens ? { tokens } : {}),
+            user: { ...state.user, mfaEnabled: true, mfaMethod: 'totp' },
+          };
+        });
+        return committed;
+      },
+
+      commitMfaDisableIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            ...(tokens ? { tokens } : {}),
+            user: { ...state.user, mfaEnabled: false, mfaMethod: null },
           };
         });
         return committed;
