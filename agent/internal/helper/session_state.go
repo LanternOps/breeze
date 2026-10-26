@@ -36,8 +36,31 @@ type sessionState struct {
 
 	// Set to true when the watcher gives up after repeated failures.
 	// Prevents Apply() from re-spawning and re-creating the watcher.
-	// Cleared on helper update or when the helper binary changes.
+	// Cleared on helper update, when the installed Assist version differs from
+	// gaveUpVersion, or watcherGiveUpRetry after gaveUpAt (#10183).
 	watcherGaveUp bool
+	gaveUpAt      time.Time
+	gaveUpVersion string
+
+	// launchIssue: the install-issue code of a pre-launch refusal in this
+	// session (webview2_outdated); "" when the last launch check passed.
+	launchIssue string
+	// webview2Refusal dedupes the refusal WARN: "<found>><minimum>" of the
+	// refusal last logged.
+	webview2Refusal string
+	// webview2UnknownLogged: the "runtime version not found" WARN fired for
+	// this session; reset once a version is read.
+	webview2UnknownLogged bool
+	// exitProbeErrLogged: a failure to watch Assist for its exit code was
+	// logged for this session; reset once a probe opens.
+	exitProbeErrLogged bool
+
+	// exitProbes hold running Assist processes open so the watcher can log how
+	// they exited (assist_exit.go). Keyed by PID. Guarded by Manager.mu.
+	exitProbes map[int]exitProbe
+	// lastExit is the most recent Assist exit the watcher observed.
+	lastExit      assistExit
+	lastExitKnown bool
 }
 
 func newSessionState(key, baseDir string) *sessionState {
