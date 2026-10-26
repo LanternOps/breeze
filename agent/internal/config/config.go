@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	mathrand "math/rand"
@@ -91,7 +93,17 @@ type Config struct {
 	// this field existed, whenever the org's binding mode requires one). This
 	// is a known, accepted gap for already-enrolled fleets at rollout, not a
 	// bug in agents enrolled after this field landed.
-	DeviceID                     string `mapstructure:"device_id"`
+	DeviceID string `mapstructure:"device_id"`
+	// BootstrapTokenFingerprint is the SHA-256 (hex) of the MSI bootstrap token
+	// that last enrolled this agent, or "" when no bootstrap token ever did
+	// (manual `enroll`, pre-#9540 fleets). The MSI BootstrapEnroll custom
+	// action runs on upgrades too; this is how it tells "the original
+	// download ran again" (skip, spend nothing) from "a new installer was
+	// sent to this host" (re-enroll). Lives in secrets.yaml (isSecretYAMLKey):
+	// the token is only ~52 bits, lives 7–30 days and may have uses left, so
+	// an unsalted digest in world-readable agent.yaml would be brute-forceable
+	// offline by any local user.
+	BootstrapTokenFingerprint    string `mapstructure:"bootstrap_token_fingerprint"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
@@ -567,6 +579,9 @@ func loadLocked(cfgFile string) (*Config, error) {
 		}
 		if v := sv.GetString("pending_helper_auth_token"); v != "" {
 			cfg.PendingHelperAuthToken = v
+		}
+		if v := sv.GetString("bootstrap_token_fingerprint"); v != "" {
+			cfg.BootstrapTokenFingerprint = v
 		}
 		if v := sv.GetString("mtls_cert_pem"); v != "" {
 			cfg.MtlsCertPEM = v
@@ -1107,6 +1122,12 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	if cfg.BackupS3SecretKey != "" {
 		sv.Set("backup_s3_secret_key", cfg.BackupS3SecretKey)
 	}
+	// #9540 — digest of the bootstrap token that last enrolled this host.
+	// Load reads it back into cfg, so every later SaveTo carries it forward;
+	// non-empty only, like the S3 keys.
+	if cfg.BootstrapTokenFingerprint != "" {
+		sv.Set("bootstrap_token_fingerprint", cfg.BootstrapTokenFingerprint)
+	}
 
 	// Same atomic-write pattern for the secrets file (0600).
 	secretsYAML, err := yaml.Marshal(sv.AllSettings())
@@ -1284,7 +1305,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 // token an older agent left in agent.yaml.
 func isSecretYAMLKey(key string) bool {
 	switch key {
-	case "auth_token", "watchdog_auth_token",
+	case "auth_token", "watchdog_auth_token", "bootstrap_token_fingerprint",
 		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires",
 		"pending_mtls_certificate", "pending_mtls_private_key",
 		"pending_mtls_certificate_id", "pending_mtls_expires_at":
@@ -1582,4 +1603,16 @@ func secretsFilePathFor(cfgFile string) string {
 		return filepath.Join(filepath.Dir(cfgFile), "secrets.yaml")
 	}
 	return filepath.Join(configDir(), "secrets.yaml")
+}
+
+// BootstrapTokenFingerprint is the value stored in Config.BootstrapTokenFingerprint
+// for a given raw bootstrap token. Case-sensitive on purpose: tokens are
+// case-sensitive, and a deploy tool that lowercased the installer file name
+// produced a different (mangled) token, not the one that enrolled this host.
+func BootstrapTokenFingerprint(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
