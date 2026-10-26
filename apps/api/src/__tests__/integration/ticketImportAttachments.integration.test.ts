@@ -531,20 +531,21 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const window = await openWindow(fx);
     const ticket = source(fx, [comment('c1', 10, 'Two runs.', [file('f1', 'one.png', PNG.length)])]);
     const context = windowWriteContext(descriptorOf(fx, window.id));
-    // This run: header (1st charge), reservation (2nd), f1 gone in its source
-    // (a permanent skip), then its chunk transaction (3rd). Right before that
-    // transaction, another run of the ticket stores f1 and marks it stored.
+    // This run finds f1 gone in its source (a permanent skip). While its fetch
+    // fails, another run of the ticket (whose source still had the file) puts
+    // f1 and marks it stored: after this run's skip, before any of its deletes.
+    // (The 212009129 order deleted that object here, before the chunk
+    // transaction, and the stored row then served 404.)
     let otherRow: { id: string; ticketId: string; storageKey: string | null } | undefined;
-    chargeHook.before = async (call) => {
-      if (call !== 3) return;
+    const fetchAttachment = vi.fn(async (): Promise<Uint8Array> => {
       [otherRow] = await bySource(fx.principal.id, 'f1');
       s3.objects.set(otherRow!.storageKey!, { body: Buffer.from(PNG), contentType: 'image/png', sha256: sha(PNG) });
       expect(await withDbAccessContext(context, () => markReservationStored(otherRow!.ticketId, fx.principal.id, {
         id: otherRow!.id, contentType: 'image/png', byteSize: PNG.length, sha256: sha(PNG),
       }))).toBe(true);
-    };
-    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({}) });
-    chargeHook.before = null;
+      throw new ImportAttachmentFetchError('not_found');
+    });
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment });
     expect(result).toMatchObject({ commentsWritten: 1, attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f1', reason: 'not_found' }] });
     // The skip-delete spared the stored row, and its object was never deleted.
     const [row] = await bySource(fx.principal.id, 'f1');
