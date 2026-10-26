@@ -592,6 +592,10 @@ const partnerPublicColumns = () => ({
   invoiceLineShowNote: partners.invoiceLineShowNote,
   invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
+  // #9075 W4a: Settings → Billing → Agreements reads these back.
+  agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
+  agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
+  agreementMaxReminders: partners.agreementMaxReminders,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   trustPageUnbranded: partners.trustPageUnbranded,
   serviceManagementMode: partners.serviceManagementMode,

@@ -25,6 +25,7 @@ vi.mock('../../lib/api/contracts', async (importOriginal) => {
 });
 
 const api = vi.hoisted(() => ({
+  getAgreementRequestDefaults: vi.fn(),
   createAgreementRequest: vi.fn(),
   updateAgreementRequest: vi.fn(),
   deleteAgreementRequest: vi.fn(),
@@ -82,6 +83,69 @@ describe('SendAgreementDialog', () => {
     api.updateAgreementRequest.mockResolvedValue(resp({ data: { id: 'r-1' } }));
     api.deleteAgreementRequest.mockResolvedValue(resp({ data: { id: 'r-1' } }));
     api.sendAgreementRequest.mockResolvedValue(resp({ data: sendResult() }));
+    api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 30, autoReminder: null } }));
+  });
+
+  describe('#9075 W4a: expiry pre-filled from the partner default', () => {
+    const inDays = (days: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    it("pre-fills now + the partner's default days and says where it came from, plus the reminder cadence", async () => {
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } } }));
+      renderDialog();
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(14)));
+      expect(api.getAgreementRequestDefaults).toHaveBeenCalledWith('org-1');
+      expect(screen.getByTestId('agreements-send-expiry-default')).toHaveTextContent('14 days');
+      expect(screen.getByTestId('agreements-send-auto-reminder')).toHaveTextContent(/every 3 days, up to 2/);
+    });
+
+    it('reminders off → no reminder line', async () => {
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ data: { defaultExpiryDays: 7, autoReminder: null } }));
+      renderDialog();
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(7)));
+      expect(screen.queryByTestId('agreements-send-auto-reminder')).not.toBeInTheDocument();
+    });
+
+    it('never clobbers an expiry the tech picked before the default arrived', async () => {
+      let release: (r: Response) => void = () => {};
+      api.getAgreementRequestDefaults.mockImplementation(() => new Promise<Response>((r) => { release = r; }));
+      renderDialog();
+      fireEvent.change(await screen.findByTestId('agreements-send-expiry'), { target: { value: '2099-01-15' } });
+      release(resp({ data: { defaultExpiryDays: 14, autoReminder: null } }));
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry-default')).toBeInTheDocument());
+      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue('2099-01-15');
+    });
+
+    it('a failed defaults read keeps the built-in 30 days and SAYS so instead of naming a source', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      api.getAgreementRequestDefaults.mockResolvedValue(resp({ error: 'nope' }, 500));
+      renderDialog();
+      expect(await screen.findByTestId('agreements-send-expiry-default-unavailable')).toHaveTextContent(/built-in default/);
+      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(30));
+      expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
+      warn.mockRestore();
+    });
+
+    it("switching org drops the previous org's hint until the new defaults arrive", async () => {
+      api.getAgreementRequestDefaults.mockImplementation(async (orgId: string) => (orgId === 'org-1'
+        ? resp({ data: { defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } } })
+        : new Promise<Response>(() => {})));
+      fetchWithAuth.mockImplementation(async (path: string) => {
+        if (path.startsWith('/orgs/organizations/org-')) return resp({ billingContact: null });
+        return resp({ data: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Globex' }] });
+      });
+      render(<SendAgreementDialog open onClose={vi.fn()} onSent={vi.fn()} />);
+      const org = await screen.findByTestId('agreements-send-org');
+      await waitFor(() => expect(org.querySelectorAll('option').length).toBeGreaterThan(2));
+      fireEvent.change(org, { target: { value: 'org-1' } });
+      expect(await screen.findByTestId('agreements-send-auto-reminder')).toBeInTheDocument();
+      fireEvent.change(org, { target: { value: 'org-2' } });
+      await waitFor(() => expect(screen.queryByTestId('agreements-send-auto-reminder')).not.toBeInTheDocument());
+      expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
+    });
   });
 
   it('locks the org and prefills recipients from the org billing contact', async () => {

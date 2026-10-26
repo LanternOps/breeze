@@ -854,6 +854,11 @@
       "cover": "Mensaje de presentación (opcional)",
       "expiry": "El enlace vence el",
       "expiryPast": "Elige una fecha de vencimiento futura.",
+      "expiryDefaultHint_one": "Predeterminado: {{count}} día, desde Configuración de facturación → Acuerdos.",
+      "expiryDefaultHint_other": "Predeterminado: {{count}} días, desde Configuración de facturación → Acuerdos.",
+      "autoReminderHint_one": "Los recordatorios automáticos se envían todos los días, hasta un máximo de {{max}}.",
+      "autoReminderHint_other": "Los recordatorios automáticos se envían cada {{count}} días, hasta un máximo de {{max}}.",
+      "expiryDefaultUnavailable": "No se pudo cargar el vencimiento predeterminado de la Configuración de facturación; se muestra el valor predeterminado integrado.",
       "label": "Etiqueta (opcional)",
       "createDraft": "Crear borrador y vista previa",
       "creating": "Creando…",
@@ -2475,6 +2480,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Acuerdos",
+      "description": "Valores predeterminados para los acuerdos que envías a firmar. Los remitentes aún pueden elegir otro vencimiento en cada solicitud.",
+      "expiryDays": "Vencimiento predeterminado del enlace (días)",
+      "expiryDaysHelp": "El enlace de firma de una nueva solicitud de acuerdo vence esta cantidad de días después de crearse, a menos que el remitente elija otra fecha.",
+      "expiryDaysInvalid": "Ingresa un número entero de días entre {{min}} y {{max}}.",
+      "remindersEnabled": "Enviar recordatorios automáticos",
+      "remindersHelp": "Vuelve a enviar por correo el mismo enlace de firma a los destinatarios hasta que el acuerdo se firme, se rechace, se anule o venza.",
+      "intervalDays": "Recordar cada (días)",
+      "intervalDaysInvalid": "Ingresa un número entero de días entre {{min}} y {{max}}.",
+      "maxReminders": "Detener después de (recordatorios)",
+      "maxRemindersHelp": "Cuenta todos los recordatorios de la solicitud, manuales o automáticos.",
+      "maxRemindersInvalid": "Ingresa un número entero entre {{min}} y {{max}}.",
+      "readOnlyNoSend": "Cambiar los valores predeterminados de los acuerdos requiere permiso para enviar acuerdos. Tienes acceso de solo lectura."
+    },
     "company": {
       "addressInherited": "Igual que en los detalles de la empresa",
       "addressLine1": "Dirección Línea 1",
@@ -2561,6 +2581,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
+    "agreements": "Acuerdos",
     "connections": "Conexiones",
     "rates": "Tarifas",
     "payments": "Pagos"

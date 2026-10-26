@@ -854,6 +854,11 @@
       "cover": "Cover message (optional)",
       "expiry": "Link expires on",
       "expiryPast": "Choose an expiry date in the future.",
+      "expiryDefaultHint_one": "Default: {{count}} day, from Billing settings → Agreements.",
+      "expiryDefaultHint_other": "Default: {{count}} days, from Billing settings → Agreements.",
+      "autoReminderHint_one": "Automatic reminders go out every day, up to {{max}} in total.",
+      "autoReminderHint_other": "Automatic reminders go out every {{count}} days, up to {{max}} in total.",
+      "expiryDefaultUnavailable": "Couldn't load your default expiry from Billing settings, so the built-in default is shown.",
       "label": "Label (optional)",
       "createDraft": "Create draft & preview",
       "creating": "Creating…",
@@ -2475,6 +2480,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Agreements",
+      "description": "Defaults for agreements you send for signature. Senders can still pick a different expiry on each request.",
+      "expiryDays": "Default link expiry (days)",
+      "expiryDaysHelp": "A new agreement request's signing link expires this many days after it is created, unless the sender picks another date.",
+      "expiryDaysInvalid": "Enter a whole number of days from {{min}} to {{max}}.",
+      "remindersEnabled": "Send automatic reminders",
+      "remindersHelp": "Emails the same signing link to the recipients again until the agreement is signed, declined, voided or expires.",
+      "intervalDays": "Remind every (days)",
+      "intervalDaysInvalid": "Enter a whole number of days from {{min}} to {{max}}.",
+      "maxReminders": "Stop after (reminders)",
+      "maxRemindersHelp": "Counts every reminder on the request, manual or automatic.",
+      "maxRemindersInvalid": "Enter a whole number from {{min}} to {{max}}.",
+      "readOnlyNoSend": "Changing agreement defaults requires permission to send agreements. You have view-only access."
+    },
     "company": {
       "addressInherited": "Same as company details",
       "addressLine1": "Address line 1",
@@ -2561,6 +2581,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Defaults",
     "documents": "Documents",
+    "agreements": "Agreements",
     "connections": "Connections",
     "rates": "Rates",
     "payments": "Payments"

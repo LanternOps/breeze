@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
     remindAgreementRequest: vi.fn(),
     getAgreementRequestLink: vi.fn(),
     voidAgreementRequest: vi.fn(),
+    getAgreementRequestDefaults: vi.fn(),
   },
   writeRouteAudit: vi.fn(),
   revoke: vi.fn(),
@@ -125,11 +126,13 @@ beforeEach(() => {
   });
   h.svc.getAgreementRequestLink.mockResolvedValue({ link: 'https://portal/agreement/t', reissued: false, orgId: ORG });
   h.svc.voidAgreementRequest.mockResolvedValue({ request: { ...DTO, status: 'voided', voidReason: 'wrong client' }, revoke: { jti: 'jti-1', tokenExpiresAt: null } });
+  h.svc.getAgreementRequestDefaults.mockResolvedValue({ defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } });
 });
 
 // The permission split, spec §5 / OD7 B.
 const ROUTES: Array<[string, string, RequestInit | undefined, string]> = [
   ['GET /', BASE, undefined, 'agreements:read'],
+  ['GET /defaults', `${BASE}/defaults?orgId=${ORG}`, undefined, 'agreements:read'],
   ['GET /:id', `${BASE}/${REQ}`, undefined, 'agreements:read'],
   ['GET /:id/preview', `${BASE}/${REQ}/preview`, undefined, 'agreements:read'],
   ['POST /', BASE, json('POST', { orgId: ORG, templateId: TEMPLATE }), 'agreements:write'],
@@ -155,6 +158,31 @@ describe('permission split (read / write / send) and scopes', () => {
       expect(res.status).toBe(403);
     });
   }
+});
+
+describe('GET /defaults (#9075 W4a — the Send dialog pre-fill)', () => {
+  it('returns the resolved partner defaults for the org, never routed as /:id', async () => {
+    const res = await contractRoutes.request(`${BASE}/defaults?orgId=${ORG}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } } });
+    expect(h.svc.getAgreementRequestDefaults).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1' }), ORG);
+    expect(h.svc.getAgreementRequestDetail).not.toHaveBeenCalled();
+  });
+
+  it('a missing or malformed orgId → 400 before the service', async () => {
+    for (const url of [`${BASE}/defaults`, `${BASE}/defaults?orgId=nope`]) {
+      const res = await contractRoutes.request(url);
+      expect(res.status).toBe(400);
+    }
+    expect(h.svc.getAgreementRequestDefaults).not.toHaveBeenCalled();
+  });
+
+  it('an inaccessible org maps the service 404', async () => {
+    h.svc.getAgreementRequestDefaults.mockRejectedValueOnce(new AgreementRequestServiceError('Organization not found', 404, 'ORG_NOT_FOUND'));
+    const res = await contractRoutes.request(`${BASE}/defaults?orgId=${ORG}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: 'ORG_NOT_FOUND' });
+  });
 });
 
 describe('validation', () => {

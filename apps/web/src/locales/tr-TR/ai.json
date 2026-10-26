@@ -628,7 +628,10 @@
       "refresh": "Yetkiyi yenile",
       "revoke": "Wisp'i kapat",
       "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Açık konular okunabilir kalır.",
-      "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin."
+      "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin.",
+      "refreshKeepsTerms": "Bu konuşma önceki yetki koşullarını korur. Yenilenen yetkiyi kullanmak için yeni bir konuşma başlatın.",
+      "startNewConversation": "Yeni bir konuşma başlat",
+      "dismissNote": "Kapat"
     },
     "settings": {
       "title": "Bütçe ve kontrol aralığı",
@@ -661,6 +664,7 @@
       "offFailed": "Wisp kapatılamadı",
       "refreshed": "Yetki yenilendi",
       "refreshFailed": "Yetki yenilenemedi",
+      "grantCheckFailed": "Wisp yetkiniz kontrol edilemedi, bu yüzden bu konuşma bir Breeze AI sohbeti olarak başladı.",
       "settingsSaved": "Wisp ayarları kaydedildi",
       "settingsFailed": "Wisp ayarları kaydedilemedi",
       "focusSet": "Wisp artık {{org}} üzerinde çalışıyor",

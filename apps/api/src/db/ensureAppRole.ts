@@ -384,6 +384,18 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_operator_plan_approval_effects') THEN
           REVOKE UPDATE ON TABLE ai_operator_plan_approval_effects FROM breeze_app;
         END IF;
+        -- contract_documents (signed agreements, #9075 W4b, 2027-01-06-150000):
+        -- append-only evidence. Table-level UPDATE/DELETE/TRUNCATE revoked;
+        -- the column-level UPDATE (contract_id, org_id) that link-later,
+        -- contract adopt and the org-merge re-point write is re-granted right
+        -- after (a table-level REVOKE also drops column grants). The
+        -- contract_documents_append_only trigger limits org_id to the merge.
+        -- Org erasure deletes as breeze_audit_admin with
+        -- breeze.allow_audit_retention='1' (AUDIT_ADMIN_REQUIRED_TABLES).
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='contract_documents') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE contract_documents FROM breeze_app;
+          GRANT UPDATE (contract_id, org_id) ON TABLE contract_documents TO breeze_app;
+        END IF;
         -- ai_invocations (AI model registry W02, #7600, 2026-11-14-100300):
         -- append-only invocation ledger. Org erasure and retention delete it as
         -- breeze_audit_admin with breeze.allow_audit_retention='1'. The

@@ -133,7 +133,13 @@ describe('signed agreement as deliverable evidence (#9312, live DB)', () => {
     const s = await seed();
     await withDbAccessContext(s.partnerCtx, () =>
       addEvidence(s.orgA.id, s.occA, { kind: 'contract_document', contractDocumentId: s.agreementA }, s.actor));
-    await sys(() => db.execute(sql`DELETE FROM contract_documents WHERE id = ${s.agreementA}::uuid`));
+    // contract_documents is append-only (2027-01-06-150000): the only delete
+    // left is org erasure's, as breeze_audit_admin with the retention GUC.
+    await sys(async () => {
+      await db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
+      await db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+      await db.execute(sql`DELETE FROM contract_documents WHERE id = ${s.agreementA}::uuid`);
+    });
     expect(await evidenceRows(s.orgA.id)).toEqual([]);
     const occ = await sys(async () => rows(await db.execute(sql`SELECT count(*)::int AS n FROM service_deliverable_occurrences`)));
     expect(occ[0]!.n).toBe(1);

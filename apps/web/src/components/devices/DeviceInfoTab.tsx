@@ -42,6 +42,7 @@ import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
 import { formatOsBuild } from "./formatOsLabel";
 import DeviceTimeSection from "./time/DeviceTimeSection";
+import { derivePromptRenderer, helperInstallIssueKey } from "./promptRenderer";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -240,6 +241,51 @@ function formatDesktopAccessReason(
     default:
       return "—";
   }
+}
+
+function AssistStatusRow({
+  helperVersion,
+  helperInstallIssue,
+}: {
+  helperVersion?: string | null;
+  helperInstallIssue?: string | null;
+}) {
+  const { t } = useTranslation("devices");
+  const renderer = derivePromptRenderer({ helperVersion, helperInstallIssue });
+  let value: string;
+  if (renderer.status === "installed") {
+    value = t("deviceInfoTab.assistStatus.installed");
+  } else if (renderer.status === "notDeployed") {
+    value = t("deviceInfoTab.assistStatus.notDeployed");
+  } else {
+    let reason: string;
+    switch (helperInstallIssueKey(renderer.issue ?? "")) {
+      case "webview2Outdated":
+        reason = t("deviceInfoTab.assistStatus.reason.webview2Outdated");
+        break;
+      case "crashLoop":
+        reason = t("deviceInfoTab.assistStatus.reason.crashLoop");
+        break;
+      case "unmanagedInstall":
+        reason = t("deviceInfoTab.assistStatus.reason.unmanagedInstall");
+        break;
+      case "awaitingServerOffer":
+        reason = t("deviceInfoTab.assistStatus.reason.awaitingServerOffer");
+        break;
+      case "installAbandoned":
+        reason = t("deviceInfoTab.assistStatus.reason.installAbandoned");
+        break;
+      default:
+        reason = t("deviceInfoTab.assistStatus.reason.unknown");
+    }
+    value = t("deviceInfoTab.assistStatus.unavailable", { reason });
+  }
+  return (
+    <div className="flex justify-between py-2" data-testid="assist-status">
+      <dt className="text-sm text-muted-foreground">{t("deviceInfoTab.assistStatus.label")}</dt>
+      <dd className="text-sm font-medium text-right">{value}</dd>
+    </div>
+  );
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
@@ -1309,7 +1355,14 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           label={t("deviceInfoTab.helperVersion")}
           value={info?.helperVersion?.trim() || "—"}
         />
-        {/* #6925: Assist enabled but not installed — the agent reports why. */}
+        {/* #10190 W01: whether Breeze Assist can draw prompts here, from the
+            last-reported helper state (not the live per-session renderer). */}
+        <AssistStatusRow
+          helperVersion={info?.helperVersion}
+          helperInstallIssue={info?.helperInstallIssue}
+        />
+        {/* #6925, #10183, #10185: the agent reports why Assist is not
+            installed or not running. */}
         {info?.helperInstallIssue ? (
           <div
             data-testid="helper-install-issue"
@@ -1320,11 +1373,17 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
               const since = info.helperInstallIssueSince
                 ? new Date(info.helperInstallIssueSince).toLocaleDateString()
                 : "—";
-              switch (info.helperInstallIssue) {
-                case "awaiting_server_offer":
+              switch (helperInstallIssueKey(info.helperInstallIssue)) {
+                case "awaitingServerOffer":
                   return t("deviceInfoTab.helperInstallIssue.awaitingServerOffer", { since });
-                case "install_abandoned":
+                case "installAbandoned":
                   return t("deviceInfoTab.helperInstallIssue.installAbandoned", { since });
+                case "webview2Outdated":
+                  return t("deviceInfoTab.helperInstallIssue.webview2Outdated", { since });
+                case "crashLoop":
+                  return t("deviceInfoTab.helperInstallIssue.crashLoop", { since });
+                case "unmanagedInstall":
+                  return t("deviceInfoTab.helperInstallIssue.unmanagedInstall", { since });
                 default:
                   return t("deviceInfoTab.helperInstallIssue.unknown", { since });
               }

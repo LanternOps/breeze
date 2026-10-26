@@ -9,6 +9,7 @@ import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type Att
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
 import {
   attachAnchorMissing,
@@ -316,8 +317,6 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   }
 }
 
-/** Session-create refusals that mean the grant cannot carry a session at all. */
-const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
@@ -775,7 +774,7 @@ export const useAiStore = create<AiState>()(
     // focus_mismatch) rather than re-anchoring silently.
     const wisp = get().wisp;
     const wispGrantId = opts?.wispGrantId ?? wisp?.grantId;
-    const wispOrgId = opts?.wispGrantId ? null : wisp ? (wisp.focusOrgId ?? wisp.scopeOrgId) : null;
+    const wispOrgId = opts?.wispGrantId ? null : wisp ? wispSessionOrgId(wisp) : null;
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
@@ -1459,7 +1458,7 @@ export const useAiStore = create<AiState>()(
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
     set({ wisp: w, ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined });
+    await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
   },
 
   setWispFocus: async (orgId, orgName) => {

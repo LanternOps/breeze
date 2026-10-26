@@ -22,7 +22,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 90 unique ids', () => {
+  it('has 93 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -30,8 +30,12 @@ describe('GOLDEN_CASES', () => {
     // g82-g84 (full-control W06, #6776): ticket config, checklist templates, time suggestions.
     // g85-g87 (full-control W07, #6777): correlation explain, device anomalies, reliability offenders.
     // g88-g90 (full-control W08, #6778): topology node relationships, diagnostic start, template preview.
-    expect(GOLDEN_CASES).toHaveLength(90);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(90);
+    // g91-g93 (full-control W09, #6779): asset probe, SNMP metric history, UniFi sync + status.
+    expect(GOLDEN_CASES).toHaveLength(93);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(93);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g91')?.expect[0]).toEqual({ tool: 'probe_network_asset' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g92')?.expect[0]).toEqual({ tool: 'get_snmp_metrics', action: 'history' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g93')?.expect[0]).toEqual({ tool: 'trigger_unifi_sync' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g88')?.expect[0]).toEqual({ tool: 'get_topology_graph', action: 'node' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g89')?.expect[0]).toEqual({ tool: 'run_topology_diagnostic', action: 'start' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g90')?.expect[0]).toEqual({ tool: 'apply_topology_template', action: 'preview' });

@@ -37,11 +37,35 @@ const sys = <T,>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 // wired, so the back-fill's RAISE WARNING row count can be asserted.
 const notices: string[] = [];
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: (n) => { notices.push(String(n.message)); } });
-afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+afterAll(async () => {
+  // A crashed withEvidenceGuardOff() must not leave the guard off for the
+  // suites that run after this file in the same shard.
+  await adminSql`ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update`;
+  const [t] = await adminSql`
+    SELECT tgenabled FROM pg_trigger
+     WHERE tgrelid = 'contract_documents'::regclass AND tgname = 'contract_documents_block_update'`;
+  await adminSql.end({ timeout: 5 });
+  expect(t?.tgenabled).toBe('O');
+});
+/**
+ * Both back-fills sort (and so apply) BEFORE 2027-01-06-150000 made the
+ * evidence columns write-once; contract_documents_append_only now refuses
+ * exactly their UPDATE (55000). A replay simulates that history, so it runs with the update
+ * guard disabled. Integration files run one at a time (fileParallelism: false)
+ * and `finally` re-enables it.
+ */
+async function withEvidenceGuardOff<T>(fn: () => Promise<T>): Promise<T> {
+  await adminSql`ALTER TABLE contract_documents DISABLE TRIGGER contract_documents_block_update`;
+  try {
+    return await fn();
+  } finally {
+    await adminSql`ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update`;
+  }
+}
 async function runMigrationAsAdmin(MIGRATION: string): Promise<string[]> {
   const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
   notices.length = 0;
-  await adminSql.unsafe(migrationSql);
+  await withEvidenceGuardOff(() => adminSql.unsafe(migrationSql));
   return notices.filter((m) => m.startsWith('backfilled signer evidence'));
 }
 
@@ -85,14 +109,9 @@ async function seed() {
       RETURNING id`))[0]!.id as string;
     const rowA = await insertDoc(true);
     const rowB = await insertDoc(false);
-    // Pre-migration state: no evidence on either row.
-    await db.execute(sql`
-      UPDATE contract_documents
-         SET signer_name = NULL, signer_email = NULL, signed_at = NULL, signer_ip = NULL,
-             signer_user_agent = NULL, acceptance_origin = NULL, acceptance_method = NULL,
-             acceptance_reference = NULL, recorded_by_user_id = NULL, content_sha256 = NULL,
-             content_hash_version = NULL, acceptance_render_locale = NULL
-       WHERE id IN (${rowA}::uuid, ${rowB}::uuid)`);
+    // Pre-migration state: insertDoc sets no evidence column, so both rows
+    // start with NULL evidence. (No UPDATE to blank them: since 2027-01-06-150000
+    // the evidence columns are write-once and breeze_app holds no grant on them.)
     return { rowA, rowB, techId: tech.id };
   });
 }
@@ -139,7 +158,7 @@ describe.each(MIGRATIONS)('contract_documents evidence back-fill (%s)', (MIGRATI
 
   runDb('is idempotent: a second replay changes nothing and back-fills no row', async () => {
     const { rowA, rowB } = await seed();
-    await replayMigration(MIGRATION);
+    await withEvidenceGuardOff(() => replayMigration(MIGRATION));
     const firstA = await docRow(rowA);
     const firstB = await docRow(rowB);
     expect(firstA.signer_name).toBe('Jane Doe');

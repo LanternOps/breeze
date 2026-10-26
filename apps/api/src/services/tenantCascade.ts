@@ -1479,6 +1479,11 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_invocations_append_only() (2026-11-14-100300, #7600 W02), so erasure has
   // to run as breeze_audit_admin with breeze.allow_audit_retention=1.
   'ai_invocations',
+  // Signed agreements (#9075 W4b): REVOKE UPDATE/DELETE from breeze_app (only
+  // column UPDATE on contract_id/org_id stays) plus
+  // contract_documents_append_only() (2027-01-06-150000), so erasure has to
+  // run as breeze_audit_admin with breeze.allow_audit_retention=1.
+  'contract_documents',
 ]);
 
 interface FkEdge {

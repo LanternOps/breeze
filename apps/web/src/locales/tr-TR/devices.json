@@ -1412,7 +1412,24 @@
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunucu bu cihaza yüklenecek bir Breeze Assist sürümü sunmadı, bu nedenle yüklenmemiş olarak kalıyor. Bu cihazın platformu için yayımlanmış bir Breeze Assist derlemesi olup olmadığını kontrol edin.",
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
+      "webview2Outdated": "Breeze Assist yüklü, ancak ajan onu başlatmıyor ({{since}} tarihinden beri): bu cihazın WebView2 Runtime sürümü Breeze Assist'in ihtiyacından eski. WebView2 Runtime güncellenene kadar istemler standart Windows iletişim kutularını kullanır. Ajan günlüğü bulunan sürümü belirtir.",
+      "crashLoop": "Breeze Assist başladıktan hemen sonra kapanıp durdu ({{since}} tarihinden beri), bu nedenle ajan onu yeniden başlatmayı bıraktı. 6 saat sonra veya yeni bir Breeze Assist sürümü yüklenir yüklenmez yeniden deneyecek. Çıkış kodları ajan günlüğünde yer alıyor.",
+      "unmanagedInstall": "Bu cihazdaki Breeze Assist, Breeze tarafından yüklenmedi ({{since}} tarihinden beri). Bu cihazın ilkesinde dağıtım kapalı, bu nedenle ajan bu kopyaya dokunmuyor: onu başlatmıyor, güncellemiyor veya kaldırmıyor. Ajanın yönetmesi için dağıtımı açın.",
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
+    },
+    "assistStatus": {
+      "label": "Breeze Assist",
+      "installed": "Yüklü",
+      "unavailable": "Kullanılamıyor: {{reason}}",
+      "notDeployed": "Dağıtılmadı",
+      "reason": {
+        "webview2Outdated": "WebView2 Runtime çok eski",
+        "crashLoop": "sürekli kapanıyor",
+        "unmanagedInstall": "Breeze tarafından yüklenmedi",
+        "awaitingServerOffer": "henüz yüklenmedi",
+        "installAbandoned": "yükleme başarısız oldu",
+        "unknown": "ajan günlüğüne bakın"
+      }
     },
     "watchdogInstall": {
       "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede <code>breeze-agent service install --watchdog</code> komutunu çalıştırın.",
@@ -1805,9 +1822,13 @@
     "updateStuckTooltip": "Bu cihaz bir saatten uzun süredir {{target}} sürümüne ajan güncellemesini tamamlayamadan yeniden deniyor.",
     "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
     "helperNotInstalled": "Yüklü değil",
+    "helperUnavailable": "Assist kullanılamıyor",
     "helperInstallIssueTooltip": {
       "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil: sunucu bu cihaza yüklenecek hiçbir Breeze Assist sürümü sunmadı.",
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil: sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu ve yeniden denemeler duraklatıldı.",
+      "webview2Outdated": "Breeze Assist yüklü ancak başlatılmıyor: cihazın WebView2 Runtime sürümü çok eski.",
+      "crashLoop": "Breeze Assist başladıktan hemen sonra kapanıp durdu; ajan 6 saat sonra yeniden deneyecek.",
+      "unmanagedInstall": "Breeze Assist, Breeze tarafından yüklenmedi ve dağıtım kapalı, bu nedenle ajan ona dokunmuyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil."
     },
     "agentVersionRelation": {

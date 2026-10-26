@@ -61,7 +61,7 @@ How the thread reads:
 - New posts appear while the page is open. The home refreshes every 30 seconds, and the thread re-reads its newest messages when that refresh shows Wisp starting or finishing a check, a newer brief, or a change in the concerns that need you. If that read fails, the thread says so and offers **Retry**.
 - An empty thread shows Wisp's welcome and four suggestions: **What needs me today?**, **Which devices are offline?**, **Run a health sweep** and **What happened overnight?**. Select one to send it. When a morning brief is already in the thread, only the suggestions show.
 
-The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Linked items](#linked-items). The thread resumes the last session instead of starting a new one on every visit. While Wisp is paused, the conversation still shows its history, read-only, and the composer is replaced by the paused notice. When the grant has ended, the history is not shown.
+The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Linked items](#linked-items). The thread resumes the last session instead of starting a new one on every visit. **New conversation** closes it, so its summary lands on the thread, and starts a fresh one on the grant. Nothing starts while the grant is paused or ended. While Wisp is paused, the conversation still shows its history, read-only, and the composer is replaced by the paused notice. When the grant has ended, the history is not shown.
 
 The rail, from the top:
 
@@ -85,7 +85,7 @@ The side panel, when it speaks as Wisp, has an **Open in Wisp** link that goes t
 
 ### Where you talk to Wisp
 
-The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (up to five; open tabs survive a reload) and shortcuts, and it works with Wisp off. The old `/workspace` and `/wisp/chat` addresses redirect to it, and old `#session=<id>` links still open their tab. The side panel speaks as Wisp only while you have an active grant; there is no toggle. Its **Open in Breeze AI** control moves a conversation to the page. See [Breeze AI](/features/breeze-ai/#where-you-talk-to-breeze-ai).
+The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (up to five; open tabs survive a reload) and shortcuts, and it works with Wisp off. The old `/workspace` and `/wisp/chat` addresses redirect to it, and old `#session=<id>` links still open their tab. When you have an active grant for the organization selected in the header (or a grant for all organizations), a new tab on the page starts under that grant, the way the side panel does, and the tab header says **Wisp**. With no active grant, Wisp off, or an organization-scoped sign-in, the tab is an ordinary chat and its header says **Breeze AI**. A conversation you open from history keeps whatever grant it started under. The side panel speaks as Wisp only while you have an active grant; there is no toggle. Its **Open in Breeze AI** control moves a conversation to the page. See [Breeze AI](/features/breeze-ai/#where-you-talk-to-breeze-ai).
 
 Breeze AI and the docked panel use the same message list as the Wisp home, so tool activity folds into one line there too, and the composer sends on Enter and adds a line on Shift+Enter.
 
@@ -117,6 +117,7 @@ A grant is the standing permission you give Wisp.
 - **Scope.** Either partner-wide or one organization. You can hold one live grant per scope.
 - **Reach is a snapshot.** The grant records what you can reach at the time. If your access later shrinks, Wisp's does too; if it grows, you refresh the grant to widen it.
 - **90-day expiry.** A grant lasts 90 days. Refreshing re-snapshots your current reach and renews the 90 days.
+- **A conversation keeps the terms it started with.** Refreshing does not change a conversation that is already open; the header says so and offers **Start a new conversation**, which runs on the refreshed grant.
 - **Revoke.** You, or a partner admin, can revoke a grant at any time.
 
 A grant can be **paused** rather than ended. You can pause and resume it yourself, and Wisp stays quiet while you are paused. Breeze also pauses a grant by itself, and shows the reason:

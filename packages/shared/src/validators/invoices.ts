@@ -6,6 +6,7 @@ import { BULK_ID_LIMIT } from '../constants';
 import { nullableHttpUrlField } from './httpUrl';
 import { currencyCodeSchema } from './currency';
 import { INVOICE_LINE_GROUPINGS } from '../utils/invoiceLineDetail';
+import { agreementDefaultsSettingsFields } from './agreementRequests';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -154,6 +155,10 @@ export const partnerBillingSettingsSchema = z.object({
   billingAddressPostalCode: z.string().max(40).nullable().optional(),
   billingAddressCountry: z.string().length(2).nullable().optional(),
   billingTermsAndConditions: z.string().max(20_000).nullable().optional(),
+  // #9075 W4a (OD8): agreement-request defaults (partner level only — no org
+  // override). The route additionally requires agreements:send when any of
+  // these is present, since they decide customer-facing reminder emails.
+  ...agreementDefaultsSettingsFields,
 });
 
 export const orgBillingSettingsSchema = z.object({

@@ -1,5 +1,6 @@
 mod app_shell;
 mod ipc;
+mod requirements;
 mod single_instance;
 mod workspace_open;
 

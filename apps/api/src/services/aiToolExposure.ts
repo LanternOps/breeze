@@ -71,6 +71,11 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_topology_monitoring',
   'manage_topology_templates',
   'apply_topology_template',
+  // Full-control W09 (#6779): partner-wide state. The routes are gated on canManagePartnerWidePolicies, which reads
+  // partnerOrgAccess; an agent / helper / MCP-key context never carries one, so these would be offered and refused every time.
+  'manage_known_guests',
+  'get_unifi_status',
+  'trigger_unifi_sync',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one

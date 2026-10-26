@@ -628,7 +628,10 @@
       "refresh": "Renouveler l’autorisation",
       "revoke": "Désactiver Wisp",
       "revokeConfirm": "Désactiver Wisp pour ce périmètre ? Les fils ouverts restent consultables.",
-      "widening": "Vous pouvez faire plus que ce que cette autorisation permet ; renouvelez-la pour que Wisp suive."
+      "widening": "Vous pouvez faire plus que ce que cette autorisation permet ; renouvelez-la pour que Wisp suive.",
+      "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
+      "startNewConversation": "Démarrer une nouvelle conversation",
+      "dismissNote": "Fermer"
     },
     "settings": {
       "title": "Budget et point de suivi",
@@ -661,6 +664,7 @@
       "offFailed": "Impossible de désactiver Wisp",
       "refreshed": "Autorisation renouvelée",
       "refreshFailed": "Impossible de renouveler l’autorisation",
+      "grantCheckFailed": "Impossible de vérifier votre autorisation Wisp : cette conversation a donc démarré comme une conversation Breeze AI.",
       "settingsSaved": "Paramètres de Wisp enregistrés",
       "settingsFailed": "Impossible d’enregistrer les paramètres de Wisp",
       "focusSet": "Wisp travaille désormais sur {{org}}",

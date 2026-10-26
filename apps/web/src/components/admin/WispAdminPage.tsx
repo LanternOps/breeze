@@ -31,7 +31,7 @@ interface WispGrantAdminRow {
   expiresAt: string;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
-  currentRevisionId: string;
+  currentRevisionId: string | null;
   assessmentsToday: number;
 }
 
@@ -44,6 +44,21 @@ interface GrantsState {
 }
 
 const COLUMN_COUNT = 9;
+
+/**
+ * Only the routes' own flag-off answer (`404 { error: 'wisp_disabled' }`) means
+ * "not enabled on this deployment". Any other 404 — e.g. the router's generic
+ * "Not Found" when the API is older than the page (#10141) — is a load error.
+ */
+async function isWispDisabled(response: Response): Promise<boolean> {
+  if (response.status !== 404) return false;
+  try {
+    const body = (await response.json()) as { error?: unknown } | null;
+    return body?.error === 'wisp_disabled';
+  } catch {
+    return false;
+  }
+}
 
 function sumPaused(paused: Record<string, number>): number {
   return Object.values(paused).reduce((a, b) => a + b, 0);
@@ -67,7 +82,7 @@ export default function WispAdminPage() {
         setState('locked');
         return;
       }
-      if (response.status === 404) {
+      if (await isWispDisabled(response)) {
         setState('disabled');
         return;
       }
@@ -99,7 +114,7 @@ export default function WispAdminPage() {
         setState('locked');
         return;
       }
-      if (response.status === 404) {
+      if (await isWispDisabled(response)) {
         setState('disabled');
         return;
       }

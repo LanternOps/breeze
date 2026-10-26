@@ -419,6 +419,11 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
   'unifi-telemetry',
   'unifi-collectors',
   'monitoring-results',
+  // #8318 wave 1b: phase 1 of the reattach rebind runs a per-agent rate
+  // limit (Redis), the provider call for the target's next certificate, and
+  // its own system transactions (routes/agents/rebind.ts); none of that may
+  // run inside a request-long org transaction (#1105).
+  'rebind',
 ]);
 
 /**

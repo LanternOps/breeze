@@ -867,6 +867,52 @@ describe('agent credential revocation cluster signal', () => {
     );
   });
 
+  // #8318 review of wave 1b-2, finding 7: a reattach confirm asks every node
+  // to close the SOURCE install's socket with 4040 (reconnect), not 4001.
+  it('closes with the code the broadcast asks for (4040 reconnect), default 4001, and ignores any other code', async () => {
+    const tokenHash = createHash('sha256').update('reattached-token').digest('hex');
+    const connect = async (agentId: string) => {
+      const handlers = createAgentWsHandlers(agentId, {
+        agentId, siteId: 'site-test', installIncarnation: 1,
+        deviceId: `device-${agentId}`, orgId: 'org-close-code', partnerId: 'partner-close-code',
+        credentialTokenHash: tokenHash,
+      });
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws, [{
+        status: 'online', agentTokenSuspendedAt: null, agentTokenHash: tokenHash,
+        previousTokenHash: null, previousTokenExpiresAt: null, watchdogTokenHash: null,
+        previousWatchdogTokenHash: null, previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null, pendingWatchdogTokenHash: null, pendingTokenExpiresAt: null,
+      }]);
+      return ws;
+    };
+
+    const reattached = await connect('agent-close-4040');
+    expect(handleAgentCredentialRevocation(JSON.stringify({
+      agentId: 'agent-close-4040', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    }))).toBe(true);
+    expect(reattached.close).toHaveBeenCalledWith(4040, 'Device reattached, reconnect required');
+
+    const forged = await connect('agent-close-forged');
+    expect(handleAgentCredentialRevocation({
+      agentId: 'agent-close-forged', revokedTokenHashes: [tokenHash], closeCode: 1000, closeReason: 'normal',
+    })).toBe(true);
+    expect(forged.close).toHaveBeenCalledWith(4001, 'Agent credentials revoked');
+  });
+
+  it('publishes the close code and reason when asked to', async () => {
+    const { getRedis } = await import('../services/redis');
+    const publish = vi.fn().mockResolvedValue(1);
+    vi.mocked(getRedis).mockReturnValue({ publish } as any);
+    const tokenHash = createHash('sha256').update('reattached-publish').digest('hex');
+    await expect(publishAgentCredentialRevocation({
+      agentId: 'agent-close-publish', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    })).resolves.toBe('published');
+    expect(JSON.parse(publish.mock.calls[0]![1] as string)).toEqual({
+      agentId: 'agent-close-publish', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    });
+  });
+
   it('a delayed old-generation event cannot close the newer socket', async () => {
     const oldHash = createHash('sha256').update('old-token').digest('hex');
     const newHash = createHash('sha256').update('new-token').digest('hex');
@@ -7039,7 +7085,9 @@ describe('late terminal_start failure binds to the exact terminal generation', (
 
   // #8318 §6.4 (review of wave 1b-1): a superseded install's socket whose
   // suspension write finds the row in another install's hands suspends
-  // nothing, so no `agent.token.suspended` row is attributed to the device.
+  // nothing, so no `agent.token.suspended` row is attributed to the device;
+  // the probe is still recorded, as `agent.cross_tenant_probe.stale_caller`
+  // (wave 1b-2).
   it('writes no suspension audit when the suspending write finds the row in another install\'s hands', async () => {
     const sessionId = '10000000-0000-4000-8000-000000000005';
     const owner = await openAgentSocket('agent-term-owner-2', TERM_DEVICE_ID);
@@ -7062,6 +7110,39 @@ describe('late terminal_start failure binds to the exact terminal generation', (
     expect(warnSpy.mock.calls.some((call) =>
       typeof call[0] === 'string' && call[0].includes('cross-tenant probe from a superseded install'))).toBe(true);
     warnSpy.mockRestore();
+
+    // The probe itself is a durable, denied audit row of its own kind.
+    const probeAudits = vi.mocked(createAuditLogAsync).mock.calls.filter(
+      (call) => (call[0] as { action?: string } | undefined)?.action === 'agent.cross_tenant_probe.stale_caller',
+    );
+    expect(probeAudits).toHaveLength(1);
+    expect(probeAudits[0]![0]).toMatchObject({
+      action: 'agent.cross_tenant_probe.stale_caller',
+      result: 'denied',
+      resourceType: 'device',
+      resourceId: 'device-term-superseded',
+      details: expect.objectContaining({
+        reason: 'cross-tenant-probe',
+        kind: 'term_failed',
+        agentId: 'agent-term-superseded',
+        suspended: false,
+      }),
+    });
+  });
+
+  it('a suspension that did happen writes no stale-caller probe row', async () => {
+    const sessionId = '10000000-0000-4000-8000-000000000006';
+    const owner = await openAgentSocket('agent-term-owner-3', TERM_DEVICE_ID);
+    const foreign = await openAgentSocket('agent-term-foreign-3', 'device-term-foreign-3');
+    const gen = await openTerminalGeneration(sessionId, 'agent-term-owner-3', owner.ws);
+    for (let i = 0; i < 5; i += 1) {
+      await foreign.handlers.onMessage(failedStartResult(gen.startCommandId), foreign.ws as any);
+    }
+    await new Promise((r) => setImmediate(r));
+    expect(suspendAudits()).toHaveLength(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls.some(
+      (call) => (call[0] as { action?: string } | undefined)?.action === 'agent.cross_tenant_probe.stale_caller',
+    )).toBe(false);
   });
 
   it('counts a LIVE start failure claimed by a different agent as a cross-tenant probe', async () => {

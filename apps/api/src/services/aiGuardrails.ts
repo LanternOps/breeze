@@ -161,6 +161,10 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_topology_monitoring: ['upsert_policy', 'delete_policy', 'upsert_target', 'delete_target', 'patch_settings'],
   manage_topology_templates: ['create_template', 'update_template', 'create_version'],
   apply_topology_template: ['preview'],
+  // Full-control W09 (#6779): SNMP templates and known guests are tenant-internal rows, reversible (the delete result carries
+  // the removed row). probe_network_asset and trigger_unifi_sync are tier 2 as whole tools (TOOL_TIERS).
+  manage_snmp_templates: ['create', 'update', 'delete'],
+  manage_known_guests: ['add', 'delete'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -388,6 +392,11 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_topology_monitoring: ['list_policies', 'list_targets', 'get_settings'],
   manage_topology_templates: ['list_templates', 'list_versions', 'site_options'],
   apply_topology_template: ['status'],
+  // Full-control W09 (#6779): the SNMP / known-guest / UniFi reads (whole-tool reads declare their vocabulary too).
+  manage_snmp_templates: ['list', 'get', 'browse_oids', 'validate_oids'],
+  get_snmp_metrics: ['history', 'dashboard'],
+  manage_known_guests: ['list'],
+  get_unifi_status: ['status', 'hosts', 'collectors', 'mappings', 'telemetry', 'sync_runs', 'controller_sites'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -2365,6 +2374,27 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     apply: { resource: 'topology', action: 'write' },
     status: { resource: 'topology', action: 'read' },
   },
+  // Full-control W09 (#6779) — each floor is read from its route by the W09 rows of aiGuardrails.routeBinding.contract.test.ts.
+  // SNMP templates / metrics / probe: devices:read|write (routes/snmp.ts, monitoringAssetMetrics.ts, discoveryAssetProbe.ts).
+  // Known guests: organizations:read|write. UniFi: billing:manage for reads AND the sync (routes/unifi/index.ts).
+  manage_snmp_templates: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    browse_oids: { resource: 'devices', action: 'read' },
+    validate_oids: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'write' },
+  },
+  get_snmp_metrics: { resource: 'devices', action: 'read' },
+  probe_network_asset: { resource: 'devices', action: 'write' },
+  manage_known_guests: {
+    list: { resource: 'organizations', action: 'read' },
+    add: { resource: 'organizations', action: 'write' },
+    delete: { resource: 'organizations', action: 'write' },
+  },
+  get_unifi_status: { resource: 'billing', action: 'manage' },
+  trigger_unifi_sync: { resource: 'billing', action: 'manage' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
