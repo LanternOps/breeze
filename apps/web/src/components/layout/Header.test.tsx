@@ -7,14 +7,16 @@ const authState = vi.hoisted(() => ({
   localLogout: vi.fn(),
   accessToken: 'access-old' as string | null,
   permissions: undefined as Array<{ resource: string; action: string }> | undefined,
+  user: {
+    id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false,
+    avatarUrl: '/api/v1/users/user-1/avatar?v=1',
+  } as { id: string; name: string; email: string; mfaEnabled: boolean; avatarUrl: string } | null,
+  isAuthenticated: true,
 }));
 vi.mock('../../stores/auth', () => {
   const state = () => ({
-    user: {
-      id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false,
-      permissions: authState.permissions,
-    },
-    isAuthenticated: true,
+    user: authState.user && { ...authState.user, permissions: authState.permissions },
+    isAuthenticated: authState.isAuthenticated,
   });
   // Selector-aware like the real zustand hook: usePermissions() selects
   // `s.user?.permissions` (#6396).
@@ -52,7 +54,7 @@ vi.mock('./NotificationCenter', () => ({ default: () => null }));
 vi.mock('../time/TimerWidget', () => ({ default: () => null }));
 vi.mock('./CommandPalette', () => ({ default: () => null }));
 vi.mock('../support/SupportModal', () => ({ default: () => null }));
-vi.mock('../../lib/avatarBlobCache', () => ({ useAvatarBlobUrl: () => null }));
+vi.mock('../../lib/avatarBlobCache', () => ({ useAvatarBlobUrl: (url: string | null) => url }));
 vi.mock('../../lib/appearance', () => ({
   readDensity: () => 'comfortable',
   readThemePreference: () => 'system',
@@ -79,6 +81,11 @@ describe('Header terminal logout UX', () => {
     authState.localLogout.mockReset();
     navigationState.navigate.mockReset();
     authState.accessToken = 'access-old';
+    authState.user = {
+      id: 'user-1', name: 'User One', email: 'user@example.com', mfaEnabled: false,
+      avatarUrl: '/api/v1/users/user-1/avatar?v=1',
+    };
+    authState.isAuthenticated = true;
     featureState.cfEnabled = false;
     assign = vi.fn();
     originalLocation = window.location;
@@ -153,6 +160,29 @@ describe('Header terminal logout UX', () => {
 
     expect(await screen.findByTestId('logout-failure')).toHaveTextContent('Server sign-out is incomplete.');
     expect(navigationState.navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the signed-in identity visible until navigation finishes after local sign-out', async () => {
+    let resolveLogout!: (outcome: { kind: 'complete' }) => void;
+    authState.apiLogout.mockImplementation(() => new Promise((resolve) => {
+      resolveLogout = resolve;
+    }));
+
+    const rendered = signOut();
+    await waitFor(() => expect(authState.apiLogout).toHaveBeenCalled());
+
+    authState.user = null;
+    authState.isAuthenticated = false;
+    rendered.rerender(<Header />);
+
+    expect(screen.getByText('User One')).toBeInTheDocument();
+    expect(screen.queryByText('layout.header.guest')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: 'User One' })[0]).toHaveAttribute(
+      'src', '/api/v1/users/user-1/avatar?v=1',
+    );
+
+    resolveLogout({ kind: 'complete' });
+    await waitFor(() => expect(navigationState.navigate).toHaveBeenCalledWith('/login', { replace: true }));
   });
 
   it('expires the component-local bearer and routes retry to safe reauthentication', async () => {

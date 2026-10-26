@@ -94,9 +94,11 @@ export default function Header() {
   const logoutFlowStartedRef = useRef(false);
 
   const { user, isAuthenticated } = useAuthStore();
+  const [logoutUser, setLogoutUser] = useState<typeof user>(null);
+  const displayUser = user ?? logoutUser;
   // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
   // paths return a blob: URL that <img> can render. External URLs pass through.
-  const resolvedAvatarUrl = useAvatarBlobUrl(user?.avatarUrl ?? null);
+  const resolvedAvatarUrl = useAvatarBlobUrl(displayUser?.avatarUrl ?? null);
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
   // #6396: POST /ai/sessions requires ai_sessions:use — don't show a button
   // that can only 403 for roles without it (UX only; the route re-checks).
@@ -251,6 +253,7 @@ export default function Header() {
   }, [theme]);
 
   const handleSignOut = async () => {
+    if (user) setLogoutUser(user);
     setIsLoggingOut(true);
     setLogoutFailure(null);
     let bearer = logoutBearerRef.current;
@@ -346,7 +349,7 @@ export default function Header() {
   const getUserInitials = () => {
     // Guard against whitespace-only names: split() would yield empty strings
     // and indexing [0][0] would throw.
-    const parts = user?.name?.trim().split(/\s+/).filter(Boolean) ?? [];
+    const parts = displayUser?.name?.trim().split(/\s+/).filter(Boolean) ?? [];
     if (parts.length === 0) return '?';
     if (parts.length >= 2) {
       return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
@@ -530,12 +533,12 @@ export default function Header() {
             {mounted && resolvedAvatarUrl ? (
               <img
                 src={resolvedAvatarUrl}
-                alt={user?.name ?? t('layout.header.userAvatar')}
+                alt={displayUser?.name ?? t('layout.header.userAvatar')}
                 className="h-8 w-8 rounded-full object-cover"
               />
             ) : (
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
-                {mounted && isAuthenticated ? getUserInitials() : <User className="h-4 w-4" />}
+                {mounted && (isAuthenticated || displayUser) ? getUserInitials() : <User className="h-4 w-4" />}
               </div>
             )}
             <ChevronDown className={`hidden h-4 w-4 transition-transform sm:block ${showUserMenu ? 'rotate-180' : ''}`} />
@@ -549,24 +552,24 @@ export default function Header() {
                   {resolvedAvatarUrl ? (
                     <img
                       src={resolvedAvatarUrl}
-                      alt={user?.name ?? t('layout.header.userAvatar')}
+                      alt={displayUser?.name ?? t('layout.header.userAvatar')}
                       className="h-10 w-10 rounded-full object-cover"
                     />
                   ) : (
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground">
-                      {isAuthenticated ? getUserInitials() : '?'}
+                      {isAuthenticated || displayUser ? getUserInitials() : '?'}
                     </div>
                   )}
                   <div className="flex-1 overflow-hidden">
                     <p className="truncate text-sm font-medium">
-                      {user?.name || t('layout.header.guest')}
+                      {displayUser?.name || t('layout.header.guest')}
                     </p>
                     <p className="truncate text-xs text-muted-foreground">
-                      {user?.email || t('layout.header.notSignedIn')}
+                      {displayUser?.email || t('layout.header.notSignedIn')}
                     </p>
                   </div>
                 </div>
-                {user?.mfaEnabled && (
+                {displayUser?.mfaEnabled && (
                   <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-600">
                     <Shield className="h-3 w-3" />
                     <span>{t('layout.header.mfaEnabled')}</span>
