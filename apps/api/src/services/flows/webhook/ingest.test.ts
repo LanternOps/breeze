@@ -22,7 +22,8 @@ const h = vi.hoisted(() => {
     runs: new Map<string, string>(),
     createInputs: [] as Array<Record<string, any>>,
     nextCreate: null as null | ((i: Record<string, any>) => Promise<unknown>),
-    rate: { allowed: true },
+    rate: { allowed: true, deny: null as null | RegExp },
+    rateKeys: [] as string[],
   };
 });
 
@@ -51,9 +52,11 @@ vi.mock('../../../db', () => {
 });
 vi.mock('../../redis', () => ({ getRedis: () => null }));
 vi.mock('../../rate-limit', () => ({
-  rateLimiter: vi.fn(async () => {
-    h.order.push('rate');
-    return { allowed: h.rate.allowed, remaining: 0, resetAt: new Date(Date.now() + 30_000) };
+  rateLimiter: vi.fn(async (_redis: unknown, key: string) => {
+    h.order.push(key.startsWith('flow-webhook-pre:') ? 'rate:pre' : 'rate:auth');
+    h.rateKeys.push(key);
+    const allowed = h.rate.allowed && !(h.rate.deny && h.rate.deny.test(key));
+    return { allowed, remaining: 0, resetAt: new Date(Date.now() + 30_000) };
   }),
 }));
 vi.mock('../../tenantStatus', () => ({
@@ -148,7 +151,9 @@ function signed(body = BODY, extra: Record<string, string> = {}, ts = String(Mat
   const sig = `sha256=${createHmac('sha256', SECRET).update(`${ts}.${body}`).digest('hex')}`;
   return new Headers({ 'content-type': 'application/json', 'x-breeze-timestamp': ts, 'x-breeze-signature': sig, ...extra });
 }
-const ingest = (headers: Headers, rawBody = BODY, flowId = FLOW) => ingestFlowWebhook({ flowId, rawBody, headers, receivedAt: new Date() });
+const CLIENT_IP = '198.51.100.7';
+const ingest = (headers: Headers, rawBody = BODY, flowId = FLOW, clientIp = CLIENT_IP) =>
+  ingestFlowWebhook({ flowId, rawBody, headers, receivedAt: new Date(), clientIp });
 
 beforeEach(() => {
   h.flags.flows = true;
@@ -159,6 +164,8 @@ beforeEach(() => {
   h.createInputs.length = 0;
   h.nextCreate = null;
   h.rate.allowed = true;
+  h.rate.deny = null;
+  h.rateKeys.length = 0;
   vi.mocked(markWebhookAuthFailure).mockClear();
   vi.mocked(getActivePartner).mockClear().mockImplementation(async (id: string) => ({ id }));
   vi.mocked(getActiveOrgTenant).mockClear().mockImplementation(async (orgId: string) => ({ orgId, partnerId: PARTNER }));
@@ -182,7 +189,30 @@ describe('ingestFlowWebhook — gates', () => {
     const r = await ingest(signed());
     expect(r).toMatchObject({ http: 429, body: { status: 'refused', code: 'rate_limited' } });
     expect((r as { retryAfterSec: number }).retryAfterSec).toBeGreaterThan(0);
-    expect(h.order).toEqual(['rate']);
+    expect(h.order).toEqual(['rate:pre']);
+    // The pre-authentication bucket is per flow AND source, so one source cannot starve the sender.
+    expect(h.rateKeys).toEqual([`flow-webhook-pre:${FLOW}:${CLIENT_IP}`]);
+  });
+
+  it('failed authentication never spends the authenticated per-flow budget (commit security review)', async () => {
+    queueFlow();
+    const headers = signed();
+    headers.set('x-breeze-signature', 'sha256=' + '0'.repeat(64));
+    expect(await ingest(headers)).toMatchObject({ http: 401 });
+    expect(h.rateKeys.some((k) => k === `flow-webhook:${FLOW}`)).toBe(false);
+    // An authenticated delivery is charged to the per-flow budget, after verification.
+    queueFlow();
+    expect(await ingest(signed())).toMatchObject({ http: 202 });
+    expect(h.rateKeys).toContain(`flow-webhook:${FLOW}`);
+    expect(h.order.indexOf('rate:auth')).toBeGreaterThan(h.order.indexOf('db:select'));
+  });
+
+  it('an authenticated sender over its per-flow budget is 429 with no row and no run', async () => {
+    h.rate.deny = /^flow-webhook:/;
+    queueFlow();
+    expect(await ingest(signed())).toMatchObject({ http: 429, body: { status: 'refused', code: 'rate_limited' } });
+    expect(h.createInputs).toHaveLength(0);
+    expect(h.deliveries).toHaveLength(0);
   });
 
   it('unknown flow, disabled flow and draft-only webhook trigger all 401', async () => {
@@ -380,6 +410,18 @@ describe('ingestFlowWebhook — runs and replay protection', () => {
     expect(h.deliveries[0]).toMatchObject({ authMode: 'token', signatureDigest: null });
     queueFlow(flowRow(), doc({ type: 'webhook', auth: 'token' }));
     expect(await ingest(headers)).toMatchObject({ http: 200, body: { status: 'duplicate' } });
+  });
+
+  it('two token deliveries without an id are two runs (commit security review)', async () => {
+    const headers = () => new Headers({ 'content-type': 'application/json', 'x-breeze-webhook-token': SECRET });
+    queueFlow(flowRow(), doc({ type: 'webhook', auth: 'token' }));
+    expect(await ingest(headers())).toMatchObject({ http: 202 });
+    queueFlow(flowRow(), doc({ type: 'webhook', auth: 'token' }));
+    expect(await ingest(headers())).toMatchObject({ http: 202 });
+    expect(h.runs.size).toBe(2);
+    const keys = h.createInputs.map((c) => c.dedupeKey as string);
+    expect(new Set(keys).size).toBe(2);
+    for (const k of keys) expect(k).toMatch(/^webhook:nokey:[0-9a-f-]{36}$/);
   });
 
   it('an hmac delivery without an id dedupes on its signature digest', async () => {

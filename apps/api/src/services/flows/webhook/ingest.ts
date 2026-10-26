@@ -5,8 +5,13 @@
  * Order (every step before authentication answers the same 401, so the
  * endpoint is not an existence oracle for flows):
  *   1. FLOWS_ENABLED off ⇒ 404; a non-uuid flow id ⇒ 401.
- *   2. Redis limiter `flow-webhook:<flowId>` BEFORE any DB read (Redis down ⇒
- *      the limiter fails closed ⇒ 429).
+ *   2. A pre-authentication Redis limiter per (flow, source IP),
+ *      `flow-webhook-pre:<flowId>:<ip>`, BEFORE any DB read (Redis down ⇒ the
+ *      limiter fails closed ⇒ 429). The flow's own budget,
+ *      `flow-webhook:<flowId>`, is charged only AFTER verification, so
+ *      unauthenticated traffic can never spend the real sender's budget
+ *      (commit security review; a deviation from the plan's single
+ *      pre-read per-flow bucket).
  *   3. System read of the flow and its LIVE publication; enabled, a webhook
  *      trigger on the publication (not just the draft), a stored secret —
  *      any miss ⇒ 401.
@@ -28,7 +33,7 @@
  *      the accepted row (a racing replay) ⇒ 200 duplicate. An admission
  *      refusal ⇒ 429 + a refused row (coalesced per key per minute).
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   FLOW_RUN_LIMITS,
   flowDocumentV1Schema,
@@ -121,16 +126,27 @@ async function loadLiveWebhookFlow(flowId: string) {
   }, 'flows.webhook.loadFlow');
 }
 
-export async function ingestFlowWebhook(i: { flowId: string; rawBody: string; headers: Headers; receivedAt: Date }): Promise<WebhookIngestResult> {
+async function limited(key: string): Promise<WebhookIngestResult | null> {
+  const rate = await rateLimiter(getRedis(), key, flowWebhookRatePerMinute(), 60);
+  if (rate.allowed) return null;
+  const retryAfterSec = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
+  return { http: 429, body: { status: 'refused', code: 'rate_limited' }, retryAfterSec };
+}
+
+export async function ingestFlowWebhook(i: {
+  flowId: string;
+  rawBody: string;
+  headers: Headers;
+  receivedAt: Date;
+  /** The trusted client IP (getTrustedClientIp); keys the pre-authentication limiter. */
+  clientIp?: string | null;
+}): Promise<WebhookIngestResult> {
   if (!flowsEnabled()) return { http: 404, body: { error: 'Not found' } };
   if (!UUID_RE.test(i.flowId)) return UNAUTHORIZED;
   const flowId = i.flowId.toLowerCase();
 
-  const rate = await rateLimiter(getRedis(), `flow-webhook:${flowId}`, flowWebhookRatePerMinute(), 60);
-  if (!rate.allowed) {
-    const retryAfterSec = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
-    return { http: 429, body: { status: 'refused', code: 'rate_limited' }, retryAfterSec };
-  }
+  const preAuth = await limited(`flow-webhook-pre:${flowId}:${i.clientIp || 'unknown'}`);
+  if (preAuth) return preAuth;
 
   const live = await loadLiveWebhookFlow(flowId);
   if (!live) return UNAUTHORIZED;
@@ -149,6 +165,9 @@ export async function ingestFlowWebhook(i: { flowId: string; rawBody: string; he
     await markWebhookAuthFailure(flow.id, verified.reason);
     return UNAUTHORIZED;
   }
+  // The flow's own budget: authenticated deliveries only.
+  const perFlow = await limited(`flow-webhook:${flow.id}`);
+  if (perFlow) return perFlow;
 
   // Tenant status after authentication, never before (no status oracle).
   let partnerId: string;
@@ -216,7 +235,11 @@ export async function ingestFlowWebhook(i: { flowId: string; rawBody: string; he
       orgId,
       scope,
       inputs: nullFlowInputs(doc.inputs),
-      dedupeKey: `webhook:${facts.deliveryId ?? `sig:${facts.signatureDigest}`}`,
+      // A delivery id, else the signature digest (hmac); a token delivery
+      // with no id has no replay key, so every POST is its own run (Decision 2).
+      dedupeKey: facts.deliveryId
+        ? `webhook:${facts.deliveryId}`
+        : facts.signatureDigest ? `webhook:sig:${facts.signatureDigest}` : `webhook:nokey:${randomUUID()}`,
       expectedPublicationSeq: flow.enabledPublicationSeq,
       expectedSecretRotatedAt: flow.webhookSecretRotatedAt,
       onCreated: async (runId) => {

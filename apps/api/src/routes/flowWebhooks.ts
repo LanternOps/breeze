@@ -19,6 +19,7 @@
  * resolution, run creation — is services/flows/webhook/ingest.ts.
  */
 import { Hono } from 'hono';
+import { getTrustedClientIp } from '../services/clientIp';
 import { ingestFlowWebhook } from '../services/flows/webhook/ingest';
 import { captureException } from '../services/sentry';
 
@@ -29,7 +30,9 @@ flowWebhookRoutes.post('/:flowId', async (c) => {
   const flowId = c.req.param('flowId');
   try {
     const rawBody = await c.req.text();
-    const result = await ingestFlowWebhook({ flowId, rawBody, headers: c.req.raw.headers, receivedAt: new Date() });
+    const result = await ingestFlowWebhook({
+      flowId, rawBody, headers: c.req.raw.headers, receivedAt: new Date(), clientIp: getTrustedClientIp(c),
+    });
     if (result.http === 429) c.header('Retry-After', String(result.retryAfterSec));
     return c.json(result.body, result.http);
   } catch (err) {
