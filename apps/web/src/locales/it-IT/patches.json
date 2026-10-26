@@ -549,6 +549,22 @@
       "title": "Applicazione installazione",
       "description": "Quanto tempo hanno i dispositivi per installare le patch approvate e per quanto tempo un utente può rimandare il riavvio. Il comportamento di riavvio è configurato per criterio nella scheda Patch."
     },
+    "featureUpdates": {
+      "title": "Aggiornamenti delle funzionalità di Windows",
+      "description": "Se i dispositivi di questo anello ricevono le versioni delle funzionalità di Windows (ad esempio 25H2). L'approvazione segue comunque le regole seguenti; aggiungi un override Aggiornamenti funzionalità per installarli automaticamente.",
+      "modeBlock": "Blocca",
+      "modeAllow": "Consenti la versione più recente",
+      "modePin": "Blocca su una versione",
+      "productLabel": "Versione di Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Versione",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Ai dispositivi di questo anello viene offerta solo questa versione e Windows Update su ciascun dispositivo è impostato per mantenerla (criterio versione di destinazione).",
+      "validation": {
+        "release": "Inserisci una versione come 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Criterio di approvazione",
       "description": "Cosa viene approvato automaticamente in questo anello e per quanto tempo trattenere una patch dopo il rilascio del vendor. L'impostazione predefinita si applica a ogni categoria; aggiungi un override per gestirne una diversamente.",
@@ -606,7 +622,9 @@
       "os": "SO: {{severities}}",
       "thirdParty": "App di terze parti",
       "appRules_one": "{{count}} regola app",
-      "appRules_other": "{{count}} regole app"
+      "appRules_other": "{{count}} regole app",
+      "featureUpdatesNewest": "Aggiornamenti funzionalità: più recente",
+      "featureUpdatesPinned": "Aggiornamenti funzionalità: {{release}}"
     }
   },
   "ringAppRules": {

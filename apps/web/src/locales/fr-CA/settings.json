@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Retenue par la fenêtre de report",
           "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
           "blocked_by_app_rule": "Bloquée par une règle d'application",
+          "blocked_by_feature_update_policy": "Exclu par la politique de mises à jour de fonctionnalités Windows de l'anneau",
           "awaiting_manual_approval": "En attente d'approbation manuelle",
           "explicitly_declined": "Refusé explicitement",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",

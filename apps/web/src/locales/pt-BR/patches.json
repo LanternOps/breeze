@@ -549,6 +549,22 @@
       "title": "Obrigatoriedade de instalação",
       "description": "Quanto tempo os dispositivos têm para instalar patches aprovados e por quanto tempo um usuário pode adiar a reinicialização. O comportamento de reinicialização em si é definido por política na aba Patch."
     },
+    "featureUpdates": {
+      "title": "Atualizações de recursos do Windows",
+      "description": "Se os dispositivos deste anel recebem versões de recursos do Windows (por exemplo, 25H2). A aprovação continua seguindo as regras abaixo; adicione uma substituição de Atualizações de recursos para instalá-las automaticamente.",
+      "modeBlock": "Bloquear",
+      "modeAllow": "Permitir a versão mais recente",
+      "modePin": "Fixar em uma versão",
+      "productLabel": "Versão do Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Versão",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Os dispositivos deste anel recebem apenas esta versão, e o Windows Update em cada dispositivo é configurado para permanecer nela (política de versão de destino).",
+      "validation": {
+        "release": "Informe uma versão como 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Política de aprovação",
       "description": "O que é aprovado automaticamente neste anel e por quanto tempo reter um patch após o lançamento pelo fornecedor. O padrão se aplica a todas as categorias; adicione uma substituição para tratar uma delas de forma diferente.",
@@ -606,7 +622,9 @@
       "os": "SO: {{severities}}",
       "thirdParty": "Apps de terceiros",
       "appRules_one": "{{count}} regra de aplicativo",
-      "appRules_other": "{{count}} regras de aplicativo"
+      "appRules_other": "{{count}} regras de aplicativo",
+      "featureUpdatesNewest": "Atualizações de recursos: mais recente",
+      "featureUpdatesPinned": "Atualizações de recursos: {{release}}"
     }
   },
   "ringAppRules": {

@@ -549,6 +549,22 @@
       "title": "Instalar aplicación",
       "description": "Cuánto tiempo tienen los dispositivos para aplicar parches aprobados y cuánto tiempo un usuario puede posponer el reinicio. El comportamiento de reinicio en sí se establece según la política en la pestaña Parche."
     },
+    "featureUpdates": {
+      "title": "Actualizaciones de funciones de Windows",
+      "description": "Si los dispositivos de este anillo reciben versiones de funciones de Windows (por ejemplo, 25H2). La aprobación sigue las reglas de abajo; agregue una anulación de Actualizaciones de funciones para instalarlas automáticamente.",
+      "modeBlock": "Bloquear",
+      "modeAllow": "Permitir la versión más reciente",
+      "modePin": "Fijar a una versión",
+      "productLabel": "Versión de Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Versión",
+      "releasePlaceholder": "25H2",
+      "pinNote": "A los dispositivos de este anillo solo se les ofrece esta versión, y Windows Update en cada dispositivo se configura para mantenerse en ella (política de versión objetivo).",
+      "validation": {
+        "release": "Ingrese una versión como 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Política de aprobación",
       "description": "Qué se aprueba automáticamente en este anillo y durante cuánto tiempo se debe retener un parche después del lanzamiento del proveedor. El valor predeterminado se aplica a todas las categorías; agregue una anulación para tratar uno de manera diferente.",
@@ -606,7 +622,9 @@
       "os": "SO: {{severities}}",
       "thirdParty": "Apps de terceros",
       "appRules_one": "{{count}} regla de aplicación",
-      "appRules_other": "{{count}} reglas de aplicación"
+      "appRules_other": "{{count}} reglas de aplicación",
+      "featureUpdatesNewest": "Actualizaciones de funciones: más reciente",
+      "featureUpdatesPinned": "Actualizaciones de funciones: {{release}}"
     }
   },
   "ringAppRules": {

@@ -549,6 +549,22 @@
       "title": "Durchsetzung der Installation",
       "description": "Legt fest, wie lange Geräte freigegebene Patches installieren müssen und wie lange Benutzer den Neustart zurückstellen können. Das Neustartverhalten selbst wird pro Richtlinie auf der Registerkarte „Patch“ festgelegt."
     },
+    "featureUpdates": {
+      "title": "Windows-Funktionsupdates",
+      "description": "Ob Geräte in diesem Ring Windows-Funktionsversionen erhalten (zum Beispiel 25H2). Die Freigabe folgt weiterhin den Regeln unten; fügen Sie eine Überschreibung für Funktionsupdates hinzu, um sie automatisch zu installieren.",
+      "modeBlock": "Blockieren",
+      "modeAllow": "Neueste Version zulassen",
+      "modePin": "An eine Version anheften",
+      "productLabel": "Windows-Version",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Version",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Geräten in diesem Ring wird nur diese Version angeboten, und Windows Update wird auf jedem Gerät darauf festgehalten (Zielversions-Richtlinie).",
+      "validation": {
+        "release": "Geben Sie eine Version wie 25H2 ein."
+      }
+    },
     "approvalPolicy": {
       "title": "Freigaberichtlinie",
       "description": "Legt fest, welche Patches in diesem Ring automatisch freigegeben und wie lange sie nach der Veröffentlichung durch den Anbieter zurückgehalten werden. Der Standard gilt für jede Kategorie; mit einer Überschreibung kann eine Kategorie abweichend behandelt werden.",
@@ -606,7 +622,9 @@
       "os": "OS: {{severities}}",
       "thirdParty": "Drittanbieter-Apps",
       "appRules_one": "{{count}} App-Regel",
-      "appRules_other": "{{count}} App-Regeln"
+      "appRules_other": "{{count}} App-Regeln",
+      "featureUpdatesNewest": "Funktionsupdates: neueste",
+      "featureUpdatesPinned": "Funktionsupdates: {{release}}"
     }
   },
   "ringAppRules": {
