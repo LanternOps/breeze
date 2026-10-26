@@ -53,7 +53,7 @@ func TestLegacyMessageFileLoadsUnchanged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "endpoint_messages.json")
 	legacy := map[string]preW02Record{
 		"m1": {Show: json.RawMessage(`{"messageId":"m1","batchId":"b1","title":"Phones <down>","body":"x","severity":"warning","requiresAck":true,"expiresAt":"2026-10-27T12:00:00Z","branding":{"companyName":"Example IT"}}`), ExpiresAt: now0.Add(24 * time.Hour)},
-		"m2": {Show: json.RawMessage(`{"messageId":"m2","batchId":"b2","title":"t","body":"","severity":"info","requiresAck":false,"expiresAt":"2026-10-26T13:30:00+02:00","branding":{}}`), ExpiresAt: time.Date(2026, 10, 26, 13, 30, 0, 0, time.FixedZone("", 2*3600))},
+		"m2": {Show: json.RawMessage(`{"messageId":"m2","batchId":"b2","title":"t","body":"","severity":"info","requiresAck":false,"expiresAt":"2026-10-26T13:30:00+02:00","branding":{}}`), ExpiresAt: time.Date(2026, 10, 26, 17, 30, 0, 0, time.FixedZone("", 2*3600))},
 	}
 	raw, err := json.Marshal(legacy)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestStoreRefusesExpiredAndRollsBackFailedSave(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := openPrompts(t, filepath.Join(blocker, "p.json"))
+	s, _ := Open(filepath.Join(blocker, "p.json"), PromptOptions()) // unreadable path: usable empty store
 	if err := s.Put(Entry{ID: "x", ExpiresAt: now0.Add(time.Hour), Payload: json.RawMessage(`{}`)}, now0); err == nil {
 		t.Fatal("Put succeeded although the file cannot be written")
 	}

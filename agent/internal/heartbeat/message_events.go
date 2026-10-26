@@ -203,7 +203,9 @@ func (h *Heartbeat) replayEndpointMessages(s *sessionbroker.Session) {
 	if !h.isMessagingAssistSession(s) {
 		return
 	}
-	pending := h.endpointMessageStore().Pending(time.Now())
+	// Only this user's cards (or pre-W02 cards, which bind to this user now):
+	// a card is never replayed into another user's session.
+	pending := h.endpointMessageStore().PendingFor(messageOwnerKey(s), time.Now())
 	for _, show := range pending {
 		show.Replay = true
 		id := fmt.Sprintf("msg-replay-%s-%d", show.MessageID, time.Now().UnixNano())

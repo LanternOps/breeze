@@ -222,14 +222,13 @@ func (s *Store) Retract(id string, now time.Time) bool {
 	return true
 }
 
-// Tombstone refuses id for TombstoneTTL (and drops a live entry with that id).
+// Tombstone refuses id for TombstoneTTL. It does not touch a live entry with
+// the same id (use Retract for "remove, or refuse if absent").
 func (s *Store) Tombstone(id string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, live := s.entries[id]
-	delete(s.entries, id)
 	s.tombstoneLocked(id, now)
-	if s.opts.PersistTombstones || live {
+	if s.opts.PersistTombstones {
 		return s.saveLocked()
 	}
 	return nil
