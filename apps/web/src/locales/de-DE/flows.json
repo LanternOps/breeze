@@ -219,7 +219,7 @@
       },
       "approval": {
         "none": "Keine Freigabe nötig",
-        "intent": "Von einer Person freigegeben",
+        "intent": "Benötigt die Freigabe einer Person",
         "pre_approved": "Vorab freigegeben"
       },
       "input": "Eingabe",

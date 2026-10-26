@@ -142,6 +142,10 @@ describe('locale key lists match the shared const arrays', () => {
   it('status.pausedReason.* covers every FLOW_PAUSED_REASONS', () => {
     expect(keys(en.status.pausedReason)).toEqual(sorted(FLOW_PAUSED_REASONS));
   });
+  it('the intent approval badge does not claim an approval happened (it shows while the step still waits)', () => {
+    expect(en.runDetail.step.approval.intent).not.toMatch(/approved/i);
+  });
+
   it('previewNotice is gone', () => {
     expect('previewNotice' in en).toBe(false);
   });

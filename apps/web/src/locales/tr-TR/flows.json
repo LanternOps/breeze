@@ -219,7 +219,7 @@
       },
       "approval": {
         "none": "Onay gerekmiyor",
-        "intent": "Bir kişi tarafından onaylandı",
+        "intent": "Bir kişinin onayını gerektirir",
         "pre_approved": "Önceden onaylandı"
       },
       "input": "Girdi",

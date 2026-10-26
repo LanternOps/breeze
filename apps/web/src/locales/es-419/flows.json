@@ -219,7 +219,7 @@
       },
       "approval": {
         "none": "No requiere aprobación",
-        "intent": "Aprobado por una persona",
+        "intent": "Requiere la aprobación de una persona",
         "pre_approved": "Preaprobado"
       },
       "input": "Entrada",
