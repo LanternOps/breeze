@@ -7,7 +7,8 @@
  */
 import { z } from 'zod';
 
-import { PAM_RULE_NEGATE_KEYS, type StoredSignerEntry } from '../db/schema';
+// The schema submodule, not the barrel: tests that partially mock '../db/schema' still load the tool schemas.
+import { PAM_RULE_NEGATE_KEYS, type StoredSignerEntry } from '../db/schema/pam';
 
 export const MAX_APPROVAL_DURATION_MINUTES = 24 * 60;
 
