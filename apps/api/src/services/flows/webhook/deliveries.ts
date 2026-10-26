@@ -13,9 +13,11 @@
 import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
 import type { FlowWebhookAuthFailure, FlowWebhookAuthMode, FlowWebhookDeliveryDto, FlowWebhookDeliveryStatus } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { flows } from '../../../db/schema/flows';
 import { flowWebhookDeliveries } from '../../../db/schema/flowWebhooks';
 import type { AuthContext } from '../../../middleware/auth';
 import { captureException } from '../../sentry';
+import { runBodiesRestricted } from '../runBodyAccess';
 
 export interface DeliveryFacts {
   flowId: string;
@@ -158,12 +160,26 @@ export async function markWebhookAuthFailure(flowId: string, reason: FlowWebhook
   }
 }
 
-/** Newest first, in the CALLER's context (RLS is the reach); `before` pages by received_at. */
+/**
+ * Newest first, in the CALLER's context (RLS is the reach); `before` pages by
+ * received_at. Null when the flow itself is not visible to the caller (the
+ * route's 404), so another org's flow id reads like an unknown one.
+ *
+ * Read ceiling: the run-body rule (`runBodiesRestricted`). The sender's
+ * delivery id and the resolver value are envelope values — the same ones the
+ * run's `triggerPayload` carries, which a site-limited or device-bound caller
+ * gets as null — so that caller gets them as null here too. Status, refusal
+ * code, timestamps, run id, auth mode, size and attempts stay: the ledger's
+ * shape, as the run summaries keep it.
+ */
 export async function listWebhookDeliveries(
-  _auth: AuthContext,
+  auth: AuthContext,
   flowId: string,
   q: { limit?: number; before?: string } = {},
-): Promise<FlowWebhookDeliveryDto[]> {
+): Promise<FlowWebhookDeliveryDto[] | null> {
+  const [visible] = await db.select({ id: flows.id }).from(flows).where(eq(flows.id, flowId)).limit(1);
+  if (!visible) return null;
+  const restricted = runBodiesRestricted(auth);
   const limit = Math.min(Math.max(q.limit ?? 50, 1), FLOW_WEBHOOK_DELIVERIES_PAGE_MAX);
   const before = q.before ? new Date(q.before) : null;
   const rows = await db
@@ -182,10 +198,10 @@ export async function listWebhookDeliveries(
     refusalCode: r.refusalCode ?? null,
     orgId: r.orgId ?? null,
     runId: r.runId ?? null,
-    deliveryId: r.deliveryId ?? null,
+    deliveryId: restricted ? null : r.deliveryId ?? null,
     authMode: r.authMode,
     bodyBytes: r.bodyBytes,
     attempts: r.attempts,
-    resolverValue: r.resolverValue ?? null,
+    resolverValue: restricted ? null : r.resolverValue ?? null,
   }));
 }

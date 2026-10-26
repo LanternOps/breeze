@@ -202,7 +202,9 @@ flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('p
 
 // ── W05 (#5220): the webhook delivery log (Decision 2) ─────────────────────
 // Caller context: RLS (the conditional connection_health_incidents policy)
-// shows an org token only its org's rows, never a partner-level one.
+// shows an org token only its org's rows, never a partner-level one. A flow
+// the caller cannot see is a 404; a site-limited or device-bound caller gets
+// the rows without the envelope values (the run-body read ceiling).
 const deliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
   before: z.string().datetime({ offset: true }).optional(),
@@ -211,7 +213,9 @@ const deliveriesQuerySchema = z.object({
 flowsRoutes.get('/:id/webhook-deliveries', zValidator('param', idParamSchema), zValidator('query', deliveriesQuerySchema), async (c) => {
   const { id } = c.req.valid('param');
   const q = c.req.valid('query');
-  return c.json({ deliveries: await listWebhookDeliveries(c.get('auth'), id, { limit: q.limit, before: q.before }) });
+  const deliveries = await listWebhookDeliveries(c.get('auth'), id, { limit: q.limit, before: q.before });
+  if (!deliveries) return c.json({ error: 'Flow not found' }, 404);
+  return c.json({ deliveries });
 });
 
 flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
