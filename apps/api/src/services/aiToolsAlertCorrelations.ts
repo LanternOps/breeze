@@ -317,7 +317,10 @@ export function registerAlertCorrelationTools(aiTools: Map<string, AiTool>): voi
           const mutation = await mutateCorrelationGroup(auth, id.groupId, kind);
           if (!mutation) return jsonError('Correlation group not found', 'NOT_FOUND');
           emitGroupAcceptedFeedback(auth, id.groupId, kind, mutation);
-          return json({ groupId: id.groupId, action, ...mutation.result, alertIds: mutation.groupAlertIds });
+          return json({
+            groupId: id.groupId, action, ...mutation.result, groupAlertIds: mutation.groupAlertIds,
+            ...(mutation.result.updated === 0 ? { note: 'No alert changed: every member was already in a terminal state or changed concurrently.' } : {}),
+          });
         }
 
         if (action === 'acknowledge_related') {
@@ -329,6 +332,7 @@ export function registerAlertCorrelationTools(aiTools: Map<string, AiTool>): voi
             alertId: id.alertId,
             action,
             ...outcome.result,
+            ...(outcome.result.updated === 0 ? { note: 'No alert changed: every alert was already in a terminal state or changed concurrently.' } : {}),
             relatedAlertIds: outcome.relatedAlerts.map((related) => related.id),
           });
         }
@@ -349,7 +353,7 @@ export function registerAlertCorrelationTools(aiTools: Map<string, AiTool>): voi
           });
           if ('error' in parsed) return parsed.error;
           const group = await recordCorrelationFeedback(auth, id.groupId, parsed.value);
-          if (!group) return jsonError('Correlation group not found', 'NOT_FOUND');
+          if (!group) return jsonError('Correlation group, or a referenced alert / merge target group, not found', 'NOT_FOUND');
           return json({ success: true, groupId: group.id, action, outcome: parsed.value.outcome });
         }
 
