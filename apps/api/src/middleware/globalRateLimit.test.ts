@@ -237,6 +237,12 @@ describe('ISOLATED_BUCKETS pins', () => {
     expect(ISOLATED_BUCKETS.some((b) => '/api/v1/webhooks/abc'.startsWith(b.prefix))).toBe(false);
   });
 
+  it('meters flow webhook deliveries in their own per-IP bucket (W05)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/webhooks/flows/', name: 'flowwebhook', limit: 1200 });
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/flows/abc'.startsWith(b.prefix))).toBe(false);
+  });
+
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');

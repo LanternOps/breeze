@@ -28,7 +28,7 @@ import { z } from 'zod';
 import {
   checkFlowStructure,
   FLOW_BUILTIN_STEPS,
-  FLOW_LATER_BUILTINS,
+  flowBuiltinTierFor,
   FLOW_LIMITS,
   FLOW_STEP_ID_RE,
   flowDocumentV1Schema,
@@ -339,7 +339,7 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
 // ── main ───────────────────────────────────────────────────────────────────
 
 function inferredSource(tool: string): FlowStepSummary['source'] {
-  if (isFlowBuiltin(tool) || (FLOW_LATER_BUILTINS as readonly string[]).includes(tool)) return 'builtin';
+  if (isFlowBuiltin(tool)) return 'builtin';
   return tool.includes('__') ? 'tenant' : 'core';
 }
 
@@ -443,7 +443,8 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
     let source: FlowStepSummary['source'] = inferredSource(step.tool);
 
     if (!entry) {
-      if ((FLOW_LATER_BUILTINS as readonly string[]).includes(step.tool)) {
+      if (isFlowBuiltin(step.tool)) {
+        // A shared built-in outside the API catalog (FLOW_EXECUTABLE_BUILTINS) — W5 PR B wires it.
         issues.push(issue('builtin_not_available', `Built-in step '${step.tool}' is not available yet.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
       } else if (!step.tool.includes('__') && isRegisteredCoreTool(step.tool)) {
         issues.push(issue('tool_not_allowed', `Tool '${step.tool}' cannot be used in a flow.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
@@ -454,7 +455,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
     } else if (entry.source === 'builtin') {
       source = 'builtin';
       issues.push(...zodInputIssues(FLOW_BUILTIN_STEPS[entry.name].inputSchema, input, step.id, base));
-      tier = FLOW_BUILTIN_STEPS[entry.name].tier;
+      tier = flowBuiltinTierFor(entry.name, input);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
       issues.push(...ajvInputIssues(entry, input, step.id, base));
@@ -595,7 +596,7 @@ export class FlowStepPinError extends Error {
 function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEntry | undefined): FlowStepPin {
   if (!entry) throw new FlowStepPinError(step.id);
   if (entry.source === 'builtin') {
-    return { stepId: step.id, tool: step.tool, source: 'builtin', tier: FLOW_BUILTIN_STEPS[entry.name].tier, approvalScope: null };
+    return { stepId: step.id, tool: step.tool, source: 'builtin', tier: flowBuiltinTierFor(entry.name, step.input), approvalScope: null };
   }
   if (entry.source === 'tenant') {
     const tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
@@ -676,7 +677,7 @@ export async function revalidateRenderedStep(
   if (entry.source === 'builtin') {
     const parsed = FLOW_BUILTIN_STEPS[entry.name].inputSchema.safeParse(rendered);
     if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
-    tier = FLOW_BUILTIN_STEPS[entry.name].tier;
+    tier = flowBuiltinTierFor(entry.name, parsed.data);
     approvalScope = null;
   } else if (entry.source === 'tenant') {
     if (pin.source !== 'tenant' || entry.descriptor.id !== pin.tenantToolId || entry.descriptor.revision !== pin.tenantRevision) {

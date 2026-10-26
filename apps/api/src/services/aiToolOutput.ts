@@ -1030,6 +1030,16 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_known_guests: new Set(['label', 'notes']),
   get_unifi_status: new Set(['accountLabel', 'name', 'hostname', 'ssid', 'unifiHostName', 'unifiSiteName', 'lastPollError', 'lastSyncError', 'error', 'model']),
   probe_network_asset: new Set(['error']),
+  // Full-control W10 (#6780). Operator-task objectives / hand-offs / step and event text are written by humans and other agent
+  // runs; plan renderings and labels name provider accounts; the Fleet Design markdown is model-generated from device-reported
+  // data; origin labels are session titles or agent names. All are fenced as data, never instructions (quorum QW4).
+  get_device_ai_activity: new Set(['label']),
+  list_operator_tasks: new Set(['objective', 'label', 'name', 'outcomeDetail', 'handoffSummary']),
+  get_operator_task: new Set([
+    'objective', 'label', 'name', 'outcomeDetail', 'handoffSummary', 'targetLabel', 'principalLabel',
+    'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
+  ]),
+  get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

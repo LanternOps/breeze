@@ -158,14 +158,19 @@
     "trigger": {
       "manual": "Manual",
       "schedule": "Schedule",
-      "event": "Event"
+      "event": "Event",
+      "webhook": "Webhook",
+      "tool": "Tool call"
     },
     "via": {
       "ui": "From the web app",
       "api": "From the API",
       "ai_tool": "From Breeze AI",
       "scheduler": "By the scheduler",
-      "event": "By an event"
+      "event": "By an event",
+      "webhook": "Webhook",
+      "mcp": "MCP",
+      "ai_agent": "AI agent"
     },
     "columns": {
       "started": "Started",
@@ -205,7 +210,13 @@
       "flow_disabled": "The flow was disabled while this run was active.",
       "flows_disabled": "Flows are turned off on this server.",
       "delegator_inactive": "The person this run acts for is no longer active.",
-      "org_merged": "The organization was merged into another one."
+      "org_merged": "The organization was merged into another one.",
+      "egress_blocked": "The outbound request was blocked by the egress policy.",
+      "http_status": "The outside API answered with an error status.",
+      "notify_failed": "The notice could not be sent.",
+      "ai_budget_exhausted": "The organization's AI budget is used up.",
+      "ai_output_invalid": "The AI result did not match the expected shape.",
+      "ai_token_cap_reached": "The run reached its AI token limit."
     },
     "step": {
       "status": {

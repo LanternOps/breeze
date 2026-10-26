@@ -766,6 +766,13 @@ const envObjectSchema = z
     // (flowRunRetentionDays(), integer 7..3650).
     FLOW_MAX_RUNNING_PER_OWNER: z.string().optional(),
     FLOW_RUN_RETENTION_DAYS: z.string().optional(),
+    // W05 (#5220): per-flow inbound webhook rate (flowWebhookRatePerMinute(),
+    // 1..6000), non-accepted delivery retention days
+    // (flowWebhookDeliveryRetentionDays(), 1..365) and the for-each parallel
+    // ceiling (flowForEachMaxParallel(), 1..10).
+    FLOW_WEBHOOK_RATE_PER_MINUTE: z.string().optional(),
+    FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: z.string().optional(),
+    FLOW_FOREACH_MAX_PARALLEL: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -2543,6 +2550,9 @@ const envSchema = envObjectSchema
     for (const [knob, min, max, what] of [
       ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, 'running flow runs per flow owner; default 20'],
       ['FLOW_RUN_RETENTION_DAYS', 7, 3650, 'days before a finished flow run\'s bodies are pruned; default 90'],
+      ['FLOW_WEBHOOK_RATE_PER_MINUTE', 1, 6000, 'inbound webhook deliveries accepted per flow per minute; default 120'],
+      ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 1, 365, 'days a non-accepted flow webhook delivery row is kept; default 30'],
+      ['FLOW_FOREACH_MAX_PARALLEL', 1, 10, 'most for-each items one flow step runs at once; default 5'],
     ] as const) {
       const raw = (data[knob] ?? '').trim();
       if (raw && (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max)) {

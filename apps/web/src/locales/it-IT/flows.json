@@ -158,14 +158,19 @@
     "trigger": {
       "manual": "Manuale",
       "schedule": "Pianificazione",
-      "event": "Evento"
+      "event": "Evento",
+      "webhook": "Chiamata webhook",
+      "tool": "Chiamata a strumento"
     },
     "via": {
       "ui": "Dall'app web",
       "api": "Dall'API",
       "ai_tool": "Da Breeze AI",
       "scheduler": "Dal pianificatore",
-      "event": "Da un evento"
+      "event": "Da un evento",
+      "webhook": "Tramite webhook",
+      "mcp": "Tramite MCP",
+      "ai_agent": "Da un agente IA"
     },
     "columns": {
       "started": "Avvio",
@@ -205,7 +210,13 @@
       "flow_disabled": "Il flusso è stato disabilitato mentre questa esecuzione era attiva.",
       "flows_disabled": "I flussi sono disattivati su questo server.",
       "delegator_inactive": "La persona per conto della quale agisce questa esecuzione non è più attiva.",
-      "org_merged": "L'organizzazione è stata unita a un'altra."
+      "org_merged": "L'organizzazione è stata unita a un'altra.",
+      "egress_blocked": "La richiesta in uscita è stata bloccata dalla policy di egress.",
+      "http_status": "L'API esterna ha risposto con uno stato di errore.",
+      "notify_failed": "Non è stato possibile inviare l'avviso.",
+      "ai_budget_exhausted": "Il budget IA dell'organizzazione è esaurito.",
+      "ai_output_invalid": "Il risultato dell'IA non corrispondeva al formato previsto.",
+      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA."
     },
     "step": {
       "status": {

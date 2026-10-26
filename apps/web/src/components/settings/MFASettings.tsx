@@ -751,7 +751,7 @@ export default function MFASettings({
         </div>
 
         {/* Authenticator app row */}
-        <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
+        <div data-testid="mfa-authenticator-row" className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">{t('mFASettings.authenticatorApp')}</span>

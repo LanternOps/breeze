@@ -290,7 +290,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
   'aiAttach.ts': { exempt: 'ai_transport', note: 'Chat session transport (#9427): a read-only SSE attach to the caller\'s own running chat turn; a browser surface, not an agent action.' },
-  'aiAgentSchedules.ts': { gap: '#6780' },
+  'aiAgentSchedules.ts': { tools: ['list_ai_agent_schedules'] }, // W10 (#6780): the read; schedule CRUD is W16 (#6786)
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },
   'aiModels/assignments.ts': { exempt: 'human_only_ai_governance', note: 'Per-feature model defaults and permitted sets -- the AI must not choose its own model policy.' },
@@ -302,7 +302,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/residency.ts':{ exempt: 'human_only_ai_governance', note: 'Data-residency requirement for AI calls -- a compliance control the AI must not change.' },
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
-  'aiOperatorTasks.ts': { gap: '#6780' },
+  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task'] }, // W10 (#6780): the task list + detail reads; create / workflows / drafts are W16 (#6786)
   'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
@@ -445,7 +445,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
   // #9234: the device-page button for the watchdog restart the AI tool already queues.
   'devices/agentRecovery.ts': { tools: ['trigger_agent_restart'] },
-  'devices/aiOrigin.ts': { gap: '#6780' },
+  'devices/aiOrigin.ts': { tools: ['get_device_ai_activity'] }, // W10 (#6780): ai-activity count and ai-origin summary
   'devices/alerts.ts': { tools: ['manage_alerts'] },
   'devices/anomalies.ts': { tools: ['manage_device_anomalies'] }, // W07 (#6777): per-row anomalies; anomaly EPISODES (list/get/action) are not exposed yet
   'devices/billing.ts': { gap: '#6784' },
@@ -524,7 +524,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'externalServices.ts': { exempt: 'breeze_account', note: 'The partner\'s Breeze billing portal and support forward.' },
   'filters.ts': { tools: ['manage_saved_filters'] },
   'fixMemory.ts': { tools: ['find_proven_fixes'] },
-  'fleetDesign.ts': { gap: '#6780' },
+  'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design'] }, // W10 (#6780): list + detail reads; run / apply / rollback / document are W16 (#6786)
   'fleetFindings.ts': { tools: ['get_fleet_findings'] },
   'google.ts': { exempt: 'vendor_console_admin' },
   'groups.ts': { tools: ['manage_groups'] },
@@ -795,6 +795,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
   'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
+  'flowWebhooks.ts': { exempt: 'inbound_integration', note: 'Public flow webhook ingress (Tool Catalog W05); HMAC/token authenticated, not an operator surface.' },
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },

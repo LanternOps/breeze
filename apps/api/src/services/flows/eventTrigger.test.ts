@@ -249,8 +249,22 @@ describe('flowEventTriggerSubscriber', () => {
     await expect(handle(event())).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
     expect(recordFlowEventAdmissionRefused).toHaveBeenCalledTimes(1);
+    expect(recordFlowEventAdmissionRefused).toHaveBeenCalledWith('flow_queue_full');
     warn.mockRestore();
   });
+
+  it.each(['flow_monthly_cap_reached', 'owner_monthly_cap_reached'] as const)(
+    'monthly cap refusal (%s) is handled, not retried (W5)',
+    async (reason) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      selects.push([candidate()], LIVE);
+      vi.mocked(createFlowRun).mockResolvedValue({ created: false, reason });
+      await expect(handle(event())).resolves.toBeUndefined();
+      expect(recordFlowEventAdmissionRefused).toHaveBeenCalledWith(reason);
+      expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(reason);
+      warn.mockRestore();
+    },
+  );
 
   it('a malformed trigger filter is skipped with a warn naming the flow', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

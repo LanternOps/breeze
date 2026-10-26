@@ -246,6 +246,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FLOW_APPROVAL_TTL_HOURS: 'timing knob (parked flow step approval window)',
   FLOW_MAX_RUNNING_PER_OWNER: 'flow run concurrency cap knob',
   FLOW_RUN_RETENTION_DAYS: 'data retention window',
+  FLOW_WEBHOOK_RATE_PER_MINUTE: 'flow webhook intake rate-limit knob',
+  FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
+  FLOW_FOREACH_MAX_PARALLEL: 'flow for-each concurrency cap knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HEARTBEAT_*

@@ -288,6 +288,47 @@ describe('ProfilePage passkey management', () => {
     ]);
   });
 
+  it('uses an available passkey to delete one after TOTP has been disabled', async () => {
+    const passkeyId = '50000000-0000-4000-8000-000000000009';
+    const assertion = { id: 'browser-credential', response: { signature: 'sig' } };
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Security key', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: { challenge: 'step-up-challenge' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '60000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+    getPasskeyCredentialMock.mockResolvedValueOnce(assertion);
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: false,
+      mfaMethod: null,
+    }} />);
+
+    await screen.findByText('Security key');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(getPasskeyCredentialMock).toHaveBeenCalledWith({ challenge: 'step-up-challenge' });
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          method: 'passkey',
+          credential: assertion,
+          operation: 'delete_passkey',
+          passkeyId,
+        }),
+      }),
+    ]);
+  });
+
   // #4018: a passwordless SSO account has no password to prove, so it proves
   // identity with a fresh forced IdP round-trip instead. The API accepted
   // `ssoReauthGrantId` on both register endpoints from the start and had no

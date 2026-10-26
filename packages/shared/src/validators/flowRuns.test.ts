@@ -6,6 +6,8 @@ import {
   FLOW_RUN_ERROR_CODES,
   FLOW_PAUSED_REASONS,
   FLOW_RUN_LIMITS,
+  FLOW_TRIGGER_KINDS,
+  FLOW_TRIGGERED_VIA,
   flowEnableRequestSchema,
   flowManualRunRequestSchema,
   isTerminalFlowRunStatus,
@@ -66,5 +68,26 @@ describe('flowManualRunRequestSchema', () => {
   });
   it('rejects a non-uuid orgId', () => {
     expect(flowManualRunRequestSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
+  });
+});
+
+describe('W5 run contracts (#5220)', () => {
+  it('FLOW_TRIGGERED_VIA lists webhook, mcp and ai_agent', () => {
+    expect([...FLOW_TRIGGERED_VIA]).toEqual(['ui', 'api', 'ai_tool', 'scheduler', 'event', 'webhook', 'mcp', 'ai_agent']);
+    expect([...FLOW_TRIGGER_KINDS]).toEqual(['manual', 'schedule', 'event', 'webhook', 'tool']);
+  });
+  it('new step error codes are run error codes too', () => {
+    const fresh = ['egress_blocked', 'http_status', 'notify_failed', 'ai_budget_exhausted', 'ai_output_invalid', 'ai_token_cap_reached'];
+    for (const c of fresh) {
+      expect(FLOW_STEP_ERROR_CODES as readonly string[]).toContain(c);
+      expect(FLOW_RUN_ERROR_CODES as readonly string[]).toContain(c);
+    }
+  });
+  it('exposes the W5 limits', () => {
+    expect(FLOW_RUN_LIMITS.webhookMaxBodyBytes).toBe(FLOW_RUN_LIMITS.maxStoredOutputBytes);
+    expect(FLOW_RUN_LIMITS.webhookTimestampWindowMs).toBe(300_000);
+    expect(FLOW_RUN_LIMITS.maxParallelUnitsPerProcess).toBe(20);
+    expect(FLOW_RUN_LIMITS.flowToolsPerSessionMax).toBe(20);
+    expect(FLOW_RUN_LIMITS.httpMaxResponseBytes).toBe(1_048_576);
   });
 });

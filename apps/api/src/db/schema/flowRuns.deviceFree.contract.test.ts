@@ -17,6 +17,8 @@
 import { describe, expect, it } from 'vitest';
 import { getTableConfig, pgTable, text, uuid, type PgTable } from 'drizzle-orm/pg-core';
 import { flowRunSteps, flowRuns, flowVersions } from './flowRuns';
+import { flowWebhookDeliveries } from './flowWebhooks';
+import { flowUsageCounters } from './flowUsage';
 
 const FORBIDDEN_COLUMNS = ['device_id', 'site_id', 'ticket_id'] as const;
 
@@ -41,6 +43,14 @@ describe('flow run tables are device-, site- and ticket-free (#5219 A3)', () => 
     const tables = [flowVersions, flowRuns, flowRunSteps];
     // Vacuity guard: the three tables are the ones the migration creates.
     expect(tables.map((t) => getTableConfig(t).name)).toEqual(['flow_versions', 'flow_runs', 'flow_run_steps']);
+    for (const table of tables) expect(getTableConfig(table).columns.length).toBeGreaterThan(5);
+
+    expect(tables.flatMap(forbiddenColumnsOf), MESSAGE).toEqual([]);
+  });
+
+  it('the W5 tables flow_webhook_deliveries and flow_usage_counters are device-, site- and ticket-free (#5220 A3)', () => {
+    const tables = [flowWebhookDeliveries, flowUsageCounters];
+    expect(tables.map((t) => getTableConfig(t).name)).toEqual(['flow_webhook_deliveries', 'flow_usage_counters']);
     for (const table of tables) expect(getTableConfig(table).columns.length).toBeGreaterThan(5);
 
     expect(tables.flatMap(forbiddenColumnsOf), MESSAGE).toEqual([]);
