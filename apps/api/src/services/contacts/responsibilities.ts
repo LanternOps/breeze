@@ -80,15 +80,21 @@ async function replaceCanonicalSet(
 
 /**
  * Compatibility adapter for legacy writers that still accept only
- * `contacts.site_id` + role names. Their input is translated into the canonical
- * whole assignment set; `contacts.roles[]` is then re-projected from that set.
+ * `contacts.site_id` + role names (spec §7.4, §8.3, §9). It is NOT an
+ * authoritative writer: it applies the *delta* between the legacy `roles[]`
+ * the caller just wrote and the distinct roles already held in `contact_roles`,
+ * and leaves every other assignment alone.
  *
- * The scope is mechanically derived from the resulting pin exactly as the
- * approved migration/backfill contract requires:
- *   - site_id NULL => Organization
- *   - site_id SET  => that exact Site
+ *   - role added   => one assignment at the scope derived from the resulting
+ *                     pin (site_id NULL => Organization, SET => that Site);
+ *   - role removed => every assignment of that role, at any scope, is removed
+ *                     (the only way to keep the `roles[]` projection true);
+ *   - role kept    => untouched, wherever it is scoped;
+ *   - site_id only => no delta, so `contact_roles` is not rewritten.
+ *
+ * `contacts.roles[]` is then re-projected from the resulting canonical set.
  */
-export async function reconcileLegacyContactResponsibilities(
+export async function syncLegacyContactRoles(
   exec: ContactExecutor,
   input: {
     contactId: string;
@@ -97,15 +103,37 @@ export async function reconcileLegacyContactResponsibilities(
     roles: readonly ContactRole[] | readonly string[] | null | undefined;
   },
 ): Promise<void> {
-  const roles = [...new Set(input.roles ?? [])] as ContactRole[];
-  const scope: ResponsibilityScopeInput = input.siteId === null
-    ? { type: 'organization' }
-    : { type: 'site', siteId: input.siteId };
-  await replaceCanonicalSet(exec, {
-    contactId: input.contactId,
-    orgId: input.orgId,
-    responsibilities: roles.map((role) => ({ role, scope })),
-  });
+  const desired = new Set<string>(input.roles ?? []);
+  const owned = and(eq(contactRoles.contactId, input.contactId), eq(contactRoles.orgId, input.orgId));
+
+  const existing = await exec.select({ role: contactRoles.role }).from(contactRoles).where(owned);
+  const held = new Set<string>(existing.map((row) => row.role));
+
+  const removed = [...held].filter((role) => !desired.has(role));
+  const added = CONTACT_ROLES.filter((role) => desired.has(role) && !held.has(role));
+
+  if (removed.length > 0) {
+    await exec.delete(contactRoles).where(and(owned, inArray(contactRoles.role, removed)));
+  }
+  if (added.length > 0) {
+    const scope: ResponsibilityScopeInput = input.siteId === null
+      ? { type: 'organization' }
+      : { type: 'site', siteId: input.siteId };
+    await exec.insert(contactRoles).values(added.map((role) => ({
+      contactId: input.contactId,
+      orgId: input.orgId,
+      role,
+      isPrimary: false,
+      ...scopeColumns(scope),
+    })));
+  }
+
+  // kept ∪ added == the desired roles inside the vocabulary.
+  const resulting = CONTACT_ROLES.filter((role) => desired.has(role));
+  await exec
+    .update(contacts)
+    .set({ roles: resulting, updatedAt: new Date() })
+    .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)));
 }
 
 /** Replace a contact's explicit canonical responsibility set atomically. */

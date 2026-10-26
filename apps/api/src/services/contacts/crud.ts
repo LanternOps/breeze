@@ -37,7 +37,7 @@ import {
   type ContactExecutor,
 } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
-import { reconcileLegacyContactResponsibilities } from './responsibilities';
+import { syncLegacyContactRoles } from './responsibilities';
 import { recordDestinationChangeWithExecutor } from '../callerVerification/destinations';
 import type { DestinationSource } from '../callerVerification/types';
 
@@ -551,7 +551,7 @@ export async function createContact(
 
   if (created) {
     const createdContact = created as ContactRecord;
-    await reconcileLegacyContactResponsibilities(exec, {
+    await syncLegacyContactRoles(exec, {
       contactId: createdContact.id,
       orgId: input.orgId,
       siteId: createdContact.siteId,
@@ -702,11 +702,11 @@ export async function updateContact(
   // behind it, on a call the route answers 404.
   if (!updated) return null;
 
-  // While legacy writers still exist, either half of the legacy responsibility
-  // shape (`siteId` + `roles`) re-derives the complete canonical assignment set.
-  // Once those adapters retire, siteId can become affiliation-only metadata.
-  if (patch.siteId !== undefined || patch.roles !== undefined) {
-    await reconcileLegacyContactResponsibilities(exec, {
+  // Legacy compatibility adapter (spec §7.4/§9): only a `roles[]` change is
+  // applied to `contact_roles`, as a delta. A `siteId`-only change is an
+  // affiliation/primacy move and leaves the canonical assignments untouched.
+  if (patch.roles !== undefined) {
+    await syncLegacyContactRoles(exec, {
       contactId,
       orgId,
       siteId: updated.siteId,

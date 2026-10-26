@@ -16,7 +16,8 @@ import { getTestDb } from './setup';
 import { cascadeDeleteOrg, getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { getTenantExportPolicyRegistry } from '../../services/tenantExportPolicyRegistry';
-import { updateContact } from '../../services/contacts/crud';
+import { createContact, updateContact } from '../../services/contacts/crud';
+import { replaceContactResponsibilities } from '../../services/contacts/responsibilities';
 import { requesterAuthorized } from '../../services/callerVerification/access';
 import type { BindingRow } from '../../services/callerVerification/types';
 
@@ -94,7 +95,7 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(second).toHaveLength(first.length);
   });
 
-  runDb('siteId-only legacy patch re-scopes org admin and removes org-level disable_user authority', async () => {
+  runDb('siteId-only legacy patch is affiliation-only: contact_roles is not rewritten and org admin stays authoritative', async () => {
     const testDb = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -102,26 +103,102 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     const [contact] = await testDb.insert(contacts).values({
       orgId: org.id, name: 'Org admin', siteId: null, roles: ['admin'],
     }).returning();
-    await testDb.insert(contactRoles).values({
+    const [seeded] = await testDb.insert(contactRoles).values({
       contactId: contact!.id, orgId: org.id, role: 'admin', siteId: null, deviceGroupId: null,
-    });
+    }).returning();
 
     await withDbAccessContext(orgContext(org.id, partner.id), () =>
       updateContact(db, contact!.id, org.id, { siteId: site.id }, { userId: null }));
 
-    const assignments = await testDb.select().from(contactRoles).where(and(
-      eq(contactRoles.contactId, contact!.id),
-      eq(contactRoles.orgId, org.id),
-      eq(contactRoles.role, 'admin'),
-    ));
+    const assignments = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, contact!.id));
     expect(assignments).toHaveLength(1);
-    expect(assignments[0]).toMatchObject({ siteId: site.id, deviceGroupId: null });
+    expect(assignments[0]).toMatchObject({ id: seeded!.id, role: 'admin', siteId: null, deviceGroupId: null });
 
     const requester = { id: randomUUID(), revokedAt: null } as BindingRow;
     const target = { id: randomUUID(), revokedAt: null } as BindingRow;
     const authorized = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       requesterAuthorized('disable_user', requester, target, org.id, contact!.id, ['admin']));
-    expect(authorized).toBe(false);
+    expect(authorized).toBe(true);
+  });
+
+  runDb('legacy roles patch preserves a Device Group assignment and adds new roles at the pin-derived scope', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    await testDb.update(contacts).set({ siteId: f.siteA.id, roles: ['technical'] }).where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values({
+      contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', deviceGroupId: f.groupA.id,
+    });
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { roles: ['technical', 'billing'] }, { userId: null }));
+
+    const rows = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'technical', siteId: null, deviceGroupId: f.groupA.id }),
+      expect.objectContaining({ role: 'billing', siteId: f.siteA.id, deviceGroupId: null }),
+    ]));
+    const [after] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(after!.roles).toEqual(['billing', 'technical']);
+  });
+
+  runDb('legacy removal of a role removes it at every scope and updates the projection', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    await testDb.update(contacts).set({ roles: ['technical', 'admin'] }).where(eq(contacts.id, f.contactA.id));
+    await testDb.insert(contactRoles).values([
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical' },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', siteId: f.siteA.id },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'technical', deviceGroupId: f.groupA.id },
+      { contactId: f.contactA.id, orgId: f.orgA.id, role: 'admin' },
+    ]);
+
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      updateContact(db, f.contactA.id, f.orgA.id, { roles: ['admin'] }, { userId: null }));
+
+    const rows = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, f.contactA.id));
+    expect(rows.map((r) => r.role)).toEqual(['admin']);
+    const [after] = await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id));
+    expect(after!.roles).toEqual(['admin']);
+  });
+
+  runDb('legacy create with a site pin yields Site scope, never Organization', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const created = await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+      createContact(db, {
+        orgId: f.orgA.id, siteId: f.siteA.id, name: 'Pinned', email: 'pinned@example.test', roles: ['admin', 'technical'],
+      } as never, { userId: null }));
+
+    const rows = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, created.id));
+    expect(rows.map((r) => r.role).sort()).toEqual(['admin', 'technical']);
+    expect(rows.every((r) => r.siteId === f.siteA.id && r.deviceGroupId === null)).toBe(true);
+    expect(rows.some((r) => r.siteId === null && r.deviceGroupId === null)).toBe(false);
+  });
+
+  runDb('dual-write projection follows spec 24.5 for multi-scope assignments', async () => {
+    const testDb = getTestDb();
+    const f = await seedTwoOrgs();
+    const projected = async () =>
+      (await testDb.select().from(contacts).where(eq(contacts.id, f.contactA.id)))[0]!.roles;
+    const replace = (responsibilities: Parameters<typeof replaceContactResponsibilities>[1]['responsibilities']) =>
+      withDbAccessContext(orgContext(f.orgA.id, f.partner.id), () =>
+        replaceContactResponsibilities(db, { contactId: f.contactA.id, orgId: f.orgA.id, responsibilities }));
+
+    await replace([{ role: 'technical', scope: { type: 'organization' } }]);
+    expect(await projected()).toEqual(['technical']);
+
+    await replace([
+      { role: 'technical', scope: { type: 'organization' } },
+      { role: 'technical', scope: { type: 'site', siteId: f.siteA.id } },
+    ]);
+    expect(await projected()).toEqual(['technical']);
+
+    await replace([{ role: 'technical', scope: { type: 'site', siteId: f.siteA.id } }]);
+    expect(await projected()).toEqual(['technical']);
+
+    await replace([]);
+    expect(await projected()).toEqual([]);
   });
 
   runDb('enforces scope CHECK, role CHECK, NULLS NOT DISTINCT uniqueness and composite tenant FKs', async () => {

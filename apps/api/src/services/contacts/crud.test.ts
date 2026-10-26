@@ -4,7 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
-  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+  syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
 
@@ -693,17 +693,15 @@ describe('updateContact writes only what the patch names', () => {
       [stored],          // locked target re-read
     ], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
-      exec,
-      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
-    );
+    // affiliation-only move: contact_roles is not rewritten (spec §7.4/§28)
+    expect(responsibilityMocks.syncLegacyContactRoles).not.toHaveBeenCalled();
   });
 
   it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {
     const updated = { ...PLAIN_ORG_ROW, siteId: SITE, roles: ['admin'] };
     const { exec } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(
       exec,
       { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
     );
