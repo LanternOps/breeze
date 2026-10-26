@@ -141,6 +141,18 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     expect(view.byPatchId.get(P3)).toEqual({ state: 'excluded', reason: 'blocked_by_source', holdUntil: null });
   });
 
+  it('shows a feature release the ring blocks as excluded (blocked_by_feature_update_policy)', async () => {
+    mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    mockEvaluatorReads(
+      [row({ patchId: P1, title: 'Windows 11, version 25H2', category: 'feature', severity: 'unknown' })],
+      [{ patchId: P1, status: 'approved', ringId: null }],
+    );
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'blocked_by_feature_update_policy', holdUntil: null });
+  });
+
   it('with no patch policy, nothing auto-approves and the ring is null', async () => {
     vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null);
     mockEvaluatorReads([row({ patchId: P4 })]);
