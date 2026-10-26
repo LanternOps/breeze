@@ -51,6 +51,7 @@ import {
   isFlowToolName,
   resolveFlowToolForCall,
   resolveFlowTools,
+  resolveRunFlowGate,
   resolveRunFlowTier,
 } from './flowTools';
 
@@ -315,6 +316,14 @@ describe('resolveFlowToolForCall', () => {
 });
 
 describe('resolveRunFlowTier', () => {
+  it('resolveRunFlowGate pins the flow and the live publication seq the tier was computed for', async () => {
+    selects.push([row({ publicationSeq: 7 })]);
+    vi.mocked(stepPinsFor).mockResolvedValue(pins(1) as never);
+    expect(await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).toEqual({ tier: 1, flowId: FLOW_1, publicationSeq: 7 });
+    selects.push([]);
+    expect(await resolveRunFlowGate(orgAuth(), { flowId: FLOW_1 })).toEqual({ tier: 3 });
+  });
+
   it('returns the flow\'s live invocation tier', async () => {
     selects.push([row()]);
     vi.mocked(stepPinsFor).mockResolvedValue(pins(1) as never);

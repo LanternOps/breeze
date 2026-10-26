@@ -372,31 +372,48 @@ export async function resolveFlowToolForCall(
 
 /**
  * `run_flow`'s dynamic gate (Decision 8): the target flow's live invocation
- * tier. Never above 3; ANY failure — flag off, a missing or invisible flow, a
- * flow that is not manual, a read or tier error — is 3, the static tier.
+ * tier, PINNED to the publication it was computed for — the chat gate hands
+ * `{ flowId, publicationSeq }` to the run_flow handler, which starts the run
+ * on exactly that publication (`startManualRun`'s `expectedPublicationSeq`),
+ * so a re-enable between the gate and the start can never run a
+ * higher-tier publication at the lowered tier. Never above 3; ANY failure —
+ * flag off, a missing or invisible flow, a flow that is not manual, a read or
+ * tier error — is `{ tier: 3 }`, the static tier, with no pin.
  */
+export type RunFlowGate = { tier: 1 | 2; flowId: string; publicationSeq: number } | { tier: 3 };
+
+export async function resolveRunFlowGate(
+  auth: AuthContext,
+  input: unknown,
+  defaultOrgId?: string | null,
+): Promise<RunFlowGate> {
+  try {
+    if (!flowsEnabled() || auth.scope === 'system') return { tier: 3 };
+    const rec = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+    const flowId = typeof rec.flowId === 'string' && UUID_RE.test(rec.flowId) ? rec.flowId.toLowerCase() : null;
+    if (!flowId) return { tier: 3 };
+    const orgId = typeof rec.orgId === 'string' && UUID_RE.test(rec.orgId) ? rec.orgId.toLowerCase() : defaultOrgId ?? null;
+    const rows = await readFlowToolRows(auth, orgId, { flowId });
+    const row = rows[0];
+    if (!row) return { tier: 3 };
+    const parsed = flowDocumentV1Schema.safeParse(row.definition);
+    if (!parsed.success || parsed.data.trigger.type !== 'manual') return { tier: 3 };
+    const partnerId = row.ownerPartnerId ?? row.flowPartnerId;
+    if (!partnerId) return { tier: 3 };
+    const owner: ToolOwnerRef = row.orgId ? { orgId: row.orgId, partnerId } : { orgId: null, partnerId };
+    const tier = await flowInvocationTier({ effectiveTier: row.effectiveTier, definition: parsed.data }, owner);
+    return tier === 3 ? { tier: 3 } : { tier, flowId: row.flowId, publicationSeq: row.publicationSeq };
+  } catch (err) {
+    console.warn('[flows] run_flow tier could not be resolved; keeping tier 3', err);
+    return { tier: 3 };
+  }
+}
+
+/** The tier alone (see `resolveRunFlowGate`); any failure is 3. */
 export async function resolveRunFlowTier(
   auth: AuthContext,
   input: unknown,
   defaultOrgId?: string | null,
 ): Promise<FlowToolTier> {
-  try {
-    if (!flowsEnabled() || auth.scope === 'system') return 3;
-    const rec = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-    const flowId = typeof rec.flowId === 'string' && UUID_RE.test(rec.flowId) ? rec.flowId.toLowerCase() : null;
-    if (!flowId) return 3;
-    const orgId = typeof rec.orgId === 'string' && UUID_RE.test(rec.orgId) ? rec.orgId.toLowerCase() : defaultOrgId ?? null;
-    const rows = await readFlowToolRows(auth, orgId, { flowId });
-    const row = rows[0];
-    if (!row) return 3;
-    const parsed = flowDocumentV1Schema.safeParse(row.definition);
-    if (!parsed.success || parsed.data.trigger.type !== 'manual') return 3;
-    const partnerId = row.ownerPartnerId ?? row.flowPartnerId;
-    if (!partnerId) return 3;
-    const owner: ToolOwnerRef = row.orgId ? { orgId: row.orgId, partnerId } : { orgId: null, partnerId };
-    return await flowInvocationTier({ effectiveTier: row.effectiveTier, definition: parsed.data }, owner);
-  } catch (err) {
-    console.warn('[flows] run_flow tier could not be resolved; keeping tier 3', err);
-    return 3;
-  }
+  return (await resolveRunFlowGate(auth, input, defaultOrgId)).tier;
 }

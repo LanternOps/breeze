@@ -223,6 +223,14 @@ export type ToolExecutionContext = {
    * `flow_tool_changed`, never a run at a tier nobody gated).
    */
   flowToolGate?: FlowToolGate;
+  /**
+   * W5 PR C (#5220): set ONLY by `createSessionPreToolUse` when it LOWERED
+   * `run_flow` below its static Tier 3 to the target flow's invocation tier —
+   * the flow and the publication seq that tier was computed for. The run_flow
+   * handler starts the run on exactly that publication or refuses
+   * (`flow_tool_changed`).
+   */
+  runFlowGate?: { flowId: string; publicationSeq: number };
 };
 
 /** See `ToolExecutionContext.flowToolGate`. */

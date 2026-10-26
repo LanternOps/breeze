@@ -1184,18 +1184,23 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // and listings read the upper bound), but the chat gate lowers it to the
     // target flow's live invocation tier through the same resolver the flow
     // tools use. Never raised above the static verdict; ANY failure keeps it.
+    // The lowered tier is PINNED to the publication it was computed for
+    // (`runFlowGate` on the call context): the handler starts the run on that
+    // publication only, so a re-enable during a Tier-2 confirmation wait can
+    // never run a higher-tier publication at the lowered tier.
     if (toolName === 'run_flow' && guardrailCheck.tier === 3) {
-      let flowTier: 1 | 2 | 3 = 3;
+      let gate: Awaited<ReturnType<typeof import('./flows/flowTools').resolveRunFlowGate>> = { tier: 3 };
       try {
-        const { resolveRunFlowTier } = await import('./flows/flowTools');
-        flowTier = await resolveRunFlowTier(session.toolAuth ?? session.auth, input, session.orgId);
+        const { resolveRunFlowGate } = await import('./flows/flowTools');
+        gate = await resolveRunFlowGate(session.toolAuth ?? session.auth, input, session.orgId);
       } catch (err) {
         console.error('[AI-SDK] run_flow tier resolution failed; keeping tier 3', err);
-        flowTier = 3;
+        gate = { tier: 3 };
       }
-      if (flowTier !== 3) {
+      if (gate.tier !== 3) {
         const { approvalScope: _scope, ...rest } = guardrailCheck;
-        guardrailCheck = { ...rest, tier: flowTier, requiresApproval: flowTier >= 2, readOnly: flowTier === 1 };
+        guardrailCheck = { ...rest, tier: gate.tier, requiresApproval: gate.tier >= 2, readOnly: gate.tier === 1 };
+        verifiedToolContext = { ...verifiedToolContext, runFlowGate: { flowId: gate.flowId, publicationSeq: gate.publicationSeq } };
       }
     }
 

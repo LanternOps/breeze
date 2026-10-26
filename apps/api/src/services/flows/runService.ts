@@ -133,7 +133,7 @@ export type StartManualRunResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'not_enabled' | 'not_manual' | 'org_required' | 'org_forbidden' | 'interactive_user_required'
-        | 'delegation_scope_restricted' | FlowRunAdmissionRefusal;
+        | 'delegation_scope_restricted' | 'flow_tool_changed' | FlowRunAdmissionRefusal;
     };
 
 export type CancelFlowRunResult =
@@ -542,6 +542,12 @@ export async function startManualRun(
   req: FlowManualRunRequest,
   via: 'ui' | 'api' | 'ai_tool',
   aiSessionId: string | null = null,
+  /**
+   * W5 PR C (#5220): the publication a chat gate checked when it lowered
+   * `run_flow` below Tier 3; any other live publication is
+   * `flow_tool_changed` (the insert then pins the same seq).
+   */
+  opts: { expectedPublicationSeq?: number } = {},
 ): Promise<StartManualRunResult> {
   if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };
   // The `ui` lane and the `ai_tool` lane (run_flow, a chat session that passed
@@ -557,6 +563,7 @@ export async function startManualRun(
   if (!flow) return { ok: false, error: 'flow_not_found' };
   if (flow.status !== 'enabled' || flow.enabledPublicationSeq === null) return { ok: false, error: 'not_enabled' };
   const seq = flow.enabledPublicationSeq;
+  if (opts.expectedPublicationSeq !== undefined && seq !== opts.expectedPublicationSeq) return { ok: false, error: 'flow_tool_changed' };
 
   const [publication] = await inSystemTx(
     async () => db

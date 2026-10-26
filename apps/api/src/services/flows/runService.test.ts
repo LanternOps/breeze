@@ -233,6 +233,19 @@ describe('startManualRun', () => {
     });
   });
 
+  it('a run_flow start pinned to the publication its lowered tier was gated on refuses any other (W5 PR C)', async () => {
+    queueStart(flowRow({ enabledPublicationSeq: 3 }));
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ai_tool', 'sess-1', { expectedPublicationSeq: 2 }))
+      .toEqual({ ok: false, error: 'flow_tool_changed' });
+    expect(callsOf('execute')).toHaveLength(0);
+    // The pinned publication itself runs, and the insert pins it too.
+    queues.select.length = 0; // the refusal returned before the publication and org reads
+    queueStart(flowRow({ enabledPublicationSeq: 2 }));
+    queueCreate();
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ai_tool', 'sess-1', { expectedPublicationSeq: 2 }))
+      .toMatchObject({ ok: true, runId: RUN_ID });
+  });
+
   it('partner flow without orgId is org_required', async () => {
     queueStart(flowRow({ orgId: null, partnerId: PARTNER }));
     expect(await startManualRun(partnerAuth(), FLOW_ID, { inputs: {} }, 'ui')).toEqual({ ok: false, error: 'org_required' });

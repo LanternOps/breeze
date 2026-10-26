@@ -422,10 +422,10 @@ function publishedApprovalRequired(session: { eventBus: { publish: ReturnType<ty
 
 
 const mockResolveFlowToolForCall = vi.fn();
-const mockResolveRunFlowTier = vi.fn();
+const mockResolveRunFlowGate = vi.fn();
 vi.mock('./flows/flowTools', () => ({
   resolveFlowToolForCall: (...args: unknown[]) => mockResolveFlowToolForCall(...args),
-  resolveRunFlowTier: (...args: unknown[]) => mockResolveRunFlowTier(...args),
+  resolveRunFlowGate: (...args: unknown[]) => mockResolveRunFlowGate(...args),
 }));
 
 // ============================================
@@ -453,7 +453,7 @@ describe('createSessionPreToolUse — flow tools (W5 PR C)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveFlowToolForCall.mockReset();
-    mockResolveRunFlowTier.mockReset();
+    mockResolveRunFlowGate.mockReset();
     vi.mocked(checkToolPermission).mockResolvedValue(null);
     vi.mocked(checkToolRateLimit).mockResolvedValue(null);
     vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
@@ -566,7 +566,7 @@ describe('createSessionPreToolUse — flow tools (W5 PR C)', () => {
 describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockResolveRunFlowTier.mockReset();
+    mockResolveRunFlowGate.mockReset();
     vi.mocked(checkToolPermission).mockResolvedValue(null);
     vi.mocked(checkToolRateLimit).mockResolvedValue(null);
     mockCreateActionIntent.mockReset();
@@ -577,11 +577,14 @@ describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)'
   });
 
   it('run_flow on a tier-1 flow needs no approval', async () => {
-    mockResolveRunFlowTier.mockResolvedValue(1);
+    mockResolveRunFlowGate.mockResolvedValue({ tier: 1, flowId: FLOW, publicationSeq: 4 });
     const session = makeActiveSession();
     const result = await createSessionPreToolUse(session)('run_flow', { flowId: FLOW });
     expect(result).toMatchObject({ allowed: true });
-    expect(mockResolveRunFlowTier).toHaveBeenCalledWith(session.toolAuth ?? session.auth, { flowId: FLOW }, 'org-1');
+    // A lowered tier is pinned to the publication it was computed for: the
+    // handler starts the run on exactly that one (or refuses).
+    expect((result as { context?: Record<string, unknown> }).context?.runFlowGate).toEqual({ flowId: FLOW, publicationSeq: 4 });
+    expect(mockResolveRunFlowGate).toHaveBeenCalledWith(session.toolAuth ?? session.auth, { flowId: FLOW }, 'org-1');
     expect(mockCreateActionIntent).not.toHaveBeenCalled();
     expect(waitForApproval).not.toHaveBeenCalled();
     // The static RBAC for run_flow still applies.
@@ -589,7 +592,7 @@ describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)'
   });
 
   it('resolver error keeps tier 3', async () => {
-    mockResolveRunFlowTier.mockResolvedValue(3);
+    mockResolveRunFlowGate.mockResolvedValue({ tier: 3 });
     mockInsertReturning({ id: 'exec-rf' });
     mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-rf', approvalRequestIds: ['appr-rf'] }));
     mockWaitForIntentDecision.mockResolvedValue('rejected');
@@ -600,7 +603,7 @@ describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)'
   });
 
   it('a thrown resolver keeps tier 3 too (fail closed)', async () => {
-    mockResolveRunFlowTier.mockRejectedValue(new Error('boom'));
+    mockResolveRunFlowGate.mockRejectedValue(new Error('boom'));
     mockInsertReturning({ id: 'exec-rf2' });
     mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-rf2', approvalRequestIds: ['appr-rf2'] }));
     mockWaitForIntentDecision.mockResolvedValue('rejected');
@@ -612,9 +615,9 @@ describe('createSessionPreToolUse — run_flow takes the flow\'s tier (W5 PR C)'
 
   it('a static denial is never lowered', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 4, requiresApproval: false, reason: 'blocked' } as any);
-    mockResolveRunFlowTier.mockResolvedValue(1);
+    mockResolveRunFlowGate.mockResolvedValue({ tier: 1, flowId: FLOW, publicationSeq: 4 });
     const result = await createSessionPreToolUse(makeActiveSession())('run_flow', { flowId: FLOW });
     expect(result).toEqual({ allowed: false, error: 'blocked' });
-    expect(mockResolveRunFlowTier).not.toHaveBeenCalled();
+    expect(mockResolveRunFlowGate).not.toHaveBeenCalled();
   });
 });
