@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
@@ -412,6 +412,52 @@ describe('ProfilePage theming settings', () => {
     await waitFor(() => {
       expect(screen.getByText('24-hour').closest('button')).toHaveAttribute('aria-pressed', 'true');
     });
+  });
+});
+
+describe('ProfilePage profile updates preserve MFA status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (String(url) === '/auth/passkeys') {
+        return makeJsonResponse({ passkeys: [] });
+      }
+      if (String(url) === '/sso/link/options') {
+        return makeJsonResponse({ data: [] });
+      }
+      if (String(url) === '/users/me' && init?.method === 'PATCH') {
+        return makeJsonResponse({
+          id: 'user-1',
+          name: 'Casey Updated',
+          email: 'casey@example.com',
+          mfaEnabled: false,
+        });
+      }
+      return undefined as unknown as Response;
+    });
+  });
+
+  it('clears the stale method when the profile response says MFA is disabled', async () => {
+    render(
+      <ProfilePage
+        initialUser={{
+          id: 'user-1',
+          name: 'Casey Admin',
+          email: 'casey@example.com',
+          mfaEnabled: true,
+          mfaMethod: 'totp',
+          hasPassword: true,
+        }}
+      />
+    );
+
+    const authenticatorRow = screen.getByTestId('mfa-authenticator-row');
+    expect(within(authenticatorRow).getByText('Enabled')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Casey Updated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await within(authenticatorRow).findByText('Disabled')).toBeTruthy();
+    expect(within(authenticatorRow).getByRole('button', { name: 'Enable' })).toBeTruthy();
   });
 });
 

@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProfilePage from './ProfilePage';
 import { fetchWithAuth } from '../../stores/auth';
 
+const { commitMfaEnrollmentIfCurrentMock, showToastMock } = vi.hoisted(() => ({
+  commitMfaEnrollmentIfCurrentMock: vi.fn(() => true),
+  showToastMock: vi.fn(),
+}));
+
 /**
  * #4413 — a wrong TOTP during enrollment must NOT fail silently.
  *
@@ -29,13 +34,12 @@ vi.mock('../../stores/auth', () => ({
     { getState: () => ({
       updateUser: vi.fn(),
       sessionGeneration: 0,
-      commitMfaEnrollmentIfCurrent: vi.fn(() => true),
+      commitMfaEnrollmentIfCurrent: commitMfaEnrollmentIfCurrentMock,
       commitReissuedSessionIfCurrent: vi.fn(() => true),
     }) }
   )
 }));
 
-const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 vi.mock('@/lib/avatarBlobCache', () => ({
@@ -258,6 +262,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
   });
 
   it('still completes enrollment on a correct code', async () => {
+    const replacementTokens = { accessToken: 'totp-replacement-token', expiresInSeconds: 900 };
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -266,7 +271,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       if (String(url) === '/auth/mfa/enable') {
         return makeJsonResponse({
           recoveryCodes: ['AAAA-BBBB'],
-          tokens: { accessToken: 'replacement-totp', expiresInSeconds: 900 },
+          tokens: replacementTokens,
         });
       }
       return undefined as unknown as Response;
@@ -282,6 +287,7 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
       await screen.findByText(/Multi-factor authentication enabled successfully/i)
     ).toBeTruthy();
     expect(screen.queryByText(/Set up authenticator/i)).toBeNull();
+    expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', replacementTokens);
   });
 
   // #4414 complement: /auth/mfa/enable is the ONLY moment these codes exist in
