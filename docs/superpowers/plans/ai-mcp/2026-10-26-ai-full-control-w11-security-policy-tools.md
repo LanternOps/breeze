@@ -111,11 +111,13 @@ Q1 reversible within a minute? Q2 leaves the tenant / reaches a person / touches
 
 | Measure | main `25fcb2e35b` | branch |
 |---|---|---|
-| Always-on (B1 < 2,560) | 2,494 | _measured at T5_ |
-| security block (B2 < 2,048) | 1,268 (largest) | _T5_ |
-| Worst page turn (B3 < 7,040) — alert | 4,731 | _T5_ |
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| security block (B2 < 2,048) | 1,268 (largest) | 1,644 (still the largest) |
+| Worst page turn (B3 < 7,040) — alert | 4,731 | 4,731 (security is not a page-context domain) |
 
-Projection: ≈ +370 B on the security line (eight tools, `manage_pam_rules` collapses to `(10 actions)`), ≈ 1,640 B. No ceiling, `DOMAIN_NOTES` or vocabulary change.
+Measured +376 B on the security line (projection +370; `manage_pam_rules` renders as `(10 actions)`, `get_security_compliance` bare). No ceiling, `DOMAIN_NOTES` or vocabulary change. None of the eight is `alwaysLoad`. `MCP_TOOL_COUNT_APPROX` stays 310: the registry is 318, inside the ±10 pin.
+
+**D5 turn-1 tokens** (`tool-capture.ts --proxy`, real key; baseline doc §16): tool search **on** — chat +379, agent-full +3,474 (gate ≤ +8,000: pass); off — chat +6,996, agent-full +3,474 (recorded).
 
 ## Quorum (codex `exec`, read-only, xhigh): AGREE WITH CHANGES
 
