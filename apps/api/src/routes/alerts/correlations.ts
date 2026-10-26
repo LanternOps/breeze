@@ -860,7 +860,7 @@ async function groupHasVisibleMember(auth: AuthContext, group: CorrelationGroupR
 }
 
 /** True when every id is an alert of `orgId` the (restricted) caller can see. */
-async function allAlertsVisible(auth: AuthContext, orgId: string, alertIds: readonly string[]): Promise<boolean> {
+async function allAlertIdsAreVisible(auth: AuthContext, orgId: string, alertIds: readonly string[]): Promise<boolean> {
   const unique = [...new Set(alertIds)];
   if (unique.length === 0) return true;
   const rows = await db.select().from(alerts).where(and(eq(alerts.orgId, orgId), inArray(alerts.id, unique)));
@@ -878,7 +878,7 @@ export async function recordCorrelationFeedback(
   if (!group || !(await groupHasVisibleMember(auth, group))) return null;
   // Every caller may only cite alerts of THIS group's org that they can see, and merge into a visible
   // group of the same org (a label must not reference another tenant's rows).
-  if (!(await allAlertsVisible(auth, group.orgId, body.alertIds))) return null;
+  if (!(await allAlertIdsAreVisible(auth, group.orgId, body.alertIds))) return null;
   if (body.targetGroupId) {
     const target = await getAccessiblePersistedGroup(body.targetGroupId, auth);
     if (!target || target.orgId !== group.orgId || !(await groupHasVisibleMember(auth, target))) return null;
