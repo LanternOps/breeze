@@ -90,14 +90,14 @@ describe('workspace-device-index', () => {
     const element = await mountTab(context as Record<string, unknown>);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(element.shadowRoot?.querySelector('[role="alert"]')?.textContent)
-      .toContain('Wisp received an invalid host context');
+      .toContain('Knowledge received an invalid host context');
   });
 
   it('renders a quiet empty state when the device has no index (404)', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Device not found' }, 404));
     const element = await mountTab();
     expect(element.shadowRoot?.querySelector('[role="status"]')?.textContent)
-      .toContain('no Wisp index');
+      .toContain('no Knowledge index');
   });
 
   it('shows an unauthorized message on 403 without echoing server text', async () => {
@@ -105,7 +105,7 @@ describe('workspace-device-index', () => {
     const element = await mountTab();
     const alert = element.shadowRoot?.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('not authorized');
-    expect(alert?.textContent).toContain('Wisp index');
+    expect(alert?.textContent).toContain('Knowledge index');
     expect(alert?.textContent).not.toMatch(/workspace/i);
     expect(element.shadowRoot?.querySelector('b')).toBeNull();
   });

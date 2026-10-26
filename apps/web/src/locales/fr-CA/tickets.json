@@ -530,7 +530,7 @@
         "device_vulnerabilities": "Vulnérabilités : {{count}}",
         "organization_key_dates": "Rappels de dates clés : {{count}}",
         "service_deliverable_occurrences": "Occurrences de livrables : {{count}}",
-        "ai_operator_task_targets": "Cibles de l'opérateur IA : {{count}}",
+        "ai_operator_task_targets": "Cibles de la tâche IA : {{count}}",
         "ticket_drafts": "Brouillons supprimés : {{count}}"
       },
       "droppedHeading": "Liens supprimés",

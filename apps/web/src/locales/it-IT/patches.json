@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Nessun job di patch ancora. I job creati da criteri, anelli di aggiornamento o dall'assistente IA appariranno qui.",
+    "empty": "Nessun job di patch ancora. I job creati da criteri, anelli di aggiornamento o da Breeze AI appariranno qui.",
     "loading": "Caricamento dei job di patch...",
     "columns": {
       "name": "Job",

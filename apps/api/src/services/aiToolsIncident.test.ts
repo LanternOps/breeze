@@ -34,6 +34,11 @@ vi.mock('./eventBus', () => ({
   publishEvent: vi.fn(async () => undefined),
 }));
 
+// QW8 (W04, #6758): screenshot evidence honours the screen-access consent gate.
+vi.mock('../routes/remote/screenAccessConsentGate', () => ({
+  checkScreenAccessConsentGate: vi.fn(async () => ({ ok: true })),
+}));
+
 // The device gate is a separately-tested collaborator
 // (aiTools.verifyDeviceAccess.test.ts). Mock it so we can drive the
 // accessible / not-accessible verdicts and assert the handler's control flow.
@@ -48,6 +53,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerIncidentTools } from './aiToolsIncident';
+import { checkScreenAccessConsentGate } from '../routes/remote/screenAccessConsentGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const INCIDENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -254,5 +260,75 @@ describe('execute_containment action lifecycle (#9662)', () => {
     expect(out.error).toMatch(/same organization/i);
     expect(db.insert).not.toHaveBeenCalled();
     expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * W04-D12 (#6758): collect_evidence must be bound to the incident's org, as
+ * execute_containment is (#9662). Without it a multi-org caller could aim
+ * forensic collection at a device in org B under an incident in org A.
+ */
+describe('collect_evidence device/incident org binding (W04-D12, #6758)', () => {
+  const input = { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes'] };
+
+  it('refuses a device outside the incident organization and dispatches nothing', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.error).toMatch(/same organization/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('control: a device in the incident organization is dispatched', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.success).toBe(true);
+    expect(aiQueueCommandForExecution).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * QW8 (W04 quorum, #6758): a screenshot is screen capture, so screenshot
+ * evidence honours the device's remote-access consent policy exactly like
+ * take_screenshot (checkScreenAccessConsentGate). Other evidence types are not
+ * screen access and never consult it.
+ */
+describe('collect_evidence screenshot honours the screen-access consent gate (W04 QW8, #6758)', () => {
+  const device = { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'host-1', status: 'online', isEphemeral: false };
+
+  beforeEach(() => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({ device } as any);
+  });
+
+  it('refuses and dispatches nothing when the gate refuses a screenshot', async () => {
+    vi.mocked(checkScreenAccessConsentGate).mockResolvedValueOnce({
+      ok: false, status: 409, body: { error: 'consent required', code: 'CONSENT_REQUIRED' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(
+      { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes', 'screenshot'] }, makeAuth(),
+    ));
+
+    expect(checkScreenAccessConsentGate).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: OWN_DEVICE_ID, orgId: ORG_ID, surface: 'collect_evidence',
+    }));
+    expect(out).toEqual({ error: 'consent required', code: 'CONSENT_REQUIRED' });
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('control: non-screenshot evidence never consults the gate', async () => {
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(
+      { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes', 'connections'] }, makeAuth(),
+    ));
+
+    expect(checkScreenAccessConsentGate).not.toHaveBeenCalled();
+    expect(out.success).toBe(true);
   });
 });

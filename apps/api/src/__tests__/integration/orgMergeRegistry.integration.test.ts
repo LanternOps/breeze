@@ -202,6 +202,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): RAISEs iff
+  // org_id (or another identity column) changes, and on any status change out
+  // of a terminal state. flow_runs is leave-for-erasure; resolveFlows only
+  // writes cancellation columns on loser runs, never org_id.
+  'flow_runs.flow_runs_immutable_trg': 'RAISEs iff org_id (or any identity column) changed; leave-for-erasure, never repointed',
   // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
   // immutable; wisp_grants is leave-for-erasure, never repointed.
   'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
@@ -310,6 +315,11 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): freezes a
+  // publication's content (flow_id, publication_seq, definition, pins,
+  // bindings, created_at, a non-NULL delegator retarget) but deliberately
+  // leaves the owner columns out, so the plain flow_versions repoint passes.
+  'flow_versions.flow_versions_immutable_trg': 'freezes publication content only; org_id/partner_id are excluded and may move, so an org_id repoint passes',
   // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
   // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
   // not name those columns, so the trigger never fires on it.

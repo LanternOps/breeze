@@ -52,6 +52,17 @@ export interface UploadedContractPdf {
   data: Buffer;
 }
 
+export interface MergeUploadedContractPdfsOptions {
+  /** Deterministic output (#9075 W2c certified copy): CreationDate and ModDate
+   *  are pinned to this instant and Producer/Creator to a constant, instead of
+   *  pdf-lib stamping the wall clock — so the same inputs always yield the same
+   *  bytes. Omitted (every quote caller) → pdf-lib's default metadata, as before. */
+  pinDates?: Date;
+}
+
+/** Producer/Creator written on a pinned merge. A constant, never a version. */
+const PINNED_PRODUCER = 'Breeze';
+
 /** Append every upload's pages after `mainPdf`'s own pages, in array order.
  *  A no-op (returns `mainPdf` unchanged) when `uploads` is empty — the common
  *  case (no uploaded contract blocks on the quote) never pays the pdf-lib
@@ -59,10 +70,12 @@ export interface UploadedContractPdf {
 export async function mergeUploadedContractPdfs(
   mainPdf: Buffer,
   uploads: UploadedContractPdf[],
+  options: MergeUploadedContractPdfsOptions = {},
 ): Promise<Buffer> {
   if (uploads.length === 0) return mainPdf;
 
-  const mainDoc = await PDFDocument.load(mainPdf);
+  const pin = options.pinDates;
+  const mainDoc = await PDFDocument.load(mainPdf, pin ? { updateMetadata: false } : undefined);
   let pageCount = mainDoc.getPageCount();
   for (const upload of uploads) {
     let uploadDoc: PDFDocument;
@@ -86,6 +99,12 @@ export async function mergeUploadedContractPdfs(
     }
     const copiedPages = await mainDoc.copyPages(uploadDoc, uploadDoc.getPageIndices());
     for (const page of copiedPages) mainDoc.addPage(page);
+  }
+  if (pin) {
+    mainDoc.setCreationDate(pin);
+    mainDoc.setModificationDate(pin);
+    mainDoc.setProducer(PINNED_PRODUCER);
+    mainDoc.setCreator(PINNED_PRODUCER);
   }
   return Buffer.from(await mainDoc.save());
 }

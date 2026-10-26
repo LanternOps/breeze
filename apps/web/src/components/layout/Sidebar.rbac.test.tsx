@@ -122,11 +122,12 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(hasSectionHeader(container, 'Backup')).toBe(false);
     expect(hasSectionHeader(container, 'Reporting')).toBe(false);
     expect(hasSectionHeader(container, 'Administration')).toBe(false);
-    // Sections that still have at least one visible item keep their header:
-    // Billing holds the items it can access, and AI has the always-visible
-    // Fleet Orchestration landing item.
+    // #10135: every AI entry is now permission- or flag-gated (Findings, the old
+    // ungated Fleet Orchestration landing item, needs ai_agents:read), so a
+    // billing-only role with AI for Office off sees no AI header either.
+    expect(hasSectionHeader(container, 'AI')).toBe(false);
+    // Sections that still have at least one visible item keep their header.
     expect(hasSectionHeader(container, 'Billing')).toBe(true);
-    expect(hasSectionHeader(container, 'AI')).toBe(true);
   });
 
   it('Partner Technician sees fleet/ops items but no billing and no user/role admin', async () => {

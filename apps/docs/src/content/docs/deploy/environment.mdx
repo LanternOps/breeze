@@ -1133,14 +1133,14 @@ The consent callback origin comes from `PUBLIC_URL`, then `PUBLIC_APP_URL`, then
 
 ### AI Operator (preview, off by default)
 
-[AI Operator](/features/ai-agents/#ai-operator-preview) hands a long-running task
+[AI tasks](/features/ai-tasks/) hands a long-running task
 to an agent that keeps working after the browser is closed. It is gated
 separately from the rest of the AI-agent subsystem, and `BREEZE_AI_AGENTS_ENABLED`
 still has to be on above it.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AI_OPERATOR_TASKS_ENABLED` | `false` | Admit AI Operator tasks and their continuation runs. With this off, the **Delegate to Operator** action does not appear and no task can be created. |
+| `AI_OPERATOR_TASKS_ENABLED` | `false` | Admit AI tasks and their continuation runs. With this off, the **Start an AI task** action does not appear and no task can be created. |
 | `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | `false` | Allow the one shipped recipe, **service recovery**. Task admission needs this as well as the flag above. |
 
 With both flags off the whole subsystem is inert. Its two background workers —

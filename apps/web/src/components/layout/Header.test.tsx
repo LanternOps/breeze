@@ -233,10 +233,10 @@ describe('Header terminal logout UX', () => {
   });
 });
 
-// #6396: the AI assistant button is gated on ai_sessions:use so a role that
+// #6396: the Breeze AI button is gated on ai_sessions:use so a role that
 // cannot open a chat session (Org Viewer, billing roles) does not get a button
 // that only ever 403s. UX only — the route re-checks the permission.
-describe('Header AI assistant button gating (#6396)', () => {
+describe('Header Breeze AI button gating (#6396)', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,

@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Niveau 1 — Lectures"
+      },
+      "tier2": {
+        "label": "Niveau 2 — Agit et journalise"
+      },
+      "tier3": {
+        "label": "Niveau 3 — Demande d’abord"
+      },
+      "tier4": {
+        "label": "Niveau 4 — Bloqué"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "Moteur de Risque IA",
     "analytics": "Analytique",
@@ -2488,7 +2504,7 @@
       "origin": {
         "web": "Interface web",
         "api": "Accès par API",
-        "ai_chat": "Clavardage IA",
+        "ai_chat": "Breeze AI",
         "mcp": "Client MCP"
       },
       "scanType": {

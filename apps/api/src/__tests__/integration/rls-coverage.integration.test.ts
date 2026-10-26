@@ -660,7 +660,17 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
   // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
   // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  // Its run tables flow_runs / flow_run_steps (W04, #5219) are deliberately
+  // NOT here: they are shape 1 (org_id NOT NULL, breeze_has_org_access only —
+  // plan Open Decision 1), so org-tenant auto-discovery covers them.
   'flows',
+  // flow_versions (Tool Catalog W04, #5219): org_id XOR partner_id
+  // publications of a flow, 2027-01-06-130000-flow-runs.sql
+  // (flow_versions_one_owner_chk; owner copied from the parent flow by the
+  // deferred flow_versions_owner_guard_trg). The flows_isolation predicate
+  // verbatim plus the flow_versions_partner_wide_select branch. Functional
+  // cross-partner forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
   // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
   // partner_id config table plus three children that DENORMALISE the owner
   // pair from their parent (owner-guard constraint triggers, like
@@ -1038,6 +1048,10 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
   // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
   'flows',
+  // flow_versions_one_owner_chk, 2027-01-06-130000-flow-runs.sql (#5219); its
+  // partner-wide SELECT branch (flow_versions_partner_wide_select) ships in the
+  // same file. Forge proof: flowRunsPartnerRls.integration.test.ts.
+  'flow_versions',
   // business_calendars_one_owner_chk and the three children's *_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
   // All four partner-wide SELECT branches ship in the same file.

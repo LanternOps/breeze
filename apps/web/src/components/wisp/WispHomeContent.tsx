@@ -28,7 +28,7 @@ type View =
 const POLL_MS = 30_000;
 const STALE_AFTER_FAILED_POLLS = 2;
 
-const CHATS_HREF = '/wisp/chat';
+const CHATS_HREF = '/ai/chat';
 const MEMORY_HREF = '/settings/wisp-memory';
 const SETTINGS_HREF = '/settings/ai-agents';
 

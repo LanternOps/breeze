@@ -1,4 +1,4 @@
-// Wisp session binding shared by the side panel (aiStore) and the /wisp/chat
+// Wisp session binding shared by the side panel (aiStore) and the /ai/chat
 // tabs (workspaceStore), #10142: both create a session under a grant with the
 // same anchor, and both read a refused create the same way. Kept free of the
 // step-up/WebAuthn graph (lib/wispGrant) so either store can import it

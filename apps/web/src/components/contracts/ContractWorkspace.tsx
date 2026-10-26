@@ -7,6 +7,7 @@ import ContractEditor from './ContractEditor';
 import ContractDetail from './ContractDetail';
 import { usePermissions } from '../../lib/permissions';
 import RecordSignedAgreementDialog from '../agreements/RecordSignedAgreementDialog';
+import SendAgreementDialog from '../agreements/SendAgreementDialog';
 import {
   getContract,
   CONTRACT_STATUS_ROLES,
@@ -33,6 +34,7 @@ export default function ContractWorkspace({ contractId }: Props) {
   const isNew = contractId === 'new';
   const { can } = usePermissions();
   const canWrite = can('contracts', 'write');
+  const canSendAgreement = can('agreements', 'send') && can('agreements', 'write');
 
   // Deep-linked org for the create form (e.g. `/contracts/new#orgId=…`), adopted
   // post-mount to avoid SSR hydration mismatches (#2421). Only meaningful when
@@ -113,6 +115,7 @@ export default function ContractWorkspace({ contractId }: Props) {
   // Only a quote-sourced document whose quote still exists qualifies.
   const [sourceQuote, setSourceQuote] = useState<{ id: string; number: string } | null>(null);
   const [recordOpen, setRecordOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   // Bumped after a recording so the pill below re-reads the agreement list.
   const [recordedTick, setRecordedTick] = useState(0);
   useEffect(() => {
@@ -215,7 +218,17 @@ export default function ContractWorkspace({ contractId }: Props) {
         </div>
         <div className="flex shrink-0 items-center gap-2">
         <WispLinkButton kind="contract" id={contract.id} orgId={contract.orgId} size="sm" />
-        {can('agreements', 'write') && (
+        {canSendAgreement && (
+          <button
+            type="button"
+            onClick={() => setSendOpen(true)}
+            data-testid="contract-send-agreement-open"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            {t('agreements.signedPage.sendForSignature')}
+          </button>
+        )}
+        {can('agreements', 'send') && (
           <button
             type="button"
             onClick={() => setRecordOpen(true)}
@@ -237,7 +250,7 @@ export default function ContractWorkspace({ contractId }: Props) {
         )}
         </div>
       </div>
-      {can('agreements', 'write') && (
+      {can('agreements', 'send') && (
         <RecordSignedAgreementDialog
           open={recordOpen}
           onClose={() => setRecordOpen(false)}
@@ -246,6 +259,18 @@ export default function ContractWorkspace({ contractId }: Props) {
           onRecorded={() => {
             setRecordOpen(false);
             setRecordedTick((n) => n + 1);
+            void load();
+          }}
+        />
+      )}
+      {canSendAgreement && (
+        <SendAgreementDialog
+          open={sendOpen}
+          onClose={() => setSendOpen(false)}
+          lockedOrgId={contract.orgId}
+          lockedContractId={contract.id}
+          onSent={() => {
+            setSendOpen(false);
             void load();
           }}
         />

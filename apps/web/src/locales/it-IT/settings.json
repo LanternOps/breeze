@@ -79,6 +79,10 @@
         "categoryLabel": "Categoria",
         "categoryUnresolved": "Suggerita — nome non disponibile in questa vista"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Memoria delle correzioni",
+      "fleetDesignReport": "Progettazione flotta"
     }
   },
   "aiDataPolicy": {
@@ -285,7 +289,7 @@
     "subtitle": "Collega i provider, scegli quali modelli sono disponibili e imposta il modello predefinito per ogni funzione IA.",
     "forbidden": "Non hai il permesso di gestire provider e modelli IA.",
     "loadFailed": "Impossibile caricare provider e modelli IA.",
-    "workspaceNote": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
+    "workspaceNote": "L'indicizzazione delle conoscenze utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
     "connections": {
       "title": "Connessioni",
       "subtitle": "Dove vengono inviate le richieste IA e chi le paga.",
@@ -1096,7 +1100,7 @@
       },
       "aiApprovals": {
         "label": "Timeout di approvazione IA",
-        "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
+        "description": "Per quanto tempo Breeze AI attende l'approvazione di un'azione controllata"
       },
       "callerVerification": {
         "label": "Verifica del chiamante",
@@ -1496,7 +1500,8 @@
       "approval_snapshot": "Dati dell’approvazione",
       "approval_expires": "Scadenza dell’approvazione",
       "approval_status": "Stato dell’approvazione",
-      "merged_into_number": "Numero del ticket di destinazione"
+      "merged_into_number": "Numero del ticket di destinazione",
+      "agreement_name": "Nome dell’accordo"
     },
     "billingPayments": "Fatturazione e pagamenti",
     "supportPortal": "Assistenza e portale",
@@ -2401,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilizzo AI",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitora l'utilizzo dell'assistente AI e configura i limiti di budget",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitora l'utilizzo di Breeze AI e configura i limiti di budget",
     "budgetConfiguration": "Configurazione budget",
     "aIEnabled": "AI abilitata",
     "enabled": "Abilitato",
@@ -2455,7 +2460,7 @@
     "creditsRemaining": "Crediti IA Breeze rimanenti",
     "defaultValue": "Predefinito ({{value}})",
     "viewPartnerWideBudgets": "Budget AI del partner",
-    "monitorAIAssistantUsage": "Monitora l’utilizzo dell’assistente AI",
+    "monitorAIAssistantUsage": "Monitora l'utilizzo di Breeze AI",
     "effectiveBudget": "Budget effettivo",
     "effectiveBudgetHelp": "I limiti attualmente in vigore per questa organizzazione e dove è stato impostato ciascuno.",
     "effectiveBudgetUnavailable": "Non è stato possibile caricare il budget effettivo. Ricarica la pagina per riprovare.",
@@ -2564,7 +2569,9 @@
       "patch": "Esamina le patch mancanti e propone cosa installare.",
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
       "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
-      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla."
+      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+      "researchLink": "Apri la memoria delle correzioni",
+      "designerLink": "Apri la progettazione flotta"
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -3136,7 +3143,7 @@
         },
         "anomalyLink": "Apri anomalie dispositivo",
         "budget": {
-          "title": "Budget di esposizione",
+          "title": "Budget delle azioni",
           "caption": "Esposizione registrata — ultime {{hours}} ore",
           "devices": "{{count}} di {{allowance}} dispositivi",
           "decisionsToday": "{{count}} di {{max}} decisioni di policy oggi",
@@ -3364,7 +3371,7 @@
       "readOnlyNote": "L’esecuzione preautorizzata è disattivata in questa installazione; questi dati sono solo informativi.",
       "byOrgTruncated": "Sono mostrate le prime {{limit}} organizzazioni in ordine di nome. Scegli una sola organizzazione nel selettore delle organizzazioni per vedere le altre.",
       "thresholdPerOrgNote": "Ogni organizzazione risolve la propria soglia di abilitazione, quindi qui le esecuzioni verificate sono mostrate senza un obiettivo. Scegli una sola organizzazione nel selettore delle organizzazioni per vedere il suo obiettivo.",
-      "approvalsLink": "Segui questa richiesta nella casella delle approvazioni",
+      "approvalsLink": "Segui questa richiesta in Approvazioni",
       "ceilingHint": "Le chiavi a livello di partner sono un limite massimo, non una concessione. L’agente di ogni organizzazione deve ricevere la chiave separatamente: tramite l’abilitazione o modificando l’agente di quella organizzazione.",
       "grantOnlyHint": "Le chiavi preautorizzate di un agente organizzazione vengono concesse solo tramite il pannello di abilitazione progressiva da un secondo approvatore, e vengono revocate anche lì.",
       "promote": "Promuovi",
@@ -3963,10 +3970,10 @@
       "runsPerHourCount_other": "{{count}} esecuzioni all'ora",
       "minuteCount_one": "{{count}} minuto",
       "minuteCount_other": "{{count}} minuti",
-      "approvers_one": "Viene interpellato {{roles}}, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
-      "approvers_other": "Vengono interpellati {{roles}}, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
-      "approversCount_one": "Viene interpellato {{count}} ruolo, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
-      "approversCount_other": "Vengono interpellati {{count}} ruoli, tramite posta in arrivo, chat e notifiche push mobili. Vince la prima decisione.",
+      "approvers_one": "Viene interpellato {{roles}}, tramite Approvazioni, chat e notifiche push mobili. Vince la prima decisione.",
+      "approvers_other": "Vengono interpellati {{roles}}, tramite Approvazioni, chat e notifiche push mobili. Vince la prima decisione.",
+      "approversCount_one": "Viene interpellato {{count}} ruolo, tramite Approvazioni, chat e notifiche push mobili. Vince la prima decisione.",
+      "approversCount_other": "Vengono interpellati {{count}} ruoli, tramite Approvazioni, chat e notifiche push mobili. Vince la prima decisione.",
       "scriptGateNote": "{{list}} verrà eseguito senza supervisione solo dopo che uno script sarà autorizzato per questo agente; fino ad allora genera una richiesta di approvazione.",
       "scriptsAuthorized_one": "{{count}} script è autorizzato a essere eseguito senza supervisione.",
       "scriptsAuthorized_other": "{{count}} script sono autorizzati a essere eseguiti senza supervisione."
@@ -5434,7 +5441,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Budget AI",
-    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per l’assistente AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
+    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
     "selectOrganization": "Seleziona un'organizzazione per configurare il suo budget AI."
   },
   "orgSettingsPage": {
@@ -5494,7 +5501,7 @@
       "ticketing": "Ticketing",
       "ticketingDescription": "Override SLA e fatturazione",
       "ai": "IA",
-      "aiDescription": "Budget dell’assistente AI, limiti di frequenza e modalità di approvazione"
+      "aiDescription": "Budget di Breeze AI, limiti di frequenza e modalità di approvazione"
     },
     "overview": {
       "title": "Panoramica organizzazione",
@@ -6728,7 +6735,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Creazione di script",
-    "subtitle": "Consenti all'assistente e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
+    "subtitle": "Consenti a Breeze AI e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
     "partnerCard": {
       "title": "Limite del partner",
       "description": "L'impostazione più ampia che qualsiasi organizzazione di questo partner può utilizzare. Le singole organizzazioni possono solo restringerla.",
@@ -6896,13 +6903,13 @@
     "timeoutLabel": "Timeout di approvazione interattiva",
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
-    "description": "Per quanto tempo un turno di chat IA in corso attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare.",
+    "description": "Per quanto tempo un turno live di Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare.",
     "orgOverrideNote": "Le organizzazioni possono sovrascrivere questo valore dalle proprie impostazioni IA; il valore dell'organizzazione prevale se impostato.",
     "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
   },
   "orgAiApprovalTimeout": {
     "title": "Timeout di approvazione IA",
-    "description": "Per quanto tempo una chat IA attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare. Le organizzazioni possono sovrascrivere qui il valore predefinito del partner; il valore dell'organizzazione prevale se impostato.",
+    "description": "Per quanto tempo Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare. Le organizzazioni possono sovrascrivere qui il valore predefinito del partner; il valore dell'organizzazione prevale se impostato.",
     "fieldLabel": "Timeout di approvazione interattiva",
     "inherit": "Eredita",
     "inheritLabel": "Eredita ({{minutes}} minuti, {{source}})",

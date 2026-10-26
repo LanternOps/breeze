@@ -27,7 +27,7 @@
     "flowDetail": "Fluxo",
     "aiAgentsRunsDetail": "Detalhes da execução",
     "aiAgentsRuns": "Execuções de agentes",
-    "aiForOffice": "IA para Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Motor de risco de IA",
     "alertsDelivery": "Alertas – Entrega",
     "alertsCorrelations": "Correlações de alertas",
@@ -72,7 +72,7 @@
     "dnsSecurity": "Segurança de DNS",
     "dr": "Recuperação de desastres",
     "extensionsNamePath": "Extensão",
-    "fleet": "Orquestração de frota",
+    "fleet": "Descobertas",
     "forgotPassword": "Esqueci minha senha",
     "incidentsDetail": "Detalhes do incidente",
     "incidents": "Incidentes de segurança",
@@ -186,7 +186,10 @@
     "settingsWispMemory": "Memória do Wisp",
     "wispThread": "Conversa do Wisp",
     "wisp": "Wisp",
-    "wispChat": "Wisp — conversas"
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tarefas de IA",
+    "aiTask": "Tarefa de IA",
+    "settingsAi": "Configurações de IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -240,7 +243,7 @@
       },
       "connectedApps": {
         "title": "Aplicativos Conectados",
-        "description": "Revise e revogue assistentes de IA e clientes MCP autorizados a acessar seu locatário."
+        "description": "Revise e revogue clientes de IA autorizados a acessar seu locatário."
       },
       "officeAddinBindings": {
         "title": "Vínculos do Suplemento do Outlook",
@@ -299,7 +302,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Aplicativos conectados",
-    "description": "Assistentes de IA e outros clientes MCP autorizados a acessar seu locatário via OAuth. Revogue o acesso a qualquer momento — o token do aplicativo será rejeitado em até 10 minutos."
+    "description": "Clientes de IA que foram autorizados a acessar seu locatário via OAuth. Revogue o acesso a qualquer momento — o token do aplicativo será rejeitado em até 10 minutos."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Configurações da organização",

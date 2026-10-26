@@ -16,6 +16,11 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));
 vi.mock('./pamRuleEngine', () => ({ evaluatePamRules: vi.fn() }));
+// W04-D10: revoke requests device cleanup (asserted in aiToolsPam.revokeCleanup.test.ts).
+vi.mock('./pamActuationLifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./pamActuationLifecycle')>()),
+  requestPamCleanup: vi.fn(async () => ({})),
+}));
 
 import { db } from '../db';
 import { registerPamTools } from './aiToolsPam';

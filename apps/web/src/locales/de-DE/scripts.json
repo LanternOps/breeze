@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Beschreiben Sie das Skript, das Sie benötigen ...",
-      "opening": "KI-Assistent wird geöffnet..."
+      "opening": "Breeze AI wird geöffnet..."
     },
     "actions": {
       "stopGenerating": "Hören Sie auf zu generieren",
@@ -826,12 +826,12 @@
       "reject": "Ablehnen"
     },
     "empty": {
-      "title": "Skript-KI-Assistent",
-      "description": "Beschreiben Sie, was Sie brauchen und ich schreibe das Skript für Sie."
+      "title": "Breeze AI",
+      "description": "Bitten Sie Breeze AI, dieses Skript zu schreiben oder zu prüfen."
     }
   },
   "scriptAiPanel": {
-    "title": "AI-Skriptassistent",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "KI-Änderung erneut anwenden",
       "redo": "Wiederholen",
@@ -1134,8 +1134,8 @@
       "exitCodeSeverity": "Schweregrad des Exit-Codes"
     },
     "ai": {
-      "toggleTitle": "KI-Skriptassistent umschalten (⌘⇧I)",
-      "button": "KI-Assistent"
+      "toggleTitle": "Breeze AI umschalten (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Noch keine Parameter. Mit Parametern können Benutzer zur Laufzeit Werte angeben – verweisen Sie sie in Ihrem Skript als",

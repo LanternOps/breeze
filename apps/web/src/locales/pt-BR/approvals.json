@@ -13,7 +13,7 @@
   "targetDevice": "Dispositivo de destino: {{hostname}}",
   "batch": {
     "approveAll": "Aprovar tudo ({{count}})",
-    "declineAll": "Recusar tudo ({{count}})",
+    "declineAll": "Negar tudo ({{count}})",
     "groupTitle": "{{count}} solicitações semelhantes · {{tool}}",
     "moreHostnames": "+{{count}} mais",
     "denyConfirmSummary": "Isso recusa {{count}} solicitações de {{org}}."
@@ -132,7 +132,7 @@
     "durationValue": "{{minutes}} minutos a partir da aprovação",
     "purpose": "Finalidade",
     "requestedBy": "Solicitado por",
-    "principalUser": "Chat de IA do Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Chave de API do MCP",
     "principalOauth": "Conexão OAuth do MCP",
     "paths": "Caminhos",
@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plano para a tarefa do operador de IA",
+    "title": "Plano para a tarefa de IA",
     "summary_one": "{{count}} efeito, revisão {{revision}} do plano",
     "summary_other": "{{count}} efeitos, revisão {{revision}} do plano",
     "groupBreeze": "Dispositivos Breeze",
@@ -171,7 +171,7 @@
       "in_progress": "Em andamento",
       "completed": "Concluída",
       "failed": "Falhou",
-      "rejected": "Rejeitada",
+      "rejected": "Negado",
       "expired": "Expirada",
       "cancelled": "Cancelada"
     }

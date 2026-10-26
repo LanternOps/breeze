@@ -80,7 +80,6 @@ const TARGET_GLOBS = [
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/ai/AiContinuationPrompt.tsx', // W05 #7603: POST /ai/sessions/:id/continue via runAction
   // Wisp W04b (#9916): grant create/refresh/revoke/settings and thread attachments go through runAction.
-  'src/components/ai/WispToggle.tsx',
   'src/components/ai/WispGrantStepUpModal.tsx',
   'src/components/ai/WispThreadHeader.tsx',
   'src/components/ai/WispThreadAttachments.tsx',
@@ -1023,7 +1022,8 @@ describe('no silent mutations in targeted set', () => {
     // Wisp W08b (#9921) adds wispLinksApi, wispPartnerSettingsApi, WispHomePage, WispLinksPanel,
     // WispNeedsYou, WispEntityPicker, WispLinkButton, WispPartnerSettingsCard: 273 → 281; then
     // WispHomeContent and WispHomeThread (G3): 281 → 283.
-    expect(absoluteFiles.length).toBe(283);
+    // AI surface cohesion W05 (#10136) deletes WispToggle (the grant decides the panel's voice): 283 → 282.
+    expect(absoluteFiles.length).toBe(282);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

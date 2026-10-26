@@ -164,7 +164,7 @@ export type ToolExecutionContext = {
    * imported, because this file must not depend on the artifact service
    * layer for an otherwise-unrelated execution-input bag.
    *
-   * Set by `executeTool` ONLY for `read_artifact` (a name check, not a
+   * Set by `executeTool` ONLY for `read_artifact` and `run_flow` (a name check, not a
    * blanket computation folded into every call's context) so every other
    * tool's `context` identity is unaffected — see the comment at the call
    * site in `aiTools.ts`. Absent for a call with no attributable org/run/

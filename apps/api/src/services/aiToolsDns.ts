@@ -18,7 +18,7 @@ import {
 } from '../db/schema';
 import { eq, and, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { schedulePolicySync } from '../jobs/dnsSyncJob';
 import { canMutateOrgWideGovernance } from './siteCeilingAccess';
@@ -43,7 +43,7 @@ type AiToolTier = 1 | 2 | 3 | 4;
  * `isAgentPrincipalCaller` (#6206).
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /** #6911: the refusal `manage_dns_policy` returns to an agent principal. */

@@ -1,7 +1,8 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
-import { and, asc, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gte, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
@@ -1228,7 +1229,7 @@ coreRoutes.get(
       conditions.push(eq(devices.deviceRole, query.role));
     }
     if (query.search) {
-      conditions.push(like(devices.hostname, `%${query.search}%`));
+      conditions.push(deviceSearchCondition(query.search));
     }
 
     // Exclude decommissioned by default unless explicitly requested.

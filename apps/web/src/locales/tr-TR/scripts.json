@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "İhtiyacınız olan komut dosyasını açıklayın...",
-      "opening": "Yapay zeka asistanı açılıyor..."
+      "opening": "Breeze AI açılıyor..."
     },
     "actions": {
       "stopGenerating": "Oluşturmayı durdur",
@@ -826,12 +826,12 @@
       "reject": "Reddet"
     },
     "empty": {
-      "title": "Komut Dosyası Yapay Zekası Asistanı",
-      "description": "Neye ihtiyacınız olduğunu açıklayın, ben de sizin için senaryoyu yazayım."
+      "title": "Breeze AI",
+      "description": "Breeze AI'dan bu komut dosyasını yazmasını veya incelemesini isteyin."
     }
   },
   "scriptAiPanel": {
-    "title": "AI Komut Dosyası Yardımcısı",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "AI değişikliğini yeniden uygulayın",
       "redo": "Yinele",
@@ -1134,8 +1134,8 @@
       "exitCodeSeverity": "Çıkış Kodu Önem Derecesi"
     },
     "ai": {
-      "toggleTitle": "AI Komut Dosyası Yardımcısını Aç/Kapat (⌘⇧I)",
-      "button": "Yapay Zeka Asistanı"
+      "toggleTitle": "Breeze AI'ı Aç/Kapat (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Henüz parametre yok. Parametreler, kullanıcıların çalışma zamanında değerler sağlamasına olanak tanır; komut dosyanızda bunlara şu şekilde başvurun:",

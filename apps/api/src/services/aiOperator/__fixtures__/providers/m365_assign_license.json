@@ -1,0 +1,74 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id}?$select=id,assignedLicenses (read profile); GET /subscribedSkus pre-read + POST /users/{id}/assignLicense (actions executor, m365.user.license.assign)",
+  "_notes": "license_unavailable is the executor's /subscribedSkus pre-read refusal (prepaidUnits.enabled === consumedUnits): NO assignLicense call is made.",
+  "toolName": "m365_assign_license",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true,
+        "assignedLicenses": [
+          {
+            "skuId": "00000000-0000-4000-8000-0000000c0101",
+            "disabledPlans": []
+          }
+        ]
+      }
+    }
+  },
+  "preUnsatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true,
+        "assignedLicenses": []
+      }
+    }
+  },
+  "writeOk": {
+    "write:m365.user.license.assign": {
+      "ok": true,
+      "result": {
+        "success": true,
+        "action": "m365.user.license.assign",
+        "userId": "00000000-0000-4000-8000-0000000a0101",
+        "assignedSkuIds": [
+          "00000000-0000-4000-8000-0000000c0101"
+        ],
+        "noop": false
+      }
+    }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true,
+        "assignedLicenses": [
+          {
+            "skuId": "00000000-0000-4000-8000-0000000c0101",
+            "disabledPlans": []
+          }
+        ]
+      }
+    }
+  },
+  "writeRefusal": {
+    "write:m365.user.license.assign": {
+      "ok": false,
+      "code": "license_unavailable",
+      "message": "No free seat for the requested licence (prepaidUnits.enabled equals consumedUnits)."
+    }
+  }
+}

@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Assistente IA",
+    "assistant": "Breeze AI",
     "agent": "Agente IA",
+    "flow": "Flusso",
     "originUnavailable": "Origine non disponibile",
     "openSession": "Apri conversazione",
     "openAgentRun": "Apri esecuzione dell'agente",
@@ -27,7 +28,7 @@
     "patches": "Patch",
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI per Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Rete",
     "jobs": "Attività",
     "flows": "Flussi",
@@ -66,10 +67,6 @@
     "scriptAuthoring": "Creazione di script",
     "toolSources": "Fonti degli strumenti",
     "aiAgents": "Agenti AI",
-    "aiAgentRuns": "Esecuzioni agenti IA",
-    "aiImpact": "Impatto IA",
-    "fixMemory": "Memoria delle correzioni",
-    "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
     "moreSettings": "Altre impostazioni",
@@ -95,7 +92,6 @@
     "sectionFleetManagement": "Gestione flotta",
     "sectionBilling": "Fatturazione",
     "sectionAdministration": "Amministrazione",
-    "fleetOrchestration": "Orchestrazione flotta",
     "software": "Software",
     "softwareInventory": "Inventario software",
     "softwarePolicies": "Criteri software",
@@ -119,7 +115,16 @@
     "ticketsChanges": "Modifiche",
     "endpointMessages": "Messaggi",
     "securityDetectionRules": "Regole di rilevamento",
-    "planAndFeatures": "Piano e funzionalità"
+    "planAndFeatures": "Piano e funzionalità",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Lavoratori",
+    "agents": "Agenti",
+    "runs": "Esecuzioni",
+    "aiTasks": "Attività IA",
+    "findings": "Rilevazioni",
+    "impact": "Impatto",
+    "aiKnowledgeSources": "Fonti di conoscenza",
+    "wispLockedServer": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -670,7 +675,7 @@
     },
     "apps": {
       "title": "App connesse",
-      "description": "Assistenti AI e altri client MCP (Claude.ai, ChatGPT, Cursor, ...) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento: i token smettono di funzionare entro 10 minuti.",
+      "description": "Client AI (Claude.ai, ChatGPT, Cursor, …) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento — i token smettono di funzionare entro 10 minuti.",
       "empty": "Nessuna app connessa",
       "emptyDescription": "Quando autorizzi una chat Claude.ai, ChatGPT, Cursor o qualsiasi altro client MCP, apparirà qui in modo da poterlo revocare in seguito.",
       "authorized": "Autorizzato",
@@ -680,7 +685,7 @@
       "revokeTitle": "Revoca {{app}}?",
       "revokeDescription": "Tutte le concessioni e i token di aggiornamento per questo client verranno cancellati. I token smettono di funzionare entro 10 minuti. Dovrai autorizzare nuovamente la prossima volta che lo utilizzerai.",
       "onlyAppTitle": "Questa è la tua unica app autorizzata.",
-      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi assistente AI possa agire sul tuo tenant.",
+      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi client AI possa agire sul tuo tenant.",
       "reasonPlaceholder": "Non più necessario, attività sospetta...",
       "revokeAction": "Revoca l'accesso"
     }
@@ -737,8 +742,8 @@
     "header": {
       "menu": "Menù",
       "openMenu": "Apri il menu di navigazione",
-      "ai": "Assistente AI",
-      "aiTitle": "Assistente AI (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aiuto e documenti",
       "helpTitle": "Guida e documenti (Cmd+Shift+H)",
       "theme": "Tema",
@@ -807,7 +812,11 @@
         "alertRules": "Regole di avviso",
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
-        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda",
+        "askBreezeAi": "Chiedi a Breeze AI",
+        "askBreezeAiDescription": "Apri il pannello laterale di Breeze AI",
+        "wispHome": "Apri Wisp",
+        "wispHomeDescription": "Vai alla tua home di Wisp"
       },
       "numberHint": "{{mod}}1–9 per aprire"
     },
@@ -875,7 +884,7 @@
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
       "orgSwitcher": "Apri il selettore dell'organizzazione",
-      "aiSidebar": "Mostra o nascondi la barra laterale IA",
+      "aiSidebar": "Mostra o nascondi Breeze AI",
       "close": "Chiudi una finestra di dialogo o un menu",
       "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
       "create": "Crea",
@@ -1997,8 +2006,8 @@
         "errors": {
           "loadFailed": "Impossibile caricare le statistiche della flotta"
         },
-        "title": "Orchestrazione della flotta",
-        "description": "Gestisci policy, distribuzioni, patch e automazioni nel tuo parco dispositivi",
+        "title": "Rilevazioni",
+        "description": "Schemi tra dispositivi individuati dai lavoratori: un’unica azione invece di molte",
         "partialWarning": "Alcuni dati potrebbero essere incompleti. Impossibile caricare: {{endpoints}}",
         "cards": {
           "policies": "Policy",
@@ -2012,7 +2021,7 @@
           "reports": "Report"
         },
         "aiFleetActions": "Azioni della flotta AI",
-        "aiFleetActionsHint": "Fai clic per chiedere all'assistente AI",
+        "aiFleetActionsHint": "Fai clic per chiedere a Breeze AI",
         "quickActions": {
           "checkCompliance": "Verifica conformità",
           "activeDeployments": "Distribuzioni attive",
@@ -2399,8 +2408,8 @@
             "description": "Gestisci più clienti? Passa da un'organizzazione all'altra qui."
           },
           "aiHelp": {
-            "title": "Assistenza basata sull'AI",
-            "description": "Poni domande sulla tua flotta, risolvi i problemi o genera report. Premi Cmd+Shift+A in qualsiasi momento."
+            "title": "Breeze AI",
+            "description": "Poni domande sulla tua flotta in linguaggio naturale, risolvi i problemi o genera report. Premi ⌘⇧A in qualsiasi momento."
           }
         },
         "skipTour": "Salta il tour",

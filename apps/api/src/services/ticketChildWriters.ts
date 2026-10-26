@@ -217,6 +217,9 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
       'Refuses a tombstone BEFORE the object delete (unlocked read); after the bytes are gone the row must go too, '
       + 'so the locked step cannot refuse. A merge moves attachments by row id, so the delete stays correct.',
   }),
+  // W06 (#6776): the AI twin of the two routes above. attach_from_artifact locks the ticket and refuses a
+  // tombstone on the locked row (isMergedTombstone); delete refuses a tombstone before the object delete, like the route.
+  'services/aiToolsTicketAttachments.ts::handler': TF(['ticket_attachments']),
   'services/ticketLinkMoveNotes.ts::noteTicketLinksRemovedByOrgMove': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::recordRefusal': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::finishRun': TF(['ticket_comments']),

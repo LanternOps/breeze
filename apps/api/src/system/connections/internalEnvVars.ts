@@ -242,6 +242,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_PREVIEW_RETENTION_DAYS: 'data retention window',
   FILESYSTEM_CLEANUP_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // FLOW_*
+  FLOW_APPROVAL_TTL_HOURS: 'timing knob (parked flow step approval window)',
+  FLOW_MAX_RUNNING_PER_OWNER: 'flow run concurrency cap knob',
+  FLOW_RUN_RETENTION_DAYS: 'data retention window',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HEARTBEAT_*

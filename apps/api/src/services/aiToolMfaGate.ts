@@ -1,4 +1,5 @@
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 
 /**
  * AI tool actions that require a session carrying the live MFA claim (#8340).
@@ -56,7 +57,7 @@ export function isMfaGatedToolAction(toolName: string, action: string | undefine
  * behavior through `hasSatisfiedMfa`.
  */
 export function mfaGateRefusesCaller(auth: Pick<AuthContext, 'principal' | 'token'>): boolean {
-  if (auth.principal?.kind === 'ai_agent') return false;
+  if (isAutomationPrincipal(auth)) return false;
   return !hasSatisfiedMfa(auth);
 }
 

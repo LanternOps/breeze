@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { ENDPOINT_MESSAGE_LIMITS, endpointMessageSendSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { executeEndpointMessageSend } from '../routes/endpointMessages/send';
 import {
   HISTORY_PAGE_MAX,
@@ -65,9 +65,9 @@ function historySiteFilter(scope: SiteScope): Pick<UserPermissions, 'allowedSite
 }
 
 async function sendAction(input: Record<string, unknown>, auth: AuthContext, scope: SiteScope): Promise<string> {
-  // An autonomous agent must never author end-user-visible text under the
-  // MSP's brand.
-  if (isAiAgentPrincipal(auth)) return jsonError('send_endpoint_message is not available to autonomous agents');
+  // An autonomous agent or flow must never author end-user-visible text under
+  // the MSP's brand.
+  if (isAutomationPrincipal(auth)) return jsonError('send_endpoint_message is not available to autonomous agents or flows');
   // Only a human chat session, where every send passes the approval card. An
   // MCP credential (API key or OAuth grant) can be opted into unattended
   // Tier 3 (MCP_UNATTENDED_TIER3_PRINCIPALS), which would skip approval and

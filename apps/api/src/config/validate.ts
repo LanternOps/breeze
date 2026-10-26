@@ -758,6 +758,14 @@ const envObjectSchema = z
     // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
     // by flowsEnabled() in env.ts. Boolean-format validation only.
     FLOWS_ENABLED: z.string().optional(),
+    // Tool catalog W04 (#5219): approval window of a parked Tier-3 flow step,
+    // in hours (flowApprovalTtlHours() in env.ts). Integer 1..168 when set.
+    FLOW_APPROVAL_TTL_HOURS: z.string().optional(),
+    // Task A8: running flow runs per flow owner (flowMaxRunningPerOwner(),
+    // integer 1..500) and the run-body retention window in days
+    // (flowRunRetentionDays(), integer 7..3650).
+    FLOW_MAX_RUNNING_PER_OWNER: z.string().optional(),
+    FLOW_RUN_RETENTION_DAYS: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -2523,6 +2531,27 @@ const envSchema = envObjectSchema
         message:
           'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
       });
+    }
+    const flowTtlRaw = (data.FLOW_APPROVAL_TTL_HOURS ?? '').trim();
+    if (flowTtlRaw && (!/^\d+$/.test(flowTtlRaw) || Number(flowTtlRaw) < 1 || Number(flowTtlRaw) > 168)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['FLOW_APPROVAL_TTL_HOURS'],
+        message: 'FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168 (hours a parked flow step waits for approval; default 24).',
+      });
+    }
+    for (const [knob, min, max, what] of [
+      ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, 'running flow runs per flow owner; default 20'],
+      ['FLOW_RUN_RETENTION_DAYS', 7, 3650, 'days before a finished flow run\'s bodies are pruned; default 90'],
+    ] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be an integer between ${min} and ${max} (${what}).`,
+        });
+      }
     }
     for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {
       const raw = (data[knob] ?? '').trim();

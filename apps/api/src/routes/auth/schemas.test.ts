@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource } from './schemas';
+import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource, callerVerificationAdministrativeStepUpResource, forceRebootStepUpResource } from './schemas';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
@@ -208,6 +208,19 @@ describe('mfaStepUpSchema operation field', () => {
     const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
     expect(parsed.operation).toBe(operation);
     expect(parsed.resource).toEqual(resource);
+  });
+
+  // #9380 review: pin `.strict()` on the force-reboot binding directly. The
+  // union-order test below cannot do it: that one passes if EITHER the member
+  // order or the strictness protects the richer bindings, so it stays green
+  // when only `.strict()` is removed. Both tests are load-bearing — this one
+  // for strictness, the one below for position — so neither is redundant.
+  it('rejects a force-reboot binding that carries any key besides deviceId', () => {
+    expect(forceRebootStepUpResource.safeParse({ deviceId: '00000000-0000-4000-8000-000000000010' }).success).toBe(true);
+    expect(forceRebootStepUpResource.safeParse({
+      deviceId: '00000000-0000-4000-8000-000000000010',
+      targetOrgId: '00000000-0000-4000-8000-000000000020',
+    }).success).toBe(false);
   });
 
   // #8729: the force-reboot binding is a bare { deviceId }. It is strict and

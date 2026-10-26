@@ -551,7 +551,7 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
       'Approve all (2)',
     );
     expect(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`)).toHaveTextContent(
-      'Decline all (2)',
+      'Deny all (2)',
     );
   });
 

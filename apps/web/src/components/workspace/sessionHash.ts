@@ -1,4 +1,4 @@
-// `/workspace#session=<uuid>` (#9427 W3, spec §3.6 / D6).
+// `/ai/chat#session=<uuid>` (#9427 W3, spec §3.6 / D6).
 //
 // The parser is the only gate between a URL anyone can craft and a request:
 // it accepts exactly one canonical UUID and nothing else, so a malformed or

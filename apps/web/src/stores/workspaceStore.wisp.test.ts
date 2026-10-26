@@ -1,5 +1,5 @@
 /**
- * #10142: a /wisp/chat tab starts its conversation under the caller's active
+ * #10142: an /ai/chat tab starts its conversation under the caller's active
  * Wisp grant for the header org (the request the side panel sends:
  * `{ orgId, wispGrantId, approvalMode }`), and stays a plain Breeze AI chat
  * when there is no grant, Wisp is off / not entitled, or the token is

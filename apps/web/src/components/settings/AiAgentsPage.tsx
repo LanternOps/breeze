@@ -113,6 +113,26 @@ export default function AiAgentsPage() {
     designer: t('aiAgentsPage.kindHints.designer'),
     research: t('aiAgentsPage.kindHints.research'),
   };
+  // #10135: fix memory / fleet design are reports written by these agent
+  // kinds; they are no longer in the sidebar, so the roster links to them.
+  const kindReportLink = (kind: string) => {
+    const target =
+      kind === 'research'
+        ? { href: '/ai-agents/fix-memory', label: t('aiAgentsPage.kindHints.researchLink') }
+        : kind === 'designer'
+          ? { href: '/ai-agents/fleet-design', label: t('aiAgentsPage.kindHints.designerLink') }
+          : null;
+    if (!target) return null;
+    return (
+      <a
+        href={target.href}
+        className="text-primary hover:underline"
+        data-testid={`ai-agents-kind-link-${kind}`}
+      >
+        {target.label}
+      </a>
+    );
+  };
   // Same reason, over `AI_AGENT_RUN_STATUSES`. Shares the runs page's own
   // vocabulary rather than minting a second set of status words.
   const RUN_STATUS_LABEL: Record<string, string> = {
@@ -631,7 +651,10 @@ export default function AiAgentsPage() {
               {AI_AGENT_KINDS.map((kind) => (
                 <Fragment key={kind}>
                   <dt className="font-medium text-foreground">{KIND_LABEL[kind]}</dt>
-                  <dd className="text-muted-foreground">{KIND_HINT[kind]}</dd>
+                  <dd className="text-muted-foreground">
+                    {KIND_HINT[kind]}
+                    {kindReportLink(kind) && <> {kindReportLink(kind)}</>}
+                  </dd>
                 </Fragment>
               ))}
             </dl>
@@ -732,6 +755,9 @@ export default function AiAgentsPage() {
                   >
                     {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${agent.kind}`)}
                   </span>
+                  {kindReportLink(agent.kind) && (
+                    <span className="text-xs">{kindReportLink(agent.kind)}</span>
+                  )}
                   {agent.allOrgs && (
                     // `title=` alone is invisible to touch and to keyboard
                     // users, so the explanation is a real described-by node.

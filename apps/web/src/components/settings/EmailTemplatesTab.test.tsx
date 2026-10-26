@@ -68,6 +68,7 @@ describe('EmailTemplatesTab', () => {
       'ticket_resolved',
       'ticket_merged',
       'quote_send',
+      'agreement_request_send',
       'invoice_send',
       'invoice_autopay',
       'portal_invite',
@@ -89,6 +90,17 @@ describe('EmailTemplatesTab', () => {
       expect(row.textContent).toContain(emailTemplateLabel(id));
       expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
     }
+  });
+
+  it('lists the agreement request template under Billing & payments (#9075 W2b)', async () => {
+    routeFetch();
+    render(<EmailTemplatesTab />);
+    await screen.findByTestId('email-templates-list');
+    const billing = screen.getByTestId('autopay-email-template-group');
+    const row = screen.getByTestId('email-template-row-agreement_request_send');
+    expect(billing.contains(row)).toBe(true);
+    expect(row.textContent).toContain('Agreement request');
+    expect(screen.getByTestId('email-template-other-group').contains(row)).toBe(false);
   });
 
   it('lists the work approval templates in the support group', async () => {

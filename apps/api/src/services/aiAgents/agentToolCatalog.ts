@@ -167,6 +167,24 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_tickets: 'tickets',
   send_endpoint_message: 'tickets',
   manage_ticket_checklist: 'tickets',
+  // Full-control W06 (#6776): PSA configuration + ticket ops. Reachable in the catalog; the
+  // classes (aiGuardrails) make every write a proposal, and each handler refuses an ai_agent
+  // principal for the write actions (users-FK actors; an agent must not reconfigure its queue).
+  manage_ticket_config: 'tickets',
+  manage_ticket_checklist_templates: 'tickets',
+  manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets',
+  manage_ticket_forms: 'tickets',
+  manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
+  // Full-control W07 (#6777): alert correlation + signal triage. The reads are agent-reachable;
+  // manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS (group writes span devices, QW3): it keeps a
+  // capability row (the catalog maps every registered tool) but is never offered. Anomaly dismiss/resolve
+  // and the reliability label are proposals released as the approver (USER_OWNED_RELEASE_ACTIONS).
+  get_alert_correlations: 'alerts_monitoring',
+  manage_alert_correlations: 'alerts_monitoring',
+  manage_device_anomalies: 'alerts_monitoring',
+  reliability_feedback: 'automations_reports',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
@@ -213,6 +231,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   validate_flow: 'automations_reports',
   get_flow: 'automations_reports',
   list_flows: 'automations_reports',
+  run_flow: 'automations_reports',
+  list_flow_runs: 'automations_reports',
+  get_flow_run: 'automations_reports',
+  cancel_flow_run: 'automations_reports',
   list_business_calendars: 'tickets', // #8973 W4: read-only
   list_ticket_routing_rules: 'tickets', // #8883 W5: read-only
   test_ticket_routing_rule: 'tickets', // #8883 W5: dry run, writes nothing

@@ -63,6 +63,10 @@ type Device struct {
 	Model     string `json:"model"`
 	IPAddress string `json:"ipAddress"`
 	State     string `json:"state"`
+	// Features/Interfaces are the documented capability sets. On the LIST they
+	// are arrays of names; decodeCapabilitySet also accepts the detail object form.
+	Features   json.RawMessage `json:"features"`
+	Interfaces json.RawMessage `json:"interfaces"`
 
 	UptimeSeconds int64     `json:"-"`
 	CPUPct        float64   `json:"-"`
@@ -132,6 +136,16 @@ type Snapshot struct {
 	Resources []Resource
 	// NextDetailCursor is where the next poll's bounded detail window starts.
 	NextDetailCursor int
+
+	// v2 (PollOptions.Wifi only).
+	ResourcesV2 []ResourceV2
+	// StatisticsAttempted is the number of statistics/latest requests issued (each
+	// consumes one token, success or not); NextStatisticsCursor is where the next
+	// poll resumes. DroppedCapabilityValues counts undocumented capability values
+	// filtered before canonicalization (reason code reasonCapabilityValueDropped).
+	StatisticsAttempted     int
+	NextStatisticsCursor    int
+	DroppedCapabilityValues int
 }
 
 // PollOptions bounds optional per-poll work. The zero value is the legacy poll:
@@ -139,6 +153,16 @@ type Snapshot struct {
 type PollOptions struct {
 	DetailBudget int // max device-detail requests this poll (0 = not attempted)
 	DetailCursor int // rotation offset into the poll's sorted (site, device) list
+
+	// Wifi enables v2 collection (spec §6): radios from detail responses and AP
+	// statistics/latest, assembled into Snapshot.ResourcesV2. Off = exact v1 poll,
+	// with no statistics request at all.
+	Wifi bool
+	// StatisticsBudget is the max statistics/latest requests this poll (§6.3),
+	// already reduced by the persisted token bucket; StatisticsCursor starts the
+	// fair rotation (§6.4).
+	StatisticsBudget int
+	StatisticsCursor int
 }
 
 type APIClient struct {
@@ -432,9 +456,16 @@ func (c *APIClient) PollWith(ctx context.Context, opts PollOptions) (Snapshot, e
 		snap.Resources = append(snap.Resources, deviceLists[i], clientListResource(s.ID, cliRes, clis, cbad),
 			Resource{ControllerSiteID: s.ID, Kind: ResourceStatistics, Outcome: topologycanon.NotAttempted, ReasonCode: "not_collected"})
 	}
-	details, next := c.collectDetailWindow(ctx, sites, siteDevices, deviceLists, opts)
+	// One enrichment deadline bounds details AND statistics; details keep
+	// priority and statistics only use what remains (§6.5).
+	ectx, cancel := context.WithTimeout(ctx, detailPhaseTimeout)
+	defer cancel()
+	details, next, extras := c.collectDetailWindow(ectx, sites, siteDevices, deviceLists, opts)
 	snap.Resources = append(snap.Resources, details...)
 	snap.NextDetailCursor = next
+	if opts.Wifi {
+		c.assembleWifi(ectx, &snap, sites, siteDevices, deviceLists, details, extras, opts)
+	}
 
 	// When several sites fail at once, report the count alongside the first
 	// message so a multi-site outage isn't surfaced as a single-site blip.
