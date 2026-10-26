@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { isStructurallyValidCron } from '../utils/cron';
+import { FLOW_LIMIT_CEILINGS } from './flowBudgets';
+import type { FlowAdmissionRefusal, FlowUsageDto } from './flowBudgets';
+import { FLOW_WEBHOOK_AUTH_MODES } from './flowWebhooks';
+import type { FlowWebhookInfoDto } from './flowWebhooks';
 
 /**
  * Flow document v1 (tool catalog W3, #5218). Stored as `flows.definition jsonb`.
@@ -41,6 +45,23 @@ export function slugifyFlowName(name: string): string {
 
 const EVENT_FILTER_KEY_RE = /^[a-zA-Z][a-zA-Z0-9_.]{0,127}$/;
 
+/**
+ * Webhook org resolver path (W5, Decision 5): a dotted own-property path into the
+ * request body, `body.<seg>(.<seg>)*`, at most 8 segments. Segments are identifiers
+ * only (no brackets, no dashes) so the path cannot express anything but a plain read.
+ */
+export const FLOW_WEBHOOK_RESOLVER_PATH_RE = /^body(\.[A-Za-z_][A-Za-z0-9_]{0,63}){1,8}$/;
+/** `organization_external_links.system` value a resolver names. */
+export const FLOW_WEBHOOK_RESOLVER_SYSTEM_RE = /^[a-z0-9_]{1,64}$/;
+
+const resolverPath = z.string().max(600).regex(FLOW_WEBHOOK_RESOLVER_PATH_RE);
+
+export const flowWebhookOrgResolverSchema = z.union([
+  z.object({ path: resolverPath, system: z.string().regex(FLOW_WEBHOOK_RESOLVER_SYSTEM_RE) }).strict(),
+  z.object({ path: resolverPath, kind: z.literal('breeze_org_id') }).strict(),
+]);
+export type FlowWebhookOrgResolver = z.infer<typeof flowWebhookOrgResolverSchema>;
+
 export const flowTriggerSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('schedule'),
@@ -55,7 +76,12 @@ export const flowTriggerSchema = z.discriminatedUnion('type', [
       .refine((f) => Object.keys(f).length <= 20, { message: 'filter may have at most 20 keys' })
       .default({}),
   }).strict(),
-  z.object({ type: z.literal('webhook') }).strict(),
+  z.object({
+    type: z.literal('webhook'),
+    auth: z.enum(FLOW_WEBHOOK_AUTH_MODES).default('hmac'),
+    // Required on partner-wide flows, refused on org flows (catalog-aware validator).
+    orgResolver: flowWebhookOrgResolverSchema.optional(),
+  }).strict(),
   z.object({ type: z.literal('manual') }).strict(),
 ]);
 
@@ -89,6 +115,12 @@ export const flowDocumentV1Schema = z.object({
   trigger: flowTriggerSchema,
   inputs: z.array(flowInputDeclSchema).max(FLOW_LIMITS.maxInputs).default([]),
   steps: z.array(flowStepSchema).min(1).max(FLOW_LIMITS.maxSteps),
+  /** W5 (Decision 15): lowers the owner's per-flow monthly cap; snapshotted by the publication. */
+  limits: z.object({
+    monthlyRuns: z.number().int().min(1).max(FLOW_LIMIT_CEILINGS.monthlyRunsPerFlow).optional(),
+  }).strict().optional(),
+  /** W5 (Decision 14): where pause, unknown-outcome and cap notices go besides the delegator's in-app notice. */
+  notices: z.object({ channelId: z.string().uuid() }).strict().optional(),
 }).strict();
 
 export type FlowDocumentV1 = z.infer<typeof flowDocumentV1Schema>;
@@ -101,7 +133,12 @@ export type FlowIssueCode =
   | 'input_not_supported' | 'action_not_literal' | 'tier_input_not_literal' | 'tool_blocked'
   | 'pre_approval_not_available' | 'reference_not_owned' | 'device_not_owned' | 'device_in_partner_flow' | 'group_in_partner_flow'
   | 'event_unknown' | 'document_too_large' | 'input_too_deep' | 'too_many_templates'
-  | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available' | 'pre_approval_not_eligible';
+  | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available' | 'pre_approval_not_eligible'
+  // W5 (#5220)
+  | 'webhook_org_resolver_required' | 'webhook_org_resolver_not_allowed' | 'flow_step_not_supported'
+  | 'http_origin_not_literal' | 'http_origin_not_allowed' | 'http_method_not_literal' | 'http_header_not_allowed'
+  | 'secret_in_document' | 'ai_tool_not_tier1' | 'ai_output_schema_invalid' | 'notify_channel_not_literal'
+  | 'notify_channel_not_owned' | 'channel_type_not_supported';
 
 /** Where a flow step's tool comes from. Defined here (not flowRuns.ts) so flows.ts never imports flowRuns.ts. */
 export type FlowToolSource = 'core' | 'tenant' | 'builtin';
@@ -168,4 +205,10 @@ export interface FlowDetailDto extends FlowSummaryDto {
   pausedReason: FlowPausedReason | null;
   preApprovalEligibility: Record<string, PreApprovalEligibility>;
   preApprovedStepIds: string[];
+  /** W5: set for flows whose draft trigger is a webhook, else null. */
+  webhook: FlowWebhookInfoDto | null;
+  /** W5: this month's run counts against the effective caps; null when not computed. */
+  usage: FlowUsageDto | null;
+  /** W5: the last admission refusal (a monthly cap or the active queue), for the banner. */
+  lastAdmissionRefusal: { at: string; code: FlowAdmissionRefusal } | null;
 }

@@ -25,16 +25,22 @@ export const FLOW_RUN_STEP_STATUSES = [
 ] as const;
 export type FlowRunStepStatus = (typeof FLOW_RUN_STEP_STATUSES)[number];
 
-export const FLOW_TRIGGER_KINDS = ['manual', 'schedule', 'event'] as const; // DB CHECK also admits 'webhook' | 'tool' (W05)
+export const FLOW_TRIGGER_KINDS = ['manual', 'schedule', 'event', 'webhook', 'tool'] as const;
 export type FlowTriggerKind = (typeof FLOW_TRIGGER_KINDS)[number];
 
-export const FLOW_TRIGGERED_VIA = ['ui', 'api', 'ai_tool', 'scheduler', 'event'] as const; // W05 adds 'mcp' / 'webhook' with flow__<slug>
+/**
+ * Kind ↔ via pairs (DB `flow_runs_via_matches_kind_chk`): schedule⇔scheduler, event⇔event,
+ * webhook⇔webhook; tool ⇒ ai_tool | mcp | ai_agent; manual ⇒ ui | api | ai_tool (W04 `run_flow`).
+ */
+export const FLOW_TRIGGERED_VIA = ['ui', 'api', 'ai_tool', 'scheduler', 'event', 'webhook', 'mcp', 'ai_agent'] as const;
 export type FlowTriggeredVia = (typeof FLOW_TRIGGERED_VIA)[number];
 
 export const FLOW_STEP_ERROR_CODES = [
   'step_failed', 'rejected', 'drift', 'binding_drift', 'unknown_outcome', 'step_timeout', 'input_invalid',
   'reference_not_owned', 'tool_unavailable', 'tool_blocked', 'too_many_items', 'render_failed',
   'no_eligible_approvers', 'worker_lost', 'cancelled',
+  // W5 built-ins (#5220)
+  'egress_blocked', 'http_status', 'notify_failed', 'ai_budget_exhausted', 'ai_output_invalid', 'ai_token_cap_reached',
 ] as const;
 export type FlowStepErrorCode = (typeof FLOW_STEP_ERROR_CODES)[number];
 
@@ -53,6 +59,20 @@ export const FLOW_RUN_LIMITS = {
   slotRetryDelayMs: 15_000,
   leaseTtlMs: 360_000,
   leaseRenewEveryMs: 60_000,
+  // W5 (#5220)
+  webhookMaxBodyBytes: 262_144,
+  webhookTimestampWindowMs: 300_000,
+  httpTimeoutMs: 30_000,
+  httpMaxResponseBytes: 1_048_576,
+  httpMaxRequestBodyBytes: 262_144,
+  httpPerRunMax: 100,
+  notifyPerRunMax: 20,
+  aiMaxTurns: 8,
+  aiMaxTools: 20,
+  aiOutputSchemaMaxBytes: 16_384,
+  /** Concurrent for-each units one worker process runs at once (each holds DB connections). */
+  maxParallelUnitsPerProcess: 20,
+  flowToolsPerSessionMax: 20,
 } as const;
 
 export const flowManualRunRequestSchema = z.object({
@@ -84,6 +104,8 @@ interface FlowRunStepBase {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
+  /** W5: model usage of an `ai` step; null for every other step. */
+  aiUsage: { inputTokens: number; outputTokens: number; costCents: number } | null;
 }
 
 export type FlowRunStepSummaryDto = FlowRunStepBase & (
@@ -119,6 +141,10 @@ export interface FlowRunDetailDto extends FlowRunSummaryDto {
   publicationSeq: number;
   wakeAt: string | null;
   bodiesPrunedAt: string | null;
+  /** W5: AI tokens this run's `ai` steps used, against the per-run ceiling. */
+  aiTokensUsed: number;
+  /** W5: the agent run that started this run (`triggeredVia = 'ai_agent'`), else null. */
+  parentAgentRunId: string | null;
   definition: FlowDocumentV1;
   steps: FlowRunStepSummaryDto[]; // bodies via GET /runs/:runId/steps/:stepRowId
 }
