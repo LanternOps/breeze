@@ -66,6 +66,15 @@ describe('prompt guidance references only real tools', () => {
     expect(Math.abs(registered.size - MCP_TOOL_COUNT_APPROX)).toBeLessThanOrEqual(10);
   });
 
+  // W5 PR C (#5220, orchestrator amendment 6): flow tools (`flow__<slug>`) are
+  // per-caller dynamic descriptors, never registry entries, so the advertised
+  // count is the registry's alone — enabling any number of flows moves
+  // neither the registry nor MCP_TOOL_COUNT_APPROX.
+  it('dynamic flow tools are excluded from the registry count', () => {
+    expect([...registered].some((name) => name.startsWith('flow__'))).toBe(false);
+    expect(MCP_TOOL_COUNT_APPROX).toBe(296);
+  });
+
   it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('hasMore');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('nextCursor');
