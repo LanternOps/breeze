@@ -158,14 +158,19 @@
     "trigger": {
       "manual": "Elle",
       "schedule": "Zamanlama",
-      "event": "Olay"
+      "event": "Olay",
+      "webhook": "Webhook çağrısı",
+      "tool": "Araç çağrısı"
     },
     "via": {
       "ui": "Web uygulamasından",
       "api": "API üzerinden",
       "ai_tool": "Breeze AI üzerinden",
       "scheduler": "Zamanlayıcı tarafından",
-      "event": "Bir olay tarafından"
+      "event": "Bir olay tarafından",
+      "webhook": "Webhook ile",
+      "mcp": "MCP ile",
+      "ai_agent": "Bir yapay zekâ aracısı tarafından"
     },
     "columns": {
       "started": "Başlangıç",
@@ -205,7 +210,13 @@
       "flow_disabled": "Bu çalıştırma etkinken akış devre dışı bırakıldı.",
       "flows_disabled": "Akışlar bu sunucuda kapalı.",
       "delegator_inactive": "Bu çalıştırmanın adına çalıştığı kişi artık etkin değil.",
-      "org_merged": "Kuruluş başka bir kuruluşla birleştirildi."
+      "org_merged": "Kuruluş başka bir kuruluşla birleştirildi.",
+      "egress_blocked": "Giden istek, çıkış politikası tarafından engellendi.",
+      "http_status": "Dış API bir hata durumuyla yanıt verdi.",
+      "notify_failed": "Bildirim gönderilemedi.",
+      "ai_budget_exhausted": "Kuruluşun yapay zekâ bütçesi tükendi.",
+      "ai_output_invalid": "Yapay zekâ sonucu beklenen biçimle eşleşmedi.",
+      "ai_token_cap_reached": "Çalıştırma yapay zekâ jeton sınırına ulaştı."
     },
     "step": {
       "status": {

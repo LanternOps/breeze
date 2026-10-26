@@ -19,15 +19,15 @@
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type {
-  FlowDetailDto,
   FlowDocumentV1,
   FlowEnableRequest,
+  FlowEnableResultDto,
   FlowPausedReason,
   FlowStatus,
   FlowValidationResult,
   PreApprovalEligibility,
 } from '@breeze/shared';
-import { db, getCurrentDbAccessContext, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { actionIntents, flowRuns, flows, flowVersions, users, type FlowRow, type FlowVersionRow } from '../../db/schema';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
@@ -49,19 +49,20 @@ import { hasSiteCeiling } from '../siteCeilingAccess';
 import { latestCronOccurrence } from '../aiAgents/sweepOccurrence';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import type { ToolOwnerRef } from '../toolSources/resolver';
-import { createNotification } from '../userNotifications';
+import { sendFlowNotice } from './notices';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
 import { assertFlowSlugAvailable, lockFlowSlugsForPartner, toDetailDto } from './service';
 
 export type EnableFlowResult =
-  | { ok: true; flow: FlowDetailDto; publication: { id: string; publicationSeq: number; definitionVersion: number } }
+  | FlowEnableResultDto
   | { ok: false; error: 'invalid'; validation: FlowValidationResult }
   | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> }
   | { ok: false; error: 'pre_approval_not_eligible'; stepId: string; reason: Extract<PreApprovalEligibility, { eligible: false }>['reason'] }
   | {
       ok: false;
       error: 'flow_not_found' | 'version_conflict' | 'already_enabled' | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available'
+        | 'webhook_secret_missing'
         | 'slug_unavailable' | 'interactive_session_required' | 'delegation_scope_restricted' | 'partner_wide_forbidden';
     };
 
@@ -74,7 +75,7 @@ const LIVE_STATUSES: readonly FlowStatus[] = ['enabled', 'paused'];
 
 // ── delegation ceiling (Decision 13) ───────────────────────────────────────
 
-function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: string | undefined; scope: 'organization' | 'partner' } {
+export function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: string | undefined; scope: 'organization' | 'partner' } {
   return { partnerId: owner.partnerId, orgId: owner.orgId ?? undefined, scope: owner.orgId ? 'organization' : 'partner' };
 }
 
@@ -85,7 +86,7 @@ function permissionContextFor(owner: ToolOwnerRef): { partnerId: string; orgId: 
  * partner-wide flow, partner membership with all-orgs access. The flow
  * principal is org-wide; a restricted user must not mint one.
  */
-function ceilingAllowsDelegation(perms: UserPermissions | null, owner: ToolOwnerRef): perms is UserPermissions {
+export function ceilingAllowsDelegation(perms: UserPermissions | null, owner: ToolOwnerRef): perms is UserPermissions {
   if (!perms) return false;
   if (perms.allowedSiteIds !== undefined) return false;
   if (owner.orgId) return canAccessOrg(perms, owner.orgId);
@@ -174,6 +175,46 @@ function partnerWideReach(row: FlowRow, auth: AuthContext): 'ok' | 'not_found' |
   return canManagePartnerWidePolicies(auth) ? 'ok' : 'forbidden';
 }
 
+// ── webhook secret binding (#10270, option b) ──────────────────────────────
+
+/**
+ * Whether the flow's webhook secret may stay valid when its current draft is
+ * published. The person who mints a secret is rule-7 checked against the draft
+ * as it is at that moment (webhook/secret.ts). If the draft is edited
+ * afterwards, for example to add stronger steps, and someone with more
+ * permissions publishes it, the holder of the old secret would start runs of
+ * content they were never checked against. So a secret survives an enable only
+ * when it was minted against the content being published:
+ *
+ *  1. The draft is unchanged since the latest publication (same
+ *     `definition_version`). Any secret on the row was either kept by that
+ *     publication's enable, by this same rule, or minted later against this
+ *     same content. Survives, whatever else was written in between (a
+ *     disable, a pause).
+ *  2. Otherwise the draft changed after the latest publication, or there is no
+ *     publication. The secret survives only if nothing has been written to the
+ *     flow since the mint. The mint sets `updated_at` to exactly
+ *     `webhook_secret_rotated_at`, and every content write after it (a draft
+ *     save, an org-merge rewrite) sets a new `updated_at`. The check is for
+ *     equality, not ordering, so it does not depend on clocks agreeing across
+ *     API instances.
+ *
+ * Every error in this rule points the same way: it invalidates, never keeps.
+ * A disable written after the mint in case 2 (the order is pause, edit, mint,
+ * disable, enable) also invalidates, so the user mints again. No migration is
+ * needed, which was the point of option (b).
+ */
+export function webhookSecretSurvivesEnable(i: {
+  secretRotatedAt: Date | null;
+  flowUpdatedAt: Date;
+  definitionVersion: number;
+  latestPublicationDefinitionVersion: number | null;
+}): boolean {
+  if (!i.secretRotatedAt) return false;
+  if (i.latestPublicationDefinitionVersion === i.definitionVersion) return true;
+  return i.flowUpdatedAt.getTime() === i.secretRotatedAt.getTime();
+}
+
 // ── enable ─────────────────────────────────────────────────────────────────
 
 /**
@@ -218,7 +259,8 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   if (!validation.valid || !document) return { ok: false, error: 'invalid', validation };
 
   if (document.trigger.type === 'event' && !isFlowEventDeliveryDurable()) return { ok: false, error: 'event_dispatch_not_durable' };
-  if (document.steps.some((s) => (s.forEach?.concurrency ?? 1) > 1)) return { ok: false, error: 'foreach_concurrency_not_available' };
+  // W5 (#5220, Decision 3): a webhook flow goes live only with a secret to verify against.
+  if (document.trigger.type === 'webhook' && !row.webhookSecretEncrypted) return { ok: false, error: 'webhook_secret_missing' };
 
   let pins: FlowStepPin[];
   try {
@@ -236,6 +278,13 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
         issues: [...validation.issues, { code: 'tool_not_found', severity: 'error', stepId: err.stepId, message: 'This step\'s tool is not available to the flow\'s owner.' }],
       },
     };
+  }
+  // W5 (#5220, Decision 11): parallel for-each only where it can be honoured —
+  // a Tier-3 item would park for approval and a wait parks the run, and
+  // parallel parking would need several live intents per run.
+  const pinTier = new Map(pins.map((p) => [p.stepId, p.tier]));
+  if (document.steps.some((st) => (st.forEach?.concurrency ?? 1) > 1 && ((pinTier.get(st.id) ?? 3) > 2 || st.tool === 'wait'))) {
+    return { ok: false, error: 'foreach_concurrency_not_available' };
   }
   const missing = missingPermissionsFor(document, pins, perms);
   if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
@@ -276,7 +325,10 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   if (!(await assertFlowSlugAvailable(owner, row.slug, { excludeFlowId: flowId }))) return { ok: false, error: 'slug_unavailable' };
 
   const [maxRow] = await db
-    .select({ max: sql<number | null>`max(${flowVersions.publicationSeq})` })
+    .select({
+      max: sql<number | null>`max(${flowVersions.publicationSeq})`,
+      latestDefinitionVersion: sql<number | null>`(array_agg(${flowVersions.definitionVersion} ORDER BY ${flowVersions.publicationSeq} DESC))[1]`,
+    })
     .from(flowVersions)
     .where(eq(flowVersions.flowId, flowId));
   // Always a new row, even for unchanged content: delegator, pins and
@@ -285,7 +337,22 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   const now = new Date();
   const effectiveTier = validation.effectiveTier ?? 3;
 
-  // Flip first (CAS on what was read): a lost race writes nothing at all.
+  // #10270 option (b): a secret minted against an older draft is invalidated
+  // here, in the same write that publishes, so the ingress (which reads the
+  // live ciphertext per request) answers 401 until a fresh mint. Clearing the
+  // three paired columns (flows_webhook_secret_pair_chk) is the generation
+  // change: createFlowRun compares webhook_secret_rotated_at, so a delivery
+  // verified a moment earlier is refused as well (`flow_changed`).
+  const latestDefinitionVersion = maxRow?.latestDefinitionVersion ?? null;
+  const invalidateWebhookSecret = document.trigger.type === 'webhook' && !webhookSecretSurvivesEnable({
+    secretRotatedAt: row.webhookSecretRotatedAt,
+    flowUpdatedAt: row.updatedAt,
+    definitionVersion: row.definitionVersion,
+    latestPublicationDefinitionVersion: latestDefinitionVersion === null ? null : Number(latestDefinitionVersion),
+  });
+
+  // Flip first (CAS on what was read, the secret generation included): a lost
+  // race writes nothing at all.
   const [updated] = await db
     .update(flows)
     .set({
@@ -296,11 +363,13 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
       pausedReason: null,
       scheduleLastOccurrenceKey: currentOccurrenceKey(document, now),
       updatedAt: now,
+      ...(invalidateWebhookSecret ? { webhookSecretEncrypted: null, webhookSecretFingerprint: null, webhookSecretRotatedAt: null } : {}),
     })
     .where(and(
       eq(flows.id, flowId),
       eq(flows.definitionVersion, row.definitionVersion),
       inArray(flows.status, [...ENABLEABLE_STATUSES]),
+      row.webhookSecretRotatedAt ? eq(flows.webhookSecretRotatedAt, row.webhookSecretRotatedAt) : isNull(flows.webhookSecretRotatedAt),
     ))
     .returning();
   if (!updated) return { ok: false, error: 'version_conflict' };
@@ -322,12 +391,16 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
     .returning({ id: flowVersions.id, publicationSeq: flowVersions.publicationSeq, definitionVersion: flowVersions.definitionVersion });
   if (!publication) throw new Error('Failed to publish flow');
 
-  audit('flow.enable', updated, auth.user, { publicationSeq, definitionVersion: row.definitionVersion, preApprovedStepIds: requested, effectiveTier });
+  audit('flow.enable', updated, auth.user, {
+    publicationSeq, definitionVersion: row.definitionVersion, preApprovedStepIds: requested, effectiveTier,
+    ...(invalidateWebhookSecret ? { webhookSecretInvalidated: true, invalidatedSecretFingerprint: row.webhookSecretFingerprint } : {}),
+  });
 
   return {
     ok: true,
     flow: toDetailDto(updated, { preApprovalEligibility: assessment.eligibility, preApprovedStepIds: bindings.map((b) => b.stepId) }),
     publication: { id: publication.id, publicationSeq: publication.publicationSeq, definitionVersion: publication.definitionVersion },
+    webhookSecretInvalidated: invalidateWebhookSecret,
   };
 }
 
@@ -478,28 +551,14 @@ export async function pauseFlow(
     if (!row) return;
     audit('flow.pause', row, null, { reason, publicationSeq: row.enabledPublicationSeq });
 
-    const delegator = row.enabledByUserId;
-    if (!delegator) return;
-    runAfterDbContextCommit('flows.pauseFlow.notify', async () => {
-      try {
-        // Cross-user insert: needs its own system context (see createNotification).
-        await runOutsideDbContext(() => withSystemDbAccessContext(() => createNotification({
-          userId: delegator,
-          orgId: row.orgId,
-          type: 'automation',
-          priority: 'high',
-          title: 'Flow paused',
-          message: `${row.name} was paused because ${PAUSE_REASON_TEXT[reason]}. Review it and enable it again.`,
-          link: `/flows/${row.id}`,
-          metadata: { flowId: row.id, reason },
-          dedupeKey: `flow-paused:${row.id}:${row.enabledPublicationSeq ?? 0}:${reason}`,
-        }), 'flows.pauseFlow.notify'));
-      } catch (err) {
-        captureException(err instanceof Error ? err : new Error(String(err)), undefined,
-          { ...(row.orgId ? { org_id: row.orgId } : {}), flow_id: row.id, flow_site: 'flows.pauseFlow.notify' },
-          { fingerprint: ['flow', 'flows.pauseFlow.notify'] });
-        console.error(`[flows] pause notification failed (flow=${row.id})`, err);
-      }
+    // The delegator's in-app notice, after commit (W5: one sender, notices.ts;
+    // the document's notice channel is PR B's).
+    await sendFlowNotice(row, null, {
+      kind: 'paused',
+      title: 'Flow paused',
+      text: `${row.name} was paused because ${PAUSE_REASON_TEXT[reason]}. Review it and enable it again.`,
+      dedupeKey: `flow-paused:${row.id}:${row.enabledPublicationSeq ?? 0}:${reason}`,
+      metadata: { flowId: row.id, reason },
     });
   }, 'flows.pauseFlow');
 }

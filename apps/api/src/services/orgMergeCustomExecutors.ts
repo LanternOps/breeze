@@ -2048,8 +2048,11 @@ const resolveFlows: CustomMergeExecutor = async (loser, survivor) => {
              definition_version = definition_version + ${nextDefinition ? sql.raw('1') : sql.raw('0')},${pause ? sql.raw(`
              status = 'paused',
              paused_reason = 'org_merged',`) : sql.raw('')}
-             updated_at = now()
+             updated_at = GREATEST(now(), webhook_secret_rotated_at + interval '1 millisecond')
        WHERE id = ${flow.id}::uuid`);
+    // updated_at is set strictly after the webhook secret's rotated_at: a
+    // definition rewrite must never look like "no edit since the mint" (#10270,
+    // flows/versions.ts webhookSecretSurvivesEnable). GREATEST ignores the NULL.
   }
 
   const notes: string[] = [...runNotes];

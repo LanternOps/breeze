@@ -1,14 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, eq, gte, ne, sql } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
-import { db } from '../../db';
-import { deviceCommands, scriptExecutions } from '../../db/schema';
+import { countDeviceAiActivity } from '../../services/deviceAiActivity';
 import { AiOriginSourceNotFoundError, resolveAiOriginSummary } from '../../services/aiOriginSummary';
-import type { DeviceAiActivityDto } from '@breeze/shared';
 
 export const deviceAiOriginRoutes = new Hono();
 
@@ -91,41 +88,7 @@ deviceAiOriginRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-
-    const [executionCountRow] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(scriptExecutions)
-      .where(
-        and(
-          eq(scriptExecutions.deviceId, deviceId),
-          sql`${scriptExecutions.aiInitiatorKind} IS NOT NULL`,
-          gte(scriptExecutions.createdAt, since),
-        ),
-      );
-
-    const [commandCountRow] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(deviceCommands)
-      .where(
-        and(
-          eq(deviceCommands.deviceId, deviceId),
-          sql`${deviceCommands.aiInitiatorKind} IS NOT NULL`,
-          gte(deviceCommands.createdAt, since),
-          // Excluded: the type='script' command a script dispatch ALSO writes
-          // — it's already counted via script_executions above. See the
-          // de-duplication rule in this handler's docstring.
-          ne(deviceCommands.type, 'script'),
-        ),
-      );
-
-    const dispatchedActions = Number(executionCountRow?.count ?? 0) + Number(commandCountRow?.count ?? 0);
-
-    const dto: DeviceAiActivityDto = {
-      dispatchedActions,
-      windowDays: days,
-      since: since.toISOString(),
-    };
+    const dto = await countDeviceAiActivity(deviceId, days);
 
     return c.json({ data: dto });
   }

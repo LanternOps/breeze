@@ -221,6 +221,15 @@ describe('executeFlowStep — when / render / built-ins', () => {
     }));
     expect(out).toMatchObject({ kind: 'failed', code: 'render_failed' });
   });
+
+  it('a W5 built-in pinned before PR B wires it is tool_unavailable and never executes', async () => {
+    const out = await executeFlowStep(input({
+      step: step('tell', 'notify', { channelId: '7d1c3a5e-2b4f-4c6a-9e8d-1f2a3b4c5d6e', title: 't', message: 'm' }),
+      pin: { stepId: 'tell', tool: 'notify', source: 'builtin', tier: 2, approvalScope: null },
+    }));
+    expect(out).toMatchObject({ kind: 'failed', code: 'tool_unavailable' });
+    for (const f of executors()) expect(f).not.toHaveBeenCalled();
+  });
 });
 
 describe('executeFlowStep — run-time revalidation and ownership', () => {

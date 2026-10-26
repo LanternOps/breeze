@@ -34,6 +34,8 @@ vi.mock('../../stores/auth', () => ({
         user: authState.user,
         updateUser: vi.fn(),
         sessionGeneration: 0,
+        commitMfaEnrollmentIfCurrent: vi.fn(() => true),
+        commitMfaDisableIfCurrent: vi.fn(() => true),
         commitReissuedSessionIfCurrent: vi.fn(() => true),
       }),
     },

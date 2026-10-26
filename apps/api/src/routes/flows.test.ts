@@ -22,6 +22,8 @@ vi.mock('../middleware/auth', () => ({
 }));
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
+vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
+vi.mock('../services/flows/webhook/deliveries', () => ({ listWebhookDeliveries: vi.fn() }));
 vi.mock('../services/flows/runService', () => ({
   startManualRun: vi.fn(),
   cancelFlowRun: vi.fn(),
@@ -34,6 +36,8 @@ import { authMiddleware } from '../middleware/auth';
 import { getFlow, listFlows } from '../services/flows/service';
 import { enableFlow, disableFlow } from '../services/flows/versions';
 import { startManualRun, cancelFlowRun, listFlowRuns, getFlowRun, getFlowRunStep } from '../services/flows/runService';
+import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
+import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 import { flowsRoutes } from './flows';
 
 const FLOW_ID = '11111111-1111-4111-8111-111111111111';
@@ -188,7 +192,7 @@ describe('flows routes', () => {
     it.each([
       ['flow_not_found', 404], ['version_conflict', 409], ['already_enabled', 409], ['slug_unavailable', 409],
       ['partner_wide_forbidden', 403], ['interactive_session_required', 403], ['delegation_scope_restricted', 403],
-      ['event_dispatch_not_durable', 422], ['foreach_concurrency_not_available', 422],
+      ['event_dispatch_not_durable', 422], ['foreach_concurrency_not_available', 422], ['webhook_secret_missing', 422],
     ])('enable maps %s to %i', async (error, status) => {
       vi.mocked(enableFlow).mockResolvedValue({ ok: false, error } as never);
       const res = await post(`/${FLOW_ID}/enable`, { expectedVersion: 1 });
@@ -235,6 +239,7 @@ describe('flows routes', () => {
     it.each([
       ['flow_not_found', 404], ['not_enabled', 409], ['not_manual', 409], ['org_required', 422], ['org_forbidden', 403],
       ['interactive_user_required', 403], ['delegation_scope_restricted', 403], ['flow_queue_full', 429],
+      ['flow_monthly_cap_reached', 429], ['owner_monthly_cap_reached', 429],
     ])('POST runs maps %s to %i', async (error, status) => {
       vi.mocked(startManualRun).mockResolvedValue({ ok: false, error } as never);
       const res = await post(`/${FLOW_ID}/runs`, {});
@@ -300,6 +305,102 @@ describe('flows routes', () => {
       expect((await res.json()).error).toBe('already_terminal');
       vi.mocked(cancelFlowRun).mockResolvedValueOnce({ ok: false, error: 'run_not_found' });
       expect((await post(`/runs/${RUN_ID}/cancel`)).status).toBe(404);
+    });
+  });
+
+  describe('W05 webhook secret route (#5220 A5)', () => {
+    const SECRET = 'bwh_' + 'a'.repeat(43);
+    const rotate = () => flowsRoutes.request(`/${FLOW_ID}/webhook-secret`, { method: 'POST' });
+
+    beforeEach(() => {
+      vi.mocked(createOrRotateWebhookSecret).mockReset().mockResolvedValue({
+        ok: true, secret: SECRET, fingerprint: 'fp1:w5:abc', rotatedAt: '2027-03-01T10:00:00.000Z',
+      });
+    });
+
+    it('webhook-secret 404s with the flag off after auth', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      expect((await rotate()).status).toBe(404);
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+      expect((await rotate()).status).toBe(401);
+      expect(createOrRotateWebhookSecret).not.toHaveBeenCalled();
+    });
+
+    it('403 without automations.write', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:write'] } as never);
+      const res = await rotate();
+      expect(res.status).toBe(403);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:write');
+      expect(createOrRotateWebhookSecret).not.toHaveBeenCalled();
+    });
+
+    it('403 MFA_REQUIRED for a session without satisfied MFA', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, principal: { kind: 'user_session' }, mfaUnsatisfied: true } as never);
+      const res = await rotate();
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(createOrRotateWebhookSecret).not.toHaveBeenCalled();
+    });
+
+    it('response is no-store and carries the warning', async () => {
+      const res = await rotate();
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(await res.json()).toEqual({
+        secret: SECRET, fingerprint: 'fp1:w5:abc', rotatedAt: '2027-03-01T10:00:00.000Z',
+        warning: 'Store this secret now. It will not be shown again.',
+      });
+      expect(createOrRotateWebhookSecret).toHaveBeenCalledWith(expect.anything(), FLOW_ID);
+    });
+
+    it.each([
+      ['flow_not_found', 404], ['not_webhook', 409], ['interactive_session_required', 403], ['partner_wide_forbidden', 403],
+      ['delegation_scope_restricted', 403], ['draft_unresolvable', 409],
+    ])(
+      'maps %s to %i and never returns a secret',
+      async (error, status) => {
+        vi.mocked(createOrRotateWebhookSecret).mockResolvedValue({ ok: false, error } as never);
+        const res = await rotate();
+        expect(res.status).toBe(status);
+        const body = await res.json();
+        expect(body).toEqual({ error });
+        expect(res.headers.get('Cache-Control')).toBe('no-store');
+      },
+    );
+
+    it('rejects a non-uuid id', async () => {
+      expect((await flowsRoutes.request('/nope/webhook-secret', { method: 'POST' })).status).toBe(400);
+      expect(createOrRotateWebhookSecret).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('W05 webhook deliveries route (#5220 A6)', () => {
+    const list = (q = '') => flowsRoutes.request(`/${FLOW_ID}/webhook-deliveries${q}`);
+    beforeEach(() => {
+      vi.mocked(listWebhookDeliveries).mockReset().mockResolvedValue([]);
+    });
+
+    it('reads with automations.read in the caller context and passes limit / before', async () => {
+      const res = await list('?limit=20&before=2027-03-01T00:00:00.000Z');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:read');
+      expect(await res.json()).toEqual({ deliveries: [] });
+      expect(listWebhookDeliveries).toHaveBeenCalledWith(expect.anything(), FLOW_ID, { limit: 20, before: '2027-03-01T00:00:00.000Z' });
+    });
+
+    it('404s with the flag off and 403s without automations.read', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      expect((await list()).status).toBe(404);
+      vi.stubEnv('FLOWS_ENABLED', 'true');
+      setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:read'] } as never);
+      expect((await list()).status).toBe(403);
+      expect(listWebhookDeliveries).not.toHaveBeenCalled();
+    });
+
+    it('rejects a limit over 100 and a bad cursor', async () => {
+      expect((await list('?limit=101')).status).toBe(400);
+      expect((await list('?before=yesterday')).status).toBe(400);
+      expect(listWebhookDeliveries).not.toHaveBeenCalled();
     });
   });
 });

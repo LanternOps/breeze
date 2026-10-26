@@ -415,6 +415,11 @@ x-api-env: &api-env
   # Flow runs per owner executing at once (1-500) and run-body retention days (7-3650).
   FLOW_MAX_RUNNING_PER_OWNER: ${FLOW_MAX_RUNNING_PER_OWNER:-20}
   FLOW_RUN_RETENTION_DAYS: ${FLOW_RUN_RETENTION_DAYS:-90}
+  # Flow webhook deliveries per flow per minute (1-6000), non-accepted delivery
+  # retention days (1-365), and the for-each parallel ceiling (1-10).
+  FLOW_WEBHOOK_RATE_PER_MINUTE: ${FLOW_WEBHOOK_RATE_PER_MINUTE:-120}
+  FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: ${FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS:-30}
+  FLOW_FOREACH_MAX_PARALLEL: ${FLOW_FOREACH_MAX_PARALLEL:-5}
   # Self-hosted only: let a tool source point at a private/loopback address.
   TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: ${TOOL_SOURCES_ALLOW_PRIVATE_EGRESS:-false}
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}

@@ -400,6 +400,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'POST /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'DELETE /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  // routes/flowWebhooks.ts
+  'POST /api/v1/webhooks/flows/:flowId': 'webhook: signature/token authenticated (services/flows/webhook/verify.ts), no user permission',
   // routes/webhooks/edr.ts
   'POST /api/v1/webhooks/edr/:connectionId': 'webhook: EDR push hint; connection lookup + adapter secret verification in handler',
   // routes/webhooks/emailProvider.ts

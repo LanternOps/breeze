@@ -234,7 +234,7 @@ describe('claimRunSlot (real Postgres)', () => {
     await insertSiblingRun(s, orgId);
     await expect(assertActiveCapacity(owner)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
     // The seam every run creation calls refuses the same way.
-    await expect(assertFlowRunAdmission(owner, s.flowId)).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
+    await expect(assertFlowRunAdmission(owner, s.flowId, { doc: {}, at: new Date() })).resolves.toEqual({ ok: false, error: 'flow_queue_full' });
 
     // Another org of the same partner (a different owner) is unaffected.
     const otherOrg = await createOrganization({ partnerId });

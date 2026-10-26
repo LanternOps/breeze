@@ -47,6 +47,7 @@ import type { BreezeEvent } from '../eventBus';
 import { liveOrgCondition, partnerFanoutOrgCondition } from '../partnerFanoutOrgs';
 import type { DurableEventSubscriber } from '../eventSubscriberRegistry';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
+import { isFlowAdmissionRefusal } from '@breeze/shared';
 import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { nullFlowInputs } from './inputDefaults';
 import { createFlowRun } from './runService';
@@ -262,9 +263,11 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
         chainDepth,
         causedByRunId,
       });
-      if (!result.created && result.reason === 'flow_queue_full') {
-        console.warn(`${LOG} active-run cap reached: flow ${flow.id} not started for event ${event.id} in org ${event.orgId}`);
-        recordFlowEventAdmissionRefused();
+      // Active-run cap or a monthly cap (W5): handled, never retried — a retry
+      // would only refuse again (the flow is not paused).
+      if (!result.created && isFlowAdmissionRefusal(result.reason)) {
+        console.warn(`${LOG} admission refused (${result.reason}): flow ${flow.id} not started for event ${event.id} in org ${event.orgId}`);
+        recordFlowEventAdmissionRefused(result.reason);
       }
     } catch (err) {
       console.error(`${LOG} run creation failed (flow=${flow.id}, event=${event.id})`, err);
