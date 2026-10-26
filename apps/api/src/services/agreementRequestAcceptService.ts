@@ -2,6 +2,15 @@
 // spec §3.3 steps 1–8, §3.5). Shaped after quoteAcceptService.acceptQuote but
 // ~1/5 the size: no invoice, no contracts, no Pax8.
 //
+// TWO CHANNELS, ONE WRITER (#9075 W3a). A customer answers either with the
+// emailed link (`claims`: the verified token) or as a logged-in portal user
+// (`portal`: the session's org + email). Both run the same lock, guards,
+// freeze and status flip below — there is no second write path. The portal
+// channel differs only where the token is the authority: it re-checks the
+// recipient list under the row lock instead of the jti, and it never writes
+// public_response_* (that column set records the LINK's single use, and the
+// signature certificate reads its absence as "accepted via portal").
+//
 // CONTEXT CONTRACT: the callers (W2b public token route, W3a portal route) run
 // these under runOutsideDbContext(() => withSystemDbAccessContext(...)) — one
 // transaction — after verifying the token (verifyAgreementAcceptToken + the
@@ -15,7 +24,7 @@
 
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { agreementRequests, type AgreementRequestRow } from '../db/schema/contractDocuments';
+import { agreementRequestRecipients, agreementRequests, type AgreementRequestRow } from '../db/schema/contractDocuments';
 import type { TemplateVersionRenderData } from './contractTemplateRender';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import {
@@ -30,11 +39,18 @@ export interface AgreementResponseClaims { requestId: string; orgId: string; jti
 
 export interface AgreementResponseRevoke { jti: string; tokenExpiresAt: Date | null; }
 
-export interface AcceptAgreementRequestParams {
-  claims: AgreementResponseClaims;
-  /** Org ids the claim's org resolves to after merges (the caller's
-   *  resolveMergedOrgIds). Defaults to the claim's own org. */
-  allowedOrgIds?: string[];
+/** A logged-in portal user answering (W3a). The route has authenticated the
+ *  portal session; the service re-asserts the org and the recipient-email
+ *  match against the LOCKED row, so no caller can skip either. */
+export interface PortalAgreementResponder {
+  requestId: string;
+  /** The portal session's org (auth.user.orgId). */
+  orgId: string;
+  /** The portal session's email; normalized (trim + lowercase) here. */
+  email: string;
+}
+
+interface CommonAcceptParams {
   /** The request's pinned version, pre-fetched outside the transaction. */
   renderData: TemplateVersionRenderData;
   signerName: string;
@@ -42,6 +58,22 @@ export interface AcceptAgreementRequestParams {
   ipAddress: string | null;
   userAgent: string | null;
   now: Date;
+}
+
+/** The emailed-link channel (W2b public route). */
+export interface AcceptAgreementRequestParams extends CommonAcceptParams {
+  claims: AgreementResponseClaims;
+  /** Org ids the claim's org resolves to after merges (the caller's
+   *  resolveMergedOrgIds). Defaults to the claim's own org. */
+  allowedOrgIds?: string[];
+  portal?: never;
+}
+
+/** The logged-in portal channel (W3a portal route). */
+export interface PortalAcceptAgreementRequestParams extends CommonAcceptParams {
+  portal: PortalAgreementResponder;
+  claims?: never;
+  allowedOrgIds?: never;
 }
 
 export interface AcceptAgreementRequestResult {
@@ -53,37 +85,80 @@ export interface AcceptAgreementRequestResult {
   revoke: AgreementResponseRevoke;
 }
 
+/** The portal result: `revoke` names the request's emailed link, so the caller
+ *  kills it post-commit exactly as after a public answer — null only when the
+ *  row carries no persisted link identity. */
+export interface PortalAcceptAgreementRequestResult extends Omit<AcceptAgreementRequestResult, 'revoke'> {
+  revoke: AgreementResponseRevoke | null;
+}
+
+type Responder =
+  | { channel: 'link'; claims: AgreementResponseClaims; allowedOrgIds: string[] }
+  | { channel: 'portal'; portal: PortalAgreementResponder };
+
+function responderOf(params: {
+  claims?: AgreementResponseClaims;
+  allowedOrgIds?: string[];
+  portal?: PortalAgreementResponder;
+}): Responder {
+  if (params.portal) return { channel: 'portal', portal: params.portal };
+  if (!params.claims) {
+    // Unreachable through the typed API; a JS caller passing neither must not
+    // fall through to an unauthenticated answer.
+    throw new AgreementRequestServiceError('Agreement request not found', 404, 'REQUEST_NOT_FOUND');
+  }
+  return { channel: 'link', claims: params.claims, allowedOrgIds: params.allowedOrgIds ?? [params.claims.orgId] };
+}
+
 const OPEN_STATUSES: AgreementRequestRow['status'][] = ['sent', 'viewed'];
 const INVALID_LINK = 'This link is invalid or has expired';
 
 /** Steps 1–3 shared by accept and decline, in order:
- *  (1) lock the row; (2) the DURABLE single-use check before the status guard
- *  (a replay 401s like the Redis gate, even when the marker was lost), then the
- *  DB-authoritative link kill (public_link_revoked_at → 410); (3) the status
- *  guard and the instant-boundary expiry. */
-async function lockOpenRequest(
-  claims: AgreementResponseClaims,
-  allowedOrgIds: string[],
-  now: Date,
-): Promise<AgreementRequestRow> {
+ *  (1) lock the row; (2) the channel's identity check — for the LINK the
+ *  DURABLE single-use check before the status guard (a replay 401s like the
+ *  Redis gate, even when the marker was lost) and the persisted-jti match; for
+ *  the PORTAL the session org and the recipient-email match, failing closed
+ *  when the request has no recipient rows. Every portal identity miss is the
+ *  SAME 404 as an unknown id and comes before anything state-revealing. Then
+ *  the DB-authoritative link kill (public_link_revoked_at → 410); (3) the
+ *  status guard and the instant-boundary expiry. */
+async function lockOpenRequest(responder: Responder, now: Date): Promise<AgreementRequestRow> {
+  const requestId = responder.channel === 'link' ? responder.claims.requestId : responder.portal.requestId;
   const [row] = await db
     .select()
     .from(agreementRequests)
-    .where(eq(agreementRequests.id, claims.requestId))
+    .where(eq(agreementRequests.id, requestId))
     .limit(1)
     .for('update');
-  if (!row || !allowedOrgIds.includes(row.orgId)) {
-    throw new AgreementRequestServiceError('Agreement request not found', 404, 'REQUEST_NOT_FOUND');
+  const notFound = () => new AgreementRequestServiceError('Agreement request not found', 404, 'REQUEST_NOT_FOUND');
+
+  if (responder.channel === 'link') {
+    const { claims, allowedOrgIds } = responder;
+    if (!row || !allowedOrgIds.includes(row.orgId)) throw notFound();
+    if (row.publicResponseConsumedAt != null && row.publicResponseJti === claims.jti) {
+      throw new AgreementRequestServiceError(INVALID_LINK, 401, 'RESPONSE_CONSUMED');
+    }
+    // A request has exactly ONE live credential: the jti persisted at send. Any
+    // other validly-signed token for this request (one replaced by a reissue)
+    // must never respond on its behalf.
+    if (row.acceptTokenJti !== claims.jti) {
+      throw new AgreementRequestServiceError(INVALID_LINK, 401, 'RESPONSE_CONSUMED');
+    }
+  } else {
+    const { portal } = responder;
+    if (!row || row.orgId !== portal.orgId) throw notFound();
+    const [recipient] = await db
+      .select({ id: agreementRequestRecipients.id })
+      .from(agreementRequestRecipients)
+      .where(and(
+        eq(agreementRequestRecipients.requestId, row.id),
+        eq(agreementRequestRecipients.orgId, row.orgId),
+        eq(agreementRequestRecipients.email, portal.email.trim().toLowerCase()),
+      ))
+      .limit(1);
+    if (!recipient) throw notFound();
   }
-  if (row.publicResponseConsumedAt != null && row.publicResponseJti === claims.jti) {
-    throw new AgreementRequestServiceError(INVALID_LINK, 401, 'RESPONSE_CONSUMED');
-  }
-  // A request has exactly ONE live credential: the jti persisted at send. Any
-  // other validly-signed token for this request (one replaced by a reissue)
-  // must never respond on its behalf.
-  if (row.acceptTokenJti !== claims.jti) {
-    throw new AgreementRequestServiceError(INVALID_LINK, 401, 'RESPONSE_CONSUMED');
-  }
+
   if (row.publicLinkRevokedAt != null) {
     throw new AgreementRequestServiceError('This agreement request was withdrawn', 410, 'LINK_REVOKED');
   }
@@ -103,12 +178,32 @@ function revokeFor(row: AgreementRequestRow, jti: string): AgreementResponseRevo
   return { jti, tokenExpiresAt: row.acceptTokenExpiresAt };
 }
 
+/** Portal: the request's own persisted link (a portal answer ends the emailed
+ *  link too), or null when it has none. */
+function portalRevoke(row: AgreementRequestRow): AgreementResponseRevoke | null {
+  return row.acceptTokenJti ? revokeFor(row, row.acceptTokenJti) : null;
+}
+
+/** The public_response_* columns record the LINK's durable single use. A
+ *  portal answer leaves them NULL (the certificate reads that as "via
+ *  portal"); the flip's `public_response_consumed_at IS NULL` guard still
+ *  refuses a request the link already answered. */
+function linkConsumption(responder: Responder, now: Date, outcome: 'accepted' | 'declined') {
+  if (responder.channel !== 'link') return {};
+  return { publicResponseJti: responder.claims.jti, publicResponseConsumedAt: now, publicResponseOutcome: outcome };
+}
+
 /** The customer signs (typed name + consent). One request, one signer: the
  *  first committed response wins — the row lock + status guard + durable jti
  *  make any later response a 401/409. */
-export async function acceptAgreementRequest(params: AcceptAgreementRequestParams): Promise<AcceptAgreementRequestResult> {
-  const { claims, renderData, now } = params;
-  const row = await lockOpenRequest(claims, params.allowedOrgIds ?? [claims.orgId], now);
+export function acceptAgreementRequest(params: AcceptAgreementRequestParams): Promise<AcceptAgreementRequestResult>;
+export function acceptAgreementRequest(params: PortalAcceptAgreementRequestParams): Promise<PortalAcceptAgreementRequestResult>;
+export async function acceptAgreementRequest(
+  params: AcceptAgreementRequestParams | PortalAcceptAgreementRequestParams,
+): Promise<AcceptAgreementRequestResult | PortalAcceptAgreementRequestResult> {
+  const { renderData, now } = params;
+  const responder = responderOf(params);
+  const row = await lockOpenRequest(responder, now);
 
   if (renderData.templateVersionId !== row.templateVersionId) {
     throw new AgreementRequestServiceError('Agreement render data does not match the pinned version', 500, 'RENDER_DATA_MISMATCH');
@@ -126,7 +221,7 @@ export async function acceptAgreementRequest(params: AcceptAgreementRequestParam
     signerEmail: params.signerEmail ?? null,
     ipAddress: params.ipAddress,
     userAgent: params.userAgent,
-    acceptanceTokenJti: claims.jti,
+    acceptanceTokenJti: responder.channel === 'link' ? responder.claims.jti : null,
   });
 
   // (5)+(6) The frozen send-time snapshot; the effective date defaults to the
@@ -170,9 +265,7 @@ export async function acceptAgreementRequest(params: AcceptAgreementRequestParam
       status: 'signed',
       signedAt: now,
       effectiveDate,
-      publicResponseJti: claims.jti,
-      publicResponseConsumedAt: now,
-      publicResponseOutcome: 'accepted',
+      ...linkConsumption(responder, now, 'accepted'),
       updatedAt: now,
     })
     .where(and(
@@ -185,7 +278,9 @@ export async function acceptAgreementRequest(params: AcceptAgreementRequestParam
     throw new AgreementRequestServiceError('This agreement request can no longer be signed', 409, 'INVALID_STATE');
   }
 
-  return { requestId: row.id, orgId: row.orgId, signedAgreementId, contentSha256, revoke: revokeFor(row, claims.jti) };
+  const signed = { requestId: row.id, orgId: row.orgId, signedAgreementId, contentSha256 };
+  if (responder.channel === 'link') return { ...signed, revoke: revokeFor(row, responder.claims.jti) };
+  return { ...signed, revoke: portalRevoke(row) };
 }
 
 /** First open of the signing link (spec §3.5 `viewed`; #9075 W2b, reused by
@@ -218,26 +313,41 @@ export async function markAgreementRequestViewed(requestId: string, orgId: strin
 export interface DeclineAgreementRequestParams {
   claims: AgreementResponseClaims;
   allowedOrgIds?: string[];
+  portal?: never;
+  reason?: string | null;
+  now: Date;
+}
+
+export interface PortalDeclineAgreementRequestParams {
+  portal: PortalAgreementResponder;
+  claims?: never;
+  allowedOrgIds?: never;
   reason?: string | null;
   now: Date;
 }
 
 /** The customer declines (reason optional), consuming the jti durably in the
- *  same statement as the status change (routes/quotesPublic.ts decline). */
-export async function declineAgreementRequest(
+ *  same statement as the status change (routes/quotesPublic.ts decline). The
+ *  portal channel consumes nothing (see linkConsumption). */
+export function declineAgreementRequest(
   params: DeclineAgreementRequestParams,
-): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke }> {
-  const { claims, now } = params;
-  const row = await lockOpenRequest(claims, params.allowedOrgIds ?? [claims.orgId], now);
+): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke }>;
+export function declineAgreementRequest(
+  params: PortalDeclineAgreementRequestParams,
+): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke | null }>;
+export async function declineAgreementRequest(
+  params: DeclineAgreementRequestParams | PortalDeclineAgreementRequestParams,
+): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke | null }> {
+  const { now } = params;
+  const responder = responderOf(params);
+  const row = await lockOpenRequest(responder, now);
   const declined = await db
     .update(agreementRequests)
     .set({
       status: 'declined',
       declinedAt: now,
       declineReason: params.reason?.trim() || null,
-      publicResponseJti: claims.jti,
-      publicResponseConsumedAt: now,
-      publicResponseOutcome: 'declined',
+      ...linkConsumption(responder, now, 'declined'),
       updatedAt: now,
     })
     .where(and(
@@ -249,5 +359,6 @@ export async function declineAgreementRequest(
   if (declined.length === 0) {
     throw new AgreementRequestServiceError('This agreement request can no longer be declined', 409, 'INVALID_STATE');
   }
-  return { requestId: row.id, orgId: row.orgId, revoke: revokeFor(row, claims.jti) };
+  const revoke = responder.channel === 'link' ? revokeFor(row, responder.claims.jti) : portalRevoke(row);
+  return { requestId: row.id, orgId: row.orgId, revoke };
 }
