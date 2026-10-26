@@ -908,6 +908,22 @@ describe('timed extras and Load earlier (Wisp companion W02b)', () => {
     expect(el.scrollTop).toBe(1800);
   });
 
+  it('a load started without the button (a Retry elsewhere) is anchored too', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 120 });
+    fireEvent.scroll(el);
+    // The host starts the load itself: no click on ai-chat-load-earlier.
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    stampGeometry(el, { scrollHeight: 1400, clientHeight: 300, scrollTop: 120 });
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    expect(el.scrollTop).toBe(520);
+    expect(onLoadEarlier).not.toHaveBeenCalled();
+  });
+
   it('a load that adds nothing leaves no stale anchor behind', () => {
     const onLoadEarlier = vi.fn();
     const newer = [u('u2', 30)];

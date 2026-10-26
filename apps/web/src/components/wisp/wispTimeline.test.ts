@@ -72,6 +72,41 @@ describe('fetchWispTimeline', () => {
     err.mockRestore();
   });
 
+  it('logs which kinds of rows were dropped, never their content', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValue(ok({
+      data: { items: [msg('m-1', '2026-10-26T08:00:00.000Z'), { source: 'message', id: 'x', role: 'system', content: 'secret text', createdAt: '2026-10-26T08:00:00.000Z' }], nextCursor: null },
+    }));
+    await fetchWispTimeline('th-1', {});
+    expect(err).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(err.mock.calls[0]);
+    expect(logged).not.toContain('secret text');
+    expect(logged).toContain('system');
+    err.mockRestore();
+  });
+
+  it('a cursor that is neither a string nor null is a contract break, not the end of history', async () => {
+    fetchMock.mockResolvedValue(ok({ data: { items: [], nextCursor: 42 } }));
+    await expect(fetchWispTimeline('th-1', {})).rejects.toThrow(/nextCursor/);
+  });
+
+  it('brief sections are checked: malformed ones are dropped, a post with none left has null sections', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const good = { heading: 'Overnight', lines: ['All quiet'] };
+    fetchMock.mockResolvedValue(ok({
+      data: {
+        items: [
+          post('p-1', '2026-10-26T09:00:00.000Z', { kind: 'brief', sections: [good, { heading: 'Bad', lines: 'not a list' }, { lines: ['no heading'] }] as never }),
+          post('p-2', '2026-10-26T08:00:00.000Z', { kind: 'brief', sections: [{ heading: 3 }] as never }),
+        ],
+        nextCursor: null,
+      },
+    }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect((page.items[0] as WispTimelinePost).sections).toEqual([good]);
+    expect((page.items[1] as WispTimelinePost).sections).toBeNull();
+  });
+
   it('every row malformed is a contract break', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValue(ok({ data: { items: [{ source: 'other' }], nextCursor: null } }));

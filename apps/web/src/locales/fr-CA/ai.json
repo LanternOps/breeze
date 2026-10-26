@@ -741,7 +741,9 @@
       "disabledSettings": "Ouvrir les paramètres des agents IA",
       "loadFailed": "Impossible de charger l’accueil de Wisp.",
       "noAccess": "Vous n'avez pas accès à Wisp",
-      "historyFailed": "Impossible de charger la conversation précédente."
+      "historyFailed": "Impossible de charger cette conversation.",
+      "refreshFailed": "Impossible de vérifier les nouvelles publications.",
+      "earlierFailed": "Impossible de charger les messages précédents."
     },
     "links": {
       "title": "Éléments liés",

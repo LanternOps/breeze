@@ -158,7 +158,13 @@ export default function WispHomeThread({
   const hasBrief = timeline.posts.some((p) => p.kind === 'brief');
   const historyNotice = timeline.failed ? (
     <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="wisp-home-thread-history-failed" role="status">
-      <span className="text-destructive">{t('wisp.home.historyFailed')}</span>
+      <span className="text-destructive">
+        {timeline.failed === 'earlier'
+          ? t('wisp.home.earlierFailed')
+          : timeline.failed === 'refresh'
+            ? t('wisp.home.refreshFailed')
+            : t('wisp.home.historyFailed')}
+      </span>
       <button
         type="button"
         data-testid="wisp-home-thread-history-retry"

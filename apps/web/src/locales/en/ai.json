@@ -741,7 +741,9 @@
       "disabledSettings": "Open AI Agents settings",
       "loadFailed": "Could not load the Wisp home.",
       "noAccess": "You don't have access to Wisp",
-      "historyFailed": "Could not load the earlier conversation."
+      "historyFailed": "Could not load this conversation.",
+      "refreshFailed": "Could not check for new posts.",
+      "earlierFailed": "Could not load earlier messages."
     },
     "links": {
       "title": "Linked items",

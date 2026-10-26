@@ -1,14 +1,36 @@
 // Wisp companion W02b (#10213): the thread timeline client. Types are W02a's
 // shared DTOs (`packages/shared/src/types/wispTimeline.ts`), never re-typed.
 import { WISP_TIMELINE_DEFAULT_LIMIT, WISP_TIMELINE_POST_KINDS } from '@breeze/shared';
-import type { WispTimelineItem, WispTimelineMessage, WispTimelinePost } from '@breeze/shared';
+import type { BriefSection, WispTimelineItem, WispTimelineMessage, WispTimelinePost } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { mapMessagesFromApi, type AiMessage } from '@/stores/processStreamEvent';
 
-const ROLES: readonly string[] = ['user', 'assistant', 'tool_use', 'tool_result'];
+const ROLE_LIST = ['user', 'assistant', 'tool_use', 'tool_result'] as const satisfies readonly WispTimelineMessage['role'][];
+const ROLES: readonly string[] = ROLE_LIST;
 const KINDS: readonly string[] = WISP_TIMELINE_POST_KINDS;
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+function isSection(v: unknown): v is BriefSection {
+  if (!v || typeof v !== 'object') return false;
+  const s = v as { heading?: unknown; lines?: unknown };
+  return typeof s.heading === 'string' && Array.isArray(s.lines) && s.lines.every((l) => typeof l === 'string');
+}
+
+/** Brief sections render as-is, so a malformed one is dropped here rather than breaking the post. */
+function parseSections(v: unknown): BriefSection[] | null {
+  if (!Array.isArray(v)) return null;
+  const sections = v.filter(isSection);
+  if (sections.length < v.length) console.error(`[wispTimeline] dropped ${v.length - sections.length} malformed brief sections`);
+  return sections.length > 0 ? sections : null;
+}
+
+/** What a dropped row was, without its content (chat text must not reach logs). */
+function rowShape(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') return { type: typeof raw };
+  const { source, kind, role } = raw as Record<string, unknown>;
+  return { source, kind, role };
+}
 
 function parseItem(raw: unknown): WispTimelineItem | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -39,7 +61,7 @@ function parseItem(raw: unknown): WispTimelineItem | null {
       title: r.title,
       body: str(r.body),
       link: str(r.link),
-      sections: Array.isArray(r.sections) ? (r.sections as WispTimelinePost['sections']) : null,
+      sections: parseSections(r.sections),
       concernId: str(r.concernId),
       orgId: str(r.orgId),
       read: typeof r.read === 'boolean' ? r.read : null,
@@ -72,14 +94,27 @@ export async function fetchWispTimeline(
   const items = body?.data?.items;
   // A malformed body is a contract break, not "no history".
   if (!Array.isArray(items)) throw new Error('Wisp timeline response malformed: data.items is not an array');
-  const parsed = items.map(parseItem).filter((i): i is WispTimelineItem => i !== null);
-  const dropped = items.length - parsed.length;
-  if (dropped > 0) {
+  const parsed: WispTimelineItem[] = [];
+  const droppedShapes: Record<string, unknown>[] = [];
+  for (const raw of items) {
+    const item = parseItem(raw);
+    if (item) parsed.push(item);
+    else droppedShapes.push(rowShape(raw));
+  }
+  if (droppedShapes.length > 0) {
     // A few unknown rows are a newer server; every row unknown is a contract break.
     if (parsed.length === 0) throw new Error(`Wisp timeline response malformed: none of ${items.length} rows parsed`);
-    console.error(`[wispTimeline] dropped ${dropped} of ${items.length} timeline rows (unknown source or kind, or missing fields)`, items);
+    console.error(
+      `[wispTimeline] dropped ${droppedShapes.length} of ${items.length} timeline rows (unknown source or kind, or missing fields)`,
+      droppedShapes,
+    );
   }
-  return { items: parsed, nextCursor: typeof body?.data?.nextCursor === 'string' ? body.data.nextCursor : null };
+  // An absent cursor is the start of the thread; any other non-string is a contract break, not "no more history".
+  const nextCursor = body?.data?.nextCursor ?? null;
+  if (nextCursor !== null && typeof nextCursor !== 'string') {
+    throw new Error(`Wisp timeline response malformed: nextCursor is ${typeof nextCursor}`);
+  }
+  return { items: parsed, nextCursor };
 }
 
 const itemMs = (item: Pick<WispTimelineItem, 'createdAt'>): number => Date.parse(item.createdAt);

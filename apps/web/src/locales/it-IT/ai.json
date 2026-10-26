@@ -741,7 +741,9 @@
       "disabledSettings": "Apri le impostazioni degli Agenti AI",
       "loadFailed": "Impossibile caricare la home di Wisp.",
       "noAccess": "Non hai accesso a Wisp",
-      "historyFailed": "Impossibile caricare la conversazione precedente."
+      "historyFailed": "Impossibile caricare questa conversazione.",
+      "refreshFailed": "Impossibile cercare nuovi post.",
+      "earlierFailed": "Impossibile caricare i messaggi precedenti."
     },
     "links": {
       "title": "Elementi collegati",

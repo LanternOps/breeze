@@ -741,7 +741,9 @@
       "disabledSettings": "Yapay Zeka Aracıları ayarlarını aç",
       "loadFailed": "Wisp ana sayfası yüklenemedi.",
       "noAccess": "Wisp'e erişiminiz yok",
-      "historyFailed": "Önceki konuşma yüklenemedi."
+      "historyFailed": "Bu konuşma yüklenemedi.",
+      "refreshFailed": "Yeni gönderiler denetlenemedi.",
+      "earlierFailed": "Önceki mesajlar yüklenemedi."
     },
     "links": {
       "title": "Bağlantılı öğeler",

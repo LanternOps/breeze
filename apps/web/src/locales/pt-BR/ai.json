@@ -741,7 +741,9 @@
       "disabledSettings": "Abrir as configurações de Agentes de IA",
       "loadFailed": "Não foi possível carregar a página inicial do Wisp.",
       "noAccess": "Você não tem acesso ao Wisp",
-      "historyFailed": "Não foi possível carregar a conversa anterior."
+      "historyFailed": "Não foi possível carregar esta conversa.",
+      "refreshFailed": "Não foi possível verificar novas publicações.",
+      "earlierFailed": "Não foi possível carregar as mensagens anteriores."
     },
     "links": {
       "title": "Itens vinculados",

@@ -427,13 +427,138 @@ describe('WispHomeThread reads the thread timeline (W02b #10213)', () => {
     fetchMock.mockImplementation(route({ timeline: () => (fail ? json({}, 500) : page([msg('m-1', 's-old', 1)])) }));
     render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
     const notice = await screen.findByTestId('wisp-home-thread-history-failed');
-    expect(notice).toHaveTextContent('Could not load the earlier conversation.');
+    expect(notice).toHaveTextContent('Could not load this conversation.');
     expect(err).toHaveBeenCalledWith(expect.stringContaining('[WispHomeThread]'), expect.anything());
     fail = false;
     fireEvent.click(screen.getByTestId('wisp-home-thread-history-retry'));
     await waitFor(() => expect(messageIds()).toEqual(['m-1', 'live-1']));
     expect(screen.queryByTestId('wisp-home-thread-history-failed')).toBeNull();
     err.mockRestore();
+  });
+
+  it('a failed Load earlier says so, keeps the page and its cursor, survives a refresh, and Retry loads that page', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let failEarlier = true;
+    fetchMock.mockImplementation(route({
+      timeline: (url) => {
+        if (paramsOf(url).get('cursor') === 'c-1') return failEarlier ? json({}, 500) : page([msg('m-1', 's-old', 1)]);
+        return page([msg('m-2', 's-old', 20)], 'c-1');
+      },
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    await waitFor(() => expect(lastKit().hasEarlier).toBe(true));
+    await act(async () => { lastKit().onLoadEarlier?.(); });
+    expect(await screen.findByTestId('wisp-home-thread-history-failed')).toHaveTextContent('Could not load earlier messages.');
+    expect(lastKit().loadingEarlier).toBe(false);
+    expect(lastKit().hasEarlier).toBe(true);
+    expect(messageIds()).toEqual(['m-2', 'live-1']);
+
+    // A refresh re-reads the newest page only: the older page is still missing, so the notice stays.
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    await waitFor(() => expect(timelineCalls().filter((u) => !paramsOf(u).has('cursor'))).toHaveLength(2));
+    expect(screen.getByTestId('wisp-home-thread-history-failed')).toHaveTextContent('Could not load earlier messages.');
+
+    failEarlier = false;
+    fireEvent.click(screen.getByTestId('wisp-home-thread-history-retry'));
+    await waitFor(() => expect(messageIds()).toEqual(['m-1', 'm-2', 'live-1']));
+    expect(paramsOf(timelineCalls().at(-1) as string).get('cursor')).toBe('c-1');
+    expect(screen.queryByTestId('wisp-home-thread-history-failed')).toBeNull();
+    err.mockRestore();
+  });
+
+  it('a failed refresh keeps the thread on screen and says so; Retry re-reads the newest page', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls = 0;
+    fetchMock.mockImplementation(route({
+      timeline: () => {
+        calls += 1;
+        if (calls === 2) return json({}, 503);
+        return calls === 1 ? page([post('p-1', 30)]) : page([post('p-2', 40), post('p-1', 30)]);
+      },
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    await waitFor(() => expect(extraIds()).toEqual(['p-1']));
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    expect(await screen.findByTestId('wisp-home-thread-history-failed')).toHaveTextContent('Could not check for new posts.');
+    expect(extraIds()).toEqual(['p-1']);
+    fireEvent.click(screen.getByTestId('wisp-home-thread-history-retry'));
+    await waitFor(() => expect(extraIds()).toEqual(['p-1', 'p-2']));
+    expect(screen.queryByTestId('wisp-home-thread-history-failed')).toBeNull();
+    err.mockRestore();
+  });
+
+  it('a failure belongs to its target: after a rebind and back it is not shown while the new read is in flight', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let failFirst = true;
+    const pending = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => {
+        if (failFirst) return json({}, 500);
+        return paramsOf(url).get('excludeSessionId') === 's-live' ? pending.promise : page([]);
+      },
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await screen.findByTestId('wisp-home-thread-history-failed');
+    failFirst = false;
+    act(() => { Object.assign(h.state, { sessionId: 's-next' }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(paramsOf(timelineCalls().at(-1) as string).get('excludeSessionId')).toBe('s-next'));
+    act(() => { Object.assign(h.state, { sessionId: 's-live' }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(paramsOf(timelineCalls().at(-1) as string).get('excludeSessionId')).toBe('s-live'));
+    expect(screen.queryByTestId('wisp-home-thread-history-failed')).toBeNull();
+    await act(async () => { pending.resolve(page([msg('m-1', 's-old', 1)])); });
+    expect(messageIds()).toEqual(['m-1', 'live-1']);
+    err.mockRestore();
+  });
+
+  it('another thread never shows this thread’s rows, even while its first page is loading', async () => {
+    const other = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => (url.includes('/thread/th-2/') ? other.promise : page([post('p-1', 30), msg('m-1', 's-old', 10)], 'c-1')),
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(extraIds()).toEqual(['p-1']));
+    const wisp2 = { ...wisp, threadId: 'th-2', grantId: 'g-2' };
+    act(() => { Object.assign(h.state, { wisp: wisp2, sessionId: 's-2', messages: [] }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp2} lastSessionId={null} />);
+    await waitFor(() => expect(timelineCalls().some((u) => u.includes('/thread/th-2/'))).toBe(true));
+    expect(extraIds()).toEqual([]);
+    expect(messageIds()).toEqual([]);
+    expect(lastKit().hasEarlier).toBe(false);
+    expect(screen.queryByTestId('wisp-suggestion')).toBeNull();
+    await act(async () => { other.resolve(page([post('p-9', 50)])); });
+    expect(extraIds()).toEqual(['p-9']);
+  });
+
+  it('a rebind during Load earlier stops the spinner, hides Load earlier until the new page lands, and drops the old page', async () => {
+    const older = deferred();
+    const rebound = deferred();
+    fetchMock.mockImplementation(route({
+      timeline: (url) => {
+        const p = paramsOf(url);
+        if (p.get('cursor') === 'c-1') return older.promise;
+        return p.get('excludeSessionId') === 's-next' ? rebound.promise : page([msg('m-2', 's-old', 20)], 'c-1');
+      },
+    }));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(lastKit().hasEarlier).toBe(true));
+    act(() => { lastKit().onLoadEarlier?.(); });
+    expect(lastKit().loadingEarlier).toBe(true);
+
+    act(() => { Object.assign(h.state, { sessionId: 's-next', messages: [] }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(lastKit().loadingEarlier).toBe(false));
+    expect(lastKit().hasEarlier).toBe(false);
+    const before = timelineCalls().length;
+    act(() => { lastKit().onLoadEarlier?.(); });
+    expect(timelineCalls()).toHaveLength(before);
+
+    await act(async () => { older.resolve(page([msg('m-stale', 's-old', 1)])); });
+    expect(messageIds()).not.toContain('m-stale');
+    await act(async () => { rebound.resolve(page([msg('m-live-p', 's-live', 40), msg('m-2', 's-old', 20)], 'c-9')); });
+    expect(messageIds()).toEqual(['m-2', 'm-live-p']);
+    expect(lastKit().hasEarlier).toBe(true);
   });
 
   it('a paused grant shows its history read-only (nothing excluded), with no composer', async () => {

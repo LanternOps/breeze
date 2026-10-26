@@ -72,7 +72,7 @@ interface AiChatMessagesProps {
   assistantLabel?: string;
   /** Time dividers from each message's createdAt (off by default; the docked panel keeps them off). */
   showTimeDividers?: boolean;
-  /** Rendered inside the scroll container before the first message (the Wisp brief post). */
+  /** Rendered inside the scroll container before the first message (the Wisp thread page's summary, a history notice). */
   leading?: ReactNode;
   /** Replaces the built-in quick-actions empty state. */
   emptyState?: ReactNode;
@@ -221,9 +221,11 @@ export default function AiChatMessages({
   // Holds the pending rAF id so a burst of streaming re-renders coalesces into a
   // single post-paint scroll instead of issuing a redundant scroll per delta.
   const scrollFrameRef = useRef<number | null>(null);
-  // W02b: the scroll geometry when "Load earlier" was clicked, until the older
-  // page lands (or the load ends with nothing new); and a one-shot that keeps
-  // the bottom-pin effect from undoing the anchor in that same commit.
+  // W02b: the scroll geometry when an earlier page was asked for (the button,
+  // or `loadingEarlier` turning on for a load the host started, such as a
+  // Retry), until the older page lands or the load ends with nothing new; and a
+  // one-shot that keeps the bottom-pin effect from undoing the anchor in that
+  // same commit.
   const prependAnchorRef = useRef<{ height: number; top: number } | null>(null);
   const skipAutoScrollRef = useRef(false);
   const firstKey = unitKey(units[0]);
@@ -232,14 +234,20 @@ export default function AiChatMessages({
 
   // Older content prepended above the reader: shift scrollTop by exactly the
   // height it added, before paint, so what they were reading stays put (a rAF
-  // after paint would flash the new content first). The container opts out of
-  // the browser's own scroll anchoring so the shift is never applied twice.
+  // after paint would flash the new content first). When `onLoadEarlier` is
+  // given the container opts out of the browser's own scroll anchoring, so the
+  // shift is never applied twice.
   useLayoutEffect(() => {
-    const anchor = prependAnchorRef.current;
     const prepended = firstKey !== lastFirstKeyRef.current;
+    const loadStarted = !wasLoadingEarlierRef.current && loadingEarlier;
     const loadEnded = wasLoadingEarlierRef.current && !loadingEarlier;
     lastFirstKeyRef.current = firstKey;
     wasLoadingEarlierRef.current = loadingEarlier;
+    if (loadStarted && !prepended && prependAnchorRef.current === null) {
+      const el = scrollContainerRef.current;
+      if (el) prependAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    }
+    const anchor = prependAnchorRef.current;
     if (!anchor) return;
     if (prepended) {
       prependAnchorRef.current = null;

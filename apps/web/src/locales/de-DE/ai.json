@@ -741,7 +741,9 @@
       "disabledSettings": "KI-Agenten-Einstellungen öffnen",
       "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden.",
       "noAccess": "Sie haben keinen Zugriff auf Wisp",
-      "historyFailed": "Der frühere Verlauf konnte nicht geladen werden."
+      "historyFailed": "Diese Unterhaltung konnte nicht geladen werden.",
+      "refreshFailed": "Neue Beiträge konnten nicht abgerufen werden.",
+      "earlierFailed": "Ältere Nachrichten konnten nicht geladen werden."
     },
     "links": {
       "title": "Verknüpfte Einträge",

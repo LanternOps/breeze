@@ -12,7 +12,9 @@ import { fetchWispTimeline, mergeTimelineItems, splitTimelinePage } from './wisp
 export type TimelineTarget = { threadId: string; excludeSessionId: string | null } | null;
 
 type Held = { key: string; items: WispTimelineItem[]; nextCursor: string | null };
-type Failure = { key: string; what: 'first' | 'earlier' };
+/** `first`: nothing loaded for the target. `refresh`: a re-read of the newest page. `earlier`: a Load earlier. */
+export type TimelineFailure = 'first' | 'refresh' | 'earlier';
+type Failure = { key: string; what: TimelineFailure };
 
 const keyOf = (t: TimelineTarget): string | null => (t ? `${t.threadId}|${t.excludeSessionId ?? ''}` : null);
 
@@ -29,8 +31,8 @@ export type WispThreadTimeline = {
   loadEarlier: () => void;
   /** The first page for the current target has landed (or failed): an empty thread is really empty. */
   settled: boolean;
-  /** What last failed for the current target, with its retry. */
-  failed: 'first' | 'earlier' | null;
+  /** What last failed for the current target (the rows on screen stay), with its retry. */
+  failed: TimelineFailure | null;
   retry: () => void;
 };
 
@@ -40,13 +42,17 @@ export type WispThreadTimeline = {
  *
  * - A new target (bind, rebind to another session, thread change) reads page
  *   one with the new exclusion and replaces what was held when it lands; a
- *   page for an earlier target is dropped. Until then the held rows stay on
- *   screen, minus any row of the session the store now shows, so a rebind
- *   neither duplicates nor drops a session.
+ *   page or a failure for an earlier target is dropped. Until then the held
+ *   rows of the same thread stay on screen, minus any row of the session the
+ *   store now shows, so a rebind never shows a session twice. The session the
+ *   store left is missing until the new page lands (it was excluded from the
+ *   held page), and the pages loaded with Load earlier are replaced.
  * - `refreshKey` changing re-reads page one and merges it (new posts appear
  *   once, a post's read flag follows the server); pages already loaded and the
  *   cursor past them are kept.
  * - Load earlier reads the page after the cursor and appends it.
+ * - Every failure is reported for its target with a retry of what failed; the
+ *   rows on screen stay.
  */
 export function useWispThreadTimeline(target: TimelineTarget, refreshKey: number): WispThreadTimeline {
   const key = keyOf(target);
@@ -73,12 +79,13 @@ export function useWispThreadTimeline(target: TimelineTarget, refreshKey: number
           ? { ...prev, items: mergeTimelineItems(prev.items, page.items) }
           : { key: k, items: page.items, nextCursor: page.nextCursor },
       );
-      setFailure((f) => (f?.key === k ? null : f));
+      // A failed Load earlier stays reported: this read did not fetch that page.
+      setFailure((f) => (f?.key === k && f.what !== 'earlier' ? null : f));
     } catch (err) {
       console.error('[WispHomeThread] reading the thread timeline failed', err);
       if (keyOf(targetRef.current) !== k) return;
-      // A failed refresh keeps what is on screen; only a target with nothing loaded says so.
-      if (heldRef.current?.key !== k) setFailure({ key: k, what: 'first' });
+      // The rows on screen stay; the notice says whether nothing loaded or only the re-read failed.
+      setFailure({ key: k, what: heldRef.current?.key === k ? 'refresh' : 'first' });
     }
   }, []);
 
@@ -97,7 +104,7 @@ export function useWispThreadTimeline(target: TimelineTarget, refreshKey: number
           ? { ...prev, items: mergeTimelineItems(prev.items, page.items), nextCursor: page.nextCursor }
           : prev,
       );
-      setFailure((f) => (f?.key === k ? null : f));
+      setFailure((f) => (f?.key === k && f.what === 'earlier' ? null : f));
     } catch (err) {
       console.error('[WispHomeThread] loading earlier messages failed', err);
       if (token === earlierToken.current) setFailure({ key: k, what: 'earlier' });
@@ -110,6 +117,8 @@ export function useWispThreadTimeline(target: TimelineTarget, refreshKey: number
   useEffect(() => {
     earlierToken.current += 1;
     setLoadingEarlier(false);
+    // A failure belongs to the read that failed; returning to a target later starts clean.
+    setFailure(null);
     if (key !== null) void loadFirstPage();
   }, [key, loadFirstPage]);
 
@@ -145,7 +154,7 @@ export function useWispThreadTimeline(target: TimelineTarget, refreshKey: number
     hasEarlier: current !== null && current.nextCursor !== null,
     loadingEarlier,
     loadEarlier: onLoadEarlier,
-    settled: current !== null || failed !== null,
+    settled: current !== null || failed === 'first',
     failed,
     retry,
   };

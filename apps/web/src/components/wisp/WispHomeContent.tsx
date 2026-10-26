@@ -37,8 +37,8 @@ const LIVE_STATUSES: readonly string[] = LIVE_CONCERN_STATUSES;
  * The Wisp home's body (W08 Task 9; W01 #10211, companion spec §4.1): one read
  * (`GET /wisp/home`, no model call) for first paint, then a quiet poll.
  * Ready: the conversation is the page. `WispCompanionShell` lays out the
- * thread column at reading width (the thread's timeline with Wisp's briefs
- * and nudges as posts, W02b; the composer anchored at the bottom) and the rail at the right from `lg` up:
+ * thread column at reading width (the thread's timeline with Wisp's posts:
+ * briefs, nudges, digests, W02b; the composer anchored at the bottom) and the rail at the right from `lg` up:
  * identity and grant controls, what needs you, workers, linked items, the
  * activity timeline, and the chats and memory links. Below `lg` the rail
  * collapses to a status strip that opens it in a drawer. No page heading: the
