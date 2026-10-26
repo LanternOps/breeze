@@ -2494,16 +2494,16 @@ describe('MFA enrollment API bindings', () => {
 });
 
 describe('MFA enrollment session adoption', () => {
-  it('records TOTP in the shared user state when adopting an enrollment', () => {
+  it.each(['totp', 'sms', 'passkey'] as const)('records the enrolled %s method in shared user state', (method) => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const generation = useAuthStore.getState().sessionGeneration;
 
-    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
-      accessToken: 'replacement-totp',
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, method, {
+      accessToken: `replacement-${method}`,
       expiresInSeconds: 900,
     })).toBe(true);
-    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
-    expect(useAuthStore.getState().tokens?.accessToken).toBe('replacement-totp');
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: method });
+    expect(useAuthStore.getState().tokens?.accessToken).toBe(`replacement-${method}`);
   });
 
   it('records disabled MFA in shared state while adopting the replacement session', () => {
@@ -2544,7 +2544,7 @@ describe('MFA enrollment session adoption', () => {
     const generation = useAuthStore.getState().sessionGeneration;
     useAuthStore.getState().logout();
 
-    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, 'totp', {
       accessToken: 'stale',
       expiresInSeconds: 900,
     })).toBe(false);
@@ -2557,7 +2557,7 @@ describe('MFA enrollment session adoption', () => {
     const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
     useAuthStore.getState().login(baseUser, newerTokens);
 
-    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, 'totp', {
       accessToken: 'stale',
       expiresInSeconds: 900,
     })).toBe(false);

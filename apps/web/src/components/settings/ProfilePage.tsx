@@ -835,6 +835,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const data = await response.json();
       const enrollmentStateCommitted = useAuthStore.getState().commitMfaEnrollmentIfCurrent(
         generation,
+        'totp',
         data.tokens?.accessToken ? data.tokens : undefined,
       );
       const enrollmentReplacementAdopted = Boolean(data.tokens?.accessToken) && enrollmentStateCommitted;

@@ -23,8 +23,9 @@ import {
   parseMfaChallengeResponse,
   type MfaChallenge,
   type MfaMethod,
+  type MfaPrimaryMethod,
 } from '@/lib/mfaChallenge';
-export type { MfaAllowedMethods, MfaChallenge, MfaMethod } from '@/lib/mfaChallenge';
+export type { MfaAllowedMethods, MfaChallenge, MfaMethod, MfaPrimaryMethod } from '@/lib/mfaChallenge';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -145,7 +146,7 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
-  commitMfaEnrollmentIfCurrent: (generation: number, tokens?: Tokens) => boolean;
+  commitMfaEnrollmentIfCurrent: (generation: number, method: MfaPrimaryMethod, tokens?: Tokens) => boolean;
   commitMfaDisableIfCurrent: (generation: number, tokens?: Tokens) => boolean;
   commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
@@ -275,7 +276,7 @@ export const useAuthStore = create<AuthState>()(
         return committed;
       },
 
-      commitMfaEnrollmentIfCurrent: (generation, tokens) => {
+      commitMfaEnrollmentIfCurrent: (generation, method, tokens) => {
         let committed = false;
         set((state) => {
           if (
@@ -286,7 +287,7 @@ export const useAuthStore = create<AuthState>()(
           committed = true;
           return {
             ...(tokens ? { tokens } : {}),
-            user: { ...state.user, mfaEnabled: true, mfaMethod: 'totp' },
+            user: { ...state.user, mfaEnabled: true, mfaMethod: method },
           };
         });
         return committed;

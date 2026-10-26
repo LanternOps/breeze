@@ -202,7 +202,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     digits.forEach((input, index) => fireEvent.change(input, { target: { value: String(index + 1) } }));
     fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
     await screen.findByText(/Multi-factor authentication enabled successfully/i);
-    expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, replacementTokens);
+    expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', replacementTokens);
 
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
