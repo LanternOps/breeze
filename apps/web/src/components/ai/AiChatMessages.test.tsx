@@ -51,6 +51,14 @@ vi.mock('./AiApprovalDialog', async () => {
 });
 vi.mock('./AiPlanReviewCard', () => ({ default: () => null }));
 vi.mock('./AiPlanProgressBar', () => ({ default: () => null }));
+// The run card polls the API; what this file owns is which run id reaches it.
+const runCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
+vi.mock('./AiRunCard', () => ({
+  default: (props: Record<string, unknown>) => {
+    runCards.props.push(props);
+    return <div data-testid="run-card-stub" data-run-id={String(props.runId)} />;
+  },
+}));
 
 type Msg = {
   id: string;
@@ -65,8 +73,21 @@ const baseProps = {
   onReject: vi.fn(),
 };
 
+/**
+ * Wisp companion W01: tool calls fold into a collapsed group by default. The
+ * suites below this helper pin the per-call wiring inside a group (input
+ * reuse, one card per call, proposal links), so they open every group first.
+ */
+function expandToolGroups(root: ParentNode = document) {
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-testid="ai-tool-group"] > button[aria-expanded="false"]')
+    .forEach((b) => fireEvent.click(b));
+}
+
 function renderWithMessages(messages: Msg[]) {
-  return render(<AiChatMessages {...baseProps} messages={messages as never} />);
+  const view = render(<AiChatMessages {...baseProps} messages={messages as never} />);
+  expandToolGroups(view.container);
+  return view;
 }
 
 // jsdom has no layout engine, so scrollHeight/clientHeight are 0. Stamp a
@@ -583,5 +604,150 @@ describe('one card per tool call (#9534)', () => {
   it('still renders an orphan result (no tool_use row) as its own card', () => {
     renderWithMessages([result('r1', 'gone')]);
     expect(toolCallCards.props).toHaveLength(1);
+  });
+});
+
+/**
+ * Wisp companion W01 (#10211, spec §4.2): prose replies with no avatar, a
+ * name label on the first reply of a run, user bubbles, folded tool activity,
+ * specialist run cards, time dividers, and the page/panel layouts.
+ */
+describe('chat kit units (Wisp companion W01)', () => {
+  const T0 = new Date(2026, 9, 25, 9, 0);
+  const atMin = (m: number) => new Date(T0.getTime() + m * 60_000);
+  const u = (id: string, m = 0) => ({ id, role: 'user', content: `question ${id}`, createdAt: atMin(m) });
+  const a = (id: string, content: string, m = 0, extra: Record<string, unknown> = {}) =>
+    ({ id, role: 'assistant', content, createdAt: atMin(m), ...extra });
+  const tu = (id: string, toolUseId: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_use', content: '', toolName, toolUseId, toolInput: {}, createdAt: T0 });
+  const tr = (id: string, toolUseId: string, toolName = 'query_devices', extra: Record<string, unknown> = {}) =>
+    ({ id, role: 'tool_result', content: '[]', toolName, toolUseId, toolOutput: [], createdAt: T0, ...extra });
+  const view = (messages: unknown[], props: Record<string, unknown> = {}) =>
+    render(<AiChatMessages {...baseProps} messages={messages as never} {...props} />);
+
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+    runCards.props.length = 0;
+  });
+
+  it('renders no avatar and labels the first assistant message of a run', () => {
+    const { container, getAllByTestId, rerender } = view([u('u1'), a('a1', 'first'), a('a2', 'second')]);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getAllByTestId('ai-msg-label').map((n) => n.textContent)).toEqual(['Breeze AI']);
+    expect(getAllByTestId('ai-msg-assistant')).toHaveLength(2);
+    const bubble = getAllByTestId('ai-msg-user')[0] as HTMLElement;
+    expect(bubble.textContent).toBe('question u1');
+    expect(bubble.className).toContain('max-w-[75%]');
+    expect(bubble.className).toContain('break-words');
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), a('a1', 'first')] as never} assistantLabel="Wisp" />);
+    expect(getAllByTestId('ai-msg-label').map((n) => n.textContent)).toEqual(['Wisp']);
+  });
+
+  it('blank assistant rows are not rendered; a streaming one shows the caret', () => {
+    const { getAllByTestId, getByTestId, rerender } = view([u('u1'), a('blank', '\n\n')]);
+    expect(() => getAllByTestId('ai-msg-assistant')).toThrow();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), a('live', '', 0, { isStreaming: true })] as never} />);
+    expect(getAllByTestId('ai-msg-assistant')).toHaveLength(1);
+    expect(getByTestId('ai-msg-caret')).toBeTruthy();
+  });
+
+  it('three tool rows render one ai-tool-group; a failed one is expanded and the assistant text after it still renders in order', () => {
+    const { getAllByTestId, container } = view([
+      u('u1'),
+      tu('t1', 'a'), tr('r1', 'a'),
+      a('pre', ' '),
+      tu('t2', 'b', 'list_sites'), tr('r2', 'b', 'list_sites', { isError: true, toolOutput: { error: 'nope' } }),
+      tu('t3', 'c', 'manage_alerts'), tr('r3', 'c', 'manage_alerts'),
+      a('after', 'One check failed.'),
+    ]);
+    const groups = getAllByTestId('ai-tool-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.getAttribute('data-state')).toBe('failed');
+    // Expanded: every call's own card renders inside the group.
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(['query_devices', 'list_sites', 'manage_alerts']);
+    const order = Array.from(container.querySelectorAll('[data-testid="ai-msg-user"], [data-testid="ai-tool-group"], [data-testid="ai-msg-assistant"]'))
+      .map((n) => n.getAttribute('data-testid'));
+    expect(order).toEqual(['ai-msg-user', 'ai-tool-group', 'ai-msg-assistant']);
+    expect(getAllByTestId('ai-msg-assistant')[0]?.textContent).toContain('One check failed.');
+  });
+
+  it('a successful group stays collapsed and renders no per-call card until opened', () => {
+    const { getByTestId } = view([u('u1'), tu('t1', 'a'), tr('r1', 'a'), tu('t2', 'b', 'list_sites'), tr('r2', 'b', 'list_sites')]);
+    expect(getByTestId('ai-tool-group').getAttribute('data-state')).toBe('done');
+    expect(toolCallCards.props).toHaveLength(0);
+    expandToolGroups();
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(['query_devices', 'list_sites']);
+  });
+
+  it('launch_specialist admitted result renders AiRunCard with its runId', () => {
+    const RUN = '0b9a4c1e-2f3d-4a5b-8c6d-7e8f9a0b1c2d';
+    const RUN_2 = '1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const launch = (id: string, runId: string) => [
+      tu(id, id, 'launch_specialist'),
+      tr(`r-${id}`, id, 'launch_specialist', { toolOutput: undefined, content: JSON.stringify({ admitted: true, runId }) }),
+    ];
+    const { getAllByTestId, queryByText, getByText, rerender } = view([u('u1'), ...launch('s1', RUN)]);
+    expect(getAllByTestId('run-card-stub').map((n) => n.getAttribute('data-run-id'))).toEqual([RUN]);
+    expect(runCards.props[0]).toMatchObject({ runId: RUN, initialStatus: 'queued' });
+    expect(queryByText(/Handed to/)).toBeNull();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), ...launch('s1', RUN), ...launch('s2', RUN_2)] as never} />);
+    expect(getAllByTestId('run-card-stub').map((n) => n.getAttribute('data-run-id'))).toEqual([RUN, RUN_2]);
+    expect(getByText('Handed to 2 specialists')).toBeTruthy();
+  });
+
+  it('a script proposal call stays a visible card so its link is never folded away (#7918)', () => {
+    const PROPOSAL = '6f1c2a4e-8d3b-4c5a-9e7f-0a1b2c3d4e5f';
+    const { getByTestId, queryByTestId } = view([
+      tu('t1', 'p', 'propose_script'),
+      tr('r1', 'p', 'propose_script', { toolOutput: { proposalId: PROPOSAL } }),
+    ]);
+    expect(queryByTestId('ai-tool-group')).toBeNull();
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('showTimeDividers inserts ai-chat-divider on a day change', () => {
+    const nextDay = new Date(T0.getFullYear(), T0.getMonth(), T0.getDate() + 1, 8, 15);
+    const { getAllByTestId } = view(
+      [u('u1', 0), a('a1', 'hi', 1), { ...u('u2'), createdAt: nextDay }],
+      { showTimeDividers: true, layout: 'page' },
+    );
+    const dividers = getAllByTestId('ai-chat-divider');
+    expect(dividers).toHaveLength(2);
+    expect(dividers[0]?.getAttribute('role')).toBe('separator');
+    expect(dividers[1]?.textContent).toMatch(/8:15/);
+  });
+
+  it('layout=panel has no max-w-3xl wrapper and no dividers', () => {
+    const { container, queryAllByTestId } = view([u('u1', 0), u('u2', 90)]);
+    expect(container.querySelector('.max-w-3xl')).toBeNull();
+    expect(queryAllByTestId('ai-chat-divider')).toHaveLength(0);
+    const page = view([u('u1', 0)], { layout: 'page' });
+    expect(page.container.querySelector('.max-w-3xl')).not.toBeNull();
+  });
+
+  it('emptyState replaces the quick actions', () => {
+    const { getByTestId, queryByText } = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
+    expect(getByTestId('custom-empty')).toBeTruthy();
+    expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('without emptyState the quick actions still render', () => {
+    const { getByText } = view([]);
+    expect(getByText('Check server health')).toBeTruthy();
+  });
+
+  it('leading renders inside the scroll container before the first message', () => {
+    const { container, getByTestId } = view([u('u1')], { leading: <article data-testid="lead">brief</article>, layout: 'page' });
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const lead = getByTestId('lead');
+    expect(scroller.contains(lead)).toBe(true);
+    const first = getByTestId('ai-msg-user');
+    expect(lead.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('leading still renders, above the empty state, when there are no messages yet', () => {
+    const { getByTestId } = view([], { leading: <article data-testid="lead">brief</article>, emptyState: <div data-testid="custom-empty" /> });
+    const lead = getByTestId('lead');
+    expect(lead.compareDocumentPosition(getByTestId('custom-empty')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

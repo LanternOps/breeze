@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { shouldAutoScroll } from "./aiChatScroll";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, User } from "lucide-react";
+import { Bot } from "lucide-react";
 import AiToolCallCard from "./AiToolCallCard";
+import AiToolActivityGroup from "./AiToolActivityGroup";
 import FlowDraftCard, { parseFlowToolResult } from "../flows/FlowDraftCard";
 import { CallerVerificationRefusal } from "../callerVerification/CallerVerificationRefusal";
 import AiApprovalDialog from "./AiApprovalDialog";
@@ -20,25 +21,9 @@ import { useTranslation } from "react-i18next";
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
-import { pairToolResults } from "./aiChatGrouping";
+import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
 
-interface Message {
-  id: string;
-  role: "user" | "assistant" | "tool_use" | "tool_result";
-  content: string;
-  toolName?: string;
-  toolInput?: Record<string, unknown>;
-  toolOutput?: unknown;
-  toolUseId?: string;
-  isError?: boolean;
-  /**
-   * Server-asserted approval handoff (#5107) — set from the SSE event by
-   * processStreamEvent, never derived from `toolOutput`, which the tool
-   * controls. Absent on rows replayed from history.
-   */
-  handoff?: string;
-  isStreaming?: boolean;
-}
+export { pairToolResults } from "./aiChatGrouping";
 
 interface PendingPlan {
   planId: string;
@@ -53,7 +38,7 @@ interface ActivePlan {
 }
 
 interface AiChatMessagesProps {
-  messages: Message[];
+  messages: ChatRow[];
   pendingApproval: PendingApproval | null;
   pendingPlan?: PendingPlan | null;
   activePlan?: ActivePlan | null;
@@ -74,10 +59,26 @@ interface AiChatMessagesProps {
    * upgrade, so an empty map degrades to "poll only", never to a blank card.
    */
   chatRuns?: Record<string, ChatRunState>;
+  /**
+   * Wisp companion W01 (spec §4.2). `page` centers the thread at reading
+   * width (the Wisp home, /ai/chat); `panel` (default) is the 400 px docked
+   * panel's dense list.
+   */
+  layout?: "panel" | "page";
+  /** The name over the first reply of each run ("Wisp"); defaults to "Breeze AI". */
+  assistantLabel?: string;
+  /** Time dividers from each message's createdAt (off by default; the docked panel keeps them off). */
+  showTimeDividers?: boolean;
+  /** Rendered inside the scroll container before the first message (the Wisp brief post). */
+  leading?: ReactNode;
+  /** Replaces the built-in quick-actions empty state. */
+  emptyState?: ReactNode;
 }
 
 const SCRIPT_PROPOSAL_TOOLS = new Set(["run_script", "propose_script", "get_script_proposal"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Results that render as their own card and never fold into a tool-activity group. */
+const CARD_TOOLS = new Set(["workspace_launch_analysis", "unattended_release"]);
 
 /**
  * #7918: the proposal page (`/approvals#proposal-<id>`) shows a script
@@ -104,7 +105,17 @@ export function scriptProposalHref(
   return typeof id === "string" && UUID_RE.test(id) ? `/approvals#proposal-${id.toLowerCase()}` : null;
 }
 
-export { pairToolResults } from "./aiChatGrouping";
+/**
+ * Flow, run, unattended-release and script-proposal results never fold: each
+ * carries an affordance (a review link, a live run, a proposal link) that
+ * must stay visible without a click.
+ */
+function isCardCall(call: ToolCall): boolean {
+  if (CARD_TOOLS.has(call.toolName)) return true;
+  const output = call.result?.toolOutput ?? call.result?.content;
+  if (call.result && parseFlowToolResult(call.toolName, output)) return true;
+  return scriptProposalHref(call.toolName, call.input, output) !== null;
+}
 
 export default function AiChatMessages({
   messages,
@@ -121,8 +132,13 @@ export default function AiChatMessages({
   onSendQuickAction,
   onIntentDecided,
   chatRuns = {},
+  layout = "panel",
+  assistantLabel,
+  showTimeDividers = false,
+  leading,
+  emptyState,
 }: AiChatMessagesProps) {
-  const { t } = useTranslation("ai");
+  const { t, i18n } = useTranslation("ai");
   const quickActions = [
     {
       label: t("aiChatMessages.quickActions.serverHealth.label"),
@@ -155,7 +171,11 @@ export default function AiChatMessages({
       dotColor: "bg-primary",
     },
   ];
-  const { resultForUse, pairedResults } = useMemo(() => pairToolResults(messages), [messages]);
+  const units = useMemo(
+    () => groupChatUnits(messages, { dividers: showTimeDividers, isCard: isCardCall }),
+    [messages, showTimeDividers],
+  );
+  const label = assistantLabel ?? t("aiChatMessages.title");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Whether the viewport is currently pinned near the bottom. Seeded `true` so
   // the first render (and a freshly opened panel) auto-scrolls. We only flip it
@@ -212,7 +232,7 @@ export default function AiChatMessages({
    * carries no input of its own).
    */
   const renderToolResult = (
-    msg: Message,
+    msg: ChatRow,
     key: string,
     input: Record<string, unknown> | undefined,
   ) => {
@@ -294,7 +314,97 @@ export default function AiChatMessages({
     );
   };
 
-  if (messages.length === 0) {
+  /**
+   * One tool call: its finished card in the tool_use row's place (#9534), or
+   * the pending card. Both are wrapped in a Fragment under the call's key, so
+   * the card instance (and its expanded state) survives the swap.
+   */
+  const renderCall = (call: ToolCall) => {
+    if (call.result) return renderToolResult(call.result, call.key, call.input);
+    return (
+      <Fragment key={call.key}>
+        <AiToolCallCard
+          toolName={call.toolName || t("aiChatMessages.unknownTool")}
+          input={call.input}
+          isExecuting
+        />
+      </Fragment>
+    );
+  };
+
+  const renderUnit = (unit: ChatUnit, now: Date): ReactNode => {
+    switch (unit.kind) {
+      case "divider": {
+        const parts = dividerParts(unit.at, now, i18n.language);
+        const text =
+          parts.day === "today"
+            ? t("aiChatMessages.divider.today", { time: parts.time })
+            : parts.day === "yesterday"
+              ? t("aiChatMessages.divider.yesterday", { time: parts.time })
+              : t("aiChatMessages.divider.date", { date: parts.date, time: parts.time });
+        return (
+          <div
+            key={`divider-${unit.at.getTime()}`}
+            role="separator"
+            aria-label={text}
+            data-testid="ai-chat-divider"
+            className="py-1 text-center text-[11px] text-muted-foreground"
+          >
+            {text}
+          </div>
+        );
+      }
+      case "user":
+        return (
+          <div
+            key={unit.msg.id}
+            data-testid="ai-msg-user"
+            className="ml-auto w-fit max-w-[75%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-primary/10 px-4 py-2.5 text-sm text-foreground dark:bg-primary/20"
+          >
+            {unit.msg.content}
+          </div>
+        );
+      case "assistant":
+        return (
+          <div key={unit.msg.id} data-testid="ai-msg-assistant" className="min-w-0">
+            {unit.firstOfRun && (
+              <p data-testid="ai-msg-label" className="mb-1 text-xs font-medium text-muted-foreground">
+                {label}
+              </p>
+            )}
+            <AssistantMarkdown content={unit.msg.content} isStreaming={unit.msg.isStreaming} />
+          </div>
+        );
+      case "tools":
+        return <AiToolActivityGroup key={unit.id} group={unit} renderCall={renderCall} />;
+      case "card":
+        return renderCall(unit.call);
+      case "specialists":
+        return (
+          <div key={unit.id} className="space-y-2" data-testid="ai-specialist-runs">
+            {unit.runs.length > 1 && (
+              <p className="text-xs font-medium text-muted-foreground">
+                {t("aiChatMessages.specialists.heading", { count: unit.runs.length })}
+              </p>
+            )}
+            {unit.runs.map((run) => (
+              <AiRunCard key={run.key} runId={run.runId} initialStatus="queued" run={chatRuns[run.runId]} />
+            ))}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  if (messages.length === 0 && !leading) {
+    if (emptyState) {
+      return (
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+          <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>{emptyState}</div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center p-6">
         <Bot className="h-10 w-10 text-muted-foreground" />
@@ -328,115 +438,12 @@ export default function AiChatMessages({
     );
   }
 
-  return (
-    <div
-      ref={scrollContainerRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
-    >
-      {messages.map((msg, idx) => {
-        if (msg.role === "user") {
-          return (
-            <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600">
-                <User className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-gray-900 whitespace-pre-wrap dark:text-gray-200">
-                  {msg.content}
-                </p>
-              </div>
-            </div>
-          );
-        }
-
-        if (msg.role === "assistant") {
-          return (
-            <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary">
-                <Bot className="h-3.5 w-3.5 text-white" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="prose prose-sm max-w-none text-sm text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert dark:text-gray-200">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      a: ({ href, children }) => {
-                        // Origin check (not a string prefix): a docs-lookalike host
-                        // (e.g. docs.breezermm.com.evil.com) is NOT treated as a
-                        // trusted in-app docs link and instead falls through to the
-                        // safe external-link branch below.
-                        if (isDocsUrl(href)) {
-                          return (
-                            <a
-                              href={href}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                useHelpStore.getState().open(href);
-                              }}
-                              className="cursor-pointer"
-                            >
-                              {children}
-                            </a>
-                          );
-                        }
-                        return (
-                          <a
-                            href={
-                              href && /^https?:\/\//.test(href) ? href : "#"
-                            }
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            {children}
-                          </a>
-                        );
-                      },
-                      // AI-authored markdown images must never auto-load —
-                      // see safeMarkdownImage.tsx for why.
-                      img: ({ src, alt }) => (
-                        <SafeMarkdownImage src={src} alt={alt} />
-                      ),
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                  {msg.isStreaming && (
-                    <span className="inline-block h-4 w-1 animate-pulse bg-gray-500 dark:bg-gray-400" />
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        }
-
-        if (msg.role === "tool_use") {
-          // #9534: once its result exists, the completed card takes this row's
-          // place under this row's key, so the pending card is replaced in
-          // place instead of staying beside a second, completed card.
-          const result = resultForUse.get(idx);
-          // The Fragment matches renderToolResult's wrapper, so the card
-          // instance (and its expanded state) survives the swap.
-          if (result) return renderToolResult(result, msg.id, msg.toolInput);
-          return (
-            <Fragment key={msg.id}>
-              <AiToolCallCard
-                toolName={msg.toolName ?? t("aiChatMessages.unknownTool")}
-                input={msg.toolInput}
-                isExecuting
-              />
-            </Fragment>
-          );
-        }
-
-        if (msg.role === "tool_result") {
-          // Already rendered in its tool_use row's place (#9534).
-          if (pairedResults.has(idx)) return null;
-          return renderToolResult(msg, msg.id, undefined);
-        }
-
-        return null;
-      })}
+  const now = new Date();
+  const body = (
+    <>
+      {leading}
+      {units.map((unit) => renderUnit(unit, now))}
+      {messages.length === 0 && emptyState}
 
       {pendingApproval && (
         <AiApprovalDialog
@@ -489,6 +496,73 @@ export default function AiChatMessages({
             {t("aiChatMessages.pauseAi")}
           </button>
         </div>
+      )}
+    </>
+  );
+
+  if (layout === "page") {
+    return (
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-6">
+        {/* Short threads sit just above the composer; long ones scroll. */}
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end space-y-5">{body}</div>
+      </div>
+    );
+  }
+  return (
+    <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-3 space-y-3">
+      {body}
+    </div>
+  );
+}
+
+/** An assistant reply: prose, no avatar, no bubble (spec D2). */
+function AssistantMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  return (
+    <div className="prose prose-sm max-w-none text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children }) => {
+            // Origin check (not a string prefix): a docs-lookalike host
+            // (e.g. docs.breezermm.com.evil.com) is NOT treated as a
+            // trusted in-app docs link and instead falls through to the
+            // safe external-link branch below.
+            if (isDocsUrl(href)) {
+              return (
+                <a
+                  href={href}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    useHelpStore.getState().open(href);
+                  }}
+                  className="cursor-pointer"
+                >
+                  {children}
+                </a>
+              );
+            }
+            return (
+              <a
+                href={href && /^https?:\/\//.test(href) ? href : "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {children}
+              </a>
+            );
+          },
+          // AI-authored markdown images must never auto-load —
+          // see safeMarkdownImage.tsx for why.
+          img: ({ src, alt }) => <SafeMarkdownImage src={src} alt={alt} />,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+      {isStreaming && (
+        <span
+          data-testid="ai-msg-caret"
+          className="inline-block h-4 w-1 animate-pulse bg-muted-foreground"
+        />
       )}
     </div>
   );
