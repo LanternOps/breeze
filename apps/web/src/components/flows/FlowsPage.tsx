@@ -67,13 +67,6 @@ export default function FlowsPage() {
         <p className="max-w-2xl text-sm text-muted-foreground">{t('subtitle')}</p>
       </header>
 
-      <p
-        className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
-        data-testid="flow-preview-notice"
-      >
-        {t('previewNotice')}
-      </p>
-
       {loadFailed && <p data-testid="flow-error" className="text-sm text-destructive">{t('errors.loadFailed')}</p>}
 
       {flows !== null && rows.length === 0 && !loadFailed ? (
