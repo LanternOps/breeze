@@ -92,7 +92,7 @@ export const AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS = 30;
 
 // #9075 W4a (OD8 B): partner-level agreement defaults, edited under
 // Settings → Billing → Agreements. Bounds mirror the partners CHECKs in
-// migration 2027-01-06-141000-agreement-defaults.sql.
+// migration 2027-01-06-180000-agreement-defaults.sql.
 export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN = 1;
 export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX = 365;
 /** Automatic reminders: "every N days since the last email"; null = off. */
