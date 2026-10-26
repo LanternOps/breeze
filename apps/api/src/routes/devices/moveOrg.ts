@@ -102,7 +102,6 @@ moveOrgRoutes.post(
   zValidator('json', moveOrgSchema),
   async (c) => {
     const auth = c.get('auth');
-    const deviceId = c.req.param('id')!;
     const { orgId: targetOrgId, siteId: targetSiteId, acceptCurrencyMismatch, stepUpGrant } = c.req.valid('json');
 
     // Multi-currency (#3776): tickets bound to this device move with it, and
@@ -117,13 +116,17 @@ moveOrgRoutes.post(
     }
 
     // Source-side access check via the standard chokepoint.
-    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    const device = await getDeviceWithOrgAndSiteCheck(c, c.req.param('id')!, auth);
     if (device === SITE_ACCESS_DENIED) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // From here on, the device's canonical id, never the raw path segment: an
+    // uppercase uuid in the URL finds the same device, and the step-up binding,
+    // the move itself and the audit rows must all use one spelling (#10119).
+    const deviceId = device.id;
 
     const sourceOrgId = device.orgId;
 
