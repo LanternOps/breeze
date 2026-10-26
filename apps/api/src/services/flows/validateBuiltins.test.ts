@@ -122,6 +122,10 @@ describe('validateBuiltinStep', () => {
   it('PUBLIC_API_URL origin is http_origin_not_allowed', async () => {
     expect(await codesFor('http_request', { method: 'POST', url: 'https://breeze.example.test/api/v1/webhooks/flows/x' })).toEqual(['http_origin_not_allowed']);
     expect(await codesFor('http_request', { method: 'GET', url: 'https://BREEZE.example.test:443/{{inputs.p}}' })).toEqual(['http_origin_not_allowed']);
+    // A trailing dot is the same host (absolute FQDN), and an env var written with one is too.
+    expect(await codesFor('http_request', { method: 'GET', url: 'https://breeze.example.test./x' })).toEqual(['http_origin_not_allowed']);
+    vi.stubEnv('PUBLIC_API_URL', 'https://breeze.example.test.');
+    expect(await codesFor('http_request', { method: 'GET', url: 'https://breeze.example.test/x' })).toEqual(['http_origin_not_allowed']);
   });
   it('denied and templated header names are http_header_not_allowed', async () => {
     for (const name of ['Host', 'cookie', 'AUTHORIZATION', 'Proxy-Authorization', 'X-Forwarded-For', 'Forwarded', 'X-Breeze-Signature', 'Transfer-Encoding', 'te']) {

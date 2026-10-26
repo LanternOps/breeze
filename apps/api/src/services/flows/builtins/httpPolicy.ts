@@ -84,14 +84,23 @@ const OWN_ORIGIN_ENV_VARS = [
   'PUBLIC_API_URL', 'API_URL', 'PUBLIC_APP_URL', 'DASHBOARD_URL', 'PUBLIC_URL', 'PUBLIC_PORTAL_URL', 'PUBLIC_WEB_URL',
 ] as const;
 
-/** Hostnames of Breeze's own configured origins, lowercased. Read at call time. */
+/**
+ * One spelling per host: lowercased, without the trailing dot(s) of an
+ * absolute FQDN (`breeze.example.test.` is the same host as
+ * `breeze.example.test` to DNS and to the server, so it must be to the guard).
+ */
+function canonicalHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.+$/, '');
+}
+
+/** Hostnames of Breeze's own configured origins, canonicalized. Read at call time. */
 export function breezeOwnHostnames(env: NodeJS.ProcessEnv = process.env): Set<string> {
   const out = new Set<string>();
   for (const key of OWN_ORIGIN_ENV_VARS) {
     const raw = env[key]?.trim();
     if (!raw) continue;
     try {
-      const host = new URL(raw).hostname.toLowerCase();
+      const host = canonicalHostname(new URL(raw).hostname);
       if (host) out.add(host);
     } catch {
       // A malformed URL var names no origin; boot validation reports it.
@@ -100,8 +109,13 @@ export function breezeOwnHostnames(env: NodeJS.ProcessEnv = process.env): Set<st
   return out;
 }
 
+/**
+ * Whether `hostname` is one of Breeze's own. By name: another name that
+ * resolves to Breeze's address (a CNAME, a raw IP) is not caught here — the
+ * per-flow rate limit and monthly caps bound such a loop (plan Decision 17).
+ */
 export function isBreezeOwnHostname(hostname: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  return breezeOwnHostnames(env).has(hostname.toLowerCase());
+  return breezeOwnHostnames(env).has(canonicalHostname(hostname));
 }
 
 // ── credentials in documents ────────────────────────────────────────────────

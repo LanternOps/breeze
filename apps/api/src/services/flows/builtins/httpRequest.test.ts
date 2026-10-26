@@ -168,6 +168,13 @@ describe('executeHttpRequestStep — egress policy', () => {
     expect(fetchMock()).not.toHaveBeenCalled();
   });
 
+  it('own API host with a trailing dot (an equivalent FQDN spelling) is still egress_blocked', async () => {
+    const own = 'https://breeze.example.test.';
+    expect(await executeHttpRequestStep({ method: 'GET', url: `${own}/api/v1/mcp` }, ctx({ literalOrigin: own })))
+      .toMatchObject({ kind: 'failed', code: 'egress_blocked', policy: true });
+    expect(fetchMock()).not.toHaveBeenCalled();
+  });
+
   it('http scheme refused without the flag', async () => {
     const httpOrigin = 'http://198.51.100.7';
     expect(await executeHttpRequestStep(get(`${httpOrigin}/x`), ctx({ literalOrigin: httpOrigin })))
