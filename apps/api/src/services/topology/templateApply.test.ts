@@ -291,4 +291,37 @@ describe('template application admission tier', () => {
       'read',
     );
   });
+  it('refuses an apply whose session epochs moved since the preview was read (W08 QW4)', async () => {
+    const previewAuth = requesterAuth();
+    const previewActor = freezeApplicationActor(previewAuth);
+    const token = 'opaque-preview-token';
+    const tokenDigest = applicationHash(token);
+    const previewId = applicationId(previewActor.user.id, tokenDigest);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const effect = {
+      siteId: site, expectedBindingRevision: '0', expectedSettingsRevision: '0', partnerVersionId: null, orgVersionId: null,
+      overrides: { targets: {}, policies: {} }, resolvedDigest: 'a'.repeat(64), templateRevisions: {},
+      enableRecurring: false, operationId: previewId,
+    };
+    const record = {
+      version: 1 as const, requesterId: previewActor.user.id, originalOrgId: org, actor: previewActor, previewId, tokenDigest,
+      permissionVersion: 'v1', expiresAt,
+      effectDigest: applicationEffectDigest({ effect, actor: previewActor, permissionVersion: 'v1', expiresAt }),
+      effect, preview: { siteId: site, expectedBindingRevision: '0', effects: [], errors: [] },
+    };
+    storeMocks.applicationRows.mockImplementation((_a: string, _r: string, eventKind: string) =>
+      Promise.resolve(eventKind === INTENT_EVENT ? [] : [{ id: 'row-1', orgId: org, siteId: site, aggregateId: previewId, eventKind: PREVIEW_EVENT, payload: record }]));
+    // The apply caller carries newer epochs than the ones the preview recorded (a sign-out or an MFA change in between).
+    const movedAuth = { ...previewAuth, token: { ...previewAuth.token, aep: 2, mep: 1 } } as typeof previewAuth;
+    authorityMock.mockResolvedValue({ auth: movedAuth, permissions, version: 'v1' });
+    await expect(applyTopologyTemplatePreview(movedAuth, permissions, token, 'moved-epochs'))
+      .rejects.toMatchObject({ code: 'permission_changed' });
+    expect(accessMock).not.toHaveBeenCalled();
+    // CONTROL: the same record with unchanged epochs does not trip the check (it proceeds to the site write check).
+    accessMock.mockRejectedValue(new TopologyError('topology_permission_denied', 403, 'denied'));
+    authorityMock.mockResolvedValue({ auth: previewAuth, permissions, version: 'v1' });
+    await expect(applyTopologyTemplatePreview(previewAuth, permissions, token, 'same-epochs'))
+      .rejects.not.toMatchObject({ code: 'permission_changed' });
+    expect(accessMock).toHaveBeenCalled();
+  });
 });
