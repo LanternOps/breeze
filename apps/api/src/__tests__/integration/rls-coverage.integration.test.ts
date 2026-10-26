@@ -696,6 +696,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // connection_health_incidents_org_partner_fk ties org_id to partner_id.
   // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
   'connection_health_incidents',
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_webhook_deliveries and
+  // flow_usage_counters copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-wide flow, NOT org XOR partner, so
+  // absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES. Neither has a
+  // breeze_current_partner_id() read branch: deliveries and counters are
+  // partner-private (an org token must never see a partner-wide flow's rows).
+  // Functional forge proof: flowWebhooksRls.integration.test.ts (Task A8).
+  'flow_webhook_deliveries',
+  'flow_usage_counters',
   // Wisp W05a (#9911, w00 A30): wisp_concerns, wisp_concern_recipients and
   // wisp_watches copy the connection_health_incidents shape — partner_id
   // always set, org_id NULL for a partner-level concern / partner-wide watch,
