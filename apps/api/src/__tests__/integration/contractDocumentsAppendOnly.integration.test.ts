@@ -1,6 +1,6 @@
 /**
  * contract_documents is append-only (#9075 W4b, spec OD2-B;
- * migrations/2027-01-06-150000-contract-documents-append-only.sql).
+ * migrations/2027-01-06-170000-contract-documents-append-only.sql).
  *
  * A signed agreement is legal evidence. Once inserted, the bytes, the hashes
  * and the signer snapshot never change and the row is never deleted, except
