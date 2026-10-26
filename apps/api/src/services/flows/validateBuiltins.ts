@@ -135,6 +135,8 @@ function httpRequestIssues(input: Record<string, unknown>, stepId: string, base:
 
   if (containsTemplate(input.method)) {
     out.push(issue('http_method_not_literal', 'The HTTP method must be literal, not a template.', at('method')));
+  } else if ((input.method === 'GET' || input.method === 'HEAD') && input.body !== undefined) {
+    out.push(issue('input_invalid', `A ${input.method} request carries no body.`, at('body')));
   }
 
   if (typeof input.url === 'string') {

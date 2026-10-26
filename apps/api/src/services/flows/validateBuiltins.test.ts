@@ -92,6 +92,10 @@ describe('validateBuiltinStep', () => {
   it('a literal https GET passes', async () => {
     expect(await codesFor('http_request', { method: 'GET', url: 'https://api.example.com/v1/items' })).toEqual([]);
   });
+  it('a GET or HEAD with a body is input_invalid at save (it would fail every run)', async () => {
+    expect(await codesFor('http_request', { method: 'GET', url: 'https://api.example.com/x', body: { a: 1 } })).toEqual(['input_invalid']);
+    expect(await codesFor('http_request', { method: 'POST', url: 'https://api.example.com/x', body: { a: 1 } })).toEqual([]);
+  });
   it('templated method is http_method_not_literal', async () => {
     expect(await codesFor('http_request', { method: '{{inputs.m}}', url: 'https://api.example.com/x' })).toEqual(['http_method_not_literal']);
   });
