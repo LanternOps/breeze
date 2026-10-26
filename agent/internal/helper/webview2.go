@@ -110,26 +110,41 @@ var fallbackAssistRequirements = assistRequirements{MinWebView2Version: fallback
 // sit next to an older executable; P12). An unknown installedVersion never
 // matches.
 func loadAssistRequirements(installDir, installedVersion string) assistRequirements {
+	req, _ := readAssistRequirements(installDir, installedVersion)
+	return req
+}
+
+// readAssistRequirements is loadAssistRequirements that also says why a
+// sidecar that exists was not used ("" when it was used or is absent).
+func readAssistRequirements(installDir, installedVersion string) (assistRequirements, string) {
 	f, err := os.Open(filepath.Join(installDir, assistRequirementsFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return fallbackAssistRequirements, ""
+	}
 	if err != nil {
-		return fallbackAssistRequirements
+		return fallbackAssistRequirements, "unreadable: " + err.Error()
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxAssistRequirementsBytes+1))
-	if err != nil || len(data) > maxAssistRequirementsBytes {
-		return fallbackAssistRequirements
+	if err != nil {
+		return fallbackAssistRequirements, "unreadable: " + err.Error()
+	}
+	if len(data) > maxAssistRequirementsBytes {
+		return fallbackAssistRequirements, "oversized"
 	}
 	var req assistRequirements
 	if err := json.Unmarshal(data, &req); err != nil {
-		return fallbackAssistRequirements
+		return fallbackAssistRequirements, "malformed: " + err.Error()
 	}
 	if _, ok := parseWebView2Version(req.MinWebView2Version); !ok {
-		return fallbackAssistRequirements
+		return fallbackAssistRequirements, "invalid minWebView2Version " + strconv.Quote(req.MinWebView2Version)
 	}
 	if strings.TrimSpace(req.AssistVersion) == "" || !helperVersionsMatch(installedVersion, req.AssistVersion) {
-		return fallbackAssistRequirements
+		// Expected right after an update rollback (P12).
+		return fallbackAssistRequirements, "for assist " + strconv.Quote(req.AssistVersion) +
+			", installed " + strconv.Quote(installedVersion)
 	}
-	return req
+	return req, ""
 }
 
 // webview2GateLocked reports whether Assist may launch in state's session.
@@ -146,16 +161,25 @@ func (m *Manager) webview2GateLocked(state *sessionState) bool {
 	raw, ok := m.readWebView2Func(state.key)
 	found, parsed := parseWebView2Version(raw)
 	if !ok || !parsed {
-		if !m.webview2UnknownLogged {
+		if !state.webview2UnknownLogged {
 			log.Warn("WebView2 runtime version not found; launching breeze assist without the runtime check",
-				"session", state.key)
-			m.webview2UnknownLogged = true
+				"session", state.key, "registered", ok, "value", raw)
+			state.webview2UnknownLogged = true
 		}
 		state.launchIssue = ""
+		state.webview2Refusal = ""
 		return true
 	}
-	req := loadAssistRequirements(filepath.Dir(m.binaryPath), m.installedVersionLocked())
-	min, _ := parseWebView2Version(req.MinWebView2Version) // validated by loadAssistRequirements
+	state.webview2UnknownLogged = false
+	req, rejected := readAssistRequirements(filepath.Dir(m.binaryPath), m.installedVersionLocked())
+	if rejected != m.sidecarRejectLogged {
+		if rejected != "" {
+			log.Warn("ignoring breeze assist's requirements sidecar; using the agent's WebView2 minimum",
+				"reason", rejected, "minimum", fallbackMinWebView2)
+		}
+		m.sidecarRejectLogged = rejected
+	}
+	min, _ := parseWebView2Version(req.MinWebView2Version) // validated by readAssistRequirements
 	if !found.less(min) {
 		if state.launchIssue != "" {
 			log.Info("WebView2 runtime now meets breeze assist's minimum; launching",

@@ -62,8 +62,11 @@ func loadOwnershipFile(dir string) (ownershipFile, bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxOwnershipFileBytes+1))
-	if err != nil || len(data) > maxOwnershipFileBytes {
-		return ownershipFile{}, true, errOwnershipMalformed
+	if err != nil {
+		return ownershipFile{}, true, fmt.Errorf("%w: %v", errOwnershipMalformed, err)
+	}
+	if len(data) > maxOwnershipFileBytes {
+		return ownershipFile{}, true, fmt.Errorf("%w: larger than %d bytes", errOwnershipMalformed, maxOwnershipFileBytes)
 	}
 	var rec ownershipFile
 	if err := json.Unmarshal(data, &rec); err != nil {
@@ -124,10 +127,28 @@ func storeOwnershipFile(dir string, rec ownershipFile) error {
 //   - deploy off and Assist installed: today's agent would already have
 //     removed its own install, so this one is someone else's.
 //
+// Once a record exists, the marker counts only while the install it describes
+// is still there: a marker left with no binary behind it (an admin removed
+// Assist, or clearing it after the agent's own uninstall failed) is cleared,
+// and an installed version other than the one recorded means someone else
+// installed over the agent's copy.
+//
 // A record that cannot be read or written fails toward "not ours": the cost is
 // a copy the agent leaves installed, never software it removes by mistake.
 // Must be called with m.mu held.
 func (m *Manager) installIsOursLocked(installed, enabled bool) bool {
+	if m.pendingOwnershipMark != nil {
+		// The marker write after the agent's own install failed: retry it.
+		// Until it lands, this process knows the install is the agent's.
+		if !installed {
+			m.pendingOwnershipMark = nil
+		} else if err := writeOwnership(m.baseDir, *m.pendingOwnershipMark); err != nil {
+			return true
+		} else {
+			log.Info("recorded breeze assist ownership after an earlier failed write", "version", m.pendingOwnershipMark.Version)
+			m.pendingOwnershipMark = nil
+		}
+	}
 	rec, present, err := loadOwnershipFile(m.baseDir)
 	if err != nil {
 		if !m.ownershipErrLogged {
@@ -135,12 +156,40 @@ func (m *Manager) installIsOursLocked(installed, enabled bool) bool {
 				"error", err.Error())
 			m.ownershipErrLogged = true
 		}
+		if !installed {
+			m.resetOwnershipRecordLocked()
+		}
 		return false
 	}
 	m.ownershipErrLogged = false
-	if present {
-		return rec.Managed != nil && rec.Managed.InstalledBy == ownershipInstalledByAgent
+	if !present {
+		return m.adoptOnFirstApplyLocked(installed, enabled)
 	}
+	if rec.Managed == nil || rec.Managed.InstalledBy != ownershipInstalledByAgent {
+		return false
+	}
+	if !installed {
+		m.resetOwnershipRecordLocked()
+		return false
+	}
+	// Compared only against the version stamped in the binary (Windows,
+	// macOS): the session status files lag an update until Assist restarts.
+	if v, verr := m.readBinaryVersion(); verr == nil && v != "" && rec.Managed.Version != "" &&
+		!helperVersionsMatch(v, rec.Managed.Version) {
+		if key := rec.Managed.Version + ">" + v; m.ownershipMismatchLogged != key {
+			log.Warn("installed breeze assist is not the version the agent installed; treating it as not the agent's",
+				"recordedVersion", rec.Managed.Version, "installedVersion", v)
+			m.ownershipMismatchLogged = key
+		}
+		return false
+	}
+	m.ownershipMismatchLogged = ""
+	return true
+}
+
+// adoptOnFirstApplyLocked is the one-shot upgrade adoption described above.
+// Must be called with m.mu held.
+func (m *Manager) adoptOnFirstApplyLocked(installed, enabled bool) bool {
 	if installed && enabled {
 		marker := ownershipMarker{
 			InstalledBy: ownershipInstalledByAgent,
@@ -148,7 +197,9 @@ func (m *Manager) installIsOursLocked(installed, enabled bool) bool {
 			InstalledAt: m.nowTime(),
 		}
 		if err := writeOwnership(m.baseDir, marker); err != nil {
-			log.Warn("failed to record the installed breeze assist as agent-managed", "error", err.Error())
+			log.Warn("failed to record the installed breeze assist as agent-managed; retrying on the next heartbeat",
+				"error", err.Error())
+			m.pendingOwnershipMark = &marker
 		} else {
 			log.Info("recorded the installed breeze assist as agent-managed (deploy is on)", "version", marker.Version)
 		}
@@ -160,12 +211,44 @@ func (m *Manager) installIsOursLocked(installed, enabled bool) bool {
 	return false
 }
 
+// resetOwnershipRecordLocked records that no agent-made install exists. If
+// that write fails it removes the record instead, so a stale marker never
+// outlives the install it described: the next Apply then re-runs the
+// first-Apply rule, under which an install found with deploy off is not the
+// agent's. Must be called with m.mu held.
+func (m *Manager) resetOwnershipRecordLocked() {
+	err := clearOwnership(m.baseDir)
+	if err == nil {
+		return
+	}
+	path := filepath.Join(m.baseDir, ownershipFileName)
+	if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		log.Warn("failed to clear the breeze assist ownership record", "error", err.Error(), "removeError", rmErr.Error())
+	}
+}
+
 // markInstalledLocked records an install the agent just made. A failed write
-// is logged, not fatal: the install succeeded, and the cost is that deploy off
-// leaves this copy installed. Must be called with m.mu held.
+// is retried on later Applies (installIsOursLocked); meanwhile this process
+// treats the install as its own. Must be called with m.mu held.
 func (m *Manager) markInstalledLocked(version string) {
 	marker := ownershipMarker{InstalledBy: ownershipInstalledByAgent, Version: version, InstalledAt: m.nowTime()}
 	if err := writeOwnership(m.baseDir, marker); err != nil {
-		log.Warn("failed to record breeze assist ownership after install", "version", version, "error", err.Error())
+		log.Warn("failed to record breeze assist ownership after install; retrying on the next heartbeat",
+			"version", version, "error", err.Error())
+		m.pendingOwnershipMark = &marker
+		return
+	}
+	m.pendingOwnershipMark = nil
+}
+
+// remarkInstalledLocked re-records the agent's install at the version now on
+// disk after an update rollback put the previous build back: the marker named
+// the build that was rolled back. Must be called with m.mu held.
+func (m *Manager) remarkInstalledLocked() {
+	if _, ok := readOwnership(m.baseDir); !ok && m.pendingOwnershipMark == nil {
+		return
+	}
+	if v, err := m.readBinaryVersion(); err == nil && v != "" {
+		m.markInstalledLocked(v)
 	}
 }

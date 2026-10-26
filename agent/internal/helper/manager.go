@@ -262,14 +262,20 @@ type Manager struct {
 	// readWebView2Func reads the WebView2 runtime version available to a
 	// session's user (webview2.go). Tests inject a fake.
 	readWebView2Func func(sessionKey string) (string, bool)
-	// webview2UnknownLogged: the "runtime version not found" warning fired.
-	webview2UnknownLogged bool
 
 	// unmanagedNoticeLogged: the "leaving an Assist the agent did not
 	// install" line fired for the current episode (ownership.go).
 	unmanagedNoticeLogged bool
 	// ownershipErrLogged dedupes the unreadable-ownership-record warning.
 	ownershipErrLogged bool
+	// ownershipMismatchLogged dedupes the version-mismatch warning:
+	// "<recorded>><installed>" of the mismatch last logged.
+	ownershipMismatchLogged string
+	// pendingOwnershipMark is a marker whose write failed after the agent
+	// installed Assist; installIsOursLocked retries it.
+	pendingOwnershipMark *ownershipMarker
+	// sidecarRejectLogged dedupes the "requirements sidecar ignored" warning.
+	sidecarRejectLogged string
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -750,7 +756,14 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if isHelperRunningInSession(state.key, m.binaryPath) ||
 		(state.spawnedPID > 0 && m.isOurProcessFunc(state.spawnedPID, m.binaryPath)) ||
 		(state.pid > 0 && state.pid != state.spawnedPID && m.isOurProcessFunc(state.pid, m.binaryPath)) {
+		// Running again (relaunched by the user, or the cause was fixed):
+		// whatever kept it from starting no longer applies.
 		state.launchIssue = ""
+		state.webview2Refusal = ""
+		if state.watcherGaveUp {
+			log.Info("breeze assist is running again; clearing its crash-loop state", "session", state.key)
+			state.watcherGaveUp = false
+		}
 		return nil
 	}
 	// #6872: nothing to spawn. Checked BEFORE watcherGaveUp so a device that
@@ -1165,7 +1178,15 @@ func (m *Manager) applyPendingUpdate() {
 	for i, state := range stopped {
 		state.pid = 0
 		state.watcherGaveUp = false // new binary — give it a fresh chance
-		if err := m.ensureRunningSession(state); err != nil {
+		if err := m.ensureRunningSession(state); errors.Is(err, errWebView2Outdated) {
+			// The new build installed; this device's WebView2 runtime is what
+			// keeps it from starting, and rolling back cannot fix that. Keep
+			// it: the gate logged the refusal, the heartbeat reports
+			// webview2_outdated, and it launches once the runtime is updated.
+			// Counting it as a failed update would reinstall and roll back
+			// every heartbeat until the version is abandoned.
+			continue
+		} else if err != nil {
 			// A new build that will not start is a failed attempt, the same as
 			// a failed msiexec, so it counts toward the retry cap (#7049).
 			m.recordInstallFailureLocked(m.pendingHelperVersion)
@@ -1183,6 +1204,8 @@ func (m *Manager) applyPendingUpdate() {
 				started.pid = 0
 			}
 			m.rollbackBinaryLocked(backup)
+			// The marker names the build just rolled back (#10185).
+			m.remarkInstalledLocked()
 			// The install already told the broker about the new build, and
 			// the rollback just put the previous one back. Refresh again
 			// before respawning it, or the broker rejects it (#7043).

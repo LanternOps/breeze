@@ -55,7 +55,11 @@ func exitCodeField(e assistExit, known bool) string {
 func (m *Manager) trackAssistExitsLocked(state *sessionState) {
 	live := 0
 	for pid, p := range state.exitProbes {
-		if _, exited, err := p.exitCode(); err != nil || exited {
+		_, exited, err := p.exitCode()
+		if err != nil {
+			m.exitProbeFailedLocked(state, pid, "read", err)
+		}
+		if err != nil || exited {
 			p.close()
 			delete(state.exitProbes, pid)
 			continue
@@ -72,7 +76,7 @@ func (m *Manager) trackAssistExitsLocked(state *sessionState) {
 		p, err := openExitProbeFunc(inst.PID, m.binaryPath)
 		if err != nil {
 			if !errors.Is(err, errExitProbeUnsupported) {
-				log.Debug("could not watch breeze assist for its exit code", "session", state.key, "pid", inst.PID, "error", err.Error())
+				m.exitProbeFailedLocked(state, inst.PID, "open", err)
 			}
 			continue
 		}
@@ -80,7 +84,21 @@ func (m *Manager) trackAssistExitsLocked(state *sessionState) {
 			state.exitProbes = make(map[int]exitProbe)
 		}
 		state.exitProbes[inst.PID] = p
+		state.exitProbeErrLogged = false
 	}
+}
+
+// exitProbeFailedLocked logs, once per session until a probe works again, that
+// the agent could not watch Assist for its exit code, so an "exitCode=unknown"
+// on the restart lines has a stated cause. Must be called with m.mu held.
+func (m *Manager) exitProbeFailedLocked(state *sessionState, pid int, op string, err error) {
+	if state.exitProbeErrLogged {
+		log.Debug("could not watch breeze assist for its exit code", "session", state.key, "pid", pid, "op", op, "error", err.Error())
+		return
+	}
+	log.Warn("could not watch breeze assist for its exit code; restarts will log it as unknown",
+		"session", state.key, "pid", pid, "op", op, "error", err.Error())
+	state.exitProbeErrLogged = true
 }
 
 // takeAssistExitLocked returns the exit of a probed Assist that has ended and
@@ -95,7 +113,11 @@ func (m *Manager) takeAssistExitLocked(state *sessionState) (assistExit, bool) {
 		if err == nil && !exited {
 			continue
 		}
-		if err == nil && !known {
+		if err != nil {
+			m.exitProbeFailedLocked(state, pid, "read", err)
+		} else if !known {
+			// Normally one probe: trackAssistExitsLocked drops the probes of
+			// instances that exit while another keeps running.
 			out, known = assistExit{Code: code}, true
 		}
 		p.close()

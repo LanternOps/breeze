@@ -48,6 +48,12 @@ type sessionState struct {
 	// webview2Refusal dedupes the refusal WARN: "<found>><minimum>" of the
 	// refusal last logged.
 	webview2Refusal string
+	// webview2UnknownLogged: the "runtime version not found" WARN fired for
+	// this session; reset once a version is read.
+	webview2UnknownLogged bool
+	// exitProbeErrLogged: a failure to watch Assist for its exit code was
+	// logged for this session; reset once a probe opens.
+	exitProbeErrLogged bool
 
 	// exitProbes hold running Assist processes open so the watcher can log how
 	// they exited (assist_exit.go). Keyed by PID. Guarded by Manager.mu.

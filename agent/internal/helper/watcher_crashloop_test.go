@@ -207,6 +207,9 @@ func givenUpSession(mgr *Manager, at time.Time, version string) *sessionState {
 }
 
 func TestWatcherRetriesAfterSixHours(t *testing.T) {
+	// The watcher the retry starts must not race the spawn count. Registered
+	// first, so the interval is restored only after Shutdown joins it.
+	slowWatcher(t)
 	mgr, _ := newNotInstalledManager(t)
 	t.Cleanup(mgr.Shutdown)
 	alive := false
@@ -244,6 +247,7 @@ func TestWatcherRetriesOnAssistVersionChange(t *testing.T) {
 		{"new version retries", "0.125.0", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			slowWatcher(t) // registered first: restored only after Shutdown joins the watcher
 			mgr, _ := newNotInstalledManager(t)
 			t.Cleanup(mgr.Shutdown)
 			alive := false
