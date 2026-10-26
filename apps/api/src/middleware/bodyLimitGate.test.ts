@@ -30,6 +30,7 @@ function buildApp() {
   );
   app.post('/api/v1/quotes/:token/images', (c) => c.json({ reached: true }));
   app.post('/api/v1/devices', (c) => c.json({ reached: true }));
+  app.post('/api/v1/webhooks/flows/:flowId', (c) => c.json({ reached: true }));
   app.post('/oauth/token', (c) => c.json({ reached: true }));
   return { app, warnings, captures };
 }
@@ -41,6 +42,20 @@ const REQUEST_ID = '123e4567-e89b-42d3-a456-426614174000';
 beforeEach(() => resetBodyLimitTelemetry());
 
 describe('createGlobalBodyLimitMiddleware', () => {
+  it('flow webhook body over 262144 bytes is 413 before the handler; at 262144 it passes', async () => {
+    const { app } = buildApp();
+    const path = '/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e';
+    const over = await app.request(path, {
+      method: 'POST', headers: { 'Content-Length': '262145' }, body: 'x'.repeat(262145),
+    });
+    expect(over.status).toBe(413);
+    const at = await app.request(path, {
+      method: 'POST', headers: { 'Content-Length': '262144' }, body: 'x'.repeat(262144),
+    });
+    expect(at.status).toBe(200);
+    expect(await at.json()).toEqual({ reached: true });
+  });
+
   it('logs a bounded rule/size/correlation record on 413 and never the raw path', async () => {
     const { app, warnings, captures } = buildApp();
     const contentLength = MB + 1;
