@@ -44,7 +44,7 @@ export function registerSecurityRecommendationTools(aiTools: Map<string, AiTool>
     searchHint: 'security recommendations: enable AV, firewall, disk encryption, password policy; mark one completed or dismissed',
     deviceArgs: [],
     definition: {
-      name: TOOL,
+      name: 'manage_security_recommendations',
       description:
         'Fleet security recommendations computed from posture. Actions: list, complete (recommendationId), dismiss (recommendationId). Complete and dismiss only record a status for one organization; nothing is changed on devices.',
       input_schema: {

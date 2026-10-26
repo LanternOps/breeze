@@ -67,6 +67,54 @@ function settingsFrom(input: Record<string, unknown>): Record<string, unknown> {
   return defined(Object.fromEntries(SETTING_KEYS.map((key) => [key, input[key]])));
 }
 
+export function registerSecurityPolicyTools(aiTools: Map<string, AiTool>): void {
+  registerSecurityPolicyTool(aiTools);
+  registerCompliancePolicyTool(aiTools);
+}
+
+// Each registration precedes its own handler so source scanners (aiTools.userOwnedRelease.contract) attribute
+// every write to the right tool.
+function registerSecurityPolicyTool(aiTools: Map<string, AiTool>): void {
+  aiTools.set(SECURITY_TOOL, {
+    tier: 1,
+    domain: 'security',
+    searchHint: 'security policies: antivirus/EDR scan schedule, real-time protection, auto-quarantine, exclusions',
+    deviceArgs: [],
+    definition: {
+      name: 'manage_security_policies',
+      description:
+        'Antivirus/EDR security policy templates. Actions: list, create (name; ownerScope partner = every organization), update (policyId). There is no delete. Writes need approval; partner-wide create needs a second approver.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: [...SECURITY_POLICY_ACTIONS], description: 'The action to perform' },
+          policyId: { type: 'string', description: 'update: security policy UUID' },
+          orgId: { type: 'string', description: 'create: owning organization UUID (org policies)' },
+          ownerScope: { type: 'string', enum: [...POLICY_OWNER_SCOPES], description: "create: 'organization' (default) or 'partner' (every organization)" },
+          name: { type: 'string', description: 'create / update: policy name (max 255)' },
+          description: { type: 'string', description: 'create / update: description (max 2000)' },
+          providerId: { type: 'string', description: 'create / update / list filter: AV provider id' },
+          scanSchedule: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'manual'], description: 'create / update / list filter: scan schedule' },
+          realTimeProtection: { type: 'boolean', description: 'create / update: real-time protection on' },
+          autoQuarantine: { type: 'boolean', description: 'create / update: quarantine detections automatically' },
+          severityThreshold: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'create / update: minimum severity to act on' },
+          exclusions: { type: 'array', items: { type: 'string' }, description: 'create / update: scan exclusions (max 200, replaces the list)' },
+          search: { type: 'string', description: 'list: name or description contains' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (input, auth) => {
+      try {
+        return await securityPolicyHandler(input, auth);
+      } catch (error) {
+        return thrown(SECURITY_TOOL, error);
+      }
+    },
+  });
+}
+
 async function securityPolicyHandler(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const action = input.action as SecurityPolicyAction;
   if (!SECURITY_POLICY_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
@@ -146,6 +194,37 @@ async function securityPolicyHandler(input: Record<string, unknown>, auth: AuthC
   return json({ updated: true, policy: projectPolicy(row) });
 }
 
+function registerCompliancePolicyTool(aiTools: Map<string, AiTool>): void {
+  aiTools.set(COMPLIANCE_TOOL, {
+    tier: 3,
+    domain: 'security',
+    searchHint: 'deactivate (turn off) a compliance policy permanently; pairs with query_compliance_policies',
+    deviceArgs: [],
+    definition: {
+      name: 'manage_compliance_policies',
+      description:
+        "Deactivate a compliance policy (find it with query_compliance_policies). Permanent: nothing re-enables it. Closes its alerts. ownerScope must match the policy: 'organization', or 'partner' for a partner-wide one (needs a second approver).",
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: [...COMPLIANCE_POLICY_ACTIONS], description: 'The action to perform' },
+          policyId: { type: 'string', description: 'Compliance policy UUID' },
+          ownerScope: { type: 'string', enum: [...POLICY_OWNER_SCOPES], description: "Who owns the policy: 'organization' or 'partner' (partner-wide)" },
+        },
+        required: ['action', 'policyId', 'ownerScope'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (input, auth) => {
+      try {
+        return await compliancePolicyHandler(input, auth);
+      } catch (error) {
+        return thrown(COMPLIANCE_TOOL, error);
+      }
+    },
+  });
+}
+
 async function compliancePolicyHandler(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   if (!(COMPLIANCE_POLICY_ACTIONS as readonly unknown[]).includes(input.action)) return jsonError(`Unknown action: ${String(input.action)}`);
   const mfa = mfaGatedToolError(COMPLIANCE_TOOL, 'deactivate', auth);
@@ -185,74 +264,4 @@ async function compliancePolicyHandler(input: Record<string, unknown>, auth: Aut
     resourceId: updated.id, resourceName: updated.name, details: { enabled: { from: policy.enabled, to: false }, partnerWide },
   });
   return json({ deactivated: true, policyId: updated.id, name: updated.name, partnerWide, wasEnabled: policy.enabled, permanent: true });
-}
-
-export function registerSecurityPolicyTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set(SECURITY_TOOL, {
-    tier: 1,
-    domain: 'security',
-    searchHint: 'security policies: antivirus/EDR scan schedule, real-time protection, auto-quarantine, exclusions',
-    deviceArgs: [],
-    definition: {
-      name: SECURITY_TOOL,
-      description:
-        'Antivirus/EDR security policy templates. Actions: list, create (name; ownerScope partner = every organization), update (policyId). There is no delete. Writes need approval; partner-wide create needs a second approver.',
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: [...SECURITY_POLICY_ACTIONS], description: 'The action to perform' },
-          policyId: { type: 'string', description: 'update: security policy UUID' },
-          orgId: { type: 'string', description: 'create: owning organization UUID (org policies)' },
-          ownerScope: { type: 'string', enum: [...POLICY_OWNER_SCOPES], description: "create: 'organization' (default) or 'partner' (every organization)" },
-          name: { type: 'string', description: 'create / update: policy name (max 255)' },
-          description: { type: 'string', description: 'create / update: description (max 2000)' },
-          providerId: { type: 'string', description: 'create / update / list filter: AV provider id' },
-          scanSchedule: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'manual'], description: 'create / update / list filter: scan schedule' },
-          realTimeProtection: { type: 'boolean', description: 'create / update: real-time protection on' },
-          autoQuarantine: { type: 'boolean', description: 'create / update: quarantine detections automatically' },
-          severityThreshold: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'create / update: minimum severity to act on' },
-          exclusions: { type: 'array', items: { type: 'string' }, description: 'create / update: scan exclusions (max 200, replaces the list)' },
-          search: { type: 'string', description: 'list: name or description contains' },
-        },
-        required: ['action'],
-        additionalProperties: false,
-      },
-    },
-    handler: async (input, auth) => {
-      try {
-        return await securityPolicyHandler(input, auth);
-      } catch (error) {
-        return thrown(SECURITY_TOOL, error);
-      }
-    },
-  });
-
-  aiTools.set(COMPLIANCE_TOOL, {
-    tier: 3,
-    domain: 'security',
-    searchHint: 'deactivate (turn off) a compliance policy permanently; pairs with query_compliance_policies',
-    deviceArgs: [],
-    definition: {
-      name: COMPLIANCE_TOOL,
-      description:
-        "Deactivate a compliance policy (find it with query_compliance_policies). Permanent: nothing re-enables it. Closes its alerts. ownerScope must match the policy: 'organization', or 'partner' for a partner-wide one (needs a second approver).",
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: [...COMPLIANCE_POLICY_ACTIONS], description: 'The action to perform' },
-          policyId: { type: 'string', description: 'Compliance policy UUID' },
-          ownerScope: { type: 'string', enum: [...POLICY_OWNER_SCOPES], description: "Who owns the policy: 'organization' or 'partner' (partner-wide)" },
-        },
-        required: ['action', 'policyId', 'ownerScope'],
-        additionalProperties: false,
-      },
-    },
-    handler: async (input, auth) => {
-      try {
-        return await compliancePolicyHandler(input, auth);
-      } catch (error) {
-        return thrown(COMPLIANCE_TOOL, error);
-      }
-    },
-  });
 }

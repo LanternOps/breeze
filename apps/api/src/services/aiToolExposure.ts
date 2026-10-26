@@ -76,6 +76,12 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_known_guests',
   'get_unifi_status',
   'trigger_unifi_sync',
+  // Full-control W11 (#6781), explicit D4 exceptions recorded in the W11 plan (quorum QW8):
+  // access reviews are identity governance (they decide which people keep access to the tenant; the reads are
+  // every member's email, role and permission map with no device axis); PAM rules decide who gets local admin and,
+  // through tool-action rules, govern the Helper's own approvals (Q4), and their reads are the elevation policy map.
+  'manage_access_reviews',
+  'manage_pam_rules',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one
@@ -186,4 +192,8 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
   ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
   ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
+  // Full-control W11 (#6781, W11-D8, quorum QW5/QW9): both write auth.user.id into a users FK, and a user-owned
+  // release would run them as the approving human, dropping the requesting run's site ceiling.
+  ['manage_audit_baselines:create', 'An active audit baseline replaces the org\'s active one and enrols every device of that OS in the daily audit-policy collection; a user-owned release would run it as the approving human and lose the run\'s site ceiling.'],
+  ['manage_audit_baselines:request_apply', 'An apply request is the input to a second person\'s approval that pushes audit policy to up to 500 devices; its requester must be a person, who then cannot approve it.'],
 ]);

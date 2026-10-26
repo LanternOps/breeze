@@ -254,7 +254,7 @@ export function registerSecurityComplianceTools(aiTools: Map<string, AiTool>): v
     searchHint: 'security status and compliance: AV, firewall, BitLocker/FileVault encryption, password policy, local admins, score trend',
     deviceArgs: ['deviceId'],
     definition: {
-      name: TOOL,
+      name: 'get_security_compliance',
       description:
         'Security status and compliance views (read-only). view: dashboard, score_breakdown, trends, status (fleet, or one deviceId), firewall, encryption, password_policy, admin_audit. For per-device posture scores use get_security_posture.',
       input_schema: {

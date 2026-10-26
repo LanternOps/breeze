@@ -55,6 +55,10 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // Ticket W06 writes (#10160): a machine principal's user id is not a users
   // row, so uploaded_by_user_id / author FKs have no human to attribute.
   'services/aiToolsTicketAttachments.ts:if (isAutomationPrincipal(auth)) return agentRefusal(action);': 'automation',
+  // Full-control W11 (#6781, W11-D8): audit-baseline writes and PAM writes store a users FK and are
+  // human-only; neither an agent nor a flow is a person who can own the row.
+  'services/aiToolsAuditBaselines.ts:if (isAutomationPrincipal(auth)) return automationRefusal(action);': 'automation',
+  "services/aiToolsPamRules.ts:if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');": 'automation',
   'services/aiToolsTicketOpsShared.ts:return isAutomationPrincipal(auth);': 'automation',
   // Same upstream-approval-instead-of-MFA rule for delivery-rail writes.
   "services/aiToolsDelivery.ts:if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');": 'automation',

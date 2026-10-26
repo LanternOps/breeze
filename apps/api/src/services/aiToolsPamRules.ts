@@ -131,6 +131,69 @@ class Refusal extends Error {
   constructor(readonly result: string) { super('refused'); }
 }
 
+export function registerPamRuleTools(aiTools: Map<string, AiTool>): void {
+  const verdictDescription = "create_rule / update_rule: require_approval, auto_deny or ignore (auto-approve rules are authored in the web app only)";
+  aiTools.set(TOOL, {
+    tier: 1,
+    domain: 'security',
+    searchHint: 'PAM elevation rules, org default verdict and trusted signer groups (who gets local admin, and when)',
+    deviceArgs: [],
+    definition: {
+      name: 'manage_pam_rules',
+      description:
+        'PAM (privileged access) rules, the org default verdict and signer groups. Reads: list_rules, get_config, list_signer_groups. Writes need approval and never create auto-approval; in an org with an auto-approve rule only additive or cosmetic changes are allowed.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: [...PAM_RULE_ACTIONS], description: 'The action to perform' },
+          orgId: { type: 'string', description: 'Organization UUID (required to write when you can reach several)' },
+          ruleId: { type: 'string', description: 'update_rule / delete_rule: rule UUID' },
+          signerGroupId: { type: 'string', description: 'update_signer_group / delete_signer_group: group UUID' },
+          name: { type: 'string', description: 'Rule or signer group name (max 255)' },
+          description: { type: 'string', description: 'Rule or signer group description (max 2000)' },
+          enabled: { type: 'boolean', description: 'Rule enabled (disabling revokes elevations it granted)' },
+          priority: { type: 'number', description: 'Rule priority, lower runs first (0-100000, default 100)' },
+          verdict: { type: 'string', enum: [...PAM_TOOL_VERDICTS], description: verdictDescription },
+          approvalDurationMinutes: { type: 'number', description: 'Rule: elevation length in minutes (1-1440)' },
+          siteId: { type: 'string', description: 'Rule: limit to one site UUID (omit for every site)' },
+          matchSigner: { type: 'string', description: 'Rule: code-signer subject CN' },
+          matchSignerThumbprint: { type: 'string', description: 'Rule: signer certificate SHA-256 thumbprint' },
+          matchSignerGroupId: { type: 'string', description: 'Rule: signer group UUID of the same organization' },
+          matchHash: { type: 'string', description: 'Rule: executable SHA-256' },
+          matchPathGlob: { type: 'string', description: 'Rule: executable path glob' },
+          matchParentImage: { type: 'string', description: 'Rule: parent process image' },
+          matchCommandLine: { type: 'string', description: 'Rule: command line pattern' },
+          matchUser: { type: 'string', description: 'Rule: user name (exact)' },
+          matchAdGroup: { type: 'string', description: 'Rule: AD group' },
+          matchToolName: { type: 'string', description: 'Rule: Helper AI tool name (tool-action rules)' },
+          matchRiskTier: { type: 'number', description: 'Rule: Helper tool risk tier 0-4 (tool-action rules)' },
+          matchNegate: { type: 'array', items: { type: 'string' }, description: 'Rule: criteria to negate' },
+          timeWindow: { type: 'object', description: 'Rule: { start "HH:MM", end "HH:MM", days [0-6], timezone }' },
+          defaultUnmatchedVerdict: { type: 'string', enum: ['require_approval', 'auto_deny'], description: 'set_config: verdict when no rule matches' },
+          signers: { type: 'array', items: {}, description: 'Signer group members: a subject CN string, or { subjectCn, thumbprint } (max 500)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (input, auth) => {
+      const action = input.action as Action;
+      if (!PAM_RULE_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
+      const bound = deviceBoundDenied(auth, 'PAM policy');
+      if (bound) return bound;
+      try {
+        if (action === 'list_rules' || action === 'get_config' || action === 'list_signer_groups') return await reads(action, input, auth);
+        const mfa = mfaGatedToolError(TOOL, action, auth);
+        if (mfa) return mfa;
+        if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');
+        return await writes(action, input, auth);
+      } catch (error) {
+        return thrown(TOOL, error);
+      }
+    },
+  });
+}
+
 async function reads(action: Action, input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const orgId = str(input.orgId);
   if (orgId && !auth.canAccessOrg(orgId)) return notFound('Organization');
@@ -242,8 +305,19 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
     if (typeof org === 'string') return org;
     const verdict = parsed.value.defaultUnmatchedVerdict;
     const [saved] = await db.insert(pamOrgConfig)
-      .values({ orgId: org.orgId, defaultUnmatchedVerdict: verdict, updatedByUserId: auth.user.id })
-      .onConflictDoUpdate({ target: pamOrgConfig.orgId, set: { defaultUnmatchedVerdict: verdict, updatedByUserId: auth.user.id, updatedAt: new Date() } })
+      .values({
+        orgId: org.orgId,
+        defaultUnmatchedVerdict: verdict,
+        updatedByUserId: auth.user.id,
+      })
+      .onConflictDoUpdate({
+        target: pamOrgConfig.orgId,
+        set: {
+          defaultUnmatchedVerdict: verdict,
+          updatedByUserId: auth.user.id,
+          updatedAt: new Date(),
+        },
+      })
       .returning();
     auditToolWrite(auth, { orgId: org.orgId, action: 'pam.config.update', resourceType: 'pam_org_config', resourceId: saved?.id, details: { defaultUnmatchedVerdict: verdict } });
     return json({ updated: true, orgId: org.orgId, defaultUnmatchedVerdict: verdict });
@@ -258,7 +332,8 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
     if (typeof org === 'string') return org;
     const [created] = await db.insert(pamSignerGroups).values({
       orgId: org.orgId, name: parsed.value.name, description: parsed.value.description ?? null,
-      signers: parsed.value.signers ?? [], createdByUserId: auth.user.id,
+      signers: parsed.value.signers ?? [],
+      createdByUserId: auth.user.id,
     }).returning();
     if (!created) return jsonError('Signer group insert returned no row');
     auditToolWrite(auth, { orgId: org.orgId, action: 'pam.signer_group.create', resourceType: 'pam_signer_group', resourceId: created.id, resourceName: created.name, details: { signerCount: created.signers.length } });
@@ -306,67 +381,4 @@ async function writes(action: Action, input: Record<string, unknown>, auth: Auth
   await db.delete(pamSignerGroups).where(eq(pamSignerGroups.id, existing.id));
   auditToolWrite(auth, { orgId: existing.orgId, action: 'pam.signer_group.delete', resourceType: 'pam_signer_group', resourceId: existing.id, resourceName: existing.name });
   return json({ deleted: true, signerGroupId: existing.id });
-}
-
-export function registerPamRuleTools(aiTools: Map<string, AiTool>): void {
-  const verdictDescription = "create_rule / update_rule: require_approval, auto_deny or ignore (auto-approve rules are authored in the web app only)";
-  aiTools.set(TOOL, {
-    tier: 1,
-    domain: 'security',
-    searchHint: 'PAM elevation rules, org default verdict and trusted signer groups (who gets local admin, and when)',
-    deviceArgs: [],
-    definition: {
-      name: TOOL,
-      description:
-        'PAM (privileged access) rules, the org default verdict and signer groups. Reads: list_rules, get_config, list_signer_groups. Writes need approval and never create auto-approval; in an org with an auto-approve rule only additive or cosmetic changes are allowed.',
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: [...PAM_RULE_ACTIONS], description: 'The action to perform' },
-          orgId: { type: 'string', description: 'Organization UUID (required to write when you can reach several)' },
-          ruleId: { type: 'string', description: 'update_rule / delete_rule: rule UUID' },
-          signerGroupId: { type: 'string', description: 'update_signer_group / delete_signer_group: group UUID' },
-          name: { type: 'string', description: 'Rule or signer group name (max 255)' },
-          description: { type: 'string', description: 'Rule or signer group description (max 2000)' },
-          enabled: { type: 'boolean', description: 'Rule enabled (disabling revokes elevations it granted)' },
-          priority: { type: 'number', description: 'Rule priority, lower runs first (0-100000, default 100)' },
-          verdict: { type: 'string', enum: [...PAM_TOOL_VERDICTS], description: verdictDescription },
-          approvalDurationMinutes: { type: 'number', description: 'Rule: elevation length in minutes (1-1440)' },
-          siteId: { type: 'string', description: 'Rule: limit to one site UUID (omit for every site)' },
-          matchSigner: { type: 'string', description: 'Rule: code-signer subject CN' },
-          matchSignerThumbprint: { type: 'string', description: 'Rule: signer certificate SHA-256 thumbprint' },
-          matchSignerGroupId: { type: 'string', description: 'Rule: signer group UUID of the same organization' },
-          matchHash: { type: 'string', description: 'Rule: executable SHA-256' },
-          matchPathGlob: { type: 'string', description: 'Rule: executable path glob' },
-          matchParentImage: { type: 'string', description: 'Rule: parent process image' },
-          matchCommandLine: { type: 'string', description: 'Rule: command line pattern' },
-          matchUser: { type: 'string', description: 'Rule: user name (exact)' },
-          matchAdGroup: { type: 'string', description: 'Rule: AD group' },
-          matchToolName: { type: 'string', description: 'Rule: Helper AI tool name (tool-action rules)' },
-          matchRiskTier: { type: 'number', description: 'Rule: Helper tool risk tier 0-4 (tool-action rules)' },
-          matchNegate: { type: 'array', items: { type: 'string' }, description: 'Rule: criteria to negate' },
-          timeWindow: { type: 'object', description: 'Rule: { start "HH:MM", end "HH:MM", days [0-6], timezone }' },
-          defaultUnmatchedVerdict: { type: 'string', enum: ['require_approval', 'auto_deny'], description: 'set_config: verdict when no rule matches' },
-          signers: { type: 'array', items: {}, description: 'Signer group members: a subject CN string, or { subjectCn, thumbprint } (max 500)' },
-        },
-        required: ['action'],
-        additionalProperties: false,
-      },
-    },
-    handler: async (input, auth) => {
-      const action = input.action as Action;
-      if (!PAM_RULE_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
-      const bound = deviceBoundDenied(auth, 'PAM policy');
-      if (bound) return bound;
-      try {
-        if (action === 'list_rules' || action === 'get_config' || action === 'list_signer_groups') return await reads(action, input, auth);
-        const mfa = mfaGatedToolError(TOOL, action, auth);
-        if (mfa) return mfa;
-        if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');
-        return await writes(action, input, auth);
-      } catch (error) {
-        return thrown(TOOL, error);
-      }
-    },
-  });
 }

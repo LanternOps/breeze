@@ -89,6 +89,12 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
 
   'manage_ticket_checklist_templates:create':
     'NEW-OBJECT, input-aware four_eyes arm (full-control W06, #6776): inserts a new `ticket_checklist_templates` row (and its items). `orgId` addresses the OWNER, not the thing being created, so there is no pre-existing row whose content the approver signed off on; the name, scope and full item list travel in the intent input the approver reviews.',
+  ...sharedReason(
+    ['manage_compliance_policies', 'manage_compliance_policies:deactivate'],
+    'Input-aware four_eyes arm (full-control W11, #6781, W11-D4): deactivating a partner-wide compliance policy (`ownerScope` not \'organization\'). The only effect is `automation_policies.enabled = false`, whatever the policy says, so no drift in its content changes what the approvers signed off on; and the row has no edit path in the product while its `updated_at` is stamped by every evaluation run (policyEvaluationService), so a pin would fail closed on routine activity. The policy id and asserted owner travel in the intent input, and the handler refuses an owner assertion that does not match the row.',
+  ),
+  'manage_security_policies:create':
+    'NEW-OBJECT, input-aware four_eyes arm (full-control W11, #6781, W11-D13): a partner-wide create (`ownerScope: \'partner\'`) inserts a new `security_policies` row; there is no pre-existing row to pin, and the name and every setting travel in the intent input the approvers review.',
   'manage_ticket_config:delete_domain':
     'IMMUTABLE reference (full-control W06, #6776): `id` addresses a `ticket_inbound_domains` row that carries only the domain string the approver saw in the intent input plus verification bookkeeping; there is no editable content for the approver to have signed off on that could drift between approval and release, and a verification-state bump must not fail the delete closed.',
 

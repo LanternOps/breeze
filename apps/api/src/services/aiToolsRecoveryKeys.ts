@@ -45,7 +45,7 @@ export function registerRecoveryKeyTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'BitLocker / FileVault recovery keys: escrow status, rotate a Windows key, re-collect keys from a device',
     deviceArgs: ['deviceId'],
     definition: {
-      name: TOOL,
+      name: 'manage_recovery_keys',
       description:
         'Disk-encryption recovery keys for one device. Actions: list (escrow metadata, never the key), rotate (Windows; volumeMount), collect (re-escrow current keys). Rotate and collect need approval. The key itself is only shown in the Breeze web app.',
       input_schema: {

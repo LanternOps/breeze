@@ -165,6 +165,13 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // the removed row). probe_network_asset and trigger_unifi_sync are tier 2 as whole tools (TOOL_TIERS).
   manage_snmp_templates: ['create', 'update', 'delete'],
   manage_known_guests: ['add', 'delete'],
+  // Full-control W11 (#6781): reversible, tenant-internal bookkeeping. A recommendation status is one audit row
+  // (reopen undoes it); an access-review item decision is recorded only (completing the review, which revokes,
+  // is human-only and absent from the tool); an audit-baseline apply request is one pending row a different
+  // person must approve. Every other W11 write is tier 3 (TIER3_ACTIONS).
+  manage_security_recommendations: ['complete', 'dismiss'],
+  manage_access_reviews: ['decide_item'],
+  manage_audit_baselines: ['request_apply'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -397,6 +404,13 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   get_snmp_metrics: ['history', 'dashboard'],
   manage_known_guests: ['list'],
   get_unifi_status: ['status', 'hosts', 'collectors', 'mappings', 'telemetry', 'sync_runs', 'controller_sites'],
+  // Full-control W11 (#6781): the security-policy reads.
+  manage_security_recommendations: ['list'],
+  manage_access_reviews: ['list', 'get'],
+  manage_audit_baselines: ['list', 'compliance', 'device_results'],
+  manage_security_policies: ['list'],
+  manage_recovery_keys: ['list'],
+  manage_pam_rules: ['list_rules', 'get_config', 'list_signer_groups'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -572,6 +586,15 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Full-control W08 (#6778): see TIER3_SUPERVISED_ACTIONS.
   manage_topology_templates: ['publish_version', 'revoke_template'],
   apply_topology_template: ['apply'],
+  // Full-control W11 (#6781): see TIER3_SUPERVISED_ACTIONS; manage_security_policies:create is input-aware.
+  manage_access_reviews: ['create'],
+  manage_audit_baselines: ['create'],
+  manage_security_policies: ['create', 'update'],
+  manage_recovery_keys: ['rotate', 'collect'],
+  manage_pam_rules: [
+    'create_rule', 'update_rule', 'delete_rule', 'set_config',
+    'create_signer_group', 'update_signer_group', 'delete_signer_group',
+  ],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -886,6 +909,22 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // monitoring configuration of every previewed site. One approver (the requester).
   manage_topology_templates: ['publish_version', 'revoke_template'],
   apply_topology_template: ['apply'],
+  // Full-control W11 (#6781, plan class review + quorum). One approver (the requester):
+  // - access-review create has no delete or cancel (QW6); audit-baseline create arms the daily
+  //   collect_audit_policy sweep on the org's devices of that OS (QW3);
+  // - a security-policy update edits AV/EDR settings (no endpoint reads them today, plan fact 5; kept
+  //   supervised); create is input-aware (partner-wide is four-eyes, resolveApprovalScope);
+  // - recovery-key rotate invalidates the current key (irreversible, one device); collect re-escrows keys;
+  // - PAM writes decide who gets local admin. They cannot write auto_approve, and in an org with an
+  //   auto-approve rule only non-widening changes are allowed (W11-D3), so none grants standing elevation.
+  manage_access_reviews: ['create'],
+  manage_audit_baselines: ['create'],
+  manage_security_policies: ['update'],
+  manage_recovery_keys: ['rotate', 'collect'],
+  manage_pam_rules: [
+    'create_rule', 'update_rule', 'delete_rule', 'set_config',
+    'create_signer_group', 'update_signer_group', 'delete_signer_group',
+  ],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -1017,6 +1056,13 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // W06 (#6776): a partner-wide checklist template is supervised; an org-owned one stays at
   // the base tier 2. Only the create INPUT (`data.ownerScope`) says which.
   'manage_ticket_checklist_templates:create',
+  // Full-control W11 (#6781, W11-D4): deactivation is irreversible in the product; an org row is supervised, a
+  // partner-wide row (every org) four-eyes. Ownership is DB state, so the call ASSERTS it in `ownerScope` and
+  // the handler refuses a mismatch; only the literal 'organization' resolves supervised.
+  'manage_compliance_policies:deactivate',
+  // Full-control W11 (#6781, W11-D13): a security policy has no delete; an org create is supervised, a
+  // partner-wide create (`ownerScope: 'partner'`, every org) four-eyes. Only the create INPUT says which.
+  'manage_security_policies:create',
 ]);
 
 /**
@@ -1130,6 +1176,9 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
   // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
   'run_script',
+  // Full-control W11 (#6781, W11-D4): base tier 3; its one action's scope comes from the asserted `ownerScope`
+  // (resolveApprovalScope): supervised for an org-owned policy, four-eyes otherwise.
+  'manage_compliance_policies',
 ]);
 
 /**
@@ -1165,6 +1214,10 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   manage_backup_profiles: ['ownerScope'],
   // isInputAwareTier3: create with data.ownerScope === 'partner' is supervised (W06, #6776).
   manage_ticket_checklist_templates: ['data'],
+  // resolveApprovalScope: deactivate is supervised only for ownerScope === 'organization' (W11, #6781).
+  manage_compliance_policies: ['ownerScope'],
+  // resolveApprovalScope: create with ownerScope === 'partner' is four-eyes (W11, #6781).
+  manage_security_policies: ['ownerScope'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -1246,6 +1299,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'manage_compliance_policies' && action === 'deactivate') {
+    // W11-D4 (#6781): only an asserted org-owned row is supervised; a partner-wide row, or an assertion that is
+    // missing or not the literal 'organization', is four-eyes. The handler refuses an assertion that does not
+    // match the row, so the cheaper scope never reaches a partner-wide policy.
+    return input.ownerScope === 'organization' ? 'supervised' : 'four_eyes';
+  }
+  if (toolName === 'manage_security_policies' && action === 'create') {
+    // W11-D13 (#6781): mirrors the handler (createPolicySchema defaults ownerScope to 'organization'): only the
+    // literal 'partner' creates a partner-wide row, which cannot be deleted and applies to every org.
+    return input.ownerScope === 'partner' ? 'four_eyes' : 'supervised';
   }
   if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
     // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is

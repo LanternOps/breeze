@@ -64,6 +64,45 @@ function visibleDeviceConditions(auth: AuthContext): SQL[] {
   return conditions;
 }
 
+export function registerAuditBaselineTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set(TOOL, {
+    tier: 1,
+    domain: 'security',
+    searchHint: 'audit policy baselines (CIS L1/L2 auditpol, auditd): drift compliance, per-device deviations, request an apply',
+    deviceArgs: ['deviceId', 'deviceIds'],
+    definition: {
+      name: 'manage_audit_baselines',
+      description:
+        'OS audit-policy baselines. Actions: list, create (name, osType, profile), compliance, device_results (deviceId), request_apply (baselineId, deviceIds; Windows). A request only waits for a different person to approve it; applying is done in the web app.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: [...AUDIT_BASELINE_ACTIONS], description: 'The action to perform' },
+          orgId: { type: 'string', description: 'Organization UUID (create needs it when you can reach several)' },
+          baselineId: { type: 'string', description: 'compliance filter / request_apply: baseline UUID' },
+          deviceId: { type: 'string', description: 'device_results: device UUID' },
+          deviceIds: { type: 'array', items: { type: 'string' }, description: 'request_apply: 1-500 device UUIDs in the baseline\'s organization' },
+          osType: { type: 'string', enum: [...OS_TYPES], description: 'create, or list / compliance filter: OS' },
+          profile: { type: 'string', enum: [...PROFILES], description: 'create, or list filter: CIS template, or custom (needs settings)' },
+          name: { type: 'string', description: 'create: baseline name (max 200)' },
+          settings: { type: 'object', description: 'create: expected settings, required for custom (max 16 KB); omit to use the CIS template' },
+          isActive: { type: 'boolean', description: 'create: make it the active baseline for that OS (default true); list filter' },
+          expiresInMinutes: { type: 'number', description: 'request_apply: minutes the request stays approvable (5-1440, default 60)' },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+    },
+    handler: async (input, auth) => {
+      try {
+        return await handle(input, auth);
+      } catch (error) {
+        return thrown(TOOL, error);
+      }
+    },
+  });
+}
+
 async function handle(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const action = input.action as Action;
   if (!AUDIT_BASELINE_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
@@ -206,86 +245,50 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
     return json({ created: true, baseline: { id: created.id, orgId: created.orgId, name: created.name, osType: created.osType, profile: created.profile, isActive: created.isActive } });
   }
 
-  // request_apply: one pending approval row; a different person approves it, and applying is done in the web app.
-  const missing = requireFields(input, ['baselineId', 'deviceIds'], action);
-  if (missing) return missing;
-  const deviceIds = Array.isArray(input.deviceIds) ? [...new Set(input.deviceIds.filter((id): id is string => typeof id === 'string'))].sort() : [];
-  if (deviceIds.length === 0 || deviceIds.length > 500) return jsonError('deviceIds must list 1 to 500 device UUIDs', 'VALIDATION_ERROR');
-  const scope = readOrgScope(auth, orgId);
-  if (typeof scope === 'string') return scope;
-  const [baseline] = await db.select().from(auditBaselines)
-    .where(and(eq(auditBaselines.id, String(input.baselineId)), ...(scope ? [scope] : []))).limit(1);
-  if (!baseline) return notFound('Audit baseline');
-  if (baseline.osType !== 'windows') return jsonError('Baseline apply is currently supported on Windows only', 'NOT_SUPPORTED');
-  const targets = await db.select({ id: devices.id, osType: devices.osType, hostname: devices.hostname, status: devices.status })
-    .from(devices)
-    .where(and(eq(devices.orgId, baseline.orgId), inArray(devices.id, deviceIds), ne(devices.status, 'decommissioned'), notParkedDeviceCondition()));
-  if (targets.length !== deviceIds.length) return notFound('One or more devices');
-  const skipped = targets.filter((d) => d.osType !== baseline.osType).map((d) => ({ deviceId: d.id, hostname: d.hostname, reason: `OS mismatch (${d.osType})` }));
-  const eligibleDeviceIds = targets.filter((d) => d.osType === baseline.osType).map((d) => d.id).sort();
-  if (eligibleDeviceIds.length === 0) return jsonError('No target devices are eligible for this baseline OS type', 'VALIDATION_ERROR');
-  const expiresInMinutes = typeof input.expiresInMinutes === 'number' ? Math.min(1440, Math.max(5, Math.trunc(input.expiresInMinutes))) : 60;
-  const now = new Date();
-  const [approval] = await db.insert(auditBaselineApplyApprovals).values({
-    orgId: baseline.orgId,
-    baselineId: baseline.id,
-    requestedBy: auth.user.id,
-    status: 'pending',
-    requestPayload: { baselineId: baseline.id, deviceIds, eligibleDeviceIds },
-    expiresAt: new Date(now.getTime() + expiresInMinutes * 60_000),
-    updatedAt: now,
-  }).returning({ id: auditBaselineApplyApprovals.id, status: auditBaselineApplyApprovals.status, expiresAt: auditBaselineApplyApprovals.expiresAt });
-  if (!approval) return jsonError('Failed to create apply request');
-  auditToolWrite(auth, {
-    orgId: baseline.orgId, action: 'audit.baseline.apply.request', resourceType: 'audit_baseline', resourceId: baseline.id, resourceName: baseline.name,
-    details: { approvalRequestId: approval.id, targetDeviceCount: deviceIds.length, eligibleDeviceCount: eligibleDeviceIds.length, skippedCount: skipped.length },
-  });
-  return json({
-    requested: true,
-    approvalRequestId: approval.id,
-    status: approval.status,
-    expiresAt: approval.expiresAt.toISOString(),
-    eligibleDeviceIds,
-    skipped,
-    note: 'Pending. A different person must approve it in the Breeze web app, and applying it is also done there.',
-  });
-}
-
-export function registerAuditBaselineTools(aiTools: Map<string, AiTool>): void {
-  aiTools.set(TOOL, {
-    tier: 1,
-    domain: 'security',
-    searchHint: 'audit policy baselines (CIS L1/L2 auditpol, auditd): drift compliance, per-device deviations, request an apply',
-    deviceArgs: ['deviceId', 'deviceIds'],
-    definition: {
-      name: TOOL,
-      description:
-        'OS audit-policy baselines. Actions: list, create (name, osType, profile), compliance, device_results (deviceId), request_apply (baselineId, deviceIds; Windows). A request only waits for a different person to approve it; applying is done in the web app.',
-      input_schema: {
-        type: 'object' as const,
-        properties: {
-          action: { type: 'string', enum: [...AUDIT_BASELINE_ACTIONS], description: 'The action to perform' },
-          orgId: { type: 'string', description: 'Organization UUID (create needs it when you can reach several)' },
-          baselineId: { type: 'string', description: 'compliance filter / request_apply: baseline UUID' },
-          deviceId: { type: 'string', description: 'device_results: device UUID' },
-          deviceIds: { type: 'array', items: { type: 'string' }, description: 'request_apply: 1-500 device UUIDs in the baseline\'s organization' },
-          osType: { type: 'string', enum: [...OS_TYPES], description: 'create, or list / compliance filter: OS' },
-          profile: { type: 'string', enum: [...PROFILES], description: 'create, or list filter: CIS template, or custom (needs settings)' },
-          name: { type: 'string', description: 'create: baseline name (max 200)' },
-          settings: { type: 'object', description: 'create: expected settings, required for custom (max 16 KB); omit to use the CIS template' },
-          isActive: { type: 'boolean', description: 'create: make it the active baseline for that OS (default true); list filter' },
-          expiresInMinutes: { type: 'number', description: 'request_apply: minutes the request stays approvable (5-1440, default 60)' },
-        },
-        required: ['action'],
-        additionalProperties: false,
-      },
-    },
-    handler: async (input, auth) => {
-      try {
-        return await handle(input, auth);
-      } catch (error) {
-        return thrown(TOOL, error);
-      }
-    },
-  });
+  if (action === 'request_apply') {
+    // request_apply: one pending approval row; a different person approves it, and applying is done in the web app.
+    const missing = requireFields(input, ['baselineId', 'deviceIds'], action);
+    if (missing) return missing;
+    const deviceIds = Array.isArray(input.deviceIds) ? [...new Set(input.deviceIds.filter((id): id is string => typeof id === 'string'))].sort() : [];
+    if (deviceIds.length === 0 || deviceIds.length > 500) return jsonError('deviceIds must list 1 to 500 device UUIDs', 'VALIDATION_ERROR');
+    const scope = readOrgScope(auth, orgId);
+    if (typeof scope === 'string') return scope;
+    const [baseline] = await db.select().from(auditBaselines)
+      .where(and(eq(auditBaselines.id, String(input.baselineId)), ...(scope ? [scope] : []))).limit(1);
+    if (!baseline) return notFound('Audit baseline');
+    if (baseline.osType !== 'windows') return jsonError('Baseline apply is currently supported on Windows only', 'NOT_SUPPORTED');
+    const targets = await db.select({ id: devices.id, osType: devices.osType, hostname: devices.hostname, status: devices.status })
+      .from(devices)
+      .where(and(eq(devices.orgId, baseline.orgId), inArray(devices.id, deviceIds), ne(devices.status, 'decommissioned'), notParkedDeviceCondition()));
+    if (targets.length !== deviceIds.length) return notFound('One or more devices');
+    const skipped = targets.filter((d) => d.osType !== baseline.osType).map((d) => ({ deviceId: d.id, hostname: d.hostname, reason: `OS mismatch (${d.osType})` }));
+    const eligibleDeviceIds = targets.filter((d) => d.osType === baseline.osType).map((d) => d.id).sort();
+    if (eligibleDeviceIds.length === 0) return jsonError('No target devices are eligible for this baseline OS type', 'VALIDATION_ERROR');
+    const expiresInMinutes = typeof input.expiresInMinutes === 'number' ? Math.min(1440, Math.max(5, Math.trunc(input.expiresInMinutes))) : 60;
+    const now = new Date();
+    const [approval] = await db.insert(auditBaselineApplyApprovals).values({
+      orgId: baseline.orgId,
+      baselineId: baseline.id,
+      requestedBy: auth.user.id,
+      status: 'pending',
+      requestPayload: { baselineId: baseline.id, deviceIds, eligibleDeviceIds },
+      expiresAt: new Date(now.getTime() + expiresInMinutes * 60_000),
+      updatedAt: now,
+    }).returning({ id: auditBaselineApplyApprovals.id, status: auditBaselineApplyApprovals.status, expiresAt: auditBaselineApplyApprovals.expiresAt });
+    if (!approval) return jsonError('Failed to create apply request');
+    auditToolWrite(auth, {
+      orgId: baseline.orgId, action: 'audit.baseline.apply.request', resourceType: 'audit_baseline', resourceId: baseline.id, resourceName: baseline.name,
+      details: { approvalRequestId: approval.id, targetDeviceCount: deviceIds.length, eligibleDeviceCount: eligibleDeviceIds.length, skippedCount: skipped.length },
+    });
+    return json({
+      requested: true,
+      approvalRequestId: approval.id,
+      status: approval.status,
+      expiresAt: approval.expiresAt.toISOString(),
+      eligibleDeviceIds,
+      skipped,
+      note: 'Pending. A different person must approve it in the Breeze web app, and applying it is also done there.',
+    });
+  }
+  return jsonError(`Unknown action: ${String(action)}`);
 }
