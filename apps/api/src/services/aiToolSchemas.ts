@@ -59,6 +59,7 @@ import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasA
 import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import { aiReadToolSchemas } from './aiToolSchemasAiReads';
+import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -593,6 +594,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...networkMonitoringToolSchemas,
   // Full-control W10 (#6780): AI-agent read tools.
   ...aiReadToolSchemas,
+  // Full-control W11 (#6781): security policy tools.
+  ...securityPolicyToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

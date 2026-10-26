@@ -24,7 +24,7 @@ export const policiesRoutes = new Hono();
 // rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
 // for partner-scope callers, so the branch is gated on partner scope to keep
 // app and DB in agreement. Mirrors softwarePolicyAccessCondition (#2126).
-function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
+export function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
   const orgCond = auth.orgCondition(securityPolicies.orgId);
   // System scope: no filter on either axis.
   if (!orgCond) return undefined;
