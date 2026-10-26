@@ -526,6 +526,33 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect(s3.objects.has(pending!.storageKey!)).toBe(false);
   }, CASE_TIMEOUT);
 
+  runDb('two runs: a reservation another run stores and marks between this run\'s skip and its delete keeps its row and its object', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const ticket = source(fx, [comment('c1', 10, 'Two runs.', [file('f1', 'one.png', PNG.length)])]);
+    const context = windowWriteContext(descriptorOf(fx, window.id));
+    // This run: header (1st charge), reservation (2nd), f1 gone in its source
+    // (a permanent skip), then its chunk transaction (3rd). Right before that
+    // transaction, another run of the ticket stores f1 and marks it stored.
+    let otherRow: { id: string; ticketId: string; storageKey: string | null } | undefined;
+    chargeHook.before = async (call) => {
+      if (call !== 3) return;
+      [otherRow] = await bySource(fx.principal.id, 'f1');
+      s3.objects.set(otherRow!.storageKey!, { body: Buffer.from(PNG), contentType: 'image/png', sha256: sha(PNG) });
+      expect(await withDbAccessContext(context, () => markReservationStored(otherRow!.ticketId, fx.principal.id, {
+        id: otherRow!.id, contentType: 'image/png', byteSize: PNG.length, sha256: sha(PNG),
+      }))).toBe(true);
+    };
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({}) });
+    chargeHook.before = null;
+    expect(result).toMatchObject({ commentsWritten: 1, attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f1', reason: 'not_found' }] });
+    // The skip-delete spared the stored row, and its object was never deleted.
+    const [row] = await bySource(fx.principal.id, 'f1');
+    expect(row).toMatchObject({ id: otherRow!.id, commentId: null, sha256: sha(PNG) });
+    expect(s3.deleted).not.toContain(otherRow!.storageKey);
+    expect(s3.objects.get(otherRow!.storageKey!)?.body).toEqual(PNG);
+  }, CASE_TIMEOUT);
+
   runDb('past the grace the reaper deletes a crashed reservation and its object, and a later pass reserves again', async () => {
     const fx = await seed();
     const window = await openWindow(fx);
@@ -714,7 +741,7 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const context = windowWriteContext(descriptorOf(fx, window.id));
 
     // Another run found f1 gone in its source: its skip-delete does not take the stored row.
-    expect(await withDbAccessContext(context, () => deleteSkippedReservations(f1!.ticketId, fx.principal.id, [f1!.id]))).toBe(0);
+    expect(await withDbAccessContext(context, () => deleteSkippedReservations(f1!.ticketId, fx.principal.id, [f1!.id]))).toEqual([]);
     expect(await bySource(fx.principal.id, 'f1')).toHaveLength(1);
 
     // Another run's comment claims f2 meanwhile; marking it stored again now fails.

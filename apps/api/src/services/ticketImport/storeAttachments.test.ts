@@ -18,7 +18,7 @@ vi.mock('../ticketAttachmentStorage', () => ({
 vi.mock('../../db', () => ({ db: {} }));
 
 import { MigrationWindowError } from '../migrationWindows';
-import { deleteSkippedReservationObjects, ImportAttachmentFetchError, storeReservedAttachment } from './storeAttachments';
+import { deleteObjectsOfDeletedReservations, ImportAttachmentFetchError, storeReservedAttachment } from './storeAttachments';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(56, 7)]);
@@ -156,7 +156,7 @@ describe('storeReservedAttachment', () => {
   });
 });
 
-describe('deleteSkippedReservationObjects (§4.3 step 3, object before row)', () => {
+describe('deleteObjectsOfDeletedReservations (§4.3 step 3, after the rows are gone)', () => {
   const A = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const B = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
@@ -164,22 +164,23 @@ describe('deleteSkippedReservationObjects (§4.3 step 3, object before row)', ()
     deleteObjectKeysMock.mockReset();
   });
 
-  it('deletes nothing and returns nothing for no skipped reservation', async () => {
-    expect(await deleteSkippedReservationObjects([])).toEqual([]);
+  it('deletes nothing for no deleted reservation', async () => {
+    await deleteObjectsOfDeletedReservations([]);
     expect(deleteObjectKeysMock).not.toHaveBeenCalled();
   });
 
-  it("deletes every skipped reservation's object and lets all their rows go", async () => {
+  it("deletes each deleted reservation's key in one call", async () => {
     deleteObjectKeysMock.mockResolvedValue(undefined);
-    expect(await deleteSkippedReservationObjects([A, B])).toEqual([A, B]);
+    await deleteObjectsOfDeletedReservations([A, B]);
     expect(deleteObjectKeysMock).toHaveBeenCalledWith([`ticket-attachments/${A}`, `ticket-attachments/${B}`]);
   });
 
-  it('keeps every row when the object delete fails, so the pending reaper can still find the keys', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('a storage fault does not fail the committed import, and the log names every orphaned key', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     deleteObjectKeysMock.mockRejectedValue(new Error('s3 down'));
-    expect(await deleteSkippedReservationObjects([A, B])).toEqual([]);
-    expect(warn).toHaveBeenCalledOnce();
-    warn.mockRestore();
+    await expect(deleteObjectsOfDeletedReservations([A, B])).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]![1]).toBe(`ticket-attachments/${A}, ticket-attachments/${B}`);
+    error.mockRestore();
   });
 });

@@ -17,32 +17,29 @@ import {
  */
 
 /**
- * Deletes the objects of the reservations a chunk skipped for good, before
- * their rows go (§4.3 step 3; object first, then the row, as spec D9 does for
- * every s3 delete, so a failure leaves the row and therefore its key
- * findable). A reservation is usually skipped before anything was put, and
- * deleting an absent key is a no-op. But an earlier pass may have put the
- * bytes and died before `markReservationStored`, and the file may since have
- * gone from the source (a permanent skip on this pass): without this, the row
- * would go and its object would stay in the bucket with nothing pointing at
- * it.
+ * Deletes the objects of reservations whose rows are gone (§4.3 step 3): the
+ * skipped reservations the chunk transaction deleted, after it committed. Row
+ * first, then the object, as the pending reaper does (see
+ * deleteSkippedReservations for why object first is wrong here): every key
+ * here belongs to a row that no longer exists, and an id is never reused, so
+ * nothing any run can still mark or claim loses its bytes. Usually no object
+ * exists (the file was skipped before anything was put), and deleting an
+ * absent key is a no-op; one exists when an earlier pass put the bytes and
+ * died before `markReservationStored`.
  *
- * Returns the ids whose rows may now be deleted: all of them, or none when the
- * delete failed. Then the rows stay pending and unstored, and the pending
- * reaper removes each row and its object after its grace. Runs with no DB
- * context, like the store step.
+ * Best effort, with no DB context: the import already committed. A storage
+ * fault leaves objects with no row to find them by, so the log names every
+ * key (ids only, never content), like the reaper's.
  */
-export async function deleteSkippedReservationObjects(ids: readonly string[]): Promise<string[]> {
-  if (ids.length === 0) return [];
+export async function deleteObjectsOfDeletedReservations(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const keys = ids.map((id) => objectKeyFor(id));
   try {
-    await deleteObjectKeys(ids.map((id) => objectKeyFor(id)));
-    return [...ids];
+    await deleteObjectKeys(keys);
   } catch (err) {
-    console.warn('[ticketImport] could not delete the objects of skipped reservations; the pending reaper will', {
-      count: ids.length,
+    console.error('[ticketImport] could not delete the objects of deleted reservations; orphaned keys:', keys.join(', '), {
       error: err instanceof Error ? err.message : String(err),
     });
-    return [];
   }
 }
 

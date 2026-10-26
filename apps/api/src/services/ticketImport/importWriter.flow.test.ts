@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   backend: 's3' as 's3' | 'db',
   byteCharges: [] as number[],
   commentInputs: [] as Array<{ content: string; imported: { sourceId: string; attachments?: unknown[] } }>,
+  /** What deleteSkippedReservations answers (the rows it deleted); null: every id it was given. */
+  deletedSkips: null as string[] | null,
   /** Names each read the writer makes, from its table and the columns it selects. */
   kindOf(q: { table: string; fields: string[]; lock?: string }): string {
     if (q.table === 'ticket_external_refs') return 'ref';
@@ -92,7 +94,7 @@ vi.mock('../ticketAttachmentStorage', () => ({
   selectBackend: vi.fn(() => h.backend),
   objectKeyFor: (id: string) => `ticket-attachments/${id}`,
   putBytes: vi.fn(async (id: string) => ({ backend: 's3', storageKey: `ticket-attachments/${id}`, data: null })),
-  deleteObjectKeys: vi.fn(async () => undefined),
+  deleteObjectKeys: vi.fn(async (keys: string[]) => { h.writes.push(['deleteObjectKeys', keys]); }),
 }));
 vi.mock('./importAttachments', async (orig) => ({
   ...(await orig<typeof import('./importAttachments')>()),
@@ -102,7 +104,7 @@ vi.mock('./importAttachments', async (orig) => ({
   }),
   deleteSkippedReservations: vi.fn(async (_ticketId: string, _principalId: string, ids: string[]) => {
     if (ids.length > 0) h.writes.push(['deleteSkippedReservations', ids]);
-    return ids.length;
+    return h.deletedSkips ?? ids;
   }),
   markReservationStored: vi.fn(async (_ticketId: string, _principalId: string, claim: { id: string }) => {
     h.writes.push(['markReservationStored', claim.id]);
@@ -189,6 +191,7 @@ beforeEach(() => {
   h.backend = 's3';
   h.byteCharges.length = 0;
   h.commentInputs.length = 0;
+  h.deletedSkips = null;
   // Under the lock the ticket is still an import, not deleted.
   h.fallback.set('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: null }]);
 });
@@ -507,13 +510,15 @@ describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2
     });
   });
 
-  it('a file the source no longer has is skipped after its reservation, which the chunk transaction deletes first', async () => {
+  it('a file the source no longer has is skipped after its reservation: the chunk transaction deletes its row, then its object goes', async () => {
     const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
     const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment });
     expect(h.writes.map((w) => w[0])).toEqual([
       'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'deleteSkippedReservations', 'addTicketComment', 'changeTicketStatus',
+      'deleteObjectKeys',
     ]);
     expect(h.writes[3]).toEqual(['deleteSkippedReservations', ['id-f9']]);
+    expect(h.writes[6]).toEqual(['deleteObjectKeys', ['ticket-attachments/id-f9']]);
     expect(h.commentInputs[0]!.content).toBe('x\n\n[Attachments not imported: lost.pdf (not found in the source)]');
     expect(result).toMatchObject({ attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
   });
@@ -544,5 +549,30 @@ describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2
     expect(result).toMatchObject({ outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR }, attachmentsWritten: 0 });
     expect(fetchAttachment).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
+  });
+});
+
+describe('importTicket: a skipped reservation another run stored meanwhile (W1 review, Todd 2026-10-26)', () => {
+  beforeEach(() => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+  });
+
+  it('keeps its object: only the rows the chunk transaction deleted lose theirs', async () => {
+    h.deletedSkips = [];
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment });
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'deleteSkippedReservations', 'addTicketComment', 'changeTicketStatus',
+    ]);
+    expect(result).toMatchObject({ attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
+  });
+
+  it('a chunk transaction that fails deletes no object', async () => {
+    const { addTicketComment } = await import('../ticketService');
+    vi.mocked(addTicketComment).mockRejectedValueOnce(new Error('boom'));
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment }))
+      .rejects.toThrow();
+    expect(h.writes.map((w) => w[0])).not.toContain('deleteObjectKeys');
   });
 });

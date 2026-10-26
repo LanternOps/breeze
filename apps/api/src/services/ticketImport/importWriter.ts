@@ -41,7 +41,7 @@ import {
   storedCommentContent,
   type SourceChanges,
 } from './sourceChanges';
-import { deleteSkippedReservationObjects, type FetchImportAttachment } from './storeAttachments';
+import { deleteObjectsOfDeletedReservations, type FetchImportAttachment } from './storeAttachments';
 import { chargeWindowBytes, chargeWindowThroughput } from './throughput';
 export type { CommentChangedInSource, SourceChanges } from './sourceChanges';
 export type { ImportAttachmentSkip, ImportAttachmentSkipReason } from './importAttachments';
@@ -989,23 +989,24 @@ export async function importTicket(
     const files = prepared.files;
 
     // Step 3: the comments claim their stored files; the reservations of
-    // files skipped after they were reserved go. Their objects go first, with
-    // no DB context: an earlier pass may have put one and died before marking
-    // it stored (deleteSkippedReservationObjects). If that delete fails, the
-    // rows stay pending for the reaper, which removes row and object.
-    const deletableSkips = await deleteSkippedReservationObjects(files.skippedReservations);
+    // files skipped after they were reserved go, rows first, in this
+    // transaction (only those still unstored: a run that stored one meanwhile
+    // keeps it). Their objects go after the commit, with no DB context, and
+    // only for the rows deleted: an earlier pass may have put one and died
+    // before marking it stored (deleteSkippedReservations has the ordering).
     const cost = chunk.length + (last ? statusCost : 0);
     const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
       const merged = await lockImportedTicket(ticketId, t.sourceId);
       if (merged) return { merged };
-      await deleteSkippedReservations(ticketId, principalId, deletableSkips);
+      const deletedSkips = await deleteSkippedReservations(ticketId, principalId, files.skippedReservations);
       const written = await writeComments(scope, ticketId, chunk, files);
       if (last) await finalStatus(scope, ticketId);
-      return { ...written, merged: null };
+      return { ...written, deletedSkips, merged: null };
     });
     if (result.merged) {
       return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, counts);
     }
+    await deleteObjectsOfDeletedReservations(result.deletedSkips);
     counts.commentsWritten += result.written;
     counts.commentsSkipped += result.skipped;
     counts.attachmentsWritten += result.attachmentsWritten;

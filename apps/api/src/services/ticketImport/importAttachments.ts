@@ -439,16 +439,26 @@ export async function isReservationPending(id: string, principalId: string): Pro
 
 /**
  * Deletes this principal's pending reservations `ids` on `ticketId` (§4.3
- * step 3): files that turned out to be permanently skipped. Their objects (an
- * earlier pass may have put one and died before marking it stored) were
- * already deleted by `deleteSkippedReservationObjects`, with no DB context,
- * object first as spec D9 requires. Runs in the chunk transaction, after lockImportedTicket; the
- * ticket lock here is a no-op re-take. Only a pending import row that is not
- * stored matches, so an attached file, a live upload, or a reservation
- * another run of the same ticket stored meanwhile is never deleted.
+ * step 3): files that turned out to be permanently skipped. Returns the ids it
+ * deleted; the caller deletes their objects after the transaction commits
+ * (`deleteObjectsOfDeletedReservations`), and only theirs. Runs in the chunk
+ * transaction, after lockImportedTicket; the ticket lock here is a no-op
+ * re-take. Only a pending import row that is not stored matches, so an
+ * attached file, a live upload, or a reservation another run of the same
+ * ticket stored meanwhile is never deleted, and its object is never touched.
+ *
+ * Row first, then the object (W1 review, Todd 2026-10-26), as the pending
+ * reaper does (jobs/ticketAttachmentReaper.ts revises spec D9 the same way):
+ * this DELETE is the atomic re-read. Another run that marks the reservation
+ * stored before it commits keeps its row and its object; one that marks it
+ * after finds no row, so its mark fails and it deletes the object it put
+ * (chunkAttachments.ts). Object first instead lets a mark land between the
+ * object delete and the row delete, and the stored row then serves 404. The
+ * cost: a storage fault after the commit orphans an object that an earlier
+ * crashed pass put, and the log names its key.
  */
-export async function deleteSkippedReservations(ticketId: string, principalId: string, ids: readonly string[]): Promise<number> {
-  if (ids.length === 0) return 0;
+export async function deleteSkippedReservations(ticketId: string, principalId: string, ids: readonly string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
   assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
   const rows = await db
     .delete(ticketAttachments)
@@ -461,5 +471,5 @@ export async function deleteSkippedReservations(ticketId: string, principalId: s
       eq(ticketAttachments.sha256, PROVISIONAL_SHA256),
     ))
     .returning({ id: ticketAttachments.id });
-  return rows.length;
+  return rows.map((r) => r.id);
 }
