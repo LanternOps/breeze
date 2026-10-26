@@ -4633,5 +4633,34 @@
     "untitledAlert": "Warnung gemeldet",
     "alertsUnavailable": "Offene Warnungen konnten nicht geladen werden",
     "viewAlerts": "Warnungen anzeigen"
+  },
+  "physicalPlacementCard": {
+    "title": "Physischer Standort",
+    "room": "Raum",
+    "rack": "Rack",
+    "rackUnit": "Rack-Einheit",
+    "heightU": "Höhe (HE)",
+    "add": "Standort hinzufügen",
+    "edit": "Bearbeiten",
+    "save": "Speichern",
+    "saving": "Wird gespeichert...",
+    "cancel": "Abbrechen",
+    "remove": "Standort entfernen",
+    "loadFailed": "Physischer Standort konnte nicht geladen werden.",
+    "linkedNotice": "Dieses Asset ist mit einem verwalteten Gerät verknüpft. Bearbeiten Sie den Standort auf",
+    "openDevice": "dem Gerät",
+    "validation": {
+      "roomTooLong": "Der Raum darf höchstens 255 Zeichen lang sein.",
+      "rackTooLong": "Das Rack darf höchstens 128 Zeichen lang sein.",
+      "unitRange": "Geben Sie eine ganze Zahl von 1 bis 100 ein."
+    },
+    "toasts": {
+      "saved": "Physischer Standort gespeichert",
+      "removed": "Physischer Standort entfernt",
+      "saveFailed": "Physischer Standort konnte nicht gespeichert werden",
+      "concurrent": "Der Standort wurde anderweitig geändert. Die aktuellen Werte wurden neu geladen; versuchen Sie es erneut.",
+      "authorityDevice": "Dieses Asset ist jetzt mit einem verwalteten Gerät verknüpft. Bearbeiten Sie den Standort auf dem Gerät.",
+      "mfaRequired": "Zum Ändern des physischen Standorts ist eine Multi-Faktor-Authentifizierung erforderlich."
+    }
   }
 }

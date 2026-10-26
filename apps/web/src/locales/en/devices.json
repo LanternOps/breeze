@@ -4633,5 +4633,34 @@
     "untitledAlert": "Alert reported",
     "alertsUnavailable": "Couldn't load open alerts",
     "viewAlerts": "View alerts"
+  },
+  "physicalPlacementCard": {
+    "title": "Physical placement",
+    "room": "Room",
+    "rack": "Rack",
+    "rackUnit": "Rack unit",
+    "heightU": "Height (U)",
+    "add": "Add placement",
+    "edit": "Edit",
+    "save": "Save",
+    "saving": "Saving...",
+    "cancel": "Cancel",
+    "remove": "Remove placement",
+    "loadFailed": "Couldn't load physical placement.",
+    "linkedNotice": "This asset is linked to a managed device. Edit the placement on",
+    "openDevice": "the device",
+    "validation": {
+      "roomTooLong": "Room must be at most 255 characters.",
+      "rackTooLong": "Rack must be at most 128 characters.",
+      "unitRange": "Enter a whole number from 1 to 100."
+    },
+    "toasts": {
+      "saved": "Physical placement saved",
+      "removed": "Physical placement removed",
+      "saveFailed": "Couldn't save the physical placement",
+      "concurrent": "The placement was changed elsewhere. The latest values were reloaded; try again.",
+      "authorityDevice": "This asset is now linked to a managed device. Edit the placement on the device.",
+      "mfaRequired": "Multi-factor authentication is required to change the physical placement."
+    }
   }
 }

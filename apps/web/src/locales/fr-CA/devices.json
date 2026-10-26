@@ -4633,5 +4633,34 @@
     "untitledAlert": "Alerte signalée",
     "alertsUnavailable": "Impossible de charger les alertes ouvertes",
     "viewAlerts": "Voir les alertes"
+  },
+  "physicalPlacementCard": {
+    "title": "Emplacement physique",
+    "room": "Salle",
+    "rack": "Baie",
+    "rackUnit": "Unité de baie",
+    "heightU": "Hauteur (U)",
+    "add": "Ajouter un emplacement",
+    "edit": "Modifier",
+    "save": "Enregistrer",
+    "saving": "Enregistrement...",
+    "cancel": "Annuler",
+    "remove": "Retirer l'emplacement",
+    "loadFailed": "Impossible de charger l'emplacement physique.",
+    "linkedNotice": "Cet actif est lié à un appareil géré. Modifiez l'emplacement sur",
+    "openDevice": "l'appareil",
+    "validation": {
+      "roomTooLong": "La salle ne peut pas dépasser 255 caractères.",
+      "rackTooLong": "La baie ne peut pas dépasser 128 caractères.",
+      "unitRange": "Saisissez un nombre entier de 1 à 100."
+    },
+    "toasts": {
+      "saved": "Emplacement physique enregistré",
+      "removed": "Emplacement physique retiré",
+      "saveFailed": "Impossible d'enregistrer l'emplacement physique",
+      "concurrent": "L'emplacement a été modifié ailleurs. Les valeurs les plus récentes ont été rechargées; réessayez.",
+      "authorityDevice": "Cet actif est maintenant lié à un appareil géré. Modifiez l'emplacement sur l'appareil.",
+      "mfaRequired": "L'authentification multifacteur est requise pour modifier l'emplacement physique."
+    }
   }
 }

@@ -4633,5 +4633,34 @@
     "untitledAlert": "Alerta reportada",
     "alertsUnavailable": "No se pudieron cargar las alertas abiertas",
     "viewAlerts": "Ver alertas"
+  },
+  "physicalPlacementCard": {
+    "title": "Ubicación física",
+    "room": "Sala",
+    "rack": "Rack",
+    "rackUnit": "Unidad de rack",
+    "heightU": "Altura (U)",
+    "add": "Agregar ubicación",
+    "edit": "Editar",
+    "save": "Guardar",
+    "saving": "Guardando...",
+    "cancel": "Cancelar",
+    "remove": "Quitar ubicación",
+    "loadFailed": "No se pudo cargar la ubicación física.",
+    "linkedNotice": "Este activo está vinculado a un dispositivo administrado. Edita la ubicación en",
+    "openDevice": "el dispositivo",
+    "validation": {
+      "roomTooLong": "La sala puede tener como máximo 255 caracteres.",
+      "rackTooLong": "El rack puede tener como máximo 128 caracteres.",
+      "unitRange": "Ingresa un número entero del 1 al 100."
+    },
+    "toasts": {
+      "saved": "Ubicación física guardada",
+      "removed": "Ubicación física quitada",
+      "saveFailed": "No se pudo guardar la ubicación física",
+      "concurrent": "La ubicación se cambió en otro lugar. Se recargaron los valores más recientes; inténtalo de nuevo.",
+      "authorityDevice": "Este activo ahora está vinculado a un dispositivo administrado. Edita la ubicación en el dispositivo.",
+      "mfaRequired": "Se requiere autenticación multifactor para cambiar la ubicación física."
+    }
   }
 }

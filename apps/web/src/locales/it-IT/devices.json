@@ -4633,5 +4633,34 @@
     "untitledAlert": "Avviso segnalato",
     "alertsUnavailable": "Impossibile caricare gli avvisi aperti",
     "viewAlerts": "Vedi avvisi"
+  },
+  "physicalPlacementCard": {
+    "title": "Posizione fisica",
+    "room": "Sala",
+    "rack": "Rack",
+    "rackUnit": "Unità rack",
+    "heightU": "Altezza (U)",
+    "add": "Aggiungi posizione",
+    "edit": "Modifica",
+    "save": "Salva",
+    "saving": "Salvataggio...",
+    "cancel": "Annulla",
+    "remove": "Rimuovi posizione",
+    "loadFailed": "Impossibile caricare la posizione fisica.",
+    "linkedNotice": "Questo asset è collegato a un dispositivo gestito. Modifica la posizione sul",
+    "openDevice": "dispositivo",
+    "validation": {
+      "roomTooLong": "La sala può contenere al massimo 255 caratteri.",
+      "rackTooLong": "Il rack può contenere al massimo 128 caratteri.",
+      "unitRange": "Inserisci un numero intero da 1 a 100."
+    },
+    "toasts": {
+      "saved": "Posizione fisica salvata",
+      "removed": "Posizione fisica rimossa",
+      "saveFailed": "Impossibile salvare la posizione fisica",
+      "concurrent": "La posizione è stata modificata altrove. Sono stati ricaricati i valori più recenti; riprova.",
+      "authorityDevice": "Questo asset è ora collegato a un dispositivo gestito. Modifica la posizione sul dispositivo.",
+      "mfaRequired": "Per modificare la posizione fisica è richiesta l'autenticazione a più fattori."
+    }
   }
 }

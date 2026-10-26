@@ -4633,5 +4633,34 @@
     "untitledAlert": "Alerta registrado",
     "alertsUnavailable": "Não foi possível carregar os alertas abertos",
     "viewAlerts": "Ver alertas"
+  },
+  "physicalPlacementCard": {
+    "title": "Localização física",
+    "room": "Sala",
+    "rack": "Rack",
+    "rackUnit": "Unidade do rack",
+    "heightU": "Altura (U)",
+    "add": "Adicionar localização",
+    "edit": "Editar",
+    "save": "Salvar",
+    "saving": "Salvando...",
+    "cancel": "Cancelar",
+    "remove": "Remover localização",
+    "loadFailed": "Não foi possível carregar a localização física.",
+    "linkedNotice": "Este ativo está vinculado a um dispositivo gerenciado. Edite a localização no",
+    "openDevice": "dispositivo",
+    "validation": {
+      "roomTooLong": "A sala pode ter no máximo 255 caracteres.",
+      "rackTooLong": "O rack pode ter no máximo 128 caracteres.",
+      "unitRange": "Informe um número inteiro de 1 a 100."
+    },
+    "toasts": {
+      "saved": "Localização física salva",
+      "removed": "Localização física removida",
+      "saveFailed": "Não foi possível salvar a localização física",
+      "concurrent": "A localização foi alterada em outro lugar. Os valores mais recentes foram recarregados; tente novamente.",
+      "authorityDevice": "Este ativo agora está vinculado a um dispositivo gerenciado. Edite a localização no dispositivo.",
+      "mfaRequired": "A autenticação multifator é necessária para alterar a localização física."
+    }
   }
 }
