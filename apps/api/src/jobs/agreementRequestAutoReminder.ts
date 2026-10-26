@@ -8,6 +8,8 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { autoRemindAgreementRequest } from '../services/agreementRequestLifecycle';
+import { AgreementRequestServiceError } from '../services/agreementRequestService';
+import { getEmailService } from '../services/email';
 import { buildPublicLinkLiveOrgPredicate } from '../services/publicLinkOrgGate';
 import { bullmqJobId } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
@@ -39,9 +41,11 @@ import { attachWorkerObservability } from './workerObservability';
  *      a system audit row `billing.agreement.reminded` (details.automatic).
  *
  * At-most-once: a crash between the commit and the mail loses that reminder;
- * it is never sent twice. A failed send is audited with its reason, not retried
- * (the next one is due an interval later). No bus event — like the manual
- * Remind, a reminder is not a lifecycle transition.
+ * it is never sent twice. A failed send is audited with its reason and logged,
+ * not retried (the next one is due an interval later). With no email service
+ * configured at all the run is HELD (nothing counted) rather than burning
+ * every request's cap. No bus event — like the manual Remind, a reminder is
+ * not a lifecycle transition.
  */
 
 const QUEUE_NAME = 'agreement-request-auto-reminder';
@@ -54,9 +58,16 @@ type ReminderJobData = { type: typeof JOB_NAME; queuedAt: string };
 
 export interface AutoReminderRunSummary {
   selected: number;
+  /** Reminded AND emailed. */
   reminded: number;
+  /** Reminded (the step is counted) but the email did not go out. */
+  emailFailed: number;
+  /** Not due on the locked row, or held by another transaction. */
   skipped: number;
+  /** Threw — rolled back, still due, retried next run. */
   failed: number;
+  /** The whole run was held because no email service is configured. */
+  held: boolean;
 }
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -108,7 +119,18 @@ export async function selectDueAutoReminderIds(now: Date, limit = MAX_PER_RUN): 
 
 export async function sendDueAgreementAutoReminders(now: Date = new Date()): Promise<AutoReminderRunSummary> {
   const ids = await runWithSystemDbAccess(() => selectDueAutoReminderIds(now));
-  const summary: AutoReminderRunSummary = { selected: ids.length, reminded: 0, skipped: 0, failed: 0 };
+  const summary: AutoReminderRunSummary = {
+    selected: ids.length, reminded: 0, emailFailed: 0, skipped: 0, failed: 0, held: false,
+  };
+  if (ids.length === 0) return summary;
+  // No mail transport (an instance without email configured): a reminder would
+  // be counted but never delivered, silently burning the partner's cap. Hold
+  // the whole run instead — the requests stay due and go out once mail works.
+  if (!getEmailService()) {
+    summary.held = true;
+    console.warn(`[AgreementRequestAutoReminder] ${ids.length} due reminder(s) held: email is not configured`);
+    return summary;
+  }
   const requestLike = requestLikeFromSnapshot({});
 
   for (const id of ids) {
@@ -116,20 +138,36 @@ export async function sendDueAgreementAutoReminders(now: Date = new Date()): Pro
     try {
       outcome = await runWithSystemDbAccess(() => autoRemindAgreementRequest(id, now));
     } catch (err) {
+      // Due-ness was re-checked on the locked row, so even a service error
+      // (e.g. RECIPIENTS_REQUIRED) is an anomaly worth reporting. The row stays
+      // due and is retried next run; the fingerprint groups those repeats into
+      // one issue per error code (the scrubber drops the message).
       summary.failed += 1;
-      console.error(`[AgreementRequestAutoReminder] Request ${id} failed:`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      const code = err instanceof AgreementRequestServiceError ? err.code : 'UNEXPECTED';
+      console.error(`[AgreementRequestAutoReminder] Request ${id} failed (${code}):`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, undefined, {
+        fingerprint: ['agreement-request-auto-reminder', code],
+      });
       continue;
     }
     if (!outcome.reminded) {
       summary.skipped += 1;
       continue;
     }
-    summary.reminded += 1;
     const { request, recipients, reissued } = outcome.result;
     // Post-commit (the system transaction above has resolved). Never rejects:
-    // every failure is an emailReason.
+    // every failure is an emailReason (a send_failed is already reported to
+    // Sentry by deliverAgreementRequestEmail). The step stays counted — at most
+    // once, the same contract as the manual Remind.
     const delivery = await outcome.result.deliverEmail();
+    if (delivery.emailed) {
+      summary.reminded += 1;
+    } else {
+      summary.emailFailed += 1;
+      console.warn(
+        `[AgreementRequestAutoReminder] Request ${request.id}: reminder ${request.reminderCount} counted but not emailed (${delivery.emailReason ?? 'unknown'})`,
+      );
+    }
     try {
       writeAuditEvent(requestLike, {
         orgId: request.orgId,
@@ -167,9 +205,10 @@ function createWorker(): Worker<ReminderJobData> {
     async (_job: Job<ReminderJobData>) => {
       try {
         const summary = await sendDueAgreementAutoReminders();
-        if (summary.reminded > 0 || summary.failed > 0) {
+        if (summary.reminded > 0 || summary.emailFailed > 0 || summary.failed > 0) {
           console.log(
-            `[AgreementRequestAutoReminder] Reminded ${summary.reminded}, skipped ${summary.skipped}, failed ${summary.failed}`,
+            `[AgreementRequestAutoReminder] Reminded ${summary.reminded}, not emailed ${summary.emailFailed}, `
+              + `skipped ${summary.skipped}, failed ${summary.failed}`,
           );
         }
         return summary;

@@ -119,15 +119,32 @@ describe('SendAgreementDialog', () => {
       expect(screen.getByTestId('agreements-send-expiry')).toHaveValue('2099-01-15');
     });
 
-    it('a failed defaults read keeps the built-in 30 days and shows no source line', async () => {
+    it('a failed defaults read keeps the built-in 30 days and SAYS so instead of naming a source', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       api.getAgreementRequestDefaults.mockResolvedValue(resp({ error: 'nope' }, 500));
       renderDialog();
-      await waitFor(() => expect(api.getAgreementRequestDefaults).toHaveBeenCalled());
-      await new Promise((r) => setTimeout(r, 10));
+      expect(await screen.findByTestId('agreements-send-expiry-default-unavailable')).toHaveTextContent(/built-in default/);
       expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(30));
       expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
       warn.mockRestore();
+    });
+
+    it("switching org drops the previous org's hint until the new defaults arrive", async () => {
+      api.getAgreementRequestDefaults.mockImplementation(async (orgId: string) => (orgId === 'org-1'
+        ? resp({ data: { defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 2 } } })
+        : new Promise<Response>(() => {})));
+      fetchWithAuth.mockImplementation(async (path: string) => {
+        if (path.startsWith('/orgs/organizations/org-')) return resp({ billingContact: null });
+        return resp({ data: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Globex' }] });
+      });
+      render(<SendAgreementDialog open onClose={vi.fn()} onSent={vi.fn()} />);
+      const org = await screen.findByTestId('agreements-send-org');
+      await waitFor(() => expect(org.querySelectorAll('option').length).toBeGreaterThan(2));
+      fireEvent.change(org, { target: { value: 'org-1' } });
+      expect(await screen.findByTestId('agreements-send-auto-reminder')).toBeInTheDocument();
+      fireEvent.change(org, { target: { value: 'org-2' } });
+      await waitFor(() => expect(screen.queryByTestId('agreements-send-auto-reminder')).not.toBeInTheDocument());
+      expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
     });
   });
 

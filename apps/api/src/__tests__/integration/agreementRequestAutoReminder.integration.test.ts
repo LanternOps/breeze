@@ -207,6 +207,25 @@ describe('autoRemindAgreementRequest on a real database', () => {
     expect((await reminderState(id)).reminder_count).toBe(1);
   });
 
+  runDb('re-checks link-liveness at lock time: a tenant suspended after selection is never reminded', async () => {
+    for (const suspend of ['organization', 'partner'] as const) {
+      const { org, partner, tv } = await seed({ intervalDays: 1, maxReminders: 3 });
+      const now = new Date();
+      const id = await insertRequest(org.id, tv, { status: 'sent' });
+      await insertRecipient(org.id, id, 'jane@example.com');
+      await shape(id, now, { sentDaysAgo: 2 });
+      expect(await sys(() => selectDueAutoReminderIds(now, 10_000))).toContain(id);
+
+      await sys(() => (suspend === 'organization'
+        ? db.execute(sql`UPDATE organizations SET status = 'suspended' WHERE id = ${org.id}::uuid`)
+        : db.execute(sql`UPDATE partners SET status = 'suspended' WHERE id = ${partner.id}::uuid`)));
+
+      expect(await sys(() => selectDueAutoReminderIds(now, 10_000))).not.toContain(id);
+      await expect(sys(() => autoRemindAgreementRequest(id, now))).resolves.toEqual({ reminded: false, reason: 'locked_or_gone' });
+      expect((await reminderState(id)).reminder_count).toBe(0);
+    }
+  });
+
   runDb('a request with no recipients surfaces RECIPIENTS_REQUIRED instead of silently counting a reminder', async () => {
     const { org, tv } = await seed({ intervalDays: 1, maxReminders: 3 });
     const now = new Date();

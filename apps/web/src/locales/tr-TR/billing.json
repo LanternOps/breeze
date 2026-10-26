@@ -857,6 +857,7 @@
       "expiryDefaultHint_other": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
       "autoReminderHint_one": "Otomatik hatırlatmalar her gün gönderilir, toplamda en fazla {{max}}.",
       "autoReminderHint_other": "Otomatik hatırlatmalar her {{count}} günde bir gönderilir, toplamda en fazla {{max}}.",
+      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma süresi yüklenemedi; yerleşik varsayılan gösteriliyor.",
       "label": "Etiket (isteğe bağlı)",
       "createDraft": "Taslak oluştur ve önizle",
       "creating": "Oluşturuluyor…",

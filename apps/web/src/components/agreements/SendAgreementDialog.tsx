@@ -112,6 +112,7 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   // #9075 W4a: the partner's resolved agreement defaults for this org, and the
   // expiry day last auto-filled from them (same no-clobber rule as recipients).
   const [defaults, setDefaults] = useState<AgreementRequestDefaultsDto | null>(null);
+  const [defaultsFailed, setDefaultsFailed] = useState(false);
   const prefilledExpiry = useRef(defaultExpiry());
 
   const orgId = lockedOrgId ?? (contractOrgId || pickedOrgId);
@@ -230,6 +231,9 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
   // resolved server-side for the org's owning partner. A read failure keeps the
   // built-in default already shown; the server never needs this to send.
   useEffect(() => {
+    // A previous org (possibly another partner's) must not keep its hint.
+    setDefaults(null);
+    setDefaultsFailed(false);
     if (!open || !orgId) return;
     let cancelled = false;
     void (async () => {
@@ -237,15 +241,20 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
         const res = await getAgreementRequestDefaults(orgId);
         if (res.status === 401) return UNAUTHORIZED();
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = (await res.json().catch(() => null)) as { data?: AgreementRequestDefaultsDto } | null;
-        if (cancelled || !body?.data) return;
+        const body = (await res.json()) as { data?: AgreementRequestDefaultsDto } | null;
+        if (!body?.data) throw new Error('response carried no defaults');
+        if (cancelled) return;
         const next = defaultExpiry(body.data.defaultExpiryDays);
         const previous = prefilledExpiry.current;
         prefilledExpiry.current = next;
         setDefaults(body.data);
         setExpiry((cur) => (cur === previous ? next : cur));
       } catch (err) {
-        if (!cancelled) console.warn('[SendAgreementDialog] agreement defaults read failed; keeping the built-in expiry', err);
+        if (cancelled) return;
+        // Say so next to the date: the sender must not mistake the built-in
+        // default for their partner's setting (it is frozen at create).
+        setDefaultsFailed(true);
+        console.warn('[SendAgreementDialog] agreement defaults read failed; keeping the built-in expiry', err);
       }
     })();
     return () => { cancelled = true; };
@@ -541,6 +550,11 @@ export default function SendAgreementDialog({ open, onClose, lockedOrgId, locked
                 {defaults && (
                   <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-expiry-default">
                     {t('agreements.send.expiryDefaultHint', { count: defaults.defaultExpiryDays })}
+                  </span>
+                )}
+                {defaultsFailed && (
+                  <span className="mt-1 block text-xs text-muted-foreground" data-testid="agreements-send-expiry-default-unavailable">
+                    {t('agreements.send.expiryDefaultUnavailable')}
                   </span>
                 )}
                 {defaults?.autoReminder && (

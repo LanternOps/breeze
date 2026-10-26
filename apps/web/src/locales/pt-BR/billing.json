@@ -857,6 +857,7 @@
       "expiryDefaultHint_other": "Padrão: {{count}} dias, em Configurações de faturamento → Acordos.",
       "autoReminderHint_one": "Os lembretes automáticos são enviados todos os dias, até {{max}} no total.",
       "autoReminderHint_other": "Os lembretes automáticos são enviados a cada {{count}} dias, até {{max}} no total.",
+      "expiryDefaultUnavailable": "Não foi possível carregar o vencimento padrão das Configurações de faturamento; o padrão interno está sendo exibido.",
       "label": "Rótulo (opcional)",
       "createDraft": "Criar rascunho e visualizar",
       "creating": "Criando…",

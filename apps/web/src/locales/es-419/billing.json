@@ -857,6 +857,7 @@
       "expiryDefaultHint_other": "Predeterminado: {{count}} días, desde Configuración de facturación → Acuerdos.",
       "autoReminderHint_one": "Los recordatorios automáticos se envían todos los días, hasta un máximo de {{max}}.",
       "autoReminderHint_other": "Los recordatorios automáticos se envían cada {{count}} días, hasta un máximo de {{max}}.",
+      "expiryDefaultUnavailable": "No se pudo cargar el vencimiento predeterminado de la Configuración de facturación; se muestra el valor predeterminado integrado.",
       "label": "Etiqueta (opcional)",
       "createDraft": "Crear borrador y vista previa",
       "creating": "Creando…",

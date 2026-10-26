@@ -35,9 +35,12 @@ vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: 'like' }),
 }));
 vi.mock('../services/agreementRequestLifecycle', () => ({ autoRemindAgreementRequest: autoRemindMock }));
+const { emailServiceMock } = vi.hoisted(() => ({ emailServiceMock: vi.fn() }));
+vi.mock('../services/email', () => ({ getEmailService: emailServiceMock }));
 
 import { sendDueAgreementAutoReminders } from './agreementRequestAutoReminder';
 import { captureException } from '../services/sentry';
+import { AgreementRequestServiceError } from '../services/agreementRequestService';
 
 const NOW = new Date('2027-01-11T12:00:00.000Z');
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -60,12 +63,13 @@ beforeEach(() => {
   queued.length = 0;
   ctx.depth = 0;
   ctx.opened = 0;
+  emailServiceMock.mockReturnValue({ sendEmail: vi.fn() });
 });
 
 describe('sendDueAgreementAutoReminders', () => {
   it('nothing due → no per-request work', async () => {
     queue([]);
-    await expect(sendDueAgreementAutoReminders(NOW)).resolves.toEqual({ selected: 0, reminded: 0, skipped: 0, failed: 0 });
+    await expect(sendDueAgreementAutoReminders(NOW)).resolves.toEqual({ selected: 0, reminded: 0, emailFailed: 0, skipped: 0, failed: 0, held: false });
     expect(autoRemindMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
   });
@@ -80,7 +84,7 @@ describe('sendDueAgreementAutoReminders', () => {
 
     const res = await sendDueAgreementAutoReminders(NOW);
 
-    expect(res).toEqual({ selected: 2, reminded: 1, skipped: 1, failed: 0 });
+    expect(res).toEqual({ selected: 2, reminded: 1, emailFailed: 0, skipped: 1, failed: 0, held: false });
     expect(autoRemindMock).toHaveBeenNthCalledWith(1, 'r-1', NOW);
     expect(autoRemindMock).toHaveBeenNthCalledWith(2, 'r-2', NOW);
     expect(ctx.opened).toBe(3); // selector + one per candidate
@@ -101,8 +105,11 @@ describe('sendDueAgreementAutoReminders', () => {
   it('a failed send is audited with its reason, not retried', async () => {
     queue([{ id: 'r-1' }]);
     autoRemindMock.mockResolvedValueOnce(reminded('r-1', async () => ({ emailed: false, emailReason: 'send_failed' })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await sendDueAgreementAutoReminders(NOW);
-    expect(res).toEqual({ selected: 1, reminded: 1, skipped: 0, failed: 0 });
+    expect(res).toEqual({ selected: 1, reminded: 0, emailFailed: 1, skipped: 0, failed: 0, held: false });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('r-1') && String(c[0]).includes('send_failed'))).toBe(true);
+    warn.mockRestore();
     expect(auditMock.mock.calls[0]![1]).toMatchObject({ details: { emailed: false, emailReason: 'send_failed' } });
   });
 
@@ -112,8 +119,27 @@ describe('sendDueAgreementAutoReminders', () => {
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(reminded('r-2', async () => ({ emailed: true })));
     const res = await sendDueAgreementAutoReminders(NOW);
-    expect(res).toEqual({ selected: 2, reminded: 1, skipped: 0, failed: 1 });
+    expect(res).toEqual({ selected: 2, reminded: 1, emailFailed: 0, skipped: 0, failed: 1, held: false });
     expect(captureException).toHaveBeenCalledTimes(1);
     expect(auditMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a service error is reported fingerprinted by its code, so hourly repeats group into one issue', async () => {
+    queue([{ id: 'r-1' }]);
+    autoRemindMock.mockRejectedValueOnce(new AgreementRequestServiceError('No recipients', 422, 'RECIPIENTS_REQUIRED'));
+    await sendDueAgreementAutoReminders(NOW);
+    expect(vi.mocked(captureException).mock.calls[0]![3]).toEqual({ fingerprint: ['agreement-request-auto-reminder', 'RECIPIENTS_REQUIRED'] });
+  });
+
+  it('no email service configured → the run is HELD: nothing locked, counted or audited', async () => {
+    emailServiceMock.mockReturnValue(null);
+    queue([{ id: 'r-1' }, { id: 'r-2' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await sendDueAgreementAutoReminders(NOW);
+    expect(res).toEqual({ selected: 2, reminded: 0, emailFailed: 0, skipped: 0, failed: 0, held: true });
+    expect(autoRemindMock).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('2 due reminder(s) held'));
+    warn.mockRestore();
   });
 });

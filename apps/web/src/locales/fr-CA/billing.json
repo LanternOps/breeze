@@ -857,6 +857,7 @@
       "expiryDefaultHint_other": "Par défaut : {{count}} jours, d’après Paramètres de facturation → Ententes.",
       "autoReminderHint_one": "Les rappels automatiques sont envoyés chaque jour, jusqu’à {{max}} au total.",
       "autoReminderHint_other": "Les rappels automatiques sont envoyés tous les {{count}} jours, jusqu’à {{max}} au total.",
+      "expiryDefaultUnavailable": "Impossible de charger l'expiration par défaut des Paramètres de facturation; la valeur par défaut intégrée est affichée.",
       "label": "Libellé (facultatif)",
       "createDraft": "Créer le brouillon et prévisualiser",
       "creating": "Création…",

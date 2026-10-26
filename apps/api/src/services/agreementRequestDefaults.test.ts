@@ -39,13 +39,25 @@ describe('resolveAgreementRequestDefaults', () => {
     })).toEqual({ defaultExpiryDays: 14, autoReminder: { intervalDays: 3, maxReminders: 5 } });
   });
 
-  it('an out-of-range stored value (CHECK bypassed) falls back per field, never throws', () => {
+  it('an out-of-range stored value (CHECK bypassed) falls back per field, never throws, and is logged', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(resolveAgreementRequestDefaults({
+      agreementDefaultExpiryDays: 14, agreementReminderIntervalDays: null, agreementMaxReminders: 3,
+    }, 'p-1')).toEqual({ defaultExpiryDays: 14, autoReminder: null });
+    expect(warn).not.toHaveBeenCalled(); // a NULL interval is "off", not corruption
+    expect(resolveAgreementRequestDefaults({
+      agreementDefaultExpiryDays: 0, agreementReminderIntervalDays: 3, agreementMaxReminders: 3,
+    }, 'p-1')).toMatchObject({ defaultExpiryDays: 30 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('partner p-1 has out-of-range agreementDefaultExpiryDays=0'));
+    warn.mockClear();
     expect(resolveAgreementRequestDefaults({
       agreementDefaultExpiryDays: 0, agreementReminderIntervalDays: 99, agreementMaxReminders: 2,
     })).toEqual({ defaultExpiryDays: 30, autoReminder: null });
     expect(resolveAgreementRequestDefaults({
       agreementDefaultExpiryDays: 10, agreementReminderIntervalDays: 2, agreementMaxReminders: 0,
     })).toEqual({ defaultExpiryDays: 10, autoReminder: { intervalDays: 2, maxReminders: 3 } });
+    expect(warn).toHaveBeenCalledTimes(3); // expiry 0, interval 99, cap 0
+    warn.mockRestore();
   });
 });
 

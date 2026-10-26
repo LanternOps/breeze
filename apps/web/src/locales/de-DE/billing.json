@@ -857,6 +857,7 @@
       "expiryDefaultHint_other": "Standard: {{count}} Tage, aus Abrechnungseinstellungen → Vereinbarungen.",
       "autoReminderHint_one": "Automatische Erinnerungen werden täglich versendet, insgesamt höchstens {{max}}.",
       "autoReminderHint_other": "Automatische Erinnerungen werden alle {{count}} Tage versendet, insgesamt höchstens {{max}}.",
+      "expiryDefaultUnavailable": "Der Standardablauf aus den Abrechnungseinstellungen konnte nicht geladen werden; der integrierte Standardwert wird angezeigt.",
       "label": "Bezeichnung (optional)",
       "createDraft": "Entwurf erstellen und Vorschau anzeigen",
       "creating": "Wird erstellt …",

@@ -52,19 +52,35 @@ function inRange(value: number | null | undefined, min: number, max: number): va
 
 /** Pure: the partner's columns → the resolved defaults. A value outside the
  *  bounds (only possible if the DB CHECK was bypassed) falls back per field
- *  rather than throwing — a bad setting must not break sending. */
-export function resolveAgreementRequestDefaults(row: PartnerAgreementDefaultColumns | null): AgreementRequestDefaults {
+ *  rather than throwing — a bad setting must not break sending — and says so in
+ *  the log, since that is exactly the case an operator needs to see. */
+export function resolveAgreementRequestDefaults(
+  row: PartnerAgreementDefaultColumns | null,
+  partnerId?: string,
+): AgreementRequestDefaults {
   if (!row) return BUILT_IN_AGREEMENT_REQUEST_DEFAULTS;
-  const defaultExpiryDays = inRange(row.agreementDefaultExpiryDays, AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN, AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX)
-    ? row.agreementDefaultExpiryDays
-    : AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS;
-  const intervalDays = row.agreementReminderIntervalDays;
-  if (!inRange(intervalDays, AGREEMENT_REMINDER_INTERVAL_DAYS_MIN, AGREEMENT_REMINDER_INTERVAL_DAYS_MAX)) {
-    return { defaultExpiryDays, autoReminder: null };
-  }
-  const maxReminders = inRange(row.agreementMaxReminders, AGREEMENT_MAX_REMINDERS_MIN, AGREEMENT_MAX_REMINDERS_MAX)
-    ? row.agreementMaxReminders
-    : AGREEMENT_MAX_REMINDERS_DEFAULT;
+  const pick = (field: keyof PartnerAgreementDefaultColumns, min: number, max: number, fallback: number | null): number | null => {
+    const value = row[field];
+    if (inRange(value, min, max)) return value;
+    // A NULL interval is the legitimate "reminders off"; anything else here is corrupt.
+    if (value !== null || field !== 'agreementReminderIntervalDays') {
+      console.warn(
+        `[agreementRequestDefaults] partner ${partnerId ?? '(unknown)'} has out-of-range ${field}=${String(value)}; using ${String(fallback)}`,
+      );
+    }
+    return fallback;
+  };
+  const defaultExpiryDays = pick(
+    'agreementDefaultExpiryDays', AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN, AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX,
+    AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS,
+  ) as number;
+  const intervalDays = pick(
+    'agreementReminderIntervalDays', AGREEMENT_REMINDER_INTERVAL_DAYS_MIN, AGREEMENT_REMINDER_INTERVAL_DAYS_MAX, null,
+  );
+  if (intervalDays === null) return { defaultExpiryDays, autoReminder: null };
+  const maxReminders = pick(
+    'agreementMaxReminders', AGREEMENT_MAX_REMINDERS_MIN, AGREEMENT_MAX_REMINDERS_MAX, AGREEMENT_MAX_REMINDERS_DEFAULT,
+  ) as number;
   return { defaultExpiryDays, autoReminder: { intervalDays, maxReminders } };
 }
 
@@ -85,7 +101,7 @@ export async function loadAgreementRequestDefaults(partnerId: string): Promise<A
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);
-  return resolveAgreementRequestDefaults(row ?? null);
+  return resolveAgreementRequestDefaults(row ?? null, partnerId);
 }
 
 /** The expiry a new request gets when the sender sets none. */
