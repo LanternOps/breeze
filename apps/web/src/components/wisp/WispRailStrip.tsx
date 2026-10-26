@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
 import type { CurrentActivity } from '@breeze/shared';
@@ -10,6 +10,14 @@ const STATUS_DOT: Record<string, string> = {
   active: 'bg-emerald-500',
   paused: 'bg-amber-500',
 };
+
+/**
+ * Hashes that point into the rail: a nudge's `#concern=<id>` and the section
+ * links. Below `lg` the rail exists only inside the drawer, so the drawer
+ * opens for them or the link would land on nothing.
+ */
+const RAIL_HASH = /^#(concern=|needs-you$|links$|activity$)/;
+const railHash = () => typeof window !== 'undefined' && RAIL_HASH.test(window.location.hash);
 
 /**
  * The rail below `lg` (W01 #10211, spec §4.1): one row under the shell header
@@ -29,13 +37,19 @@ export default function WispRailStrip({
   rail: ReactNode;
 }) {
   const { t } = useTranslation('ai');
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(railHash);
+
+  useEffect(() => {
+    const onHash = () => { if (railHash()) setOpen(true); };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   return (
     <div className="lg:hidden" data-testid="wisp-rail-strip">
       <div className="flex items-center gap-2 rounded-lg border bg-card py-1.5 pl-3 pr-1.5">
         <Sparkles className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-        <span className="shrink-0 text-sm font-semibold">{t('wisp.name')}</span>
+        <span className="shrink-0 text-sm font-semibold">{t('wisp.title')}</span>
         <p
           data-testid="wisp-rail-strip-state"
           aria-live="polite"
@@ -77,7 +91,7 @@ export default function WispRailStrip({
           {t('wisp.rail.details')}
         </button>
       </div>
-      <Drawer open={open} onClose={() => setOpen(false)} title={t('wisp.name')} width="max-w-md" dataTestId="wisp-rail-drawer">
+      <Drawer open={open} onClose={() => setOpen(false)} title={t('wisp.title')} width="max-w-md" dataTestId="wisp-rail-drawer">
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{rail}</div>
       </Drawer>
     </div>

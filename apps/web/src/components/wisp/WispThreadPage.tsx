@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MessageSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
 import { wispStateFromThread } from '@/lib/wispGrant';
-import WispThreadHeader from '../ai/WispThreadHeader';
-import { WispConcernsPanel } from '../ai/WispConcernsPanel';
-import WispActivityPanel from './WispActivityPanel';
+import WispCompanionShell from './WispCompanionShell';
+import WispHomeThread from './WispHomeThread';
+import WispRail from './WispRail';
 import { fetchWispActivity } from './wispActivity';
 import type { CurrentActivity } from '@breeze/shared';
 
@@ -17,7 +16,7 @@ type View =
   | { kind: 'notFound' }
   | { kind: 'error' }
   /** `stale`: background refreshes keep failing, so what is shown may be out of date. */
-  | { kind: 'ready'; wisp: Wisp; current: CurrentActivity; stale: boolean };
+  | { kind: 'ready'; wisp: Wisp; lastSessionId: string | null; current: CurrentActivity; stale: boolean };
 
 /** The live line and spend meter refresh at this cadence while the tab is visible (w00 A31). */
 const POLL_MS = 30_000;
@@ -36,11 +35,22 @@ function mergePolled(prev: Wisp | null, next: Wisp): Wisp {
   return next;
 }
 
+/** The thread DTO's last stamped session; `wispStateFromThread` does not carry it. */
+function lastSessionIdFrom(body: unknown): string | null {
+  const value = (body as { data?: { thread?: { lastSessionId?: unknown } } } | null)?.data?.thread?.lastSessionId;
+  return typeof value === 'string' ? value : null;
+}
+
+/** No links on this page: the column gets `links={null}` (no "Link an item"), the rail hides the section. */
+const ignoreLinks = () => {};
+
 /**
- * The Wisp thread page (W06 Task 7, spec §7.4): where an in-app nudge lands
- * (`/ai/wisp/thread/:threadId#concern=:id`). Header (scope, status, spend,
- * pause, live line), the grant's concerns with the hash-selected row
- * expanded, and the activity timeline. Chatting happens in the docked panel.
+ * The Wisp thread page (W06 Task 7, spec §7.4), on the Wisp home's companion
+ * layout (W01 #10211, spec §4.1): where an in-app nudge lands
+ * (`/ai/wisp/thread/:threadId#concern=:id`). The conversation runs inline in
+ * the column, the thread summary as its first post; the rail carries the
+ * grant controls and live line, the grant's concerns (WispNeedsYou loads them
+ * and expands the hash-selected row), workers and the activity timeline.
  */
 export default function WispThreadPage({ threadId }: { threadId: string }) {
   const { t } = useTranslation('ai');
@@ -48,11 +58,8 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
   const [activityKey, setActivityKey] = useState(0);
   const organizations = useOrgStore((s) => s.organizations);
   const storeWisp = useAiStore((s) => s.wisp);
-  const enterWispMode = useAiStore((s) => s.enterWispMode);
-  const openPanel = useAiStore((s) => s.open);
   const updateStoreWisp = useAiStore((s) => s.updateWisp);
   const exitWispMode = useAiStore((s) => s.exitWispMode);
-  const [opening, setOpening] = useState(false);
 
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -90,7 +97,7 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       if (!next) throw new Error('wisp thread read: malformed payload');
       const prev = viewRef.current.kind === 'ready' ? viewRef.current.wisp : null;
       failedPolls.current = 0;
-      setView({ kind: 'ready', wisp: mergePolled(prev, next), current, stale: false });
+      setView({ kind: 'ready', wisp: mergePolled(prev, next), lastSessionId: lastSessionIdFrom(body), current, stale: false });
     } catch (err) {
       console.error('[WispThreadPage] loading the thread failed', err);
       if (token !== loadToken.current) return;
@@ -144,16 +151,6 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
     await load(false);
   };
 
-  const openInChat = async (wisp: Wisp) => {
-    setOpening(true);
-    try {
-      await enterWispMode(wisp);
-      openPanel();
-    } finally {
-      setOpening(false);
-    }
-  };
-
   if (view.kind === 'loading') {
     return <div className="p-6 text-sm text-muted-foreground" data-testid="wisp-thread-loading" aria-busy="true" />;
   }
@@ -171,28 +168,17 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
     );
   }
 
-  const { wisp, current, stale } = view;
+  const { wisp, lastSessionId, current, stale } = view;
   const orgName = wisp.scopeOrgId ? ((organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null) : null;
-  const active = wisp.status === 'active';
+  const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-4" data-testid="wisp-thread-page">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold">{t('wisp.thread.title')}</h1>
-        <button
-          type="button"
-          data-testid="wisp-thread-open-chat"
-          disabled={!active || opening}
-          title={active ? undefined : t('wisp.thread.openChatInactive')}
-          onClick={() => void openInChat(wisp)}
-          className="flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-        >
-          <MessageSquare className="h-4 w-4" />
-          {t('wisp.thread.openChat')}
-        </button>
-      </div>
-
-      {stale && (
+    <WispCompanionShell
+      testId="wisp-thread-page"
+      wisp={wisp}
+      current={current}
+      needsYouCount={0}
+      banners={stale && (
         <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-thread-stale" role="status">
           <span>{t('wisp.thread.stale')}</span>
           <button type="button" data-testid="wisp-thread-stale-retry" onClick={() => void load(true)} className="font-medium underline underline-offset-2">
@@ -200,29 +186,34 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
           </button>
         </div>
       )}
-
-      <section className="overflow-hidden rounded-lg border bg-card">
-        <WispThreadHeader
+      column={
+        <WispHomeThread
+          wisp={wisp}
+          lastSessionId={lastSessionId}
+          scopeLabel={scopeLabel}
+          links={null}
+          onLinksChange={ignoreLinks}
+          leading={wisp.summary ? (
+            <article className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('wisp.post.summary')}</p>
+              <p className="whitespace-pre-wrap text-sm" data-testid="wisp-thread-summary">{wisp.summary}</p>
+            </article>
+          ) : null}
+        />
+      }
+      rail={
+        <WispRail
           wisp={wisp}
           orgName={orgName}
-          wideningAvailable={wisp.wideningAvailable}
-          showFocus={false}
-          currentActivity={current}
+          current={current}
+          needsYou={[]}
+          links={null}
+          onLinksChange={ignoreLinks}
           onWispChange={onWispChange}
           onRevoked={onRevoked}
+          activityKey={activityKey}
         />
-        {wisp.summary && (
-          <p className="whitespace-pre-wrap px-4 py-3 text-sm" data-testid="wisp-thread-summary">{wisp.summary}</p>
-        )}
-      </section>
-
-      <section className="overflow-hidden rounded-lg border bg-card">
-        <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} crossOrg />
-      </section>
-
-      <section className="overflow-hidden rounded-lg border bg-card">
-        <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} />
-      </section>
-    </div>
+      }
+    />
   );
 }

@@ -4,7 +4,8 @@
  * rail in the shared Drawer.
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { act } from 'react';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { WispState } from '@/stores/aiStore';
 import WispRailStrip from './WispRailStrip';
 
@@ -70,5 +71,27 @@ describe('WispRailStrip', () => {
       <WispRailStrip wisp={mkWisp()} current={{ orgId: 'o1', orgName: '', startedAt: new Date().toISOString() }} needsYouCount={0} rail={rail} />,
     );
     expect(screen.getByTestId('wisp-rail-strip-state').textContent).toContain('Checking a customer');
+  });
+
+  describe('a deep link into the rail opens the drawer (the rail lives only in it below lg)', () => {
+    afterEach(() => { window.history.replaceState(null, '', '/'); });
+
+    it.each(['#concern=c-1', '#needs-you', '#links', '#activity'])('%s opens it on load', (hash) => {
+      window.history.replaceState(null, '', `/ai/wisp/thread/t1${hash}`);
+      render(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} />);
+      expect(screen.getByTestId('wisp-rail-drawer')).toBeInTheDocument();
+      expect(screen.getByTestId('rail-node')).toBeInTheDocument();
+    });
+
+    it('#thread does not, and a later hash change to a rail section does', () => {
+      window.history.replaceState(null, '', '/wisp#thread');
+      render(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} />);
+      expect(screen.queryByTestId('wisp-rail-drawer')).toBeNull();
+      act(() => {
+        window.history.replaceState(null, '', '/wisp#concern=c-2');
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      expect(screen.getByTestId('wisp-rail-drawer')).toBeInTheDocument();
+    });
   });
 });

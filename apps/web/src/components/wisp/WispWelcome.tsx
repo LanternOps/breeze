@@ -7,19 +7,24 @@ const SUGGESTIONS: readonly SuggestionKey[] = ['needsMe', 'offline', 'sweep', 'o
 export default function WispWelcome({
   scopeLabel,
   onSuggest,
+  intro = true,
 }: {
   scopeLabel: string;
   onSuggest: (prompt: string) => void;
+  /** False when a brief is already in the thread: "your first brief arrives" would contradict it, so only the chips show. */
+  intro?: boolean;
 }) {
   const { t } = useTranslation('ai');
 
   return (
     <div data-testid="wisp-welcome" className="space-y-2">
-      <div>
-        <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.name')}</p>
-        <p className="text-sm">{t('wisp.welcome.title', { scope: scopeLabel })}</p>
-        <p className="mt-1 text-sm">{t('wisp.welcome.body')}</p>
-      </div>
+      {intro && (
+        <div>
+          <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.title')}</p>
+          <p className="text-sm">{t('wisp.welcome.title', { scope: scopeLabel })}</p>
+          <p className="mt-1 text-sm">{t('wisp.welcome.body')}</p>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         {SUGGESTIONS.map((key) => (
           <button

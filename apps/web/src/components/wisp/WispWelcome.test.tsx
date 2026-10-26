@@ -14,6 +14,13 @@ describe('WispWelcome (W01 Task 7)', () => {
     ).toBeInTheDocument();
   });
 
+  it('intro=false keeps only the chips (a brief is already on screen)', () => {
+    render(<WispWelcome scopeLabel="Acme" onSuggest={vi.fn()} intro={false} />);
+    expect(screen.queryByText("I'm looking around Acme.")).toBeNull();
+    expect(screen.queryByText(/Your first brief arrives/)).toBeNull();
+    expect(screen.getAllByTestId('wisp-suggestion')).toHaveLength(4);
+  });
+
   it('each chip sends its prompt', () => {
     const onSuggest = vi.fn();
     render(<WispWelcome scopeLabel="Acme" onSuggest={onSuggest} />);

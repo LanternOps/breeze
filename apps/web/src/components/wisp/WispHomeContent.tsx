@@ -1,18 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Brain, MessagesSquare, Sparkles } from 'lucide-react';
-import type { CurrentActivity, WispHomePayload, WispThreadLink } from '@breeze/shared';
+import { LIVE_CONCERN_STATUSES, type CurrentActivity, type WispHomePayload, type WispThreadLink } from '@breeze/shared';
 import { FeatureLock } from '@/components/shared/FeatureLock';
 import { useEntitlement } from '@/hooks/useEntitlement';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
-import WispThreadHeader from '../ai/WispThreadHeader';
 import WispGrantStepUpModal from '../ai/WispGrantStepUpModal';
-import WispActivityPanel from './WispActivityPanel';
 import WispBriefPost from './WispBriefPost';
-import WispNeedsYou from './WispNeedsYou';
-import WispLinksPanel from './WispLinksPanel';
+import WispCompanionShell from './WispCompanionShell';
 import WispHomeThread from './WispHomeThread';
+import WispRail from './WispRail';
 import { fetchWispHome, fetchWispPartnerEnabled, homeSectionFromHash } from './wispHome';
 
 type Wisp = NonNullable<WispState>;
@@ -32,13 +30,22 @@ const CHATS_HREF = '/ai/chat';
 const MEMORY_HREF = '/settings/wisp-memory';
 const SETTINGS_HREF = '/settings/ai-agents';
 
+/** What the needs-you count shows: the same live rule `WispNeedsYou` lists by. */
+const LIVE_STATUSES: readonly string[] = LIVE_CONCERN_STATUSES;
+
 /**
- * The Wisp home's body (W08 Task 9, spec §17.2): one read (`GET /wisp/home`,
- * no model call) for first paint, then a quiet poll. Left: the grant header
- * (scope, spend, pause/resume, live line), the morning brief, what needs you,
- * the activity timeline. Right: the conversation and the linked items.
- * States: not entitled → FeatureLock; no grant → start card (or, with the
- * partner switch off, why not); a broken read → retry, never a guessed state.
+ * The Wisp home's body (W08 Task 9; W01 #10211, companion spec §4.1): one read
+ * (`GET /wisp/home`, no model call) for first paint, then a quiet poll.
+ * Ready: the conversation is the page. `WispCompanionShell` lays out the
+ * thread column at reading width (the latest brief is its first post, the
+ * composer anchored at the bottom) and the rail at the right from `lg` up:
+ * identity and grant controls, what needs you, workers, linked items, the
+ * activity timeline, and the chats and memory links. Below `lg` the rail
+ * collapses to a status strip that opens it in a drawer. No page heading: the
+ * identity card carries the name.
+ * Other states keep the framed heading: not entitled → FeatureLock; no grant
+ * → start card (or, with the partner switch off, why not); a broken read →
+ * retry, never a guessed state.
  */
 export default function WispHomeContent() {
   const { t } = useTranslation('ai');
@@ -116,12 +123,15 @@ export default function WispHomeContent() {
   }, [liveKey]);
 
   // `#needs-you`, `#links`, `#concern=<id>` …: bring the section into view once it exists.
+  // Below `lg` the rail sections sit in the closed drawer, so a rail hash has nothing to scroll to there.
   const ready = view.kind === 'ready';
   useEffect(() => {
     if (!ready) return;
     const scroll = () => {
       const section = homeSectionFromHash(window.location.hash);
-      if (section) document.getElementById(section)?.scrollIntoView?.({ block: 'start' });
+      // The brief is the thread's first post now, not a section of its own.
+      const id = section === 'brief' ? 'thread' : section;
+      if (id) document.getElementById(id)?.scrollIntoView?.({ block: 'start' });
     };
     scroll();
     window.addEventListener('hashchange', scroll);
@@ -187,52 +197,56 @@ export default function WispHomeContent() {
     await load(false);
   };
 
-  return (
-    <HomeFrame>
-      {stale && (
-        <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-home-stale" role="status">
-          <span>{t('wisp.thread.stale')}</span>
-          <button type="button" onClick={() => void load(true)} className="font-medium underline underline-offset-2">{t('wisp.thread.retry')}</button>
-        </div>
-      )}
-      {!payload.partner.enabled && <DisabledCard />}
+  const onLinksChange = (next: WispThreadLink[]) => {
+    // Same as onWispChange: a poll already in flight read the links before this change.
+    loadToken.current++;
+    setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
+  };
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="min-w-0 space-y-4">
-          <section className="overflow-hidden rounded-lg border bg-card">
-            <WispThreadHeader
-              wisp={wisp}
-              orgName={orgName}
-              wideningAvailable={wisp.wideningAvailable}
-              showFocus={false}
-              currentActivity={current}
-              onWispChange={onWispChange}
-              onRevoked={onRevoked}
-            />
-          </section>
-          {payload.brief && <WispBriefPost brief={payload.brief} />}
-          <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={payload.needsYou} />
-          <section id="activity" className="overflow-hidden rounded-lg border bg-card">
-            <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} />
-          </section>
-        </div>
-        <div className="min-w-0 space-y-4">
-          <WispHomeThread wisp={wisp} lastSessionId={payload.thread.lastSessionId} />
-          <div className="overflow-hidden rounded-lg border bg-card">
-            <WispLinksPanel
-              threadId={wisp.threadId}
-              links={links}
-              canAdd={wisp.status === 'active'}
-              onLinksChange={(next) => {
-                // Same as onWispChange: a poll already in flight read the links before this change.
-                loadToken.current++;
-                setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
-              }}
-            />
-          </div>
-        </div>
-      </div>
-    </HomeFrame>
+  const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
+  const liveNeedsYouCount = payload.needsYou.filter((c) => LIVE_STATUSES.includes(c.status)).length;
+
+  return (
+    <WispCompanionShell
+      testId="wisp-home"
+      wisp={wisp}
+      current={current}
+      needsYouCount={liveNeedsYouCount}
+      banners={
+        <>
+          {stale && (
+            <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-home-stale" role="status">
+              <span>{t('wisp.thread.stale')}</span>
+              <button type="button" onClick={() => void load(true)} className="font-medium underline underline-offset-2">{t('wisp.thread.retry')}</button>
+            </div>
+          )}
+          {!payload.partner.enabled && <DisabledCard />}
+        </>
+      }
+      column={
+        <WispHomeThread
+          wisp={wisp}
+          lastSessionId={payload.thread.lastSessionId}
+          scopeLabel={scopeLabel}
+          links={links}
+          onLinksChange={onLinksChange}
+          leading={payload.brief ? <WispBriefPost brief={payload.brief} /> : null}
+        />
+      }
+      rail={
+        <WispRail
+          wisp={wisp}
+          orgName={orgName}
+          current={current}
+          needsYou={payload.needsYou}
+          links={links}
+          onLinksChange={onLinksChange}
+          onWispChange={onWispChange}
+          onRevoked={onRevoked}
+          activityKey={activityKey}
+        />
+      }
+    />
   );
 }
 

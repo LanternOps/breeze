@@ -30,7 +30,7 @@ export default function WispIdentityCard({
           <Sparkles className="h-5 w-5" />
         </div>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{t('wisp.name')}</h2>
+          <h2 className="text-sm font-semibold">{t('wisp.title')}</h2>
           <p
             data-testid="wisp-state-line"
             aria-live="polite"
