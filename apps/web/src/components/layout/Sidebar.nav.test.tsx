@@ -135,7 +135,7 @@ describe('navSections structure (#1321, #1324)', () => {
     // #10135: Wisp · Breeze AI · Workers{…} · Breeze AI for Office (the Workers
     // heading is not an item; see Sidebar.aiSection.test.tsx).
     expect(hrefsOf('ai')).toEqual([
-      '/wisp', '/wisp/chat', '/settings/ai-agents', '/ai-agents/runs', '/operator', '/fleet', '/ai-agents/impact', '/ai-for-office',
+      '/wisp', '/ai/chat', '/settings/ai-agents', '/ai-agents/runs', '/operator', '/fleet', '/ai-agents/impact', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);

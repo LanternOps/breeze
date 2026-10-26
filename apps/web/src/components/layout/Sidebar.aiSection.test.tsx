@@ -120,7 +120,7 @@ describe('Sidebar — the AI section (#10135)', () => {
       'Wisp', 'Breeze AI', 'Workers', 'Agents', 'Runs', 'AI Tasks', 'Findings', 'Impact', 'Breeze AI for Office',
     ]);
     expect(aiSectionHrefs(container)).toEqual([
-      '/wisp', '/wisp/chat', '/settings/ai-agents', '/ai-agents/runs', '/operator', '/fleet', '/ai-agents/impact', '/ai-for-office',
+      '/wisp', '/ai/chat', '/settings/ai-agents', '/ai-agents/runs', '/operator', '/fleet', '/ai-agents/impact', '/ai-for-office',
     ]);
   });
 
@@ -179,10 +179,10 @@ describe('Sidebar — the AI section (#10135)', () => {
   it('highlights Breeze AI, not Wisp, on the full-page chat', async () => {
     state.user.permissions = ALL;
     mockServer({ wispEnabled: true });
-    const { container } = render(<Sidebar currentPath="/wisp/chat" />);
-    await waitFor(() => expect(aiSectionHrefs(container)).toContain('/wisp/chat'));
+    const { container } = render(<Sidebar currentPath="/ai/chat" />);
+    await waitFor(() => expect(aiSectionHrefs(container)).toContain('/ai/chat'));
     const active = [...container.querySelectorAll('a[aria-current="page"]')].map((a) => a.getAttribute('href'));
-    expect(active).toEqual(['/wisp/chat']);
+    expect(active).toEqual(['/ai/chat']);
   });
 
   it.each([
@@ -241,7 +241,7 @@ describe('Sidebar — the Wisp entry is locked when the server has Wisp off (#10
     // The reason reaches assistive tech, not only the hover title.
     expect(wisp.textContent).toContain(LOCKED_REASON);
     // Only Wisp locks: the chat door is the built-in AI everyone has.
-    const chat = container.querySelector('a[href="/wisp/chat"]')!;
+    const chat = container.querySelector('a[href="/ai/chat"]')!;
     expect(chat.getAttribute('data-testid')).toBeNull();
     expect(chat.getAttribute('title')).toBeNull();
     expect(aiSectionEntries(container)[0]).toContain('Wisp');
@@ -321,7 +321,7 @@ describe('Sidebar — the Settings → AI hub link (#10135)', () => {
     state.user.permissions = AI_SESSIONS_ONLY;
     mockServer({});
     const { container } = render(<Sidebar currentPath="/" />);
-    await waitFor(() => expect(container.querySelector('a[href="/wisp/chat"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/ai/chat"]')).not.toBeNull());
     await settle();
     expect(hubLink(container)).toBeNull();
   });

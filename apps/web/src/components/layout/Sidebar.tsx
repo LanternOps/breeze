@@ -323,8 +323,8 @@ export const navSections: NavSection[] = [
       // chat page and a bare "Permission denied" on send.
       { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, lockedWhenWispOff: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       // The full-page multi-tab chat (formerly "AI Assistant" at /workspace,
-      // which redirects here). W05 moves it to /ai/chat.
-      { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/wisp/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      // then /wisp/chat — both redirect here, AI surface cohesion W05 #10136).
+      { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/ai/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
       { name: 'Agents', labelKey: 'nav.agents', href: '/settings/ai-agents', icon: Bot, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
