@@ -221,6 +221,8 @@ describe('notifyBudgetExhaustedOnce', () => {
       deepLink: `/ai/wisp/thread/${THREAD}`,
       dedupeKey: `wisp-budget-${GRANT}-2027-01-05`,
     });
+    // W02a: a budget notice is never a thread post (explicit post kinds only).
+    expect(h.deliverInApp.mock.calls[0]![0]).not.toHaveProperty('post');
   });
 
   it('second call in the same window returns false (dedupe key collides)', async () => {
