@@ -114,7 +114,7 @@ const namespaceDuplicateBaselines = {
     // (Huntress, SentinelOne, Slack, Discord) are now pinned literal, so they
     // match English exactly, as vendor names should.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'integrations.json': 31,
+    'integrations.json': 35, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -304,7 +304,7 @@ const namespaceDuplicateBaselines = {
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
-    'integrations.json': 36,
+    'integrations.json': 39, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -491,7 +491,7 @@ const namespaceDuplicateBaselines = {
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
-    'integrations.json': 41,
+    'integrations.json': 42, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -697,7 +697,7 @@ const namespaceDuplicateBaselines = {
     'flows.json': 3,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
-    'integrations.json': 41,
+    'integrations.json': 42, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -920,7 +920,7 @@ const namespaceDuplicateBaselines = {
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'integrations.json': 45,
+    'integrations.json': 49, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -1092,7 +1092,7 @@ const namespaceDuplicateBaselines = {
     // in it-IT), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns, and one more backupProviders label spells
     // identically to English in it-IT.
-    'integrations.json': 85,
+    'integrations.json': 88, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
     // (event-log category), "CPU" (resource select) are identical
@@ -1237,7 +1237,7 @@ const namespaceDuplicateBaselines = {
     'flows.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
-    'integrations.json': 24,
+    'integrations.json': 27, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,

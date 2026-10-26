@@ -3,7 +3,7 @@ import { toUnifiTelemetryDevice } from './telemetryReadModel';
 
 describe('toUnifiTelemetryDevice', () => {
   it('maps absent data to null and never to 0', () => {
-    const out = toUnifiTelemetryDevice({ id: 'd1' });
+    const out = toUnifiTelemetryDevice({});
     expect(out).toMatchObject({
       online: null, controllerState: null, wifiCapable: null, uptimeSeconds: null, cpuPct: null, memPct: null,
       wirelessClientCount: null, uplinkRxRateBps: null, uplinkTxRateBps: null, radioOverview: null, radioStatistics: null,
