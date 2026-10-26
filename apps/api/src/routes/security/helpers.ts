@@ -1,9 +1,10 @@
-import { and, desc, eq, inArray, ne, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db';
 import {
   auditLogs,
   devices,
+  securityPolicies,
   securityStatus,
   securityThreats
 } from '../../db/schema';
@@ -1257,4 +1258,24 @@ export async function buildBe9Recommendations(
   }
 
   return { recommendations, affectedByOrg };
+}
+
+// ── Security policy access ──────────────────────────────────────────────────
+// Here rather than in policies.ts so the AI tool (aiToolsSecurityPolicies.ts) shares it without importing the router.
+
+// Dual-axis access condition (#2127): org-owned rows the caller can reach OR
+// partner-wide rows (org_id NULL) owned by the caller's own partner. This
+// app-layer condition keeps partner-owned templates visible to reads that
+// filter by auth.orgCondition (which would otherwise exclude org_id IS NULL
+// rows). RLS is STRICTER, not identical: breeze_has_partner_access only passes
+// for partner-scope callers, so the branch is gated on partner scope to keep
+// app and DB in agreement. Mirrors softwarePolicyAccessCondition (#2126).
+export function securityPolicyAccessCondition(auth: AuthContext): SQL | undefined {
+  const orgCond = auth.orgCondition(securityPolicies.orgId);
+  // System scope: no filter on either axis.
+  if (!orgCond) return undefined;
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${orgCond} OR (${securityPolicies.orgId} IS NULL AND ${securityPolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return orgCond;
 }

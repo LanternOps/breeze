@@ -29,7 +29,7 @@ import { resolveWritableToolOrgId } from './aiToolWriteOrg';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { invalidateOrgPolicyProbeCache } from './agentOrgSettingsCache';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
-import { securityPolicyAccessCondition } from '../routes/security/policies';
+import { securityPolicyAccessCondition } from '../routes/security/helpers';
 import { createPolicySchema, updatePolicySchema } from '../routes/security/schemas';
 import { getPolicyWithOrgCheck } from '../routes/policyManagement/helpers';
 import { parseData } from './aiToolsTicketOpsShared';
