@@ -10,7 +10,7 @@ import {
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
-import { moveOrgResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
+import { canonicalId, moveOrgResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
 import { getUserEpochs } from '../../services/authEpochs';
 import { ENABLE_2FA } from '../auth/schemas';
 import { hasPermission, PERMISSIONS } from '../../services/permissions';
@@ -102,7 +102,15 @@ moveOrgRoutes.post(
   zValidator('json', moveOrgSchema),
   async (c) => {
     const auth = c.get('auth');
-    const { orgId: targetOrgId, siteId: targetSiteId, acceptCurrencyMismatch, stepUpGrant } = c.req.valid('json');
+    const { orgId: rawTargetOrgId, siteId: rawTargetSiteId, acceptCurrencyMismatch, stepUpGrant } = c.req.valid('json');
+    // Canonical destination ids from here on (#10119). Both are `.uuid()`-validated,
+    // so case carries no meaning, and the raw spelling would otherwise: slip past
+    // the same-org guard below (a JS `===` against `device.orgId`), fail
+    // `auth.canAccessOrg`, miss the `orgRows.find(r.id === targetOrgId)` row-id
+    // comparison with a 404 for an org that exists, and land in the grant binding,
+    // the move detail and the audit rows in the caller's spelling.
+    const targetOrgId = canonicalId(rawTargetOrgId);
+    const targetSiteId = canonicalId(rawTargetSiteId);
 
     // Multi-currency (#3776): tickets bound to this device move with it, and
     // accepting that their unbilled monetary rows stay in the OLD currency is a
