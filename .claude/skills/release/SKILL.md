@@ -115,6 +115,41 @@ Add a new entry at the **top** of `WHATS_NEW_ENTRIES` (newest-first):
   or below the shipped release will never auto-show for them. Version the entry as the *next*
   release and fold the missed highlights into it.
 
+## Step 0.45 — Bump the mobile store version (BEFORE tagging)
+
+Xcode Cloud builds the iOS app on every push to `main` and uploads to App Store Connect.
+Apple closes a version "train" the moment App Review approves it; every later upload
+stamped with that version is rejected (`ITMS-90186 Invalid Pre-Release Train` +
+`ITMS-90062 CFBundleShortVersionString must be higher`) and Apple emails Todd on each
+commit. From 10-23 to 10-25 that silently discarded builds 85–93, including the iOS 27
+crash fix. The cure is a new train per Breeze release, so Todd submits the store update at
+release time from a build that already exists.
+
+Bump the **patch** component (store version is independent of the Breeze semver) in the
+two files that carry it, plus the doc, in one commit merged to `main` before the tag:
+
+```bash
+OLD=$(node -p "require('./apps/mobile/app.json').expo.version")
+NEW=$(echo "$OLD" | awk -F. '{print $1"."$2"."$3+1}')
+sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" apps/mobile/app.json apps/mobile/package.json
+sed -i '' "s/^- Store version: \`$OLD\`/- Store version: \`$NEW\`/" apps/mobile/STORE_SUBMISSION.md
+cd apps/mobile && npx vitest run src/config/appJson.test.ts   # app.json shape guards
+```
+
+- `ios.buildNumber` and `android.versionCode` are **not** part of this step: Xcode Cloud
+  assigns iOS build numbers itself, and Android's `versionCode` is bumped only when a Play
+  upload is actually made (`STORE_SUBMISSION.md`).
+- Skip the bump only if the current version was never approved (check App Store Connect →
+  the version's status is still "Prepare for Submission" or "Waiting for Review"). A train
+  that was never approved is still open and accepts new builds.
+- After the release is tagged and the Xcode Cloud build for the bump commit finishes, the
+  build appears in TestFlight under the new version. Todd then creates that version in App
+  Store Connect, attaches the build, and submits. That submission is **his** step, outside
+  this skill; the skill's job ends at making sure a submittable build exists.
+- Optional hardening (App Store Connect UI, not code): restrict the Xcode Cloud workflow's
+  start condition to tags `v*` instead of every `main` push. Then builds only happen at
+  release cuts and the rejection emails cannot recur between releases.
+
 ## Step 0.5 — After tagging: WAIT for the build, confirm ALL artifacts exist
 
 Pushing the tag kicks off `release.yml`, which is a **long, multi-job build** (~20–40 min): api/web/portal GHCR images, agent binaries for every platform, the **signed** Windows MSI, the **notarized** macOS agent/viewer/helper, watchdog + user-helper, and the signed `release-artifact-manifest.json` (+ `.ed25519`/`.minisig`) and `checksums.txt`. The GitHub Release is created by the **final** job — you cannot `gh release edit` the body until then, and **you must not roll out until every artifact is present**.

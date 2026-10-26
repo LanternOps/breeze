@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   getAgreementRequestLink: vi.fn(),
   voidAgreementRequest: vi.fn(),
   deleteAgreementRequest: vi.fn(),
+  remindAgreementRequest: vi.fn(),
 }));
 vi.mock('../../lib/api/agreementRequests', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../lib/api/agreementRequests')>();
@@ -118,12 +119,76 @@ describe('AgreementRequestsTable', () => {
     expect(screen.queryByTestId('agreement-request-delete-r2')).not.toBeInTheDocument();
   });
 
-  it('never renders a Remind button', async () => {
-    api.listAgreementRequests.mockResolvedValue(resp({ data: [row(), row({ id: 'r2', status: 'viewed' }), row({ id: 'r3', status: 'draft' })] }));
-    render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
-    await screen.findAllByTestId('agreement-request-row');
-    expect(screen.queryByText(/remind/i)).not.toBeInTheDocument();
-    expect(document.querySelector('[data-testid*="remind"]')).toBeNull();
+  describe('Remind (#9075 W3b)', () => {
+    it('is offered on sent and viewed rows only, behind agreements:send', async () => {
+      api.listAgreementRequests.mockResolvedValue(resp({ data: [row(), row({ id: 'r2', status: 'viewed' }), row({ id: 'r3', status: 'draft' })] }));
+      const { unmount } = render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      await screen.findAllByTestId('agreement-request-row');
+      expect(screen.getByTestId('agreement-request-remind-r1')).toBeInTheDocument();
+      expect(screen.getByTestId('agreement-request-remind-r2')).toBeInTheDocument();
+      expect(screen.queryByTestId('agreement-request-remind-r3')).not.toBeInTheDocument();
+      unmount();
+
+      perms.granted = new Set(['agreements:read', 'agreements:write']);
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      await screen.findAllByTestId('agreement-request-row');
+      expect(document.querySelector('[data-testid^="agreement-request-remind-"]')).toBeNull();
+    });
+
+    it('posts the reminder, toasts the recipient count and reloads the list', async () => {
+      api.remindAgreementRequest.mockResolvedValue(resp({ data: { request: row({ reminderCount: 1 }), emailed: true, recipients: ['a@acme.test', 'b@acme.test'] } }));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      fireEvent.click(await screen.findByTestId('agreement-request-remind-r1'));
+      await waitFor(() => expect(api.remindAgreementRequest).toHaveBeenCalledWith('r1'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Reminder sent to 2 recipients' })));
+      await waitFor(() => expect(api.listAgreementRequests).toHaveBeenCalledTimes(2));
+    });
+
+    it('a committed reminder whose email failed is a warning naming the fallback, never a success', async () => {
+      api.remindAgreementRequest.mockResolvedValue(resp({ data: { request: row(), emailed: false, emailReason: 'send_failed', recipients: ['a@acme.test'] } }));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      fireEvent.click(await screen.findByTestId('agreement-request-remind-r1'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning', message: expect.stringContaining('email failed to deliver'),
+      })));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('an unknown emailReason from a newer API falls back to the generic failure copy (no missing key)', async () => {
+      api.remindAgreementRequest.mockResolvedValue(resp({ data: { request: row(), emailed: false, emailReason: 'something_new', recipients: [] } }));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      fireEvent.click(await screen.findByTestId('agreement-request-remind-r1'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning', message: expect.stringContaining('email failed to deliver'),
+      })));
+    });
+
+    it('a refused reminder (e.g. already signed) toasts an error and does not reload', async () => {
+      api.remindAgreementRequest.mockResolvedValue(resp({ error: 'This agreement is already signed' }, 409));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      fireEvent.click(await screen.findByTestId('agreement-request-remind-r1'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(api.listAgreementRequests).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables the button while a reminder is in flight (a double-click mails once)', async () => {
+      let release: (r: Response) => void = () => {};
+      api.remindAgreementRequest.mockImplementation(() => new Promise<Response>((r) => { release = r; }));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      const btn = await screen.findByTestId('agreement-request-remind-r1');
+      fireEvent.click(btn);
+      await waitFor(() => expect(btn).toBeDisabled());
+      fireEvent.click(btn);
+      expect(api.remindAgreementRequest).toHaveBeenCalledTimes(1);
+      release(resp({ data: { request: row(), emailed: true, recipients: ['a@acme.test'] } }));
+      await waitFor(() => expect(btn).toBeEnabled());
+    });
+
+    it('shows how many times a request has been reminded', async () => {
+      api.listAgreementRequests.mockResolvedValue(resp({ data: [row({ reminderCount: 3 })] }));
+      render(<AgreementRequestsTable bucket="pending" orgNames={{}} />);
+      expect(await screen.findByTestId('agreement-request-reminded')).toHaveTextContent('Reminded 3 times');
+    });
   });
 
   it('closed rows have no actions and show the decline / void reason', async () => {

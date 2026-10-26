@@ -182,6 +182,22 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
 }
 
 /**
+ * Resolve the live concern holding `signature` for the partner, if any (system
+ * automation closing its own readiness concern; no memory block is written).
+ * Idempotent: nothing live → `{ resolved: false }`.
+ */
+export async function resolveConcernBySignature(
+  partnerId: string,
+  signature: string,
+  outcome: string,
+): Promise<{ resolved: boolean }> {
+  const id = await inSystemContext(() => findLiveBySignature(partnerId, signature));
+  if (!id) return { resolved: false };
+  const { resolved } = await resolveConcern(id, {}, outcome);
+  return { resolved };
+}
+
+/**
  * Patch the given fields of a LIVE concern; evidence is replaced, not merged.
  * No-op on an unknown id and on a concern that was resolved or dismissed
  * meanwhile (a run that read it open must not bump a closed one — the routes'

@@ -457,6 +457,18 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.queryByText(/unsaved changes/i)).toBeNull();
   });
 
+  it('uses the full content width, not a centred max-width column (matches Partner Settings, #9400)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    const heading = screen.getByRole('heading', { name: /Organization Settings/i });
+    const root = heading.closest('header')!.parentElement!;
+    expect(root.className).not.toMatch(/\bmax-w-/);
+    expect(root.className).not.toMatch(/\bmx-auto\b/);
+    expect(heading.className).toMatch(/\btext-2xl\b/);
+    expect(screen.getByTestId('org-settings-tab-general')).not.toBeNull();
+  });
+
   it('renders the sections as grouped links and marks the active one with aria-current', async () => {
     render(<OrgSettingsPage orgId="org-1" />);
 
