@@ -234,7 +234,7 @@ func replaceEvidence(root programDataPathSecurity, entries map[string]programDat
 		if !sec.Exists {
 			continue
 		}
-		own := reclaimAgentEntries[strings.ToLower(name)]
+		own := reclaimAgentEntries[strings.ToLower(name)] || isRebindStagedAside(name)
 		if sec.Unreadable {
 			if own {
 				return name + " cannot be inspected by the agent", nil, nil

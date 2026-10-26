@@ -193,6 +193,8 @@ func reclaimUnixDir(root string, configDir, forEnroll bool) error {
 				want := efi.Mode().Perm() &^ reclaimOtherWrite
 				if isConfig {
 					want = mode
+				} else if configDir && efi.Mode().IsRegular() && isRebindStagedAside(e.Name()) {
+					want = 0o600 // a corrupt staged set moved aside: the staged set's mode
 				}
 				if err := os.Chmod(p, want); err != nil {
 					return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)

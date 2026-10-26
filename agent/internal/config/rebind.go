@@ -277,7 +277,8 @@ func WriteRebindStaged(cfgFile string, s *RebindStagedSet) error {
 // ErrRebindStagedUnusable reports a staged-set file that was read completely
 // and is provably corrupt: not JSON, or a version-1 set that fails validation
 // (this build validates every set before writing it). It has been moved aside
-// (kept, never deleted), so the caller proceeds as if there were none.
+// (only the newest such copy is kept), so the caller proceeds as if there
+// were none.
 var ErrRebindStagedUnusable = errors.New("the staged reattach set on disk is corrupt")
 
 // ErrRebindStagedUnreadable reports a staged-set file that exists but could
@@ -292,8 +293,10 @@ var errRebindStagedCorrupt = errors.New("corrupt staged set")
 
 // ReadRebindStaged returns the staged set, or nil when there is none. Only a
 // provably corrupt file is moved aside (rebind-staged.json.unusable-<time>,
-// ErrRebindStagedUnusable). Every other failure returns an error wrapping
-// ErrRebindStagedUnreadable and leaves the file where it is.
+// ErrRebindStagedUnusable); older copies set aside before it are deleted, so
+// at most one (which may hold plaintext tokens) is kept for diagnosis. Every
+// other failure returns an error wrapping ErrRebindStagedUnreadable and
+// leaves the file where it is.
 func ReadRebindStaged(cfgFile string) (*RebindStagedSet, error) {
 	path := RebindStagedPath(cfgFile)
 	if err := checkConfigTarget(path); err != nil {
@@ -309,7 +312,36 @@ func ReadRebindStaged(cfgFile string) (*RebindStagedSet, error) {
 	if renameErr := renameWithRetry(path, aside); renameErr != nil {
 		return nil, fmt.Errorf("%w: corrupt (%v) and could not be moved aside: %v", ErrRebindStagedUnreadable, err, renameErr)
 	}
+	pruneRebindStagedAsides(filepath.Dir(path), filepath.Base(aside))
 	return nil, fmt.Errorf("%w (moved to %s): %v", ErrRebindStagedUnusable, filepath.Base(aside), err)
+}
+
+// rebindStagedAsidePrefix names the copies ReadRebindStaged moves aside.
+const rebindStagedAsidePrefix = rebindStagedFileName + ".unusable-"
+
+// isRebindStagedAside reports whether a config-folder entry is a corrupt
+// staged set moved aside: the agent's own file, holding the same kind of
+// secrets as the staged set, so the folder reclaim treats it as one.
+func isRebindStagedAside(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), rebindStagedAsidePrefix)
+}
+
+// pruneRebindStagedAsides deletes every set-aside copy in dir but keep. A
+// failure is logged (names only) and retried on the next set-aside.
+func pruneRebindStagedAsides(dir, keep string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		log.Warn("could not list older corrupt staged reattach sets to delete", "error", err.Error())
+		return
+	}
+	for _, e := range entries {
+		if e.Name() == keep || !isRebindStagedAside(e.Name()) || !e.Type().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("could not delete an older corrupt staged reattach set", "file", e.Name(), "error", err.Error())
+		}
+	}
 }
 
 func readRebindStagedLocked(path string) (*RebindStagedSet, error) {

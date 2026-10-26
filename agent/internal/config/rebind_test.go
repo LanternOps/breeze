@@ -161,6 +161,36 @@ func TestReadRebindStagedMovesAnUnusableFileAside(t *testing.T) {
 	}
 }
 
+// The set-aside copies may hold plaintext tokens: only the newest is kept.
+func TestReadRebindStagedKeepsOnlyTheNewestUnusableCopy(t *testing.T) {
+	cfgPath := bindConfig(t)
+	path := RebindStagedPath(cfgPath)
+	older := path + ".unusable-20200101T000000Z"
+	if err := os.WriteFile(older, []byte("{old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(filepath.Dir(path), "rebind-staged.json.bak")
+	if err := os.WriteFile(unrelated, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRebindStaged(cfgPath); !errors.Is(err, ErrRebindStagedUnusable) {
+		t.Fatalf("err = %v, want ErrRebindStagedUnusable", err)
+	}
+	matches, _ := filepath.Glob(path + ".unusable-*")
+	if len(matches) != 1 || matches[0] == older {
+		t.Fatalf("set-aside copies = %v, want only the new one", matches)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatal("an unrelated file was deleted")
+	}
+	if !isRebindStagedAside(filepath.Base(matches[0])) || isRebindStagedAside(rebindStagedFileName) {
+		t.Fatal("isRebindStagedAside does not recognize exactly the set-aside copies")
+	}
+}
+
 func rebindTestIdentity(withCert bool) RebindIdentity {
 	id := RebindIdentity{
 		IntentID:          rebindTestIntent,
