@@ -134,10 +134,39 @@ func TestNativeConsentDialogsEscapeIsDeny(t *testing.T) {
 	}
 }
 
+// The countdown the copy promises must actually be armed on every platform,
+// and a prompt without one must not get one.
+func TestNativeConsentDialogsArmTheCountdown(t *testing.T) {
+	timed := sanitizeConsentRequest(ipc.ConsentRequest{TimeoutMs: 30_000})
+	if got := consentMessageBoxTimeoutMs(timed); got != 30_000 {
+		t.Errorf("windows MessageBoxTimeoutW timeout = %d, want 30000", got)
+	}
+	if script := consentOsascriptScript(timed); !strings.HasSuffix(script, " giving up after 30") {
+		t.Errorf("macOS consent dialog has no 30 s countdown: %s", script)
+	}
+	if args := consentZenityArgs(timed); !slices.Contains(args, "--timeout=30") {
+		t.Errorf("zenity consent dialog has no 30 s countdown: %v", args)
+	}
+
+	untimed := sanitizeConsentRequest(ipc.ConsentRequest{})
+	if got := consentMessageBoxTimeoutMs(untimed); got != consentInfiniteMs {
+		t.Errorf("windows MessageBoxTimeoutW timeout without a countdown = %#x, want INFINITE", got)
+	}
+	if script := consentOsascriptScript(untimed); strings.Contains(script, "giving up after") {
+		t.Errorf("macOS consent dialog got a countdown the request did not ask for: %s", script)
+	}
+	for _, a := range consentZenityArgs(untimed) {
+		if strings.HasPrefix(a, "--timeout") {
+			t.Errorf("zenity consent dialog got a countdown the request did not ask for: %v", consentZenityArgs(untimed))
+		}
+	}
+}
+
 // The native dialogs cannot tick down like the Assist card's "Declining
 // automatically in 0:30", so each states once what happens if the user does
-// nothing, and says "allowed" only when the policy really proceeds on expiry
-// (the same rule decideConsent and legacyConsentDecision apply).
+// nothing, and says "allowed" only under a "proceed" policy: exactly when
+// legacyConsentDecision turns an expiry into "allow" (decideConsent applies
+// the same rule to a prompt it can confirm was on screen).
 func TestNativeConsentDialogsStateTheExpiryOutcome(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -165,6 +194,10 @@ func TestNativeConsentDialogsStateTheExpiryOutcome(t *testing.T) {
 			}
 			if !strings.Contains(notice, tt.want) {
 				t.Fatalf("notice = %q, want it to contain %q", notice, tt.want)
+			}
+			decision, _ := legacyConsentDecision(dialogExpired, req.OnTimeout)
+			if saysAllowed := strings.Contains(notice, "allowed automatically"); saysAllowed != (decision == "allow") {
+				t.Errorf("notice %q disagrees with the expiry decision %q", notice, decision)
 			}
 			_, winBody := consentMessageBoxText(req)
 			surfaces := map[string]string{

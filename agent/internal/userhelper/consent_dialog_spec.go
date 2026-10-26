@@ -1,12 +1,14 @@
 // Untagged on purpose, like notify_prompt.go: the native consent dialogs behind
-// showConsentDialogFn are windows/darwin/linux-tagged, and the userhelper
-// package's Windows tests do not run in CI. Everything that decides WHAT each
-// native dialog is asked to render (its buttons, which one is the default, the
+// showConsentDialogFn are windows/darwin/linux-tagged, and CI runs only an
+// allowlisted set of userhelper tests on Windows (ci.yml, "Run Windows
+// user-helper toast tests"). Everything that decides WHAT each native dialog is
+// asked to render (its buttons, which one is the default, its countdown, the
 // countdown copy) lives on this side of the build tag, so every OS's test run
 // checks every platform's dialog.
 //
 // Safe default (#10187): Deny is the default button on every native consent
-// dialog, as it is on the Breeze Assist card (apps/helper ConsentDialog.tsx).
+// dialog, as it is on the Breeze Assist card
+// (apps/helper/src/windows/ConsentDialog.tsx focuses Deny).
 // A user who presses Enter to get rid of "something that popped up" must not
 // grant remote control. A countdown expiry is reported as presented_expired,
 // never as a grant; the agent's policy decides it (decideConsent).
@@ -26,12 +28,23 @@ const (
 	consentMBSystemModal   = 0x00001000
 	consentMBSetForeground = 0x00010000
 	consentMBTopMost       = 0x00040000
+
+	consentInfiniteMs = 0xFFFFFFFF // MessageBoxTimeoutW: no countdown
 )
 
 // consentMessageBoxFlags is the Windows consent box's uType: Yes (Allow) /
 // No (Deny), with MB_DEFBUTTON2 making No the default button. An MB_YESNO box
 // has no Cancel button, so Esc and the close box are disabled.
 const consentMessageBoxFlags = consentMBYesNo | consentMBDefButton2 | consentMBIconQuestion | consentMBTopMost | consentMBSystemModal | consentMBSetForeground
+
+// consentMessageBoxTimeoutMs is the Windows consent box's countdown: the
+// request's, or none when it carries no timeout.
+func consentMessageBoxTimeoutMs(req ipc.ConsentRequest) uint32 {
+	if req.TimeoutMs > 0 {
+		return uint32(req.TimeoutMs)
+	}
+	return consentInfiniteMs
+}
 
 // consentMessageBoxText is the Windows consent box's title and body. A message
 // box cannot relabel its buttons, so the body says what Yes and No mean.
@@ -91,10 +104,11 @@ func consentTimeoutSeconds(req ipc.ConsentRequest) int {
 
 // consentCountdownNotice states what happens if the user does nothing: the
 // Assist card's "Declining automatically" line, said once because a native
-// dialog cannot tick down. It says "allowed" only when the policy proceeds on
-// expiry, the same rule decideConsent and legacyConsentDecision apply. ""
-// for a prompt without a countdown. req must be sanitized (OnTimeout
-// lower-cased).
+// dialog cannot tick down. It says "allowed" only under a "proceed" policy,
+// the rule legacyConsentDecision applies to an expiry; decideConsent applies
+// the same rule to an expiry it can confirm was on screen and refuses one it
+// cannot. "" for a prompt without a countdown. req must be sanitized
+// (OnTimeout lower-cased).
 func consentCountdownNotice(req ipc.ConsentRequest) string {
 	if req.TimeoutMs <= 0 {
 		return ""
