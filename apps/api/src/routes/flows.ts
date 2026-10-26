@@ -94,6 +94,8 @@ const ENABLE_STATUS: Record<string, Status> = {
   invalid: 422,
   // W5 (#5220, Decision 3): a webhook flow needs a secret before it can go live.
   webhook_secret_missing: 422,
+  // W5 PR B (#5220, Decision 13): an org flow's ai step needs an AI budget that can be spent.
+  ai_budget_unavailable: 422,
 };
 const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
 const RUN_STATUS: Record<string, Status> = {

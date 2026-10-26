@@ -49,6 +49,7 @@ import { hasSiteCeiling } from '../siteCeilingAccess';
 import { latestCronOccurrence } from '../aiAgents/sweepOccurrence';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
 import { sendFlowNotice } from './notices';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
@@ -59,6 +60,7 @@ export type EnableFlowResult =
   | { ok: false; error: 'invalid'; validation: FlowValidationResult }
   | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> }
   | { ok: false; error: 'pre_approval_not_eligible'; stepId: string; reason: Extract<PreApprovalEligibility, { eligible: false }>['reason'] }
+  | { ok: false; error: 'ai_budget_unavailable'; message: string }
   | {
       ok: false;
       error: 'flow_not_found' | 'version_conflict' | 'already_enabled' | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available'
@@ -288,6 +290,12 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   }
   const missing = missingPermissionsFor(document, pins, perms);
   if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  // W5 (#5220, Decision 13): an org flow's `ai` step needs an AI budget that
+  // can ever be spent; a partner-wide flow is checked per run org at run time.
+  if (owner.orgId && document.steps.some((s) => s.tool === 'ai')) {
+    const denial = await aiStepPermanentBudgetDenial(owner.orgId, owner.partnerId);
+    if (denial) return { ok: false, error: 'ai_budget_unavailable', message: denial.message };
+  }
 
   const requested = [...new Set(req.preApprovedStepIds ?? [])];
   const stepIds = new Set(document.steps.map((s) => s.id));

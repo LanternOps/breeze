@@ -63,6 +63,7 @@ vi.mock('../permissions', async (importOriginal) => ({
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
+vi.mock('./builtins/aiBudget', () => ({ aiStepPermanentBudgetDenial: vi.fn() }));
 
 import { eventDispatchMode, eventDispatchQueueSubscribers } from '../../config/env';
 import { FlowStepPinError, stepPinsFor, validateFlowDocument, type FlowStepPin } from '../flowValidator';
@@ -72,6 +73,7 @@ import { getUserPermissions, type UserPermissions } from '../permissions';
 import { writeAuditEvent } from '../auditEvents';
 import { createNotification } from '../userNotifications';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
 import { assertDelegatorAuthority, disableFlow, enableFlow, pauseFlow, webhookSecretSurvivesEnable } from './versions';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -174,6 +176,7 @@ beforeEach(() => {
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(createNotification).mockReset().mockResolvedValue('n1');
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
+  vi.mocked(aiStepPermanentBudgetDenial).mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -339,6 +342,43 @@ describe('enableFlow — refusals', () => {
       definition: doc, webhookSecretEncrypted: 'enc:v3:k:x', webhookSecretFingerprint: 'fp', webhookSecretRotatedAt: new Date('2027-03-01T00:00:00Z'),
     }));
     expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+  });
+
+  // W5 PR B (#5220, Decision 13): spec §6.7 "cannot be enabled if the owner has no budget".
+  describe('ai step budget', () => {
+    const AI_DOC = { ...MANUAL_DOC, steps: [{ id: 'think', tool: 'ai', input: { prompt: 'x', tools: [], output: { type: 'object' } }, ...STEP_DEFAULTS }] };
+    const AI_PINS: FlowStepPin[] = [{ stepId: 'think', tool: 'ai', source: 'builtin', tier: 1, approvalScope: null }];
+
+    it('org flow with an ai step and AI disabled is ai_budget_unavailable', async () => {
+      queues.select.push([row({ definition: AI_DOC })]);
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'AI features are disabled for this organization' });
+      expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+        .toEqual({ ok: false, error: 'ai_budget_unavailable', message: 'AI features are disabled for this organization' });
+      expect(aiStepPermanentBudgetDenial).toHaveBeenCalledWith(ORG, PARTNER);
+      expect(callsOf('update')).toHaveLength(0);
+    });
+
+    it('org flow with an ai step and a usable budget enables', async () => {
+      queueEnable(row({ definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+    });
+
+    it('a partner-wide flow checks per run org at run time, not at enable', async () => {
+      queueEnable(row({ orgId: null, partnerId: PARTNER, definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'x' });
+      vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
+      expect((await enableFlow(partnerAuth('all'), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
+
+    it('a flow without an ai step never checks the AI budget', async () => {
+      queueEnable();
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
   });
 
   it('missing permissions are all listed', async () => {

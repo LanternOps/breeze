@@ -54,7 +54,6 @@ import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin 
 import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
 import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
-import { FLOW_EXECUTABLE_BUILTINS } from './catalog';
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
 import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
@@ -461,7 +460,7 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
 
   // 3. built-ins (in-process; never a tool call)
   if (i.pin.source === 'builtin') {
-    if (!isFlowBuiltin(i.step.tool) || !FLOW_EXECUTABLE_BUILTINS.has(i.step.tool)) {
+    if (!isFlowBuiltin(i.step.tool) || (i.step.tool !== 'set' && i.step.tool !== 'wait')) {
       return failedPolicy('tool_unavailable', `Built-in '${i.step.tool}' is not available.`, { renderedInput: rendered });
     }
     if (i.step.tool === 'set') {
