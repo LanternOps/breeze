@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NotificationsTab, usePromptList, type PromptListApi } from './NotificationsTab';
-import type { PromptView } from './types';
+import type { PromptListView, PromptView } from './types';
 
 const NOW = new Date(2026, 9, 26, 14, 30, 0).getTime();
 
@@ -30,6 +30,8 @@ const base: PromptView = {
   lastOutcome: null,
   closed: false,
   card: false,
+  lastError: null,
+  version: 3,
 };
 
 const outcome: PromptView = {
@@ -71,40 +73,83 @@ describe('NotificationsTab', () => {
     render(<NotificationsTab entries={[]} onAction={vi.fn()} clock={() => NOW} />);
     expect(screen.getByText('No notifications')).toBeInTheDocument();
   });
+
+  it('shows the error Rust recorded for an entry', () => {
+    render(<NotificationsTab entries={[{ ...base, lastError: 'That choice is not available.' }]} onAction={vi.fn()} clock={() => NOW} />);
+    expect(screen.getByRole('listitem')).toHaveTextContent('That choice is not available.');
+  });
 });
 
 describe('usePromptList', () => {
-  function fakeApi() {
-    let push: ((l: PromptView[]) => void) | null = null;
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function fakeApi(overrides: Partial<PromptListApi> = {}) {
+    let push: ((l: PromptListView) => void) | null = null;
     const api: PromptListApi = {
-      getList: vi.fn(async () => [base]),
+      getList: vi.fn(async () => ({ version: 3, entries: [base] })),
       action: vi.fn(async () => {}),
-      subscribe: vi.fn(async (onList: (l: PromptView[]) => void) => {
+      subscribe: vi.fn(async (onList: (l: PromptListView) => void) => {
         push = onList;
         return () => {
           push = null;
         };
       }),
+      ...overrides,
     };
-    return { api, push: (l: PromptView[]) => push?.(l) };
+    return { api, push: (l: PromptListView) => push?.(l) };
   }
 
   it('loads the list and follows updates from Rust', async () => {
     const { api, push } = fakeApi();
-    const { result } = renderHook(() => usePromptList(api, true));
+    const { result } = renderHook(() => usePromptList(api, true, 0));
     await waitFor(() => expect(result.current.entries).toHaveLength(1));
     await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
-    act(() => push([]));
+    act(() => push({ version: 4, entries: [] }));
     expect(result.current.entries).toHaveLength(0);
     await act(() => result.current.act('restart:42', 'postpone'));
     expect(api.action).toHaveBeenCalledWith('restart:42', 'postpone');
   });
 
+  it('subscribes before it fetches, and keeps the newer list', async () => {
+    let resolveList: (l: PromptListView) => void = () => {};
+    const { api, push } = fakeApi({ getList: vi.fn(() => new Promise<PromptListView>((r) => (resolveList = r))) });
+    const { result } = renderHook(() => usePromptList(api, true, 0));
+    await waitFor(() => expect(api.getList).toHaveBeenCalled());
+    expect(vi.mocked(api.subscribe).mock.invocationCallOrder[0]!).toBeLessThan(
+      vi.mocked(api.getList).mock.invocationCallOrder[0]!,
+    );
+    act(() => push({ version: 5, entries: [] }));
+    await act(async () => resolveList({ version: 4, entries: [base] }));
+    expect(result.current.entries).toHaveLength(0);
+  });
+
+  it('retries a failed fetch once, then says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api } = fakeApi({ getList: vi.fn(async () => Promise.reject('down')) });
+    const { result } = renderHook(() => usePromptList(api, true, 0));
+    await waitFor(() => expect(result.current.error).toMatch(/could not be loaded/));
+    expect(api.getList).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('warns and says so when updates cannot be subscribed, then re-pulls once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api } = fakeApi({ subscribe: vi.fn(async () => Promise.reject('no listener')) });
+    const { result } = renderHook(() => usePromptList(api, true, 0));
+    await waitFor(() => expect(result.current.error).toMatch(/may be out of date/));
+    await waitFor(() => expect(api.getList).toHaveBeenCalledTimes(2));
+    expect(result.current.entries).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('stays empty and calls nothing outside Tauri', () => {
     const { api } = fakeApi();
-    const { result } = renderHook(() => usePromptList(api, false));
+    const { result } = renderHook(() => usePromptList(api, false, 0));
     expect(result.current.entries).toEqual([]);
     expect(api.getList).not.toHaveBeenCalled();
     expect(api.subscribe).not.toHaveBeenCalled();
   });
 });
+

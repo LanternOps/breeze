@@ -396,10 +396,15 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
     win.on_window_event(move |event| match event {
         tauri::WindowEvent::CloseRequested { api, .. } => {
             let Some(bridge) = handle.try_state::<std::sync::Arc<PromptBridge>>() else { return };
-            match bridge.dismiss(super::client::now_unix_ms(), &id, ActionVia::Keyboard) {
-                // A decision keeps its card: the safe action is on its way, or
-                // could not be sent and the person must be able to retry.
-                Ok(DismissEffect::ActionSent) | Err(_) => api.prevent_close(),
+            match bridge.dismiss(super::client::now_unix_ms(), &id, ActionVia::Click) {
+                // A decision keeps its card while its safe action is on its way.
+                Ok(DismissEffect::ActionSent) => api.prevent_close(),
+                // ...or when it could not be sent: the bridge recorded why on the
+                // prompt (`last_error`, shown on the card) and the person retries.
+                Err(e) => {
+                    eprintln!("[helper] prompt card close box could not act (promptId={id}): {e}");
+                    api.prevent_close();
+                }
                 Ok(DismissEffect::Hidden) | Ok(DismissEffect::Nothing) => {}
             }
             publish_prompt_state(&handle, Some(&id));
@@ -439,7 +444,7 @@ pub fn emit_prompt_view(app: &AppHandle, view: &super::prompt::PromptView) {
 
 /// Push the notification list to the main window's Notifications tab. An
 /// event only: this never shows, focuses or un-minimises the main window.
-pub fn emit_prompt_list(app: &AppHandle, list: &[super::prompt::PromptView]) {
+pub fn emit_prompt_list(app: &AppHandle, list: &super::prompt::PromptListView) {
     if let Err(e) = app.emit_to("main", PROMPT_LIST_EVENT, list) {
         eprintln!("[helper] failed to emit {}: {}", PROMPT_LIST_EVENT, e);
     }
@@ -452,7 +457,7 @@ pub fn publish_prompt_state(app: &AppHandle, prompt_id: Option<&str>) {
     let now = super::client::now_unix_ms();
     // Snapshots first; the tracker lock is never held across a window call.
     let view = prompt_id.and_then(|id| bridge.tracker().view(id, now));
-    let list = bridge.tracker().list(now);
+    let list = bridge.tracker().list_view(now);
     if let Some(view) = view {
         emit_prompt_view(app, &view);
     }

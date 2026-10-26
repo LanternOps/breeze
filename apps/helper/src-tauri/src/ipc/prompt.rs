@@ -570,6 +570,19 @@ pub struct PromptView {
     pub closed: bool,
     /// Has a card window right now.
     pub card: bool,
+    /// Why the last attempt to act could not be sent (close box, no session).
+    pub last_error: Option<String>,
+    /// Tracker change counter when this view was taken: a window keeps the
+    /// highest one, so a fetched snapshot never overwrites a newer update.
+    pub version: u64,
+}
+
+/// The notification list with the same change counter as [`PromptView`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptListView {
+    pub version: u64,
+    pub entries: Vec<PromptView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,6 +597,8 @@ enum Surface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
     action_id: String,
+    /// The `prompt_action` envelope; its result is the reply on this envelope.
+    envelope_id: String,
     since_ms: i64,
 }
 
@@ -594,6 +609,7 @@ struct Tracked {
     closed: bool,
     pending: Option<Pending>,
     last_outcome: Option<&'static str>,
+    last_error: Option<String>,
     first_seen_ms: i64,
     seq: u64,
     /// A persistent entry whose expiresAtUnixMs passed while the prompt is open.
@@ -609,6 +625,8 @@ pub struct PromptTracker {
     focus: FocusLimiter,
     identity: Option<PromptBrandingSync>,
     seq: u64,
+    /// Bumped by every `&mut self` method; stamped on every view.
+    version: u64,
 }
 
 impl Default for PromptTracker {
@@ -626,6 +644,7 @@ impl PromptTracker {
             focus: FocusLimiter::default(),
             identity: None,
             seq: 0,
+            version: 0,
         }
     }
 
@@ -653,6 +672,7 @@ impl PromptTracker {
 
     /// `prompt_show`: the full state of one prompt.
     pub fn on_show(&mut self, now_ms: i64, show: &PromptShow) -> ShowOutcome {
+        self.version += 1;
         if validate_ref(&show.prompt_id, show.rev, &show.lease).is_err() {
             return ShowOutcome::RenderFailed(DETAIL_MALFORMED);
         }
@@ -670,6 +690,7 @@ impl PromptTracker {
         if let Some(t) = self.prompts.get_mut(&show.prompt_id).filter(|t| !t.closed) {
             // Same prompt, newer rev: replace in place, never a second window.
             t.show = show.clone();
+            t.last_error = None;
             return ShowOutcome::Replace { card_open: matches!(t.surface, Surface::Card { .. }) };
         }
         self.closed_revs.remove(&show.prompt_id);
@@ -687,6 +708,7 @@ impl PromptTracker {
                 closed: false,
                 pending: None,
                 last_outcome: None,
+                last_error: None,
                 first_seen_ms: now_ms,
                 seq: self.seq,
                 list_lapsed: false,
@@ -730,6 +752,7 @@ impl PromptTracker {
     /// `prompt_update`: present fields replace; the merged state must still be
     /// a valid `prompt_show` (`applyPromptUpdate` in schema.ts).
     pub fn on_update(&mut self, _now_ms: i64, update: &PromptUpdate) -> UpdateOutcome {
+        self.version += 1;
         if validate_ref(&update.prompt_id, update.rev, &update.lease).is_err() {
             return UpdateOutcome::RenderFailed(DETAIL_MALFORMED);
         }
@@ -755,12 +778,14 @@ impl PromptTracker {
         }
         let t = self.prompts.get_mut(&update.prompt_id).expect("checked above");
         t.show = merged;
+        t.last_error = None;
         UpdateOutcome::Applied { card_open: !t.closed && matches!(t.surface, Surface::Card { .. }) }
     }
 
     /// `prompt_close`. `resolved` / `expired` keep a persistent entry in the
     /// list (no actions); `fenced` / `withdrawn` / `superseded` remove it.
     pub fn on_close(&mut self, now_ms: i64, close: &PromptClose) -> CloseOutcome {
+        self.version += 1;
         let Some(t) = self.prompts.get_mut(&close.prompt_id) else {
             if validate_ref(&close.prompt_id, close.rev, &close.lease).is_ok() {
                 self.remember_closed(&close.prompt_id, close.rev);
@@ -791,6 +816,7 @@ impl PromptTracker {
     /// The person chose `action_id` (card click / key, or the list). One action
     /// in flight per prompt until its `prompt_action_result`.
     pub fn action(&mut self, now_ms: i64, prompt_id: &str, action_id: &str, via: ActionVia) -> Result<Outbound, ActionRefusal> {
+        self.version += 1;
         let t = self.prompts.get_mut(prompt_id).ok_or(ActionRefusal::UnknownPrompt)?;
         if t.closed {
             return Err(ActionRefusal::Closed);
@@ -801,8 +827,6 @@ impl PromptTracker {
         if !t.show.actions.iter().any(|a| a.id == action_id) {
             return Err(ActionRefusal::InvalidAction);
         }
-        t.pending = Some(Pending { action_id: action_id.to_string(), since_ms: now_ms });
-        t.last_outcome = None;
         let msg = PromptActionMsg {
             prompt_id: prompt_id.to_string(),
             rev: t.show.rev,
@@ -811,12 +835,17 @@ impl PromptTracker {
             via,
         };
         let id = self.fresh_id();
+        let t = self.prompts.get_mut(prompt_id).expect("checked above");
+        t.pending = Some(Pending { action_id: action_id.to_string(), envelope_id: id.clone(), since_ms: now_ms });
+        t.last_outcome = None;
+        t.last_error = None;
         Ok(Outbound { id, typ: TYPE_PROMPT_ACTION, payload: to_value(&msg) })
     }
 
     /// The action frame could not be handed to a live session: forget it so
     /// the person can try again (nothing is queued for a later session).
     pub fn on_send_failed(&mut self, prompt_id: &str, action_id: &str) {
+        self.version += 1;
         if let Some(t) = self.prompts.get_mut(prompt_id) {
             if t.pending.as_ref().is_some_and(|p| p.action_id == action_id) {
                 t.pending = None;
@@ -824,11 +853,18 @@ impl PromptTracker {
         }
     }
 
-    /// `prompt_action_result`: releases the matching action. True when the
-    /// view changed. Its `rev` is information only, never an applied rev.
-    pub fn on_action_result(&mut self, result: &PromptActionResult) -> bool {
+    /// `prompt_action_result` (the reply on the `prompt_action` envelope
+    /// `envelope_id`): releases the action it answers. A result on any other
+    /// envelope (an earlier action, a session that is gone) releases nothing.
+    /// True when the view changed. Its `rev` is information only.
+    pub fn on_action_result(&mut self, envelope_id: &str, result: &PromptActionResult) -> bool {
+        self.version += 1;
         let Some(t) = self.prompts.get_mut(&result.prompt_id) else { return false };
-        if !t.pending.as_ref().is_some_and(|p| p.action_id == result.action_id) {
+        if !t
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.action_id == result.action_id && p.envelope_id == envelope_id)
+        {
             return false;
         }
         t.pending = None;
@@ -843,6 +879,7 @@ impl PromptTracker {
     /// Esc or the window close box: the safe action on a pending decision,
     /// "hide" everywhere else.
     pub fn dismiss(&mut self, now_ms: i64, prompt_id: &str, via: ActionVia) -> Dismiss {
+        self.version += 1;
         let Some(t) = self.prompts.get(prompt_id) else { return Dismiss::Nothing };
         if !t.closed && is_decision(t.show.state, t.show.presentation) {
             let Some(safe) = t.show.default_action_id.clone() else {
@@ -875,6 +912,7 @@ impl PromptTracker {
     /// can no longer be answered there, so it is reported `render_failed` (the
     /// agent falls back); anything else was simply hidden.
     pub fn window_gone(&mut self, prompt_id: &str) -> Option<Outbound> {
+        self.version += 1;
         let t = self.prompts.get(prompt_id)?;
         if t.closed || !matches!(t.surface, Surface::Card { .. }) {
             return None;
@@ -891,11 +929,13 @@ impl PromptTracker {
     /// The card window could not be built: forget the prompt (the caller
     /// answers `render_failed`, and the agent falls back).
     pub fn on_window_failed(&mut self, prompt_id: &str) {
+        self.version += 1;
         self.prompts.remove(prompt_id);
     }
 
     /// Forget one prompt (its message was refused); true when it was tracked.
     pub fn forget(&mut self, prompt_id: &str) -> bool {
+        self.version += 1;
         self.prompts.remove(prompt_id).is_some()
     }
 
@@ -904,6 +944,7 @@ impl PromptTracker {
     /// had a card window, for the caller to close. The agent replays open
     /// prompts after the next authentication.
     pub fn on_disconnect(&mut self) -> Vec<String> {
+        self.version += 1;
         let mut cards: Vec<String> = self
             .prompts
             .iter()
@@ -920,6 +961,7 @@ impl PromptTracker {
     /// The 250 ms tick: release actions stuck without a result and drop list
     /// entries past `expiresAtUnixMs`. Expiry of a decision is the agent's.
     pub fn expire_due(&mut self, now_ms: i64) -> ExpireReport {
+        self.version += 1;
         let mut report = ExpireReport::default();
         for (id, t) in self.prompts.iter_mut() {
             if t.pending.as_ref().is_some_and(|p| now_ms.saturating_sub(p.since_ms) >= ACTION_RESULT_TIMEOUT_MS) {
@@ -952,7 +994,20 @@ impl PromptTracker {
     }
 
     pub fn view(&self, prompt_id: &str, _now_ms: i64) -> Option<PromptView> {
-        self.prompts.get(prompt_id).map(view_of)
+        self.prompts.get(prompt_id).map(|t| view_of(t, self.version))
+    }
+
+    /// Record why acting on a prompt failed, for its card and list entry.
+    pub fn note_error(&mut self, prompt_id: &str, message: &str) {
+        self.version += 1;
+        if let Some(t) = self.prompts.get_mut(prompt_id) {
+            t.last_error = Some(message.to_string());
+        }
+    }
+
+    /// The list plus the change counter it was taken at.
+    pub fn list_view(&self, now_ms: i64) -> PromptListView {
+        PromptListView { version: self.version, entries: self.list(now_ms) }
     }
 
     /// The notification list, newest first: persistent entries until they
@@ -960,7 +1015,7 @@ impl PromptTracker {
     pub fn list(&self, now_ms: i64) -> Vec<PromptView> {
         let mut entries: Vec<&Tracked> = self.prompts.values().filter(|t| in_list(t, now_ms)).collect();
         entries.sort_by(|a, b| b.seq.cmp(&a.seq));
-        entries.into_iter().map(view_of).collect()
+        entries.into_iter().map(|t| view_of(t, self.version)).collect()
     }
 
     pub fn list_len(&self, now_ms: i64) -> usize {
@@ -970,6 +1025,7 @@ impl PromptTracker {
     /// `prompt_branding_sync`: kept in memory for W03 to render. A sync that is
     /// neither `cleared` nor a complete identity is ignored.
     pub fn on_branding_sync(&mut self, b: PromptBrandingSync) -> bool {
+        self.version += 1;
         if !valid_branding(&b) {
             return false;
         }
@@ -1002,7 +1058,7 @@ fn in_list(t: &Tracked, now_ms: i64) -> bool {
     (t.show.list_entry.persistent && !list_expired(&t.show, now_ms)) || (!t.closed && t.surface == Surface::Collapsed)
 }
 
-fn view_of(t: &Tracked) -> PromptView {
+fn view_of(t: &Tracked, version: u64) -> PromptView {
     let s = &t.show;
     let decision = !t.closed && is_decision(s.state, s.presentation);
     PromptView {
@@ -1028,6 +1084,8 @@ fn view_of(t: &Tracked) -> PromptView {
         last_outcome: t.last_outcome,
         closed: t.closed,
         card: !t.closed && matches!(t.surface, Surface::Card { .. }),
+        last_error: t.last_error.clone(),
+        version,
     }
 }
 
@@ -1235,7 +1293,10 @@ pub fn decode<T: serde::de::DeserializeOwned + Addressed>(raw: Option<&str>) -> 
 }
 
 fn to_value<T: Serialize>(v: &T) -> serde_json::Value {
-    serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
+    serde_json::to_value(v).unwrap_or_else(|e| {
+        eprintln!("[helper] prompt frame could not be serialized: {e}");
+        serde_json::Value::Null
+    })
 }
 
 /// `prompt_presented` on envelope `id`.
@@ -1281,6 +1342,12 @@ pub enum DismissEffect {
 }
 
 impl PromptBridge {
+    /// A bridge around a given tracker (tests advertise kinds W02 does not).
+    #[cfg(test)]
+    pub fn with_tracker(tracker: PromptTracker) -> Self {
+        Self { tracker: Mutex::new(tracker), sender: Mutex::new(None) }
+    }
+
     /// Lock the tracker. Never hold the guard across an `.await` or a window call.
     pub fn tracker(&self) -> MutexGuard<'_, PromptTracker> {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
@@ -1320,8 +1387,18 @@ impl PromptBridge {
         Err(NOT_CONNECTED.to_string())
     }
 
-    /// Esc / close box / the card's hide: see [`PromptTracker::dismiss`].
+    /// Esc / close box / the card's hide: see [`PromptTracker::dismiss`]. A
+    /// refusal is also recorded on the prompt (`last_error`), because the close
+    /// box has no caller that could show it.
     pub fn dismiss(&self, now_ms: i64, prompt_id: &str, via: ActionVia) -> Result<DismissEffect, String> {
+        let result = self.dismiss_inner(now_ms, prompt_id, via);
+        if let Err(message) = &result {
+            self.tracker().note_error(prompt_id, message);
+        }
+        result
+    }
+
+    fn dismiss_inner(&self, now_ms: i64, prompt_id: &str, via: ActionVia) -> Result<DismissEffect, String> {
         let outcome = self.tracker().dismiss(now_ms, prompt_id, via);
         match outcome {
             Dismiss::Action(frame) => {
@@ -1913,16 +1990,16 @@ mod tests {
     fn one_action_in_flight_until_its_result() {
         let mut t = tracker();
         assert!(rendered(&t.on_show(NOW, &restart())));
-        assert!(t.action(NOW, "restart:42", "postpone", ActionVia::Click).is_ok());
+        let sent = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
         assert_eq!(t.action(NOW, "restart:42", "restart_now", ActionVia::Click), Err(ActionRefusal::Pending));
         // A result for another action does not release it.
         let mut other: PromptActionResult = serde_json::from_str(RESULT_STALE).unwrap();
         other.action_id = "something_else".into();
-        assert!(!t.on_action_result(&other));
+        assert!(!t.on_action_result(&sent.id, &other));
         assert_eq!(t.action(NOW, "restart:42", "restart_now", ActionVia::Click), Err(ActionRefusal::Pending));
         // Its own result does.
         let accepted: PromptActionResult = serde_json::from_str(RESULT_ACCEPTED).unwrap();
-        assert!(t.on_action_result(&accepted));
+        assert!(t.on_action_result(&sent.id, &accepted));
         let v = t.view("restart:42", NOW).unwrap();
         assert_eq!(v.pending_action_id, None);
         assert_eq!(v.last_outcome, Some("accepted"));
@@ -1935,10 +2012,52 @@ mod tests {
     fn action_result_does_not_advance_the_applied_rev() {
         let mut t = tracker();
         assert!(rendered(&t.on_show(NOW, &restart())));
-        t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        let sent = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
         let accepted: PromptActionResult = serde_json::from_str(RESULT_ACCEPTED).unwrap();
-        assert!(t.on_action_result(&accepted));
+        assert!(t.on_action_result(&sent.id, &accepted));
         assert_eq!(t.on_update(NOW, &update("restart:42", accepted.rev)), UpdateOutcome::Applied { card_open: true });
+    }
+
+    /// `prompt_action_result` is the reply on the `prompt_action` envelope: a
+    /// result on any other envelope (an earlier action, another session) never
+    /// releases the action in flight.
+    #[test]
+    fn action_result_matches_only_its_own_envelope() {
+        let mut t = tracker();
+        assert!(rendered(&t.on_show(NOW, &restart())));
+        let first = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        let accepted: PromptActionResult = serde_json::from_str(RESULT_ACCEPTED).unwrap();
+        assert!(!t.on_action_result("prompt-someone-else", &accepted));
+        assert_eq!(t.view("restart:42", NOW).unwrap().pending_action_id.as_deref(), Some("postpone"));
+        assert!(t.on_action_result(&first.id, &accepted));
+        // A duplicate of that result, after a second click, does not release the second.
+        let second = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(!t.on_action_result(&first.id, &accepted));
+        assert_eq!(t.view("restart:42", NOW).unwrap().pending_action_id.as_deref(), Some("postpone"));
+    }
+
+    /// Every change bumps the view version, so a window can tell a fetched
+    /// snapshot from a newer pushed update (subscribe first, then fetch).
+    #[test]
+    fn view_version_increases_with_every_change() {
+        let mut t = tracker();
+        assert!(rendered(&t.on_show(NOW, &restart())));
+        let v1 = t.view("restart:42", NOW).unwrap().version;
+        let sent = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        let v2 = t.view("restart:42", NOW).unwrap().version;
+        assert!(v2 > v1);
+        let accepted: PromptActionResult = serde_json::from_str(RESULT_ACCEPTED).unwrap();
+        assert!(t.on_action_result(&sent.id, &accepted));
+        let v3 = t.view("restart:42", NOW).unwrap().version;
+        assert!(v3 > v2);
+        t.note_error("restart:42", "x");
+        let list = t.list_view(NOW);
+        assert!(list.version > v3);
+        assert_eq!(list.entries.len(), 1);
+        assert_eq!(list.entries[0].version, list.version);
+        // Reading never bumps it.
+        assert_eq!(t.view("restart:42", NOW).unwrap().version, list.version);
     }
 
     #[test]
@@ -1959,7 +2078,7 @@ mod tests {
     fn no_replay_of_unacked_action_after_disconnect() {
         let mut t = tracker();
         assert!(rendered(&t.on_show(NOW, &restart())));
-        t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        let dropped = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
         // The session drops with the action unacknowledged.
         assert_eq!(t.on_disconnect(), vec!["restart:42".to_string()]);
         assert!(t.view("restart:42", NOW).is_none(), "nothing survives the session");
@@ -1976,9 +2095,14 @@ mod tests {
         let f = t.action(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
         assert_eq!(f.payload["lease"]["epoch"], 2);
         assert_eq!(f.payload["lease"]["rendererSession"], "assist-user-4243");
-        // A late result for the dropped action does not touch the new one.
+        // A late result for the dropped action (its own envelope) does not
+        // release the new one, even with the same action id...
         let accepted: PromptActionResult = serde_json::from_str(RESULT_ACCEPTED).unwrap();
-        assert!(t.on_action_result(&accepted), "same action id: the new one is answered");
+        assert!(!t.on_action_result(&dropped.id, &accepted));
+        assert_eq!(t.view("restart:42", NOW).unwrap().pending_action_id.as_deref(), Some("postpone"));
+        // ...only the new action's own result does.
+        assert!(t.on_action_result(&f.id, &accepted));
+        assert_eq!(t.view("restart:42", NOW).unwrap().pending_action_id, None);
     }
 
     #[test]
@@ -2134,6 +2258,78 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap().typ, TYPE_PROMPT_ACTION);
         b.clear_sender();
         assert!(b.act(NOW, "restart:42", "restart_now", ActionVia::Click).is_err());
+    }
+
+    fn bridge_with(show: &PromptShow) -> PromptBridge {
+        let b = PromptBridge::with_tracker(tracker());
+        assert!(rendered(&b.tracker().on_show(NOW, show)));
+        b
+    }
+
+    /// The close box on a decision whose safe action cannot be sent (no live
+    /// session, or an action already in flight) keeps the card and says why on
+    /// it; the refusal is never silent.
+    #[test]
+    fn bridge_records_why_a_close_box_could_not_act() {
+        let b = bridge_with(&restart());
+        assert_eq!(b.dismiss(NOW, "restart:42", ActionVia::Click), Err(NOT_CONNECTED.to_string()));
+        let v = b.tracker().view("restart:42", NOW).unwrap();
+        assert_eq!(v.last_error.as_deref(), Some(NOT_CONNECTED));
+        assert_eq!(v.pending_action_id, None);
+        assert!(v.card, "a decision keeps its card");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        assert_eq!(b.dismiss(NOW, "restart:42", ActionVia::Click), Ok(DismissEffect::ActionSent));
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(sent.payload["actionId"], "postpone");
+        assert_eq!(sent.payload["via"], "click");
+        let v = b.tracker().view("restart:42", NOW).unwrap();
+        assert_eq!(v.last_error, None, "a sent action clears the old notice");
+        // Pressed again while that action is in flight: refused, recorded, nothing sent.
+        assert_eq!(b.dismiss(NOW, "restart:42", ActionVia::Click), Err(ActionRefusal::Pending.message().to_string()));
+        assert_eq!(b.tracker().view("restart:42", NOW).unwrap().last_error.as_deref(), Some(ActionRefusal::Pending.message()));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn bridge_window_gone_reports_a_lost_decision_once() {
+        let b = bridge_with(&restart());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        b.window_gone("restart:42");
+        let f = rx.try_recv().expect("a frame for the lost decision");
+        assert_eq!(f.typ, TYPE_PROMPT_CLOSED);
+        assert_eq!(f.payload["reason"], "render_failed");
+        assert_eq!(f.payload["detail"], DETAIL_WINDOW_FAILED);
+        assert_eq!(f.payload["promptId"], "restart:42");
+        b.window_gone("restart:42");
+        assert!(rx.try_recv().is_err(), "reported once");
+        // A non-decision card that vanished is reported hidden.
+        let b = bridge_with(&elevation());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        b.window_gone(&elevation().prompt_id);
+        assert_eq!(rx.try_recv().unwrap().payload["reason"], "hidden");
+    }
+
+    /// A frame queued on one session's channel is never written to the next:
+    /// each session has its own channel, and the pending action is dropped.
+    #[test]
+    fn bridge_never_hands_a_queued_action_to_the_next_session() {
+        let b = bridge_with(&restart());
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx1);
+        assert_eq!(b.act(NOW, "restart:42", "postpone", ActionVia::Click), Ok(()));
+        // Session 1 ends before writing it.
+        b.clear_sender();
+        b.tracker().on_disconnect();
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx2);
+        assert!(rx2.try_recv().is_err(), "nothing carried over to session 2");
+        assert!(b.tracker().view("restart:42", NOW).is_none());
+        // Session 1's channel still holds only its own frame, and it dies with it.
+        assert_eq!(rx1.try_recv().unwrap().typ, TYPE_PROMPT_ACTION);
     }
 
     #[test]

@@ -91,7 +91,7 @@ export function PromptCard({
     prevSeconds.current = seconds;
   }, [seconds, deadline, nowMs]);
 
-  const notice = error || outcomeMessage(view.lastOutcome);
+  const notice = error || view.lastError || outcomeMessage(view.lastOutcome);
   const titleId = `prompt-title-${view.promptId}`;
 
   return (

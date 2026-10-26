@@ -38,6 +38,8 @@ const decision: PromptView = {
   lastOutcome: null,
   closed: false,
   card: true,
+  lastError: null,
+  version: 1,
 };
 
 /** A waiting elevation request: not a decision. */
@@ -132,6 +134,9 @@ describe('PromptCard', () => {
     expect(screen.queryAllByRole('button')).toHaveLength(0);
     rerender(<PromptCard view={{ ...decision, lastOutcome: 'rejected_stale' }} nowMs={NOW} onAction={onAction} onHide={onHide} />);
     expect(screen.getByRole('alert')).toHaveTextContent('That choice is no longer available.');
+    // A refusal Rust recorded (e.g. the close box with no agent session) is shown too.
+    rerender(<PromptCard view={{ ...decision, lastError: 'Not connected.' }} nowMs={NOW} onAction={onAction} onHide={onHide} />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Not connected.');
   });
 
   it('announces the countdown only when it crosses 60, 30 or 10 seconds', () => {

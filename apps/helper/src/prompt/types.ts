@@ -59,4 +59,18 @@ export interface PromptView {
   closed: boolean;
   /** Has a card window right now. */
   card: boolean;
+  /** Why the last attempt to act could not be sent (e.g. the close box with no agent session). */
+  lastError: string | null;
+  /**
+   * Rust's change counter when this view was taken. A window keeps the view
+   * with the highest version, so a fetched snapshot never overwrites a newer
+   * pushed update.
+   */
+  version: number;
+}
+
+/** The notification list, with the same change counter as `PromptView.version`. */
+export interface PromptListView {
+  version: number;
+  entries: PromptView[];
 }

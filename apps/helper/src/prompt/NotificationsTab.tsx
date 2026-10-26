@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 import { orderActions, outcomeMessage } from './PromptCard';
 import { applyPlaceholders } from './placeholders';
-import type { PromptState, PromptView } from './types';
+import type { PromptListView, PromptState, PromptView } from './types';
 import './prompt.css';
 
 /*
@@ -16,65 +16,104 @@ import './prompt.css';
 
 /** The main-window commands and event behind the tab. */
 export interface PromptListApi {
-  getList(): Promise<PromptView[]>;
+  getList(): Promise<PromptListView>;
   action(promptId: string, actionId: string): Promise<void>;
-  subscribe(onList: (list: PromptView[]) => void): Promise<() => void>;
+  subscribe(onList: (list: PromptListView) => void): Promise<() => void>;
 }
 
 const tauriListApi: PromptListApi = {
-  getList: () => invoke<PromptView[]>('get_prompt_list'),
+  getList: () => invoke<PromptListView>('get_prompt_list'),
   action: (promptId, actionId) => invoke<void>('prompt_list_action', { promptId, actionId }),
-  subscribe: (onList) => listen<PromptView[]>('prompt-list-updated', (e) => onList(e.payload)),
+  subscribe: (onList) => listen<PromptListView>('prompt-list-updated', (e) => onList(e.payload)),
 };
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+const LOAD_FAILED = 'Notifications could not be loaded. Reopen this tab to try again.';
+const STALE_NOTICE = 'Live updates are unavailable; this list may be out of date.';
+
 /**
- * The list, kept current from Rust. Outside Tauri (browser dev mode, tests of
- * other components) it stays empty and calls nothing.
+ * The list, kept current from Rust: subscribes FIRST, then fetches, and keeps
+ * whichever has the higher `version`, so nothing pushed during the fetch is
+ * lost or overwritten. Failures are logged, retried once and reported. Outside
+ * Tauri (browser dev mode, tests of other components) it stays empty and calls
+ * nothing.
  */
-export function usePromptList(api: PromptListApi = tauriListApi, enabled: boolean = inTauri()) {
-  const [entries, setEntries] = useState<PromptView[]>([]);
-  const [error, setError] = useState<string | null>(null);
+export function usePromptList(
+  api: PromptListApi = tauriListApi,
+  enabled: boolean = inTauri(),
+  retryDelayMs: number = 250,
+) {
+  const [list, setList] = useState<PromptListView | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     let unlisten: (() => void) | undefined;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const later = (fn: () => void) => timers.push(setTimeout(fn, retryDelayMs));
+    const apply = (next: PromptListView) => {
+      if (!live) return;
+      setLoadError(null);
+      setList((cur) => (cur && cur.version > next.version ? cur : next));
+    };
+    const fetchList = (attempt: number) => {
+      api
+        .getList()
+        .then(apply)
+        .catch((err) => {
+          if (!live) return;
+          console.warn(`[prompt] could not load the notification list (attempt ${attempt + 1})`, err);
+          if (attempt === 0) later(() => fetchList(1));
+          else setLoadError(LOAD_FAILED);
+        });
+    };
     api
-      .subscribe((list) => {
-        if (live) setEntries(list);
-      })
+      .subscribe(apply)
       .then((fn) => {
-        if (live) unlisten = fn;
-        else fn();
+        if (!live) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+        fetchList(0);
       })
-      .catch(() => {});
-    api
-      .getList()
-      .then((list) => {
-        if (live) setEntries(list);
-      })
-      .catch(() => {});
+      .catch((err) => {
+        if (!live) return;
+        console.warn('[prompt] could not subscribe to notification list updates', err);
+        setLiveError(STALE_NOTICE);
+        fetchList(0);
+        later(() => {
+          api
+            .getList()
+            .then(apply)
+            .catch((e) => console.warn('[prompt] could not refresh the notification list', e));
+        });
+      });
     return () => {
       live = false;
+      timers.forEach(clearTimeout);
       unlisten?.();
     };
-  }, [api, enabled]);
+  }, [api, enabled, retryDelayMs]);
 
   const act = useCallback(
     async (promptId: string, actionId: string) => {
-      setError(null);
+      setActionError(null);
       try {
         await api.action(promptId, actionId);
       } catch (err) {
-        setError(typeof err === 'string' && err ? err : "Couldn't send your choice. Please try again.");
+        setActionError(typeof err === 'string' && err ? err : "Couldn't send your choice. Please try again.");
       }
     },
     [api],
   );
 
-  return { entries, act, error };
+  const entries = useMemo(() => list?.entries ?? [], [list]);
+  return { entries, act, error: actionError ?? loadError ?? liveError };
 }
 
 const STATE_LABEL: Record<PromptState, string> = {
@@ -122,7 +161,7 @@ export function NotificationsTab({
           {entries.map((v) => {
             const fill = (text: string) => applyPlaceholders(text, nowMs, v.locale, v.countdownDeadlineUnixMs);
             const pending = v.pendingActionId !== null;
-            const notice = outcomeMessage(v.lastOutcome);
+            const notice = v.lastError ?? outcomeMessage(v.lastOutcome);
             const detail = v.copy.stateDetail ?? v.copy.consequence;
             return (
               <li key={v.promptId} className={`prompt-list-item is-${v.state}`} dir={v.direction} lang={v.locale}>

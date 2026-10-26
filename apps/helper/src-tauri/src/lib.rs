@@ -994,20 +994,30 @@ fn prompt_card_action(
 
 /// Esc / the card's hide control: the safe action on a pending decision (the
 /// card stays up), otherwise hide the card (`prompt_closed{hidden}`); the list
-/// entry stays either way. Hiding is never a domain action.
+/// entry stays either way. Hiding is never a domain action. `via` is how the
+/// person did it (`keyboard` for Esc, `click` otherwise).
 #[tauri::command]
 fn prompt_card_hide(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
     prompt_id: String,
+    via: String,
 ) -> Result<(), String> {
     if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
         return Err("wrong window".into());
     }
-    let effect = bridge.dismiss(crate::ipc::client::now_unix_ms(), &prompt_id, crate::ipc::prompt::ActionVia::Keyboard);
+    let via = match via.as_str() {
+        "click" => crate::ipc::prompt::ActionVia::Click,
+        "keyboard" => crate::ipc::prompt::ActionVia::Keyboard,
+        _ => return Err("invalid via".into()),
+    };
+    let effect = bridge.dismiss(crate::ipc::client::now_unix_ms(), &prompt_id, via);
     if let Ok(crate::ipc::prompt::DismissEffect::Hidden | crate::ipc::prompt::DismissEffect::Nothing) = effect {
-        let _ = window.destroy();
+        if let Err(e) = window.destroy() {
+            eprintln!("[helper] prompt card could not be closed (promptId={prompt_id}): {e}");
+            return Err("This notification could not be closed. Try again.".into());
+        }
     }
     crate::ipc::desktop::publish_prompt_state(&app, Some(&prompt_id));
     effect.map(|_| ())
@@ -1018,10 +1028,10 @@ fn prompt_card_hide(
 fn get_prompt_list(
     window: tauri::WebviewWindow,
     bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
-) -> Result<Vec<crate::ipc::prompt::PromptView>, String> {
+) -> Result<crate::ipc::prompt::PromptListView, String> {
     crate::ipc::message::deny_message_window(window.label())?;
     let now = crate::ipc::client::now_unix_ms();
-    let list = bridge.tracker().list(now);
+    let list = bridge.tracker().list_view(now);
     Ok(list)
 }
 
@@ -2397,6 +2407,26 @@ mod tests {
         // Main window still built hidden, and lib.rs builds no card.
         assert!(lib.contains(".visible(false);"));
         assert!(!lib.contains("show_prompt_window"));
+    }
+
+    // #10190 review: the hide command reports how the person dismissed the
+    // card and never swallows a failed close; the close box is a click.
+    #[test]
+    fn prompt_hide_paths_report_via_and_failures() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let start = lib.find("fn prompt_card_hide(").expect("prompt_card_hide");
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let hide = &lib[start..end];
+        assert!(hide.contains("via: String"), "hide takes the caller's via");
+        assert!(hide.contains("&prompt_id, via)"), "dismiss gets the caller's via, not a hard-coded one");
+        assert!(hide.contains("window.destroy()") && !hide.contains("let _ = window.destroy()"));
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let start = desktop.find("pub fn show_prompt_window(").unwrap();
+        let end = desktop[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let card = &desktop[start..end];
+        assert!(card.contains("ActionVia::Click") && !card.contains("ActionVia::Keyboard"));
+        assert!(card.contains("eprintln!"), "a refused close box is logged");
     }
 
     // #10190: the card capability grants only listening for its own
