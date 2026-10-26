@@ -122,7 +122,8 @@
     "testDialog": {
       "title": "Test on a device",
       "selectDevice": "Device",
-      "run": "Run test"
+      "run": "Run test",
+      "saveToTest": "Save to test your changes"
     },
     "deliveryPreview": {
       "selectOrg": "Select an organization to preview delivery.",

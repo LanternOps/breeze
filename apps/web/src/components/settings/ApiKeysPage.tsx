@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import ApiKeyList, { type ApiKey } from './ApiKeyList';
 import ApiKeyForm, { CreatedKeyModal, type ApiKeyFormValues } from './ApiKeyForm';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
@@ -15,6 +15,10 @@ export default function ApiKeysPage() {
   const { t } = useTranslation('settings');
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
+  // Background refetches (after create/rotate/revoke/page change) keep the rows
+  // and open modals on screen; only the first load replaces the page (#9656).
+  const [refreshing, setRefreshing] = useState(false);
+  const hasLoadedRef = useRef(false);
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedKey, setSelectedKey] = useState<ApiKey | null>(null);
@@ -31,7 +35,8 @@ export default function ApiKeysPage() {
 
   const fetchApiKeys = useCallback(async (page = 1) => {
     try {
-      setLoading(true);
+      if (hasLoadedRef.current) setRefreshing(true);
+      else setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth(`/api-keys?page=${page}`);
       if (!response.ok) {
@@ -49,10 +54,12 @@ export default function ApiKeysPage() {
         setCurrentPage(pagination.page ?? page);
       }
       setIsAdmin(data.isAdmin ?? false);
+      hasLoadedRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : t('apiKeysPage.anErrorOccurred'));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -221,6 +228,13 @@ export default function ApiKeysPage() {
           </svg>
           {t('apiKeysPage.createKey')}</button>
       </div>
+
+      {refreshing && (
+        <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          {t('apiKeysPage.loadingAPIKeys')}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

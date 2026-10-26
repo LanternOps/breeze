@@ -174,7 +174,7 @@ runDb('per-root GC: each root reclaims only its own garbage, never across roots 
   expect(retirement?.sweptAt).toBeInstanceOf(Date);
 });
 
-runDb('per-root GC: a retirement under a prefixed root is not confirmed swept when only the legacy root listed (#7081)', async () => {
+runDb('per-root GC: a retirement under a prefixed root is not confirmed swept when the listing of its own root failed (#7081)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const bucket = `gc-roots-swept-${unique}`;
   const identity = normalizeStorageIdentity('s3', s3Config(bucket));
@@ -262,6 +262,85 @@ runDb('per-root GC: an erasure-fenced prefixed manifest is read under its fence\
     SELECT state, referenced_keys FROM backup_erasure_fence_refs WHERE storage_identity = ${identity} AND snapshot_id = 'e1'
   `)) as unknown as Array<{ state: string; referenced_keys: string[] }>;
   expect(refs).toEqual([{ state: 'resolved', referenced_keys: ['snapshots/e0/files/shared.dat'] }]);
+});
+
+// W03 (rule 10, mint-root half): with the writer on, a prefixed destination
+// writes its prefixed root, not the bucket root. An org whose rows are all
+// under its prefix therefore runs only under that root: the bucket root is
+// never listed, read or swept with its (possibly prefix-scoped) credentials.
+// While the writer was off the same org also "wrote" the legacy root, ran a
+// unit there and reclaimed the bucket-root orphan below.
+runDb('per-root GC: an org whose destination writes a prefix and has no legacy rows never lists the bucket root (#7081 W03)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const bucket = `gc-roots-mint-${unique}`;
+  const identity = normalizeStorageIdentity('s3', s3Config(bucket));
+  const old = new Date(Date.now() - 20 * DAY_MS);
+
+  await withSystemDbAccessContext(async () => {
+    const [partner] = await db.insert(partners).values({
+      name: `Root Partner ${unique}`, slug: `root-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
+    }).returning({ id: partners.id });
+    const orgC = await seedOrg(unique, partner!.id, 'c', s3Config(bucket, 'orgC'));
+    await insertSnapshot(orgC, 'c1', identity, { keyLayout: 'prefixed_flat', keyPrefix: 'orgC' });
+  });
+
+  s3.put(bucket, 'orgC/snapshots/c1/manifest.json', manifest(['snapshots/c1/files/a.dat']), old);
+  s3.put(bucket, 'orgC/snapshots/c1/files/a.dat', 'a', old);
+  // An old, row-less group under the prefix: org C's own garbage.
+  s3.put(bucket, 'orgC/snapshots/c9/manifest.json', manifest(['snapshots/c9/files/x.dat']), old);
+  s3.put(bucket, 'orgC/snapshots/c9/files/x.dat', 'x', old);
+  // An old, row-less group at the bucket root, which org C neither recorded nor writes.
+  s3.put(bucket, 'snapshots/z9/manifest.json', manifest(['snapshots/z9/files/z.dat']), old);
+  s3.put(bucket, 'snapshots/z9/files/z.dat', 'z', old);
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(s3.keys(bucket)).toEqual([
+    'orgC/snapshots/c1/files/a.dat',
+    'orgC/snapshots/c1/manifest.json',
+    'snapshots/z9/files/z.dat',
+    'snapshots/z9/manifest.json',
+  ]);
+  const calls = s3.callsFor(bucket);
+  const listed = calls.flatMap((c) => (c.op === 'list' ? [c.prefix] : []));
+  const touched = calls.flatMap((c) => (c.op === 'get' ? [c.key] : c.op === 'delete' ? c.keys : []));
+  expect(listed.filter((p) => p === 'orgC/snapshots/')).toHaveLength(1);
+  expect(listed.some((p) => p.startsWith('snapshots/'))).toBe(false);
+  expect(touched.some((key) => key.startsWith('snapshots/'))).toBe(false);
+});
+
+// W03: an invalid stored prefix gives the org no write root at all. It must
+// not fall back to "writes the bucket root" — that would list the bucket root
+// with credentials that may be scoped to the (intended) prefix.
+runDb('per-root GC: an org whose stored prefix is invalid runs only under roots it has rows in, never the bucket root by default (#7081 W03)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const bucket = `gc-roots-badprefix-${unique}`;
+  const identity = normalizeStorageIdentity('s3', s3Config(bucket));
+  const old = new Date(Date.now() - 20 * DAY_MS);
+
+  await withSystemDbAccessContext(async () => {
+    const [partner] = await db.insert(partners).values({
+      name: `Root Partner ${unique}`, slug: `root-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
+    }).returning({ id: partners.id });
+    const orgD = await seedOrg(unique, partner!.id, 'd', s3Config(bucket, 'a//b'));
+    await insertSnapshot(orgD, 'd1', identity, { keyLayout: 'prefixed_flat', keyPrefix: 'orgD' });
+  });
+
+  s3.put(bucket, 'orgD/snapshots/d1/manifest.json', manifest(['snapshots/d1/files/a.dat']), old);
+  s3.put(bucket, 'orgD/snapshots/d1/files/a.dat', 'a', old);
+  s3.put(bucket, 'orgD/snapshots/d9/files/x.dat', 'x', old); // the org's own old orphan under its recorded root
+  s3.put(bucket, 'snapshots/z9/files/z.dat', 'z', old);
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(s3.keys(bucket)).toEqual([
+    'orgD/snapshots/d1/files/a.dat',
+    'orgD/snapshots/d1/manifest.json',
+    'snapshots/z9/files/z.dat',
+  ]);
+  const listed = s3.callsFor(bucket).flatMap((c) => (c.op === 'list' ? [c.prefix] : []));
+  expect(listed.filter((p) => p === 'orgD/snapshots/')).toHaveLength(1);
+  expect(listed.some((p) => p.startsWith('snapshots/'))).toBe(false);
 });
 
 runDb('loadReservationGcState reports each reclaimable reservation\'s recorded key root, null when unreadable (#7081)', async () => {

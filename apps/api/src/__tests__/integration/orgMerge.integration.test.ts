@@ -1298,6 +1298,33 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
     expect(Number(eventsAfter[0]?.n)).toBe(1);
   }, 180_000);
 
+  it('#8972: a merged ticket pair in the loser org moves wholesale; the tombstone still names its survivor', async () => {
+    const mk = async () => (await query<{ id: string }>(sql`
+      INSERT INTO tickets (org_id, partner_id, subject, source, priority, ticket_number)
+      VALUES (${f.loser}::uuid, ${f.partner}::uuid, 'org-merge tombstone', 'api', 'normal', ${`OM-${randomUUID().slice(0, 8)}`})
+      RETURNING id`))[0]!.id;
+    const survivorTicket = await mk();
+    const tombstone = await mk();
+    await query(sql`
+      UPDATE tickets SET merged_into_ticket_id = ${survivorTicket}::uuid, merged_at = now(), status = 'closed'
+       WHERE id = ${tombstone}::uuid`);
+
+    await orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser,
+      survivorOrgId: f.survivor,
+      partnerId: f.partner,
+      performedBy: f.actor,
+      performedByEmail: f.actorEmail,
+    });
+
+    expect(await query(sql`
+      SELECT id, org_id, merged_into_ticket_id FROM tickets WHERE id IN (${survivorTicket}::uuid, ${tombstone}::uuid) ORDER BY id`))
+      .toEqual([
+        { id: survivorTicket, org_id: f.survivor, merged_into_ticket_id: null },
+        { id: tombstone, org_id: f.survivor, merged_into_ticket_id: survivorTicket },
+      ].sort((a, b) => a.id.localeCompare(b.id)));
+  }, 180_000);
+
   it('a merge appends survivor ownership lineage for each loser device; loser lineage goes with loser erasure (#8203)', async () => {
     await orgMergeModule.executeOrgMerge({
       loserOrgId: f.loser,

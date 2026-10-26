@@ -16,11 +16,12 @@ import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { searchFleetLogs } from './logSearch';
 import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
-import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerability';
+import { readCatalog, readDeviceFindings, readFindingSoftware, normStatus } from './aiToolsVulnerability';
 import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
@@ -314,7 +315,7 @@ const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
-    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, false);
+    if (isAutomationPrincipal(req.auth)) return agentInventoryPager(req, false);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // #5776: `generateDeviceInventoryReport` now honours `filters.deviceIds`
@@ -340,7 +341,7 @@ const softwareInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
-    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, true);
+    if (isAutomationPrincipal(req.auth)) return agentInventoryPager(req, true);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // This generator DOES honour filters.deviceIds, so the restriction goes
@@ -506,9 +507,13 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
         const findings = await readDeviceFindings(req.orgId, { status, deviceId });
         const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
         const byId = new Map(catalog.map((c) => [c.id, c]));
+        // #9532: the affected software, read per device (bounded by that
+        // device's findings), flattened to one column per field.
+        const softwareById = await readFindingSoftware(req.orgId, findings.map((f) => f.id), req.auth);
         for (const finding of findings) {
           const cve = byId.get(finding.vulnerabilityId);
           if (!cve) continue;
+          const software = softwareById.get(finding.id)?.software ?? null;
           collected.push({
             id: finding.id,
             deviceId,
@@ -520,6 +525,9 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
             status: finding.status,
             knownExploited: cve.knownExploited ?? false,
             patchAvailable: cve.patchAvailable ?? false,
+            softwareName: software?.name ?? null,
+            softwareVersion: software?.version ?? null,
+            softwareVendor: software?.vendor ?? null,
           });
         }
       });

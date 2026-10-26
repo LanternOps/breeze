@@ -35,6 +35,8 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/enrollment-keys', docsPath: '/agents/enrollment-keys/', label: 'Enrollment Keys' },
   { pattern: '/settings/api-keys', docsPath: '/reference/api-keys/', label: 'API Keys' },
   { pattern: '/settings/connected-apps', docsPath: '/features/mcp-server/', label: 'Connected Apps & MCP' },
+  { pattern: '/settings/ticket-checklist-templates', docsPath: '/features/ticketing/', label: 'Checklist Templates' },
+  { pattern: '/settings/tool-sources', docsPath: '/features/tool-sources/', label: 'Tool Sources' },
   {
     pattern: '/settings/organization',
     docsPath: '/reference/organizations-and-sites/',
@@ -52,9 +54,11 @@ const docsMapping: DocsEntry[] = [
       'event-logs': { docsPath: '/features/event-log-forwarding/', label: 'Event Logs' },
       notifications: { docsPath: '/features/notifications/', label: 'Notifications' },
       ticketing: { docsPath: '/features/ticketing/', label: 'Ticketing' },
+      ai: { docsPath: '/features/ai/', label: 'AI' },
     },
   },
   { pattern: '/settings/sso', docsPath: '/reference/sso/', label: 'Single Sign-On' },
+  { pattern: '/settings/wisp-memory', docsPath: '/features/wisp/#memory', label: 'Wisp Memory' },
   { pattern: '/settings/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
   { pattern: '/settings/deliverable-templates', docsPath: '/features/contracts/#service-deliverables', label: 'Deliverable Templates' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },
@@ -62,7 +66,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/settings/access-reviews', docsPath: '/reference/access-reviews/', label: 'Access Reviews' },
   { pattern: '/settings/notifications', docsPath: '/features/notifications/', label: 'Notifications' },
   { pattern: '/settings/branding', docsPath: '/features/branding/', label: 'Branding' },
-  { pattern: '/settings/alert-templates', docsPath: '/features/alert-templates/', label: 'Alert Templates' },
+  { pattern: '/settings/alert-templates', docsPath: '/features/monitors/', label: 'Alert Templates' },
   { pattern: '/settings/integrations/backup', docsPath: '/backup/backup-providers/', label: 'Backup Providers' },
   { pattern: '/settings/integrations/huntress', docsPath: '/features/edr-integrations/', label: 'EDR Integrations' },
   { pattern: '/settings/integrations/security', docsPath: '/features/edr-integrations/', label: 'Security Integrations' },
@@ -86,8 +90,10 @@ const docsMapping: DocsEntry[] = [
       notifications: { docsPath: '/features/notifications/', label: 'Notifications' },
       ticketing: { docsPath: '/features/ticketing/', label: 'Ticketing' },
       'ai-budgets': { docsPath: '/features/ai/', label: 'AI Budgets' },
+      'ai-features': { docsPath: '/features/ai/', label: 'AI Features' },
       branding: { docsPath: '/features/branding/', label: 'Branding' },
       'login-branding': { docsPath: '/features/branding/', label: 'Login Branding' },
+      'trust-center': { docsPath: '/security/trust-center/#partner-defaults', label: 'Trust Center' },
     },
   },
   { pattern: '/settings/roles', docsPath: '/reference/users-and-roles/', label: 'Roles' },
@@ -108,6 +114,7 @@ const docsMapping: DocsEntry[] = [
 
   // Admin / Partner
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
+  { pattern: '/admin/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
   { pattern: '/admin/system', docsPath: '/deploy/upgrades/', label: 'System' },
   { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
   { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
@@ -130,7 +137,7 @@ const docsMapping: DocsEntry[] = [
       anomalies: { docsPath: '/features/ml-insights/', label: 'Anomalies' },
       tickets: { docsPath: '/features/ticketing/', label: 'Tickets' },
       eventlog: { docsPath: '/features/event-log-forwarding/', label: 'Event Log' },
-      monitoring: { docsPath: '/features/service-monitoring/', label: 'Service Monitoring' },
+      monitoring: { docsPath: '/features/monitors/', label: 'Service Monitoring' },
       compliance: { docsPath: '/features/configuration-policies/', label: 'Compliance' },
       software: { docsPath: '/features/software-inventory/', label: 'Software Inventory' },
       patches: { docsPath: '/features/patch-management/', label: 'Patch Management' },
@@ -147,9 +154,10 @@ const docsMapping: DocsEntry[] = [
       filesystem: { docsPath: '/features/filesystem-analysis/', label: 'Disk Cleanup' },
       'boot-performance': { docsPath: '/features/boot-performance/', label: 'Boot Performance' },
       backup: { docsPath: '/backup/overview/', label: 'Backup' },
+      'system-restore': { docsPath: '/features/devices/#system-restore-tab', label: 'System Restore' },
     },
   },
-  { pattern: '/alerts/rules', docsPath: '/features/alert-templates/', label: 'Alert Rules' },
+  { pattern: '/alerts/rules', docsPath: '/features/monitors/', label: 'Alert Rules' },
   { pattern: '/alerts/channels', docsPath: '/features/alerts/', label: 'Notification Channels' },
   { pattern: '/alerts/correlations', docsPath: '/features/ml-insights/', label: 'Alert Correlations' },
   { pattern: '/alerts', docsPath: '/features/alerts/', label: 'Alerts' },
@@ -159,10 +167,16 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/billing/quotes', docsPath: '/features/quotes/', label: 'Quotes' },
   { pattern: '/billing', docsPath: '/features/invoices/', label: 'Billing' },
   { pattern: '/contracts', docsPath: '/features/contracts/', label: 'Recurring Contracts' },
+  { pattern: '/agreements', docsPath: '/features/agreements/', label: 'Agreements' },
   {
     pattern: '/organizations',
     docsPath: '/reference/organizations-and-sites/#the-organisation-record-page',
     label: 'Organization Record',
+    // OrganizationRecordPage writes the tab id to the hash; only the Trust
+    // Center tab has a doc of its own.
+    tabs: {
+      trust: { docsPath: '/security/trust-center/', label: 'Trust Center' },
+    },
   },
   { pattern: '/ai-script-proposals', docsPath: '/features/ai-script-authoring/', label: 'AI Script Proposal' },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
@@ -211,7 +225,8 @@ const docsMapping: DocsEntry[] = [
       alert_rule: { docsPath: '/features/alerts/', label: 'Alert Rules' },
       backup: { docsPath: '/backup/policies/', label: 'Backup Policy' },
       security: { docsPath: '/features/security/', label: 'Security' },
-      monitoring: { docsPath: '/features/service-monitoring/', label: 'Service Monitoring' },
+      security_agents: { docsPath: '/features/configuration-policies/#security-agents', label: 'Security Agents' },
+      monitoring: { docsPath: '/features/monitors/', label: 'Service Monitoring' },
       maintenance: { docsPath: '/features/maintenance-windows/', label: 'Maintenance Windows' },
       compliance: { docsPath: '/features/cis-hardening/', label: 'Compliance' },
       automation: { docsPath: '/features/automations/', label: 'Automations' },
@@ -243,7 +258,14 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/operator/tasks', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator Tasks' },
   { pattern: '/operator', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
-  { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
+  // The full-page Breeze AI chat lives at /ai/chat (W05 #10136); /wisp/chat and
+  // /workspace only redirect there. /wisp/chat stays before /wisp (the home) —
+  // first prefix match wins.
+  { pattern: '/ai/chat', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
+  { pattern: '/wisp/chat', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
+  { pattern: '/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
+  { pattern: '/workspace', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
+  { pattern: '/ai/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
 
   // Account
   { pattern: '/account/delete', docsPath: '/reference/account-deletion/', label: 'Account Deletion' },

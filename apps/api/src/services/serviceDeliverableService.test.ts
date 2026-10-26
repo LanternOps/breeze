@@ -12,6 +12,13 @@ const results: QueuedQuery[] = [];
 function queueResult(rows: unknown[]) { results.push({ rows }); }
 function queueError(error: unknown) { results.push({ error }); }
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -1129,6 +1136,8 @@ describe('serviceDeliverableService', () => {
       expect(lastSet().deliveredAt).toBeInstanceOf(Date);
       // CAS on the status the decision was made from.
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open']));
+      // #8972 W0: the ticket row is locked before the occurrence CAS update
+      expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't1');
     });
 
     it('resolve without an artifact requirement delivers even with no evidence', async () => {

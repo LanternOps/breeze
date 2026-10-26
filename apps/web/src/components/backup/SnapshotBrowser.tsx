@@ -17,6 +17,12 @@ import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import HashLink from '../shared/HashLink';
 import { buildRestoreHash } from './restoreHash';
+import SnapshotIntegrityBadge, { snapshotIntegrityTone } from './SnapshotIntegrityBadge';
+import {
+  LARGE_FOLDER_SELECTION_THRESHOLD,
+  folderCheckState,
+  selectedFolderFileTotal,
+} from './folderSelection';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -55,6 +61,8 @@ type Snapshot = {
   requestedImmutabilityEnforcement: 'application' | 'provider' | null;
   immutabilityFallbackReason: string | null;
   retentionBlockedReason?: 'legal_hold' | 'immutable_until' | null;
+  // GET /backup/snapshots; absent on an older API.
+  integrityStatus?: string | null;
   bareMetalRestorable?: boolean | null;
   bareMetalReasons?: string[] | null;
   // Set from GET /snapshots/:id/browse: the snapshot recorded files but has no
@@ -68,6 +76,8 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Directories: indexed files beneath it (#9628). */
+  fileCount?: number;
 };
 
 // #8230: the browse endpoint returns ONE directory level per request, paged by
@@ -120,6 +130,11 @@ function formatDateTime(value: string | null | undefined): string {
 
 export default function SnapshotBrowser() {
   const { t } = useTranslation('backup');
+  // <option> text cannot hold the badge element, so the picker spells the status out.
+  const integrityLabel = (status?: string | null): string | null => {
+    const tone = snapshotIntegrityTone(status);
+    return tone ? t(/* i18n-dynamic */ `snapshotIntegrityBadge.${tone}`) : null;
+  };
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -334,11 +349,35 @@ export default function SnapshotBrowser() {
       .map((item) => ({
         id: item.path,
         name: item.name,
-        size: typeof item.sizeBytes === 'number' ? `${item.sizeBytes} B` : undefined,
-        modified: item.modifiedAt,
+        size: typeof item.sizeBytes === 'number' ? formatBytes(item.sizeBytes) : undefined,
+        modified: item.modifiedAt ? formatDateTime(item.modifiedAt) : undefined,
       })),
     [dirs, selectedFolder]
   );
+  const visibleFolders = useMemo(
+    () => (dirs[selectedFolder]?.items ?? []).filter((item) => item.type === 'directory'),
+    [dirs, selectedFolder]
+  );
+  const folderCounts = useRef(new Map<string, number>());
+  // Selecting a folder stores its tree path; the API expands it to the indexed
+  // files beneath it when the restore is created (#9628).
+  const toggleFolder = (item: SnapshotTreeItem) => {
+    const count = item.fileCount ?? 0;
+    folderCounts.current.set(item.path, count);
+    const state = folderCheckState(item.path, selectedFiles);
+    // Covered by a selected ancestor folder: uncheck that one instead.
+    if (state === 'checked' && !selectedFiles.has(item.path)) return;
+    if (state !== 'checked' && count > 0) {
+      const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
+      if (
+        total > LARGE_FOLDER_SELECTION_THRESHOLD &&
+        !window.confirm(t('snapshotBrowser.confirmLargeFolderSelection', { count: total }))
+      ) {
+        return;
+      }
+    }
+    toggleFile(item.path);
+  };
   const rootLoaded = dirs[ROOT_DIR] !== undefined && !dirs[ROOT_DIR]!.loading;
   const rootEmpty = rootLoaded && dirs[ROOT_DIR]!.items.length === 0;
 
@@ -490,6 +529,7 @@ export default function SnapshotBrowser() {
               {snapshots.map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
                   {snapshotOptionLabel(snapshot)}
+                  {integrityLabel(snapshot.integrityStatus) ? ` — ${integrityLabel(snapshot.integrityStatus)}` : ''}
                 </option>
               ))}
             </select>
@@ -507,6 +547,7 @@ export default function SnapshotBrowser() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
+                <SnapshotIntegrityBadge status={selectedSnapshot.integrityStatus} />
                 {selectedSnapshot.deviceName && (
                   <span data-testid="snapshot-device-name" className="text-sm text-muted-foreground">
                     {selectedSnapshot.deviceName}
@@ -748,6 +789,43 @@ export default function SnapshotBrowser() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
+                  {visibleFolders.map((folder) => (
+                    <tr key={`d:${folder.path}`} className="text-sm text-foreground">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={folderCheckState(folder.path, selectedFiles) === 'checked'}
+                          ref={(el) => {
+                            if (el) el.indeterminate = folderCheckState(folder.path, selectedFiles) === 'partial';
+                          }}
+                          // Covered by a selected parent folder: uncheck that one instead.
+                          disabled={folderCheckState(folder.path, selectedFiles) === 'checked' && !selectedFiles.has(folder.path)}
+                          onChange={() => toggleFolder(folder)}
+                          aria-label={t('snapshotBrowser.selectFolder', { name: folder.name })}
+                          className="h-4 w-4"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            ensureDirLoaded(folder.path);
+                            setSelectedFolder(folder.path);
+                          }}
+                          className="flex items-center gap-2 font-medium hover:underline"
+                        >
+                          <Folder className="h-4 w-4 text-muted-foreground" />
+                          {folder.name}/
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {typeof folder.fileCount === 'number'
+                          ? t('snapshotBrowser.folderFileCount', { count: folder.fileCount })
+                          : ''}
+                      </td>
+                      <td className="px-4 py-3" />
+                    </tr>
+                  ))}
                   {visibleFiles.map((file) => (
                     <tr key={file.id} className="text-sm text-foreground">
                       <td className="px-4 py-3">
@@ -783,7 +861,7 @@ export default function SnapshotBrowser() {
               </button>
             )}
 
-            {visibleFiles.length === 0 && !dirs[selectedFolder]?.loading && (
+            {visibleFiles.length === 0 && visibleFolders.length === 0 && !dirs[selectedFolder]?.loading && (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
                 {!rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'

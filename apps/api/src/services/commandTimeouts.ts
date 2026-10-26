@@ -113,6 +113,9 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.FILESYSTEM_ANALYSIS,
   CommandTypes.SYSTEM_CLEANUP_LIST,
   CommandTypes.REBOOT_SAFE_MODE,
+  // #8729: same execution budget as the safe-mode reboot. Its DELIVERY window
+  // is the 15-minute live_only class (commandOfflinePolicy.ts), not this.
+  CommandTypes.FORCE_REBOOT,
   CommandTypes.SELF_UNINSTALL,
   CommandTypes.COLLECT_EVIDENCE,
   CommandTypes.EXECUTE_CONTAINMENT,

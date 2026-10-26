@@ -34,6 +34,11 @@ vi.mock('./eventBus', () => ({
   publishEvent: vi.fn(async () => undefined),
 }));
 
+// QW8 (W04, #6758): screenshot evidence honours the screen-access consent gate.
+vi.mock('../routes/remote/screenAccessConsentGate', () => ({
+  checkScreenAccessConsentGate: vi.fn(async () => ({ ok: true })),
+}));
+
 // The device gate is a separately-tested collaborator
 // (aiTools.verifyDeviceAccess.test.ts). Mock it so we can drive the
 // accessible / not-accessible verdicts and assert the handler's control flow.
@@ -48,6 +53,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerIncidentTools } from './aiToolsIncident';
+import { checkScreenAccessConsentGate } from '../routes/remote/screenAccessConsentGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const INCIDENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -153,4 +159,176 @@ describe('incident AI tools — cross-org device gate', () => {
       expect(JSON.parse(result).success).toBe(true);
     });
   }
+});
+
+/**
+ * #9662: the action row is the containment's only lifecycle record, and the
+ * agent-result handler finds it by command id. It must therefore exist (and
+ * name the command id) BEFORE the command can reach the agent — a fast agent
+ * answering before a post-dispatch insert left the row `in_progress` forever.
+ */
+describe('execute_containment action lifecycle (#9662)', () => {
+  const input = {
+    incidentId: INCIDENT_ID,
+    deviceId: OWN_DEVICE_ID,
+    actionType: 'process_kill',
+    approvalRef: 'appr-1',
+    parameters: { pid: 1234 },
+  };
+
+  function updateChain() {
+    const chain: any = {};
+    chain.set = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([]));
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'host-1', status: 'online' },
+    } as any);
+  });
+
+  it('records the action with a preallocated command id before dispatching that same id', async () => {
+    const order: string[] = [];
+    let insertedValues: any;
+    vi.mocked(db.insert).mockImplementation(() => {
+      const chain = createInsertChain([{ id: 'action-1' }]);
+      chain.values = vi.fn((v: unknown) => { order.push('insert'); insertedValues = v; return chain; });
+      return chain as any;
+    });
+    vi.mocked(aiQueueCommandForExecution).mockImplementation(async (...args: any[]) => {
+      order.push('dispatch');
+      return { command: { id: args[5].commandId, status: 'sent' } } as any;
+    });
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(order).toEqual(['insert', 'dispatch']);
+    const dispatchedId = vi.mocked(aiQueueCommandForExecution).mock.calls[0]![5]!.commandId;
+    expect(dispatchedId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(insertedValues).toMatchObject({ status: 'in_progress', result: { commandId: dispatchedId } });
+    expect(out).toMatchObject({ success: true, commandId: dispatchedId, actionId: 'action-1' });
+  });
+
+  it('does not dispatch when the action cannot be recorded', async () => {
+    vi.mocked(db.insert).mockImplementation(() => {
+      const chain = createInsertChain([]);
+      chain.returning = vi.fn(() => Promise.reject(new Error('insert failed')));
+      return chain as any;
+    });
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(out.error).toMatch(/could not be recorded/i);
+  });
+
+  it('fails the recorded action when the dispatch is refused', async () => {
+    const chain = updateChain();
+    vi.mocked(db.update).mockImplementation(() => chain);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ error: 'Device is offline' } as any);
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(out.error).toBe('Device is offline');
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      result: expect.objectContaining({ error: 'Device is offline' }),
+    }));
+  });
+
+  it('cancels the recorded action when the dispatch was cancelled at claim time', async () => {
+    const chain = updateChain();
+    vi.mocked(db.update).mockImplementation(() => chain);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-1', status: 'cancelled' }, error: 'Command cancelled', refusal: 'cancelled',
+    } as any);
+
+    await buildToolMap().get('execute_containment')!.handler(input, makeAuth());
+
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+  });
+
+  it('refuses a device outside the incident organization', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(out.error).toMatch(/same organization/i);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * W04-D12 (#6758): collect_evidence must be bound to the incident's org, as
+ * execute_containment is (#9662). Without it a multi-org caller could aim
+ * forensic collection at a device in org B under an incident in org A.
+ */
+describe('collect_evidence device/incident org binding (W04-D12, #6758)', () => {
+  const input = { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes'] };
+
+  it('refuses a device outside the incident organization and dispatches nothing', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.error).toMatch(/same organization/i);
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('control: a device in the incident organization is dispatched', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(input, makeAuth()));
+
+    expect(out.success).toBe(true);
+    expect(aiQueueCommandForExecution).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * QW8 (W04 quorum, #6758): a screenshot is screen capture, so screenshot
+ * evidence honours the device's remote-access consent policy exactly like
+ * take_screenshot (checkScreenAccessConsentGate). Other evidence types are not
+ * screen access and never consult it.
+ */
+describe('collect_evidence screenshot honours the screen-access consent gate (W04 QW8, #6758)', () => {
+  const device = { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'host-1', status: 'online', isEphemeral: false };
+
+  beforeEach(() => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({ device } as any);
+  });
+
+  it('refuses and dispatches nothing when the gate refuses a screenshot', async () => {
+    vi.mocked(checkScreenAccessConsentGate).mockResolvedValueOnce({
+      ok: false, status: 409, body: { error: 'consent required', code: 'CONSENT_REQUIRED' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(
+      { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes', 'screenshot'] }, makeAuth(),
+    ));
+
+    expect(checkScreenAccessConsentGate).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: OWN_DEVICE_ID, orgId: ORG_ID, surface: 'collect_evidence',
+    }));
+    expect(out).toEqual({ error: 'consent required', code: 'CONSENT_REQUIRED' });
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('control: non-screenshot evidence never consults the gate', async () => {
+    const out = JSON.parse(await buildToolMap().get('collect_evidence')!.handler(
+      { incidentId: INCIDENT_ID, deviceId: OWN_DEVICE_ID, evidenceTypes: ['processes', 'connections'] }, makeAuth(),
+    ));
+
+    expect(checkScreenAccessConsentGate).not.toHaveBeenCalled();
+    expect(out.success).toBe(true);
+  });
 });

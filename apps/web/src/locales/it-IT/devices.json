@@ -360,7 +360,22 @@
     "moving": "Spostamento...",
     "toADifferentSite": "in un sito diverso.",
     "deviceMovedByOther": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale",
-    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente."
+    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente.",
+    "bulkIntro": "Sposta {{count}} dispositivi selezionati in un sito diverso all'interno di {{org}}.",
+    "bulkIntro_one": "Sposta {{count}} dispositivo selezionato in un sito diverso all'interno di {{org}}.",
+    "bulkIntro_other": "Sposta {{count}} dispositivi selezionati in un sito diverso all'interno di {{org}}.",
+    "bulkIntroNoOrg": "Sposta {{count}} dispositivi selezionati in un sito diverso.",
+    "bulkIntroNoOrg_one": "Sposta {{count}} dispositivo selezionato in un sito diverso.",
+    "bulkIntroNoOrg_other": "Sposta {{count}} dispositivi selezionati in un sito diverso.",
+    "devicesFromSites": "{{count}} dispositivi da {{siteCount}} siti",
+    "devicesFromSites_one": "{{count}} dispositivo da {{siteCount}} siti",
+    "devicesFromSites_other": "{{count}} dispositivi da {{siteCount}} siti",
+    "selectSite": "Seleziona un sito",
+    "moveDevices": "Sposta {{count}} dispositivi",
+    "moveDevices_one": "Sposta {{count}} dispositivo",
+    "moveDevices_other": "Sposta {{count}} dispositivi",
+    "bulkPolicyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a questi dispositivi. Breeze non li riporterà indietro automaticamente.",
+    "failedToMoveDevices": "Impossibile spostare i dispositivi"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -441,6 +456,14 @@
         "message": "Installa Homebrew con l'utente attualmente connesso, usando una copia fissata e verificata tramite checksum del programma di installazione ufficiale. Richiede una sessione console con privilegi di amministratore e una credenziale sudo attiva o senza password; in caso contrario l'installazione non riesce e l'errore viene segnalato.",
         "confirm": "Installa Homebrew"
       },
+      "restartAgent": {
+        "title": "Riavviare l’agente Breeze?",
+        "message": "Chiedi al watchdog su {{hostname}} di riavviare il servizio dell’agente Breeze. Il watchdog lo esegue al prossimo check-in, di solito entro un minuto, e si collega solo mentre l’agente è fermo.",
+        "watchdogLastSeen": "Ultima segnalazione del watchdog: {{date}}.",
+        "watchdogStale": "L’ultima segnalazione del watchdog risale a {{date}}, troppo tempo fa per accettare la richiesta; verrà rifiutata finché non si ricollega.",
+        "watchdogNeverSeen": "Il watchdog non ha ancora inviato segnalazioni, quindi la richiesta verrà rifiutata finché non si collega.",
+        "confirm": "Riavvia agente"
+      },
       "bulkDeleteManual": {
         "title": "Eliminare {{count}} risorse manuali?",
         "message": "Questa operazione elimina definitivamente le risorse manuali selezionate. Non può essere annullata.",
@@ -473,6 +496,10 @@
     "reRunAgentInventoryCollectorsSo": "Raccogli subito l’inventario",
     "refresh": "Aggiorna",
     "reboot": "Riavvia",
+    "forceRebootNow": "Forza il riavvio ora",
+    "forceRebootHint": "Riavvia subito e chiude le app in esecuzione. Il lavoro non salvato va perso.",
+    "forceRebootAgentUpgradeRequired": "Aggiornamento dell'agente richiesto: il riavvio forzato richiede l'agente {{version}} o successivo",
+    "forceRebootQueued": "Riavvio forzato in coda per {{hostname}}. Viene eseguito non appena sul dispositivo non è in esecuzione nient'altro.",
     "wake": "Riattiva",
     "rebootToSafeMode": "Riavvia in modalità provvisoria",
     "deploySoftware": "Distribuisci software",
@@ -492,7 +519,8 @@
       "liveSessionOnly": "{{reason}} — il Terminale remoto richiede un agente connesso. I comandi in coda verranno comunque eseguiti alla riconnessione.",
       "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
     },
-    "installHomebrew": "Installa Homebrew"
+    "installHomebrew": "Installa Homebrew",
+    "restartAgent": "Riavvia agente"
   },
   "deviceActivityFeed": {
     "activity": "Attività",
@@ -868,7 +896,12 @@
     "devices": "Dispositivi",
     "devicesCrumbOtherOrg": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro resta {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro non cambia",
-    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova."
+    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova.",
+    "restartAgent": {
+      "queued": "Riavvio dell’agente richiesto per {{hostname}}. Il watchdog lo eseguirà al prossimo check-in.",
+      "alreadyPending": "Un riavvio dell’agente per {{hostname}} è già in attesa del watchdog.",
+      "failed": "Impossibile richiedere il riavvio dell’agente per {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Panoramica",
@@ -944,8 +977,8 @@
     "strip": "striscia",
     "networkAsset": "Asset di rete",
     "networkAssets": "Asset di rete (elenco)",
-    "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
+    "operatorTasks": "Attività IA",
+    "operatorTasksForThisDevice": "Attività IA per questo dispositivo",
     "tabGroups": {
       "monitoring": "Monitoraggio",
       "inventory": "Inventario",
@@ -1017,7 +1050,9 @@
       "label": "approvazione",
       "byRing": "definita dall'anello di aggiornamento collegato",
       "manualOnly": "solo approvazioni manuali (nessun anello di aggiornamento collegato)"
-    }
+    },
+    "chainResolutionRule": "Decide prima il livello: Dispositivo prevale su Gruppo di dispositivi, poi Sito, Organizzazione e Partner. La priorità (vince il numero più basso) decide solo tra criteri dello stesso livello. Le funzionalità barrate sono state sovrascritte da un criterio più vicino.",
+    "featureOverriddenBy": "Sovrascritta da {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossibile recuperare le attività",
@@ -1342,6 +1377,7 @@
     "drive": "Unità",
     "size": "Dimensione",
     "used": "Utilizzato",
+    "usedPercent": "% utilizzato",
     "health": "Integrità",
     "noDiskInventoryReported": "Nessun inventario dei dischi segnalato.",
     "networkAdapters": "Schede di rete",
@@ -1825,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} di {{count}} dispositivo",
     "countLine_other": "{{shown}} di {{count}} dispositivi",
-    "noMatchesTitle": "Nessun dispositivo corrisponde a questi filtri"
+    "noMatchesTitle": "Nessun dispositivo corrisponde a questi filtri",
+    "moveToSite": "Sposta in un sito",
+    "moveSelectedToSite": "Sposta in un sito",
+    "moveSiteMixedOrgs": "I dispositivi selezionati appartengono a più di un'organizzazione",
+    "moveSiteOverCap": "Seleziona al massimo {{count}} dispositivi da spostare contemporaneamente"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -1847,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Caricamento dei log del dispositivo...",
     "noLogsMatchTheSelectedFilters": "Nessun log corrisponde ai filtri selezionati.",
-    "noDeviceLogsRecordedYet": "Nessun log del dispositivo ancora registrato."
+    "noDeviceLogsRecordedYet": "Nessun log del dispositivo ancora registrato.",
+    "linkedWindow": "Finestra di calcolo dell'affidabilità mostrata: {{from}} – {{to}}",
+    "linkedWindowWithSource": "Finestra di calcolo dell'affidabilità mostrata: {{from}} – {{to}} per {{source}}",
+    "clearLinkedFilter": "Rimuovi il filtro del link"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Caricamento dello stato di gestione...",
@@ -1929,6 +1972,7 @@
     "title": "Connessioni di rete attive"
   },
   "devicePatchStatusTab": {
+    "released": "Rilasciato il {{date}}",
     "compliance": {
       "compliant": "{{percent}}% conforme",
       "description": "Aggiornamenti in sospeso rispetto a quelli installati",
@@ -2052,6 +2096,7 @@
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedRingReferenceTitle": "Trattenuta: il criterio patch di questo dispositivo collega un anello di aggiornamento che non esiste più o non è disponibile per questo partner. Correggi l'anello di aggiornamento del criterio per riprendere l'applicazione delle patch.",
+      "excludedDeclinedTitle": "Rifiutata: questa patch è stata rifiutata esplicitamente, quindi l'approvazione automatica dell'anello non la installerà. Approvala di nuovo per consentirla.",
       "pending": "Approvazione in sospeso",
       "needsApprovalRingTitle": "L'anello di aggiornamento {{ring}} non approva automaticamente questa patch. Approvala manualmente per installarla.",
       "needsApprovalNoRingTitle": "Nessun anello di aggiornamento è collegato al criterio patch di questo dispositivo, quindi questa patch si installa solo dopo un'approvazione manuale.",
@@ -2131,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Durata: {{duration}}",
     "empty": "Nessuna esecuzione di playbook trovata per questo dispositivo.",
-    "emptyHelp": "I playbook possono essere avviati tramite l'assistente AI per automatizzare gli interventi di correzione.",
+    "emptyHelp": "I playbook possono essere avviati tramite Breeze AI per automatizzare gli interventi di correzione.",
     "loading": "Caricamento della cronologia dei playbook...",
     "noStepResults": "Nessun risultato dei passaggi registrato.",
     "rollbackExecuted": "Rollback eseguito",
@@ -2266,7 +2311,11 @@
       "savedNotActive": "Marcatore salvato. Un marcatore successivo è ancora in vigore, quindi il punteggio non è cambiato.",
       "clearNotFound": "Questo marcatore non esiste più.",
       "clearAlreadyCleared": "Questo marcatore è già stato disattivato."
-    }
+    },
+    "eventLogLinkExact": "Visualizza nel registro eventi",
+    "eventLogLinkWindow": "Apri il registro eventi",
+    "eventLogLinkTitle": "Registro eventi, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Registro eventi per {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copia negli appunti",
@@ -2476,7 +2525,7 @@
     "showFindings": "Mostra rilevamenti",
     "stats": {
       "accepted": "Accettate",
-      "kev": "KEV",
+      "kev": "Sfruttata nota",
       "mitigated": "Mitigate",
       "open": "Aperte",
       "patchReady": "Pronte per patch",
@@ -2672,14 +2721,20 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} dispositivo aveva già ricevuto la disinstallazione: su quella macchina potrebbe essere necessario reinstallare l'agente.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} dispositivi avevano già ricevuto la disinstallazione: su quelle macchine potrebbe essere necessario reinstallare l'agente.",
       "bulkRestored_one": "{{count}} dispositivo ripristinato",
-      "bulkRestored_other": "{{count}} dispositivi ripristinati"
+      "bulkRestored_other": "{{count}} dispositivi ripristinati",
+      "bulkMoveSiteSuccess": "{{count}} dispositivi ora si trovano in {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} dispositivo ora si trova in {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} dispositivi ora si trovano in {{site}}",
+      "bulkMoveSiteSomeFailed": "{{moved}} dispositivi su {{total}} spostati in {{site}}. Non spostati: {{devices}}",
+      "bulkMoveSiteAllFailed": "Nessun dispositivo è stato spostato in {{site}}. Non spostati: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito"
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",
     "unknownOrg": "Organizzazione sconosciuta",
     "unknownSite": "Sito sconosciuto",
     "viewInstallationGuide": "Visualizza la guida di installazione",
-    "importFromRmm": "Importa da un altro RMM",
+    "importFromRmm": "Importa campi personalizzati da un altro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivi di rete",
@@ -3013,6 +3068,29 @@
     "submitting": "Elaborazione…",
     "cancel": "Annulla",
     "genericError": "Impossibile avviare la modalità manutenzione."
+  },
+  "forceRebootDialog": {
+    "title": "Forza il riavvio ora",
+    "description": "Riavvia {{hostname}} subito e chiude le app in esecuzione, invece di attenderle.",
+    "hostnameLabel": "Dispositivo",
+    "osLabel": "Sistema operativo",
+    "commandLabel": "Comando",
+    "noEffectOnOs": "Su {{os}} un riavvio non attende mai le app, quindi equivale a un normale riavvio immediato.",
+    "warning": "Il lavoro non salvato nelle app aperte su questo dispositivo andrà perso. Il riavvio attende comunque i comandi già in esecuzione sul dispositivo.",
+    "typeHostname": "Digita {{hostname}} per confermare",
+    "stepUpHeading": "Conferma la tua identità",
+    "stepUpPasskeyNote": "Confermerai con la tua passkey.",
+    "stepUpCodeLabel": "Codice dell'autenticatore",
+    "noStepUpFactor": "Aggiungi un'app di autenticazione o una passkey al tuo account prima di forzare il riavvio di un dispositivo.",
+    "mfaRequired": "Completa prima l'accesso MFA, poi riprova.",
+    "stepUpFailed": "La verifica non è riuscita. Inserisci un nuovo codice e riprova.",
+    "deviceOffline": "Questo dispositivo non è online. Un riavvio forzato viene inviato solo a un dispositivo online in questo momento.",
+    "agentUpgradeRequired": "L'agente di questo dispositivo è troppo vecchio per un riavvio forzato. Aggiorna prima l'agente.",
+    "genericError": "Impossibile inviare il riavvio forzato.",
+    "cancel": "Annulla",
+    "confirm": "Forza il riavvio ora",
+    "submitStepUp": "Verifica e forza il riavvio",
+    "submitting": "Invio…"
   },
   "moveDeviceOrgDialog": {
     "title": "Sposta in un'altra organizzazione",
@@ -3439,6 +3517,8 @@
     "health": {
       "empty": {
         "title": "Non è ancora attivo alcun monitoraggio",
+        "titleWithCheck": "Nessun dato di integrità SNMP",
+        "descriptionWithCheck": "Per questo dispositivo è attivo un controllo di rete, quindi la raggiungibilità è comunque monitorata. Attiva SNMP per raccogliere anche i dati di integrità.",
         "action": "Configura il monitoraggio",
         "benefit": {
           "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",

@@ -953,6 +953,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
 
   auditLogin(c, {
     orgId: context.orgId ?? null,
+    partnerId: context.partnerId ?? null,
     userId: user.id,
     email: user.email,
     name: user.name,

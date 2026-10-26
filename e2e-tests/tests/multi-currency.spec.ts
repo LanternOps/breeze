@@ -224,7 +224,7 @@ test.describe('multi-currency — non-USD org browser slices', () => {
       try {
         const publicPage = await publicContext.newPage();
         await publicPage.goto(`${origin}/portal/quote/${acceptToken}`);
-        const doc = publicPage.getByTestId('public-quote');
+        const doc = publicPage.getByTestId('document-root');
         await doc.waitFor({ timeout: 20_000 });
         // The customer-facing document renders the quote's stamped currency.
         await expect(doc).toContainText('€400.00');

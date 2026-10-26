@@ -129,8 +129,9 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 		}
 
 		// Retryable status — check for Retry-After before discarding response.
-		answer := &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
-		if ra := ParseRetryAfter(resp.Header, nowFn()); ra > 0 {
+		ra := ParseRetryAfter(resp.Header, nowFn())
+		answer := &RetryableStatusError{StatusCode: resp.StatusCode, URL: url, RetryAfter: ra, AnsweredAt: time.Now()}
+		if ra > 0 {
 			// Issue #2728: jitter the server's delay. A server-side limit is
 			// usually tripped by the WHOLE fleet at once, so every agent
 			// receives the same Retry-After at the same instant; waiting
@@ -202,6 +203,13 @@ type RetryableStatusError struct {
 	// answer carried no usable Retry-After, or loop-level Retry-After is off
 	// (SetLoopRetryAfter). W09, #8148.
 	RetryAt time.Time
+	// RetryAfter is the server's Retry-After on that answer (0 if absent),
+	// so a caller that retries on its own schedule can still honor it.
+	RetryAfter time.Duration
+	// AnsweredAt is when that answer arrived. Do may already have spent part
+	// of RetryAfter sleeping before its context ended, so a caller waits
+	// RetryAfter minus the time since AnsweredAt, not RetryAfter again.
+	AnsweredAt time.Time
 }
 
 // RetryAtFrom returns the RetryAt carried anywhere in err's chain, and whether

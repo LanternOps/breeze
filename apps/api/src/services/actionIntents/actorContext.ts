@@ -7,6 +7,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { deserializeAiOrigin } from '@breeze/shared';
 import {
   AgentRunOwnershipError,
@@ -63,7 +64,7 @@ const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<st
  * Returns null for any intent whose tool/action is not in the allowlist
  * above, or whose recorded target-org argument is missing or not a string.
  */
-function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
+export function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
   // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
   // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
   // purpose: `services/aiGuardrails.ts` pulls in the full tool-registry import
@@ -103,6 +104,19 @@ function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
  * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
+  // B-W04 (#6158, D-B26): an intent filed by an MCP credential is rebuilt
+  // from that LIVE credential with the same function the MCP call used —
+  // never the user-owned rebuild below, which would widen an org-pinned key
+  // to a target org and synthesize `mfa: true`. This first branch serves all
+  // three callers (release revalidation, the worker's M365 headless dispatch,
+  // the supervised approve-time RBAC re-check). Dynamic import keeps this
+  // module a light leaf (see resolveTenantMutationTargetOrgId above).
+  if (isMcpOriginIntent(intent)) {
+    const { rebuildMcpOriginAuthContext } = await import('../mcpPrincipalAuth');
+    const rebuilt = await rebuildMcpOriginAuthContext(intent);
+    return 'error' in rebuilt ? null : rebuilt.auth;
+  }
+
   if (intent.requestedByUserId) {
     return buildUserOwnedAuthContext(intent, intent.requestedByUserId);
   }
@@ -112,12 +126,27 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId/
+  // requestingFlowRunId is set.
   // An agent-originated intent reconstructs the RUN's agent identity (wave
   // 3b): structural, never a user token — checkToolPermission keeps denying
   // the resulting principal, and release authority is checkAgentReleaseAuthority.
   if (intent.requestingAgentRunId) {
     return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
+  }
+  // Tool catalog W04 (#5219): a flow-originated intent (requestingFlowRunId,
+  // the fourth actor root) rebuilds the RUN's flow principal — structural,
+  // never a user token (checkToolPermission keeps denying it). Any refusal
+  // (run gone, run in an org the flow does not own) is `null` ⇒ actor_invalid.
+  // Dynamic import: keeps this module a light leaf (see the MCP branch above).
+  if (intent.requestingFlowRunId) {
+    const { checkFlowReleaseAuthority } = await import('../flows/releaseAuthority');
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      console.error(`[actorContext] intent ${intent.id} flow release authority refused (${authority.code}) — failing closed`);
+      return null;
+    }
+    return authority.auth;
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -161,6 +190,14 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
             agentId: intent.originPrincipalId,
             runId: intent.requestingAgentRunId,
           }
+        : { kind: 'unknown' };
+    case 'flow':
+      // Tool catalog W04 (#5219): the stored origin of a parked Tier-3 flow
+      // step. flowId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — a flow intent without them is
+      // corruption and stays untrusted (`unknown`).
+      return intent.requestingFlowRunId && intent.originPrincipalId
+        ? { kind: 'flow', flowId: intent.originPrincipalId, runId: intent.requestingFlowRunId }
         : { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,

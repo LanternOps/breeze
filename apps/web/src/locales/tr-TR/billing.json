@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
         "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
-        "draftDeleted": "Taslak silindi"
+        "draftDeleted": "Taslak silindi",
+        "skipped": {
+          "already_billed": "Fatura oluşturulmadı — bu faturalama dönemi zaten faturalandı.",
+          "not_due": "Fatura oluşturulmadı — bu sözleşmenin faturalama zamanı henüz gelmedi.",
+          "renewal_pending": "Fatura oluşturulmadı — bu sözleşme bitiş tarihini geçti ve yenilenmeyi bekliyor.",
+          "expired": "Fatura oluşturulmadı — bu sözleşmenin süresi doldu.",
+          "unknown": "Bu sözleşme için fatura oluşturulmadı."
+        }
       },
       "cancelConfirm": {
         "title": "Bu sözleşme iptal edilsin mi?",
@@ -711,7 +718,15 @@
       },
       "fileType": {
         "image": "taranmış kopya"
-      }
+      },
+      "sendForSignature": "İmzaya gönder",
+      "filter": {
+        "pending": "İmza bekleyen",
+        "signed": "İmzalanan",
+        "closed": "Reddedilen / iptal edilen / süresi dolan"
+      },
+      "downloadOriginal": "Orijinal",
+      "certifiedUnavailable": "Bu sözleşme için onaylı kopya oluşturulamadı; bunun yerine özgün dosya indirildi."
     },
     "templateEditor": {
       "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
@@ -757,6 +772,101 @@
       "submit": "İmzalı anlaşmayı kaydet",
       "success": "İmzalı anlaşma kaydedildi.",
       "error": "İmzalı anlaşma kaydedilemedi."
+    },
+    "requests": {
+      "columns": {
+        "template": "Şablon",
+        "organization": "Organizasyon",
+        "recipients": "Alıcılar",
+        "sent": "Gönderildi",
+        "expires": "Bitiş",
+        "status": "Durum"
+      },
+      "status": {
+        "draft": "Taslak",
+        "sent": "İmza bekliyor",
+        "viewed": "Görüntülendi",
+        "signed": "İmzalandı",
+        "declined": "Reddedildi",
+        "voided": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "empty": {
+        "pending": {
+          "title": "İmza bekleyen bir şey yok",
+          "description": "İmzaya gönderdiğiniz anlaşmalar, müşteri imzalayana kadar burada görünür."
+        },
+        "closed": {
+          "title": "Reddedilen, iptal edilen veya süresi dolan istek yok",
+          "description": "Reddedilen, iptal edilen veya süresi dolan istekler burada görünür."
+        }
+      },
+      "loadError": "Anlaşma istekleri yüklenemedi.",
+      "recipientsMore": "+{{count}} daha",
+      "notSent": "Gönderilmedi",
+      "declinedReason": "Reddedildi: {{reason}}",
+      "voidedReason": "İptal edildi: {{reason}}",
+      "copyLink": {
+        "label": "Bağlantıyı kopyala",
+        "success": "İmza bağlantısı kopyalandı",
+        "error": "İmza bağlantısı kopyalanamadı.",
+        "clipboardError": "Panoya kopyalanamadı. İmza bağlantısı: {{link}}"
+      },
+      "void": {
+        "label": "İptal et",
+        "title": "Bu anlaşma isteği iptal edilsin mi?",
+        "description": "İmza bağlantısı çalışmaz hale gelir ve alıcılar bu anlaşmayı artık imzalayamaz.",
+        "reasonLabel": "Neden (isteğe bağlı)",
+        "confirm": "İsteği iptal et",
+        "confirming": "İptal ediliyor…",
+        "success": "Anlaşma isteği iptal edildi.",
+        "error": "Anlaşma isteği iptal edilemedi."
+      },
+      "deleteDraft": {
+        "label": "Taslağı sil",
+        "success": "Taslak silindi.",
+        "error": "Taslak silinemedi."
+      }
+    },
+    "send": {
+      "title": "İmzaya gönder",
+      "contract": "Bir sözleşmeye bağla (isteğe bağlı)",
+      "contractsError": "Bu organizasyonun sözleşmeleri yüklenemedi. Anlaşmayı yine de gönderip daha sonra bir sözleşmeye bağlayabilirsiniz.",
+      "recipients": "Alıcılar",
+      "recipientsHelp": "E-posta adresleri; virgül veya yeni satırla ayırın. Organizasyonun fatura kişisiyle önceden doldurulur.",
+      "recipientsRequired": "En az bir alıcı e-postası ekleyin.",
+      "recipientsInvalid": "Bunlar geçerli e-posta adresleri gibi görünmüyor: {{emails}}",
+      "recipientsTooMany": "En fazla 50 alıcı.",
+      "cover": "Eşlik eden mesaj (isteğe bağlı)",
+      "expiry": "Bağlantının bitiş tarihi",
+      "expiryPast": "Gelecekte bir son geçerlilik tarihi seçin.",
+      "label": "Etiket (isteğe bağlı)",
+      "createDraft": "Taslak oluştur ve önizle",
+      "creating": "Oluşturuluyor…",
+      "preview": {
+        "title": "Önizleme",
+        "loading": "Önizleme yükleniyor…",
+        "error": "Önizleme yüklenemedi.",
+        "uploaded": "Bu şablon yüklenmiş bir belgedir. Müşteri yüklenen dosyayı imzalar."
+      },
+      "unresolved": {
+        "title": "Göndermeden önce eksik değerleri doldurun"
+      },
+      "updatePreview": "Önizlemeyi güncelle",
+      "updating": "Güncelleniyor…",
+      "submit": "Gönder",
+      "sending": "Gönderiliyor…",
+      "createError": "Taslak oluşturulamadı.",
+      "updateError": "Anlaşma güncellenemedi.",
+      "sendError": "Anlaşma gönderilemedi.",
+      "discardError": "Taslak silinemedi; hâlâ İmza bekleyen altında listeleniyor, oradan silebilirsiniz.",
+      "sent_one": "Anlaşma {{count}} alıcıya gönderildi",
+      "sent_other": "Anlaşma {{count}} alıcıya gönderildi",
+      "notEmailed": {
+        "no_email_service": "Gönderildi, ancak e-posta yapılandırılmamış. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın.",
+        "no_recipients": "Gönderildi, ancak e-posta gönderilecek alıcı yoktu. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın.",
+        "send_failed": "Gönderildi, ancak e-posta iletilemedi. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın."
+      }
     }
   },
   "quotes": {
@@ -1343,8 +1453,10 @@
         "signerNameLabel": "Onayı veren kişi",
         "signerEmailLabel": "E-posta adresi (isteğe bağlı)",
         "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
+        "consequenceInvoiceDraft": "Taslak bir fatura oluşturulacak. Henüz düzenlenmedi ve numaralandırılmadı.",
         "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
         "consequenceEmail": "Fatura {{recipients}} adresine e-postayla gönderilecek.",
+        "consequenceEmailNotConfigured": "Yapılandırılmış bir e-posta hizmeti yok; fatura e-posta ile gönderilmeyecek. Fatura sayfasından paylaşın.",
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
@@ -1360,6 +1472,7 @@
         "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin.",
         "consequenceEmailNoRecipient": "Bu teklifte kayıtlı alıcı yok; bu nedenle fatura e-postayla gönderilmeyebilir. Gerekirse müşteriye kendiniz gönderin.",
         "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok.",
+        "successNoEmailService": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmedi: yapılandırılmış bir e-posta hizmeti yok. Fatura sayfasından paylaşın.",
         "overlap": {
           "title": "Bu kuruluşun aynı sıklıkta bir sözleşmesi zaten var",
           "body": "Kabul işlemi yeni bir taslak sözleşme oluşturdu. Mevcut sözleşmeyle birlikte bunu da etkinleştirirseniz müşteri her ikisi için de ödeme yapar. Herhangi birini etkinleştirmeden önce ikisini de gözden geçirin.",
@@ -1576,76 +1689,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Tah.",
-        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
         "setDevices": "cihazlar",
         "setSeats": "kullanıcılar",
-        "setGroup": "“{{name}}” içindeki cihazlar",
-        "atSite": "{{site}} konumundaki {{set}}",
-        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
-        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+        "setGroup": "“{{name}}” içindeki cihazlar"
       },
       "additionalItems": "Ek öğeler",
       "contract": {
-        "download": "Anlaşmayı indirin",
-        "previewTitle": "{{name}} anlaşması",
         "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Anlaşmalar",
-        "termsTitle": "Şartlar ve Koşullar",
-        "read": "Oku",
-        "hide": "Gizle",
-        "readTime": "~{{minutes}} dk okuma",
-        "sectionsReadTime_one": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "sectionsReadTime_other": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "pdfDocument": "PDF belgesi",
-        "unavailable": "Kullanılamıyor",
-        "untitled": "Anlaşma"
-      },
-      "draft": "Taslak",
-      "empty": "Bu teklifin henüz içeriği yok.",
-      "imageUnavailable": "Resim kullanılamıyor",
-      "issued": "Verildi",
-      "preparedFor": "için hazırlandı",
-      "taxId": "Vergi Numarası: {{id}}",
-      "imageZoomAria": "Daha büyük resmi görüntüle",
       "preview": {
         "description": "Bu, müşterinizin teklif bağlantısında gördüğü şeydir.",
         "downloadPdf": "PDF'yi indir",
-        "preparing": "Hazırlanıyor…"
-      },
-      "pricing": "Fiyatlandırma",
-      "pricingScrollAria": "Fiyatlandırma — daha fazla sütun için yana doğru kaydırın",
-      "proposal": "Teklif",
-      "proposalImageAlt": "Teklif resmi",
-      "recurrence": {
-        "annual": "Yıllık",
-        "monthly": "Aylık"
-      },
-      "table": {
-        "amount": "Tutar",
-        "description": "Açıklama",
-        "qty": "Adet",
-        "tax": "Vergi",
-        "unitPrice": "Birim fiyatı"
-      },
-      "totals": {
-        "annualRecurring": "Yıllık yinelenen",
-        "depositDue": "Depozito ödenmesi gerekiyor",
-        "depositDueNow": "Depozito ödemesinin şimdi yapılması gerekiyor",
-        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
-        "firstPeriodSubtotal": "İlk dönem ara toplamı",
-        "firstPeriodTotal": "Birinci dönem toplamı",
-        "monthlyRecurring": "Aylık olarak yinelenen",
-        "recurringNote": "Bu teklifi kabul ettiğinizde tek seferlik ücretler artık faturalandırılır. Yinelenen hatlar kendi programlarına göre faturalandırılır.",
-        "remainingBalance": "Kalan bakiye (şartlara göre vadesi gelecek)",
-        "subtotal": "Ara Toplam",
-        "tax": "Vergi"
-      },
-      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
-      "validUntil": "Geçerlilik tarihi:"
+        "preparing": "Hazırlanıyor…",
+        "loading": "Müşteri görünümü yükleniyor…",
+        "loadError": "Bu teklifin müşteri görünümü yüklenemedi.",
+        "retry": "Yeniden dene",
+        "signatureInert": "Müşteriniz burada imzalar"
+      }
     },
     "page": {
       "accessDenied": "Alıntıları görüntüleme izniniz yok.",
@@ -2192,36 +2253,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Fatura Alıcısı",
-    "documentType": "Fatura",
-    "due": "Vadesi geldi",
-    "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
-    "fallbackTitle": "Fatura",
-    "issued": "Verildi",
-    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
       "downloadPdf": "PDF'yi indir",
-      "preparing": "Hazırlanıyor…"
+      "loadError": "Bu faturanın müşteri görünümü yüklenemedi.",
+      "loading": "Müşteri görünümü yükleniyor…",
+      "preparing": "Hazırlanıyor…",
+      "retry": "Yeniden dene"
     },
-    "table": {
-      "amount": "Tutar",
-      "description": "Açıklama",
-      "qty": "Adet",
-      "tax": "Vergi",
-      "unitPrice": "Birim fiyatı"
-    },
-    "terms": "Şartlar ve Koşullar",
-    "ticketHeader": "Talep No. {{number}}",
-    "ticketWork": "Talep çalışması",
-    "totals": {
-      "amountDue": "Ödenecek tutar",
-      "paid": "Ücretli",
-      "subtotal": "Ara Toplam",
-      "tax": "Vergi",
-      "total": "Toplam"
-    }
+    "ticketHeader": "Talep No. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Faturalar",
@@ -2508,7 +2549,7 @@
     "documents": "Belgeler",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
-    "payments": "Payments"
+    "payments": "Ödemeler"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2582,7 +2623,7 @@
     "ai": {
       "column": "Yapay zeka kullanımı",
       "sectionTitle": "Yapay zeka kullanımı",
-      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların yapay zeka asistanı kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
+      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların Breeze AI kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
       "coverage": "Yapay zeka kullanımı faturalandırması",
       "coverageBillable": "Faturalandırılabilir",
       "coverageIncluded": "Dahil",
@@ -2846,6 +2887,10 @@
       "confirm": "Onayla",
       "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
       "unavailable": "Doğrulama başlatılamadı"
+    },
+    "notEnabled": {
+      "title": "Hesabınız için otomatik ödemeler etkin değil",
+      "hint": "Otomatik ödemeler henüz açılmadı. Breeze yöneticinizden etkinleştirmesini isteyin, ardından müşterilerinizden kayıt talep etmek için geri dönün."
     }
   },
   "reminders": {

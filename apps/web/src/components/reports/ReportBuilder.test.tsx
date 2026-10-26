@@ -268,7 +268,7 @@ describe('ReportBuilder config preservation', () => {
     });
   });
 
-  it('lets current builder state win over stale baseConfig keys', async () => {
+  it('drops stale builder keys from a curated template baseConfig (#9265)', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: {} }));
 
     render(
@@ -284,9 +284,9 @@ describe('ReportBuilder config preservation', () => {
 
     await waitFor(() => {
       const { config } = putBody();
-      // posture key survives, but the builder's own key reflects live state
+      // posture key survives; the stale builder key is stripped, not rewritten
       expect(config.backupRequired).toBe(true);
-      expect(config.builderType).toBe('compliance');
+      expect(config).not.toHaveProperty('builderType');
     });
   });
 });
@@ -901,5 +901,72 @@ describe('ReportBuilder keeps a one-time schedule', () => {
 
     expect(await screen.findByRole('button', { name: 'Weekly' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByRole('button', { name: 'One-time' })).toBeNull();
+  });
+});
+
+// #9265: a curated template report (backup_status etc.) owns its own options
+// form; saving it must not stamp the freeform device-builder keys into its config.
+describe('ReportBuilder submit config keys (#9265)', () => {
+  const putConfig = () => {
+    const call = fetchWithAuthMock.mock.calls.find(
+      ([url, init]) => url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT'
+    );
+    expect(call).toBeDefined();
+    return (JSON.parse(String((call![1] as RequestInit).body)) as { config: Record<string, unknown> }).config;
+  };
+  const builderKeys = [
+    'builderType', 'dataSource', 'columns', 'aggregation', 'filterConditions', 'groupBy', 'chartType',
+    'saveTemplate', 'templateName'
+  ];
+  // Every builder key pre-polluted into the stored config: all must be stripped.
+  const pollutedBaseConfig = {
+    staleAfterHours: 48,
+    ...Object.fromEntries(builderKeys.map(key => [key, 'stale']))
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { rows: [] } }));
+  });
+
+  afterEach(() => {
+    useOrgStore.setState({ currentOrgId: null });
+  });
+
+  it('does not write device-builder keys into a backup_status config', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        reportOrgId="org-1"
+        baseConfig={pollutedBaseConfig}
+        defaultValues={{ name: 'Backups', type: 'backup_status', schedule: 'weekly' }}
+      />
+    );
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+    await waitFor(() => expect(putConfig()).toBeDefined());
+    const config = putConfig();
+    for (const key of builderKeys) expect(config).not.toHaveProperty(key);
+    expect(config).toMatchObject({ staleAfterHours: 48 });
+    expect(config).toHaveProperty('schedule');
+    expect(config).toHaveProperty('exportFormats');
+    expect(config).toHaveProperty('emailRecipients');
+  });
+
+  it('still writes the builder keys for a devices builder report', async () => {
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        reportOrgId="org-1"
+        defaultValues={{ name: 'Devices', type: 'device_inventory', schedule: 'weekly' }}
+      />
+    );
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+    await waitFor(() => expect(putConfig()).toBeDefined());
+    const config = putConfig();
+    expect(config).toMatchObject({ builderType: 'devices' });
+    for (const key of ['dataSource', 'columns', 'aggregation']) expect(config).toHaveProperty(key);
   });
 });

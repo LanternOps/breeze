@@ -6,10 +6,9 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  ReferenceLine
 } from 'recharts';
 import { useTranslation } from 'react-i18next';
-import { cn } from '@/lib/utils';
+import { formatAxisLabel } from './ChartWidget';
 
 type ForecastPoint = {
   timestamp: string;
@@ -17,25 +16,18 @@ type ForecastPoint = {
   trend?: number;
 };
 
-type Thresholds = {
-  warning?: number;
-  critical?: number;
-};
-
 type CapacityForecastProps = {
   title: string;
   currentValue: number;
   unit?: string;
   data: ForecastPoint[];
-  thresholds?: Thresholds;
 };
 
 export default function CapacityForecast({
   title,
   currentValue,
   unit = '%',
-  data,
-  thresholds
+  data
 }: CapacityForecastProps) {
   const { t } = useTranslation('reports');
 
@@ -59,28 +51,12 @@ export default function CapacityForecast({
             {t('analytics.chartWidget.noData')}
           </div>
         ) : (
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minHeight={240}>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-            <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />
+            <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} tickFormatter={formatAxisLabel} className="text-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="text-muted-foreground" />
-            <Tooltip wrapperClassName="chart-tooltip" />
-            {thresholds?.warning !== undefined && (
-              <ReferenceLine
-                y={thresholds.warning}
-                stroke="hsl(var(--warning))"
-                strokeDasharray="4 4"
-                label={{ value: t('analytics.capacityForecast.warning'), position: 'right', fontSize: 10 }}
-              />
-            )}
-            {thresholds?.critical !== undefined && (
-              <ReferenceLine
-                y={thresholds.critical}
-                stroke="hsl(var(--destructive))"
-                strokeDasharray="4 4"
-                label={{ value: t('analytics.capacityForecast.critical'), position: 'right', fontSize: 10 }}
-              />
-            )}
+            <Tooltip wrapperClassName="chart-tooltip" labelFormatter={formatAxisLabel} />
             <Line
               type="monotone"
               dataKey="value"
@@ -102,24 +78,8 @@ export default function CapacityForecast({
         </ResponsiveContainer>
         )}
       </div>
-      {thresholds && (
-        <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
-          {thresholds.warning !== undefined && (
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-warning" />
-              {t('analytics.capacityForecast.warnValue', { value: thresholds.warning, unit })}
-            </span>
-          )}
-          {thresholds.critical !== undefined && (
-            <span className={cn('inline-flex items-center gap-1', 'text-destructive')}>
-              <span className="h-2 w-2 rounded-full bg-destructive" />
-              {t('analytics.capacityForecast.criticalValue', { value: thresholds.critical, unit })}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
-export type { CapacityForecastProps, ForecastPoint, Thresholds };
+export type { CapacityForecastProps, ForecastPoint };

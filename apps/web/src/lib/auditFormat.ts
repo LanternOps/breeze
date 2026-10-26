@@ -46,6 +46,9 @@ const ACTION_DISPLAY: Record<string, string> = {
   'agent.eventlogs.submit': 'Reported event logs',
   'agent.reliability.submit': 'Reported reliability',
   'agent.command.result.submit': 'Submitted command result',
+  // Template for `agent.command.<type>` (one code per audited command type);
+  // `{command}` is the friendly command name - see `formatAgentCommandAction`.
+  'agent.command.*': 'Queued command: {command}',
   'agent.filesystem.threshold_scan.queued': 'Filesystem scan queued',
   'agent.enroll': 'Agent enrolled',
 
@@ -68,6 +71,10 @@ const ACTION_DISPLAY: Record<string, string> = {
   'device.delete': 'Removed device',
   'device.archive': 'Archived device',
 
+  // Recovery keys
+  'device.recovery_key.reveal': 'Revealed a recovery key',
+  'device.recovery_key.rotate': 'Rotated a recovery key',
+
   // Orgs/sites
   'organization.create': 'Created organization',
   'organization.update': 'Updated organization',
@@ -75,6 +82,9 @@ const ACTION_DISPLAY: Record<string, string> = {
   'site.create': 'Created site',
   'site.update': 'Updated site',
   'site.delete': 'Deleted site',
+
+  // Scripts run on a device (#9672)
+  'script.execute': 'Ran script on device',
 
   // Alerts
   'alert.create': 'Raised alert',
@@ -92,11 +102,32 @@ const ACTION_DISPLAY: Record<string, string> = {
   // AI / MCP
   'ai.message.send': 'Sent AI message',
   'ai.tool_approval.update': 'Updated AI tool approval',
+  // Template for the per-tool rows (`ai.tool.<toolName>`, #9534); `{tool}` is
+  // the humanized tool name — see `formatAiToolAction`. `*` keeps the key from
+  // ever colliding with a real tool name.
+  'ai.tool.*': 'AI tool: {tool}',
+  'ai.session.create': 'Started a Breeze AI conversation',
+  'ai.session.close': 'Closed a Breeze AI conversation',
+  'ai.session.flag': 'Flagged a Breeze AI conversation',
+  'ai.session.unflag': 'Unflagged a Breeze AI conversation',
+  'ai.message.interrupt': 'Stopped AI response',
+  'ai.command.executed': 'AI ran a command',
+  'ai.script.executed': 'AI ran a script',
+  'ai.external_tool.call': 'AI called an external tool',
+  'ai.plan_approval.update': 'Updated AI plan approval',
+  'ai.plan.abort': 'Aborted AI plan',
+  'ai.security.prompt_injection_detected': 'AI: prompt injection detected',
+  'ai.budget.update': 'Updated AI budget',
   'mcp.initialize': 'MCP: initialize',
   'mcp.notifications.initialized': 'MCP: initialized notifications',
   'mcp.tools.list': 'MCP: list tools',
   'mcp.tools.call': 'MCP: call tool',
   'mcp.resources.list': 'MCP: list resources',
+
+  // Backup restores (#9630)
+  'backup.restore.create': 'Started a restore',
+  'backup.restore.cancel': 'Cancelled a restore',
+  'backup.restore.unattested_override': 'Confirmed restore of an unverified snapshot',
 
   // Remote sessions
   'terminal.session.summary': 'Terminal session summary',
@@ -141,6 +172,120 @@ function formatFallbackAction(
   return template.replace('{target}', target);
 }
 
+// Every AI tool call is audited as `ai.tool.<toolName>` (aiAgentSdk.ts), one
+// code per tool — far too many to catalog. Render it as "AI tool: <Tool name>"
+// rather than prettifying it to "Ai tool remediate vulnerability" (#9534).
+const AI_TOOL_ACTION_RE = /^ai\.tool\.(.+)$/;
+
+function formatAiToolAction(
+  action: string,
+  labels?: Record<string, string>,
+): string | null {
+  const match = AI_TOOL_ACTION_RE.exec(action);
+  if (!match) return null;
+  // A namespaced MCP id (`mcp__<server>__<tool>`) shows only the tool.
+  const words = match[1].replace(/^mcp__.+?__/, '').replace(/[_.]+/g, ' ').trim();
+  const template = labels?.['ai.tool.*'] ?? ACTION_DISPLAY['ai.tool.*'];
+  if (!words || !template) return null;
+  return template.replace('{tool}', words.charAt(0).toUpperCase() + words.slice(1));
+}
+
+// Every audited command queued to an agent is logged as `agent.command.<type>`
+// (commandQueue.ts AUDITED_COMMANDS). Friendly names for those types; an
+// unlisted type still renders readably by humanizing the type, so a new
+// command type needs no edit here to be legible (#9630).
+const AGENT_COMMAND_NAMES: Readonly<Record<string, string>> = {
+  kill_process: 'Kill process',
+  start_service: 'Start service',
+  stop_service: 'Stop service',
+  restart_service: 'Restart service',
+  task_run: 'Run scheduled task',
+  task_enable: 'Enable scheduled task',
+  task_disable: 'Disable scheduled task',
+  registry_set: 'Set registry value',
+  registry_delete: 'Delete registry value',
+  registry_key_create: 'Create registry key',
+  registry_key_delete: 'Delete registry key',
+  file_write: 'Write file',
+  file_delete: 'Delete file',
+  file_mkdir: 'Create folder',
+  file_rename: 'Rename file',
+  file_copy: 'Copy file',
+  file_trash_restore: 'Restore file from trash',
+  file_trash_purge: 'Purge trash',
+  terminal_start: 'Start terminal',
+  script: 'Run script',
+  script_cancel: 'Cancel script',
+  patch_scan: 'Scan for patches',
+  install_patches: 'Install patches',
+  rollback_patches: 'Roll back patches',
+  software_install: 'Install software',
+  software_uninstall: 'Uninstall software',
+  software_update: 'Update software',
+  homebrew_bootstrap: 'Install Homebrew',
+  cis_benchmark: 'Run CIS benchmark',
+  apply_cis_remediation: 'Apply CIS remediation',
+  security_scan: 'Run security scan',
+  security_threat_quarantine: 'Quarantine threat',
+  security_threat_remove: 'Remove threat',
+  security_threat_restore: 'Restore threat',
+  sensitive_data_scan: 'Scan for sensitive data',
+  encrypt_file: 'Encrypt file',
+  secure_delete_file: 'Securely delete file',
+  quarantine_file: 'Quarantine file',
+  take_screenshot: 'Take screenshot',
+  computer_action: 'Computer action',
+  capture_pprof: 'Capture agent profile',
+  manage_startup_item: 'Manage startup item',
+  apply_audit_policy_baseline: 'Apply audit policy baseline',
+  peripheral_policy_sync: 'Sync peripheral policy',
+  peripheral_policy_sync_v2: 'Sync peripheral policy',
+  reboot: 'Reboot',
+  schedule_reboot: 'Scheduled reboot',
+  reboot_safe_mode: 'Reboot into safe mode',
+  self_uninstall: 'Uninstall agent',
+  backup_run: 'Run backup',
+  backup_stop: 'Stop backup',
+  backup_restore: 'Restore backup',
+  backup_verify: 'Verify backup',
+  backup_test_restore: 'Test restore',
+  vss_writer_list: 'List VSS writers',
+  mssql_backup: 'SQL Server backup',
+  mssql_restore: 'SQL Server restore',
+  mssql_verify: 'Verify SQL Server backup',
+  hyperv_backup: 'Hyper-V backup',
+  hyperv_restore: 'Hyper-V restore',
+  hyperv_checkpoint: 'Hyper-V checkpoint',
+  hyperv_vm_state: 'Change Hyper-V VM state',
+  vm_restore_from_backup: 'Restore VM from backup',
+  vm_instant_boot: 'Instant-boot VM',
+  bmr_recover: 'Bare-metal recovery',
+  bare_metal_rebuild: 'Bare-metal rebuild',
+  vault_sync: 'Sync vault',
+  vault_configure: 'Configure vault',
+  collect_evidence: 'Collect evidence',
+  execute_containment: 'Execute containment',
+};
+
+const AGENT_COMMAND_ACTION_RE = /^agent\.command\.(.+)$/;
+
+function formatAgentCommandAction(
+  action: string,
+  labels?: Record<string, string>,
+): string | null {
+  const match = AGENT_COMMAND_ACTION_RE.exec(action);
+  if (!match) return null;
+  const type = match[1];
+  const humanized = type.replace(/[_.]+/g, ' ').trim();
+  const name = AGENT_COMMAND_NAMES[type] ?? humanized.charAt(0).toUpperCase() + humanized.slice(1);
+  const template = labels?.['agent.command.*'] ?? ACTION_DISPLAY['agent.command.*'];
+  if (!humanized || !template) return null;
+  return template.replace('{command}', name);
+}
+
+// Acronyms the prettifier must not render as ordinary words ("Ai session close").
+const PRETTIFY_ACRONYMS: Readonly<Record<string, string>> = { ai: 'AI', mcp: 'MCP' };
+
 // Generic prettifier for codes that aren't in the map.
 // Examples:
 //   "foo.bar_baz.update" -> "Foo bar baz update"
@@ -151,7 +296,8 @@ function prettify(action: string): string {
     .trim()
     .toLowerCase();
   if (!cleaned) return action;
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  const words = cleaned.split(/\s+/).map((word) => PRETTIFY_ACRONYMS[word] ?? word).join(' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**
@@ -172,6 +318,8 @@ export function formatAuditAction(
     labels?.[action] ??
     ACTION_DISPLAY[action] ??
     formatFallbackAction(action, labels) ??
+    formatAiToolAction(action, labels) ??
+    formatAgentCommandAction(action, labels) ??
     prettify(action)
   );
 }
@@ -261,4 +409,27 @@ export function formatAuditDetails(details: unknown): string {
       return `${label}: ${rendered}`;
     })
     .join(', ');
+}
+
+/**
+ * Action-code prefixes for the Audit Trail's Action filter (#9672), derived from
+ * the catalog so the options are real dotted-code families (`script`, `device`,
+ * `agent.command`, ...) rather than bare verbs. The API matches each as a code
+ * prefix (`script` -> `script.*`). `api.*` catch-all rows are skipped: they are
+ * HTTP-verb templates, not a family anyone filters by.
+ */
+export function auditActionFilterOptions(): string[] {
+  const prefixes = new Set<string>();
+  for (const code of Object.keys(ACTION_DISPLAY)) {
+    if (!code.includes('.')) continue;
+    const first = code.split('.')[0];
+    if (first === 'api') continue;
+    prefixes.add(code.startsWith('agent.command.') ? 'agent.command' : first);
+  }
+  return [...prefixes].sort();
+}
+
+/** Human label for an action prefix / resource type option ("agent.command" -> "Agent command"). */
+export function auditPrefixLabel(prefix: string): string {
+  return prettify(prefix);
 }

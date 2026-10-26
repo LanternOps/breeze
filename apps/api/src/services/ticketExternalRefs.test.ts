@@ -19,7 +19,8 @@ vi.mock('../db', () => ({
     select: vi.fn(() => {
       const b: any = {
         from: vi.fn(() => b), innerJoin: vi.fn(() => b), where: vi.fn(() => b),
-        limit: vi.fn(() => mocks.selectResult()),
+        limit: vi.fn(() => b), // thenable: plain `.limit()` reads still resolve via `then`
+        for: vi.fn(() => mocks.selectResult()), // #8972 W0: lockTicketForWrite ends in .for('update')
         then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(mocks.selectResult()).then(res, rej),
       };
       return b;
@@ -108,6 +109,7 @@ describe('ticketExternalRefs', () => {
     const map = await ticketExternalRefsFor(input.principalId, [input.ticketId]);
     expect(map.get(input.ticketId)).toEqual({ ticketId: input.ticketId, externalId: 'PSA-42', externalUrl: null });
     expect((await ticketExternalRefsFor(input.principalId, [])).size).toBe(0);
+    mocks.selectResult.mockResolvedValueOnce([{ orgId: TICKET_ORG }]); // #8972 W0: lockTicketForWrite
     await clearTicketExternalRef(input.principalId, input.ticketId);
     expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
   });

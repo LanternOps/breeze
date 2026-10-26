@@ -670,6 +670,32 @@ describe('computeEffectDigestOutcome', () => {
     });
   });
 
+  // Full-control W02 (#6756): channel delete is four_eyes (QV3).
+  describe('manage_notification_channels:delete', () => {
+    const args = { action: 'delete', channelId: 'channel-1' };
+    const row = { name: 'Ops Slack', type: 'slack', orgId: null, partnerId: 'partner-1' };
+
+    it('pins the channel identity: a rename or re-scope changes the digest, a test run does not', async () => {
+      const before = await digestFor('manage_notification_channels', args, makeFakeDb([[row]]).database);
+      const sameAfterATest = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row }]]).database);
+      const renamed = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, name: 'Billing Slack' }]]).database);
+      const rescoped = await digestFor('manage_notification_channels', args, makeFakeDb([[{ ...row, orgId: 'org-1', partnerId: null }]]).database);
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).toBe(sameAfterATest);
+      expect(before).not.toBe(renamed);
+      expect(before).not.toBe(rescoped);
+    });
+
+    it('reports missing_arg without a channelId and target_absent for a deleted channel', async () => {
+      const { database, select } = makeFakeDb([]);
+      expect(await computeEffectDigestOutcome('manage_notification_channels', { action: 'delete' }, database))
+        .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      expect(select).not.toHaveBeenCalled();
+      expect(await computeEffectDigestOutcome('manage_notification_channels', args, makeFakeDb([[]]).database))
+        .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    });
+  });
+
   describe('execute_dr_plan', () => {
     it('pins the plan revision — a plan edited between approval and release changes the digest', async () => {
       const args = { planId: 'plan-1', executionType: 'failover' };
@@ -872,6 +898,56 @@ describe('operator_plan (Recipe Library E4)', () => {
     expect(await computeEffectDigestOutcome('operator_plan', ARGS, makeFakeDb([[row(0, { argumentDigest: 'nothex' })]]).database))
       .toEqual({ kind: 'unresolved', reason: 'target_absent' });
     expect(await computeEffectDigestOutcome('operator_plan', { taskId: 't' }, makeFakeDb([]).database))
+      .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+  });
+});
+
+// Wisp W03: confirm_memory / retract_memory are four_eyes surfaces (registry tier 3, the
+// operator_plan precedent). The approver signs off on a block REFERENCE; the pin makes a
+// block edited, superseded or retracted between approval and release fail closed.
+describe.each(['confirm_memory', 'retract_memory'])('%s effect digest', (tool) => {
+  const BLOCK = '55555555-5555-4555-8555-555555555555';
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    id: BLOCK,
+    tenantPartnerId: 'p1',
+    ownerKind: 'user',
+    ownerUserId: 'u1',
+    ownerOrgId: null,
+    blockType: 'preference',
+    subjectKey: 'ticket.notify',
+    content: { channel: 'sms', quiet: { from: 22, to: 7 } },
+    confidence: 'medium',
+    status: 'unconfirmed',
+    supersededById: null,
+    updatedAt: new Date('2026-10-23T00:00:00Z'),
+    ...overrides,
+  });
+  const digestOf = async (r: Record<string, unknown> | null) =>
+    digestFor(tool, { blockId: BLOCK }, makeFakeDb([r ? [r] : []]).database);
+
+  it('is stable for the same row, including content key order', async () => {
+    const a = await digestOf(row());
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(await digestOf(row())).toBe(a);
+    expect(await digestOf(row({ content: { quiet: { to: 7, from: 22 }, channel: 'sms' } }))).toBe(a);
+  });
+
+  it.each([
+    ['content', { content: { channel: 'email', quiet: { from: 22, to: 7 } } }],
+    ['status', { status: 'retracted' }],
+    ['supersededById', { supersededById: '66666666-6666-4666-8666-666666666666' }],
+    ['updatedAt', { updatedAt: new Date('2026-10-23T00:00:01Z') }],
+    ['owner', { ownerKind: 'org', ownerUserId: null, ownerOrgId: 'o1' }],
+    ['subjectKey', { subjectKey: 'ticket.other' }],
+    ['confidence', { confidence: 'high' }],
+  ])('changes when %s changes', async (_label, overrides) => {
+    expect(await digestOf(row(overrides))).not.toBe(await digestOf(row()));
+  });
+
+  it('target_absent when the block is gone (or hidden by RLS); missing_arg without blockId', async () => {
+    expect(await computeEffectDigestOutcome(tool, { blockId: BLOCK }, makeFakeDb([[]]).database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(await computeEffectDigestOutcome(tool, {}, makeFakeDb([]).database))
       .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
   });
 });

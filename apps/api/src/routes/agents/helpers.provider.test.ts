@@ -40,6 +40,14 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
     expect(normalizeProvider(raw)).toBe(expected);
   });
 
+  // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
+  it.each([
+    ['cylance', 'cylance'],
+    ['Cylance', 'cylance']
+  ])('maps %s to %s (#9178)', (raw, expected) => {
+    expect(normalizeProvider(raw)).toBe(expected);
+  });
+
   it('still normalizes known providers and unknowns', () => {
     expect(normalizeProvider('crowdstrike')).toBe('crowdstrike');
     expect(normalizeProvider('acme-shield')).toBe('other');
@@ -81,6 +89,15 @@ describe('normalizeProvider — provider mapping (#2018, #7551)', () => {
         expect(prettySecurityProvider(value)).not.toBe(value);
       }
     }
-    expect(securityProviderValues).toEqual(expect.arrayContaining(['emsisoft', 'webroot', 'withsecure']));
+    expect(securityProviderValues).toEqual(expect.arrayContaining(['emsisoft', 'webroot', 'withsecure', 'cylance']));
+  });
+
+  it('labels Cylance with its Aurora rebrand and the old name (#9178)', () => {
+    expect(providerCatalog.cylance).toEqual({
+      id: 'cylance',
+      name: 'Aurora Endpoint Defense (CylancePROTECT)',
+      vendor: 'Arctic Wolf'
+    });
+    expect(prettySecurityProvider('cylance')).toBe('Aurora Endpoint Defense (CylancePROTECT)');
   });
 });

@@ -12,6 +12,9 @@ import {
 } from '../../services/contractDocumentService';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 import { contentDispositionFor } from '../../services/attachmentFilename';
+import { loadCertifiedAgreementInput, renderCertifiedAgreementPdf } from '../../services/agreementCertificate';
+import { PdfMergeError } from '../../services/pdfMerge';
+import { captureException } from '../../services/sentry';
 
 // Executed contract-document surfaces (Task 18): list per-contract or
 // unattached, stream the raw PDF, and link a document to a contract after
@@ -37,6 +40,10 @@ const listQuery = z.object({
   linked: z.enum(['all', 'linked', 'unlinked']).default('unlinked'),
 });
 const linkBody = z.object({ contractId: z.string().guid() });
+// #9075 W2c (spec §3.8): which copy of a signed agreement to download. The
+// certified copy (original + signature certificate page, derived on demand) is
+// the default; `original` is the stored bytes, for hash verification.
+const pdfQuery = z.object({ copy: z.enum(['certified', 'original']).default('certified') });
 
 function authFrom(c: { get: (k: string) => unknown }): AuthContext {
   return c.get('auth') as AuthContext;
@@ -58,8 +65,13 @@ const SIGNED_AGREEMENT_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
 };
 
-function signedAgreementFilename(id: string, mime: string): string {
-  return `signed-agreement-${id}.${SIGNED_AGREEMENT_EXT[mime] ?? 'pdf'}`;
+/** The certified copy is always a PDF; the original keeps its stored MIME and
+ *  says it is the original, so a fallback download is never mistaken for the
+ *  certified one. Mirrored by the web's signedAgreementFilename. */
+function signedAgreementFilename(id: string, mime: string, copy: 'certified' | 'original'): string {
+  return copy === 'certified'
+    ? `signed-agreement-${id}.pdf`
+    : `signed-agreement-${id}-original.${SIGNED_AGREEMENT_EXT[mime] ?? 'pdf'}`;
 }
 
 /** Strips the binary pdfData column before a full document row goes over
@@ -81,38 +93,87 @@ contractDocumentRoutes.get('/', scopes, readPerm, zValidator('query', listQuery)
   }
 });
 
-// GET /:id/pdf — streams the signed agreement's stored bytes (a PDF, or an
-// externally signed PNG/JPEG scan) under its stored MIME. Always a download,
-// never rendered inline in the app origin (acceptanceEvidence.ts precedent).
-contractDocumentRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
-  try {
-    const { id } = c.req.valid('param');
-    const doc = await getContractDocumentPdf(authFrom(c), id);
-    const response = new Response(new Uint8Array(doc.pdfData), {
-      status: 200,
-      headers: {
-        'Content-Type': doc.mime,
-        'Content-Length': String(doc.byteSize),
-        'Content-Disposition': contentDispositionFor(doc.mime, signedAgreementFilename(id, doc.mime))
-          .replace(/^inline;/, 'attachment;'),
-        'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': 'private, max-age=300',
-      },
-    });
-    auditSensitiveRead(c, {
-      action: 'contract.document.download',
-      orgId: doc.orgId,
-      resourceType: 'contract_document',
-      resourceId: id,
-      format: 'pdf',
-      rowCount: 1,
-      byteCount: doc.byteSize,
-    });
-    return response;
-  } catch (err) {
-    return handleDocumentError(c, err);
-  }
-});
+// GET /:id/pdf — a signed agreement's bytes, always a download, never rendered
+// inline in the app origin (acceptanceEvidence.ts precedent).
+//   ?copy=certified (default) — the frozen original plus a derived signature
+//     certificate page (renderCertifiedAgreementPdf); always a PDF.
+//   ?copy=original — the stored bytes byte-for-byte under the stored MIME (a
+//     PDF, or an externally signed PNG/JPEG scan), for hash verification.
+// Access is decided by getContractDocumentPdf under the caller's RLS context;
+// the certificate loader runs only after it succeeded (it reads under system
+// scope so the bytes do not vary by viewer — see agreementCertificate.ts).
+contractDocumentRoutes.get(
+  '/:id/pdf',
+  scopes,
+  readPerm,
+  zValidator('param', idParam),
+  zValidator('query', pdfQuery),
+  async (c) => {
+    try {
+      const { id } = c.req.valid('param');
+      const { copy } = c.req.valid('query');
+      const doc = await getContractDocumentPdf(authFrom(c), id);
+
+      let body: Uint8Array<ArrayBuffer>;
+      let mime = doc.mime;
+      let served: 'certified' | 'original' = 'original';
+      if (copy === 'certified') {
+        const input = await loadCertifiedAgreementInput(id);
+        if (!input) {
+          // Readable a moment ago, gone now: same answer as never there.
+          throw new ContractDocumentServiceError('Contract document not found', 404, 'DOCUMENT_NOT_FOUND');
+        }
+        try {
+          body = new Uint8Array(await renderCertifiedAgreementPdf(input));
+          mime = 'application/pdf';
+          served = 'certified';
+        } catch (err) {
+          // Only an unreadable/oversized original degrades to the original
+          // (spec §3.8 fallback) — named and audited as the original, so the
+          // download never pretends to be certified. Anything else (a missing
+          // font, a bug) is a loud 500; the Original download still works.
+          if (!(err instanceof PdfMergeError)) throw err;
+          console.warn('[contractDocuments] certified copy unavailable — serving the original', { id, code: err.code, message: err.message });
+          // Bounded fingerprint (the code, never the id) so one bad document's
+          // retries group as one issue; the id rides in the tags.
+          captureException(err, c, { area: 'agreement-certificate', documentId: id }, {
+            fingerprint: ['agreement-certificate-fallback', err.code],
+          });
+          body = new Uint8Array(doc.pdfData);
+        }
+      } else {
+        body = new Uint8Array(doc.pdfData);
+      }
+
+      const response = new Response(body, {
+        status: 200,
+        headers: {
+          'Content-Type': mime,
+          'Content-Length': String(body.byteLength),
+          'Content-Disposition': contentDispositionFor(mime, signedAgreementFilename(id, mime, served))
+            .replace(/^inline;/, 'attachment;'),
+          'X-Agreement-Copy': served,
+          'X-Content-Type-Options': 'nosniff',
+          // A fallback original must not stick in the browser cache in place of
+          // the certified copy once the cause is fixed.
+          'Cache-Control': copy === 'certified' && served === 'original' ? 'no-store' : 'private, max-age=300',
+        },
+      });
+      auditSensitiveRead(c, {
+        action: 'contract.document.download',
+        orgId: doc.orgId,
+        resourceType: 'contract_document',
+        resourceId: id,
+        format: served === 'certified' ? 'pdf-certified' : 'original',
+        rowCount: 1,
+        byteCount: body.byteLength,
+      });
+      return response;
+    } catch (err) {
+      return handleDocumentError(c, err);
+    }
+  },
+);
 
 // PATCH /:id — link-later: attach an unattached document to a contract.
 contractDocumentRoutes.patch(

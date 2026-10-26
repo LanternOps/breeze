@@ -83,7 +83,9 @@
         "intune_devices": "Dispositivos de Intune",
         "ca_policies": "Acceso condicional",
         "skus": "Licencias",
-        "secure_score": "Puntuación de seguridad"
+        "secure_score": "Puntuación de seguridad",
+        "signin_events": "Eventos de inicio de sesión",
+        "unknown": "Tipo de datos no reconocido"
       }
     },
     "errors": {
@@ -300,6 +302,9 @@
     "workspace": "Espacio de trabajo",
     "workspaceID": "Espacio de trabajo ID: {{id}}",
     "connectWorkspace": "Conectar espacio de trabajo",
+    "notConnected": "No conectado",
+    "pendingConnection": "Conexión pendiente",
+    "turnOnSlackToConnectWorkspace": "Activa las notificaciones de Slack para conectar un espacio de trabajo.",
     "oauthRedirectStartsWhenYouConnectASlack": "La redirección OAuth comienza cuando conecta un espacio de trabajo Slack.",
     "defaultChannel": "Canal predeterminado",
     "microsoftTeams": "Microsoft Teams",
@@ -334,10 +339,14 @@
   "connectionHealthPanel": {
     "title": "Estado de las conexiones",
     "allHealthy": "Todas las conexiones funcionan correctamente",
+    "allHealthyDetail": "Las integraciones conectadas se verifican automáticamente. Los problemas aparecen aquí y junto a la integración en la lista.",
     "loadError": "No se pudo cargar el estado de las conexiones.",
     "retry": "Reintentar",
     "since": "desde {{time}}",
     "fix": "Corregir",
+    "remedy": {
+      "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze."
+    },
     "truncated": "Se muestran los primeros {{count}}",
     "recentlyResolved": "Resueltas recientemente ({{count}})",
     "resolution": {
@@ -392,11 +401,11 @@
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Conexión verificada y guardada.",
     "googleWorkspace": "Google Workspace",
-    "connectAWorkspaceDomainSoTheAIAssistant": "Conecte un dominio de Workspace para que el asistente AI pueda administrar usuarios y grupos para esta organización.",
+    "connectAWorkspaceDomainSoTheAIAssistant": "Conecta un dominio de Workspace para que Breeze AI pueda administrar usuarios y grupos de esta organización. ",
     "googleWorkspaceIntegrationIsNotEnabledOnThis": "La integración de Google Workspace no está habilitada en esta instancia.",
     "anAdministratorEnablesItBySetting": "Un administrador lo habilita configurando",
     "onTheAPIServerThenReloadingThisPage": "en el servidor API, luego recargando esta página.",
-    "connectAWorkspaceDomainSoTheAIAssistant2": "Conecte un dominio de Workspace para que el asistente AI pueda buscar usuarios, administrar grupos, restablecer contraseñas, ejecutar salidas guiadas y más para esta organización.",
+    "connectAWorkspaceDomainSoTheAIAssistant2": "Conecta un dominio de Workspace para que Breeze AI pueda buscar usuarios, administrar grupos, restablecer contraseñas, ejecutar bajas guiadas y más para esta organización. ",
     "connection": "Conexión",
     "pasteTheServiceAccountJSONKeyAndThe": "Pegue la clave JSON de la cuenta de servicio y el superadministrador que representa. Breeze realiza una llamada al Directorio en vivo API para verificar la delegación de todo el dominio antes de guardar.",
     "howToGetTheServiceAccountJSONAnd": "Cómo obtener la cuenta de servicio JSON y autorizar la delegación",
@@ -545,6 +554,14 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "En todo el socio",
+      "partnerWideDetail": "Se aplica a todas las organizaciones que administra."
+    },
+    "nav": {
+      "select": "Elija una integración",
+      "openProblems": "Problemas abiertos: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configurando integraciones para",
       "thisOrganization": "esta organización",
@@ -563,16 +580,16 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Precios",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
     "payments": "Pagos",
     "integrations": "Integraciones",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Administre todas las conexiones y mantenga saludables los flujos de trabajo de automatización.",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Conecte Breeze con las herramientas con las que trabaja su MSP y vea qué conexiones requieren atención.",
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Las integraciones de distribuidores (Pax8 y TD SYNNEX) están disponibles solo para cuentas de socios.",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Las integraciones contables solo están disponibles para cuentas de socios.",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "La integración de la red UniFi está disponible solo para cuentas de socios.",
     "psa": "PSA",
     "viewNameDocumentation": "Ver documentación de {{name}}",
-    "tdSYNNEXPriceFile": "Archivo de precios TD SYNNEX",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "backup": "Copia de seguridad",
     "edrProviders": "Proveedores de EDR"
   },
@@ -592,7 +609,7 @@
     "hidePassword": "Ocultar contraseña",
     "portalLabelToggle": "Mostrar el nombre del proveedor en el portal del cliente",
     "portalLabelHelp": "Desactivado de forma predeterminada: los clientes ven \"Copia de seguridad gestionada en la nube\" en lugar del nombre del fabricante.",
-    "credentialsHelp": "Cree un usuario dedicado de la consola de Cove con rol de solo lectura, una contraseña única y sin autenticación de dos factores. Breeze solo lee el estado; nunca modifica nada en Cove.",
+    "credentialsHelp": "Cree un usuario de API de Cove (Management → Users → API Users) bajo su cliente de nivel superior. Ingrese el nombre de ese cliente como nombre de partner, el nombre de inicio de sesión del usuario de API como usuario y su token como contraseña. Breeze solo lee el estado; nunca modifica nada en Cove.",
     "test": "Probar conexión",
     "syncNow": "Sincronizar ahora",
     "reauthRequired": "Credenciales rechazadas",
@@ -656,7 +673,7 @@
   "m365Integration": {
     "connectionVerifiedAndSaved": "Conexión verificada y guardada.",
     "microsoft365": "Microsoft 365",
-    "connectAnEntraAzureADAppRegistrationSo": "Conecte un registro de aplicación Entra (Azure AD) para que el asistente AI pueda administrar usuarios y grupos para el inquilino de esta organización.",
+    "connectAnEntraAzureADAppRegistrationSo": "Conecta un registro de aplicación de Entra (Azure AD) para que Breeze AI pueda administrar usuarios y grupos del tenant de esta organización. ",
     "microsoft365IntegrationIsNotEnabledOnThis": "La conexión directa heredada no está habilitada en esta instancia.",
     "anAdministratorEnablesItBySetting": "Un administrador lo habilita configurando",
     "onTheAPIServerThenReloadingThisPage": "en el servidor API, luego recargando esta página.",
@@ -711,11 +728,11 @@
     "legacyBadge": "Heredado",
     "precedenceNote": "Esta conexión directa heredada tiene prioridad sobre la conexión basada en consentimiento para este inquilino.",
     "disconnectConfirm": "¿Desconectar la conexión directa heredada? Breeze elimina las credenciales guardadas del registro de aplicación. El registro de aplicación sigue existiendo en Microsoft Entra.",
-    "legacyHeading": "Microsoft 365: registro de aplicación heredado (solo asistente de IA)",
-    "legacyHeadingForOrg": "Microsoft 365: registro de aplicación heredado (solo asistente de IA) para {{orgName}}",
-    "legacyScopeSummary": "Un registro de aplicación de Entra con secreto de cliente para el tenant de esta organización. Solo habilita las acciones del asistente de IA que se indican abajo.",
+    "legacyHeading": "Microsoft 365: registro de aplicación heredado (solo Breeze AI)",
+    "legacyHeadingForOrg": "Microsoft 365: registro de aplicación heredado (solo Breeze AI) para {{orgName}}",
+    "legacyScopeSummary": "Un registro de aplicación de Entra más un secreto de cliente para el tenant de esta organización. Habilita únicamente las acciones de Breeze AI que se enumeran a continuación.",
     "powersHeading": "Habilita",
-    "powersList": "Seis acciones del asistente de IA: buscar usuario, actividad de inicio de sesión, listar grupos, miembros de grupo, deshabilitar usuario y restablecer contraseña.",
+    "powersList": "Seis acciones de Breeze AI: búsqueda de usuarios, actividad de inicio de sesión, listar grupos, miembros del grupo, deshabilitar usuario, restablecer contraseña.",
     "doesNotPowerHeading": "No habilita",
     "doesNotPowerSync": "La sincronización del tenant (usuarios, licencias, inicios de sesión, Acceso condicional, Secure Score)",
     "doesNotPowerQueryTools": "Herramientas de IA y MCP",
@@ -725,7 +742,10 @@
     "allApplications": "Todas las aplicaciones",
     "searchAllApplicationsFirst2": " (no en Aplicaciones propias) si ya existe una aplicación de Breeze en este tenant. ",
     "tenantIdGuidPlaceholder": "ID de tenant (GUID), p. ej. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Para guardar se requiere verificación MFA.",
+    "clientSecretPlaceholder": "secreto de cliente de la app",
+    "clientSecretStoredPlaceholder": "•••••••••• (almacenado, cifrado)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Estado del dispositivo",

@@ -13,7 +13,7 @@ const CANONICAL_OP_KEY = 'run_script:execute';
 const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, toolSourcesMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
-  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status'), decisionReason: col('decision_reason'), refusalReason: col('refusal_reason') };
   const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id'), orgId: col('org_id'), alertId: col('alert_id') };
   const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
@@ -58,6 +58,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
        *  (e.g. loadIntentDecidedVia's SELECT) without disturbing every
        *  other test that relies on the queue-based happy path above. */
       selectActionIntentsNextError: null as Error | null,
+      selectApprovalRequestsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
@@ -248,6 +249,11 @@ vi.mock('../db', () => {
             return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
           }
           if (table === schema.approvalRequestsTbl) {
+            if (dbState.selectApprovalRequestsNextError) {
+              const err = dbState.selectApprovalRequestsNextError;
+              dbState.selectApprovalRequestsNextError = null;
+              return Promise.reject(err);
+            }
             return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
           }
           if (table === schema.aiAgentRunsTbl) {
@@ -381,6 +387,33 @@ vi.mock('../services/actionIntents/policyDecide', () => {
     PolicyDecisionTransientError,
   };
 });
+// B-W04 (#6158, D-B29): the MCP-origin release seams. The origin rebuild is
+// covered by mcpPrincipalAuth.test.ts; the lifecycle by mcpTier3Lifecycle.test.ts.
+const mcpReleaseMock = vi.hoisted(() => ({
+  finish: vi.fn(async () => undefined),
+  beginMcpReleaseLifecycle: vi.fn(),
+  writeMcpIntentOutcomeAudit: vi.fn(async () => undefined),
+  rebuildMcpOriginAuthContext: vi.fn(),
+  checkMcpOriginReleaseAuthority: vi.fn(() => ({ ok: true })),
+}));
+vi.mock('../services/mcpTier3Lifecycle', () => ({
+  beginMcpReleaseLifecycle: mcpReleaseMock.beginMcpReleaseLifecycle,
+  writeMcpIntentOutcomeAudit: mcpReleaseMock.writeMcpIntentOutcomeAudit,
+}));
+// #10129: the AI Operator release ledger seam. The real predicate runs; the
+// ledger writes are covered by aiOperatorRevealFeed.integration.test.ts.
+const operatorLedgerMock = vi.hoisted(() => ({
+  finish: vi.fn(async () => undefined),
+  beginOperatorReleaseLedger: vi.fn(),
+}));
+vi.mock('../services/aiOperator/operatorReleaseLedger', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  beginOperatorReleaseLedger: operatorLedgerMock.beginOperatorReleaseLedger,
+}));
+vi.mock('../services/mcpPrincipalAuth', () => ({
+  rebuildMcpOriginAuthContext: mcpReleaseMock.rebuildMcpOriginAuthContext,
+  checkMcpOriginReleaseAuthority: mcpReleaseMock.checkMcpOriginReleaseAuthority,
+}));
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
   buildApproverAuthContextForIntent: actorContextMock.buildApproverAuthContextForIntent,
@@ -444,6 +477,7 @@ const topologyPreconditionsMock = vi.hoisted(() => ({
 }));
 vi.mock('../services/topology/aiToolGate', () => ({
   withTopologyReleasePreconditions: topologyPreconditionsMock.withTopologyReleasePreconditions,
+  isTopologyAiToolName: (name: string) => name.startsWith('topology_'),
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -495,6 +529,7 @@ vi.mock('../services/toolTimeouts', async (importOriginal) => {
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
+  isNull: vi.fn((...args: unknown[]) => ({ op: 'isNull', args })),
   // Reached transitively via services/userNotifications (countUnread).
   sql: Object.assign(() => ({}), { raw: () => ({}) }),
 }));
@@ -531,6 +566,19 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
 // inert stand-ins since these tests only exercise the exported functions,
 // never `createWorker` itself.
+// Wisp W04a: the delegation ceiling at release, consulted by the REAL
+// revalidation for a chat-originated intent (`ai_origin_session_id` set). Mocked
+// at the module boundary — its own reads/codes/audit are covered in
+// services/wisp/releaseCeiling.test.ts and the real-Postgres
+// wispIntentRelease.integration.test.ts; what THIS file proves is that the
+// worker never executes a refused intent and executes a passing one under the
+// auth the check hands back.
+const wispReleaseMock = vi.hoisted(() => ({
+  checkWispCeilingForRelease: vi.fn(async (_intent: unknown, auth: unknown) => ({ ok: true as const, auth }) as unknown),
+}));
+vi.mock('../services/wisp/releaseCeiling', () => ({
+  checkWispCeilingForRelease: wispReleaseMock.checkWispCeilingForRelease,
+}));
 vi.mock('bullmq', () => ({
   // `function`, not an arrow: the #4156 reporting tests construct it with `new`.
   Worker: vi.fn().mockImplementation(function () {
@@ -652,6 +700,7 @@ function resetDbState() {
   dbState.selectAgentRunsResults.length = 0;
   dbState.selectAgentsResults.length = 0;
   dbState.selectActionIntentsNextError = null;
+  dbState.selectApprovalRequestsNextError = null;
 }
 
 /** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
@@ -798,6 +847,23 @@ describe('releaseApprovedIntent', () => {
       toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
     }
 
+    it('#6268: passes the intent\'s own source through as context.intentSource (not a constant)', async () => {
+      const intent = baseIntent({
+        source: 'ai_agent',
+        approvalExpiresAt: new Date(Date.now() - 60_000),
+        releaseBy: new Date(Date.now() + 5 * 60_000),
+      } as Partial<ActionIntent>);
+      leaseAwareClaimOnce(intent);
+      primeAfterClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      const call = aiToolsMock.executeTool.mock.calls.at(-1);
+      expect(call?.[3]).toMatchObject({ context: { actionIntentId: intent.id, intentSource: 'ai_agent' } });
+    });
+
     it('claims and executes when approval_expires_at is already past but the release lease is still live', async () => {
       const intent = baseIntent({
         approvalExpiresAt: new Date(Date.now() - 60_000),
@@ -820,7 +886,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -904,7 +970,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
@@ -936,7 +1002,7 @@ describe('releaseApprovedIntent', () => {
       // Same auth and context bag as any other release — only the wrapper differs.
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
         intent.actionName, intent.arguments, fakeAuth,
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(mockedWithAuthContext).not.toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -1465,6 +1531,49 @@ describe('releaseApprovedIntent', () => {
       );
       expect(auditMock.writeAuditEvent).toHaveBeenCalled();
     });
+
+    // Wisp W02: a paused/revoked delegation grant PAUSES like the kill
+    // switch; a ceiling violation is terminal.
+    it('grant_inactive CASes executing -> approved (pausable) like kill_switch_engaged', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'grant_inactive',
+        details: { grantId: 'g1', grantRevisionId: 'r1', code: 'inactive' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(intent.id, 'executing', 'approved');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('grant_ceiling_violation CASes executing -> failed', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'grant_ceiling_violation',
+        details: { grantId: 'g1', grantRevisionId: 'r1', code: 'org' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'grant_ceiling_violation' }),
+      );
+    });
   });
 
   // Wave 5 Part B (#3827): the FINAL pre-effect kill read, immediately
@@ -1540,7 +1649,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1573,7 +1682,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1679,7 +1788,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
@@ -2222,7 +2331,7 @@ describe('releaseApprovedIntent', () => {
         {
           context: {
             actionIntentId: intent.id,
-            releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia },
+            releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source,
             approverRelease: { approverUserId: 'approver-1' },
           },
         },
@@ -2323,7 +2432,7 @@ describe('releaseApprovedIntent', () => {
         {
           context: {
             actionIntentId: intent.id,
-            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source,
             approverRelease: { approverUserId: APPROVER_ID },
           },
         },
@@ -2423,7 +2532,7 @@ describe('releaseApprovedIntent', () => {
       expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
         'manage_tickets', expect.anything(), agentAuth,
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
     });
 
@@ -2481,7 +2590,7 @@ describe('releaseApprovedIntent', () => {
           {
             context: {
               actionIntentId: intent.id,
-              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source,
               approverRelease: { approverUserId: APPROVER_ID },
             },
           },
@@ -2540,7 +2649,7 @@ describe('releaseApprovedIntent', () => {
         expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
         expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
           'manage_patches', expect.anything(), agentAuth,
-          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source } },
         );
       });
     });
@@ -2645,7 +2754,7 @@ describe('releaseApprovedIntent', () => {
           {
             context: {
               actionIntentId: intent.id,
-              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia },
+              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia }, intentSource: intent.source,
               approverRelease: { approverUserId: APPROVER_ID },
             },
           },
@@ -4225,7 +4334,261 @@ describe('releaseApprovedIntent', () => {
       expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
       expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
     });
+
+    describe('AI Operator release ledger (#10129)', () => {
+      const operatorIntent = (o: Partial<ActionIntent> = {}) => taskIntent({
+        source: 'mcp_api', originPrincipalKind: 'user_session', ...o,
+      } as Partial<ActionIntent>);
+
+      beforeEach(() => {
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValue({
+          sessionId: 'operator-session-1', executionId: 'operator-exec-1', finish: operatorLedgerMock.finish,
+        });
+      });
+
+      it('an operator child opens the ledger before dispatch and closes it with a compact result', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id, taskId: 'task-1' }));
+        const beganAt = operatorLedgerMock.beginOperatorReleaseLedger.mock.invocationCallOrder[0]!;
+        expect(beganAt).toBeLessThan(aiToolsMock.executeTool.mock.invocationCallOrder[0]!);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success', ledgerResult: expect.any(String) });
+        // Not MCP-origin: the MCP lifecycle never runs for it.
+        expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+        // The dispatched auth is untouched (no aiOrigin swap, unlike MCP).
+        expect(aiToolsMock.executeTool.mock.calls[0]?.[2]).toBe(fakeAuth);
+      });
+
+      it('ledger unavailable → failed operator_ledger_unavailable, a clean dispatch failure, nothing dispatched', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValueOnce(null);
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(operationServiceMock.markOperationDispatchFailed).toHaveBeenCalledWith(intent.id, 'operator_ledger_unavailable');
+        const failed = intentServiceMock.transitionIntent.mock.calls.find((c) => c[2] === 'failed');
+        expect(failed?.[3]).toMatchObject({ errorCode: 'operator_ledger_unavailable' });
+        expect(operatorLedgerMock.finish).not.toHaveBeenCalled();
+      });
+
+      it('a thrown dispatch closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure', error: expect.any(Error) }));
+      });
+
+      it('a returned tool error closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ error: 'nope' }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+      });
+
+      it('a secret-bearing child (m365_create_user) records no result body on the ledger', async () => {
+        const intent = operatorIntent({ actionName: 'm365_create_user' });
+        primeTaskLinkedThroughClaim(intent);
+        m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(true);
+        m365HeadlessMock.executeM365ToolHeadless.mockResolvedValueOnce(
+          JSON.stringify({ success: true, action: 'm365.user.create', userId: 'u1' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success' });
+      });
+
+      it.each([
+        ['a chat-source task intent', { source: 'chat', originPrincipalKind: 'user_session' }],
+        ['a user_session mcp_api intent with no task', { source: 'mcp_api', originPrincipalKind: 'user_session', taskId: null, taskStepKey: null, operationKey: null }],
+      ] as const)('%s is not wrapped', async (_label, o) => {
+        const intent = operatorIntent(o as Partial<ActionIntent>);
+        if (intent.taskId) primeTaskLinkedThroughClaim(intent);
+        else primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).not.toHaveBeenCalled();
+      });
+    });
   });
+});
+
+describe('MCP-origin release lifecycle (B-W04 #6158)', () => {
+  const mcpIntent = (o: Partial<ActionIntent> = {}) => baseIntent({
+    source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1', ...o,
+  } as Partial<ActionIntent>);
+  const originAuth = { ...fakeAuth, principal: { kind: 'api_key', apiKeyId: 'key-1' } };
+
+  function primeMcp(intent: ActionIntent) {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    mcpReleaseMock.rebuildMcpOriginAuthContext.mockResolvedValueOnce({ auth: originAuth, credential: {} });
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    mcpReleaseMock.beginMcpReleaseLifecycle.mockImplementation(async (_i: unknown, auth: object) => ({
+      auth: { ...auth, aiOrigin: { kind: 'ai_assistant', sessionId: 'ledger-session-1' } },
+      finish: mcpReleaseMock.finish,
+    }));
+  });
+
+  it('mcp_api release opens the ledger, dispatches under its aiOrigin, then finishes success', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), originAuth,
+    );
+    const dispatchedAuth = aiToolsMock.executeTool.mock.calls[0]?.[2] as { aiOrigin?: unknown; token?: unknown };
+    expect(dispatchedAuth.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'ledger-session-1' });
+    expect(dispatchedAuth.token).toEqual({});
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+  });
+
+  it('ledger begin failure → failed mcp_ledger_unavailable and the tool is never dispatched', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    mcpReleaseMock.beginMcpReleaseLifecycle.mockResolvedValueOnce(null);
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    const failed = intentServiceMock.transitionIntent.mock.calls.find((c) => c[2] === 'failed');
+    expect(failed?.[3]).toMatchObject({ errorCode: 'mcp_ledger_unavailable' });
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), 'release_refused', 'mcp_ledger_unavailable',
+    );
+  });
+
+  it('a Google secret-aware branch is wrapped too', async () => {
+    const intent = mcpIntent({ actionName: 'google_reset_password' });
+    primeMcp(intent);
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'success',
+      llmText: 'Reset the password. The temporary credential is available for one-time reveal.',
+      secrets: { temporaryPassword: 'Bz9!oVnL920blvsjqqMy' },
+    });
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).toHaveBeenCalledTimes(1);
+    expect(mcpReleaseMock.finish).toHaveBeenCalledTimes(1);
+    // A secret-bearing result is never recorded on the ledger or audit.
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.not.objectContaining({ ledgerResult: expect.anything() }));
+  });
+
+  it('a thrown dispatch finishes the lifecycle as failure', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+    // Executed failure: the lifecycle already audited it; no second outcome audit.
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).not.toHaveBeenCalled();
+  });
+
+  it('a returned tool error finishes the lifecycle as failure', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ error: 'nope' }));
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+  });
+
+  it('release-refused mcp_api intent writes a failure outcome audit with its errorCode', async () => {
+    const intent = mcpIntent();
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    mcpReleaseMock.rebuildMcpOriginAuthContext.mockResolvedValueOnce({ error: 'mcp_origin_revoked' });
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), 'release_refused', 'mcp_origin_revoked',
+    );
+  });
+
+  it('chat intents are not wrapped (no ledger, no outcome audit)', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.finish).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).not.toHaveBeenCalled();
+  });
+
+  it.each(['intent_rejected', 'intent_expired', 'intent_cancelled'] as const)(
+    '%s of an mcp_api intent writes the terminal outcome audit (deduped inside the writer)',
+    async (eventType) => {
+      const status = eventType.replace('intent_', '');
+      const row = { ...FOUR_EYES_INTENT, status, source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1' };
+      for (let delivery = 0; delivery < 2; delivery++) { // at-least-once: redelivered
+        dbState.selectActionIntentsResults.push([row]); // the notifier's one read
+        await processIntentReleaseJob({ intentId: 'intent-1', eventType });
+      }
+      expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'intent-1' }), status,
+      );
+    },
+  );
 });
 
 describe('secret-bearing release', () => {
@@ -4552,6 +4915,57 @@ describe('processIntentReleaseJob', () => {
     );
   });
 
+  it('includes the approver\'s deny reason in the requester\'s denial notification (#9658)', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: 'Wrong maintenance window' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { title: string; message: string };
+    expect(arg.title).toBe('Approval denied');
+    expect(arg.message).toBe(
+      'run_script(deviceId=d-1) was denied and will not run. Reason: Wrong maintenance window',
+    );
+  });
+
+  it('words the denial with the friendly action label, not the raw tool call', async () => {
+    dbState.selectActionIntentsResults.push([
+      {
+        ...FOUR_EYES_INTENT,
+        status: 'rejected',
+        targetSummary: 'manage_services(deviceId=6eae0f70-1111-4222-8333-944455556666, action=restart, serviceName=Spooler)',
+        actionName: 'manage_services',
+        arguments: { deviceId: '6eae0f70-1111-4222-8333-944455556666', action: 'restart', serviceName: 'Spooler' },
+      },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('Manage services: restart Spooler was denied and will not run.');
+    expect(arg.message).not.toContain('manage_services(');
+  });
+
+  it('keeps the plain denial copy when the approver gave no reason', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: '  ' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
+  it('still sends the plain denial notification when the reason lookup fails', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsNextError = new Error('connection terminated unexpectedly');
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
   it('notifies the requester on intent_expired without releasing anything', async () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
 
@@ -4587,6 +5001,32 @@ describe('processIntentReleaseJob', () => {
     dbState.selectActionIntentsResults.push([
       { ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised' },
     ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  // B-W04 (#6158, D-B28): an MCP-origin intent has no inline channel and a
+  // 24 h window, so its supervised requester is told the outcome.
+  it('notifies the requester of a SUPERVISED mcp_api (MCP-origin) intent', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1',
+    }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'requester-1', dedupeKey: 'intent-outcome:intent-1:expired' }),
+    );
+  });
+
+  it('stays silent for a SUPERVISED user-session mcp_api intent (agent graduation / AI operator)', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'user_session', originPrincipalId: null,
+    }]);
 
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
 
@@ -5233,5 +5673,287 @@ describe('BullMQ retry failure reporting (#4156)', () => {
 
     await expect(processor(makeJob(0))).rejects.toBe(transient);
     expect(sentryMock.captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe('releaseApprovedIntent — Wisp delegation ceiling at durable release (W04a)', () => {
+  const SESSION = '55555555-5555-4555-8555-555555555555';
+  const wispIntent = () => baseIntent({ aiOriginKind: 'ai_assistant', aiOriginSessionId: SESSION } as Partial<ActionIntent>);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    wispReleaseMock.checkWispCeilingForRelease.mockImplementation(async (_intent: unknown, auth: unknown) => ({ ok: true as const, auth }));
+  });
+
+  it.each([
+    ['wisp_ceiling_refused', 'permission'],
+    ['wisp_grant_inactive', 'inactive'],
+    ['wisp_gate_unavailable', 'unavailable'],
+  ])('a %s refusal: the tool never runs and the intent is FAILED (never paused) with that code', async (errorCode, wispRefusal) => {
+    const intent = wispIntent();
+    primeThroughRevalidation(intent);
+    wispReleaseMock.checkWispCeilingForRelease.mockResolvedValueOnce({ ok: false, errorCode, details: { wispRefusal } });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(wispReleaseMock.checkWispCeilingForRelease).toHaveBeenCalledWith(intent, fakeAuth);
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id, 'executing', 'failed', expect.objectContaining({ errorCode }),
+    );
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(intent.id, 'executing', 'approved', expect.anything());
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'action_intent.executed',
+        result: 'failure',
+        details: expect.objectContaining({ errorCode, wispRefusal }),
+      }),
+    );
+  });
+
+  it('a passing Wisp intent executes under the ceiling-narrowed auth the check returns, not the raw rebuilt one', async () => {
+    const intent = wispIntent();
+    primeThroughRevalidation(intent);
+    const narrowed = { ...fakeAuth, accessibleOrgIds: ['org-1'], wispGrant: { grantId: 'g-1', grantRevisionId: 'r-1', sessionId: SESSION } };
+    wispReleaseMock.checkWispCeilingForRelease.mockResolvedValueOnce({ ok: true, auth: narrowed });
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, narrowed, expect.anything());
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(intent.id, 'executing', 'completed', expect.anything());
+  });
+
+  it('an intent with no chat-session origin never consults the Wisp check', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(wispReleaseMock.checkWispCeilingForRelease).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth, expect.anything());
+  });
+});
+
+// ============================================================================
+// Tool catalog W04 (#5219), plan Task A5 — flow-origin releases.
+//
+// A flow intent takes the flow-aware dispatch claim (never the plain CAS),
+// revalidates through the structural flow branch (real
+// revalidateApprovedIntentForRelease; only its flow-authority collaborator is
+// mocked), executes under the run's flow principal INSIDE the run's
+// flowExecutionContext frame, and never notifies a requester — the run
+// timeline is the outcome surface.
+// ============================================================================
+const { flowClaimMock, flowAuthorityMock } = vi.hoisted(() => ({
+  flowClaimMock: { claimFlowLinkedIntentForDispatch: vi.fn() },
+  flowAuthorityMock: { checkFlowReleaseAuthority: vi.fn() },
+}));
+vi.mock('../services/flows/intentClaim', () => flowClaimMock);
+vi.mock('../services/flows/releaseAuthority', () => flowAuthorityMock);
+
+describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
+  const RUN_ID = '77777777-7777-4777-8777-777777777777';
+  const FLOW_ID = '66666666-6666-4666-8666-666666666666';
+  const flowAuth = {
+    principal: { kind: 'flow', flowId: FLOW_ID, runId: RUN_ID },
+    aiOrigin: { kind: 'flow', flowRunId: RUN_ID },
+    user: { id: FLOW_ID, email: `flow+${FLOW_ID}@breeze.internal`, name: 'Disk cleanup', isPlatformAdmin: false },
+    token: null,
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    scope: 'organization' as const,
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: (id: string) => id === 'org-1',
+  };
+
+  function flowIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+    return baseIntent({
+      requestedByUserId: null,
+      requestingFlowRunId: RUN_ID,
+      originPrincipalKind: 'flow',
+      originPrincipalId: FLOW_ID,
+      source: 'flow',
+      approvalScope: 'supervised',
+      ...overrides,
+    } as Partial<ActionIntent>);
+  }
+
+  function primeFlow(intent: ActionIntent, claim: unknown = { claimed: true, runId: RUN_ID, chainDepth: 2 }) {
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockResolvedValueOnce(claim);
+    flowAuthorityMock.checkFlowReleaseAuthority.mockResolvedValue({ ok: true, auth: flowAuth });
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    flowAuthorityMock.checkFlowReleaseAuthority.mockReset();
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockReset();
+    intentServiceMock.transitionIntent.mockReset();
+    aiToolsMock.executeTool.mockReset();
+  });
+
+  it('goes through the flow claim, executes with the flow principal auth inside the run frame, and never checks user RBAC', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let frameDuringExecute: unknown;
+    const { currentFlowExecutionFrame } = await import('../services/flows/flowExecutionContext');
+    aiToolsMock.executeTool.mockImplementationOnce(async () => {
+      frameDuringExecute = currentFlowExecutionFrame();
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(flowClaimMock.claimFlowLinkedIntentForDispatch).toHaveBeenCalledWith(intent.id);
+    // The plain approved -> executing CAS is NOT taken for a flow intent.
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+      intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+    );
+    expect(dispatchClaimMock.claimTaskLinkedIntentForDispatch).not.toHaveBeenCalled();
+    expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, flowAuth, expect.anything());
+    expect(frameDuringExecute).toEqual({ runId: RUN_ID, chainDepth: 2 });
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+    );
+  });
+
+  // aiDispatch.requireAiOrigin (the device-dispatch gate) reads exactly
+  // `auth.aiOrigin` and throws MissingAiOriginError without it; the flow
+  // principal passing it is pinned in flowAuthContext.test.ts. Here: the auth
+  // the RELEASE hands the tool carries it.
+  it('released flow run_script reaches aiDispatch with aiOrigin kind flow', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let origin: unknown;
+    aiToolsMock.executeTool.mockImplementationOnce(async (_name: string, _args: unknown, auth: { aiOrigin?: unknown }) => {
+      if (!auth.aiOrigin) throw new Error('MissingAiOriginError');
+      origin = auth.aiOrigin;
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(origin).toEqual({ kind: 'flow', flowRunId: RUN_ID });
+  });
+
+  it('a tenant-tool flow release passes actor { kind: flow, id: runId }', async () => {
+    const TOOL_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const descriptor = { id: TOOL_ID, qualifiedName: 'acme__restart' };
+    const args = { name: 'svc' };
+    const intent = flowIntent({
+      actionName: 'acme__restart',
+      arguments: args,
+      argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-7',
+    } as Partial<ActionIntent>);
+    primeFlow(intent);
+    aiToolsMock.getToolTier.mockReturnValue(undefined);
+    aiToolsMock.requiresLiveSession.mockReturnValue(false);
+    toolSourcesMock.loadTenantToolBindingState.mockResolvedValue({
+      tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3 },
+      source: { id: 'src-1', status: 'active' },
+    });
+    toolSourcesMock.loadTenantToolForExecution.mockResolvedValue({ descriptor, source: {} });
+    toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: JSON.stringify({ ok: 1 }) });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
+      descriptor, args, flowAuth, { surface: 'flow', orgId: intent.orgId, actor: { kind: 'flow', id: RUN_ID } },
+    );
+    expect(aiGuardrailsMock.checkPermissionRequirements).not.toHaveBeenCalled();
+  });
+
+  it('a terminal transition publishes the terminal outbox once, carrying the run id (the run wake)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    const { publishIntentTerminalOutbox } = await import('../services/aiOperator/taskOutbox');
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(publishIntentTerminalOutbox).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(publishIntentTerminalOutbox).mock.calls[0]![1]).toMatchObject({
+      id: intent.id, orgId: intent.orgId, requestingFlowRunId: RUN_ID,
+    });
+  });
+
+  it('lost_race returns without writing anything', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'lost_race' });
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(flowAuthorityMock.checkFlowReleaseAuthority).not.toHaveBeenCalled();
+  });
+
+  it.each(['run_terminal', 'run_not_waiting', 'flow_not_enabled', 'publication_moved', 'tool_revision_changed', 'approval_scope_changed', 'delegator_inactive', 'run_cancel_requested'])(
+    'a %s refusal (the claim already wrote its outcome) executes nothing and writes nothing more',
+    async (reason) => {
+      const intent = flowIntent();
+      primeFlow(intent, { claimed: false, reason });
+      await releaseApprovedIntent(intent.id);
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('run_leased throws a retryable error so BullMQ redelivers the release (nothing written)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'run_leased' });
+    await expect(releaseApprovedIntent(intent.id)).rejects.toThrow(/flow run .* is leased/);
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('notifyRequesterOfOutcome is a no-op for a flow intent (approve and every terminal event)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    // The notifier re-reads the intent.
+    dbState.selectActionIntentsResults.push([{ ...intent, status: 'completed' }]);
+
+    await processIntentReleaseJob({ intentId: intent.id, eventType: 'intent_approved' });
+
+    for (const eventType of ['intent_rejected', 'intent_expired', 'intent_cancelled'] as const) {
+      dbState.selectActionIntentsResults.push([{ ...intent, status: eventType.replace('intent_', '') }]);
+      await processIntentReleaseJob({ intentId: intent.id, eventType });
+    }
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
   });
 });

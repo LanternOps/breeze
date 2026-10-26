@@ -1,5 +1,5 @@
 /**
- * Tool catalog W01 PR C (#5216) — the Tool Sources nav entry is gated on the
+ * Tool catalog W01 PR C (#5216) — the Tool Sources entry is gated on the
  * SERVER flag, not on a client constant: `TOOL_SOURCES_ENABLED` off makes
  * every `/tool-sources` route answer 404, so showing the item would be a link
  * to a dead page. Default CLOSED (an unreachable or older `/config` hides it)
@@ -35,6 +35,7 @@ vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar from './Sidebar';
 import { useFeaturesStore } from '../../stores/featuresStore';
+import { SETTINGS_CATALOG } from '../../lib/settingsCatalog';
 
 function mockConfig(body: unknown, ok = true) {
   fetchWithAuthMock.mockImplementation((url: string) => {
@@ -57,7 +58,7 @@ beforeEach(() => {
   // The store is a module singleton with a `loaded` short-circuit, so a
   // previous test's answer would otherwise decide this one's.
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
     loaded: false,
   });
   localStorage.clear();
@@ -72,39 +73,25 @@ beforeEach(() => {
 
 afterEach(() => vi.clearAllMocks());
 
-describe('Sidebar — Tool Sources server gate', () => {
-  it('shows the nav item when /config reports features.toolSources true', async () => {
+describe('Sidebar — Tool Sources lives in Settings → AI (#10135)', () => {
+  // The AI section no longer lists Tool Sources; it is a card on the
+  // Settings → AI hub (/settings/ai), gated there by the same server flag and
+  // permission (SettingsCatalog.test.tsx covers the flag on the hub).
+  it('is not a sidebar link even with the server flag on and the permission held', async () => {
     mockConfig({ features: { toolSources: true } });
+    useFeaturesStore.setState((s) => ({ features: { ...s.features, toolSources: true }, loaded: true }));
     const { container } = render(<Sidebar currentPath="/settings/tool-sources" />);
-    await waitFor(() =>
-      expect(container.querySelector('a[href="/settings/tool-sources"]')).not.toBeNull(),
-    );
-  });
-
-  it('hides the nav item when the flag is false', async () => {
-    mockConfig({ features: { toolSources: false } });
-    const { container } = render(<Sidebar currentPath="/settings/tool-sources" />);
-    // Wait for the sidebar to be rendered at all before asserting an absence.
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
+    expect(useFeaturesStore.getState().features.toolSources).toBe(true);
     expect(container.querySelector('a[href="/settings/tool-sources"]')).toBeNull();
   });
 
-  it('hides the nav item from a user without tool_sources:read even when the flag is on', async () => {
-    mockConfig({ features: { toolSources: true } });
-    state.user.permissions = [{ resource: 'devices', action: 'read' }];
-    try {
-      const { container } = render(<Sidebar currentPath="/settings/tool-sources" />);
-      await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
-      expect(container.querySelector('a[href="/settings/tool-sources"]')).toBeNull();
-    } finally {
-      state.user.permissions = [{ resource: 'tool_sources', action: 'read' }];
-    }
-  });
-
-  it('hides the nav item when /config is unreachable (fails closed)', async () => {
-    mockConfig({}, false);
-    const { container } = render(<Sidebar currentPath="/settings/tool-sources" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
-    expect(container.querySelector('a[href="/settings/tool-sources"]')).toBeNull();
+  it('keeps the server flag and the permission on its Settings → AI catalogue entry', () => {
+    expect(SETTINGS_CATALOG.find((e) => e.id === 'tool-sources')).toMatchObject({
+      group: 'ai',
+      href: '/settings/tool-sources',
+      requiresToolSources: true,
+      requiredPermission: { resource: 'tool_sources', action: 'read' },
+    });
   });
 });

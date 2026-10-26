@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { loadAndResolveEffectivePeripheralPolicySet } from '../services/peripheralEffectivePolicy';
 import {
   organizations,
   peripheralDeviceClassEnum,
@@ -48,13 +49,16 @@ const policySchema = z.object({
   name: z.string().min(1).max(200),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
-  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
+  // No schema defaults on targeting: this schema doubles as the update body, and
+  // an update that omits targetType/targetIds keeps the stored targeting (#9620).
+  // The create path applies the 'organization' / {} defaults itself.
+  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
   priority: z.number().int().safe().min(0).max(1000).optional(),
   targetIds: z.object({
     siteIds: z.array(z.string().guid()).max(1000).optional(),
     groupIds: z.array(z.string().guid()).max(1000).optional(),
     deviceIds: z.array(z.string().guid()).max(5000).optional(),
-  }).optional().default({}),
+  }).optional(),
   exceptions: z.array(z.object({
     vendor: z.string().min(1).max(255).optional(),
     product: z.string().min(1).max(255).optional(),
@@ -219,6 +223,8 @@ function normalizeExceptionRule(rule: z.infer<typeof exceptionsSchema>['exceptio
   };
 }
 
+type PeripheralPolicyTargetType = (typeof peripheralPolicyTargetTypeEnum.enumValues)[number];
+
 function sanitizeTargetIds(targetIds: z.infer<typeof policySchema>['targetIds']): PeripheralPolicyTargetIds {
   if (!targetIds) return {};
   return {
@@ -226,6 +232,27 @@ function sanitizeTargetIds(targetIds: z.infer<typeof policySchema>['targetIds'])
     groupIds: targetIds.groupIds ?? [],
     deviceIds: targetIds.deviceIds ?? [],
   };
+}
+
+/**
+ * Targeting for an update (#9620). Omitting both fields keeps the stored
+ * targeting — the web form cannot edit targets, and must not widen a
+ * site/group/device policy to the whole org on save. targetIds omitted with
+ * the same targetType keeps the stored ids; switching targetType without
+ * naming new ids clears them rather than reinterpreting the old ones.
+ */
+function resolveUpdateTargeting(
+  payload: Pick<z.infer<typeof policySchema>, 'targetType' | 'targetIds'>,
+  existing: { targetType: PeripheralPolicyTargetType; targetIds: PeripheralPolicyTargetIds | null }
+): { targetType: PeripheralPolicyTargetType; targetIds: PeripheralPolicyTargetIds } {
+  const targetType = payload.targetType ?? existing.targetType;
+  if (payload.targetIds !== undefined) {
+    return { targetType, targetIds: sanitizeTargetIds(payload.targetIds) };
+  }
+  if (targetType === existing.targetType) {
+    return { targetType, targetIds: existing.targetIds ?? {} };
+  }
+  return { targetType, targetIds: sanitizeTargetIds({}) };
 }
 
 // Dual-axis access condition (#2131): org-owned rows the caller can reach OR
@@ -502,8 +529,30 @@ peripheralControlRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    // Batched name lookups so the Activity Log can show a hostname / policy
+    // name instead of a UUID prefix (#9621). Both reads run under the caller's
+    // RLS context; an id the caller cannot see simply gets a null name.
+    const deviceIds = [...new Set(rows.map((r) => r.deviceId))];
+    const policyIds = [...new Set(rows.map((r) => r.policyId).filter((id): id is string => !!id))];
+    const [deviceRows, policyRows] = await Promise.all([
+      deviceIds.length > 0
+        ? db.select({ id: devices.id, hostname: devices.hostname, displayName: devices.displayName })
+            .from(devices).where(inArray(devices.id, deviceIds))
+        : Promise.resolve([] as { id: string; hostname: string; displayName: string | null }[]),
+      policyIds.length > 0
+        ? db.select({ id: peripheralPolicies.id, name: peripheralPolicies.name })
+            .from(peripheralPolicies).where(inArray(peripheralPolicies.id, policyIds))
+        : Promise.resolve([] as { id: string; name: string }[]),
+    ]);
+    const deviceNames = new Map(deviceRows.map((d) => [d.id, d.displayName || d.hostname]));
+    const policyNames = new Map(policyRows.map((p) => [p.id, p.name]));
+
     return c.json({
-      data: rows,
+      data: rows.map((row) => ({
+        ...row,
+        deviceName: deviceNames.get(row.deviceId) ?? null,
+        policyName: row.policyId ? policyNames.get(row.policyId) ?? null : null,
+      })),
       pagination: {
         total: Number(countRow?.count ?? 0),
         limit,
@@ -535,7 +584,14 @@ peripheralControlRoutes.get(
     const accessCondition = peripheralPolicyAccessCondition(auth);
     if (accessCondition) conditions.push(accessCondition);
 
-    if (query.orgId) conditions.push(eq(peripheralPolicies.orgId, query.orgId));
+    // With a client selected, the list is that org's rows PLUS its partner's
+    // partner-wide rows (org_id NULL) — they apply to the client too (#9621).
+    // The partner-wide branch is read-only here and still bounded by
+    // `accessCondition` above (and by RLS: only partner-scope callers can
+    // SELECT partner-owned rows).
+    if (query.orgId) {
+      conditions.push(sql`(${eq(peripheralPolicies.orgId, query.orgId)} OR (${peripheralPolicies.orgId} IS NULL AND ${peripheralPolicies.partnerId} = (SELECT ${organizations.partnerId} FROM ${organizations} WHERE ${eq(organizations.id, query.orgId)})))`);
+    }
     if (query.isActive !== undefined) conditions.push(eq(peripheralPolicies.isActive, query.isActive === 'true'));
     if (query.action) conditions.push(eq(peripheralPolicies.action, query.action));
     if (query.deviceClass) conditions.push(eq(peripheralPolicies.deviceClass, query.deviceClass));
@@ -566,6 +622,65 @@ peripheralControlRoutes.get(
         limit,
         offset
       }
+    });
+  }
+);
+
+/**
+ * The peripheral policies that actually apply to ONE device (#9621): the
+ * resolver's effective set (site/group/device targeting, partner-wide rows),
+ * not every active policy of the org. Authorisation happens here, before the
+ * system-context resolver runs: the device must be in a caller-accessible org
+ * and, for a site-restricted caller, in one of their sites.
+ */
+peripheralControlRoutes.get(
+  '/devices/:deviceId/effective',
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('param', z.object({ deviceId: z.string().guid() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { deviceId } = c.req.valid('param');
+
+    const [device] = await db
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device || !auth.canAccessOrg(device.orgId)) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId)) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const resolved = await loadAndResolveEffectivePeripheralPolicySet(deviceId);
+    // null = the device's organization row is missing (data-integrity problem),
+    // which must not read as "no policies apply".
+    if (!resolved) return c.json({ error: 'Device not found' }, 404);
+    if (resolved.effectivePolicies.length === 0) return c.json({ data: [] });
+
+    // Names/targeting for exactly the policies the resolver says apply to this
+    // (already authorised) device — including partner-wide rows an org-scope
+    // caller's RLS would not let them SELECT directly.
+    const policyIds = resolved.effectivePolicies.map((p) => p.policyId);
+    const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db
+        .select({ id: peripheralPolicies.id, name: peripheralPolicies.name, targetType: peripheralPolicies.targetType })
+        .from(peripheralPolicies)
+        .where(inArray(peripheralPolicies.id, policyIds))));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    return c.json({
+      data: resolved.effectivePolicies.map((p) => ({
+        id: p.policyId,
+        name: byId.get(p.policyId)?.name ?? null,
+        source: p.source,
+        deviceClass: p.effectiveClass,
+        action: p.action,
+        targetType: byId.get(p.policyId)?.targetType ?? null,
+        priority: p.priority,
+      })),
     });
   }
 );
@@ -617,6 +732,7 @@ peripheralControlRoutes.post(
       }
 
       const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(existing);
+      const targeting = resolveUpdateTargeting(payload, existing);
 
       const [updated] = await db
         .update(peripheralPolicies)
@@ -624,10 +740,11 @@ peripheralControlRoutes.post(
           name: payload.name,
           deviceClass: payload.deviceClass,
           action: payload.action,
-          targetType: payload.targetType,
+          targetType: targeting.targetType,
           priority: payload.priority ?? existing.priority,
-          targetIds: sanitizeTargetIds(payload.targetIds),
-          exceptions: payload.exceptions ?? [],
+          targetIds: targeting.targetIds,
+          // undefined = unchanged; an explicit [] clears
+          ...(payload.exceptions !== undefined ? { exceptions: payload.exceptions } : {}),
           isActive: payload.isActive ?? existing.isActive,
           updatedAt: now
         })
@@ -691,9 +808,9 @@ peripheralControlRoutes.post(
         name: payload.name,
         deviceClass: payload.deviceClass,
         action: payload.action,
-        targetType: payload.targetType,
+        targetType: payload.targetType ?? 'organization',
         priority: payload.priority ?? 100,
-        targetIds: sanitizeTargetIds(payload.targetIds),
+        targetIds: sanitizeTargetIds(payload.targetIds ?? {}),
         exceptions: payload.exceptions ?? [],
         isActive: payload.isActive ?? true,
         createdBy: auth.user.id,

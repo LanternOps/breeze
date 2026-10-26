@@ -65,7 +65,7 @@ import { seriesManagedRefusal } from './reportSeries/types';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } from 'drizzle-orm';
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -176,7 +176,7 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
  * avoid the write, never catch it.
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /**

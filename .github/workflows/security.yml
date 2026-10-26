@@ -14,7 +14,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
 
 # Least-privilege default; the SARIF-uploading job opts into
 # security-events: write per-job below.
@@ -133,7 +133,7 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy filesystem SARIF
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         if: always()
         with:
           sarif_file: 'trivy-fs.sarif'
@@ -274,6 +274,7 @@ jobs:
         run: |
           node --test \
             .github/scripts/check-workflow-security.test.mjs \
+            .github/scripts/cancel-stale-merge-group-runs.test.mjs \
             scripts/security/pin-github-actions.test.mjs \
             scripts/release/attest-macos-pkg.test.mjs
           node .github/scripts/check-workflow-security.mjs

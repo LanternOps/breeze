@@ -73,6 +73,11 @@ export function isCommandQueueable(status: string): boolean {
  * runBulkAction's switch already routes them through sendBulkCommand, so they are
  * classified up front: wiring a button later must not silently skip the gate.
  *
+ * `force_reboot` (#8729) is deliberately NOT a bulk action and must not become
+ * one: it force-closes apps on the device, so it is one device at a time, behind
+ * a typed-hostname confirmation and a step-up bound to that device. The API
+ * refuses it on POST /devices/bulk/commands as well.
+ *
  * `decommission` (i.e. bulk Remove) is gated here too, but for a DIFFERENT
  * reason than the agent-command actions above — read this before moving it back
  * to INTENTIONALLY_UNGATED_BULK_ACTIONS. `bulkDecommissionDevices` fires one
@@ -117,6 +122,10 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
  *                     available and synthetic placeholders otherwise, so a
  *                     decommissioned device is a legitimate — if sometimes
  *                     approximate — comparison subject.)
+ *   move-site       — a DB write (POST /devices/bulk/site, #9796), not an
+ *                     agent command; the API refuses no device status. Its own
+ *                     per-SELECTION rule (agents only, one org, at most the
+ *                     cap) is {@link bulkMoveSiteBlock} below.
  *
  * NOTE (follow-up, deliberately out of scope): the API *also* refuses
  * `decommissioned` for bulk wake (`commands.ts:89`) and for maintenance
@@ -135,7 +144,44 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'link-multiboot',
   'link-vm-host',
   'compare',
+  'move-site',
 ]);
+
+/**
+ * Per-request cap of POST /devices/bulk/site. MIRRORS `BULK_SITE_MOVE_CAP` in
+ * apps/api/src/routes/devices/schemas.ts — change both together. Above it the
+ * bulk action is disabled with a reason; it is never chunked into several
+ * requests (that would be the client loop spec Decision 5 rejected).
+ */
+export const BULK_SITE_MOVE_CAP = 100;
+
+/** Why the bulk "Move to site" item is disabled for a selection. */
+export type BulkMoveSiteBlock = 'no_agents' | 'mixed_org' | 'over_cap';
+
+type MoveSiteCandidate = { orgId: string; deviceClass?: string };
+
+/**
+ * The rows a bulk site move acts on: agent devices only. A network row's id is
+ * a `discovered_assets.id` and a manual row's a `manual_assets.id`; neither is
+ * in `devices`, so the API would answer `not_found` for them.
+ */
+export function bulkMoveSiteAgents<T extends MoveSiteCandidate>(selection: readonly T[]): T[] {
+  return selection.filter((d) => (d.deviceClass ?? 'agent') === 'agent');
+}
+
+/**
+ * Can the bulk "Move to site" item act on this selection? `null` = yes.
+ * Spec §4.4: all selected agents in ONE org (a cross-org move is
+ * MoveDeviceOrgDialog's job), and no more than the API cap. Mixed orgs is
+ * reported before the cap: it is the reason the user can act on first.
+ */
+export function bulkMoveSiteBlock<T extends MoveSiteCandidate>(selection: readonly T[]): BulkMoveSiteBlock | null {
+  const agents = bulkMoveSiteAgents(selection);
+  if (agents.length === 0) return 'no_agents';
+  if (new Set(agents.map((d) => d.orgId)).size > 1) return 'mixed_org';
+  if (agents.length > BULK_SITE_MOVE_CAP) return 'over_cap';
+  return null;
+}
 
 /**
  * Bulk actions that ONLY a removed (decommissioned) device accepts — the exact

@@ -1,36 +1,28 @@
-import { quoteStatusTone } from '@/lib/quoteStatus';
 import { withBase } from '@/lib/basePath';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
+import { QuoteDocumentView, quoteAgreementLinks, type DocumentHostComponents } from '@breeze/document-ui';
 import { type QuoteDetail, publicApiPath, portalApi } from '@/lib/api';
-import { shortDate } from '@/lib/format';
+import { money, shortDate } from '@/lib/format';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
-import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
-import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
+import { quoteModelFor } from '@/lib/quoteDocument';
+import { portalQuoteHostComponents, quoteAssetSource } from './documentHostComponents';
 import { BTN_PRIMARY, BTN_SECONDARY } from './ui';
 import { SignaturePanel } from './SignaturePanel';
 
 interface QuoteDetailViewProps {
-  detail: QuoteDetail | null;
+  detail?: QuoteDetail | null;
+  /** Alias of `detail` (test seam mirroring PublicQuoteView / InvoiceDetailView). */
+  initial?: QuoteDetail | null;
+  /** Test seam: parity tests inject deterministic stand-ins for the asset components. */
+  components?: DocumentHostComponents;
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  sent: 'Sent',
-  viewed: 'Viewed',
-  accepted: 'Accepted',
-  declined: 'Declined',
-  expired: 'Expired',
-  converted: 'Accepted',
-  // Without this the `?? status` fallback renders the raw enum "superseded" to
-  // the customer. This status only became reachable when revisions shipped.
-  superseded: 'Replaced',
-};
-
-export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewProps) {
+export function QuoteDetailView({ detail: detailProp, initial, components, error, statusCode }: QuoteDetailViewProps) {
+  const detail = detailProp ?? initial ?? null;
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
@@ -43,8 +35,20 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
   // nothing left to charge). That's terminal, so drop the CTA instead of leaving a
   // button whose only outcome is the same error again.
   const [payUnavailable, setPayUnavailable] = useState(false);
+  // Same source of truth as the invoice page (#7509): GET /portal/invoices/:id's
+  // onlinePaymentAvailable. Only an explicit false hides the CTA; a failed lookup
+  // keeps it, and the pay route's 409 stays the backstop.
+  const [onlinePaymentOff, setOnlinePaymentOff] = useState(false);
+  // The model follows the status this page moved the proposal into, so the header pill changes without a refetch.
+  const model = useMemo(() => (detail ? quoteModelFor(detail, status) : null), [detail, status]);
+  const hostComponents = useMemo(
+    () => components ?? (detail
+      ? portalQuoteHostComponents(quoteAssetSource(detail, (imageId) => publicApiPath(`/portal/quotes/${detail.quote.id}/images/${imageId}`)))
+      : null),
+    [components, detail],
+  );
 
-  if (error || !detail) {
+  if (error || !detail || !model || !hostComponents) {
     return (
       <div className="border-y border-border/70 py-14 text-center">
         <AlertCircle className="mx-auto h-10 w-10 text-destructive-on-tint" strokeWidth={1.5} />
@@ -64,26 +68,12 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     );
   }
 
-  const { quote, blocks, lines, branding, presentation } = detail;
-  const currency = quote.currencyCode;
+  const { quote, branding } = detail;
   const open = status === 'sent' || status === 'viewed';
 
-  const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
-  // Omit a missing date rather than printing an em-dash placeholder on a
-  // document the customer forwards (the public token view already does this).
-  // The cover is authored per quote; null or disabled means the document opens on its header.
-  const cover = quote.coverPage?.enabled
-    ? {
-        title: quote.coverPage.title ?? null,
-        coverImageId: quote.coverPage.coverImageId ?? null,
-        preparedForName: quote.coverPage.preparedForName ?? null,
-        showPreparedBy: quote.coverPage.showPreparedBy !== false,
-      }
-    : null;
-  const headerDates = [
-    ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
-    ...(quote.expiryDate ? [{ label: 'Valid until', value: shortDate(quote.expiryDate) }] : []),
-  ];
+  const depositDue = quote.depositDueTotal ?? null;
+  const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total;
+  const currency = quote.currencyCode;
 
   const accept = async (signerName: string) => {
     if (busy || !signerName.trim()) return;
@@ -91,14 +81,28 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     setMsg(null);
     setMsgError(false);
     const res = await portalApi.acceptQuote(quote.id, signerName.trim());
-    setBusy(false);
     if (res.error) {
+      setBusy(false);
       setMsg(res.error);
       setMsgError(true);
       return;
     }
+    const invoiceId = res.data?.data?.invoiceId ?? null;
+    // Resolve availability before flipping to the accepted state so the CTA never
+    // flashes in and then disappears.
+    // The quote is already accepted, so a failed lookup must never block the
+    // accepted state; busy stays set meanwhile so Accept can't be re-sent.
+    if (invoiceId) {
+      try {
+        const inv = await portalApi.getInvoice(invoiceId);
+        if (inv.data?.onlinePaymentAvailable === false) setOnlinePaymentOff(true);
+      } catch (err) {
+        console.error('[portal] post-accept invoice availability lookup failed', err);
+      }
+    }
+    setBusy(false);
     setStatus('converted');
-    setAcceptedInvoiceId(res.data?.data?.invoiceId ?? null);
+    setAcceptedInvoiceId(invoiceId);
     setMsg('Accepted. Your invoice is ready.');
   };
 
@@ -142,35 +146,6 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
     setMsgError(true);
   };
 
-  // Derived from the LINES as well as the header aggregates: a payload that
-  // omits monthlyRecurringTotal/annualRecurringTotal used to silently drop the
-  // "First period subtotal" qualifier and the recurring reassurance rows,
-  // leaving a bare serif Total that visibly doesn't sum from the lines shown.
-  // The lines are always delivered, so cadence presence never depends on
-  // optional header fields.
-  const lineHasRecurring = lines.some(
-    (l) => l.customerVisible !== false && (l.recurrence === 'monthly' || l.recurrence === 'annual')
-  );
-  const lineHasCadence = (cadence: 'monthly' | 'annual') => lines.some(
-    (l) => l.customerVisible !== false && l.recurrence === cadence,
-  );
-  const hasRecurring =
-    lineHasRecurring ||
-    Number(quote.monthlyRecurringTotal ?? 0) > 0 ||
-    Number(quote.annualRecurringTotal ?? 0) > 0;
-  // Per-line Tax column + a Subtotal/Tax breakdown appear only when this quote
-  // carries tax (otherwise the totals stay focused on due-on-acceptance).
-  const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
-  const showTax = Number(quote.taxTotal ?? 0) > 0;
-  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
-  const categoryBreakdown = quote.categoryBreakdown ?? [];
-  const depositDue = quote.depositDueTotal ?? null;
-  const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total;
-  // Remaining balance in integer cents so the subtraction never drifts on floats.
-  const remainderCents = depositDue != null
-    ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
-    : 0;
-
   // Post-accept CTA. The label states what Stripe will charge: the invoice was just
   // created by this acceptance, so amountPaid is 0 and the shared deposit-first rule
   // reduces to "deposit if one is set, else the due-on-acceptance total".
@@ -186,7 +161,7 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
   // is known-good. A quote that was already converted when the page loaded carries no
   // invoice figures (or payment state), so that customer gets the invoice link only,
   // where InvoiceDetailView pays against a live balance.
-  const canPay = acceptedInvoiceId !== null && !payUnavailable && Number(payCharge.amount) > 0;
+  const canPay = acceptedInvoiceId !== null && !payUnavailable && !onlinePaymentOff && Number(payCharge.amount) > 0;
   const invoiceHref = withBase(acceptedInvoiceId ? `/invoices/${acceptedInvoiceId}` : '/invoices');
 
   return (
@@ -224,169 +199,38 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
         </div>
       )}
 
-      <DocumentPaper primaryColor={branding?.primaryColor} docTheme={presentation?.theme}>
-        {cover && (
-          <DocumentCover
-            title={cover.title || quote.title || quote.quoteNumber || 'Proposal'}
-            imageUrl={cover.coverImageId ? publicApiPath(`/portal/quotes/${quote.id}/images/${cover.coverImageId}`) : null}
-            preparedForName={cover.preparedForName || quote.billToName}
-            preparedByName={branding?.partnerName}
-            showPreparedBy={cover.showPreparedBy}
-          />
-        )}
-        <DocumentHeader
-          logoUrl={branding?.logoUrl}
-          partnerName={branding?.partnerName}
-          seller={seller}
-          eyebrow="Proposal"
-          title={quote.quoteNumber ?? 'Proposal'}
-          subtitle={quote.title}
-          statusLabel={STATUS_LABELS[status] ?? status}
-          statusTone={quoteStatusTone(status)}
-          dates={headerDates}
-          preparedForName={cover ? undefined : quote.billToName ?? undefined}
-          titleAs={cover ? 'h2' : 'h1'}
-        />
-
-        {quote.introNotes && (
-          <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">{quote.introNotes}</p>
-        )}
-
-        <QuoteBlocks
-          blocks={blocks}
-          lines={lines}
-          currency={currency}
-          imageUrl={(imageId) => publicApiPath(`/portal/quotes/${quote.id}/images/${imageId}`)}
-          buildUrl={publicApiPath}
-          taxRate={taxRate}
-          showTax={showTax}
-        />
-
-        <section className="flex justify-end">
-          <div className="w-full max-w-xs space-y-2.5">
-            {showTax && (
-              <>
-                <div className="flex justify-between text-sm">
-                  {/* `subtotal` sums ALL lines (one-time + first period of each
-                      recurring cadence), so with recurring lines a bare
-                      "Subtotal" invites the reader to reconcile it against the
-                      due-on-acceptance figures below — which never add up. The
-                      qualifier names the basis. */}
-                  <span className="text-muted-foreground">{hasRecurring ? 'First period subtotal' : 'Subtotal'}</span>
-                  <span className="tabular-nums text-foreground">{money(quote.subtotal ?? 0, currency)}</span>
+      <QuoteDocumentView
+        model={model}
+        components={hostComponents}
+        slots={{
+          signature: open ? (
+            <div className="space-y-10">
+              <SignaturePanel
+                onAccept={(signerName) => void accept(signerName)}
+                onDecline={(reason) => void decline(reason)}
+                busy={busy}
+                testIdPrefix="quote"
+                agreements={quoteAgreementLinks(model)}
+              />
+              {/* While signing is open, feedback stays adjacent to the button (below the
+                  paper it would land under the expanded agreement). */}
+              {msg && (
+                <div
+                  data-testid="quote-msg"
+                  role={msgError ? 'alert' : 'status'}
+                  className={
+                    msgError
+                      ? 'rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint'
+                      : 'rounded-md bg-muted p-3 text-sm'
+                  }
+                >
+                  {msg}
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span>
-                  <span className="tabular-nums text-foreground">{money(quote.taxTotal ?? 0, currency)}</span>
-                </div>
-              </>
-            )}
-            {hasRecurring && lineHasCadence('monthly') && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Monthly recurring</span>
-                <span className="tabular-nums text-foreground">{money(quote.monthlyRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
-              </div>
-            )}
-            {hasRecurring && lineHasCadence('annual') && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Annual recurring</span>
-                <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
-              </div>
-            )}
-            {categoryBreakdown.length > 1 && (
-              <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-category-breakdown">
-                {categoryBreakdown.map((b) => (
-                  <div key={b.category} className="flex justify-between">
-                    <span className="capitalize">{b.category}</span>
-                    <span className="tabular-nums">
-                      {[
-                        Number(b.oneTimeTotal) > 0 ? money(b.oneTimeTotal, currency) : null,
-                        Number(b.monthlyTotal) > 0 ? `${money(b.monthlyTotal, currency)}/mo` : null,
-                        Number(b.annualTotal) > 0 ? `${money(b.annualTotal, currency)}/yr` : null,
-                      ].filter(Boolean).join(' + ')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {depositDue != null ? (
-              <>
-                {/* Anchor row: the deposit stays the hero (it's what's payable
-                    now), but the three figures must visibly sum — due on
-                    acceptance = deposit due now + remaining balance. */}
-                <div className="doc-accent-border flex justify-between border-t pt-3 text-sm" data-testid="quote-due-on-acceptance">
-                  <span className="font-medium text-foreground">Due on acceptance</span>
-                  <span className="font-medium tabular-nums text-foreground">{money(dueOnAcceptance, currency)}</span>
-                </div>
-                <div className="flex items-baseline justify-between" data-testid="quote-deposit-due">
-                  <span className="text-sm font-semibold text-foreground">Deposit due now</span>
-                  <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums">
-                    {money(depositDue, currency)}
-                  </span>
-                </div>
-                <div className="flex justify-between text-sm" data-testid="quote-deposit-remainder">
-                  <span className="text-muted-foreground">Remaining balance (due per terms)</span>
-                  <span className="tabular-nums text-foreground">{money(remainderCents / 100, currency)}</span>
-                </div>
-              </>
-            ) : (
-              <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
-                <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-                <span className="doc-accent-text font-display text-2xl font-semibold tabular-nums">
-                  {money(dueOnAcceptance, currency)}
-                </span>
-              </div>
-            )}
-            {hasRecurring && (
-              <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">First-period total</span>
-                  <span className="tabular-nums text-foreground">{money(quote.total, currency)}</span>
-                </div>
-                <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
-                  Accepting this proposal bills only the one-time charges now. Recurring lines bill on their own schedule.
-                </p>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Two distinct free-text columns, both genuinely terms: `terms` is the
-            API-only legacy field, `termsAndConditions` is what the quote editor
-            writes. The quote's notes live in `introNotes`, elsewhere on the page.
-            Spec 2026-09-14 §3 checked this and left both labels as-is. */}
-        {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
-        {open && (
-          <SignaturePanel
-            onAccept={(signerName) => void accept(signerName)}
-            onDecline={(reason) => void decline(reason)}
-            busy={busy}
-            testIdPrefix="quote"
-            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
-          />
-        )}
-        {/* While signing is open, feedback stays adjacent to the button (below the
-            paper it would land under the expanded agreement). */}
-        {open && msg && (
-          <div
-            data-testid="quote-msg"
-            role={msgError ? 'alert' : 'status'}
-            className={
-              msgError
-                ? 'rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint'
-                : 'rounded-md bg-muted p-3 text-sm'
-            }
-          >
-            {msg}
-          </div>
-        )}
-        <QuoteAgreements
-          blocks={blocks}
-          termsAndConditions={quote.termsAndConditions}
-          buildUrl={publicApiPath}
-          testIdPrefix="quote"
-        />
-      </DocumentPaper>
+              )}
+            </div>
+          ) : undefined,
+        }}
+      />
 
       {/* Failures render on their own, outside the accepted panel, so a failed pay
           attempt is never dressed up in success styling. */}
@@ -420,6 +264,11 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
             <p data-testid="quote-accepted-on-behalf">
               Accepted on your behalf by {branding?.partnerName || 'your provider'}
               {quote.acceptedAt ? ` on ${shortDate(quote.acceptedAt)}` : ''}.
+            </p>
+          )}
+          {onlinePaymentOff && acceptedInvoiceId !== null && (
+            <p data-testid="quote-pay-offline">
+              {`Online payment isn't available for this invoice. Please contact ${branding?.partnerName || 'your provider'} to pay.`}
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">

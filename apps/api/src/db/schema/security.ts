@@ -9,7 +9,8 @@ import {
   pgEnum,
   integer,
   index,
-  uniqueIndex
+  uniqueIndex,
+  check
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { devices } from './devices';
@@ -29,6 +30,8 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'emsisoft',
   'webroot',
   'withsecure',
+  // CylancePROTECT / Aurora Endpoint Defense (#9178).
+  'cylance',
   'other',
   // Failed collection / not collected (#8538) — distinct from 'other', which
   // is a real attribution for an unmapped product.
@@ -114,6 +117,51 @@ export const securityThreats = pgTable('security_threats', {
     .where(sql`${table.resolvedAt} IS NOT NULL`)
 }));
 
+// #6263 W05 — IOC sweeps. One row per org touched by a sweep request (rows of
+// one request share groupId); children are security_scans rows with sweepId.
+// Shape 1 (org_id NOT NULL), RLS in 2027-01-04-140000-security-scan-sweeps.sql.
+// An execution record, not config: Partner-Wide First does not apply.
+export const securityScanSweeps = pgTable('security_scan_sweeps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  groupId: uuid('group_id').notNull(),
+  dedupeKey: varchar('dedupe_key', { length: 64 }).notNull(),
+  ruleSetIds: uuid('rule_set_ids').array().notNull(),
+  ruleSetPins: jsonb('rule_set_pins').notNull(),
+  scanType: varchar('scan_type', { length: 16 }).notNull(),
+  paths: text('paths').array(),
+  scope: jsonb('scope').notNull(),
+  state: varchar('state', { length: 16 }).notNull().default('active'),
+  targetedCount: integer('targeted_count').notNull(),
+  skipped: jsonb('skipped').notNull().default({}),
+  origin: varchar('origin', { length: 16 }).notNull(),
+  aiOrigin: jsonb('ai_origin'),
+  intentId: uuid('intent_id'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'set null' })
+}, (table) => ({
+  orgCreatedIdx: index('security_scan_sweeps_org_created_idx').on(table.orgId, table.createdAt.desc()),
+  groupIdx: index('security_scan_sweeps_group_idx').on(table.groupId),
+  activeExpiresIdx: index('security_scan_sweeps_active_expires_idx')
+    .on(table.expiresAt)
+    .where(sql`${table.state} = 'active'`),
+  activeDedupeIdx: index('security_scan_sweeps_active_dedupe_idx')
+    .on(table.orgId, table.dedupeKey)
+    .where(sql`${table.state} = 'active'`),
+  stateChk: check('security_scan_sweeps_state_chk', sql`${table.state} IN ('active', 'completed', 'cancelled', 'expired')`),
+  scanTypeChk: check('security_scan_sweeps_scan_type_chk', sql`${table.scanType} IN ('quick', 'full', 'custom')`),
+  ruleSetsChk: check('security_scan_sweeps_rule_sets_chk', sql`cardinality(${table.ruleSetIds}) BETWEEN 1 AND 20`),
+  pathsChk: check(
+    'security_scan_sweeps_paths_chk',
+    sql`(${table.scanType} = 'custom') = (${table.paths} IS NOT NULL AND cardinality(${table.paths}) BETWEEN 1 AND 20)`
+  ),
+  originChk: check('security_scan_sweeps_origin_chk', sql`${table.origin} IN ('web', 'api', 'ai_chat', 'mcp')`)
+}));
+
 export const securityScans = pgTable('security_scans', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
@@ -135,10 +183,22 @@ export const securityScans = pgTable('security_scans', {
   // written before W03. ruleSetErrors: [{ id, version?, code, detail? }] from
   // the dispatch-time resolver/version gate plus the agent's C3 report.
   engine: varchar('engine', { length: 16 }),
-  ruleSetErrors: jsonb('rule_set_errors')
+  ruleSetErrors: jsonb('rule_set_errors'),
+  // #6263 W05 — the sweep this scan belongs to (NULL for scheduled/manual
+  // scans). Plain FK: the device-org move detaches before it restamps.
+  sweepId: uuid('sweep_id').references(() => securityScanSweeps.id, { onDelete: 'set null' }),
+  // [{ id, version, sha256 }] actually sent; the agent fetch route authorizes
+  // exactly these refs for a running scan.
+  dispatchedRuleSets: jsonb('dispatched_rule_sets'),
+  // device_commands.id of the dispatch; no FK. Finalize looks commands up by
+  // this id, never by payload (payloads are erased on terminalization).
+  commandId: uuid('command_id')
 }, (table) => ({
   deviceStartedIdx: index('security_scans_device_started_idx').on(table.deviceId, table.startedAt),
-  statusIdx: index('security_scans_status_idx').on(table.status)
+  statusIdx: index('security_scans_status_idx').on(table.status),
+  sweepStatusIdx: index('security_scans_sweep_status_idx')
+    .on(table.sweepId, table.status)
+    .where(sql`${table.sweepId} IS NOT NULL`)
 }));
 
 // A security policy is owned by EITHER an org (orgId set, partnerId NULL — the

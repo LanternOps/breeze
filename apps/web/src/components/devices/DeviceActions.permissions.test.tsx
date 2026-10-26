@@ -102,3 +102,47 @@ describe('DeviceActions Remote Tools is permission-gated (live device inspection
     expect(screen.getByRole('menuitem', { name: /remote tools/i })).toBeInTheDocument();
   });
 });
+
+// #8729: "Force reboot now" force-closes apps. It sits in the Power menu next to
+// Reboot, only for callers with devices:execute, and is disabled (with the
+// reason) when the agent predates force_reboot, so nobody starts the MFA step
+// for a device that cannot do it. The server's 409 stays the real check.
+describe('DeviceActions — Force reboot now (#8729)', () => {
+  const onlineDevice: Device = { ...offlineDevice, status: 'online', agentVersion: '0.125.0' };
+
+  it('is not offered without devices:execute', async () => {
+    render(<DeviceActions device={onlineDevice} />);
+    await userEvent.click(screen.getByTestId('device-power-menu'));
+    expect(screen.getByRole('menuitem', { name: /^reboot$/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('device-power-action-force-reboot')).toBeNull();
+  });
+
+  it('opens the typed-hostname confirmation from the Power menu', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={onlineDevice} />);
+    await userEvent.click(screen.getByTestId('device-power-menu'));
+    const item = screen.getByTestId('device-power-action-force-reboot');
+    expect(item).toHaveTextContent(/force reboot now/i);
+    expect(item.getAttribute('aria-disabled')).not.toBe('true');
+    await userEvent.click(item);
+    expect(await screen.findByTestId('force-reboot-dialog')).toHaveTextContent('edge-01');
+  });
+
+  it('is disabled with an "agent upgrade required" reason when the agent is too old', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={{ ...onlineDevice, agentVersion: '0.124.0' }} />);
+    await userEvent.click(screen.getByTestId('device-power-menu'));
+    const item = screen.getByTestId('device-power-action-force-reboot');
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.getAttribute('title')).toMatch(/agent upgrade required/i);
+    await userEvent.click(item);
+    expect(screen.queryByTestId('force-reboot-dialog')).toBeNull();
+  });
+
+  it('is offered in the compact menu too', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={onlineDevice} compact />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(screen.getByTestId('device-power-action-force-reboot')).toBeInTheDocument();
+  });
+});

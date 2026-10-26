@@ -186,7 +186,7 @@ export default function TrendsPage() {
   const TrendIcon =
     data.summary.trend === "improving" ? TrendingUp : TrendingDown;
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="security-trends-page">
       <SecurityPageHeader
         title={t("securityTrendsPage.securityTrends")}
         subtitle={t("securityTrendsPage.scoreMovementOverTime")}
@@ -205,6 +205,7 @@ export default function TrendsPage() {
       <div className="grid gap-4 sm:grid-cols-4">
         <SecurityStatCard
           icon={TrendIcon}
+          testId="security-trends-current-score"
           label={t("securityTrendsPage.currentScore")}
           value={data.summary.current}
           variant={

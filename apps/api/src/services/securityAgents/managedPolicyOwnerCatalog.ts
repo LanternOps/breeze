@@ -2,15 +2,30 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { SecurityAgentsInlineSettings } from '@breeze/shared/validators';
 import { db } from '../../db';
 import { organizations, softwareCatalog, softwareVersions } from '../../db/schema';
-import { getBuiltinPackage, installArgsCarryPlaceholders } from '../builtinDeploymentPackages';
+import {
+  builtinPackageKeysForVendor,
+  catalogIdForBuiltinKey,
+  getBuiltinPackage,
+  installArgsCarryPlaceholders,
+  type BuiltinPackageKey,
+} from '../builtinDeploymentPackages';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 
 /**
  * Catalog reads for the security-agents managed-policy generator (#6960):
- * which built-in package each enabled vendor installs from, and whether a
+ * which built-in package rows each enabled vendor installs from, and whether a
  * package that needs a partner-uploaded installer has a deployable one.
  * Runs on the generator's executor (the link-write or sweep transaction).
  */
+
+/**
+ * One catalog row a vendor installs from. EDR vendors have exactly one (their
+ * integration package, `builtinPackageKey` null). Tenant-variable vendors have
+ * one per OS they support and the link selects (#6958 D1: a `software_versions`
+ * row has one `is_latest` per catalog, so each OS is its own catalog row), and
+ * the generator writes one rule per row.
+ */
+export type VendorCatalogRow = { catalogId: string; builtinPackageKey: BuiltinPackageKey | null };
 
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -27,27 +42,58 @@ export function vendorRequiresUploadedBinary(vendor: VendorKey): boolean {
 }
 
 /**
- * The partner's built-in catalog package per enabled vendor, and which of
- * those packages that need a partner-uploaded installer have a deployable one.
+ * The built-in package keys an enabled tenant-variable vendor installs from:
+ * one per OS the registry marks `supported` AND the link's own platform list
+ * (when given) selects, in registry platform order. An OS without a pinned
+ * key (NextDNS macOS) contributes nothing.
+ */
+function wantedBuiltinKeys(vendor: VendorKey, selectedPlatforms: readonly string[] | undefined): BuiltinPackageKey[] {
+  if (vendor !== 'controld' && vendor !== 'nextdns') return [];
+  const keys = builtinPackageKeysForVendor(vendor);
+  const wanted: BuiltinPackageKey[] = [];
+  for (const [platform, support] of Object.entries(getVendor(vendor).platforms)) {
+    if (support !== 'supported') continue;
+    if (selectedPlatforms && !selectedPlatforms.includes(platform)) continue;
+    const key = keys[platform as 'windows' | 'macos'];
+    if (key) wanted.push(key);
+  }
+  return wanted;
+}
+
+/**
+ * The partner's built-in catalog rows per enabled vendor, and which of those
+ * packages that need a partner-uploaded installer have a deployable one.
  * The owner's partner: the config policy's own for a partner-wide policy, its
  * org's for an org policy. Built-in packages are partner rows that every org of
- * the partner may read (software_catalog SELECT branch for integration
+ * the partner may read (software_catalog SELECT branch for partner-wide
  * packages), and a partner-wide policy only reaches that partner's orgs, so
  * the owner's package is the one every reached device installs from.
+ *
+ * Tenant-variable vendors resolve each OS key with the read-only
+ * `catalogIdForBuiltinKey` (#6958 D5: never `ensurePinnedBuiltinPackage`; the
+ * row is provisioned only from the Built-in packages panel). That lookup runs
+ * on the ambient DB context, which is the same transaction as `executor` on
+ * both callers (the link-write request context, the sweep's system context).
+ * An archived row reads as absent. Only enableable vendors are looked up: a
+ * stored blob for a vendor that cannot get a rule costs no query.
  */
 export async function readOwnerCatalog(
   executor: DbExecutor,
   configPolicy: OwnerConfigPolicy,
   settings: SecurityAgentsInlineSettings,
-): Promise<{ catalogIdByVendor: Map<VendorKey, string>; uploadedBinaryVendors: Set<VendorKey> }> {
-  const providers = settings.agents
-    .filter((agent) => agent.enabled)
+): Promise<{ catalogByVendor: Map<VendorKey, VendorCatalogRow[]>; uploadedBinaryVendors: Set<VendorKey> }> {
+  const enabledAgents = settings.agents.filter((agent) => agent.enabled);
+  const providers = enabledAgents
     .map((agent) => getVendor(agent.vendor).integrationProvider)
     .filter((provider): provider is 'huntress' | 'sentinelone' => provider !== null);
-  const result = new Map<VendorKey, string>();
+  const tenantVarAgents = enabledAgents.filter((agent) => {
+    const vendor = getVendor(agent.vendor);
+    return vendor.orgSource === 'tenant_var' && vendor.enableable;
+  });
+  const result = new Map<VendorKey, VendorCatalogRow[]>();
   const uploadedBinaryVendors = new Set<VendorKey>();
-  const empty = { catalogIdByVendor: result, uploadedBinaryVendors };
-  if (providers.length === 0) return empty;
+  const empty = { catalogByVendor: result, uploadedBinaryVendors };
+  if (providers.length === 0 && tenantVarAgents.length === 0) return empty;
 
   let partnerId = configPolicy.partnerId;
   if (configPolicy.orgId) {
@@ -60,25 +106,38 @@ export async function readOwnerCatalog(
   }
   if (!partnerId) return empty;
 
-  const rows = await executor
-    .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider, createdAt: softwareCatalog.createdAt })
-    .from(softwareCatalog)
-    .where(and(
-      eq(softwareCatalog.partnerId, partnerId),
-      isNull(softwareCatalog.orgId),
-      isNull(softwareCatalog.deletedAt),
-      inArray(softwareCatalog.integrationProvider, providers),
-    ));
-  // Oldest first: ensureBuiltinPackage reuses the first row it finds, so the
-  // oldest is the one integration connects keep pointing at.
-  rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  for (const vendor of listVendors()) {
-    if (!vendor.integrationProvider || result.has(vendor.key)) continue;
-    const row = rows.find((candidate) => candidate.integrationProvider === vendor.integrationProvider);
-    if (row) result.set(vendor.key, row.id);
+  if (providers.length > 0) {
+    const rows = await executor
+      .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider, createdAt: softwareCatalog.createdAt })
+      .from(softwareCatalog)
+      .where(and(
+        eq(softwareCatalog.partnerId, partnerId),
+        isNull(softwareCatalog.orgId),
+        isNull(softwareCatalog.deletedAt),
+        inArray(softwareCatalog.integrationProvider, providers),
+      ));
+    // Oldest first: ensureBuiltinPackage reuses the first row it finds, so the
+    // oldest is the one integration connects keep pointing at.
+    rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    for (const vendor of listVendors()) {
+      if (!vendor.integrationProvider || result.has(vendor.key)) continue;
+      const row = rows.find((candidate) => candidate.integrationProvider === vendor.integrationProvider);
+      if (row) result.set(vendor.key, [{ catalogId: row.id, builtinPackageKey: null }]);
+    }
   }
 
-  const needsBinary = Array.from(result.entries()).filter(([vendor]) => vendorRequiresUploadedBinary(vendor));
+  for (const agent of tenantVarAgents) {
+    const rows: VendorCatalogRow[] = [];
+    for (const key of wantedBuiltinKeys(agent.vendor, agent.platforms)) {
+      const catalogId = await catalogIdForBuiltinKey(partnerId, key);
+      if (catalogId) rows.push({ catalogId, builtinPackageKey: key });
+    }
+    if (rows.length > 0) result.set(agent.vendor, rows);
+  }
+
+  const needsBinary = Array.from(result.entries())
+    .filter(([vendor]) => vendorRequiresUploadedBinary(vendor))
+    .map(([vendor, rows]) => [vendor, rows[0]!.catalogId] as const);
   if (needsBinary.length > 0) {
     const deployable = await readDeployableVersionCatalogIds(executor, needsBinary.map(([, catalogId]) => catalogId));
     for (const [vendor, catalogId] of needsBinary) {
@@ -86,7 +145,7 @@ export async function readOwnerCatalog(
       if (version && versionIsDeployableFor(version, vendor)) uploadedBinaryVendors.add(vendor);
     }
   }
-  return { catalogIdByVendor: result, uploadedBinaryVendors };
+  return { catalogByVendor: result, uploadedBinaryVendors };
 }
 
 /** The fields of a latest version that decide whether it can be dispatched. */

@@ -107,6 +107,28 @@ describe('DeviceInfoTab — OS version display', () => {
     expect(screen.queryByText('macOS 26.5.1')).toBeNull();
   });
 
+  it('derives the OS Build row from a bare NT osVersion like the header does (#9610)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === `/devices/${deviceId}` && method === 'GET') {
+        return makeJsonResponse({
+          ...baseDeviceInfoPayload,
+          osVersion: '10.0.22631.4317',
+          osBuild: '',
+        });
+      }
+      if (url === '/custom-fields') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceInfoTab deviceId={deviceId} />);
+
+    await screen.findByText('Operating System');
+    const label = screen.getByText('OS Build');
+    expect(label.parentElement).toHaveTextContent('22631');
+  });
+
   it('capitalizes Linux distro names in the OS Version row', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
       const url = String(input);

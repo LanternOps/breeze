@@ -213,6 +213,27 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'flow-event-trigger',
+    // Tool catalog W04 (#5219), Task A9 — starts event-triggered flow runs
+    // (services/flows/eventTrigger.ts, which owns the config below as
+    // `flowEventTriggerSubscriber`; eventTrigger.test.ts pins the two equal).
+    // Every event type: a flow can listen for any known event. Dark when
+    // FLOWS_ENABLED is off (the handler returns first thing). Event flows
+    // only enable when this id is queue-dispatched in enforce mode
+    // (Decision 10), so in practice it always runs from the durable queue.
+    //
+    // Lazy for the same worker-closure reason as the subscribers above:
+    // eventTrigger.ts -> runService.ts reaches the flow validator and the
+    // tool catalog.
+    eventTypes: '*',
+    handler: async (event: BreezeEvent) => {
+      const { flowEventTriggerSubscriber } = await import('./flows/eventTrigger');
+      return flowEventTriggerSubscriber.handler(event);
+    },
+    retry: { attempts: 5, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
     id: 'notification-dispatcher',
     eventTypes: ['alert.triggered', 'alert.acknowledged', 'alert.resolved'],
     handler: handleAlertLifecycleEvent,
@@ -234,6 +255,41 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     id: 'dns-threat-alerts',
     eventTypes: ['dns.threat.blocked'],
     handler: handleDnsThreatBlockedEvent,
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
+    id: 'wisp-wake',
+    // Wisp W05b Task 9 (#9917). Each event asks for ONE debounced (60 s)
+    // assessment per active grant covering the event's org; the grant events
+    // onboard a new grant / tick a resumed one. Dark when wispEnabled() is
+    // false (the handler returns first thing). An assessment run's own
+    // ai.agent.run.* event never wakes Wisp again (no self-wake).
+    //
+    // Lazy for the same worker-closure reason as the subscribers above:
+    // wisp/wake.ts reaches grantAuthority and the BullMQ queue.
+    eventTypes: [
+      'alert.triggered',
+      'alert.resolved',
+      'ticket.sla_breached',
+      'ticket.stale',
+      'ticket.status_changed',
+      'monitoring.check_failed',
+      'integration.health_opened',
+      'anomaly.incident_opened',
+      'vulnerability.critical_detected',
+      'edr.detection_detected',
+      'ai.agent.run.completed',
+      'ai.agent.run.failed',
+      'ai.operator.task.finished',
+      'ai.intent.decided',
+      'wisp.grant.created',
+      'wisp.grant.resumed',
+    ],
+    handler: async (event: BreezeEvent) => {
+      const { handleWispWakeEvent } = await import('./wisp/wake');
+      return handleWispWakeEvent(event);
+    },
     retry: { attempts: 3, backoffMs: 30_000 },
   });
 }

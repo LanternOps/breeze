@@ -6,6 +6,7 @@ import { captureException } from './sentry';
 import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
 import { eventDispatchMode } from '../config/env';
 import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
+import { currentFlowExecutionFrame } from './flows/flowExecutionContext';
 
 // Event types for type safety
 export type EventType =
@@ -14,7 +15,6 @@ export type EventType =
   | 'device.online'
   | 'device.offline'
   | 'device.updated'
-  | 'device.decommissioned'
   | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
   // Alert events
   | 'alert.triggered'
@@ -76,6 +76,13 @@ export type EventType =
   // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
   // went wrong, so alerting keyed on automation.failed must not fire.
   | 'automation.cancelled'
+  // Tool catalog W04 (#5219), plan Task A8: a flow run finished (spec §6.5
+  // step 7). Payload `{ flowId, runId, chainDepth, status }` — ids only;
+  // `failed` also covers `expired` (status says which). Published by the
+  // runner (and by a refused dispatch claim) after the terminal write commits,
+  // with metadata.flowRunId / flowChainDepth so an event flow inherits depth.
+  | 'flow.run.completed'
+  | 'flow.run.failed'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -135,6 +142,10 @@ export type EventType =
   // Same id-only posture (`changed` is a list of field NAMES, never values).
   | 'ticket.updated'
   | 'ticket.assigned'
+  // Ticket merge (#8972, spec §3.7): published on the SURVIVOR; ids and
+  // numbers only ({ sourceTicketId, targetTicketId, sourceInternalNumber,
+  // targetInternalNumber }).
+  | 'ticket.merged'
   // Ticket migration windows (#8313). The ONLY event an import produces: one
   // per org in the window, published after the window closes, with the
   // deterministic eventId `${windowId}:${orgId}` so a retry never duplicates.
@@ -151,6 +162,12 @@ export type EventType =
   // only. Payload: codes and ids, never provider text (eventPayload.ts).
   | 'integration.health_opened'
   | 'integration.health_resolved'
+  // Wisp W02 (w00 A29/A33): published from routes/wisp.ts after the grant
+  // create / user-resume commit. Payload { grantId, partnerId, orgId, grantorUserId }
+  // (ids only). The bus is org-keyed, so a partner-wide grant (orgId null)
+  // routes on its partner id. W05's wake subscriber consumes both.
+  | 'wisp.grant.created'
+  | 'wisp.grant.resumed'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -219,6 +236,18 @@ export type EventType =
   | 'ai.agent.circuit.opened'
   // #4388 — an org crossed an AI budget rung; org-level, no device/site.
   | 'ai.budget.threshold_crossed'
+  // Wisp W05 (#9911). Published OUTSIDE any DB context, after the writing
+  // transaction committed. `ai.intent.decided`: an action intent reached a
+  // decision (approved | rejected | expired | cancelled), payload
+  // { intentId, orgId, toolName, decision, requestingAgentRunId, grantId }.
+  // `ai.operator.task.finished`: an operator task reached completed | partial
+  // | handed_off | failed, payload { taskId, orgId, state, outcome, grantId }.
+  // `ticket.stale`: a ticket crossed the staleness threshold with no update,
+  // payload { ticketId, orgId, staleHours, updatedAt }; published with a
+  // deterministic eventId so a re-scan collapses to one logical event.
+  | 'ai.intent.decided'
+  | 'ai.operator.task.finished'
+  | 'ticket.stale'
   // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
   // publishUserEvent, which deliberately does not use the ordinary publish
   // path. Two segments so it stays subscribable under EVENT_TYPE_RE.
@@ -255,6 +284,14 @@ export interface BreezeEvent<T = Record<string, unknown>> {
     causationId?: string;
     userId?: string;
     timestamp: string;
+    /**
+     * Tool catalog W04 (#5219), Decision 14: the flow run whose step caused
+     * this event, and that run's chain depth (0..3). Stamped by `publish()`
+     * from the flowExecutionContext frame — a frame always wins over the
+     * caller's options, so a step cannot forge or clear its ancestry.
+     */
+    flowRunId?: string;
+    flowChainDepth?: number;
   };
 }
 
@@ -274,6 +311,13 @@ export interface PublishOptions {
    * known. `null`/`undefined` ⇒ org-level (no site attribution).
    */
   siteId?: string | null;
+  /**
+   * Flow ancestry for an event published OUTSIDE a flow step (the runner's own
+   * `flow.run.*` events). Ignored whenever a flowExecutionContext frame is
+   * active — the frame is authoritative (Decision 14).
+   */
+  flowRunId?: string;
+  flowChainDepth?: number;
 }
 
 export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) => Promise<void>;
@@ -355,7 +399,8 @@ class EventBus {
         correlationId: options.correlationId || eventId,
         causationId: options.causationId,
         userId: options.userId,
-        timestamp: occurredAt.toISOString()
+        timestamp: occurredAt.toISOString(),
+        ...flowAncestryMetadata(options),
       }
     };
 
@@ -582,6 +627,23 @@ export function getEventBus(): EventBus {
 }
 
 // Convenience function for publishing events
+/**
+ * Decision 14: the frame of the executing flow step wins over caller-supplied
+ * ancestry; outside a frame an explicit, well-formed pair is carried (the
+ * runner publishing `flow.run.*`). Keys are omitted when absent so a plain
+ * event's metadata shape is unchanged.
+ */
+function flowAncestryMetadata(options: PublishOptions): { flowRunId?: string; flowChainDepth?: number } {
+  const frame = currentFlowExecutionFrame();
+  if (frame) return { flowRunId: frame.runId, flowChainDepth: frame.chainDepth };
+  const out: { flowRunId?: string; flowChainDepth?: number } = {};
+  if (typeof options.flowRunId === 'string' && options.flowRunId.length > 0) out.flowRunId = options.flowRunId;
+  if (Number.isInteger(options.flowChainDepth) && options.flowChainDepth! >= 0 && options.flowChainDepth! <= 3) {
+    out.flowChainDepth = options.flowChainDepth;
+  }
+  return out;
+}
+
 export async function publishEvent<T = Record<string, unknown>>(
   type: EventType,
   orgId: string,
@@ -599,7 +661,6 @@ export const EVENT_TYPES = {
   DEVICE_ONLINE: 'device.online' as const,
   DEVICE_OFFLINE: 'device.offline' as const,
   DEVICE_UPDATED: 'device.updated' as const,
-  DEVICE_DECOMMISSIONED: 'device.decommissioned' as const,
   // #800: server-detected asymmetry (watchdog OK, main agent silent past threshold)
   DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
   // Alert
@@ -624,6 +685,9 @@ export const EVENT_TYPES = {
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
   AUTOMATION_CANCELLED: 'automation.cancelled' as const,
+  // Flow runs (#5219 W04)
+  FLOW_RUN_COMPLETED: 'flow.run.completed' as const,
+  FLOW_RUN_FAILED: 'flow.run.failed' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,
@@ -662,12 +726,16 @@ export const EVENT_TYPES = {
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
   TICKET_UPDATED: 'ticket.updated' as const,
   TICKET_ASSIGNED: 'ticket.assigned' as const,
+  TICKET_MERGED: 'ticket.merged' as const,
   // Ticket migration windows (#8313) — ids and counts only.
   MIGRATION_WINDOW_CLOSED: 'migration.window_closed' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   INTEGRATION_HEALTH_OPENED: 'integration.health_opened' as const,
   INTEGRATION_HEALTH_RESOLVED: 'integration.health_resolved' as const,
+  // Wisp W02
+  WISP_GRANT_CREATED: 'wisp.grant.created' as const,
+  WISP_GRANT_RESUMED: 'wisp.grant.resumed' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,
@@ -729,6 +797,10 @@ export const EVENT_TYPES = {
   AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' as const,
   // #4388
   AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' as const,
+  // Wisp W05 (#9911)
+  AI_INTENT_DECIDED: 'ai.intent.decided' as const,
+  AI_OPERATOR_TASK_FINISHED: 'ai.operator.task.finished' as const,
+  TICKET_STALE: 'ticket.stale' as const,
   // Wave 2 (#3823). Addressed to one user via publishUserEvent — never
   // broadcast, never written to the stream or the global channel.
   NOTIFICATION_CREATED: 'notification.created' as const,

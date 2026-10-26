@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { admissionReasonMessage } from './admissionReason';
 import { useTranslation } from 'react-i18next';
 import { X, Play, Loader2, Clock, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -680,7 +681,7 @@ export default function ScriptExecutionModal({
                       <span className="shrink-0 text-right text-xs text-muted-foreground">
                         <span className="font-medium">{targetState}</span>
                         {executionState !== 'submitting' && target.reasonCode && (
-                          <span className="ml-2 font-mono">{target.reasonCode}</span>
+                          <span className="ml-2" title={target.reasonCode}>{admissionReasonMessage(t, target.reasonCode)}</span>
                         )}
                       </span>
                     </div>

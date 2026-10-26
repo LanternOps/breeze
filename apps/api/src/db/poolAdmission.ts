@@ -112,8 +112,21 @@ export interface AcquireOptions {
   signal?: AbortSignal;
 }
 
-/** W08: window for the grant-wait p95 that admission control reads. */
-export const POOL_WAIT_STATS_WINDOW_MS = 3_000;
+/**
+ * W08: window for the grant-wait p95 that admission control reads. Keep it at
+ * 1.5 x the admission tick (ADMISSION_TICK_MS = 1 s; not imported, to keep db/
+ * free of services/ imports).
+ *
+ * The old 3 s window let one slow grant at idle (few grants, so p95 = that
+ * grant) be re-read on three consecutive ticks. That alone passed the old
+ * 2-tick rise gate, and would pass a 3-tick gate too (#9353). At 1.5 ticks, a
+ * grant is read on at most two ticks, fewer than the default
+ * BREEZE_ADMISSION_RISE_TICKS (3). The extra half tick covers late ticks:
+ * setInterval never fires early, so a window exactly one tick wide would drop
+ * grants landing between a late tick and the one before it. Smoothing is now
+ * the rise gate's job.
+ */
+export const POOL_WAIT_STATS_WINDOW_MS = 1_500;
 
 /** W08 admission-control inputs. Separate from snapshot() so W04's snapshot shape is unchanged. */
 export interface PoolWaitStats {

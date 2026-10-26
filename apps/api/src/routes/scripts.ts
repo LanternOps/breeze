@@ -57,6 +57,7 @@ import { scriptBundleRoutes } from './scriptBundle';
 import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 import { cutScriptVersion } from '../services/scriptVersions';
 import { scriptExecutionRestorePointSql } from '../services/restorePointInline';
+import { scriptLastRunAtSql, type ScriptLastRunScope } from '../services/scriptLastRun';
 
 import {
   MAX_GRACE_SECONDS,
@@ -374,6 +375,11 @@ scriptRoutes.get(
     // Exclude soft-deleted scripts
     conditions.push(isNull(scripts.deletedAt) as ReturnType<typeof eq>);
 
+    // #9563 — whose executions may feed each row's lastRunAt. Set alongside
+    // the script-visibility filter below so the two cannot drift: a caller
+    // never sees a run from an org it could not list scripts for.
+    let lastRunScope: ScriptLastRunScope = { kind: 'all' };
+
     // Filter by org access based on scope
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
@@ -384,6 +390,7 @@ scriptRoutes.get(
       if (auth.partnerId) ors.push(eq(scripts.partnerId, auth.partnerId));
       if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true));
       conditions.push(or(...ors) as ReturnType<typeof eq>);
+      lastRunScope = { kind: 'orgs', orgIds: [auth.orgId] };
     } else if (auth.scope === 'partner') {
       if (query.orgId) {
         const hasAccess = ensureOrgAccess(query.orgId, auth);
@@ -394,6 +401,7 @@ scriptRoutes.get(
         if (auth.partnerId) ors.push(eq(scripts.partnerId, auth.partnerId));
         if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true));
         conditions.push(or(...ors) as ReturnType<typeof eq>);
+        lastRunScope = { kind: 'orgs', orgIds: [query.orgId] };
       } else {
         const orgIds = auth.accessibleOrgIds ?? [];
         const ors: ReturnType<typeof eq>[] = [];
@@ -402,10 +410,12 @@ scriptRoutes.get(
         if (query.includeSystem === 'true') ors.push(eq(scripts.isSystem, true) as ReturnType<typeof eq>);
         if (ors.length === 0) return c.json({ data: [], pagination: { page, limit, total: 0 } });
         conditions.push(or(...ors) as ReturnType<typeof eq>);
+        lastRunScope = { kind: 'orgs', orgIds };
       }
     } else if (auth.scope === 'system') {
       if (query.orgId) {
         conditions.push(eq(scripts.orgId, query.orgId));
+        lastRunScope = { kind: 'orgs', orgIds: [query.orgId] };
       }
       // System scope sees everything, no additional filter needed
     }
@@ -459,6 +469,9 @@ scriptRoutes.get(
             AND sv.version = ${sql.identifier('scripts')}.${sql.identifier('version')}
             AND sv.review_id IS NOT NULL
         )`,
+        // #9563 — newest execution per script, as a correlated subquery so
+        // the page stays one statement with its LIMIT/OFFSET intact.
+        lastRunAt: scriptLastRunAtSql(lastRunScope, getAllowedSiteIds(c)),
       })
       .from(scripts)
       .where(whereCondition)
@@ -474,12 +487,13 @@ scriptRoutes.get(
 
     return c.json({
       // A row from a pre-existing test mock (or a stale read path) may lack
-      // these two fields entirely — default to a plain, unreviewed human
-      // script rather than surface `undefined` to the client.
+      // these fields entirely — default to a plain, unreviewed human script
+      // that never ran rather than surface `undefined` to the client.
       data: scriptList.map((row: Record<string, unknown>) => ({
         ...row,
         origin: row.origin ?? 'human',
         reviewedAtHead: row.reviewedAtHead ?? false,
+        lastRunAt: row.lastRunAt ?? null,
       })),
       pagination: { page, limit, total }
     });
@@ -1551,7 +1565,11 @@ scriptRoutes.get(
         runAs: scriptExecutions.runAs,
         targetSessionId: scriptExecutions.targetSessionId,
         deviceHostname: devices.hostname,
-        deviceOsType: devices.osType
+        deviceOsType: devices.osType,
+        // #9563 — a `queued` row only says the command was not delivered (no
+        // live agent session); the device's own status is what tells the UI
+        // whether it is actually offline or just awaiting pickup.
+        deviceStatus: devices.status
       })
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
@@ -1618,6 +1636,8 @@ scriptRoutes.get(
         approvalMethod: scriptExecutions.approvalMethod,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
+        // #9563 — see the list endpoint above.
+        deviceStatus: devices.status,
         deviceOrgId: devices.orgId,
         deviceSiteId: devices.siteId
       })

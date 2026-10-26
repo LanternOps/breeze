@@ -23,9 +23,11 @@
     "adminUsersDetailDevices": "Kullanıcı cihazları",
     "aiAgentsImpact": "Yapay Zeka Etkisi",
     "aiAgentsFixMemory": "Düzeltme belleği",
+    "flows": "Akışlar",
+    "flowDetail": "Akış",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
     "aiAgentsRuns": "Aracı Çalıştırmaları",
-    "aiForOffice": "Office için AI",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Yapay Zeka Risk Motoru",
     "alertsDelivery": "Uyarılar – Teslimat",
     "alertsCorrelations": "Uyarı Korelasyonları",
@@ -70,10 +72,10 @@
     "dnsSecurity": "DNS Güvenlik",
     "dr": "Olağanüstü Durum Kurtarma",
     "extensionsNamePath": "Uzantı",
-    "fleet": "Filo Orkestrasyonu",
+    "fleet": "Bulgular",
     "forgotPassword": "Şifremi Unuttum",
     "incidentsDetail": "Olay Ayrıntısı",
-    "incidents": "Olaylar",
+    "incidents": "Güvenlik Olayları",
     "dashboard": "Kontrol Paneli",
     "integrations": "Entegrasyonlar",
     "integrationsPsa": "PSA Entegrasyonları",
@@ -139,6 +141,7 @@
     "settingsBilling": "Faturalandırma Ayarları",
     "settingsCatalog": "Ürün Kataloğu",
     "settingsConnectedApps": "Bağlı uygulamalar",
+    "settingsDeliverableTemplates": "Teslimat şablonları",
     "settingsCustomFields": "Özel Alanlar",
     "settingsEnrollmentKeys": "Kayıt Anahtarları",
     "settingsFilters": "Kayıtlı Filtreler",
@@ -152,6 +155,7 @@
     "settingsProfile": "Profil Ayarları",
     "settingsRoles": "Roller",
     "settingsSitesDetail": "Site Ayarları",
+    "settingsSites": "Siteler",
     "settingsSso": "Tek Oturum Açma (SSO)",
     "settingsUsers": "Kullanıcılar",
     "settingsVariables": "Değişkenler",
@@ -165,7 +169,6 @@
     "ticketsNew": "Bilet Oluştur",
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
-    "workspace": "Yapay Zeka Asistanı",
     "aiAgentsFleetDesign": "Filo Tasarımı",
     "agreementTemplates": "Anlaşma şablonları",
     "agreementTemplateDetail": "Anlaşma şablonu",
@@ -175,8 +178,18 @@
     "securityScans": "IOC Taramaları",
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Uç Nokta Mesajları"
+    "adminWisp": "Wisp",
+    "billingAutopay": "Otomatik ödemeler",
+    "endpointMessages": "Uç Nokta Mesajları",
+    "securityDetectionRules": "Tespit Kuralları",
+    "settingsPlan": "Plan ve özellikler",
+    "settingsWispMemory": "Wisp belleği",
+    "wispThread": "Wisp konuşması",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "Yapay Zekâ Görevleri",
+    "aiTask": "Yapay zekâ görevi",
+    "settingsAi": "Yapay zeka ayarları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -230,7 +243,7 @@
       },
       "connectedApps": {
         "title": "Bağlı Uygulamalar",
-        "description": "Kiracınıza erişim yetkisi verilen yapay zeka asistanlarını ve MCP istemcilerini inceleyin ve iptal edin."
+        "description": "Kiracınıza erişim yetkisi verilen AI istemcilerini inceleyin ve iptal edin."
       },
       "officeAddinBindings": {
         "title": "Outlook Eklenti Bağlamaları",
@@ -259,6 +272,14 @@
       },
       "alertTemplates": {
         "title": "Uyarı şablonları"
+      },
+      "plan": {
+        "title": "Plan ve özellikler",
+        "description": "Planınız, hangi özellikleri içerdiği ve her birinin nereden geldiği."
+      },
+      "wispMemory": {
+        "title": "Wisp belleği",
+        "description": "Wisp’in hatırladıklarını inceleyin, onaylayın ve geri çekin."
       }
     },
     "groups": {
@@ -281,7 +302,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Bağlı uygulamalar",
-    "description": "OAuth üzerinden kiracınıza erişim yetkisi verilen yapay zeka asistanları ve diğer MCP istemcileri. Erişimi istediğiniz zaman iptal edin — uygulamanın belirteci 10 dakika içinde reddedilir."
+    "description": "OAuth üzerinden kiracınıza erişim yetkisi verilen AI istemcileri. Erişimi istediğiniz zaman iptal edin — uygulamanın belirteci 10 dakika içinde reddedilir."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organizasyon ayarları",

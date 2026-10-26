@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} Position(en) liegen über der inbegriffenen Menge und wurden nicht berechnet: {{names}}",
         "uncoveredDevices": "Rechnung erstellt, aber {{count}} Gerät(e) werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
-        "draftDeleted": "Entwurf gelöscht"
+        "draftDeleted": "Entwurf gelöscht",
+        "skipped": {
+          "already_billed": "Keine Rechnung erstellt – dieser Abrechnungszeitraum wurde bereits abgerechnet.",
+          "not_due": "Keine Rechnung erstellt – dieser Vertrag ist noch nicht zur Abrechnung fällig.",
+          "renewal_pending": "Keine Rechnung erstellt – dieser Vertrag hat sein Enddatum überschritten und wartet auf die Verlängerung.",
+          "expired": "Keine Rechnung erstellt – dieser Vertrag ist abgelaufen.",
+          "unknown": "Für diesen Vertrag wurde keine Rechnung erstellt."
+        }
       },
       "cancelConfirm": {
         "title": "Diesen Vertrag kündigen?",
@@ -711,7 +718,15 @@
       },
       "fileType": {
         "image": "gescannte Kopie"
-      }
+      },
+      "sendForSignature": "Zur Unterschrift senden",
+      "filter": {
+        "pending": "Wartet auf Unterschrift",
+        "signed": "Unterzeichnet",
+        "closed": "Abgelehnt / annulliert / abgelaufen"
+      },
+      "downloadOriginal": "Originaldatei",
+      "certifiedUnavailable": "Die beglaubigte Kopie konnte für diese Vereinbarung nicht erstellt werden – stattdessen wurde die Originaldatei heruntergeladen."
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
@@ -757,6 +772,101 @@
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
       "error": "Die unterzeichnete Vereinbarung konnte nicht erfasst werden."
+    },
+    "requests": {
+      "columns": {
+        "template": "Vorlage",
+        "organization": "Organisation",
+        "recipients": "Empfänger",
+        "sent": "Gesendet",
+        "expires": "Läuft ab",
+        "status": "Bearbeitungsstand"
+      },
+      "status": {
+        "draft": "Entwurf",
+        "sent": "Wartet auf Unterschrift",
+        "viewed": "Angesehen",
+        "signed": "Unterzeichnet",
+        "declined": "Abgelehnt",
+        "voided": "Annulliert",
+        "expired": "Abgelaufen"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nichts wartet auf Unterschrift",
+          "description": "Zur Unterschrift gesendete Vereinbarungen erscheinen hier, bis der Kunde unterzeichnet."
+        },
+        "closed": {
+          "title": "Keine abgelehnten, annullierten oder abgelaufenen Anfragen",
+          "description": "Anfragen, die abgelehnt oder annulliert wurden oder abgelaufen sind, erscheinen hier."
+        }
+      },
+      "loadError": "Vereinbarungsanfragen konnten nicht geladen werden.",
+      "recipientsMore": "+{{count}} weitere",
+      "notSent": "Nicht gesendet",
+      "declinedReason": "Abgelehnt: {{reason}}",
+      "voidedReason": "Annulliert: {{reason}}",
+      "copyLink": {
+        "label": "Link kopieren",
+        "success": "Signaturlink kopiert",
+        "error": "Der Signaturlink konnte nicht kopiert werden.",
+        "clipboardError": "Das Kopieren in die Zwischenablage ist fehlgeschlagen. Signierlink: {{link}}"
+      },
+      "void": {
+        "label": "Annullieren",
+        "title": "Diese Vereinbarungsanfrage annullieren?",
+        "description": "Der Signaturlink funktioniert nicht mehr und die Empfänger können diese Vereinbarung nicht mehr unterzeichnen.",
+        "reasonLabel": "Grund (optional)",
+        "confirm": "Anfrage annullieren",
+        "confirming": "Wird annulliert …",
+        "success": "Vereinbarungsanfrage annulliert.",
+        "error": "Die Vereinbarungsanfrage konnte nicht annulliert werden."
+      },
+      "deleteDraft": {
+        "label": "Entwurf löschen",
+        "success": "Entwurf gelöscht.",
+        "error": "Der Entwurf konnte nicht gelöscht werden."
+      }
+    },
+    "send": {
+      "title": "Zur Unterschrift senden",
+      "contract": "Einem Vertrag zuordnen (optional)",
+      "contractsError": "Die Verträge dieser Organisation konnten nicht geladen werden. Sie können die Vereinbarung trotzdem senden und später einem Vertrag zuordnen.",
+      "recipients": "Empfänger",
+      "recipientsHelp": "E-Mail-Adressen, getrennt durch Kommas oder Zeilenumbrüche. Vorausgefüllt mit dem Rechnungskontakt der Organisation.",
+      "recipientsRequired": "Fügen Sie mindestens eine Empfänger-E-Mail hinzu.",
+      "recipientsInvalid": "Das sind keine gültigen E-Mail-Adressen: {{emails}}",
+      "recipientsTooMany": "Höchstens 50 Empfänger.",
+      "cover": "Begleitnachricht (optional)",
+      "expiry": "Link läuft ab am",
+      "expiryPast": "Wählen Sie ein Ablaufdatum in der Zukunft.",
+      "label": "Bezeichnung (optional)",
+      "createDraft": "Entwurf erstellen und Vorschau anzeigen",
+      "creating": "Wird erstellt …",
+      "preview": {
+        "title": "Vorschau",
+        "loading": "Vorschau wird geladen …",
+        "error": "Die Vorschau konnte nicht geladen werden.",
+        "uploaded": "Diese Vorlage ist ein hochgeladenes Dokument. Der Kunde unterzeichnet die hochgeladene Datei."
+      },
+      "unresolved": {
+        "title": "Fehlende Werte vor dem Senden ausfüllen"
+      },
+      "updatePreview": "Vorschau aktualisieren",
+      "updating": "Wird aktualisiert …",
+      "submit": "Senden",
+      "sending": "Wird gesendet …",
+      "createError": "Der Entwurf konnte nicht erstellt werden.",
+      "updateError": "Die Vereinbarung konnte nicht aktualisiert werden.",
+      "sendError": "Die Vereinbarung konnte nicht gesendet werden.",
+      "discardError": "Der Entwurf konnte nicht verworfen werden – er steht weiterhin unter „Wartet auf Unterschrift“, wo Sie ihn löschen können.",
+      "sent_one": "Vereinbarung an {{count}} Empfänger gesendet",
+      "sent_other": "Vereinbarung an {{count}} Empfänger gesendet",
+      "notEmailed": {
+        "no_email_service": "Gesendet, aber E-Mail ist nicht eingerichtet. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "no_recipients": "Gesendet, aber es gab keine Empfänger für die E-Mail. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "send_failed": "Gesendet, aber die E-Mail konnte nicht zugestellt werden. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter."
+      }
     }
   },
   "quotes": {
@@ -1343,8 +1453,10 @@
         "signerNameLabel": "Wer zugestimmt hat",
         "signerEmailLabel": "E-Mail-Adresse (optional)",
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
+        "consequenceInvoiceDraft": "Es wird eine Rechnung als Entwurf erstellt. Sie wird noch nicht ausgestellt oder nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
         "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
+        "consequenceEmailNotConfigured": "Es ist kein E-Mail-Dienst konfiguriert; die Rechnung wird nicht per E-Mail gesendet. Teilen Sie sie über die Rechnungsseite.",
         "consequenceDraft": "Dieses Angebot wurde nie versendet. Der Kunde sieht es zum ersten Mal als Rechnung.",
         "submit": "Annehmen und Rechnung stellen",
         "success": "Angebot angenommen. Rechnung {{number}} erstellt.",
@@ -1360,6 +1472,7 @@
         "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an.",
         "consequenceEmailNoRecipient": "Für dieses Angebot ist kein Empfänger hinterlegt, daher wird die Rechnung möglicherweise nicht per E-Mail versendet. Senden Sie sie bei Bedarf selbst an den Kunden.",
         "successNoRecipient": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde möglicherweise nicht per E-Mail versendet — für dieses Angebot ist kein Empfänger hinterlegt.",
+        "successNoEmailService": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde nicht per E-Mail versendet — es ist kein E-Mail-Dienst konfiguriert. Geben Sie sie über die Rechnungsseite weiter.",
         "overlap": {
           "title": "Diese Organisation hat bereits einen Vertrag im gleichen Rhythmus",
           "body": "Die Annahme hat einen neuen Vertragsentwurf erstellt. Wenn er zusätzlich zum bestehenden aktiviert wird, zahlt der Kunde für beide. Prüfen Sie beide, bevor Sie einen davon aktivieren.",
@@ -1576,76 +1689,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Gesch.",
-        "estimate": "Geschätzte Menge — abgerechnet wird die tatsächliche Anzahl {{set}} in jedem Abrechnungszeitraum.",
         "setDevices": "Geräte",
         "setSeats": "Benutzerplätze",
-        "setGroup": "Geräte in „{{name}}“",
-        "atSite": "{{set}} am Standort {{site}}",
-        "allowanceBill": "Enthält {{included}}; weitere Einheiten werden mit je {{price}} berechnet.",
-        "allowanceFlag": "Enthält {{included}}; weitere Einheiten werden zur Prüfung gemeldet, nicht automatisch berechnet."
+        "setGroup": "Geräte in „{{name}}“"
       },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
-        "download": "Vereinbarung herunterladen",
-        "previewTitle": "Vereinbarung {{name}}",
         "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
-      "agreements": {
-        "heading": "Vereinbarungen",
-        "termsTitle": "Allgemeine Geschäftsbedingungen",
-        "read": "Lesen",
-        "hide": "Ausblenden",
-        "readTime": "ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_one": "{{count}} Abschnitt · ca. {{minutes}} Min. Lesezeit",
-        "sectionsReadTime_other": "{{count}} Abschnitte · ca. {{minutes}} Min. Lesezeit",
-        "pdfDocument": "PDF-Dokument",
-        "unavailable": "Nicht verfügbar",
-        "untitled": "Vereinbarung"
-      },
-      "draft": "Entwurf",
-      "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
-      "imageUnavailable": "Bild nicht verfügbar",
-      "issued": "Ausgestellt",
-      "preparedFor": "Vorbereitet für",
-      "taxId": "Steuernummer: {{id}}",
-      "imageZoomAria": "Größeres Bild anzeigen",
       "preview": {
         "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
         "downloadPdf": "Laden Sie PDF herunter",
-        "preparing": "Vorbereiten…"
-      },
-      "pricing": "Preise",
-      "pricingScrollAria": "Preise – scrollen Sie seitwärts für weitere Spalten",
-      "proposal": "Vorschlag",
-      "proposalImageAlt": "Angebotsbild",
-      "recurrence": {
-        "annual": "Jährlich",
-        "monthly": "Monatlich"
-      },
-      "table": {
-        "amount": "Betrag",
-        "description": "Beschreibung",
-        "qty": "Menge",
-        "tax": "Steuer",
-        "unitPrice": "Stückpreis"
-      },
-      "totals": {
-        "annualRecurring": "Jährlich wiederkehrend",
-        "depositDue": "Anzahlung fällig",
-        "depositDueNow": "Anzahlung jetzt fällig",
-        "dueOnAcceptance": "Fällig bei Abnahme",
-        "firstPeriodSubtotal": "Zwischensumme erster Zeitraum",
-        "firstPeriodTotal": "Gesamtsumme erster Zeitraum",
-        "monthlyRecurring": "Monatlich wiederkehrend",
-        "recurringNote": "Wenn Sie diesen Vorschlag annehmen, werden die einmaligen Kosten jetzt in Rechnung gestellt. Wiederkehrende Positionen werden nach ihrem eigenen Zeitplan abgerechnet.",
-        "remainingBalance": "Restbetrag (gemäß Bedingungen)",
-        "subtotal": "Zwischensumme",
-        "tax": "Steuer"
-      },
-      "unsupportedBlock": "Dieser Blocktyp wird in dieser Ansicht noch nicht unterstützt.",
-      "validUntil": "Gültig bis"
+        "preparing": "Vorbereiten…",
+        "loading": "Kundenansicht wird geladen …",
+        "loadError": "Die Kundenansicht dieses Angebots konnte nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "signatureInert": "Hier unterschreibt Ihr Kunde"
+      }
     },
     "page": {
       "accessDenied": "Sie sind nicht berechtigt, Angebote anzuzeigen.",
@@ -2192,36 +2253,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Bill zu",
-    "documentType": "Rechnung",
-    "due": "Fällig",
-    "empty": "Diese Rechnung enthält noch keine Einzelposten.",
-    "fallbackTitle": "Rechnung",
-    "issued": "Ausgestellt",
-    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
       "downloadPdf": "Laden Sie PDF herunter",
-      "preparing": "Vorbereiten…"
+      "loadError": "Die Kundenansicht dieser Rechnung konnte nicht geladen werden.",
+      "loading": "Kundenansicht wird geladen …",
+      "preparing": "Vorbereiten…",
+      "retry": "Erneut versuchen"
     },
-    "table": {
-      "amount": "Betrag",
-      "description": "Beschreibung",
-      "qty": "Menge",
-      "tax": "Steuer",
-      "unitPrice": "Stückpreis"
-    },
-    "terms": "Allgemeine Geschäftsbedingungen",
-    "ticketHeader": "Ticket-Nr. {{number}}",
-    "ticketWork": "Ticket-Arbeit",
-    "totals": {
-      "amountDue": "Fälliger Betrag",
-      "paid": "Bezahlt",
-      "subtotal": "Zwischensumme",
-      "tax": "Steuer",
-      "total": "Insgesamt"
-    }
+    "ticketHeader": "Ticket-Nr. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Rechnungen",
@@ -2508,7 +2549,7 @@
     "documents": "Dokumente",
     "connections": "Verbindungen",
     "rates": "Tarife",
-    "payments": "Payments"
+    "payments": "Zahlungen"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2582,7 +2623,7 @@
     "ai": {
       "column": "KI-Nutzung",
       "sectionTitle": "KI-Nutzung",
-      "sectionHelp": "Wie die Nutzung des KI-Assistenten durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
+      "sectionHelp": "Wie die Nutzung von Breeze AI durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
       "coverage": "Abrechnung der KI-Nutzung",
       "coverageBillable": "Abrechenbar",
       "coverageIncluded": "Inklusive",
@@ -2846,6 +2887,10 @@
       "confirm": "Bestätigen",
       "failed": "Verifizierung fehlgeschlagen. Versuchen Sie es erneut.",
       "unavailable": "Verifizierung konnte nicht gestartet werden"
+    },
+    "notEnabled": {
+      "title": "Automatische Zahlungen sind für Ihr Konto nicht aktiviert",
+      "hint": "Automatische Zahlungen wurden noch nicht aktiviert. Bitten Sie Ihre Breeze-Administration, sie zu aktivieren, und kehren Sie dann zurück, um die Anmeldung bei Ihren Kunden anzufordern."
     }
   },
   "reminders": {

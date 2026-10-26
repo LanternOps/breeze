@@ -329,6 +329,7 @@
         },
         "approve": "Approve",
         "approved": "Request approved. The requester was emailed a download link.",
+        "approvedNoEmail": "Access approved. No email service is configured, so the requester was not emailed.",
         "approveFailed": "Could not approve the request.",
         "deny": "Deny",
         "denyTitle": "Deny this request?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Could not revoke access.",
         "resend": "Resend link",
         "resent": "A new download link was emailed. The previous link no longer works.",
+        "resentNoEmail": "New download link created. No email service is configured, so it was not emailed. The previous link no longer works.",
         "resendFailed": "Could not resend the link.",
         "errors": {
           "mfaRequired": "Approving or resending requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
@@ -390,7 +392,10 @@
           "saved": "Trust Center defaults saved",
           "saveFailed": "Couldn't save the Trust Center defaults",
           "mfaRequired": "Changing these defaults requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
-          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes."
+          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes.",
+          "conflictNotice": "Someone else saved these defaults while you were editing. Reload theirs to start from their version, or keep editing: saving again will keep failing until you reload.",
+          "reloadTheirs": "Reload theirs",
+          "keepEditing": "Keep editing"
         },
         "title": "Inherited settings"
       },
@@ -587,6 +592,7 @@
       "title": "Documents",
       "subtitle": "Runbooks, baselines, policies and delivery evidence for this organization.",
       "empty": "No documents yet. Upload a runbook, a baseline or a signed policy to start the library.",
+      "emptyPortalHint": "Your customer sees documents marked Visible in portal. A signed proposal or agreement and a security baseline are good first documents.",
       "emptyFiltered": "No documents in this category.",
       "loadFailed": "Could not load documents.",
       "upload": "Upload document",

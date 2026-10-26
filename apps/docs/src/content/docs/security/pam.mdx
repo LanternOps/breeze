@@ -96,6 +96,8 @@ The organization policy is authoritative for dormant elevation-account provision
 
 **`pam_enabled` controls local startup provisioning; it is not a local opt-out from organization PAM policy.** Setting it to `true` alone does not enable UAC interception without an enabled effective policy, and setting it to `false` does not block policy-driven provisioning. Support-mode agents do not provision the account.
 
+On RD Session Hosts the agent runs its Windows helpers on demand. While UAC interception is enabled, it also keeps a SYSTEM helper in every signed-in session so the elevation dialog can appear. See [Windows Helper Lifecycle](/agents/helper/#windows-helper-lifecycle-always-on-vs-on-demand).
+
 `PAM_ACTUATOR_ENABLED` gates the legacy `POST /api/v1/devices/:id/actuate-elevation` endpoint. It is not a kill switch for managed PAM v2. To disable policy-driven UAC interception, disable the effective organization's UAC-interception policy.
 
 ---
@@ -133,6 +135,8 @@ When the agent reports a UAC observation, the control plane decides it before an
 This chain **fails safe**. If either evaluator *errors*, the request falls through to `pending` -- never to an auto-approval (regardless of the configured default verdict). Degrading a would-be blocklist denial to a pending row is preferable to dropping the observation, and an evaluator outage can never become a silent grant.
 
 A rule must carry at least one identifying criterion; a rule scoped only by time window (or nothing) is rejected at the API, because it would match every elevation in the org -- catastrophic for an auto-approve verdict.
+
+**When the device cannot act.** The agent reports the request first and then needs a SYSTEM helper in the requesting user's Windows session to show the dialog and handle `consent.exe`. If the agent gives up because no helper can run the flow in time (for example on a Remote Desktop session host whose session is disconnected, or a helper stuck in crash cooldown), it reports that it cannot act on the request. A request still waiting for a technician is closed as `expired`, so nobody can approve it, and the server then withdraws its mobile approvals. That withdrawal is best-effort (the agent retries a failed one for up to five minutes); a phone approval of a closed request is refused whether or not it has run. When the agent cannot tell, the request stays pending until the stale-request expiry. Under the Expired or All status filter, the requests list shows that the device could not act, with one of three reasons (no PAM helper available, the user's session unavailable, the PAM helper failed to start) and the agent's diagnostic message as a tooltip. A request already decided by policy keeps its status; the report is recorded on it for the audit trail.
 
 ---
 
@@ -187,10 +191,19 @@ Every elevation produces an immutable chain of events on a dedicated ledger, sep
 - Auto-decisions add an `approved` / `denied` event attributed to the deciding software policy or PAM rule.
 - Human decisions add `approved`, `denied`, or `revoked` events attributed to the approver **by user**, with the supplied reason.
 - Actuation, session start/stop, and command execution land as their own event types.
+- A `device_unable` event records an agent's report that it cannot act on the request, with the reason category; when that closes a pending request, an `expired` event with cause `device_unable` follows it.
 
 The ledger denormalizes the organization id and ties each audit row to its parent request with a **composite foreign key** `(elevation_request_id, org_id) -> elevation_requests(id, org_id)`. This is a structural guarantee that an audit row's tenant can never drift from its parent request's tenant, even under a logic bug. Because it inherits the platform's forced row-level security, an audit entry is only ever visible within its own tenant.
 
 The **Audit** tab of the Privileged Access console renders this ledger -- filterable by status, flow, and date range, and exportable to CSV for compliance reporting. Each entry names the decider, so there is never ambiguity about who (or what rule) granted access.
+
+### Ownership changes
+
+An elevation request belongs to the organization that owned the device when it was made. Moving a device to another organization, or merging its organization into another, expires every elevation request on it that is still live and has not been actuated -- pending, approved and not yet used -- and writes an `expired` event to the ledger naming the ownership change as the cause. The departing organization's policy decided those requests; the receiving organization's policy decides any new ones. Evidence of actuations that already happened stays with the request and is never rewritten.
+
+### Evidence retention after a merge
+
+When an organization is merged away while it still owns PAM evidence, Breeze keeps it as a held shell rather than deleting the chain, so the ledger stays verifiable. A nightly job deletes evidence from those held shells only -- never from a live organization -- once every row in the shell's chain is older than `PAM_EVIDENCE_RETENTION_DAYS` (default 400, never below 30). Set `PAM_EVIDENCE_RETENTION_ENABLED=false` to keep merged evidence indefinitely. See [Privileged Access Management](/features/pam/) for the operator view.
 
 ---
 

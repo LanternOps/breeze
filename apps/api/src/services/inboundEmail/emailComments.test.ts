@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('../ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 const { insertReturningMock, selectLimitMock, emitMock, outboxMock } = vi.hoisted(() => ({
   insertReturningMock: vi.fn(),
   selectLimitMock: vi.fn(),
@@ -43,6 +50,8 @@ describe('insertEmailAuthoredComment', () => {
     });
 
     expect(outboxMock).toHaveBeenCalledTimes(1);
+    // #8972 W0: the ticket row is locked before the comment insert
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID);
     expect(outboxMock).toHaveBeenCalledWith({
       orgId: ORG_ID,
       ticketId: TICKET_ID,

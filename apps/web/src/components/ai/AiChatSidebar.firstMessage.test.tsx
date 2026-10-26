@@ -47,6 +47,12 @@ const resetStore = (over: Partial<ReturnType<typeof useAiStore.getState>> = {}) 
     ...over,
   });
 
+/** #9427: the attach a hydrate opens; no turn running. */
+const idleAttach = (): Response => {
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'attach_state', turn: 'idle', turnId: null, lastSeq: 0, turnUserMessageId: null, partial: false, replay: [], pendingCards: [], activePlan: null, turnModel: null })}\n\n`);
+  return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+};
+
 describe('AiChatSidebar first message of a new session (#6933)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -85,9 +91,10 @@ describe('AiChatSidebar first message of a new session (#6933)', () => {
   it('still restores history for a persisted session on page load', async () => {
     resetStore({ sessionId: 's-old' });
     fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/s-old/stream') return idleAttach();
       if (url === '/ai/sessions/s-old') {
         return json({
-          session: { status: 'active', orgId: 'org-1' },
+          session: { status: 'active', orgId: 'org-1', type: 'general' },
           messages: [
             { id: 'm1', role: 'user', content: 'hello', createdAt: '2026-09-01T00:00:00.000Z' },
             { id: 'm2', role: 'assistant', content: 'hi there', createdAt: '2026-09-01T00:00:01.000Z' },
@@ -101,6 +108,8 @@ describe('AiChatSidebar first message of a new session (#6933)', () => {
 
     await waitFor(() => expect(useAiStore.getState().messages).toHaveLength(2));
     expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/s-old');
+    // #9427: the restore then attaches to the session's turn, once.
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u === '/ai/sessions/s-old/stream')).toHaveLength(1));
     expect(useAiStore.getState().messages.map((m) => m.content)).toEqual(['hello', 'hi there']);
   });
 });

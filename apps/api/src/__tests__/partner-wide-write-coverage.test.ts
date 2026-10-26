@@ -62,6 +62,20 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
+  // --- business calendars (#8973 W4) ------------------------------------------
+  'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  // Wisp W02 (#9908): worker/system path only — it only ever TIGHTENS a grant
+  // (pause/expire) or lifts a pause it set itself; the caller-facing
+  // create/refresh/revoke/settings gates live in services/wisp/grants.ts.
+  'services/wisp/grantLifecycle.ts': 'worker/system path: only ever TIGHTENS a grant (pause/expire) or restores a pause it caused itself; the caller-facing create/refresh/revoke gates live in services/wisp/grants.ts',
+  // Wisp W04 (#9910): a wisp_threads row is the conversation state of ONE
+  // grant, not partner-wide configuration pushed into every org.
+  'services/wisp/concerns.ts': 'Wisp W05a triage facts (wisp_concerns / wisp_concern_recipients): per-subject concerns and per-grant recipient state, not partner-wide config; every write runs in system context on ids the caller already authorised (grant-owner routes, chat tools under auth.wispGrant after assertWithinCeiling, the assessment finalizer)',
+  'services/wisp/threadLinks.ts': 'Wisp W08 (#9914) thread links (wisp_thread_links): one grant\'s own thread context, not partner-wide config; every add resolves the entity first (caller permission, live ceiling, token scope — services/wisp/entityRefs.ts) and every query is pinned to (partner_id, thread_id) of a thread the caller owns (loadOwnThread / the chat tool\'s own grant)',
+  'services/wisp/watches.ts': 'Wisp W05a standing checks (wisp_watches): one grant\'s own rows, not partner-wide config; createWatch runs assertWithinCeiling and stamps grant/owner from the ceiling, deleteWatch is keyed by the ceiling\'s grant, the scheduler functions run in system context',
+  'services/wisp/threads.ts': 'per-grant conversation state (one row per wisp_grants id), not partner-wide config; writes run in system context on ids the caller already authorised (validateWispGrantForSession / the grant-owner thread routes), and setThreadFocus is keyed by the ceiling\'s own grant + partner after assertWithinCeiling',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and
@@ -323,7 +337,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offeringVerificationStore.ts': 'W06 (#7604) Task 12: worker-only writer of a gateway offering\'s verification record (capabilities), run by the ai-model-discovery verify-offering job under system scope for the job\'s (offeringId, partnerId); the route that queues it (routes/aiModels/offerings.ts /verify) is gated BILLING_MANAGE + MFA + requirePartnerWide. Never enables, never takes caller-supplied capabilities',
   'services/aiModels/connectionSettings.ts':'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
-  'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
+  'services/builtinDeploymentPackages.ts': 'ensureBuiltinPackage: routes/huntress.ts + routes/sentinelOne.ts behind requirePartnerManager; ensurePinnedBuiltinPackage: routes/softwareBuiltinPackages.ts behind canManagePartnerWidePolicies + devices.execute + MFA (#6958 D2); refreshPinnedBuiltinPackages: boot task, no caller',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
@@ -414,6 +428,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
   'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
+  // Partner Entitlements W1 (#9907). partner_entitlements rows are COMMERCIAL
+  // facts, not partner-wide configuration: a partner must never write them, so
+  // canManagePartnerWidePolicies (which a partner admin passes) is the wrong gate.
+  'services/entitlements.ts': 'commercial entitlement facts written only in system context by the platform-admin route routes/admin/entitlements.ts (platformAdminMiddleware + requireMfa) and, from W2, the billing/licence writers; no partner-scoped caller ever reaches these write primitives',
 };
 
 /**

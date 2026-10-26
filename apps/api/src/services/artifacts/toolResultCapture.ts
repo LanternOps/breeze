@@ -1,5 +1,6 @@
 import { aiArtifactCaptureEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
+import { isFlowPrincipal } from '../../middleware/principalKind';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { captureException } from '../sentry';
 import { ARTIFACT_PREVIEW_BYTES, REDACTED_CAPTURE_NAME_INFIX, buildPreviews, createArtifact } from './artifactService';
@@ -53,6 +54,14 @@ export interface CaptureScope {
   orgId: string;
   /** `ai_sessions.id` — what the artifact row's `session_id` FK points at. */
   sessionId: string;
+  /**
+   * Wisp W04 (w00 A24): the `wisp_threads.id` this session is attached to.
+   * READ SIDE ONLY — `executeTool` copies it onto the `read_artifact` anchor so
+   * thread attachments (stored with `session_id` NULL) are readable from every
+   * session on the thread. `captureContextFrom` ignores it: a capture still
+   * anchors on the session. Omit the key entirely when there is no thread.
+   */
+  wispThreadId?: string | null;
 }
 
 export interface CaptureContext {
@@ -101,6 +110,9 @@ export function captureContextFrom(
   // call, so it must never be the thing that throws — `middleware/auth.ts` reads
   // it the same defensive way (isAiAgentPrincipal, dbAccessContextFromAuth).
   const principal = auth.principal as AuthContext['principal'] | undefined;
+  // Tool catalog W04 (#5219): a flow run owns no captured artifacts (the owner
+  // is an agent run or a chat session); its run id is never an agent run id.
+  if (isFlowPrincipal(auth)) return null;
   const runId = principal?.kind === 'ai_agent' ? principal.runId : null;
   const sessionId = runId ? null : (opts?.capture?.sessionId ?? null);
   if (!orgId) return null;

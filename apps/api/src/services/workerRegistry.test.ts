@@ -48,7 +48,7 @@ const EXPECTED_WORKER_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker', 'trustPageSnapshotWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention',
@@ -58,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'restorePointAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
+  // #10019/#10020 — DNS events/aggregations retention + background integration delete.
+  'dnsSecurityRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
@@ -65,7 +67,7 @@ const EXPECTED_WORKER_NAMES = [
   'migrationWindowSweep',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
-  'quickSupportReaper', 'softwareUploadSessionCleanup',
+  'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
@@ -94,12 +96,15 @@ const EXPECTED_WORKER_NAMES = [
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
-  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
+  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
-  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
+  'alertVerdictScheduler', 'aiAgentSweepScheduler',
+  // Wisp W05b Task 9 (#9917) — wake tick + debounced assess jobs.
+  'wispWakeScheduler',
+  'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',
   'scriptReviewWorker',
@@ -116,6 +121,13 @@ const EXPECTED_WORKER_NAMES = [
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
+  // Tool catalog W04 (#5219), Task A8 — flow run slices, the 60 s run
+  // reconciler and daily run-body retention.
+  'flowRunner',
+  'flowRunReconciler',
+  'flowRunRetention',
+  // Task A9 — the schedule-trigger tick.
+  'flowScheduleTick',
   // Partner sending domains W03 (#6183) — the one place that calls the
   // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
   'sendingDomainsWorker',
@@ -142,6 +154,15 @@ describe('workerRegistry: losslessness', () => {
     expect(has('all')).toBe(true);
     expect(has('worker')).toBe(false);
   });
+
+  it('registers the Wisp grant reconciler (W02) as global placement', async () => {
+    const entry = WORKER_REGISTRY.find((w) => w.name === 'wispGrantReconciler');
+    expect(entry, 'wispGrantReconciler is not in the worker registry').toBeDefined();
+    expect(entry!.placement).toBe('global');
+    const loaded = await entry!.load();
+    expect(typeof loaded.init).toBe('function');
+    expect(typeof loaded.shutdown).toBe('function');
+  }, 60_000);
 
   it('registers the m365 sync retention worker as global placement', async () => {
     const entry = WORKER_REGISTRY.find((w) => w.name === 'm365SyncRetention');

@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Connected apps (org-wide)",
       "description": {
-        "prefix": "AI assistants and other MCP clients that users in",
+        "prefix": "AI clients that users in",
         "yourOrganization": "your organization",
         "suffix": "have authorized. Block any client to immediately revoke every active grant."
       },
@@ -561,6 +561,61 @@
         "mfaRequired": "Flipping the AI kill switch requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Per-partner overview of Wisp grants and today's activity. Read-only.",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "loading": "Loading...",
+      "empty": "No partners have Wisp grants yet",
+      "disabled": "Wisp is not enabled on this deployment (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Failed to load the Wisp overview"
+      },
+      "platformAdmin": {
+        "title": "Platform admin only",
+        "description": "The Wisp overview is available to platform administrators."
+      },
+      "table": {
+        "partner": "Partner",
+        "plan": "Plan",
+        "activeGrants": "Active grants",
+        "pausedGrants": "Paused grants",
+        "assessmentsToday": "Checks today",
+        "specialistRequestsToday": "Specialist requests today",
+        "openConcerns": "Open concerns",
+        "budgetExhaustedToday": "Budget-exhausted grants today"
+      },
+      "grants": {
+        "loading": "Loading grants...",
+        "error": "Failed to load grants",
+        "empty": "This partner has no grants",
+        "grantor": "Grantor",
+        "scope": "Scope",
+        "status": "Status",
+        "pausedReason": "Paused reason",
+        "expires": "Expires",
+        "budget": "Budget (cents/day)",
+        "tickMinutes": "Tick (min)",
+        "assessmentsToday": "Checks today",
+        "partnerWide": "Partner-wide"
+      },
+      "status": {
+        "active": "Active",
+        "paused": "Paused",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget exhausted",
+        "grantor_suspended": "Grantor suspended",
+        "grantor_access_lost": "Grantor lost access",
+        "factor_expired": "Factor expired",
+        "entitlement_lost": "Entitlement lost",
+        "user_paused": "Paused by user",
+        "partner_disabled": "Partner disabled"
+      }
+    },
     "systemPage": {
       "title": "System",
       "description": "Deployment-wide status for platform administrators. This page is read-only.",
@@ -791,6 +846,7 @@
       "agent.eventlogs.submit": "Reported event logs",
       "agent.reliability.submit": "Reported reliability",
       "agent.command.result.submit": "Submitted command result",
+      "agent.command.*": "Queued command: {command}",
       "agent.filesystem.threshold_scan.queued": "Filesystem scan queued",
       "agent.enroll": "Agent enrolled",
       "api.fallback.post": "Submitted {target}",
@@ -808,6 +864,8 @@
       "session_consent_bypassed": "Remote session started without an answer to the consent prompt",
       "screen_access_consent_blocked": "Screen access blocked: device requires user consent",
       "device.wake_on_lan": "Sent Wake-on-LAN",
+      "device.recovery_key.reveal": "Revealed a recovery key",
+      "device.recovery_key.rotate": "Rotated a recovery key",
       "device.create": "Added device",
       "device.update": "Updated device",
       "device.delete": "Removed device",
@@ -826,7 +884,23 @@
       "enrollment_key.revoke": "Revoked enrollment key",
       "partner.settings.update": "Updated partner settings",
       "ai.message.send": "Sent AI message",
+      "backup.restore.create": "Started a restore",
+      "backup.restore.cancel": "Cancelled a restore",
+      "backup.restore.unattested_override": "Confirmed restore of an unverified snapshot",
       "ai.tool_approval.update": "Updated AI tool approval",
+      "ai.tool.*": "AI tool: {tool}",
+      "ai.session.create": "Started a Breeze AI conversation",
+      "ai.session.close": "Closed a Breeze AI conversation",
+      "ai.session.flag": "Flagged a Breeze AI conversation",
+      "ai.session.unflag": "Unflagged a Breeze AI conversation",
+      "ai.message.interrupt": "Stopped AI response",
+      "ai.command.executed": "AI ran a command",
+      "ai.script.executed": "AI ran a script",
+      "ai.external_tool.call": "AI called an external tool",
+      "ai.plan_approval.update": "Updated AI plan approval",
+      "ai.plan.abort": "Aborted AI plan",
+      "ai.security.prompt_injection_detected": "AI: prompt injection detected",
+      "ai.budget.update": "Updated AI budget",
       "mcp.initialize": "MCP: initialize",
       "mcp.notifications.initialized": "MCP: initialized notifications",
       "mcp.tools.list": "MCP: list tools",
@@ -834,6 +908,7 @@
       "mcp.resources.list": "MCP: list resources",
       "terminal.session.summary": "Terminal session summary",
       "script.run": "Ran script",
+      "script.execute": "Ran script on device",
       "script.create": "Created script",
       "script.update": "Updated script",
       "script.delete": "Deleted script",

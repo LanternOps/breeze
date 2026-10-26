@@ -720,6 +720,8 @@
       "timeout": "A execução do script atingiu o tempo limite",
       "pending": "O script está aguardando execução",
       "queued": "O script está na fila para envio ao dispositivo",
+      "queuedAwaitingPickup": "Nenhuma sessão ativa do agente o retirou ainda. O script será entregue quando o agente do dispositivo fizer o próximo check-in.",
+      "deviceOffline": "O dispositivo está offline. O script será entregue quando ele se reconectar.",
       "cancelling": "Interrupção solicitada — aguardando confirmação do dispositivo.",
       "cancelled": "O script foi interrompido no dispositivo"
     },
@@ -743,7 +745,8 @@
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
       "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
-      "queuedOffline": "Na fila — dispositivo offline"
+      "queuedOffline": "Na fila — dispositivo offline",
+      "queuedAwaitingPickup": "Na fila — aguardando o dispositivo retirá-lo"
     }
   },
   "executionHistory": {
@@ -774,7 +777,8 @@
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
       "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
-      "queuedOffline": "Na fila — dispositivo offline"
+      "queuedOffline": "Na fila — dispositivo offline",
+      "queuedAwaitingPickup": "Na fila — aguardando retirada"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -803,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Descreva o script de que você precisa...",
-      "opening": "Abrindo o assistente de IA..."
+      "opening": "Abrindo o Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Parar geração",
@@ -822,12 +826,12 @@
       "reject": "Rejeitar"
     },
     "empty": {
-      "title": "Assistente de IA para scripts",
-      "description": "Descreva o que você precisa e eu escreverei o script para você."
+      "title": "Breeze AI",
+      "description": "Peça ao Breeze AI para escrever ou revisar este script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistente de IA para scripts",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Reaplicar alteração da IA",
       "redo": "Refazer",
@@ -966,7 +970,15 @@
       "allAdmitted": "Todos os dispositivos selecionados foram admitidos e colocados na fila.",
       "partiallyAdmitted": "Alguns dispositivos foram admitidos e colocados na fila. Revise os destinos restantes.",
       "rejected": "Nenhum dispositivo foi admitido. Revise os motivos abaixo.",
-      "queued": "Na fila"
+      "queued": "Na fila",
+      "reasons": {
+        "not_found_or_inaccessible": "Dispositivo não encontrado ou inacessível",
+        "site_access_denied": "Você não tem acesso ao site deste dispositivo",
+        "script_org_mismatch": "O script pertence a uma organização diferente da do dispositivo",
+        "os_incompatible": "O script não é compatível com o sistema operacional deste dispositivo",
+        "device_decommissioned": "O dispositivo foi desativado",
+        "maintenance_suppressed": "Ignorado: o dispositivo está em uma janela de manutenção"
+      }
     },
     "confirm": {
       "title": "Confirmar execução",
@@ -1122,8 +1134,8 @@
       "exitCodeSeverity": "Gravidade por código de saída"
     },
     "ai": {
-      "toggleTitle": "Alternar assistente de IA para scripts (⌘⇧I)",
-      "button": "Assistente de IA"
+      "toggleTitle": "Alternar Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Ainda não há parâmetros. Parâmetros permitem que usuários informem valores em tempo de execução — referencie-os no script como",

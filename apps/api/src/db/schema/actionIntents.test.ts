@@ -30,10 +30,12 @@ describe('actionIntentStatusEnum', () => {
 });
 
 describe('actionIntentSourceEnum', () => {
-  it('has exactly chat, mcp_api, and ai_agent', () => {
+  it('has exactly chat, mcp_api, ai_agent, and flow', () => {
     // 'ai_agent' (wave 3) is the autonomous AI agent principal's source —
-    // NOT the same as 'agent', which is the Go device agent.
-    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent']);
+    // NOT the same as 'agent', which is the Go device agent. 'flow' (tool
+    // catalog W04, #5219) is a parked Tier-3 flow step; the SQL CHECK pin is
+    // in flowRuns.checkPins.test.ts.
+    expect(actionIntentSourceEnum).toEqual(['chat', 'mcp_api', 'ai_agent', 'flow']);
   });
 });
 
@@ -301,6 +303,8 @@ describe('action_intents schema', () => {
         'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
+        // W04 (#5219): the flow run actor root.
+        'requestingFlowRunId',
         'scopeKind',
         'scopeDeviceId',
         'scopeTicketId',
@@ -354,6 +358,9 @@ describe('action_intents schema', () => {
         'targetEntraOid',
         'targetConnectionRef',
         'dispatchStartedAt',
+        // B-W06 (#6160): stamped only by the status-change trigger
+        // (2027-01-04-121000-action-intents-status-changed-at.sql).
+        'statusChangedAt',
       ].sort(),
     );
   });

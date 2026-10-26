@@ -10,6 +10,9 @@
  * No capacity figure: object stores have no meaningful "total", and inventing
  * one would be worse than showing usage alone.
  *
+ * Usage is STORED bytes (services/backupStoredBytes.ts, #9631), not the sum
+ * of every snapshot's logical size.
+ *
  * Runs on the ambient request transaction via the RLS-aware `db`; org is
  * filtered explicitly and the snapshot side takes the caller's site-scoped
  * device list, because RLS does not see the site axis.
@@ -17,6 +20,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupConfigs, backupSnapshots } from '../db/schema';
+import { sumStoredSnapshotBytesByProvider } from './backupStoredBytes';
 
 export type StorageProviderRow = {
   id: string;
@@ -84,16 +88,7 @@ export async function getStorageByProvider(
       .groupBy(backupConfigs.provider),
     noVisibleDevices
       ? Promise.resolve([] as UsageRow[])
-      : db
-          .select({
-            provider: backupConfigs.provider,
-            bytes: sql<string>`coalesce(sum(${backupSnapshots.size}), 0)::bigint`,
-            snapshots: sql<number>`count(*)::int`,
-          })
-          .from(backupSnapshots)
-          .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
-          .where(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope))
-          .groupBy(backupConfigs.provider),
+      : sumStoredSnapshotBytesByProvider(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope)),
   ]);
 
   return buildStorageProviders(configRows, usageRows);

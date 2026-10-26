@@ -292,10 +292,17 @@ describe('m365 sync action contracts', () => {
     expect(m365SyncFailureCodeSchema.safeParse('continuation_invalid').success).toBe(true);
     expect(readActionFailureCodeSchema.safeParse('continuation_invalid').success).toBe(false);
     expect(m365SyncFailureCodeSchema.safeParse('sync_capacity').success).toBe(false);
-    // The sync enum is exactly the read enum plus one code — asserted by
-    // derivation so a future read-enum addition cannot silently skip sync.
+    // #9393: graph_provider_rejected (Graph refused the request, e.g. a 400 on a
+    // bad $filter) is sync-only too — the interactive read path still folds it.
+    expect(m365SyncFailureCodeSchema.safeParse('graph_provider_rejected').success).toBe(true);
+    expect(readActionFailureCodeSchema.safeParse('graph_provider_rejected').success).toBe(false);
+    expect(m365SyncActionResponseSchema.safeParse({
+      success: false, code: 'graph_provider_rejected',
+    }).success).toBe(true);
+    // The sync enum is exactly the read enum plus the sync-only codes — asserted
+    // by derivation so a future read-enum addition cannot silently skip sync.
     expect(m365SyncFailureCodeSchema.options).toEqual([
-      ...readActionFailureCodeSchema.options, 'continuation_invalid',
+      ...readActionFailureCodeSchema.options, 'continuation_invalid', 'graph_provider_rejected',
     ]);
   });
 });

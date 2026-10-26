@@ -406,6 +406,9 @@ type helperLifecycleController interface {
 	Done() <-chan struct{}
 	Mode() string
 	SetModeOverride(override string)
+	// SetPAMHelperHold keeps a SYSTEM helper in every signed-in session while
+	// UAC interception is enabled (#8996); a no-op in always-on mode.
+	SetPAMHelperHold(enabled bool)
 	AcquireLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	RenewLease(sessionID uint32, role ipc.HelperRole, opID string, ttl time.Duration) error
 	ReleaseLease(sessionID uint32, role ipc.HelperRole, opID string)
@@ -453,13 +456,17 @@ type Heartbeat struct {
 	client                    *http.Client
 	clientMu                  sync.RWMutex
 	stopChan                  chan struct{}
-	metricsCol                *collectors.MetricsCollector
-	hardwareCol               *collectors.HardwareCollector
-	softwareCol               *collectors.SoftwareCollector
-	softwareObservationFn     func() (collectors.SoftwareInventoryObservationV2, error)
-	inventoryCol              *collectors.InventoryCollector
-	vpnCol                    *collectors.VPNCollector
-	changeTrackerCol          *collectors.ChangeTrackerCollector
+	// pamUnableStop closes as Stop begins, ahead of the bounded drain that
+	// precedes stopChan, so an in-flight PAM unable report is cancelled
+	// within the shutdown stage budget.
+	pamUnableStop         chan struct{}
+	metricsCol            *collectors.MetricsCollector
+	hardwareCol           *collectors.HardwareCollector
+	softwareCol           *collectors.SoftwareCollector
+	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol          *collectors.InventoryCollector
+	vpnCol                *collectors.VPNCollector
+	changeTrackerCol      *collectors.ChangeTrackerCollector
 	// hardwareCollectFn / memoryCollectFn override the hardware-send path's
 	// collectors in tests; nil uses hardwareCol.CollectHardware and
 	// collectors.CollectMemoryModules. memoryCollectTimeout 0 = default.
@@ -504,18 +511,21 @@ type Heartbeat struct {
 	// commandJournal records, on disk, which server-tracked commands are
 	// executing, so a restart can report one that died with no result as
 	// failed instead of leaving its row in `sent` until the reaper (#8296).
-	commandJournal        *commandJournal
-	mu                    sync.Mutex
-	lastInventoryUpdate   time.Time
-	lastEventLogUpdate    time.Time
-	lastSecurityUpdate    time.Time
-	lastRecoveryKeysFP    string
-	pendingRecoveryKeys   []security.RecoveryKey
-	lastSessionUpdate     time.Time
-	lastPostureUpdate     time.Time
-	lastReliabilityUpdate time.Time
-	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
-	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
+	commandJournal      *commandJournal
+	mu                  sync.Mutex
+	lastInventoryUpdate time.Time
+	lastEventLogUpdate  time.Time
+	lastSecurityUpdate  time.Time
+	lastRecoveryKeysFP  string
+	// lastRecoveryKeysCollect is when the security tick last read the
+	// recovery protectors; see recoveryKeyCollectInterval.
+	lastRecoveryKeysCollect time.Time
+	pendingRecoveryKeys     []security.RecoveryKey
+	lastSessionUpdate       time.Time
+	lastPostureUpdate       time.Time
+	lastReliabilityUpdate   time.Time
+	lastHardwareUpdate      time.Time // stamped at startup; gate then re-runs every 24 h
+	lastPatchUpdate         time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 	// Hardware health (RAID/disk) collection state. hwContext/hwCancel bound
 	// in-flight collect/upload work so shutdown can cancel it; hwStarted /
 	// hwRunning / hwStopping / hwDisabled* gate dispatch (see hardware_health.go).
@@ -588,9 +598,29 @@ type Heartbeat struct {
 	closeSessionBroker         func()
 	// PAM seams default to the real broker methods in RunPamFlow/denyConsent
 	// when nil; overridden in pam_flow_test.go.
-	pamFindSession    func(capability, targetWinSession string) *sessionbroker.Session
-	pamRequestDialog  func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
+	pamRequestDialog func(session *sessionbroker.Session, id string, req ipc.PamRequestDialog, timeout time.Duration) (ipc.PamDialogResult, error)
+	// pamConsoleSessionID resolves the console session for the on-demand
+	// helper spawn when the requester session is unknown. nil uses
+	// sessionbroker.GetConsoleSessionID — the same target FindCapableSession
+	// falls back to.
+	pamConsoleSessionID func() string
+	// pamReportUnable sends the "cannot act on this elevation" report (#9517);
+	// nil means reportPamUnable's real POST (sendPamElevationUnable), sent off
+	// the etwlua loop goroutine.
+	pamReportUnable   func(requestID string, unable pamUnable)
 	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
+	// nil means sessionBroker.DismissPamConsentInstance.
+	pamDismissConsentInstance func(session *sessionbroker.Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamPendingConsents remembers the consent.exe each request parked for
+	// technician approval was raised from, so a verified pam_apply_v2 launch
+	// can dismiss that prompt and no other (pam_approved_consent.go).
+	pamPendingConsents pendingPamConsents
+	// pamApprovedConsentQuiesceWait bounds how long an uncertain approved-
+	// prompt dismissal keeps pamActuateMu while waiting for the helper to
+	// prove it finished. Zero means pamDismissTimeout; tests shrink it.
+	pamApprovedConsentQuiesceWait time.Duration
 	// pamActuateMu serializes consent.exe actuation/dismissal so the local
 	// etwlua flow (RunPamFlow) and the remote actuate_elevation command never
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
@@ -1123,15 +1153,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	outboxRoot := backupResultOutboxDir()
 	h := &Heartbeat{
-		config:       cfg,
-		secureToken:  secToken,
-		client:       httpClient,
-		stopChan:     make(chan struct{}),
-		metricsCol:   collectors.NewMetricsCollector(),
-		hardwareCol:  collectors.NewHardwareCollector(),
-		softwareCol:  collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol: collectors.NewInventoryCollector(),
-		vpnCol:       collectors.NewVPNCollector(),
+		config:        cfg,
+		secureToken:   secToken,
+		client:        httpClient,
+		stopChan:      make(chan struct{}),
+		pamUnableStop: make(chan struct{}),
+		metricsCol:    collectors.NewMetricsCollector(),
+		hardwareCol:   collectors.NewHardwareCollector(),
+		softwareCol:   collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:  collectors.NewInventoryCollector(),
+		vpnCol:        collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -2161,10 +2192,7 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
-		h.mu.Lock()
-		h.helperLifecycle = lifecycle
-		h.lifecycleCancel = cancel
-		h.mu.Unlock()
+		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
 		}, lifecycleBootstrapRetryInterval)
@@ -2405,7 +2433,7 @@ func (h *Heartbeat) Start() {
 			}
 			// Send security status every 5 minutes
 			if shouldSendSecurity {
-				go h.sendSecurityStatus()
+				go h.sendSecurityStatus(false)
 				go h.sendRecoveryKeys()
 			}
 			if shouldSendSessions {
@@ -2466,6 +2494,9 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
+		if h.pamUnableStop != nil {
+			close(h.pamUnableStop)
+		}
 		h.stopHardwareHealth()
 		h.stopTimeSync()
 		h.stopWorkloads()
@@ -4152,6 +4183,12 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.Scope != "" {
 			item["scope"] = p.Scope
 		}
+		// Where the severity came from (vendor rating vs. derived from the
+		// update's classification, #9387). Omitted when the provider has no
+		// provenance, so the API stores NULL rather than a guess.
+		if p.SeveritySource != "" && severity != "unknown" {
+			item["severitySource"] = p.SeveritySource
+		}
 		items[i] = item
 	}
 	return items
@@ -4370,8 +4407,15 @@ func (h *Heartbeat) sendEventLogs() {
 	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
 }
 
-func (h *Heartbeat) sendSecurityStatus() {
-	status, err := security.CollectStatus(h.config)
+// sendSecurityStatus uploads security posture. The 5-minute tick passes
+// fresh=false (slow Windows probes served from cache, #9267); an explicit
+// technician request (Refresh Inventory) passes fresh=true.
+func (h *Heartbeat) sendSecurityStatus(fresh bool) {
+	collect := security.CollectStatus
+	if fresh {
+		collect = security.CollectStatusFresh
+	}
+	status, err := collect(h.config)
 	if err != nil {
 		log.Warn("security status collection warning", "error", err.Error())
 	}
@@ -4381,8 +4425,9 @@ func (h *Heartbeat) sendSecurityStatus() {
 
 // sendRecoveryKeys escrows the device's BitLocker recovery keys. Runs on the
 // security tick but only transmits when the key set changed (fingerprint
-// gate) — recovery keys should not transit the wire every 5 minutes. Also
-// drains rotation results whose upload previously failed.
+// gate) — recovery keys should not transit the wire every 5 minutes — and only
+// re-reads the protectors every recoveryKeyCollectInterval (#9267). Drains
+// rotation results whose upload previously failed on every tick.
 func (h *Heartbeat) sendRecoveryKeys() {
 	if !h.loopReady("PUT", h.agentRouteURL("security/recovery-keys")) {
 		return // before the pop: parked keys stay parked, no false key-loss ERROR
@@ -4404,8 +4449,27 @@ func (h *Heartbeat) sendRecoveryKeys() {
 		}
 	}
 
-	keys, err := security.CollectRecoveryKeys()
+	now := time.Now()
+	h.mu.Lock()
+	due := h.lastRecoveryKeysCollect.IsZero() || now.Sub(h.lastRecoveryKeysCollect) >= recoveryKeyCollectInterval
+	if due {
+		// Stamped before the read so a failing read (no BitLocker module,
+		// PowerShell timeout) is retried after the interval, not every tick.
+		h.lastRecoveryKeysCollect = now
+	}
+	h.mu.Unlock()
+	if !due {
+		return
+	}
+
+	keys, err := collectRecoveryKeys()
 	if err != nil {
+		// Retry sooner than the full interval: the common transient cause is a
+		// PowerShell cold start after boot hitting its timeout, and a newly
+		// BitLocker-enabled volume should not wait half an hour for escrow.
+		h.mu.Lock()
+		h.lastRecoveryKeysCollect = now.Add(recoveryKeyErrorRetry - recoveryKeyCollectInterval)
+		h.mu.Unlock()
 		log.Warn("recovery key collection failed", "error", err.Error())
 		return
 	}
@@ -4417,6 +4481,13 @@ func (h *Heartbeat) sendRecoveryKeys() {
 		return
 	}
 	if err := h.pushRecoveryKeys("snapshot", keys); err != nil {
+		// Not escrowed: re-read and retry after recoveryKeyErrorRetry rather
+		// than the full interval. Not on the very next tick — a server outage
+		// or a persistent rejection would otherwise put the PowerShell read
+		// back on every 5-minute tick fleet-wide.
+		h.mu.Lock()
+		h.lastRecoveryKeysCollect = now.Add(recoveryKeyErrorRetry - recoveryKeyCollectInterval)
+		h.mu.Unlock()
 		return
 	}
 	h.mu.Lock()
@@ -5908,6 +5979,9 @@ func (h *Heartbeat) reconcileAndReapplyPAMPolicyLocked(ctx context.Context) []pa
 }
 
 func (h *Heartbeat) handleUACInterceptionLocked(on bool) {
+	// Every exit path leaves the lifecycle's PAM hold matching the effective
+	// interception state (#8996), including a rejected enable (stays off).
+	defer h.syncPAMHelperHold()
 	if !on {
 		prev := h.uacInterceptionEnabled.Swap(false)
 		if h.pamLifetimeManager != nil {

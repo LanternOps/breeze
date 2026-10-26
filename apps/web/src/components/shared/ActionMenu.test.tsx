@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ActionMenu } from './ActionMenu';
@@ -172,5 +173,70 @@ describe('ActionMenu', () => {
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Tab' });
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  // #9840 W4 (additive): a disabled item is still announced and reachable, but does nothing.
+  it('a disabled item renders aria-disabled, stays in the arrow-key order, and neither click nor Enter/Space activates it', async () => {
+    const user = userEvent.setup();
+    const onOff = vi.fn();
+    const onOn = vi.fn();
+    render(
+      <ActionMenu
+        label="Add"
+        testId="menu-trigger"
+        items={[
+          { id: 'off', label: 'Off item', description: 'Why it is off', onSelect: onOff, testId: 'item-off', disabled: true },
+          { id: 'on', label: 'On item', onSelect: onOn, testId: 'item-on' },
+        ]}
+      />,
+    );
+    await user.click(screen.getByTestId('menu-trigger'));
+    const off = screen.getByTestId('item-off');
+    expect(off).toHaveAttribute('aria-disabled', 'true');
+    expect(off).toHaveTextContent('Why it is off');
+    expect(screen.getByTestId('item-on')).not.toHaveAttribute('aria-disabled');
+    // First item takes focus even when disabled, so it is announced.
+    expect(document.activeElement).toBe(off);
+
+    await user.click(off);
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(onOff).not.toHaveBeenCalled();
+    // The menu stays open: nothing happened.
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByTestId('item-on'));
+    await user.keyboard('{Enter}');
+    expect(onOn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a disabled link item does not navigate', async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<ActionMenu label="Add" testId="menu-trigger" items={[{ id: 'l', label: 'Link', href: '#x', onSelect, testId: 'item-l', disabled: true }]} />);
+    await user.click(screen.getByTestId('menu-trigger'));
+    const link = screen.getByTestId('item-l');
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('a trigger override replaces the icon; without one the trigger is unchanged', () => {
+    const { unmount } = render(
+      <ActionMenu label="New tab" testId="custom" trigger={<span data-testid="custom-content">New</span>} items={[{ id: 'a', label: 'A', onSelect: vi.fn() }]} />,
+    );
+    const custom = screen.getByTestId('custom');
+    expect(custom).toContainElement(screen.getByTestId('custom-content'));
+    expect(custom.querySelector('svg')).toBeNull();
+    expect(custom).toHaveAttribute('aria-label', 'New tab');
+    unmount();
+
+    render(<ActionMenu label="More" testId="default" items={[{ id: 'a', label: 'A', onSelect: vi.fn() }]} />);
+    const def = screen.getByTestId('default');
+    expect(def.children).toHaveLength(1);
+    expect(def.firstElementChild?.tagName.toLowerCase()).toBe('svg');
+    expect(def.firstElementChild).toHaveAttribute('aria-hidden', 'true');
   });
 });

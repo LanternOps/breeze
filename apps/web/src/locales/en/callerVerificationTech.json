@@ -207,7 +207,7 @@
     "title": "Caller verification required",
     "tier": "This action needs a tier {{tier}} verification.",
     "verify": "Verify caller",
-    "verifiedRetry": "Caller verified. Ask the assistant to try again.",
+    "verifiedRetry": "Caller verified. Ask Breeze AI to try again.",
     "reasons": {
       "no_fresh_verification": "The caller has not been verified recently.",
       "grant_consumed": "The last verification was already used for another action.",

@@ -22,6 +22,10 @@ export const PERMISSION_GRANTS = {
   DEVICES_WRITE: { resource: 'devices', action: 'write' },
   DEVICES_DELETE: { resource: 'devices', action: 'delete' },
   DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+  // Ask the watchdog to restart or start a wedged/stopped agent (#9234). Its own
+  // grant so an MSP can hand out agent recovery without arbitrary device
+  // commands, or withhold it from a role that otherwise holds devices:execute.
+  DEVICES_RECOVER_AGENT: { resource: 'devices', action: 'recover_agent' },
 
   // Signed, resource-bound rollback of customer-machine agent components.
   AGENT_ROLLBACK_CREATE: { resource: 'agent_rollback', action: 'create' },
@@ -99,6 +103,11 @@ export const PERMISSION_GRANTS = {
   // operations on a template, so there is nothing left for a third verb to gate.
   AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
   AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
+  // #9075 W2a (OD7 B): sending an agreement for signature, copying its link,
+  // voiding it, reminding, and recording a client's signature obtained
+  // elsewhere. A different blast radius from editing templates — the same
+  // split quotes make with quotes:send / quotes:accept.
+  AGREEMENTS_SEND: { resource: 'agreements', action: 'send' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },
@@ -226,6 +235,10 @@ export const PERMISSION_GRANTS = {
   // deliberately to the techs who may use premium/fast offerings whose
   // `required_permission` names it. Seeded on NO role.
   AI_MODELS_PREMIUM: { resource: 'ai_models', action: 'premium' },
+  // Wisp W02 (spec §4.6): the execute-class gate on the sandbox workspace
+  // tools (workspace_stage/run/collect/cancel), which run arbitrary code.
+  // Partner Admin holds it through `*:*`; seeded on NO other role.
+  AI_WORKSPACE_EXECUTE: { resource: 'ai_workspace', action: 'execute' },
 
   // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
   TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },

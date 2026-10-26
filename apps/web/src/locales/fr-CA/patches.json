@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Confirmer l’approbation du correctif",
-      "selectedOrganization": "l’organisation sélectionnée",
-      "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
-      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?"
+      "selectedRing": "(sans nom)",
+      "messageRingOne": "Approuver le correctif sur {{count}} appareil dans toutes les organisations de l’anneau {{ring}} ?",
+      "messageRingMany": "Approuver le correctif sur {{count}} appareils dans toutes les organisations de l’anneau {{ring}} ?",
+      "messagePartnerWide": "Approuver le correctif pour toutes les organisations de votre partenaire ?"
     },
     "checkingAccess": "Vérification de votre accès..."
   },
@@ -95,6 +96,7 @@
       "statusFilterLabel": "Filtrer par état de conformité",
       "pendingPatches": "Correctifs en attente ({{count}})",
       "critical": "Critique ({{count}})",
+      "failed": "Installations échouées ({{count}})",
       "pendingReboot": "Redémarrage en attente ({{count}})",
       "thirdPartyPending": "En attente de tiers ({{count}})",
       "compliant": "Docile ({{count}})"
@@ -159,6 +161,11 @@
       "messageOne": "{{action}} sur {{count}} appareil dans {{org}} ?",
       "messageMany": "{{action}} sur {{count}} appareils dans {{org}} ?",
       "messageMultiOrg": "{{action}} sur {{count}} appareils à travers {{orgCount}} organisations ({{orgNames}}) ?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} sur {{total}}",
+      "previous": "Page précédente",
+      "next": "Page suivante"
     }
   },
   "patchInstallHistory": {
@@ -259,7 +266,9 @@
       "moderate": "Modéré",
       "low": "Faible",
       "unrated": "Non évalué",
-      "unratedNote": "Ne sera pas approuvé automatiquement"
+      "unratedNote": "Ne sera pas approuvé automatiquement",
+      "derivedNote": "Niveau déduit",
+      "derivedTooltip": "L'éditeur n'a publié aucune évaluation pour cette mise à jour. Cette gravité a été déduite de sa classification et de son titre."
     },
     "approval": {
       "pending": "En attente",
@@ -331,16 +340,12 @@
       "error": "Impossible de charger la liste des appareils.",
       "showing": "{{shown}} sur {{total}} affichés",
       "loadMore": "En charger plus",
-      "lastChecked": "Dernière vérification : {{when}}",
-      "status": {
-        "online": "En ligne",
-        "offline": "Hors ligne",
-        "maintenance": "Maintenance",
-        "decommissioned": "Mis hors service",
-        "quarantined": "En quarantaine",
-        "updating": "Mise à jour en cours",
-        "pending": "En attente"
-      }
+      "lastChecked": "Dernière vérification : {{when}}"
+    },
+    "disambiguator": {
+      "version": "Version du paquet {{version}}",
+      "id": "ID de catalogue {{id}}",
+      "title": "Une autre entrée du catalogue porte le même titre. Chacune est approuvée séparément."
     }
   },
   "patchesPage": {
@@ -381,7 +386,8 @@
       "createRing": "Impossible de créer un anneau de mise à jour",
       "deleteRing": "Impossible de supprimer l’anneau",
       "approveUnknown": "État d'approbation inconnu — la réponse du serveur n'a pas pu être lue. Actualisez pour confirmer quels correctifs ont été approuvés.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} correctifs avaient également été refusés par le serveur auparavant.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} correctifs avaient également été refusés par le serveur auparavant.)",
+      "checkRingLinks": "Impossible de vérifier quelles politiques utilisent cet anneau; rien n’a été supprimé"
     },
     "toast": {
       "ringSaved": "Anneau de mise à jour enregistré",
@@ -411,10 +417,16 @@
       "createTitle": "Créer un anneau de mise à jour"
     },
     "truncatedNotice": "Affichage de {{shown}} correctifs sur {{total}}. Les filtres ici ne réduisent que ce qui est déjà chargé; le reste est donc inaccessible depuis cette vue — utilisez l'API des correctifs pour parcourir le catalogue complet.",
-    "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste."
+    "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste.",
+    "ringDelete": {
+      "title": "Supprimer {{name}}?",
+      "messageOne": "1 politique cessera d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",
+      "messageMany": "{{count}} politiques cesseront d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",
+      "confirm": "Supprimer l’anneau"
+    }
   },
   "patchJobsList": {
-    "empty": "Aucune tâche de correctif pour le moment. Les tâches créées par des politiques, des anneaux de mise à jour ou l'assistant IA apparaîtront ici.",
+    "empty": "Aucune tâche de correctif pour le moment. Les tâches créées par des politiques, des anneaux de mise à jour ou Breeze AI apparaîtront ici.",
     "loading": "Chargement des tâches de correctifs...",
     "columns": {
       "name": "Tâche",
@@ -613,5 +625,24 @@
     "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
     "removeRuleFor": "Supprimer la règle pour {{application}}",
     "scopeNote": "Ces règles s'appliquent à chaque appareil dont la politique de configuration est liée à cet anneau."
+  },
+  "patchDetails": {
+    "unknown": "Inconnu",
+    "source": "Origine",
+    "packageId": "KB / ID de paquet",
+    "severity": "Gravité",
+    "releaseDate": "Date de publication",
+    "firstSeen": "Première apparition dans le catalogue",
+    "rings": {
+      "title": "Anneaux de mise à jour",
+      "note": "Quand chaque anneau approuve automatiquement ce correctif (règle au niveau de l’anneau; les exceptions par catégorie ne sont pas affichées).",
+      "none": "Aucun anneau de mise à jour configuré.",
+      "manual": "Pas d’approbation automatique — approbation manuelle requise",
+      "immediate": "Approuvé automatiquement immédiatement",
+      "needsDate": "Retenu — aucune date de publication pour démarrer la fenêtre de {{count}} jours",
+      "autoApproves": "Approuvé automatiquement le {{date}}",
+      "hold_one": "Report de {{count}} jour",
+      "hold_other": "Report de {{count}} jours"
+    }
   }
 }

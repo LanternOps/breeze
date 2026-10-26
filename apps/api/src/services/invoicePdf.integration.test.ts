@@ -13,11 +13,13 @@ vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockR
 // on the test env lacking SMTP config) so the emailed:false assertion is honest.
 vi.mock('./email', () => ({ getEmailService: () => null, buildInvoiceTemplate: vi.fn() }));
 
-import { db, withSystemDbAccessContext } from '../db';
-import { partners, organizations, invoices, invoiceLines, invoiceDocuments } from '../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { partners, organizations, invoices, invoiceLines, invoiceDocuments, stripeConnectAccounts } from '../db/schema';
+import { extractPositionedPdfText } from '../testUtils/invoiceRenderFixtures';
 import { eq } from 'drizzle-orm';
 import { renderInvoicePdf, getInvoicePdf, sendInvoiceEmail } from './invoicePdf';
-import { getCustomerInvoice, markViewed } from './invoiceService';
+import { getPortalInvoiceRowOr404, markViewed } from './invoiceService';
+import { assembleCustomerInvoiceDocument } from './customerDocument';
 import { InvoiceServiceError } from './invoiceTypes';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -169,10 +171,11 @@ describe.runIf(RUN)('sendInvoiceEmail honest outcome + org guard', () => {
   });
 });
 
-describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
+describe.runIf(RUN)('portal org guard: getPortalInvoiceRowOr404 + assembler / markViewed', () => {
   it('returns the invoice for its own org and hides non-visible lines', async () => {
     const f = await seedIssuedInvoice();
-    const { invoice, lines } = await withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, f.orgId));
+    const { invoice, lines } = await withSystemDbAccessContext(async () =>
+      assembleCustomerInvoiceDocument(await getPortalInvoiceRowOr404(f.invoiceId, f.orgId), 'portal'));
     expect(invoice.id).toBe(f.invoiceId);
     // The seed has 3 lines, one of which is customerVisible:false (hidden bundle child).
     expect(lines).toHaveLength(2);
@@ -185,7 +188,8 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     // #6467: workedMinutes joined the DTO (structured worked-vs-billed disclosure,
     // ordinary numeric fact like quantity) — still an exact, pinned key set.
     // #8604: workDate joined too (non-null only when the frozen setting prints dates).
-    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,ticketCategory,ticketNumber,unitPrice,workDate,workedMinutes')).toBe(true);
+    // #9402: the line `id` (invoice_lines.id) is the opaque row key the shared renderer keys rows by.
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,id,lineTotal,name,quantity,taxable,ticketCategory,ticketNumber,unitPrice,workDate,workedMinutes')).toBe(true);
     // W08 (#4562): ticketNumber joins the DTO; source_type/source_id must still never appear.
     expect(lines.every((line) => !('sourceType' in line) && !('sourceId' in line))).toBe(true);
     expect(lines.every((line) => 'name' in line)).toBe(true);
@@ -195,7 +199,7 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     const f = await seedIssuedInvoice();
     const otherOrg = '00000000-0000-0000-0000-0000000000aa';
     await expect(
-      withSystemDbAccessContext(() => getCustomerInvoice(f.invoiceId, otherOrg))
+      withSystemDbAccessContext(() => getPortalInvoiceRowOr404(f.invoiceId, otherOrg))
     ).rejects.toMatchObject({ status: 404 } satisfies Partial<InvoiceServiceError>);
   });
 
@@ -216,5 +220,56 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     await expect(
       withSystemDbAccessContext(() => markViewed(f.invoiceId, otherOrg))
     ).rejects.toMatchObject({ status: 404 } satisfies Partial<InvoiceServiceError>);
+  });
+});
+
+// #9454: the pay-online availability is read on the CALLER's connection whenever the caller can
+// see the partner row (system or partner scope) — no second connection inside the caller's
+// transaction. Real RLS: stripe_connect_accounts must be visible to both scopes, or the frozen
+// PDF would silently lose its pay line.
+describe.runIf(RUN)('renderInvoicePdf pay-online line on the caller connection (#9454)', () => {
+  const pdfText = (pdf: Buffer) => extractPositionedPdfText(pdf).map((f) => f.text).join('');
+
+  async function connectStripe(partnerId: string): Promise<void> {
+    // stripe_connect_connected_requires_key: a connected row carries a key + last4.
+    await withSystemDbAccessContext(() => db.insert(stripeConnectAccounts).values({
+      partnerId, stripeAccountId: `acct_${partnerId.slice(0, 8)}`,
+      apiKey: 'enc:test-key', keyLast4: '4242', livemode: false,
+    }));
+  }
+
+  it('prints the pay line for a connected partner, rendered in system scope', async () => {
+    const f = await seedIssuedInvoice();
+    await connectStripe(f.partnerId);
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(pdfText(pdf)).toContain('/invoice/');
+  });
+
+  it('prints the pay line for a connected partner, rendered in that partner\'s scope', async () => {
+    const f = await seedIssuedInvoice();
+    await connectStripe(f.partnerId);
+    const { pdf } = await withDbAccessContext({
+      scope: 'partner', orgId: null, accessibleOrgIds: [f.orgId], accessiblePartnerIds: [f.partnerId],
+      userId: null, currentPartnerId: f.partnerId,
+    }, () => renderInvoicePdf(f.invoiceId));
+    expect(pdfText(pdf)).toContain('/invoice/');
+  });
+
+  it('an org-scoped (portal) caller cannot see the partner row, falls back to the system read, and still prints the pay line', async () => {
+    const f = await seedIssuedInvoice();
+    await connectStripe(f.partnerId);
+    // The portal request context (routes/portal/auth.ts): partner-axis rows are invisible here,
+    // so a caller-connection read would wrongly say "not available".
+    const { pdf } = await withDbAccessContext({
+      scope: 'organization', orgId: f.orgId, accessibleOrgIds: [f.orgId], accessiblePartnerIds: [],
+      userId: null, currentPartnerId: null,
+    }, () => renderInvoicePdf(f.invoiceId));
+    expect(pdfText(pdf)).toContain('/invoice/');
+  });
+
+  it('prints no pay line when the partner has no Stripe connection', async () => {
+    const f = await seedIssuedInvoice();
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(pdfText(pdf)).not.toContain('/invoice/');
   });
 });

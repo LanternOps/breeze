@@ -1,0 +1,6 @@
+---
+// AI surface cohesion W05 (#10136): the multi-tab chat moved to /ai/chat.
+// Permanent redirect so bookmarks and `/wisp/chat#session=<id>` links keep
+// working — browsers carry the fragment across a redirect whose Location has none.
+return Astro.redirect('/ai/chat', 301);
+---

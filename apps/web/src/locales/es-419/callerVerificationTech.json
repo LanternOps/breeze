@@ -207,7 +207,7 @@
     "title": "Se requiere verificar a quien llama",
     "tier": "Esta acción necesita una verificación de nivel {{tier}}.",
     "verify": "Verificar a quien llama",
-    "verifiedRetry": "Se verificó a quien llama. Pide al asistente que lo intente de nuevo.",
+    "verifiedRetry": "Llamante verificado. Pide a Breeze AI que lo intente de nuevo.",
     "reasons": {
       "no_fresh_verification": "No se ha verificado a quien llama recientemente.",
       "grant_consumed": "La última verificación ya se usó para otra acción.",

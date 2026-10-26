@@ -94,6 +94,10 @@ const SITE_RESTRICTED_PRINCIPAL_KINDS = new Set<PrincipalKind['kind']>([
   'api_key',
   'oauth_grant',
   'ai_agent',
+  // Tool catalog W04 (#5219): an org-bounded machine principal like ai_agent.
+  // Its ceiling is its own `allowedSiteIds` — undefined for a flow, because
+  // enable refuses a site-restricted delegator (Open Decision 13).
+  'flow',
 ]);
 
 const SITE_UNRESTRICTED_PRINCIPAL_KINDS = new Set<PrincipalKind['kind']>([

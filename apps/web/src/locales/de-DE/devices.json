@@ -360,7 +360,22 @@
     "moving": "Wird verschoben...",
     "toADifferentSite": "an einen anderen Standort.",
     "deviceMovedByOther": "Dieses Gerät wurde von jemand anderem verschoben – laden Sie die Seite neu, um den aktuellen Standort zu sehen",
-    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück."
+    "policyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für {{device}} gelten. Breeze verschiebt es nicht automatisch zurück.",
+    "bulkIntro": "{{count}} ausgewählte Geräte an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntro_one": "{{count}} ausgewähltes Gerät an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntro_other": "{{count}} ausgewählte Geräte an einen anderen Standort innerhalb von {{org}} verschieben.",
+    "bulkIntroNoOrg": "{{count}} ausgewählte Geräte an einen anderen Standort verschieben.",
+    "bulkIntroNoOrg_one": "{{count}} ausgewähltes Gerät an einen anderen Standort verschieben.",
+    "bulkIntroNoOrg_other": "{{count}} ausgewählte Geräte an einen anderen Standort verschieben.",
+    "devicesFromSites": "{{count}} Geräte von {{siteCount}} Standorten",
+    "devicesFromSites_one": "{{count}} Gerät von {{siteCount}} Standorten",
+    "devicesFromSites_other": "{{count}} Geräte von {{siteCount}} Standorten",
+    "selectSite": "Standort auswählen",
+    "moveDevices": "{{count}} Geräte verschieben",
+    "moveDevices_one": "{{count}} Gerät verschieben",
+    "moveDevices_other": "{{count}} Geräte verschieben",
+    "bulkPolicyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für diese Geräte gelten. Breeze verschiebt sie nicht automatisch zurück.",
+    "failedToMoveDevices": "Geräte konnten nicht verschoben werden"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
@@ -445,6 +460,14 @@
         "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
         "confirm": "Homebrew installieren"
       },
+      "restartAgent": {
+        "title": "Breeze-Agent neu starten?",
+        "message": "Den Watchdog auf {{hostname}} anweisen, den Breeze-Agent-Dienst neu zu starten. Der Watchdog übernimmt das beim nächsten Check-in, meist innerhalb einer Minute, und meldet sich nur, solange der Agent nicht läuft.",
+        "watchdogLastSeen": "Letzte Meldung des Watchdogs: {{date}}.",
+        "watchdogStale": "Der Watchdog hat sich zuletzt {{date}} gemeldet, zu lange her, um die Anfrage anzunehmen; sie wird abgelehnt, bis er sich wieder meldet.",
+        "watchdogNeverSeen": "Der Watchdog hat sich noch nicht gemeldet; die Anfrage wird abgelehnt, bis er sich meldet.",
+        "confirm": "Agent neu starten"
+      },
       "bulkDeleteManual": {
         "title": "{{count}} manuelle Assets löschen?",
         "message": "Dadurch werden die ausgewählten manuellen Assets dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
@@ -477,6 +500,10 @@
     "reRunAgentInventoryCollectorsSo": "Bestandsdaten jetzt neu erfassen",
     "refresh": "Aktualisieren",
     "reboot": "Neu starten",
+    "forceRebootNow": "Jetzt erzwungen neu starten",
+    "forceRebootHint": "Sofort neu starten und laufende Apps schließen. Nicht gespeicherte Arbeit geht verloren.",
+    "forceRebootAgentUpgradeRequired": "Agent-Update erforderlich: Der erzwungene Neustart benötigt Agent {{version}} oder neuer",
+    "forceRebootQueued": "Erzwungener Neustart für {{hostname}} in die Warteschlange gestellt. Er läuft, sobald auf dem Gerät nichts anderes mehr läuft.",
     "wake": "Aufwecken",
     "rebootToSafeMode": "Im abgesicherten Modus neu starten",
     "deploySoftware": "Software bereitstellen",
@@ -492,7 +519,8 @@
     "power": "Energie",
     "shutdown": "Herunterfahren",
     "deviceSettings": "Geräteeinstellungen",
-    "installHomebrew": "Homebrew installieren"
+    "installHomebrew": "Homebrew installieren",
+    "restartAgent": "Agent neu starten"
   },
   "deviceActivityFeed": {
     "activity": "Aktivität",
@@ -868,7 +896,12 @@
     "devices": "Geräte",
     "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht",
-    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen."
+    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen.",
+    "restartAgent": {
+      "queued": "Neustart des Agents für {{hostname}} angefordert. Der Watchdog führt ihn beim nächsten Check-in aus.",
+      "alreadyPending": "Für {{hostname}} wartet bereits ein Agent-Neustart auf den Watchdog.",
+      "failed": "Neustart des Agents für {{hostname}} konnte nicht angefordert werden"
+    }
   },
   "deviceDetails": {
     "overview": "Übersicht",
@@ -944,8 +977,8 @@
     "strip": "Streifen",
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
-    "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "operatorTasks": "KI-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Aufgaben für dieses Gerät",
     "tabGroups": {
       "monitoring": "Überwachung",
       "inventory": "Inventar",
@@ -1017,7 +1050,9 @@
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
       "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
-    }
+    },
+    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
+    "featureOverriddenBy": "Überschrieben von {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1342,6 +1377,7 @@
     "drive": "Laufwerk",
     "size": "Größe",
     "used": "Verwendet",
+    "usedPercent": "Belegt %",
     "health": "Zustand",
     "noDiskInventoryReported": "Kein Festplatteninventar gemeldet.",
     "networkAdapters": "Netzwerkadapter",
@@ -1825,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} von {{count}} Gerät",
     "countLine_other": "{{shown}} von {{count}} Geräten",
-    "noMatchesTitle": "Keine Geräte passen zu diesen Filtern"
+    "noMatchesTitle": "Keine Geräte passen zu diesen Filtern",
+    "moveToSite": "An Standort verschieben",
+    "moveSelectedToSite": "An Standort verschieben",
+    "moveSiteMixedOrgs": "Die ausgewählten Geräte gehören zu mehr als einer Organisation",
+    "moveSiteOverCap": "Wählen Sie höchstens {{count}} Geräte zum gleichzeitigen Verschieben aus"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -1847,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Geräteprotokolle werden geladen...",
     "noLogsMatchTheSelectedFilters": "Keine Protokolle entsprechen den ausgewählten Filtern.",
-    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet."
+    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet.",
+    "linkedWindow": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}}",
+    "linkedWindowWithSource": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}} für {{source}}",
+    "clearLinkedFilter": "Link-Filter zurücksetzen"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Verwaltungsstatus wird geladen...",
@@ -1929,6 +1972,7 @@
     "title": "Aktive Netzwerkverbindungen"
   },
   "devicePatchStatusTab": {
+    "released": "Veröffentlicht am {{date}}",
     "compliance": {
       "compliant": "{{percent}} % konform",
       "description": "Ausstehende vs. installierte Updates",
@@ -2052,6 +2096,7 @@
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
       "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
+      "excludedDeclinedTitle": "Abgelehnt: Dieser Patch wurde ausdrücklich abgelehnt, daher installiert ihn die automatische Genehmigung des Rings nicht. Genehmigen Sie ihn erneut, um ihn zuzulassen.",
       "pending": "Genehmigung ausstehend",
       "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",
       "needsApprovalNoRingTitle": "Mit der Patch-Richtlinie dieses Geräts ist kein Update-Ring verknüpft, daher wird dieser Patch nur nach manueller Genehmigung installiert.",
@@ -2131,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Dauer: {{duration}}",
     "empty": "Für dieses Gerät wurden keine Playbook-Ausführungen gefunden.",
-    "emptyHelp": "Playbooks können über den KI-Assistenten ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
+    "emptyHelp": "Playbooks können über Breeze AI ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
     "loading": "Playbook-Verlauf wird geladen...",
     "noStepResults": "Es wurden keine Schrittergebnisse aufgezeichnet.",
     "rollbackExecuted": "Rollback wurde ausgeführt",
@@ -2266,7 +2311,11 @@
       "savedNotActive": "Markierung gespeichert. Eine spätere Markierung ist weiterhin wirksam, daher hat sich die Punktzahl nicht geändert.",
       "clearNotFound": "Diese Markierung existiert nicht mehr.",
       "clearAlreadyCleared": "Diese Markierung wurde bereits aufgehoben."
-    }
+    },
+    "eventLogLinkExact": "Im Ereignisprotokoll anzeigen",
+    "eventLogLinkWindow": "Ereignisprotokoll öffnen",
+    "eventLogLinkTitle": "Ereignisprotokoll, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Ereignisprotokoll für {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "In die Zwischenablage kopieren",
@@ -2476,7 +2525,7 @@
     "showFindings": "Befunde anzeigen",
     "stats": {
       "accepted": "Akzeptiert",
-      "kev": "Kev",
+      "kev": "Bekanntermaßen ausgenutzt",
       "mitigated": "Abgemildert",
       "open": "Offen",
       "patchReady": "Patch bereit",
@@ -2494,9 +2543,9 @@
     "statusLabel": "Statusetikett",
     "table": {
       "actions": "Aktionen",
-      "cve": "Cve",
-      "cvss": "Lebenslauf",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risiko",
       "severity": "Schweregrad",
       "status": "Status"
@@ -2551,7 +2600,7 @@
       "shutdown": "Herunterfahren"
     },
     "addDevice": "Gerät hinzufügen",
-    "importFromRmm": "Von einer anderen RMM importieren",
+    "importFromRmm": "Benutzerdefinierte Felder aus einer anderen RMM importieren",
     "bulkPurge": {
       "andMore": "und {{count}} weitere",
       "confirm": "Endgültig löschen",
@@ -2668,7 +2717,13 @@
       "bulkRestoreUninstallAlreadySent_one": "Bei {{count}} Gerät wurde die Deinstallation bereits gesendet — auf dieser Maschine muss der Agent ggf. neu installiert werden.",
       "bulkRestoreUninstallAlreadySent_other": "Bei {{count}} Geräten wurde die Deinstallation bereits gesendet — auf diesen Maschinen muss der Agent ggf. neu installiert werden.",
       "bulkRestored_one": "{{count}} Gerät wiederhergestellt",
-      "bulkRestored_other": "{{count}} Geräte wiederhergestellt"
+      "bulkRestored_other": "{{count}} Geräte wiederhergestellt",
+      "bulkMoveSiteSuccess": "{{count}} Geräte befinden sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} Gerät befindet sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} Geräte befinden sich jetzt am Standort {{site}}",
+      "bulkMoveSiteSomeFailed": "{{moved}} von {{total}} Geräten nach {{site}} verschoben. Nicht verschoben: {{devices}}",
+      "bulkMoveSiteAllFailed": "Es wurden keine Geräte nach {{site}} verschoben. Nicht verschoben: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -3013,6 +3068,29 @@
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
+  },
+  "forceRebootDialog": {
+    "title": "Jetzt erzwungen neu starten",
+    "description": "Startet {{hostname}} sofort neu und schließt laufende Apps, statt auf sie zu warten.",
+    "hostnameLabel": "Gerät",
+    "osLabel": "Betriebssystem",
+    "commandLabel": "Befehl",
+    "noEffectOnOs": "Unter {{os}} wartet ein Neustart nie auf Apps; dies entspricht also einem normalen sofortigen Neustart.",
+    "warning": "Nicht gespeicherte Arbeit in geöffneten Apps auf diesem Gerät geht verloren. Der Neustart wartet weiterhin auf Befehle, die bereits auf dem Gerät laufen.",
+    "typeHostname": "Geben Sie zur Bestätigung {{hostname}} ein",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie ein Gerät erzwungen neu starten.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "stepUpFailed": "Die Bestätigung ist fehlgeschlagen. Geben Sie einen neuen Code ein und versuchen Sie es erneut.",
+    "deviceOffline": "Dieses Gerät ist nicht online. Ein erzwungener Neustart wird nur an ein Gerät gesendet, das jetzt online ist.",
+    "agentUpgradeRequired": "Der Agent dieses Geräts ist für einen erzwungenen Neustart zu alt. Aktualisieren Sie zuerst den Agent.",
+    "genericError": "Der erzwungene Neustart konnte nicht gesendet werden.",
+    "cancel": "Abbrechen",
+    "confirm": "Jetzt erzwungen neu starten",
+    "submitStepUp": "Bestätigen und erzwungen neu starten",
+    "submitting": "Wird gesendet…"
   },
   "moveDeviceOrgDialog": {
     "title": "In eine andere Organisation verschieben",
@@ -3439,6 +3517,8 @@
     "health": {
       "empty": {
         "title": "Es wird noch nichts überwacht",
+        "titleWithCheck": "Keine SNMP-Integritätsdaten",
+        "descriptionWithCheck": "Für dieses Gerät ist eine Netzwerkprüfung aktiv, daher wird die Erreichbarkeit weiterhin erfasst. Aktivieren Sie SNMP, um zusätzlich Integritätsdaten zu erfassen.",
         "action": "Überwachung einrichten",
         "benefit": {
           "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",

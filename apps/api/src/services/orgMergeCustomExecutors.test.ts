@@ -637,3 +637,259 @@ describe('mergeToolSources / mergeToolSourceTools', () => {
     expect(result.dropped).toBe(0);
   });
 });
+
+/**
+ * Tool Catalog W03 (#5218). `flows_org_slug_uq (org_id, slug)` lets two orgs
+ * each own a flow with the same slug, so a plain repoint would abort the
+ * merge on 23505 and a dedupe-DELETE would silently destroy a draft. The
+ * resolve half renames the loser's colliding flows `<slug>_m<n>` and rewrites
+ * step tool references to loser tool sources that `mergeToolSources` will
+ * rename in the move phase (quorum risk 1) — resolve runs for every table
+ * before move runs for any, so this cannot depend on walk order.
+ */
+describe('resolveFlows / mergeFlows', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  const LOSER_HEX3 = L.replace(/-/g, '').slice(0, 3);
+  const def = (tools: string[]) => ({
+    version: 1,
+    name: 'x',
+    trigger: { type: 'manual' },
+    inputs: [],
+    steps: tools.map((tool, i) => ({ id: `s${i}`, tool, input: {} })),
+  });
+  const updates = () =>
+    executeMock.mock.calls
+      .map((c) => dialect.sqlToQuery(c[0] as SQL))
+      .filter((q) => /^\s*UPDATE flows/i.test(q.sql));
+  /**
+   * The run-cancellation half runs first and unconditionally (#5219 A3):
+   * call 0 flags every active loser run, call 1 cancels the parked ones.
+   */
+  const mockRunPhase = (active = 0, cancelled = 0) =>
+    executeMock
+      .mockResolvedValueOnce({ count: active }) // cancel_requested_at on every active run
+      .mockResolvedValueOnce([{ n: cancelled }]); // parked runs ended cancelled
+
+  it('classifies flows as custom with both a resolve and a move half', () => {
+    expect(getOrgMergePolicies().get('flows')).toMatchObject({ kind: 'custom' });
+    expect(CUSTOM_RESOLVE_EXECUTORS.flows).toBeTypeOf('function');
+    expect(CUSTOM_EXECUTORS.flows).toBeTypeOf('function');
+  });
+
+  it('rewrites nothing when the loser has no flows or runs', async () => {
+    mockRunPhase();
+    executeMock.mockResolvedValueOnce([]);
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(updates()).toHaveLength(0);
+    expect(out).toEqual({ moved: 0, dropped: 0, notes: [] });
+  });
+
+  it('renames a colliding slug to _m1, retrying past a taken _m1, and leaves non-colliders alone', async () => {
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'disk_cleanup', definition: def(['get_device_details']) },
+        { id: 'f2', slug: 'patch_report', definition: def(['wait']) },
+      ])
+      .mockResolvedValueOnce([{ slug: 'disk_cleanup' }, { slug: 'disk_cleanup_m1' }]) // survivor + partner-wide slugs
+      .mockResolvedValueOnce([]) // no colliding tool sources
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1);
+    expect(ups[0]!.params).toContain('disk_cleanup_m2');
+    expect(ups[0]!.params).toContain('f1');
+    expect(out.dropped).toBe(0);
+    expect(out.notes.join(' ')).toMatch(/renamed 1/);
+  });
+
+  it('cuts a 48-char base so the result fits, strips a trailing _, and never forms __', async () => {
+    const long = 'a'.repeat(44) + '_bcd'; // 48 chars; cut at 45 ends in '_'
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([{ id: 'f1', slug: long, definition: def(['wait']) }])
+      .mockResolvedValueOnce([{ slug: long }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue({ count: 1 });
+
+    await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const slug = updates()[0]!.params.find((p) => typeof p === 'string' && p.endsWith('_m1')) as string;
+    expect(slug).toBe('a'.repeat(44) + '_m1');
+    expect(slug.length).toBeLessThanOrEqual(48);
+    expect(slug).not.toContain('__');
+    expect(slug).toMatch(/^[a-z][a-z0-9_]{1,47}$/);
+  });
+
+  it('rewrites step tools naming a renamed loser source and bumps definition_version', async () => {
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'asset_sync', definition: def(['hudu__get_asset', 'halo__create_ticket', 'wait']) },
+      ])
+      .mockResolvedValueOnce([]) // no flow slug collision
+      .mockResolvedValueOnce([{ old_slug: 'hudu', new_slug: `hudum${LOSER_HEX3}` }])
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    // The rename map query mirrors mergeToolSources' suffix expression.
+    const mapSql = dialect.sqlToQuery(executeMock.mock.calls[4]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(mapSql).toMatch(/FROM tool_sources/i);
+    expect(mapSql).toMatch(/left\(/i);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1);
+    expect(ups[0]!.sql).toMatch(/definition_version = definition_version \+ 1/);
+    const written = JSON.parse(ups[0]!.params.find((p) => typeof p === 'string' && p.startsWith('{')) as string);
+    expect(written.steps.map((s: { tool: string }) => s.tool)).toEqual([
+      `hudum${LOSER_HEX3}__get_asset`,
+      'halo__create_ticket',
+      'wait',
+    ]);
+    expect(out.notes.join(' ')).toMatch(/rewrote/);
+  });
+
+  // --- #5219 A3: enabled flows, runs and publications -----------------------
+
+  it('pauses an enabled flow whose step tool it rewrites (org_merged) in the same statement, keeping its publication pointer', async () => {
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'asset_sync', status: 'enabled', definition: def(['hudu__get_asset']) },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ old_slug: 'hudu', new_slug: `hudum${LOSER_HEX3}` }])
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1);
+    const text = ups[0]!.sql.replace(/\s+/g, ' ');
+    // The pause rides on the statement that rewrites the definition: the live
+    // publication still names the old qualified tool, so it must be re-enabled.
+    expect(text).toMatch(/definition = /);
+    expect(text).toMatch(/status = 'paused'/);
+    expect(text).toMatch(/paused_reason = 'org_merged'/);
+    // flows_enabled_publication_chk: a paused flow keeps enabled_publication_seq.
+    expect(text).not.toMatch(/enabled_publication_seq/);
+    expect(out.notes.join(' ')).toMatch(/paused 1 enabled flow\(s\).*org_merged/);
+  });
+
+  it('leaves an enabled flow enabled when nothing in it is rewritten (a slug rename alone is not drift)', async () => {
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'disk_cleanup', status: 'enabled', definition: def(['hudu__get_asset']) },
+        { id: 'f2', slug: 'patch_report', status: 'enabled', definition: def(['get_device_details']) },
+      ])
+      .mockResolvedValueOnce([{ slug: 'disk_cleanup' }]) // f1 slug collides
+      .mockResolvedValueOnce([]) // no colliding tool sources
+      .mockResolvedValue({ count: 1 });
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const ups = updates();
+    expect(ups).toHaveLength(1); // f1 renamed; f2 untouched
+    expect(ups[0]!.sql).not.toMatch(/paused/);
+    expect(ups[0]!.params).not.toContain('org_merged');
+    expect(out.notes.join(' ')).not.toMatch(/paused/);
+  });
+
+  it('never pauses a draft (flows_enabled_publication_chk) or re-reasons an already paused flow', async () => {
+    mockRunPhase();
+    executeMock
+      .mockResolvedValueOnce([
+        { id: 'f1', slug: 'a_draft', status: 'draft', definition: def(['hudu__get_asset']) },
+        { id: 'f2', slug: 'a_paused', status: 'paused', definition: def(['hudu__get_asset']) },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ old_slug: 'hudu', new_slug: `hudum${LOSER_HEX3}` }])
+      .mockResolvedValue({ count: 1 });
+
+    await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const ups = updates();
+    expect(ups).toHaveLength(2);
+    for (const up of ups) {
+      expect(up.sql).toMatch(/definition = /);
+      expect(up.sql).not.toMatch(/paused/);
+    }
+  });
+
+  it('flags every active loser run cancel_requested_at, ends parked runs cancelled org_merged, and never cancels under a live lease', async () => {
+    mockRunPhase(5, 3);
+    executeMock.mockResolvedValueOnce([]); // no loser org flows
+
+    const out = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
+
+    const flag = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    const flagSql = flag.sql.replace(/\s+/g, ' ');
+    expect(flagSql).toMatch(/^ ?UPDATE flow_runs SET cancel_requested_at = COALESCE\(cancel_requested_at, now\(\)\)/);
+    expect(flagSql).toMatch(/status IN \('queued', 'running', 'waiting', 'awaiting_approval'\)/);
+    expect(flagSql).not.toMatch(/status = 'cancelled'/);
+    expect(flag.params).toEqual([L]);
+
+    const cancel = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL);
+    const cancelSql = cancel.sql.replace(/\s+/g, ' ');
+    expect(cancelSql).toMatch(/UPDATE flow_runs SET status = 'cancelled'/);
+    expect(cancelSql).toMatch(/error_code = 'org_merged'/);
+    expect(cancelSql).toMatch(/cancel_requested_at = COALESCE\(cancel_requested_at, now\(\)\)/);
+    // flow_runs_finished_chk / flow_runs_waiting_chk / flow_runs_lease_pair_chk.
+    expect(cancelSql).toMatch(/finished_at = now\(\)/);
+    expect(cancelSql).toMatch(/wake_at = NULL/);
+    expect(cancelSql).toMatch(/lease_token = NULL/);
+    expect(cancelSql).toMatch(/lease_expires_at = NULL/);
+    // Parked states only — a running run is never written cancelled — and
+    // only when no live lease is held (a resuming slice owns it otherwise).
+    expect(cancelSql).toMatch(/status IN \('queued', 'waiting', 'awaiting_approval'\)/);
+    expect(cancelSql).not.toMatch(/'running'\s*[,)]/);
+    expect(cancelSql).toMatch(/lease_expires_at IS NULL OR lease_expires_at <= now\(\)/);
+    // The parked step of a cancelled awaiting_approval run is closed with it.
+    expect(cancelSql).toMatch(/UPDATE flow_run_steps/);
+    expect(cancelSql).toMatch(/status = 'awaiting_approval'/);
+    expect(cancel.params).toEqual([L]);
+
+    // Runs are leave-for-erasure: nothing here moves an org_id.
+    for (const call of executeMock.mock.calls.slice(0, 2)) {
+      const q = dialect.sqlToQuery(call[0] as SQL);
+      expect(q.sql).not.toMatch(/SET org_id|org_id = .*survivor/i);
+      expect(q.params).not.toContain(S);
+    }
+
+    const notes = out.notes.join(' ');
+    expect(notes).toMatch(/cancelled 3 parked run\(s\)/);
+    expect(notes).toMatch(/2 running run\(s\).*next checkpoint/);
+    expect(out).toMatchObject({ moved: 0, dropped: 0 });
+  });
+
+  it('flow_versions repoint with their flow (generic repoint, partner-wide rows untouched); runs and steps stay for erasure', () => {
+    const policies = getOrgMergePolicies();
+    expect(policies.get('flow_versions')).toMatchObject({ kind: 'repoint' });
+    // The generic repoint is `UPDATE flow_versions SET org_id = S WHERE org_id = L`
+    // (buildRepoint): every loser-org publication is a publication of a loser-org
+    // flow (flow_versions_owner_guard_trg, DEFERRED), and an org_id NULL
+    // partner-wide row never matches.
+    expect(CUSTOM_EXECUTORS.flow_versions).toBeUndefined();
+    expect(policies.get('flow_runs')).toMatchObject({ kind: 'leave-for-erasure' });
+    expect(policies.get('flow_run_steps')).toMatchObject({ kind: 'leave-for-erasure' });
+    const flowsPolicy = policies.get('flows');
+    expect(flowsPolicy?.kind === 'custom' ? flowsPolicy.note : '').toMatch(/org_merged/);
+  });
+
+  it('move half repoints org_id only (partner-wide rows have org_id NULL and are untouched)', async () => {
+    executeMock.mockResolvedValueOnce({ count: 3 });
+    const out = await CUSTOM_EXECUTORS.flows!(L, S);
+    const text = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql;
+    expect(text).toMatch(/UPDATE "flows" SET org_id =/);
+    expect(text).toMatch(/WHERE org_id =/);
+    expect(out).toEqual({ moved: 3, dropped: 0, notes: [] });
+  });
+});

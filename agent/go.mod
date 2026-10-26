@@ -1,6 +1,6 @@
 module github.com/breeze-rmm/agent
 
-go 1.26.9
+go 1.26.10
 
 require (
 	cloud.google.com/go/storage v1.69.0
@@ -8,7 +8,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.2
 	github.com/Backblaze/blazer v0.8.0
-	github.com/Microsoft/go-winio v0.6.3
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
@@ -25,8 +25,8 @@ require (
 	github.com/jezek/xgb v1.3.1
 	github.com/niallnsec/yaraxwasm v1.1.0
 	github.com/pion/logging v0.2.4
-	github.com/pion/rtcp v1.2.19
-	github.com/pion/webrtc/v4 v4.2.23
+	github.com/pion/rtcp v1.2.20
+	github.com/pion/webrtc/v4 v4.2.25
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -37,7 +37,7 @@ require (
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0
-	google.golang.org/api v0.302.0
+	google.golang.org/api v0.306.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -96,12 +96,12 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
-	github.com/pion/dtls/v3 v3.1.10 // indirect
-	github.com/pion/ice/v4 v4.4.7 // indirect
+	github.com/pion/dtls/v3 v3.1.15 // indirect
+	github.com/pion/ice/v4 v4.4.8 // indirect
 	github.com/pion/interceptor v0.1.49 // indirect
 	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtp v1.10.5 // indirect
+	github.com/pion/rtp v1.10.6 // indirect
 	github.com/pion/sctp v1.12.0 // indirect
 	github.com/pion/sdp/v3 v3.0.20 // indirect
 	github.com/pion/srtp/v3 v3.1.3 // indirect
@@ -139,7 +139,7 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

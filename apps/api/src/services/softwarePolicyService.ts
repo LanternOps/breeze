@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { captureException } from './sentry';
+import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 import {
   devices,
   softwareComplianceStatus,
@@ -66,6 +67,13 @@ export type SoftwareComplianceUpsertInput = {
   remediationStatus?: SoftwarePolicyRemediationStatus;
   installRemediationStatus?: SoftwarePolicyInstallRemediationStatus;
   installRemediationAttempts?: number;
+  /**
+   * #6958 PR E: the derived `service_running` watch names. The compliance pass
+   * always passes it (an array, or null when the policy derives no names for
+   * the device) so a rule edit clears stale watches within one cycle; other
+   * writers leave it undefined and the column untouched.
+   */
+  serviceWatches?: Array<{ name: string }> | null;
 };
 
 type DeviceSoftwareInventoryRow = SoftwareInventoryRow & {
@@ -414,7 +422,21 @@ export function evaluateSoftwareInventory(
   rules: SoftwarePolicyRulesDefinition,
   inventory: SoftwareInventoryRow[]
 ): SoftwarePolicyViolation[] {
+  return evaluateSoftwareInventoryDetailed(mode, rules, inventory).violations;
+}
+
+/**
+ * evaluateSoftwareInventory plus the names of the rules some inventory row
+ * matched (#6958 PR E: the service_running bridge needs "inventory matched"
+ * per rule, which the violation list only implies for allowlist rules).
+ */
+export function evaluateSoftwareInventoryDetailed(
+  mode: typeof softwarePolicies.$inferSelect.mode,
+  rules: SoftwarePolicyRulesDefinition,
+  inventory: SoftwareInventoryRow[]
+): { violations: SoftwarePolicyViolation[]; matchedRuleNames: Set<string> } {
   const violations: SoftwarePolicyViolation[] = [];
+  const matchedRuleNames = new Set<string>();
   const detectedAt = new Date().toISOString();
   const softwareRules = rules.software ?? [];
   const allowUnknown = rules.allowUnknown === true;
@@ -438,6 +460,7 @@ export function evaluateSoftwareInventory(
 
     for (const rule of softwareRules) {
       const found = inventory.some((installed) => matchesSoftwareRule(installed, rule));
+      if (found) matchedRuleNames.add(rule.name);
       if (!found) {
         violations.push({
           type: 'missing',
@@ -457,13 +480,14 @@ export function evaluateSoftwareInventory(
       }
     }
 
-    return violations;
+    return { violations, matchedRuleNames };
   }
 
   // Audit mode uses blocklist-style detection but does not auto-remediate.
   for (const installed of inventory) {
     const matchedRule = softwareRules.find((rule) => matchesSoftwareRule(installed, rule));
     if (!matchedRule) continue;
+    matchedRuleNames.add(matchedRule.name);
 
     violations.push({
       type: 'unauthorized',
@@ -483,7 +507,7 @@ export function evaluateSoftwareInventory(
     });
   }
 
-  return violations;
+  return { violations, matchedRuleNames };
 }
 
 export function evaluateSoftwarePolicyAgainstInventory(
@@ -569,12 +593,13 @@ export async function evaluateSoftwarePolicyForDevice(
  * SQL objects, so each generated statement gets its own fragment.
  */
 type ComplianceUpsertOptionalKey = keyof SoftwareComplianceUpsertInput
-  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts');
+  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts' | 'serviceWatches');
 
 const COMPLIANCE_UPSERT_OPTIONAL_COLUMNS: Record<ComplianceUpsertOptionalKey, () => SQL> = {
   remediationStatus: () => sql`excluded.remediation_status`,
   installRemediationStatus: () => sql`excluded.install_remediation_status`,
   installRemediationAttempts: () => sql`excluded.install_remediation_attempts`,
+  serviceWatches: () => sql`excluded.service_watches`,
 };
 
 const COMPLIANCE_UPSERT_OPTIONAL_KEYS = Object.keys(
@@ -713,4 +738,51 @@ export async function recordSoftwarePolicyAudit(input: {
     });
     captureException(err);
   }
+}
+
+type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Revokes live PAM elevations minted by this policy's matches and requests
+ * device-side cleanup. Call inside the same transaction as the policy's
+ * deactivation/deletion (REST PATCH/DELETE and the AI tool both do).
+ */
+export async function cleanupSoftwarePolicyElevations(
+  tx: SoftwarePolicyTx,
+  policyId: string,
+): Promise<number> {
+  const result = await tx.execute<{ id: string }>(sql`
+    WITH matching AS (
+      SELECT id
+      FROM elevation_requests
+      WHERE metadata->>'software_policy_match_id' = ${policyId}
+        AND status IN ('approved', 'auto_approved', 'actuating')
+      FOR UPDATE
+    )
+    UPDATE elevation_requests AS request
+    SET status = 'revoked',
+        revoked_at = now(),
+        revision = request.revision + 1,
+        updated_at = now()
+    FROM matching
+    WHERE request.id = matching.id
+      AND request.status IN ('approved', 'auto_approved', 'actuating')
+    RETURNING request.id
+  `);
+  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
+  for (const row of rows) {
+    try {
+      await requestPamCleanup(tx, {
+        elevationRequestId: row.id,
+        cause: 'policy_removed',
+      });
+    } catch (err) {
+      // No pam_actuations row: the grant was approved but never actuated, so
+      // nothing reached the device and the revoke above is the whole cleanup
+      // (the expiry enforcer's reading, jobs/pamJobs.ts). Any other failure
+      // rolls the caller's transaction back.
+      if (!(err instanceof PamActuationNotFoundError)) throw err;
+    }
+  }
+  return rows.length;
 }

@@ -79,6 +79,11 @@ const defaultSelectChain = () => ({
   }))
 });
 
+// The heartbeat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
+// selectOwnDeviceRowForUpdate); every other read awaits `.limit()` directly.
+const lockableRows = (rows: unknown) => Object.assign(Promise.resolve(rows), { for: vi.fn(() => Promise.resolve(rows)) });
+const lockableLimit = (rows: unknown) => vi.fn(() => lockableRows(rows));
+
 const defaultInsertChain = () => ({
   values: vi.fn(() => ({
     onConflictDoNothing: vi.fn(() => ({
@@ -279,6 +284,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../middleware/agentAuth', () => ({
   agentAuthMiddleware: vi.fn((c: any, next: any) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-123',
       agentId: 'agent-123',
       orgId: 'org-123',
@@ -810,7 +816,7 @@ describe('agent routes', () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
+            limit: lockableLimit([{
               id: 'device-123',
               agentId: 'agent-123',
               orgId: 'org-123'
@@ -842,7 +848,7 @@ describe('agent routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
+              limit: lockableLimit([{
                 id: 'device-123',
                 agentId: 'agent-123'
               }])
@@ -916,9 +922,9 @@ describe('agent routes', () => {
       // resolvers await it directly).
       const rowsChain = (rows: unknown[]) => ({
         where: vi.fn(() => Object.assign(Promise.resolve(rows), {
-          limit: vi.fn(() => Promise.resolve(rows)),
+          limit: vi.fn(() => lockableRows(rows)),
           orderBy: vi.fn(() => Object.assign(Promise.resolve(rows), {
-            limit: vi.fn(() => Promise.resolve(rows))
+            limit: vi.fn(() => lockableRows(rows))
           }))
         }))
       });
@@ -1024,7 +1030,7 @@ describe('agent routes', () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
+            limit: lockableLimit([])
           })
         })
       } as any);
@@ -1053,7 +1059,7 @@ describe('agent routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
+              limit: lockableLimit([{
                 id: 'device-123',
                 agentId: 'agent-123',
                 orgId: 'org-123',
@@ -1066,7 +1072,7 @@ describe('agent routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([])
+                limit: lockableLimit([])
               })
             })
           })
@@ -1075,7 +1081,7 @@ describe('agent routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([])
+                limit: lockableLimit([])
               })
             })
           })
@@ -1182,6 +1188,7 @@ describe('agent routes', () => {
     it('rejects a watchdog credential through the primary-agent role gate', async () => {
       vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('agent', {
+          installIncarnation: 1,
           deviceId: 'device-123',
           agentId: 'agent-123',
           orgId: 'org-123',

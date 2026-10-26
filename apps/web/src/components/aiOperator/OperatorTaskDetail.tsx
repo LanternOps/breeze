@@ -28,6 +28,21 @@ import type {
 } from '@breeze/shared';
 import { taskStateLabel } from './operatorTaskLabels';
 import { usePageItemName } from '../layout/usePageItemName';
+import { readWispProvenance, wispGrantorLabel } from '../wisp/wispProvenance';
+import { useHashState } from '@/lib/useHashState';
+import OperatorTaskSteps from './OperatorTaskSteps';
+import OperatorTaskPlan from './OperatorTaskPlan';
+import OperatorTaskEvents from './OperatorTaskEvents';
+import OperatorTaskAccounts from './OperatorTaskAccounts';
+import { readHashParam, writeHashParam } from './operatorHash';
+
+/**
+ * W06 R1b: the task-page panels, selected by `#panel=`. W07 R2b adds
+ * `accounts`, offered only for a task that created accounts — a task with
+ * none grows no tab, and `#panel=accounts` then falls back to the steps.
+ */
+const PANELS = ['steps', 'plan', 'events', 'accounts'] as const;
+type Panel = (typeof PANELS)[number];
 
 interface OperatorTaskDetailProps {
   taskId: string;
@@ -94,6 +109,19 @@ function nextActionLabel(t: Translator, action: AiOperatorTaskNextAction): strin
   }
 }
 
+/**
+ * "Approve in Approvals" opens the card itself: `/approvals#intent-<id>` using
+ * the intent the task is waiting on (`waitDependency`, set for plan and
+ * single-operation approvals alike), falling back to the pending plan
+ * approval, else the Approvals page.
+ */
+function approvalsHref(task: AiOperatorTaskDto): string {
+  const id = task.waitDependency?.kind === 'intent'
+    ? task.waitDependency.id
+    : task.plan?.find((p) => p.state === 'pending' && p.intentId)?.intentId;
+  return id ? `/approvals#intent-${encodeURIComponent(id)}` : '/approvals';
+}
+
 function dispatchStateLabel(t: Translator, state: AiOperatorOperationDispatchState): string {
   switch (state) {
     case 'reserved': return t('operatorTaskDetail.dispatchState.reserved');
@@ -139,6 +167,14 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   // OperatorTaskActivityFeed's `error` state shape.
   const [error, setError] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [panel, setPanel] = useHashState<Panel>('steps', (hash) => {
+    const v = readHashParam(hash, 'panel');
+    return (PANELS as readonly string[]).includes(v ?? '') ? (v as Panel) : undefined;
+  });
+  const selectPanel = (next: Panel) => {
+    setPanel(next);
+    writeHashParam('panel', next);
+  };
 
   // Monotonic request id + mount guard — same pattern as RunDetailPage's
   // `load()`/`requestIdRef`/`mountedRef`.
@@ -223,9 +259,21 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
     );
   }
 
+  // A contact-targeted task (W06) has no inline device target; name its contact.
+  const contactTarget = task.targets.find((x) => x.targetKind === 'contact');
   const targetText = task.target.deviceId
     ? (task.target.label ?? task.target.deviceId)
-    : t('operatorTaskDetail.target.none');
+    : contactTarget?.label ?? t('operatorTaskDetail.target.none');
+  const panelLabel = (p: Panel) => (p === 'steps'
+    ? t('taskPanels.tabs.steps')
+    : p === 'plan' ? t('taskPanels.tabs.plan')
+      : p === 'accounts' ? t('taskPanels.tabs.accounts') : t('taskPanels.tabs.events'));
+  const accounts = task.accounts ?? [];
+  const panels = PANELS.filter((p) => p !== 'accounts' || accounts.length > 0);
+  const shownPanel: Panel = panels.includes(panel) ? panel : 'steps';
+  // Wisp W07 (#9920, spec §13) — a task admitted under a Wisp grant names the
+  // person whose authority it runs under. Null for every other task.
+  const wispProvenance = readWispProvenance(task);
 
   return (
     <div className="space-y-6">
@@ -245,6 +293,14 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.origin.label')}</dt>
           <dd>{originKindLabel(t, task.originKind)}</dd>
         </div>
+        {wispProvenance && (
+          <div>
+            <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.requestedBy')}</dt>
+            <dd data-testid="operator-task-wisp">
+              {t('operatorTaskDetail.wispFor', { name: wispGrantorLabel(wispProvenance) })}
+            </dd>
+          </div>
+        )}
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.state.label')}</dt>
           <dd>
@@ -265,7 +321,15 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
         )}
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.nextAction.label')}</dt>
-          <dd data-testid="operator-task-next-action">{nextActionLabel(t, task.nextAction)}</dd>
+          <dd data-testid="operator-task-next-action">
+            {task.nextAction === 'approve_in_inbox' ? (
+              <a href={approvalsHref(task)} className="text-primary underline underline-offset-2 hover:no-underline">
+                {nextActionLabel(t, task.nextAction)}
+              </a>
+            ) : (
+              nextActionLabel(t, task.nextAction)
+            )}
+          </dd>
         </div>
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.deadline.label')}</dt>
@@ -290,6 +354,35 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
           )}
         </div>
       )}
+
+      <div className="space-y-3">
+        <div role="tablist" aria-label={t('taskPanels.tabsLabel')} className="flex gap-1 border-b">
+          {panels.map((p) => (
+            <button
+              key={p}
+              id={`task-panel-tab-${p}`}
+              type="button"
+              role="tab"
+              aria-selected={shownPanel === p}
+              aria-controls={shownPanel === p ? `task-panel-${p}` : undefined}
+              data-testid={`task-panel-tab-${p}`}
+              onClick={() => selectPanel(p)}
+              className={cn(
+                '-mb-px border-b-2 px-3 py-2 text-sm font-medium',
+                shownPanel === p ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {panelLabel(p)}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id={`task-panel-${shownPanel}`} aria-labelledby={`task-panel-tab-${shownPanel}`}>
+          {shownPanel === 'steps' && <OperatorTaskSteps task={task} />}
+          {shownPanel === 'plan' && <OperatorTaskPlan plan={task.plan} />}
+          {shownPanel === 'events' && <OperatorTaskEvents events={task.events} />}
+          {shownPanel === 'accounts' && <OperatorTaskAccounts accounts={accounts} />}
+        </div>
+      </div>
 
       <div>
         <h3 className="mb-2 text-sm font-semibold">{t('operatorTaskDetail.operations.heading')}</h3>

@@ -51,11 +51,11 @@ async function seed(orgId: string, siteId: string) {
 async function snapshot(siteId: string) {
   const db = getTestDb();
   return { state: await db.select().from(topologySiteState).where(eq(topologySiteState.siteId, siteId)),
-    nodes: await db.select().from(topologyNodes).where(eq(topologyNodes.siteId, siteId)),
-    relationships: await db.select().from(topologyRelationships).where(eq(topologyRelationships.siteId, siteId)),
-    layout: await db.select().from(topologyLayouts).where(eq(topologyLayouts.siteId, siteId)),
-    positions: await db.select().from(topologyNodePositions).where(eq(topologyNodePositions.siteId, siteId)),
-    outbox: await db.select().from(topologyChangeOutbox).where(eq(topologyChangeOutbox.siteId, siteId)) };
+    nodes: await db.select().from(topologyNodes).where(eq(topologyNodes.siteId, siteId)).orderBy(topologyNodes.id),
+    relationships: await db.select().from(topologyRelationships).where(eq(topologyRelationships.siteId, siteId)).orderBy(topologyRelationships.id),
+    layout: await db.select().from(topologyLayouts).where(eq(topologyLayouts.siteId, siteId)).orderBy(topologyLayouts.id),
+    positions: await db.select().from(topologyNodePositions).where(eq(topologyNodePositions.siteId, siteId)).orderBy(topologyNodePositions.layoutId, topologyNodePositions.nodeId),
+    outbox: await db.select().from(topologyChangeOutbox).where(eq(topologyChangeOutbox.siteId, siteId)).orderBy(topologyChangeOutbox.id) };
 }
 async function graph(env: TestEnvironment, siteId: string, query = ''): Promise<GraphResponse> {
   const result = await request(env, siteId, `graph${query}`);

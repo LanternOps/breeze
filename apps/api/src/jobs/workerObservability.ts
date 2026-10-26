@@ -99,6 +99,12 @@ export const WORKER_FAILURE_REASONS = [
   'gmail_mark_retry',
   /** intentReleaseWorker: attemptPolicyDecision hit a transient fault; BullMQ redelivers with backoff (#4156). */
   'action_intent_policy_decide_transient',
+  /** intentReleaseWorker: a flow intent's run is held by a runner-slice lease; BullMQ redelivers the release (#5219). */
+  'action_intent_flow_run_leased',
+  /** aiModelDiscoveryWorker: the platform model listing failed (e.g. rejected platform key); retried with backoff (#9534). */
+  'ai_platform_model_sync_failed',
+  /** aiModelDiscoveryWorker: an offering failed verification; the verdict is stored and the queue retries it (#9534). */
+  'ai_offering_verification_retry',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

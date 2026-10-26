@@ -997,6 +997,23 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),
+  // Full-control W06 (#6776). The inbound-email review queue holds mail the router could not
+  // place: sender, recipient, subject and parse error are all attacker-authored. Attachment
+  // filenames come from the uploader (or a run artifact name) and `text` is decoded file
+  // content. Time suggestions echo a ticket subject (requester-authored) and a device hostname
+  // (self-reported at enrollment).
+  manage_ticket_inbox: new Set(['subject', 'fromAddress', 'toAddress', 'error']),
+  manage_ticket_attachments: new Set(['originalFilename', 'text']),
+  manage_time_suggestions: new Set(['subject', 'hostname']),
+  // Full-control W07 (#6777). Alert title/message come from a rule match against endpoint-reported
+  // data; the RCA evidence timeline carries event-log text (`title`, `summary`, `message`) and
+  // metadata authored on the endpoint; a group's `rootCause`/`alerts` echo alert titles.
+  get_alert_correlations: new Set(['title', 'message', 'summary', 'label']),
+  // Reliability offender labels are service, hardware-source and process names reported by the
+  // device (`get_fleet_health` also returns them under `offenders`).
+  get_fleet_health: new Set(['label', 'detail']),
+  // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
+  manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
@@ -1096,6 +1113,12 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_browser_security: new Set(['name', 'version', 'extensionId', 'details']),
   // Per-device install history: the installer's/OS's own error text.
   manage_patches: new Set(['errorMessage']),
+  // #9532: the affected software's name/version/vendor come from the agent's
+  // software inventory (an installer's DisplayName, settable by a local
+  // user). Every string under `software` is fenced; CVE ids, scores and
+  // Breeze-authored skip reasons stay verbatim.
+  get_device_vulnerabilities: new Set(['software']),
+  remediate_vulnerability: new Set(['software']),
 } as const;
 
 /**

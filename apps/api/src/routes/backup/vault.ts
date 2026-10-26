@@ -9,6 +9,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from '../../services/vaultDeviceCommands';
+import { updateVaultWithinCurrentSite } from '../../services/localVaultUpdate';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -73,60 +74,6 @@ async function pushDeviceVaultConfig(
     console.error(`[Vault] Failed to queue vault_configure for device ${deviceId}:`, err);
     return { status: 'failed', error: 'Failed to send the vault configuration to the device' };
   }
-}
-
-async function updateVaultWithinCurrentSite(
-  orgId: string,
-  vaultId: string,
-  updateData: Record<string, unknown>,
-  permissions: UserPermissions | undefined,
-) {
-  const allowedSiteIds = permissions?.allowedSiteIds;
-  if (allowedSiteIds === undefined) {
-    const [row] = await db
-      .update(localVaults)
-      .set(updateData)
-      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
-      .returning();
-    return row;
-  }
-  if (!Array.isArray(allowedSiteIds) || allowedSiteIds.length === 0) return undefined;
-
-  // Device-first locking is shared with device-move paths. If the move wins,
-  // this re-read observes the new site and denies; if this lock wins, the move
-  // waits until the authorized vault mutation commits. The deviceId equality
-  // on the UPDATE is a final CAS against unsupported direct reassignment.
-  return db.transaction(async (tx) => {
-    const [vault] = await tx
-      .select({ deviceId: localVaults.deviceId })
-      .from(localVaults)
-      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
-      .limit(1);
-    if (!vault) return undefined;
-
-    const [device] = await tx
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(
-        eq(devices.id, vault.deviceId),
-        eq(devices.orgId, orgId),
-        inArray(devices.siteId, allowedSiteIds),
-      ))
-      .limit(1)
-      .for('update');
-    if (!device) return undefined;
-
-    const [row] = await tx
-      .update(localVaults)
-      .set(updateData)
-      .where(and(
-        eq(localVaults.id, vaultId),
-        eq(localVaults.orgId, orgId),
-        eq(localVaults.deviceId, vault.deviceId),
-      ))
-      .returning();
-    return row;
-  });
 }
 
 // GET /vault — list vaults for org (optional ?deviceId filter)
@@ -252,7 +199,7 @@ vaultRoutes.patch(
     if (payload.retentionCount !== undefined) updateData.retentionCount = payload.retentionCount;
     if (payload.isActive !== undefined) updateData.isActive = payload.isActive;
 
-    const row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions);
+    const row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions?.allowedSiteIds);
 
     if (!row) {
       return c.json({ error: 'Vault not found' }, 404);
@@ -295,7 +242,7 @@ vaultRoutes.delete(
     orgId,
     id,
     { isActive: false, updatedAt: new Date() },
-    permissions,
+    permissions?.allowedSiteIds,
   );
 
   if (!row) {

@@ -15,7 +15,7 @@ describe('web CSP helpers', () => {
       },
     });
 
-    expect(directive).toBe("connect-src 'self' https://api.2breeze.app wss://api.2breeze.app https://o123.ingest.sentry.io");
+    expect(directive).toBe("connect-src 'self' https://api.2breeze.app wss://api.2breeze.app https://o123.ingest.sentry.io https://cloudflareinsights.com");
     expect(directive).not.toMatch(/connect-src[^;]*\bhttps:(\s|$)/);
     expect(directive).not.toMatch(/connect-src[^;]*\bws:(\s|$)/);
     expect(directive).not.toMatch(/connect-src[^;]*\bwss:(\s|$)/);
@@ -72,5 +72,16 @@ describe('web CSP helpers', () => {
         env: { CSP_ALLOW_DEV_UNSAFE_INLINE: '1' },
       }),
     ).toEqual({ allowInlineScript: true, allowInlineStyle: true });
+  });
+});
+
+// Once the middleware narrows connect-src at runtime, the Cloudflare Web
+// Analytics beacon (loaded from static.cloudflareinsights.com, allowed in
+// script-src) must still be able to POST its RUM payload.
+describe('connect-src allows the Cloudflare Web Analytics beacon endpoint', () => {
+  it('includes https://cloudflareinsights.com in production', () => {
+    const directive = resolveConnectSrcDirective({ isDev: false, env: { PUBLIC_API_URL: 'https://us.example.app' } });
+    expect(directive.split(' ')).toContain('https://cloudflareinsights.com');
+    expect(directive).not.toMatch(/\bhttps:(\s|$)/);
   });
 });

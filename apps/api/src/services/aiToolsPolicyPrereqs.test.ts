@@ -1074,6 +1074,33 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
     });
   });
 
+  // W03 quorum QW6 (#6757): an approver sees only the new values, so the
+  // update returns what it replaced — undoable from the transcript.
+  describe('manage_backup_profiles:update returns the previous state', () => {
+    it('includes previous name, description, selections and isActive', async () => {
+      const existing = {
+        id: 'bp-1', orgId: ORG_ID, partnerId: null, name: 'Old', description: 'before',
+        selections: { file: { enabled: true, paths: ['/data', '/home'] } }, isActive: true,
+      };
+      mockSelectReturns(existing);
+      updateMock.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...existing, selections: { file: { enabled: true, paths: ['/data'] } } }]),
+          }),
+        }),
+      });
+      const parsed = JSON.parse(await getToolByName('manage_backup_profiles').handler(
+        { action: 'update', profileId: 'bp-1', selections: { file: { enabled: true, paths: ['/data'] } } },
+        makeAuth(),
+      ));
+      expect(parsed.success).toBe(true);
+      expect(parsed.previous).toEqual({
+        name: 'Old', description: 'before', selections: { file: { enabled: true, paths: ['/data', '/home'] } }, isActive: true,
+      });
+    });
+  });
+
   describe('manage_backup_configs:create', () => {
     const INPUT = {
       action: 'create',

@@ -329,6 +329,7 @@
         },
         "approve": "Onayla",
         "approved": "Talep onaylandı. Talep sahibine e-posta ile bir indirme bağlantısı gönderildi.",
+        "approvedNoEmail": "Erişim onaylandı. Yapılandırılmış bir e-posta hizmeti yok, bu nedenle talep sahibine e-posta gönderilmedi.",
         "approveFailed": "Talep onaylanamadı.",
         "deny": "Reddet",
         "denyTitle": "Bu talep reddedilsin mi?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Erişim iptal edilemedi.",
         "resend": "Bağlantıyı yeniden gönder",
         "resent": "Yeni bir indirme bağlantısı e-posta ile gönderildi. Önceki bağlantı artık çalışmaz.",
+        "resentNoEmail": "Yeni indirme bağlantısı oluşturuldu. Yapılandırılmış bir e-posta hizmeti yok, bu nedenle e-posta ile gönderilmedi. Önceki bağlantı artık çalışmaz.",
         "resendFailed": "Bağlantı yeniden gönderilemedi.",
         "errors": {
           "mfaRequired": "Onaylamak veya yeniden göndermek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızdan MFA'yı etkinleştirip tekrar deneyin.",
@@ -390,7 +392,10 @@
           "saved": "Güven Merkezi varsayılanları kaydedildi",
           "saveFailed": "Güven Merkezi varsayılanları kaydedilemedi",
           "mfaRequired": "Bu varsayılanları değiştirmek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızda MFA’yı etkinleştirip tekrar deneyin.",
-          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin."
+          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin.",
+          "conflictNotice": "Siz düzenlerken başka biri bu varsayılanları kaydetti. Onun sürümünden devam etmek için yeniden yükleyin veya düzenlemeye devam edin: yeniden yükleyene kadar tekrar kaydetmek başarısız olmaya devam eder.",
+          "reloadTheirs": "Onun sürümünü yükle",
+          "keepEditing": "Düzenlemeye devam et"
         },
         "title": "Devralınan ayarlar"
       },
@@ -587,6 +592,7 @@
       "title": "Belgeler",
       "subtitle": "Bu kuruluşa ait runbook'lar, taban çizgileri, politikalar ve teslimat kanıtları.",
       "empty": "Henüz belge yok. Kitaplığı başlatmak için bir runbook, taban çizgisi veya imzalı bir politika yükleyin.",
+      "emptyPortalHint": "Müşteriniz, portalda Görünür olarak işaretlenen belgeleri görür. İmzalı bir teklif veya sözleşme ile bir güvenlik taban çizgisi iyi ilk belgelerdir.",
       "emptyFiltered": "Bu kategoride belge yok.",
       "loadFailed": "Belgeler yüklenemedi.",
       "upload": "Belge yükle",

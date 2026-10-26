@@ -28,6 +28,10 @@ vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(),
 }));
 
+vi.mock('./localVaultUpdate', () => ({
+  updateVaultWithinCurrentSite: vi.fn(),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -35,6 +39,7 @@ import { validateToolInput } from './aiToolSchemas';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerVaultTools } from './aiToolsVault';
 import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
+import { updateVaultWithinCurrentSite } from './localVaultUpdate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '22222222-2222-2222-2222-222222222222';
@@ -50,7 +55,7 @@ const EXPECTED_TOOLS = [
 const EXPECTED_TIERS: Record<(typeof EXPECTED_TOOLS)[number], number> = {
   query_vaults: 1,
   get_vault_status: 1,
-  trigger_vault_sync: 2,
+  trigger_vault_sync: 3, // W03 (#6757): supervised
   configure_vault: 2,
 };
 
@@ -317,6 +322,45 @@ describe('aiToolsVault handlers', () => {
       expect(columns).toEqual(expect.arrayContaining(['id', 'org_id', 'device_id']));
       expect(values).toEqual(expect.arrayContaining([VAULT_ID, ORG_ID, DEVICE_ID]));
     }
+  });
+
+  const restrictedAuth = () => ({
+    ...makeAuth(), allowedSiteIds: ['site-1'], canAccessSite: (siteId: string | null) => siteId === 'site-1',
+  }) as unknown as AuthContext;
+
+  // W03-D12 (#6757, quorum QW5): a site-restricted update row-locks the device
+  // inside the caller's sites, exactly as PATCH /backup/vault/:id does, so a
+  // concurrent site move cannot slip between the check and the write.
+  it('routes a site-restricted configure_vault update through the locked update (W03-D12)', async () => {
+    prepareHandlerMocks('configure_vault');
+    // vault row, then deviceIdSiteDenied's device-site read (in the caller's site).
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+    vi.mocked(updateVaultWithinCurrentSite).mockResolvedValue({ id: VAULT_ID, vaultPath: '/vaults/updated' } as any);
+    const auth = restrictedAuth();
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' }, auth,
+    ));
+
+    expect(result.success).toBe(true);
+    expect(updateVaultWithinCurrentSite).toHaveBeenCalledWith(
+      ORG_ID, VAULT_ID, expect.objectContaining({ vaultPath: '/vaults/updated' }), ['site-1'],
+    );
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses the update when the locked update finds the device outside the sites (W03-D12)', async () => {
+    prepareHandlerMocks('configure_vault');
+    mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID }], [{ siteId: 'site-1' }]]);
+    vi.mocked(updateVaultWithinCurrentSite).mockResolvedValue(undefined);
+    const auth = restrictedAuth();
+
+    const result = JSON.parse(await toolMap.get('configure_vault')!.handler(
+      { action: 'update', vaultId: VAULT_ID, vaultPath: '/vaults/updated' }, auth,
+    ));
+
+    expect(result.error).toBe('Vault not found or access denied');
+    expect(buildVaultConfigurePayload).not.toHaveBeenCalled();
   });
 
   it('binds the AI configure_vault update to (id, orgId, deviceId), not id alone', async () => {

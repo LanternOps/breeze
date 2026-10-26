@@ -159,6 +159,7 @@ vi.mock('../services/permissions', () => ({
   })),
   userCanDecideApprovals: vi.fn(() => true),
   canAccessOrg: vi.fn(() => true),
+  canAccessSite: vi.fn(() => true),
   // Real matching semantics (exact resource/action or a wildcard) so a test
   // that swaps in a narrower permissions array actually drives a denial,
   // rather than a stub that always returns true regardless of what's granted.
@@ -300,6 +301,7 @@ vi.mock('../middleware/auth', () => ({
   }),
   // Same rule as the real helper (middleware/auth.ts): an allowlist of ONE.
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
+  hasSatisfiedMfa: vi.fn(() => true),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
@@ -310,13 +312,13 @@ import { approvalRoutes } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
 import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
 import { issueMobileAssertionNonce } from '../services/mobileHwKey';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
-import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
+import { getUserPermissions, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../services/permissions';
 import { resolveIntentApprovers, isAgentIntentDecideAuthorized } from '../services/actionIntents/intentApprovers';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
@@ -571,6 +573,13 @@ function buildPendingApproval(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+// B-W04 (#6158, D-B35): the MCP-origin branch of report-suspicious. Default:
+// not an MCP-origin intent (null) → today's behaviour, 204.
+const mcpOriginReportMock = vi.hoisted(() => ({ reportSuspiciousMcpOrigin: vi.fn(async () => null) }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  reportSuspiciousMcpOrigin: mcpOriginReportMock.reportSuspiciousMcpOrigin,
+}));
 
 describe('GET /approvals/pending', () => {
   it('returns only pending non-expired approvals for the authed user', async () => {
@@ -1902,18 +1911,24 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(details).not.toHaveProperty('required_assurance_level');
   });
 
-  it('deny mirrors elevation to denied', async () => {
+  it.each([
+    [undefined, 'Denied without reason'],
+    ['', 'Denied without reason'],
+    [' \t\n ', 'Denied without reason'],
+    ['not allowed', 'not allowed'],
+    ['  not allowed  ', 'not allowed'],
+  ])('deny mirrors elevation with reason %j as %j', async (reason, expectedReason) => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
     const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
 
     const res = await buildApp().request('/approvals/appr-1/deny', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reason: 'not allowed' }),
+      body: JSON.stringify({ reason }),
     });
     expect(res.status).toBe(200);
     expect(tx.elevationSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: 'not allowed' }),
+      expect.objectContaining({ status: 'denied', deniedByUserId: TEST_USER.id, denialReason: expectedReason }),
     );
     expect(tx.auditValues).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'denied', actor: 'technician' }),
@@ -2026,7 +2041,7 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       // Call 2 (NEW, §6C): resolve the elevation's orgId to authorize against,
       // BEFORE any assurance ladder / CAS write.
       vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9' }]) }),
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', flowType: 'uac_intercept', deviceId: 'dev-1' }]) }),
       } as any);
     }
 
@@ -2066,12 +2081,15 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
-    it('a decider holding pam:approve for the elevation org proceeds to the CAS write', async () => {
+    it('a decider holding pam:approve and devices:execute for the elevation org proceeds to the CAS write', async () => {
       mockPreFetchAndElevationOrgLookup();
       vi.mocked(getUserPermissions).mockResolvedValueOnce({
         scope: 'organization',
         orgId: 'org-9',
-        permissions: [{ resource: 'pam', action: 'approve' }],
+        permissions: [{ resource: 'pam', action: 'approve' }, { resource: 'devices', action: 'execute' }],
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', siteId: 'site-a' }]) }),
       } as any);
       const tx = mockElevationTx([{ id: 'elev-1', orgId: 'org-9' }]);
       const casReturning = vi.fn().mockResolvedValue([{ ...pendingRow, status: 'approved' }]);
@@ -2095,6 +2113,42 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
       expect(res.status).toBe(200);
       expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('UAC approve also requires devices:execute before the CAS write', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization', orgId: 'org-9', permissions: [{ resource: 'pam', action: 'approve' }],
+      } as any);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'devices_execute_required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('UAC approve requires an MFA-assured session', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(hasSatisfiedMfa).mockReturnValueOnce(false);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('UAC approve checks the current device site', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'organization', orgId: 'org-9', allowedSiteIds: ['site-a'],
+        permissions: [{ resource: 'pam', action: 'approve' }, { resource: 'devices', action: 'execute' }],
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ orgId: 'org-9', siteId: 'site-b' }]) }),
+      } as any);
+      vi.mocked(canAccessSite).mockReturnValueOnce(false);
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'site_access_denied' });
+      expect(db.transaction).not.toHaveBeenCalled();
     });
 
     // Gap: hasPermission(perms, 'pam', 'approve') alone says nothing about
@@ -3441,6 +3495,49 @@ describe('POST /approvals/:id/report-suspicious', () => {
     expect(res.status).toBe(404);
   });
 
+  describe('B-W04: MCP-origin intent', () => {
+    function wireIntentRow() {
+      const intentRow = { ...baseRow, executionId: null, intentId: 'intent-mcp', requestingClientId: null };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([intentRow]) }),
+      } as any);
+      const casReturning = vi.fn().mockResolvedValue([{ orgId: 'org-9', actionName: 'execute_command', argumentDigest: 'd', source: 'mcp_api' }]);
+      const tx = {
+        select: txSelectForUpdateStub(),
+        update: vi.fn()
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any)
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) }) } as any)
+          .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any),
+      };
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+    }
+
+    it('reported by its requester → origin revoked, 200 with credentialRevoked true', async () => {
+      wireIntentRow();
+      mcpOriginReportMock.reportSuspiciousMcpOrigin.mockResolvedValueOnce({ credentialRevoked: true } as never);
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ reported: true, credentialRevoked: true });
+      expect(mcpOriginReportMock.reportSuspiciousMcpOrigin).toHaveBeenCalledWith('intent-mcp', TEST_USER.id);
+    });
+
+    it('a revocation failure is reported, never a silent 204', async () => {
+      wireIntentRow();
+      mcpOriginReportMock.reportSuspiciousMcpOrigin.mockResolvedValueOnce({ credentialRevoked: false, revocationError: 'revocation_failed' } as never);
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ reported: true, credentialRevoked: false, revocationError: 'revocation_failed' });
+    });
+
+    it('a non-mcp intent keeps today\'s 204', async () => {
+      wireIntentRow();
+      const res = await buildApp().request('/approvals/a1/report-suspicious', { method: 'POST' });
+      expect(res.status).toBe(204);
+    });
+  });
+
   it('rejects the linked action intent and expires sibling approvals for an intent-backed row', async () => {
     // Intent-backed rows carry intentId (not executionId). A suspicious report
     // must reject the whole intent and expire siblings so another approver's
@@ -4072,10 +4169,15 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     );
   });
 
-  it('403s human_decision_required for a non-user_session principal', async () => {
+  // B-W04 (#6158, D-B30): an MCP credential is never an approver — pinned for
+  // both MCP principal kinds.
+  it.each([
+    { kind: 'api_key', apiKeyId: 'key-1' },
+    { kind: 'oauth_grant', grantId: 'grant-1' },
+  ])('403s human_decision_required for a non-user_session principal (%o)', async (principal) => {
     vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
       c.set('auth', {
-        principal: { kind: 'api_key', apiKeyId: 'key-1' },
+        principal,
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
@@ -4683,5 +4785,166 @@ describe('GET /approvals/pending?view=recent (#6022)', () => {
 
     const body = await (await buildApp().request('/approvals/pending?view=recent&limit=2')).json();
     expect(body.approvals).toHaveLength(2);
+  });
+});
+
+// Tool catalog W04 (#5219) review finding 1: a supervised FLOW intent has no
+// requester (requestedByUserId NULL) and no agent run (requestingAgentRunId
+// NULL). Before the fix it fell through to the human `requestedByUserId ===
+// userId` rule and was invisible on every read surface, so nobody could ever
+// see — let alone decide — a flow approval.
+describe('W04 #5219: supervised flow intents are visible to their pool', () => {
+  const FLOW_RUN_ID = 'flow-run-1';
+
+  function buildFlowIntent(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'intent-fl-1',
+      orgId: 'org-9',
+      actionName: 'execute_command',
+      arguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      argumentDigest: 'digest-fl',
+      source: 'flow',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: null,
+      requestingAgentRunId: null,
+      requestingFlowRunId: FLOW_RUN_ID,
+      toolSourceToolId: null,
+      requestingClientLabel: 'Nightly cleanup',
+      scopeKind: null,
+      scopeDeviceId: null,
+      scopeTicketId: null,
+      ...overrides,
+    };
+  }
+
+  function buildFlowApproval(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'appr-fl-1',
+      userId: TEST_USER.id,
+      requestingClientLabel: 'Nightly cleanup',
+      requestingMachineLabel: null,
+      requestingClientId: null,
+      requestingSessionId: null,
+      actionLabel: 'Kill process on dev-1',
+      actionToolName: 'execute_command',
+      actionArguments: { deviceId: 'dev-1', commandType: 'kill_process' },
+      riskTier: 'high',
+      riskSummary: 'Terminates a process on a managed device.',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 60_000),
+      decidedAt: null,
+      decisionReason: null,
+      executionId: null,
+      elevationRequestId: null,
+      intentId: 'intent-fl-1',
+      boundArgumentDigest: 'digest-fl',
+      isRecursive: false,
+      createdAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  /** Every `db.select()` gets its own chain resolving the next queued result
+   *  (or `[]`), whatever builder methods the call site uses. */
+  function queueSelects(results: unknown[][]) {
+    const queue = [...results];
+    vi.mocked(db.select).mockImplementation((() => {
+      const result = queue.shift() ?? [];
+      const node: any = {};
+      for (const m of ['from', 'leftJoin', 'innerJoin', 'where', 'orderBy', 'limit']) {
+        node[m] = vi.fn(() => node);
+      }
+      node.then = (resolve: (v: unknown) => void, reject?: (e: unknown) => void) =>
+        Promise.resolve(result).then(resolve, reject);
+      return node;
+    }) as any);
+  }
+
+  it('GET /pending lists a supervised flow row for a pool member, via the pool authorizer', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
+    expect(body.approvals[0].approvalScope).toBe('supervised');
+    expect(vi.mocked(isAgentIntentDecideAuthorized)).toHaveBeenCalledWith(
+      TEST_USER.id,
+      expect.objectContaining({ id: 'intent-fl-1', requestingFlowRunId: FLOW_RUN_ID }),
+    );
+  });
+
+  it('GET /pending/count counts it', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+
+    const res = await buildApp().request('/approvals/pending/count');
+    expect(await res.json()).toEqual({ count: 1 });
+  });
+
+  it('hides it from a user outside the pool', async () => {
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+    const body = await (await buildApp().request('/approvals/pending')).json();
+    expect(body.approvals).toEqual([]);
+
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent() }]]);
+    const count = await (await buildApp().request('/approvals/pending/count')).json();
+    expect(count).toEqual({ count: 0 });
+  });
+
+  it('GET /:id returns it to a pool member and 404s for a non-member', async () => {
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()]]);
+    const res = await buildApp().request('/approvals/appr-fl-1');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approval.id).toBe('appr-fl-1');
+    expect(body.approval.approvalScope).toBe('supervised');
+
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()]]);
+    const denied = await buildApp().request('/approvals/appr-fl-1');
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).not.toContain('kill_process');
+  });
+
+  it('POST /:id/assertion-challenge mints for a pool member and 404s for a non-member', async () => {
+    // approval row, intent, webauthn devices, mobile devices
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()], [], []]);
+    const res = await buildApp().request('/approvals/appr-fl-1/assertion-challenge', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(generateApprovalAssertionOptions).toHaveBeenCalledWith(
+      expect.objectContaining({ approvalId: 'appr-fl-1', userId: TEST_USER.id }),
+    );
+
+    vi.mocked(generateApprovalAssertionOptions).mockClear();
+    vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(false);
+    queueSelects([[buildFlowApproval()], [buildFlowIntent()], [], []]);
+    const denied = await buildApp().request('/approvals/appr-fl-1/assertion-challenge', { method: 'POST' });
+    expect(denied.status).toBe(404);
+    expect(generateApprovalAssertionOptions).not.toHaveBeenCalled();
+  });
+
+  it('a four_eyes flow intent uses the org approvals:decide rule, not the pool', async () => {
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent({ approvalScope: 'four_eyes' }) }]]);
+    const body = await (await buildApp().request('/approvals/pending')).json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
+    expect(vi.mocked(isAgentIntentDecideAuthorized)).not.toHaveBeenCalled();
+
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+    queueSelects([[{ approval: buildFlowApproval(), intent: buildFlowIntent({ approvalScope: 'four_eyes', id: 'intent-fl-2' }) }]]);
+    const hidden = await (await buildApp().request('/approvals/pending')).json();
+    expect(hidden.approvals).toEqual([]);
+  });
+
+  it('the Recent view shows a terminal supervised flow row to a pool member', async () => {
+    queueSelects([[
+      {
+        approval: buildFlowApproval({ status: 'approved', decidedAt: new Date() }),
+        intent: buildFlowIntent({ status: 'completed', errorCode: null, result: null, executedAt: new Date() }),
+      },
+    ]]);
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals.map((a: any) => a.id)).toEqual(['appr-fl-1']);
   });
 });

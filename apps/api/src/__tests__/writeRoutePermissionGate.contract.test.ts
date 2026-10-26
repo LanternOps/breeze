@@ -106,6 +106,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/commands/:commandId/pam-observations': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamReconciliation.ts
   'POST /api/v1/agents/:id/pam/reconciliation-bindings': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/pamElevationUnable.ts (#9517)
+  'POST /api/v1/agents/:id/pam/elevation-unable': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/patches.ts
   'PUT /api/v1/agents/:id/patches/pending': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'PUT /api/v1/agents/:id/patches/installed': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
@@ -343,6 +345,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PUT /api/v1/portal/trust-page': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   'POST /api/v1/portal/trust-page/preview-token': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   'POST /api/v1/portal/trust-page/unpublish': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  // routes/agreementsPublic.ts (#9075 W2b)
+  'POST /api/v1/agreements/public/:token/accept': 'public: Signed agreement-request link token; persisted jti + partner continuity checked in resolveAgreementLink(); durable single-use in the service',
+  'POST /api/v1/agreements/public/:token/decline': 'public: Signed agreement-request link token; persisted jti + partner continuity checked in resolveAgreementLink(); durable single-use in the service',
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',

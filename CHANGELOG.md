@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- PAM requests can be denied without a reason from the dashboard, API, or mobile approval flow. Missing, empty, and whitespace-only denial reasons now store "Denied without reason"; supplied reasons are trimmed. The database constraint is unchanged.
+
 ### Added
+- Software deployments gain `zip` packages, pre- and post-install scripts, and a **Service running** detection rule, plus two Breeze-pinned DNS filtering clients (Control D and NextDNS CLI for Windows) that partner admins add from Software → Catalog → Built-in packages. Software policies now report `not_running` and `service_unverified` violations from per-device service watches and restart a stopped service when armed for install. Zip packages and scripts need agent 0.125.0 or newer; scripts stored on earlier versions stay inactive until the version is re-created. No new environment variables (#6958).
 - PAM enabled through organization policy provisions the dormant elevation account after reconciliation and before admitting requests, even when `pam_enabled` is false locally. A later verified missing-account recovery clears the provisioning latch so policy can provision the account again. Recovery requires independent account, job, process, and token absence proof while retaining replay protection; unreadable ledgers and unknown tokens remain fail-closed.
 - Supported Windows PAM reconciliation retry endpoint requiring current tenant/site access, `pam:approve`, `devices:execute`, applicable MFA assurance, and partner trust. Unsupported and holding-organization devices return 409; trust denials return 403. Deploy the additive reset-capability migration and updated agent; a queued retry never deletes ledger or outbox evidence.
 - **System Protection** configuration policy feature (#4609): policy-controlled Windows System Restore checkpoint requests before patch installs, scripts and software installs, with a per-device attempts ledger, per-action badges and a device **System Restore** tab. Agent-side checkpoint creation and reporting roll out with a future agent release; until then attempts read "Awaiting the device". Patch installs keep their existing best-effort behavior. New migrations: `system_protection` enum value, `device_restore_point_attempts` table. No new environment variables (#4751).
@@ -21,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Approving a UAC interception request now requires `devices:execute` in addition to `pam:approve`. The approvals inbox/mobile path newly enforces the dashboard's MFA session gate: when two-factor authentication is enabled, a session without the qualifying MFA claim receives 403. Both paths verify the device's current organization and site; denial permissions are unchanged.
+
 - Network checks are authored under **Alerts → Monitors**, with asset binding; **Network** keeps Assets, SNMP Templates and Results. Interactive conversion adopts supported legacy probes, preserves results and open alerts, and supports ledger retirement/Undo while the network runtime remains. Startup sweeps exclude network sources.
 - Legacy network check create/update and alert-rule writes return `410 Gone`; unmanaged deletion uses ledger retirement. Device **Disable SNMP monitoring** is SNMP-only; the old monitoring asset DELETE refuses active checks with 409. Retained bound checks block asset deletion.
 - Network checks retain the previously shipped `expectStatus` → `expectedStatus` mapping (#6352), offline alert-device evaluation (#6353) and new-check redirect defaults (#6510); conversion preserves the legacy redirect behavior.
@@ -28,10 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Policy **Check interval** is stored on the `monitors` feature link. Startup converts remaining legacy alerting per partner, retires unconvertible sources with reasons, and checks for unretired rules and watches on every boot. Alerts → Monitors lists retirements for review; open alerts from unconvertible sources require manual resolution. Undo for removed legacy runtimes ends at this upgrade.
 - Queued legacy alerts and unconverted standalone rules use monitor settings and Delivery routing without legacy channel or escalation overrides. Review routing and the explicit **Everything else** row before upgrading.
 
+- Patch compliance on the dashboard now shows the percentage of devices that are fully patched, matching the Patches page. It previously showed the percentage of individual patches installed, so the number may change after upgrading.
+
 ### Security
 - New partners now require MFA by default: `settings.security.requireMfa` is set to `true` at partner creation on every creation path (signup, platform-admin `POST /orgs/partners`, dev seed — the seeded Default Partner opts out so local stacks keep password-only admins). Existing partners are not changed; their policy-managers see a daily-dismissible banner until they turn **Require MFA** on. Self-hosters who do not want it turn the toggle off in Settings → Partner → Security. (Strix scan follow-up, spec `docs/superpowers/specs/2026-09-18-mfa-required-default-new-partners-design.md`.)
 - Microsoft 365 ticket mailbox consent now verifies the Microsoft tenant and consenting administrator identity and binds verified tenant ownership to the Breeze partner. Existing active connections, plus disabled rows that retain legacy tenant or cursor state, require consent again after upgrade; clean disabled rows remain disabled.
 - Seven core `/api/v1` route namespaces are now reserved against extension hijack: `service-principals`, `partner-service-principals`, `partner-api`, `billing`, `support`, `ticket-forms`, `ticket-response-templates`. The extension gateway mounts `app.all('/api/v1/:routeNamespace/*')` before the core sub-routers, so an installed + enabled extension declaring one of these as its `routeNamespace` previously shadowed that core surface fleet-wide, receiving the full request including the `Authorization` header. `POST /api/v1/billing/portal` (MFA + `BILLING_MANAGE` gated, returns a Stripe customer-portal session URL) was among the exposed routes. `CORE_NAMESPACES` is now derived from the route mounts at test time instead of being a hand-maintained list copy-pasted from the reserved set — the previous form made its own assertion tautological, which is how all seven shipped (#2634, #2635, #2641).
+
+- Approved PAM v2 commands attempt immediate delivery through the agent command relay after the queue transaction commits, retaining canonical claims and heartbeat fallback instead of waiting for the next heartbeat.
+- Dashboard event subscriptions wait for authenticated connection acknowledgement, preventing silent subscription loss. Privileged Access catches up after reconnect/focus and refreshes visible data periodically without hiding existing rows.
 
 ### Critical for self-hosters upgrading to this release
 

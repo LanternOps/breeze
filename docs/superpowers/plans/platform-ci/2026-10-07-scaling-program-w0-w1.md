@@ -20,7 +20,7 @@ The order follows owner decision 1: per-agent efficiency (W1a) and measurement (
 | W06 | W0b | Storm scenarios on the simulator: API kill, drop all sockets, slow event loop, rolling deploy; reconnect curve and pool recovery report | W02 | at wave start | Tooling |
 | W07 | W0c | KPI dashboard per instance and region; nightly/manual `perf` workflow on fixed hardware, failing on a >15 % KPI regression; first baseline committed | W02 | at wave start | Tooling |
 | W08 | W1c | API admission control: priority shedding on event-loop lag / pool wait with `503` + `Retry-After`; WS upgrade token bucket refused with a pre-upgrade `503` + `Retry-After`; heartbeats never shed; ships in `observe` mode; edge shed rules removed after an `enforce` peak day | W04 | `2026-10-08-scaling-w08-api-admission-control.md` | **High** (agent-facing behaviour under load) |
-| W09 | W1d | Agent: jittered first reconnect, `drain {reconnectWithinMs}` handling, loop-level `Retry-After`, jittered startup and periodic requests | W06, W08 | at wave start | **High**: ships to customer machines; follows agent release rings |
+| W09 | W1d | Agent: jittered first reconnect, `drain {reconnectWithinMs}` handling, loop-level `Retry-After`, jittered startup and periodic requests | W06, W08 | `2026-10-12-scaling-w09-agent-reconnect-drain.md` (amended 2026-10-20: rebased on #9145, #9146, #9245) | **High**: ships to customer machines; follows agent release rings |
 
 W01 and W02 can run in parallel. **P1 for v0.123.0 (owner, 2026-10-08):** W03, W04, W08, W10. Order for the pool/admission work: #8243 → W04 → W08. W04 is independent of everything else and can start whenever a slot is free.
 

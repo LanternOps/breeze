@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SiteDetailPage from './SiteDetailPage';
+import { decodeFilterFromHash } from '../devices/filterUrl';
+import { readDeviceClassFromHash } from '../devices/deviceClassFilter';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 
@@ -99,14 +101,34 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     expect(screen.getByPlaceholderText('alex@company.com')).toHaveValue('alex@company.com');
   });
 
-  it('gives the icon-only back-to-organizations link an accessible name (#7158 a11y)', async () => {
+  it('gives the icon-only back link an accessible name and returns to the Sites page (#7158 a11y, #9794)', async () => {
     mockApi();
     render(<SiteDetailPage siteId={SITE_ID} />);
 
-    expect(await screen.findByRole('link', { name: 'Back to organizations' })).toHaveAttribute(
-      'href',
-      `/organizations/${ORG_ID}`
-    );
+    expect(await screen.findByRole('link', { name: 'Back to sites' })).toHaveAttribute('href', '/settings/sites');
+    expect(screen.queryByRole('link', { name: 'Back to organizations' })).toBeNull();
+  });
+
+  it('breadcrumbs read Settings → Sites → site, and the org name still links to its record (#9794)', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+    await waitFor(() => expect(crumbs).toHaveTextContent('Main Office'));
+    const links = within(crumbs).getAllByRole('link');
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Settings', '/settings'],
+      ['Sites', '/settings/sites'],
+    ]);
+    expect(crumbs).not.toHaveTextContent('Organizations');
+    expect(await screen.findByTestId('site-detail-org-link')).toHaveAttribute('href', `/organizations/${ORG_ID}`);
+  });
+
+  it('the not-found state also returns to the Sites page (#9794)', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'nope' }, false));
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    expect(await screen.findByRole('link', { name: 'Back to sites' })).toHaveAttribute('href', '/settings/sites');
   });
 
   it('links the site name input to its label (#7158 a11y)', async () => {
@@ -244,5 +266,56 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     } finally {
       flags.ENABLE_ENDPOINT_MESSAGING = true;
     }
+  });
+});
+
+describe('SiteDetailPage — devices tab count + site-filtered "View all" (#9791)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    granted.clear();
+    window.location.hash = '#devices';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/orgs/sites/${SITE_ID}`) return makeJsonResponse({ ...SITE_FROM_API, deviceCount: 7 });
+      if (url === `/orgs/organizations/${ORG_ID}`) return makeJsonResponse({ id: ORG_ID, name: 'Acme Corp' });
+      return makeJsonResponse({ data: [] });
+    });
+  });
+
+  it('renders the device count the API returned', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const count = await screen.findByTestId('site-detail-device-count');
+    expect(count.textContent).toBe('7');
+  });
+
+  it('"View all" opens the devices list pinned to this org, agent class, and this site', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const link = await screen.findByTestId('site-detail-devices-view-all-link');
+    const href = link.getAttribute('href')!;
+    expect(href.startsWith(`/devices#orgId=${ORG_ID}&deviceClass=agent&filtersV2=`)).toBe(true);
+    const hash = href.slice(href.indexOf('#'));
+    expect(decodeFilterFromHash(hash)).toEqual({
+      operator: 'AND',
+      conditions: [{ field: 'siteId', operator: 'equals', value: SITE_ID }],
+    });
+    expect(readDeviceClassFromHash(hash)).toBe('agent');
+  });
+
+  it('renders no "View all" link when the org id is not a uuid (never a broader fallback link)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/orgs/sites/${SITE_ID}`) return makeJsonResponse({ ...SITE_FROM_API, orgId: 'not-a-uuid', deviceCount: 7 });
+      return makeJsonResponse({ data: [] });
+    });
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    await screen.findByTestId('site-detail-device-count');
+    expect(screen.queryByTestId('site-detail-devices-view-all-link')).toBeNull();
+  });
+
+  it('link has a resting underline and a focus-visible ring', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const cls = (await screen.findByTestId('site-detail-devices-view-all-link')).className;
+    expect(cls).toMatch(/underline/);
+    expect(cls).toMatch(/focus-visible:ring/);
   });
 });

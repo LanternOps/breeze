@@ -22,7 +22,59 @@ type PairRow = {
   account_id: string; client_id: string; partner_id: string; org_id: string | null;
   auto_revoked_at: Date | string | null; has_later: boolean; has_active: boolean;
   client_disabled: boolean; client_name: unknown;
+  // Same account + same client_name under a different client_id (DCR re-registration).
+  has_later_by_name: boolean; has_active_by_name: boolean;
+  owner_email: string | null; grant_created_at: Date | string | null;
 };
+
+const REUSE_DETAIL =
+  "Breeze revoked this app's access on purpose after a refresh token was reused (possible replay). "
+  + 'Harmless if you have signed in again; otherwise reconnect from the app. Nothing to do in Breeze.';
+
+const isoDay = (d: Date | string | null): string | null => {
+  if (d === null) return null;
+  const t = new Date(d);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString().slice(0, 10);
+};
+
+const DISPLAY_NAME_CAP = 80;
+const MIN_NAME_CODE_POINTS = 24; // name is protected up to this length; the owner email yields first
+const DISAMBIGUATOR_LEN = 11; // " · " + last 8 chars of the client id
+
+const clip = (v: string, n: number): string => Array.from(v).slice(0, Math.max(0, n)).join('');
+
+/**
+ * "<name> (<owner email>, <created date>)", at most 80 code points INCLUDING the
+ * 11-char client-id suffix `disambiguateDisplayNames` may add afterwards (that
+ * budget is reserved here, so the cap holds after disambiguation). The name is
+ * kept up to 24 code points; the owner email is clipped to fit what is left.
+ * Same-name matching (has_*_by_name) is deliberately scoped to one account +
+ * partner; two same-named apps of one account can retire each other's incident.
+ */
+function reuseDisplayName(r: PairRow): string {
+  const base = cleanDisplayName(r.client_name, r.client_id);
+  const email = typeof r.owner_email === 'string' ? cleanDisplayName(r.owner_email, '') : '';
+  const day = isoDay(r.grant_created_at) ?? '';
+  const budget = DISPLAY_NAME_CAP - DISAMBIGUATOR_LEN;
+  const dayPart = day ? (email ? `, ${day}` : day) : '';
+  // " (" + ")" overhead is 3 code points.
+  const emailPart = clip(email, budget - Math.min(Array.from(base).length, MIN_NAME_CODE_POINTS) - 3 - dayPart.length);
+  const inner = `${emailPart}${dayPart}`;
+  if (!inner) return clip(base, budget);
+  const suffix = ` (${inner})`;
+  return clip(base, budget - Array.from(suffix).length) + suffix;
+}
+
+/** Rows that are still identical after owner + date get the client id's last 8 characters. */
+export function disambiguateDisplayNames(observations: HealthObservation[]): HealthObservation[] {
+  const counts = new Map<string, number>();
+  for (const o of observations) counts.set(o.displayName, (counts.get(o.displayName) ?? 0) + 1);
+  return observations.map((o) => {
+    if ((counts.get(o.displayName) ?? 0) < 2) return o;
+    const client = o.sourceId.slice(o.sourceId.indexOf(':') + 1);
+    return { ...o, displayName: `${o.displayName} · ${client.slice(-8)}` };
+  });
+}
 
 /**
  * Spec §3 classification of one (account, client) pair. E is the pair's latest
@@ -31,12 +83,12 @@ type PairRow = {
  * then a deliberate revoke or expiry); none → broken. Without E: active →
  * healthy, else retired. A disabled client is always retired.
  */
-function toObservation(r: PairRow, now: Date): HealthObservation {
+export function toObservation(r: PairRow, now: Date): HealthObservation {
   const hasAutoRevoke = r.auto_revoked_at !== null;
   let state: HealthObservation['state'];
   if (r.client_disabled) state = 'retired';
-  else if (r.has_active) state = 'healthy';
-  else if (hasAutoRevoke && !r.has_later) state = 'broken';
+  else if (r.has_active || (hasAutoRevoke && r.has_active_by_name)) state = 'healthy';
+  else if (hasAutoRevoke && !r.has_later && !r.has_later_by_name) state = 'broken';
   else state = 'retired';
   return {
     sourceKind: 'oauth_grant',
@@ -47,8 +99,8 @@ function toObservation(r: PairRow, now: Date): HealthObservation {
     state,
     severity: 'permanent',
     condition: hasAutoRevoke ? 'grant_revoked_reuse' : 'grant_revoked',
-    detail: null,
-    displayName: cleanDisplayName(r.client_name, r.client_id),
+    detail: hasAutoRevoke ? REUSE_DETAIL : null,
+    displayName: hasAutoRevoke ? reuseDisplayName(r) : cleanDisplayName(r.client_name, r.client_id),
     fixHref: '/settings/connected-apps',
     ownerFixHref: '/account/connected-apps',
     viewPermission: PERMISSIONS.CONNECTED_APPS_READ,
@@ -91,7 +143,7 @@ function pairQuery(pairsSql: SQL, now: Date): SQL {
     WHERE g.partner_id IS NOT NULL
   ),
   auto AS (
-    SELECT DISTINCT ON (account_id, client_id) id, account_id, client_id, partner_id, org_id, revoked_at
+    SELECT DISTINCT ON (account_id, client_id) id, account_id, client_id, partner_id, org_id, revoked_at, created_at
     FROM grants
     WHERE revoked_reason = ${AUTO_REASON} AND revoked_by_user_id IS NULL
       AND revoked_at >= ${lookbackCutoff(now)}::timestamptz
@@ -111,9 +163,21 @@ function pairQuery(pairsSql: SQL, now: Date): SQL {
     EXISTS (SELECT 1 FROM grants a WHERE a.account_id = n.account_id AND a.client_id = n.client_id
             AND a.revoked_at IS NULL AND a.expires_at > ${nowIso}::timestamptz
             AND (e.id IS NULL OR (a.id <> e.id AND a.created_at > e.revoked_at))) AS has_active,
+    EXISTS (SELECT 1 FROM oauth_grants l JOIN oauth_clients lc ON lc.id = l.client_id
+            WHERE e.id IS NOT NULL AND l.account_id = n.account_id AND l.client_id <> n.client_id
+              AND l.partner_id = e.partner_id AND l.created_at > e.revoked_at
+              AND lc.metadata->>'client_name' = c.metadata->>'client_name') AS has_later_by_name,
+    EXISTS (SELECT 1 FROM oauth_grants l JOIN oauth_clients lc ON lc.id = l.client_id
+            WHERE e.id IS NOT NULL AND l.account_id = n.account_id AND l.client_id <> n.client_id
+              AND l.partner_id = e.partner_id AND l.created_at > e.revoked_at
+              AND l.revoked_at IS NULL AND l.expires_at > ${nowIso}::timestamptz
+              AND lc.metadata->>'client_name' = c.metadata->>'client_name') AS has_active_by_name,
     (c.disabled_at IS NOT NULL) AS client_disabled,
-    c.metadata->'client_name' AS client_name
+    c.metadata->'client_name' AS client_name,
+    u.email AS owner_email,
+    e.created_at AS grant_created_at
   FROM newest n
+  LEFT JOIN users u ON u.id = n.account_id
   LEFT JOIN auto e ON e.account_id = n.account_id AND e.client_id = n.client_id
   LEFT JOIN oauth_clients c ON c.id = n.client_id`;
 }
@@ -147,7 +211,7 @@ export const oauthGrantSource: HealthSource = {
       // Untracked pairs only matter when broken (spec §1.3: never report the healthy set).
       if (o.state === 'broken' || trackedSet.has(o.sourceId)) out.push(o);
     }
-    return decorateStillRetrying(out, now);
+    return decorateStillRetrying(disambiguateDisplayNames(out), now);
   },
 };
 
@@ -166,7 +230,8 @@ export async function decorateStillRetrying(observations: HealthObservation[], n
   const counts = await readRefreshRetryCounts([...new Set(broken.map(clientOf))], now);
   return observations.map((o) => {
     if (o.state !== 'broken') return o;
-    const detail = retryingDetail(counts.get(clientOf(o)) ?? 0);
-    return detail ? { ...o, detail: sanitizeHealthDetail(detail) } : o;
+    const retry = retryingDetail(counts.get(clientOf(o)) ?? 0);
+    if (!retry) return o;
+    return { ...o, detail: sanitizeHealthDetail(o.detail ? `${o.detail} ${retry}` : retry) };
   });
 }

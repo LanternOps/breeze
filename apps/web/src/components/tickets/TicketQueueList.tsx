@@ -7,7 +7,6 @@ import TicketTypeChip from './TicketTypeChip';
 import { statusConfig, priorityConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { type TicketConfig } from '../../lib/ticketConfigApi';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import { EntityLink } from '@/components/shared/EntityLink';
 
 interface Props {
   tickets: TicketSummary[];
@@ -106,17 +105,18 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               )}
             />
           )}
-          {/* A div (not a <button>) so the org EntityLink inside is never an anchor
-              nested in a button. role="option" + tabIndex + onKeyDown keep the
-              button's focus and Enter/Space activation. */}
+          {/* role="option" + tabIndex + onKeyDown give the row a button's focus
+              and Enter/Space activation. Keep it free of nested links: the whole
+              row is the select target, and an anchor inside it (the org name used
+              to be one) captures clicks in the middle of the row and navigates
+              away instead of opening the ticket (#9564). The workbench header
+              carries the org record link. */}
           <div
             role="option"
             tabIndex={0}
             aria-selected={ticket.id === selectedId}
             onClick={() => onSelect(ticket)}
             onKeyDown={(e) => {
-              // Ignore keys pressed on the nested link: Enter there follows the link.
-              if (e.target !== e.currentTarget) return;
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 onSelect(ticket);
@@ -152,6 +152,12 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
+              {ticket.mergedIntoTicketId && (
+                // #8972: a merged tombstone, listed only under "Show merged".
+                <span className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-medium text-primary" data-testid={`ticket-row-merged-${ticket.id}`}>
+                  {t('ticketQueueList.merged')}
+                </span>
+              )}
               {ticket.checklist && ticket.checklist.total > 0 && (
                 <span
                   className={cn(
@@ -165,7 +171,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 </span>
               )}
               {!hideOrg && ticket.orgName && (
-                <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} tone="muted" />
+                <span className="min-w-0 truncate" data-testid={`ticket-org-${ticket.id}`}>{ticket.orgName}</span>
               )}
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={ticket} />

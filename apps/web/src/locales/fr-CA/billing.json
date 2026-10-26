@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} ligne(s) dépassent la quantité incluse et n'ont pas été facturées : {{names}}",
         "uncoveredDevices": "Facture générée, mais {{count}} appareil(s) ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
-        "draftDeleted": "Brouillon supprimé"
+        "draftDeleted": "Brouillon supprimé",
+        "skipped": {
+          "already_billed": "Aucune facture générée : cette période de facturation a déjà été facturée.",
+          "not_due": "Aucune facture générée : ce contrat n’est pas encore à facturer.",
+          "renewal_pending": "Aucune facture générée : ce contrat a dépassé sa date de fin et attend son renouvellement.",
+          "expired": "Aucune facture générée : ce contrat est expiré.",
+          "unknown": "Aucune facture n’a été générée pour ce contrat."
+        }
       },
       "cancelConfirm": {
         "title": "Annuler ce contrat ?",
@@ -711,7 +718,15 @@
       },
       "fileType": {
         "image": "copie numérisée"
-      }
+      },
+      "sendForSignature": "Envoyer pour signature",
+      "filter": {
+        "pending": "En attente de signature",
+        "signed": "Signées",
+        "closed": "Refusées / annulées / expirées"
+      },
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "La copie certifiée n’a pas pu être produite pour cette entente; le fichier original a été téléchargé à la place."
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
@@ -757,6 +772,101 @@
       "submit": "Enregistrer l'entente signée",
       "success": "Entente signée enregistrée.",
       "error": "Impossible d'enregistrer l'entente signée."
+    },
+    "requests": {
+      "columns": {
+        "template": "Modèle",
+        "organization": "Organisation",
+        "recipients": "Destinataires",
+        "sent": "Envoyée",
+        "expires": "Expire",
+        "status": "Statut"
+      },
+      "status": {
+        "draft": "Brouillon",
+        "sent": "En attente de signature",
+        "viewed": "Consultée",
+        "signed": "Signée",
+        "declined": "Refusée",
+        "voided": "Annulée",
+        "expired": "Expirée"
+      },
+      "empty": {
+        "pending": {
+          "title": "Rien en attente de signature",
+          "description": "Les conventions envoyées pour signature apparaissent ici jusqu’à ce que le client signe."
+        },
+        "closed": {
+          "title": "Aucune demande refusée, annulée ou expirée",
+          "description": "Les demandes refusées, annulées ou expirées apparaissent ici."
+        }
+      },
+      "loadError": "Impossible de charger les demandes de convention.",
+      "recipientsMore": "+{{count}} autres",
+      "notSent": "Non envoyée",
+      "declinedReason": "Refusée : {{reason}}",
+      "voidedReason": "Annulée : {{reason}}",
+      "copyLink": {
+        "label": "Copier le lien",
+        "success": "Lien de signature copié",
+        "error": "Impossible de copier le lien de signature.",
+        "clipboardError": "Impossible de copier dans le presse-papiers. Lien de signature : {{link}}"
+      },
+      "void": {
+        "label": "Annuler",
+        "title": "Annuler cette demande de convention ?",
+        "description": "Le lien de signature cesse de fonctionner et les destinataires ne peuvent plus signer cette convention.",
+        "reasonLabel": "Motif (facultatif)",
+        "confirm": "Annuler la demande",
+        "confirming": "Annulation…",
+        "success": "Demande de convention annulée.",
+        "error": "Impossible d’annuler la demande de convention."
+      },
+      "deleteDraft": {
+        "label": "Supprimer le brouillon",
+        "success": "Brouillon supprimé.",
+        "error": "Impossible de supprimer le brouillon."
+      }
+    },
+    "send": {
+      "title": "Envoyer pour signature",
+      "contract": "Classer avec un contrat (facultatif)",
+      "contractsError": "Impossible de charger les contrats de cette organisation. Vous pouvez tout de même envoyer la convention et la lier à un contrat plus tard.",
+      "recipients": "Destinataires",
+      "recipientsHelp": "Adresses courriel, séparées par des virgules ou des sauts de ligne. Préremplies avec le contact de facturation de l’organisation.",
+      "recipientsRequired": "Ajoutez au moins une adresse de destinataire.",
+      "recipientsInvalid": "Ces valeurs ne sont pas des adresses valides : {{emails}}",
+      "recipientsTooMany": "50 destinataires au maximum.",
+      "cover": "Message d’accompagnement (facultatif)",
+      "expiry": "Le lien expire le",
+      "expiryPast": "Choisissez une date d’expiration future.",
+      "label": "Libellé (facultatif)",
+      "createDraft": "Créer le brouillon et prévisualiser",
+      "creating": "Création…",
+      "preview": {
+        "title": "Aperçu",
+        "loading": "Chargement de l’aperçu…",
+        "error": "Impossible de charger l’aperçu.",
+        "uploaded": "Ce modèle est un document téléversé. Le client signe le fichier téléversé."
+      },
+      "unresolved": {
+        "title": "Renseignez les valeurs manquantes avant l’envoi"
+      },
+      "updatePreview": "Mettre à jour l’aperçu",
+      "updating": "Mise à jour…",
+      "submit": "Envoyer",
+      "sending": "Envoi…",
+      "createError": "Impossible de créer le brouillon.",
+      "updateError": "Impossible de mettre à jour la convention.",
+      "sendError": "Impossible d’envoyer la convention.",
+      "discardError": "Impossible de supprimer le brouillon; il figure toujours sous En attente de signature, où vous pouvez le supprimer.",
+      "sent_one": "Convention envoyée à {{count}} destinataire",
+      "sent_other": "Convention envoyée à {{count}} destinataires",
+      "notEmailed": {
+        "no_email_service": "Envoyée, mais le courriel n’est pas configuré. Copiez le lien de signature depuis « En attente de signature » et partagez-le.",
+        "no_recipients": "Envoyée, mais il n’y avait aucun destinataire à joindre. Copiez le lien de signature depuis « En attente de signature » et partagez-le.",
+        "send_failed": "Envoyée, mais le courriel n’a pas pu être livré. Copiez le lien de signature depuis « En attente de signature » et partagez-le."
+      }
     }
   },
   "quotes": {
@@ -1343,8 +1453,10 @@
         "signerNameLabel": "Qui a donné son accord",
         "signerEmailLabel": "Son courriel (facultatif)",
         "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
+        "consequenceInvoiceDraft": "Une facture en brouillon sera créée. Elle n’est pas encore émise ni numérotée.",
         "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
         "consequenceEmail": "La facture sera envoyée par courriel à {{recipients}}.",
+        "consequenceEmailNotConfigured": "Aucun service de courriel n'est configuré; la facture ne sera pas envoyée par courriel. Partagez-la depuis la page de la facture.",
         "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
@@ -1360,6 +1472,7 @@
         "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
         "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur cette soumission; la facture pourrait donc ne pas être envoyée par courriel. Envoyez-la vous-même au client au besoin.",
         "successNoRecipient": "Soumission acceptée. Facture {{number}} émise. Elle pourrait ne pas avoir été envoyée par courriel : aucun destinataire n'est enregistré sur cette soumission.",
+        "successNoEmailService": "Soumission acceptée. Facture {{number}} émise. Elle n'a pas été envoyée par courriel : aucun service de courriel n'est configuré. Partagez-la depuis la page de la facture.",
         "overlap": {
           "title": "Cette organisation a déjà un contrat au même rythme",
           "body": "L’acceptation a créé un nouveau brouillon de contrat. Si vous l’activez en plus du contrat existant, le client paie pour les deux. Vérifiez les deux avant d’en activer un.",
@@ -1576,76 +1689,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
         "setDevices": "appareils",
         "setSeats": "postes",
-        "setGroup": "appareils dans « {{name}} »",
-        "atSite": "{{set}} au site {{site}}",
-        "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
-        "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
+        "setGroup": "appareils dans « {{name}} »"
       },
       "additionalItems": "Articles supplémentaires",
       "contract": {
-        "download": "Télécharger l'entente",
-        "previewTitle": "Entente {{name}}",
         "unavailable": "Fichier de l'entente indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
-      "agreements": {
-        "heading": "Ententes",
-        "termsTitle": "Modalités et conditions",
-        "read": "Lire",
-        "hide": "Masquer",
-        "readTime": "~{{minutes}} min de lecture",
-        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min de lecture",
-        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min de lecture",
-        "pdfDocument": "Document PDF",
-        "unavailable": "Non disponible",
-        "untitled": "Entente"
-      },
-      "draft": "Brouillon",
-      "empty": "Cette proposition n'a encore aucun contenu.",
-      "imageUnavailable": "Image indisponible",
-      "issued": "Émis",
-      "preparedFor": "Préparé pour",
-      "taxId": "Identifiant fiscal : {{id}}",
-      "imageZoomAria": "Voir l'image en grand",
       "preview": {
         "description": "Voici ce que votre client voit sur son lien de proposition.",
         "downloadPdf": "Télécharger le PDF",
-        "preparing": "Préparation…"
-      },
-      "pricing": "Tarification",
-      "pricingScrollAria": "Tarification — faites défiler horizontalement pour plus de colonnes",
-      "proposal": "Proposition",
-      "proposalImageAlt": "Image de la proposition",
-      "recurrence": {
-        "annual": "Annuel",
-        "monthly": "Mensuel"
-      },
-      "table": {
-        "amount": "Montant",
-        "description": "Description",
-        "qty": "Qté",
-        "tax": "Taxe",
-        "unitPrice": "Prix unitaire"
-      },
-      "totals": {
-        "annualRecurring": "Récurrent annuel",
-        "depositDue": "Acompte dû",
-        "depositDueNow": "Acompte dû maintenant",
-        "dueOnAcceptance": "Dû à l'acceptation",
-        "firstPeriodSubtotal": "Sous-total de la première période",
-        "firstPeriodTotal": "Total de la première période",
-        "monthlyRecurring": "Récurrent mensuel",
-        "recurringNote": "L'acceptation de cette proposition facture maintenant les frais ponctuels. Les lignes récurrentes sont facturées selon leur propre calendrier.",
-        "remainingBalance": "Solde restant (selon les conditions)",
-        "subtotal": "Sous-total",
-        "tax": "Taxe"
-      },
-      "unsupportedBlock": "Ce type de bloc n'est pas encore pris en charge par cette visionneuse.",
-      "validUntil": "Valide jusqu'au"
+        "preparing": "Préparation…",
+        "loading": "Chargement de la vue client…",
+        "loadError": "Impossible de charger la vue client de cette proposition.",
+        "retry": "Réessayer",
+        "signatureInert": "Votre client signe ici"
+      }
     },
     "page": {
       "accessDenied": "Vous n'avez pas l'autorisation de consulter les devis.",
@@ -2192,36 +2253,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Facturer à",
-    "documentType": "Facture",
-    "due": "Échéance",
-    "empty": "Cette facture ne contient encore aucune ligne.",
-    "fallbackTitle": "Facture",
-    "issued": "Émise",
-    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
       "downloadPdf": "Télécharger le PDF",
-      "preparing": "Préparation…"
+      "loadError": "Impossible de charger la vue client de cette facture.",
+      "loading": "Chargement de la vue client…",
+      "preparing": "Préparation…",
+      "retry": "Réessayer"
     },
-    "table": {
-      "amount": "Montant",
-      "description": "Description",
-      "qty": "Qté",
-      "tax": "Taxe",
-      "unitPrice": "Prix unitaire"
-    },
-    "terms": "Conditions générales",
-    "ticketHeader": "Billet n° {{number}}",
-    "ticketWork": "Travail lié au billet",
-    "totals": {
-      "amountDue": "Montant dû",
-      "paid": "Payé",
-      "subtotal": "Sous-total",
-      "tax": "Taxe",
-      "total": "Total"
-    }
+    "ticketHeader": "Billet n° {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Factures",
@@ -2508,7 +2549,7 @@
     "documents": "Documents",
     "connections": "Connexions",
     "rates": "Tarifs",
-    "payments": "Payments"
+    "payments": "Paiements"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2582,7 +2623,7 @@
     "ai": {
       "column": "Utilisation IA",
       "sectionTitle": "Utilisation de l'IA",
-      "sectionHelp": "Comment l'utilisation de l'assistant IA par les organisations qui ont ce profil de facturation est facturée. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
+      "sectionHelp": "Comment l'utilisation de Breeze AI par les organisations qui ont ce profil de facturation est facturée. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
       "coverage": "Facturation de l'utilisation IA",
       "coverageBillable": "Facturable",
       "coverageIncluded": "Inclus",
@@ -2846,6 +2887,10 @@
       "confirm": "Confirmer",
       "failed": "Échec de la vérification. Réessayez.",
       "unavailable": "Impossible de démarrer la vérification"
+    },
+    "notEnabled": {
+      "title": "Les paiements automatiques ne sont pas activés pour votre compte",
+      "hint": "Les paiements automatiques n'ont pas encore été activés. Demandez à votre administrateur Breeze de les activer, puis revenez demander l'inscription à vos clients."
     }
   },
   "reminders": {

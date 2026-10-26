@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Sparkles } from 'lucide-react';
+import { ExternalLink, Pencil, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -23,13 +23,16 @@ import { approvalFriendly } from '../../lib/ticketApproval';
 import TicketPartsCard from './TicketPartsCard';
 import TicketChecklistCard from './TicketChecklistCard';
 import TicketLinksCard from './TicketLinksCard';
+import MergeTicketDialog from './MergeTicketDialog';
 import TicketTypeChip from './TicketTypeChip';
 import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
 import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
 import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
+import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
+import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
-import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import { statusConfig, priorityConfig, slaState, ticketDisplayNumber, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
 import type { AiAgentRunTicketProposalDto } from '@breeze/shared';
 
 /** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
@@ -58,6 +61,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import WispLinkButton from '@/components/wisp/WispLinkButton';
 import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
@@ -66,6 +70,8 @@ interface TagEditorProps {
   value: string[];
   max?: number;
   onChange: (tags: string[]) => void;
+  /** Read-only: tags render without the remove buttons or the add input. */
+  disabled?: boolean;
   'data-testid'?: string;
 }
 
@@ -75,7 +81,7 @@ function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPr
   return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketWorkbench.priority.${priority}`);
 }
 
-function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEditorProps) {
+function TagEditor({ value, max = 20, onChange, disabled = false, 'data-testid': testId }: TagEditorProps) {
   const { t } = useTranslation('tickets');
   const [input, setInput] = useState('');
 
@@ -91,7 +97,7 @@ function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEdit
       {value.map((tag) => (
         <span key={tag} className="flex items-center gap-0.5 rounded border bg-muted px-1.5 py-0.5 text-xs">
           {tag}
-          <button
+          {!disabled && <button
             type="button"
             data-testid={`ticket-workbench-tag-remove-${tag}`}
             className="ml-0.5 hover:text-destructive"
@@ -99,10 +105,10 @@ function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEdit
             aria-label={t('ticketWorkbench.tags.removeTag', { tag })}
           >
             ×
-          </button>
+          </button>}
         </span>
       ))}
-      {value.length < max && (
+      {!disabled && value.length < max && (
         <input
           type="text"
           data-testid="ticket-workbench-tag-input"
@@ -131,6 +137,13 @@ interface Props {
   // the instant a mutation lands, so the list reflects the change without waiting
   // for (or paying for) a full list refetch. `onChanged` still reconciles after.
   onTicketPatched?: (id: string, patch: Partial<TicketDetail>) => void;
+  // Fired after a successful soft-delete, so a host holding this ticket in its
+  // pane (TicketsPage's post-resolve hold, #9564) lets go of it.
+  onDeleted?: (id: string) => void;
+  // Fired after this ticket is merged into another (#8972). The split pane
+  // moves its selection to the survivor; without a host (full-page view) the
+  // workbench navigates to the survivor itself.
+  onMerged?: (survivorId: string, survivorNumber: string | null) => void;
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
@@ -166,7 +179,7 @@ type TicketAiDraft = {
   runId: string | null;
 };
 
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, onMerged, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -214,11 +227,25 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [moving, setMoving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  // #8972: a tombstone's survivor number, read from the survivor's own detail
+  // (the tombstone carries only its id). 'missing' = 404/403: the survivor was
+  // deleted or is outside this caller's view, so the banner has no link.
+  const [mergedInto, setMergedInto] = useState<{ id: string; state: 'pending' | 'found' | 'missing'; number?: string } | null>(null);
+  // #8972: display numbers of the tombstones this ticket's moved comments came
+  // from, keyed by mergedFromTicketId. Each id is read once per workbench.
+  const [mergedFromNumbers, setMergedFromNumbers] = useState<Record<string, string>>({});
+  const mergedFromRequested = useRef<Set<string>>(new Set());
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
   const { can } = usePermissions();
   const canManage = can('tickets', 'manage');
   // #7900: type edits and link add/remove need tickets:write (UX only; the API re-checks).
   const canWrite = can('tickets', 'write');
+  // #8972: a merged tombstone is read-only — every ticket write answers 409
+  // TICKET_MERGED. `merged` hides or disables each write control; `canEdit` is
+  // the write gate for the controls that were tickets:write-gated already.
+  const merged = Boolean(ticket?.mergedIntoTicketId);
+  const canEdit = canWrite && !merged;
   // GET /orgs/organizations returns the full org row for partner/system scope,
   // which carries currency_code (wave 1); the parts card needs it for catalog
   // prefill (#3775). Org-scoped callers get a name-only projection → undefined.
@@ -228,6 +255,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [config, setConfig] = useState<TicketConfig | null>(null);
   const [editingDescription, setEditingDescription] = useState(false);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Subject is a heading at rest; the pencil swaps in an input. `subjectCommittedRef`
+  // makes commit idempotent: Enter commits and leaves edit mode, and the blur that
+  // follows (unmount or explicit) must not PATCH the same value a second time.
+  const [editingSubject, setEditingSubject] = useState(false);
+  const subjectCommittedRef = useRef(false);
   // Requester editor: picker options (portal users for the org) + edit state.
   const [requesters, setRequesters] = useState<Array<{ id: string; name: string | null; email: string }>>([]);
   const [editingRequester, setEditingRequester] = useState(false);
@@ -345,7 +377,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, [ticket, agentName]);
 
   useEffect(() => {
-    if (!ticket) {
+    if (!ticket || ticket.mergedIntoTicketId) {
       setTriageSuggestion(null);
       return;
     }
@@ -401,7 +433,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // consumed elsewhere) simply drops out of `aiDrafts` on the next fetch,
   // which is the only thing the card list renders from.
   useEffect(() => {
-    if (!ticket) {
+    if (!ticket || ticket.mergedIntoTicketId) {
       setAiDrafts([]);
       setDraftContent({});
       return;
@@ -440,7 +472,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, []);
 
   useEffect(() => {
-    if (!ticket) {
+    if (!ticket || ticket.mergedIntoTicketId) {
       setAiProposal(null);
       return;
     }
@@ -467,6 +499,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // tickets — same-ticket refreshes keep the tree mounted (see render below).
   useEffect(() => {
     setTicket(null);
+    setEditingSubject(false);
     setResolveOpen(false);
     setResolutionNote('');
     setPendingOpen(null);
@@ -474,6 +507,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
     setResolveDraftId(null);
     setDeleteOpen(false);
+    setMergeOpen(false);
+    setMergedInto(null);
+    setMergedFromNumbers({});
+    mergedFromRequested.current = new Set();
     setChecklistCounts(null);
     setChecklistConfirm(null);
     // I2 (#4191 final review): without this, ticket A's AI-draft cards (and
@@ -487,6 +524,64 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     // eagerly rather than waiting on the `[ticket, ticketId]` refetch effect.
     setAiProposal(null);
   }, [ticketId]);
+
+  // #8972: resolve the survivor's number for the tombstone banner. Not parsed
+  // from resolutionNote (free text a later edit could change).
+  const mergedIntoTicketId = ticket?.mergedIntoTicketId ?? null;
+  useEffect(() => {
+    if (!mergedIntoTicketId) { setMergedInto(null); return; }
+    let cancelled = false;
+    setMergedInto((prev) => (prev?.id === mergedIntoTicketId ? prev : { id: mergedIntoTicketId, state: 'pending' }));
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/tickets/${mergedIntoTicketId}`);
+        if (cancelled) return;
+        if (res.status === 404 || res.status === 403) {
+          setMergedInto({ id: mergedIntoTicketId, state: 'missing' });
+          return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } };
+        if (cancelled) return;
+        setMergedInto({ id: mergedIntoTicketId, state: 'found', number: ticketDisplayNumber(body.data ?? { id: mergedIntoTicketId }) });
+      } catch (err) {
+        // Leave the pending banner (no number, link by id) rather than claim the survivor is gone.
+        if (!cancelled) console.warn('[TicketWorkbench] survivor lookup failed', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mergedIntoTicketId]);
+
+  // #8972: comments moved here by a merge carry the tombstone's id; read each
+  // distinct tombstone once (tombstones stay readable) for the "from T-…" mark.
+  const mergedFromIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of ticket?.comments ?? []) if (c.mergedFromTicketId) ids.add(c.mergedFromTicketId);
+    return [...ids].sort().join(',');
+  }, [ticket?.comments]);
+  useEffect(() => {
+    if (!mergedFromIds) return;
+    const pending = mergedFromIds.split(',').filter((id) => !mergedFromRequested.current.has(id));
+    if (pending.length === 0) return;
+    for (const id of pending) mergedFromRequested.current.add(id);
+    const forTicketId = ticketId;
+    for (const id of pending) {
+      void fetchWithAuth(`/tickets/${id}`)
+        .then(async (res) => {
+          if (!res.ok) {
+            console.warn(`[TicketWorkbench] merged-from lookup ${id} answered ${res.status}`);
+            return null;
+          }
+          return (await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } };
+        })
+        .then((body) => {
+          if (!body?.data || ticketIdRef.current !== forTicketId) return;
+          const number = ticketDisplayNumber(body.data);
+          setMergedFromNumbers((prev) => ({ ...prev, [id]: number }));
+        })
+        .catch((err) => { console.warn('[TicketWorkbench] merged-from lookup failed', err); });
+    }
+  }, [mergedFromIds, ticketId]);
 
   // Opens the resolve form and, when an active `resolution_note` AI draft
   // exists, prefills the note field from it and remembers its id so
@@ -748,6 +843,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setDeleteOpen(false);
+      onDeleted?.(ticketId);
       onChanged?.();
       if (expanded) void navigateTo('/tickets');
     } catch (err) {
@@ -755,7 +851,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setDeleting(false);
     }
-  }, [deleting, ticketId, onChanged, expanded, t]);
+  }, [deleting, ticketId, onChanged, onDeleted, expanded, t]);
+
+  // The dialog already toasted "Merged into T-…". The split-pane host moves
+  // its selection to the survivor; standalone, go to the survivor's page.
+  const handleMerged = useCallback((survivor: { id: string; internalNumber: string | null }) => {
+    setMergeOpen(false);
+    if (onMerged) onMerged(survivor.id, survivor.internalNumber);
+    else void navigateTo(`/tickets/${survivor.id}`);
+  }, [onMerged]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -960,13 +1064,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       }
       return; // keep the form open and the typed note intact on failure
     }
-    afterMutation({ status: 'resolved', resolutionNote: note });
+    // The patch must carry the resolved status's own name/colour: the host's
+    // "now under Closed" banner reads `statusName`, and omitting it left the
+    // previous status name ("Open — now under Closed"). A plain core resolve
+    // has no custom name (null falls back to the translated core label).
+    const resolvedRow = pendingStatusId ? config?.statuses.find((s) => s.id === pendingStatusId) : undefined;
+    afterMutation({
+      status: 'resolved',
+      resolutionNote: note,
+      statusName: resolvedRow?.name ?? null,
+      statusColor: resolvedRow?.color ?? null,
+    });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -1112,39 +1226,82 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? t('ticketWorkbench.triage.suggestedCategory'))
     : null;
   const triageReasons = triageSuggestion?.reasons.filter((reason) => reason.trim().length > 0) ?? [];
+  const mergedDate = ticket.mergedAt ? formatDateTime(ticket.mergedAt) : t('common:states.unknown');
+
+  const commitSubject = (raw: string) => {
+    if (subjectCommittedRef.current) return;
+    subjectCommittedRef.current = true;
+    setEditingSubject(false);
+    const next = raw.trim();
+    if (!next || next === ticket.subject) return;
+    handleFieldSave({ subject: next });
+  };
+  const cancelSubjectEdit = () => {
+    subjectCommittedRef.current = true;
+    setEditingSubject(false);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
+      {merged && ticket.mergedIntoTicketId && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-primary/30 bg-primary/10 px-4 py-2 text-sm" role="status" data-testid="ticket-merged-banner">
+          <span>
+            {mergedInto?.state === 'missing'
+              ? t('ticketWorkbench.mergedBanner.deleted', { date: mergedDate })
+              : mergedInto?.state === 'found' && mergedInto.number
+                ? t('ticketWorkbench.mergedBanner.mergedInto', { number: mergedInto.number, date: mergedDate })
+                : t('ticketWorkbench.mergedBanner.pending', { date: mergedDate })}
+          </span>
+          {mergedInto?.state !== 'missing' && (
+            <a href={`/tickets/${ticket.mergedIntoTicketId}`} className="font-medium text-primary hover:underline" data-testid="ticket-merged-banner-link">
+              {t('ticketWorkbench.mergedBanner.open', { number: mergedInto?.number ?? ticket.mergedIntoTicketId.slice(0, 8) })}
+            </a>
+          )}
+        </div>
+      )}
       {/* Header */}
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticket.internalNumber ?? ticket.id.slice(0, 8)}</span>
-          <input
-            type="text"
-            defaultValue={ticket.subject}
-            key={ticket.subject}
-            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-hidden hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
-            data-testid="ticket-workbench-subject-edit"
-            aria-label={t('ticketWorkbench.ticketSubject')}
-            onBlur={(e) => {
-              const next = e.target.value.trim();
-              if (!next || next === ticket.subject) return;
-              handleFieldSave({ subject: next });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                const next = (e.target as HTMLInputElement).value.trim();
-                if (!next || next === ticket.subject) return;
-                handleFieldSave({ subject: next });
-                (e.target as HTMLInputElement).blur();
-              }
-              if (e.key === 'Escape') {
-                (e.target as HTMLInputElement).value = ticket.subject;
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-          />
+          {editingSubject ? (
+            <input
+              type="text"
+              defaultValue={ticket.subject}
+              autoFocus
+              className="-my-0.5 min-w-0 flex-1 rounded-md border bg-background px-1.5 py-0.5 text-lg font-semibold outline-hidden focus:ring-1 focus:ring-ring"
+              data-testid="ticket-workbench-subject-edit"
+              aria-label={t('ticketWorkbench.ticketSubject')}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={(e) => commitSubject(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitSubject(e.currentTarget.value);
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelSubjectEdit();
+                }
+              }}
+            />
+          ) : (
+            <>
+              <h2 className="min-w-0 truncate text-lg font-semibold" title={ticket.subject} data-testid="ticket-workbench-subject">
+                {ticket.subject}
+              </h2>
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={() => { subjectCommittedRef.current = false; setEditingSubject(true); }}
+                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+                  aria-label={t('ticketWorkbench.subjectEditButton')}
+                  title={t('ticketWorkbench.subjectEditButton')}
+                  data-testid="ticket-workbench-subject-edit-btn"
+                >
+                  <Pencil className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
+            </>
+          )}
           {!expanded && (
             <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title={t('ticketWorkbench.openFullPage')} data-testid="ticket-workbench-expand">
               <ExternalLink className="h-4 w-4" />
@@ -1159,7 +1316,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} tone="muted" />
             </>
           )}
-          {ticket.requesterContactId && (
+          {ticket.requesterContactId && !merged && (
             // Both render nothing (and fetch nothing) unless the server's
             // caller-verification flag is on.
             <>
@@ -1177,6 +1334,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               />
             </>
           )}
+          {/* Renders nothing unless the Operator flag is on and the org can run offboarding. */}
+          <OffboardPersonLauncher orgId={ticket.orgId} source="ticket" contactId={ticket.requesterContactId ?? null} personHint={ticket.submitterEmail ?? null} label={ticket.submitterName ?? ticket.submitterEmail ?? null} />
+          {/* Same gate, onboarding recipe. The requester pre-fills the new hire's MANAGER, never the new hire. */}
+          <OnboardPersonLauncher orgId={ticket.orgId} source="ticket" requesterContactId={ticket.requesterContactId ?? null} requesterLabel={ticket.submitterName ?? ticket.submitterEmail ?? null} />
           {slaState(ticket).kind !== 'none' && (
             // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
             <>
@@ -1194,6 +1355,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <select
               value={pendingDisplayStatus ? (pendingStatusId ?? selectedStatusId ?? '') : (selectedStatusId ?? '')}
               onChange={(e) => void onCustomStatusChange(e.target.value)}
+              disabled={merged}
               className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
               data-testid="ticket-workbench-status"
@@ -1211,6 +1373,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <select
               value={pendingDisplayStatus ?? ticket.status}
               onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
+              disabled={merged}
               className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               data-testid="ticket-workbench-status"
               aria-label={t('common:labels.status')}
@@ -1218,7 +1381,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
           )}
-          {canWrite ? (
+          {canEdit ? (
             <select
               value={ticket.ticketType ?? 'incident'}
               onChange={(e) => {
@@ -1252,6 +1415,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               }).then(() => afterMutation({ priority })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
             }}
             className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
+            disabled={merged}
             data-testid="ticket-workbench-priority"
             aria-label={t('ticketWorkbench.priorityLabel')}
           >
@@ -1270,6 +1434,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 }).then(() => afterMutation({ categoryId })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
               }}
               className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+              disabled={merged}
               data-testid="ticket-workbench-category"
               aria-label={t('ticketWorkbench.categoryLabel')}
             >
@@ -1293,6 +1458,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 });
               }}
               className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+              disabled={merged}
               data-testid="ticket-workbench-assignee"
               aria-label={t('ticketWorkbench.assignee')}
             >
@@ -1308,7 +1474,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <button
               type="button"
               onClick={() => void mutate('/assign', { assigneeId: null }, t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), { assignedTo: null, assigneeName: null })}
-              className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+              className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+              disabled={merged}
               data-testid="ticket-workbench-unassign"
             >
               {t('ticketWorkbench.assigneeValue', { assignee: ticket.assigneeName ?? t('ticketWorkbench.mspStaff') })}
@@ -1316,24 +1483,38 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           ) : (
             <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">{t('ticketWorkbench.unassigned')}</span>
           )}
-          <button
-            type="button"
-            onClick={() => void createInvoice()}
-            disabled={creatingInvoice}
-            className="ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-            data-testid="ticket-workbench-create-invoice"
-          >
-            {creatingInvoice ? t('ticketWorkbench.invoice.creating') : t('ticketWorkbench.invoice.create')}
-          </button>
-          <button
-            type="button"
-            data-testid="ticket-workbench-move-org"
-            className="text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
-          >
-            {t('ticketWorkbench.move.open')}
-          </button>
-          {canManage && (
+          {!merged && (
+            <>
+              <button
+                type="button"
+                onClick={() => void createInvoice()}
+                disabled={creatingInvoice}
+                className="ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                data-testid="ticket-workbench-create-invoice"
+              >
+                {creatingInvoice ? t('ticketWorkbench.invoice.creating') : t('ticketWorkbench.invoice.create')}
+              </button>
+              <button
+                type="button"
+                data-testid="ticket-workbench-move-org"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
+              >
+                {t('ticketWorkbench.move.open')}
+              </button>
+            </>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              data-testid="ticket-merge-open"
+              className="text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setMergeOpen(true)}
+            >
+              {t('ticketWorkbench.merge.open')}
+            </button>
+          )}
+          {canManage && !merged && (
             <button
               type="button"
               data-testid="ticket-delete-button"
@@ -1343,8 +1524,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {t('common:actions.delete')}
             </button>
           )}
+          <WispLinkButton kind="ticket" id={ticket.id} orgId={ticket.orgId} size="sm" />
         </div>
-        {(invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
+        {!merged && (invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">
             {partialInvoiceId ? (
               <p>
@@ -1391,7 +1573,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             )}
           </div>
         )}
-        {moveOrgOpen && (
+        {moveOrgOpen && !merged && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
             <label className="text-xs font-medium" htmlFor="move-org-select">{t('ticketWorkbench.move.label')}</label>
             <select
@@ -1468,7 +1650,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
-        {(triageSuggestion || triageLoading) && (
+        {!merged && (triageSuggestion || triageLoading) && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-triage-suggestion">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
@@ -1525,7 +1707,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
-        {aiProposal && (
+        {!merged && aiProposal && (
           <div className="mt-2">
             <TicketProposalCard
               proposal={aiProposal.proposal}
@@ -1535,7 +1717,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             />
           </div>
         )}
-        {aiDrafts.map((draft) => (
+        {!merged && aiDrafts.map((draft) => (
           // At most one `reply` + one `resolution_note` draft can be active
           // at once (ticket_drafts_active_uq) — testids are keyed per kind
           // (not per draft id) so both cards are independently addressable.
@@ -1575,7 +1757,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         ))}
-        {resolveOpen && (
+        {resolveOpen && !merged && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
             <label className="text-xs font-medium" htmlFor="resolve-note">{t('ticketWorkbench.resolve.noteLabel')}</label>
             <textarea
@@ -1600,7 +1782,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
-        {pendingOpen && (
+        {pendingOpen && !merged && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-pending-form">
             <label className="text-xs font-medium" htmlFor="pending-reason">{t('ticketWorkbench.pending.reasonLabel')}</label>
             <textarea
@@ -1665,7 +1847,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="border-b p-4">
-              {editingDescription ? (
+              {editingDescription && !merged ? (
                 <div className="space-y-2">
                   <textarea
                     ref={descriptionTextareaRef}
@@ -1705,34 +1887,41 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   ) : (
                     <p className="flex-1 text-sm text-muted-foreground italic">{t('ticketWorkbench.description.empty')}</p>
                   )}
-                  <button
+                  {!merged && <button
                     type="button"
                     onClick={() => { setEditingDescription(true); }}
                     className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
                     data-testid="ticket-workbench-description-edit-btn"
                   >
                     {ticket.description ? t('common:actions.edit') : t('ticketWorkbench.description.add')}
-                  </button>
+                  </button>}
                 </div>
               )}
             </div>
             <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} canSavePartnerWide={canSavePartnerWideChecklist} />
-            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
+            <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canEdit} />
             <TicketFeed
               ticketId={ticket.id}
               comments={ticket.comments}
-              onEditComment={handleEditComment}
-              onDeleteComment={handleDeleteComment}
-              canManageComment={(c) => !c.portalUserId}
+              onEditComment={merged ? undefined : handleEditComment}
+              onDeleteComment={merged ? undefined : handleDeleteComment}
+              canManageComment={(c) => !merged && !c.portalUserId}
+              mergedFromNumbers={mergedFromNumbers}
             />
           </div>
-          <TicketComposer
-            requesterName={ticket.submitterName}
-            onSend={sendComment}
-            onUploadAttachment={uploadAttachment}
-            templates={cannedTemplates}
-            templateVars={templateVars}
-          />
+          {merged ? (
+            <p className="border-t bg-muted/30 px-4 py-3 text-sm text-muted-foreground" data-testid="ticket-merged-readonly">
+              {t('ticketWorkbench.mergedBanner.readOnly')}
+            </p>
+          ) : (
+            <TicketComposer
+              requesterName={ticket.submitterName}
+              onSend={sendComment}
+              onUploadAttachment={uploadAttachment}
+              templates={cannedTemplates}
+              templateVars={templateVars}
+            />
+          )}
         </div>
         {railOpen && (
           <aside className="w-64 shrink-0 overflow-y-auto border-l p-3 text-sm hidden lg:block" data-testid="ticket-workbench-rail">
@@ -1746,7 +1935,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 <div>
                   <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>
                   <dd>
-                    {editingRequester ? (
+                    {editingRequester && !merged ? (
                       <div className="space-y-2">
                         <select
                           value={reqSel}
@@ -1808,14 +1997,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                         <span className="flex-1" data-testid="ticket-workbench-requester">
                           {ticket.submitterName ?? ticket.submitterEmail ?? t('common:states.unknown')}
                         </span>
-                        <button
+                        {!merged && <button
                           type="button"
                           onClick={openRequesterEditor}
                           className="shrink-0 rounded px-1 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
                           data-testid="ticket-workbench-requester-edit"
                         >
                           {t('common:actions.edit')}
-                        </button>
+                        </button>}
                       </div>
                     )}
                   </dd>
@@ -1831,6 +2020,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       aria-label={t('ticketWorkbench.dueDate')}
                       value={ticket.dueDate ? ticket.dueDate.slice(0, 10) : ''}
                       onChange={(e) => handleFieldSave({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
+                      disabled={merged}
                       className="rounded-md border bg-background px-2 py-1 text-xs"
                     />
                   </dd>
@@ -1842,6 +2032,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       data-testid="ticket-workbench-tags"
                       value={ticket.tags ?? []}
                       max={20}
+                      disabled={merged}
                       onChange={(tags) => handleFieldSave({ tags })}
                     />
                   </dd>
@@ -1862,13 +2053,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                         <span>{t('ticketWorkbench.device.none')}</span>
                       )}
                     </div>
-                    <TicketDeviceEditor
+                    {!merged && <TicketDeviceEditor
                       orgId={ticket.orgId}
                       hasDevice={!!ticket.deviceId}
                       hasAssignee={!!ticket.assignedTo}
                       onSelect={(deviceId) => handleFieldSave({ deviceId })}
                       onUnlink={() => handleFieldSave({ deviceId: null })}
-                    />
+                    />}
                   </dd>
                 </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}
@@ -1892,6 +2083,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         )}
       </div>
 
+      {canEdit && mergeOpen && (
+        <MergeTicketDialog
+          key={ticket.id}
+          open
+          source={ticket}
+          onClose={() => setMergeOpen(false)}
+          onMerged={handleMerged}
+        />
+      )}
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}

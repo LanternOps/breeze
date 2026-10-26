@@ -31,6 +31,8 @@ import { ContractBlockEditor } from './QuoteContractBlockEditor';
 import { TableBlockEditor, CalloutBlockEditor } from './QuoteStructuredBlockEditor';
 import { BILLABLE_DEVICE_ROLES, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
 import type { QuoteDeviceSetType } from '@breeze/shared';
+import type { DocumentPageSize } from '@breeze/shared/documents';
+import { DocumentCoverCrop } from '@breeze/document-ui';
 
 type DeviceSetForm = {
   contractLineType?: QuoteDeviceSetType;
@@ -1120,7 +1122,7 @@ function LineDropGap({ colSpan, active, onDragOver, onDrop, testId }: {
 // header, so a bare <img src> would 401 (web-1): fetchWithAuth → blob → object
 // URL, revoked on unmount/change (same pattern as useAuthedImage in
 // useQuoteImage.ts, kept inline for its distinct loading/failed states).
-export function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+export function QuoteImagePreview({ quoteId, imageId, caption, crop }: { quoteId: string; imageId: string; caption?: string; crop?: DocumentPageSize }) {
   const { t } = useTranslation('billing');
   const [url, setUrl] = useState<string>();
   const [failed, setFailed] = useState(false);
@@ -1143,6 +1145,22 @@ export function QuoteImagePreview({ quoteId, imageId, caption }: { quoteId: stri
     return () => { cancelled = true; if (objectUrl) window.URL.revokeObjectURL(objectUrl); };
   }, [quoteId, imageId]);
 
+  // `crop` (the cover image): the same page-aspect, centre-cropped frame the customer's
+  // document and the PDF use (DocumentCoverCrop → document.css), so what the author sees
+  // here is the crop that ships. Width is the editor's; the aspect is the page's.
+  if (crop) {
+    return (
+      <DocumentCoverCrop pageSize={crop} testId="quote-cover-page-image-crop" className="w-40 shrink-0 rounded border bg-muted">
+        {failed ? (
+          <p className="absolute inset-0 overflow-auto p-2 text-xs text-muted-foreground">{t('quotes.editor.image.previewUnavailable')}</p>
+        ) : url ? (
+          <img src={url} alt={caption || t('quotes.editor.image.alt')} className="doc-cover-image" />
+        ) : (
+          <div className="absolute inset-0 animate-pulse" data-testid="quote-image-loading" />
+        )}
+      </DocumentCoverCrop>
+    );
+  }
   if (failed) return <p className="text-sm text-muted-foreground">{t('quotes.editor.image.previewUnavailable')}</p>;
   if (!url) return <div className="h-24 w-full animate-pulse rounded border bg-muted" data-testid="quote-image-loading" />;
   return <img src={url} alt={caption || t('quotes.editor.image.alt')} className="max-h-64 rounded border" />;

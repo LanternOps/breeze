@@ -22,6 +22,12 @@ vi.mock('../../../stores/orgStore', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispLinkButton', () => ({
+  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
+    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+  ),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -73,6 +79,14 @@ describe('QuoteWorkspace tabs', () => {
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
 
     expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Sent');
+  });
+
+  it('mounts the Link-to-Wisp button in the header with the loaded quote and its org (W08 Task 10)', async () => {
+    render(<QuoteWorkspace id="q-1" />);
+    const button = await screen.findByTestId('wisp-link-button-mock');
+    expect(button).toHaveAttribute('data-kind', 'quote');
+    expect(button).toHaveAttribute('data-id', 'q-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('renders an "Accepted" status badge for a different quote status (proves the badge is status-driven, not hardcoded)', async () => {

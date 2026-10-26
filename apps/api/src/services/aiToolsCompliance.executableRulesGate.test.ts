@@ -76,6 +76,7 @@ const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
   insert: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  transaction: ReturnType<typeof vi.fn>;
 };
 
 const USER_ID = 'user-1';
@@ -137,6 +138,9 @@ function governedPolicyRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Update writes run in a transaction (W04-D15); route tx.update to mockDb.update.
+  mockDb.transaction.mockImplementation(async (fn: any) =>
+    fn({ update: (...a: unknown[]) => (mockDb.update as unknown as (...x: unknown[]) => unknown)(...a), execute: vi.fn(async () => ({ rows: [] })) }));
   mfaRef.current = true;
   managePolicyRef.current = true;
   permsRef.current = { permissions: [], scope: 'organization', orgId: ORG_ID, partnerId: null, roleId: 'role-1' };

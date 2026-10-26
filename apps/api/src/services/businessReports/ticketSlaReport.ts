@@ -38,10 +38,11 @@ export type { TicketSlaConfig };
 type GroupBy = TicketSlaSummary['groupBy'];
 
 const NOTES = [
-  'Attainment is recomputed from ticket timestamps and the SLA targets stored on each ticket, not from the sla_breached_at stamp: the SLA sweep only marks tickets that are still open and unanswered when it runs, so a late-but-eventually-answered ticket is never stamped.',
-  'sla_paused_minutes is a lifetime total, so pause time that occurred after first response slightly flatters response attainment.',
+  'Attainment is recomputed from ticket timestamps and the SLA deadlines stored on each ticket, not from the sla_breached_at stamp: the SLA sweep only marks tickets that are still open and unanswered when it runs, so a late-but-eventually-answered ticket is never stamped.',
+  'Attainment compares each completion with the deadline stored on the ticket. The response deadline is frozen at the first response, so later pauses do not move it. Tickets answered before #8973 keep a deadline that includes all of their pauses.',
   'Tickets with no SLA target are excluded from the attainment denominators and counted separately.',
   'Planned work (work_kind other than support) carries a due date, not an SLA, and is excluded.',
+  'Tickets merged into another ticket are excluded; their close stamps are merge stamps, not resolutions. A merged ticket that had breached no longer counts as missed.',
   'The technician axis uses the ticket\'s CURRENT assignee; reassignment history is not tracked.',
   'Ticket detail lists breached tickets first (newest first), then the rest, so the detail cap never drops a breach in favour of a newer on-time ticket.',
 ];
@@ -92,8 +93,13 @@ const GROUP_AXES: Record<GroupBy, { key: SQL; label: SQL; order: SQL }> = {
 
 /**
  * The shared CTE, repeated in each statement (PG has no cross-statement CTEs).
- * The deadline mirrors `ticketSlaWorker.ts` exactly:
- * `created_at + (target + paused) * interval '1 minute'`.
+ * #8973 W3 (spec §4.3 reader 3): the deadline is the STORED response_due_at /
+ * resolution_due_at — the same column the breach sweep compares — so the
+ * report and the sweep can no longer disagree about when a target was due.
+ * met = completion <= due; missed = completion after it, or now() past it
+ * while unmet. A target whose stored deadline is not written yet (a pre-W3
+ * instance during a deploy; the SLA sweep heals it) is judged against the
+ * wall-clock formula the heal will store, so it is never dropped as no_target.
  */
 function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
   return sql`
@@ -103,10 +109,16 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
         t.ticket_number, t.internal_number, t.created_at,
         t.first_response_at, t.resolved_at,
         t.response_sla_minutes, t.resolution_sla_minutes,
+        COALESCE(t.response_due_at, t.created_at
+          + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+        COALESCE(t.resolution_due_at, t.created_at
+          + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
         COALESCE(t.sla_paused_minutes, 0) AS paused,
         t.sla_breached_at, t.sla_breach_reason
       FROM tickets t
       WHERE t.deleted_at IS NULL
+        -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+        AND t.merged_into_ticket_id IS NULL
         -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
         AND t.work_kind = 'support'
         AND t.created_at >= ${sqlTimestamp(period.start)} AND t.created_at < ${sqlTimestamp(period.end)}
@@ -117,19 +129,19 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
         CASE
           WHEN s.response_sla_minutes IS NULL THEN 'no_target'
           WHEN s.first_response_at IS NOT NULL
-           AND s.first_response_at <= s.created_at + (s.response_sla_minutes + s.paused) * interval '1 minute'
+           AND s.first_response_at <= s.response_due_at
             THEN 'met'
           WHEN s.first_response_at IS NOT NULL THEN 'missed'
-          WHEN now() > s.created_at + (s.response_sla_minutes + s.paused) * interval '1 minute' THEN 'missed'
+          WHEN now() > s.response_due_at THEN 'missed'
           ELSE 'pending'
         END AS response_outcome,
         CASE
           WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
           WHEN s.resolved_at IS NOT NULL
-           AND s.resolved_at <= s.created_at + (s.resolution_sla_minutes + s.paused) * interval '1 minute'
+           AND s.resolved_at <= s.resolution_due_at
             THEN 'met'
           WHEN s.resolved_at IS NOT NULL THEN 'missed'
-          WHEN now() > s.created_at + (s.resolution_sla_minutes + s.paused) * interval '1 minute' THEN 'missed'
+          WHEN now() > s.resolution_due_at THEN 'missed'
           ELSE 'pending'
         END AS resolution_outcome
       FROM scoped s

@@ -103,6 +103,12 @@ type Event struct {
 	// It is used to route PAM locally and must not be sent to the server.
 	SubjectSessionID uint32 `json:"-"`
 
+	// Consent identifies the consent.exe process showing this prompt, when the
+	// interception attributed the request to one (zero otherwise). Local-only,
+	// like SubjectSessionID: it lets a server-approved launch dismiss exactly
+	// this prompt afterwards without touching any other UAC prompt (#8995).
+	Consent ConsentInstance `json:"-"`
+
 	// TargetExecutablePath is the absolute path of the binary about to be
 	// elevated. Required.
 	TargetExecutablePath string `json:"target_executable_path"`
@@ -147,6 +153,16 @@ const (
 	ElevationDenied       ElevationStatus = "denied"
 	ElevationIgnored      ElevationStatus = "ignored"
 )
+
+// ConsentInstance identifies one consent.exe process by PID plus creation time,
+// so a reused PID can never be mistaken for the original prompt.
+type ConsentInstance struct {
+	PID       uint32
+	CreatedAt time.Time
+}
+
+// IsZero reports whether no consent.exe was identified.
+func (c ConsentInstance) IsZero() bool { return c.PID == 0 || c.CreatedAt.IsZero() }
 
 // ElevationOutcome is the server's synchronous ingest decision for a posted
 // uac_intercept elevation request, parsed from the POST response body

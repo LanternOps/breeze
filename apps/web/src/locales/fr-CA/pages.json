@@ -23,9 +23,11 @@
     "adminUsersDetailDevices": "Appareils de l'utilisateur",
     "aiAgentsImpact": "Impact de l'IA",
     "aiAgentsFixMemory": "Mémoire des correctifs",
+    "flows": "Flux",
+    "flowDetail": "Flux",
     "aiAgentsRunsDetail": "Détail de l'exécution",
     "aiAgentsRuns": "Exécutions des agents",
-    "aiForOffice": "IA pour Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Moteur de risque IA",
     "alertsDelivery": "Alertes – Livraison",
     "alertsCorrelations": "Corrélations d'alertes",
@@ -70,10 +72,10 @@
     "dnsSecurity": "DNS Sécurité",
     "dr": "Reprise après sinistre",
     "extensionsNamePath": "Extension",
-    "fleet": "Orchestration de la flotte",
+    "fleet": "Constats",
     "forgotPassword": "Mot de passe oublié",
     "incidentsDetail": "Détail de l'incident",
-    "incidents": "Incidents",
+    "incidents": "Incidents de sécurité",
     "dashboard": "Tableau de bord",
     "integrations": "Intégrations",
     "integrationsPsa": "Intégrations PSA",
@@ -139,6 +141,7 @@
     "settingsBilling": "Paramètres de facturation",
     "settingsCatalog": "Catalogue de produits",
     "settingsConnectedApps": "Applications connectées",
+    "settingsDeliverableTemplates": "Modèles de livrables",
     "settingsCustomFields": "Champs personnalisés",
     "settingsEnrollmentKeys": "Clés d'inscription",
     "settingsFilters": "Filtres enregistrés",
@@ -152,6 +155,7 @@
     "settingsProfile": "Paramètres du profil",
     "settingsRoles": "Rôles",
     "settingsSitesDetail": "Paramètres du site",
+    "settingsSites": "Sites",
     "settingsSso": "Authentification unique (SSO)",
     "settingsUsers": "Utilisateurs",
     "settingsVariables": "Variables",
@@ -165,7 +169,6 @@
     "ticketsNew": "Créer un ticket",
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
-    "workspace": "Assistant IA",
     "aiAgentsFleetDesign": "Conception de flotte",
     "agreementTemplates": "Modèles d'entente",
     "agreementTemplateDetail": "Modèle d'entente",
@@ -175,8 +178,18 @@
     "securityScans": "Balayages IOC",
     "devicesTime": "Synchronisation de l’heure",
     "adminAiModels": "Modèles d'IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Messages aux terminaux"
+    "adminWisp": "Wisp",
+    "billingAutopay": "Paiements automatiques",
+    "endpointMessages": "Messages aux terminaux",
+    "securityDetectionRules": "Règles de détection",
+    "settingsPlan": "Forfait et fonctionnalités",
+    "settingsWispMemory": "Mémoire de Wisp",
+    "wispThread": "Fil Wisp",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tâches IA",
+    "aiTask": "Tâche IA",
+    "settingsAi": "Paramètres de l’IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -230,7 +243,7 @@
       },
       "connectedApps": {
         "title": "Applications connectées",
-        "description": "Vérifiez et révoquez les assistants IA et clients MCP autorisés à accéder à votre organisation."
+        "description": "Vérifiez et révoquez les clients IA autorisés à accéder à votre locataire."
       },
       "officeAddinBindings": {
         "title": "Liaisons du module Outlook",
@@ -259,6 +272,14 @@
       },
       "alertTemplates": {
         "title": "Modèles d’alertes"
+      },
+      "plan": {
+        "title": "Forfait et fonctionnalités",
+        "description": "Votre forfait, les fonctionnalités qu’il comprend et la provenance de chacune."
+      },
+      "wispMemory": {
+        "title": "Mémoire de Wisp",
+        "description": "Examiner, confirmer et retirer ce que Wisp retient."
       }
     },
     "groups": {
@@ -281,7 +302,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Applications connectées",
-    "description": "Assistants IA et autres clients MCP autorisés à accéder à votre organisation via OAuth. Révoquez l'accès à tout moment — le jeton de l'application sera rejeté dans les 10 minutes."
+    "description": "Clients IA autorisés à accéder à votre locataire via OAuth. Révoquez l'accès à tout moment — le jeton de l'application sera rejeté dans les 10 minutes."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Paramètres de l'organisation",

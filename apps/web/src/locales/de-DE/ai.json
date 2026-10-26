@@ -18,12 +18,13 @@
     "pendingApproverDescription": "Diese Aktion muss im Bereich „Genehmigungen“ oder in der Breeze-Mobile-App genehmigt werden.",
     "timeRemaining": "Verbleibend: {{minutes}} Min., {{seconds}} Sek.",
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
-    "progressLabel": "Verbleibende Zeit bis zur automatischen Ablehnung",
+    "progressLabel": "Verbleibende Zeit, bevor dies automatisch abgelehnt wird",
     "showParameters": "Parameter anzeigen",
     "approve": "Genehmigen",
     "reject": "Ablehnen",
     "approveVerify": "Bestätigen & genehmigen",
     "verifying": "Warte auf Verifizierung…",
+    "approving": "Wird genehmigt…",
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
@@ -43,9 +44,9 @@
     "deniedToast_other": "{{count}} Aktionen abgelehnt",
     "refusedToast": "Genehmigung verweigert. Die Anfrage wurde abgelehnt.",
     "runContextLabel": "Ausführungskontext:",
-    "runContextChosenByAssistant": "vom Assistenten ausgewählt",
+    "runContextChosenByAssistant": "von Breeze AI gewählt",
     "runContextScriptDefault": "der gespeicherte Standard des Skripts",
-    "runContextOverrides": "vom Assistenten ausgewählt und überschreibt den gespeicherten Standard des Skripts ({{context}})"
+    "runContextOverrides": "von Breeze AI gewählt, überschreibt den gespeicherten Standard des Skripts ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Antwort wird erwartet…",
@@ -55,7 +56,7 @@
     "sendShortcut": "Mit Cmd+Enter senden"
   },
   "aiChatMessages": {
-    "title": "Breeze AI-Assistent",
+    "title": "Breeze AI",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
@@ -105,6 +106,24 @@
     "noM365Customer": "Kein M365-Kunde",
     "dismiss": "Schließen"
   },
+  "aiConversationMove": {
+    "openInAssistant": "In Breeze AI öffnen",
+    "continueInPanel": "In der Seitenleiste fortsetzen",
+    "openPastConversation": "Frühere Unterhaltung öffnen",
+    "closeTabInAssistant": "Schließen Sie einen Tab in Breeze AI, um diese Unterhaltung zu öffnen",
+    "closeTabToOpen": "Schließen Sie einen Tab, um diese Unterhaltung zu öffnen",
+    "notAvailable": "Diese Unterhaltung ist nicht verfügbar",
+    "wasClosed": "Diese Unterhaltung wurde geschlossen",
+    "topologyFromMap": "Untersuchungen werden über die Topologiekarte geöffnet",
+    "openInPanel": "In der Seitenleiste öffnen",
+    "replaceConfirm": "Unterhaltung in der Seitenleiste ersetzen? Sie bleibt in Ihrem Verlauf.",
+    "joinedMidResponse": "Mitten in der Antwort beigetreten. Die vollständige Antwort erscheint, sobald sie fertig ist.",
+    "chooseModelInPanel": "In der Seitenleiste fortsetzen, um ein Modell auszuwählen",
+    "tabMenu": "Tab-Optionen",
+    "anotherOrg": "Andere Organisation",
+    "device": "Gerät",
+    "newChat": "Neuer Chat"
+  },
   "aiContextBadge": {
     "context": "Kontext",
     "dashboard": "Dashboard"
@@ -112,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} Nachrichten",
     "messageCount_one": "{{count}} Nachricht",
-    "messageCount_other": "{{count}} Nachrichten"
+    "messageCount_other": "{{count}} Nachrichten",
+    "thisMonth": "{{amount}} diesen Monat",
+    "credits_one": "{{formatted}} Credit",
+    "credits_other": "{{formatted}} Credits"
   },
   "aiPlanProgressBar": {
     "completed": "Plan abgeschlossen ({{completed}}/{{total}})",
@@ -141,7 +163,7 @@
     "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
   },
   "aiForOfficePage": {
-    "title": "KI für Office",
+    "title": "Breeze AI for Office",
     "description": "Kontrollierter KI-Assistent in den Excel-Anwendungen Ihrer Kunden – Bereitstellung, Richtlinien, Audit, Nutzung und Vorlagen",
     "tabs": {
       "orgs": "Organisationen",
@@ -175,7 +197,7 @@
       "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (die Entra-App-Registrierung für das Add-In) in der API festlegen und neu laden."
     },
     "title": "Kundenorganisationen",
-    "description": "Den Excel-KI-Assistenten je Kundenorganisation bereitstellen: Entra-Mandanten zuordnen, Administratorzustimmung erteilen, Richtlinie aktivieren und Add-In bereitstellen.",
+    "description": "Breeze AI for Office pro Kundenorganisation bereitstellen: Entra-Mandanten zuordnen, Administratorzustimmung erteilen, Richtlinie aktivieren, Add-in verteilen.",
     "columns": {
       "aiEnabled": "KI aktiviert",
       "entraTenant": "Entra-Mandant",
@@ -189,7 +211,7 @@
     "noOrganizations": "Keine Organisationen",
     "removeMapping": {
       "title": "Mandantenzuordnung entfernen",
-      "message": "Benutzer im Entra-Mandanten von {{orgName}} können sich danach nicht mehr beim Excel-Assistenten anmelden. Die Organisationsrichtlinie und der Nutzungsverlauf bleiben erhalten.",
+      "message": "Benutzer im Entra-Mandanten von {{orgName}} können sich nicht mehr bei Breeze AI for Office anmelden. Die Organisationsrichtlinie und der Nutzungsverlauf bleiben erhalten.",
       "confirm": "Zuordnung entfernen"
     },
     "wizard": {
@@ -211,7 +233,7 @@
       "openNewTab": "In neuem Tab öffnen",
       "afterConsent": "Nach der Erteilung leitet Microsoft auf eine Breeze-Bestätigungsseite weiter. Die Zustimmung wird hier als erteilt angezeigt, sobald sich der erste Benutzer über Excel anmeldet – es erfolgt keine Live-Abfrage bei Microsoft (Plan-4, Entscheidung 1).",
       "consentGranted": "Zustimmung wurde erteilt",
-      "enableDescription": "Den Assistenten für diese Organisation aktivieren. Dadurch wird <code>enabled: true</code> mit sicheren Standardwerten in die Organisationsrichtlinie geschrieben (alle Benutzer, Lese-/Schreibzugriff mit Genehmigung durch den Endbenutzer, DLP-Schwärzung für Finanz- und Anmeldedatentypen). Alle Einstellungen können anschließend im Richtlinieneditor angepasst werden.",
+      "enableDescription": "Breeze AI for Office für diese Organisation aktivieren. Dabei wird <code>enabled: true</code> mit sicheren Standardwerten in die Organisationsrichtlinie geschrieben (alle Benutzer, Lesen/Schreiben mit Genehmigung durch den Endbenutzer, DLP-Schwärzung für Finanz- und Zugangsdatentypen). Passen Sie anschließend alles im Richtlinien-Editor an.",
       "enabling": "Wird aktiviert…",
       "alreadyEnabled": "Bereits aktiviert – fortfahren",
       "enableAi": "AI for Office aktivieren",
@@ -238,7 +260,7 @@
     },
     "organizations": "Organisationen",
     "title": "Organisationsrichtlinie",
-    "description": "Alle Aktionen, die der Excel-Assistent dieser Kundenorganisation ausführen darf.",
+    "description": "Alles, was Breeze AI for Office dieser Kundenorganisation tun darf.",
     "sections": {
       "general": "Allgemein",
       "userAccess": "Benutzerzugriff",
@@ -435,8 +457,8 @@
     "dismiss": "Schließen"
   },
   "workspaceEmptyState": {
-    "title": "KI-Arbeitsbereich",
-    "description": "Mehrere KI-Unterhaltungen gleichzeitig führen. Ein Geräteproblem in einem Tab untersuchen und parallel in einem anderen eine Richtlinie konfigurieren.",
+    "title": "Breeze AI",
+    "description": "Führen Sie mehrere Unterhaltungen gleichzeitig. Untersuchen Sie ein Gerät in einem Tab, während Sie in einem anderen eine Richtlinie einrichten.",
     "newConversation": "Neue Unterhaltung",
     "limit": "Bis zu 5 gleichzeitige Unterhaltungen"
   },
@@ -551,5 +573,260 @@
     "created": "Neuer Chat mit {{model}} aus einer Zusammenfassung gestartet.",
     "failed": "Der neue Chat konnte nicht gestartet werden. Bitte erneut versuchen.",
     "openFailed": "Der neue Chat wurde erstellt, konnte aber nicht geöffnet werden. Sie finden ihn im Chatverlauf; Ihre Nachricht wurde nicht gesendet."
+  },
+  "buyCredits": {
+    "link": "Credits kaufen"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "locked": {
+      "why": "Wisp ist in Pro und höheren Tarifen verfügbar.",
+      "server": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
+    },
+    "modal": {
+      "title": "Wisp aktivieren",
+      "refreshTitle": "Wisp-Berechtigung erneuern",
+      "scopeLabel": "Wisp kann arbeiten für",
+      "scopeOrg": "Diese Organisation",
+      "scopePartner": "Alle Organisationen",
+      "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
+      "code": "Authentifizierungscode",
+      "passkey": "Sie bestätigen mit Ihrem Passkey.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
+      "confirm": "Bestätigen",
+      "cancel": "Abbrechen",
+      "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut.",
+      "reverify": "Ihre Zugriffsrechte haben sich während der Bestätigung geändert. Geben Sie einen neuen Code ein, um fortzufahren.",
+      "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut.",
+      "turningOn": "Wisp wird aktiviert…"
+    },
+    "header": {
+      "scopeAll": "Alle Organisationen",
+      "status": {
+        "active": "Aktiv",
+        "paused": "Pausiert",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
+      },
+      "refresh": "Berechtigung erneuern",
+      "revoke": "Wisp deaktivieren",
+      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
+      "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann."
+    },
+    "settings": {
+      "title": "Budget und Check-in",
+      "budget": "Tagesbudget",
+      "tick": "Check-in alle (Minuten)",
+      "save": "Speichern"
+    },
+    "focus": {
+      "label": "Arbeitet an",
+      "none": "Kein Kundenfokus",
+      "pick": "Auf einen Kunden fokussieren…",
+      "clear": "Fokus aufheben"
+    },
+    "attachments": {
+      "title": "An diesen Thread angehängt",
+      "drop": "E-Mail-Thread, .eml oder CSV hier ablegen oder Text einfügen",
+      "paste": "Text einfügen",
+      "label": "Bezeichnung",
+      "add": "Anhängen",
+      "empty": "Noch nichts angehängt",
+      "expires": "Läuft ab am {{date}}",
+      "limits": "Bis zu 20 Dateien, je 5 MB, nur Text",
+      "focusRequired": "Wählen Sie vor dem Anhängen einen Kundenfokus",
+      "loadFailed": "Anhänge konnten nicht geladen werden"
+    },
+    "toast": {
+      "on": "Wisp ist aktiviert",
+      "onFailed": "Wisp konnte nicht aktiviert werden",
+      "off": "Wisp ist deaktiviert",
+      "offFailed": "Wisp konnte nicht deaktiviert werden",
+      "refreshed": "Berechtigung erneuert",
+      "refreshFailed": "Die Berechtigung konnte nicht erneuert werden",
+      "settingsSaved": "Wisp-Einstellungen gespeichert",
+      "settingsFailed": "Wisp-Einstellungen konnten nicht gespeichert werden",
+      "focusSet": "Wisp arbeitet jetzt für {{org}}",
+      "focusCleared": "Kundenfokus aufgehoben",
+      "focusFailed": "Der Fokus konnte nicht geändert werden",
+      "attached": "An den Thread angehängt",
+      "attachFailed": "Anhängen fehlgeschlagen",
+      "attachTooLarge": "Diese Datei ist größer als 5 MB",
+      "attachUnsupported": "Es können nur Textdateien angehängt werden",
+      "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Aktivieren Sie Wisp erneut, um ihn wieder zu öffnen.",
+      "paused": "Wisp pausiert",
+      "resumed": "Wisp fortgesetzt",
+      "pauseFailed": "Wisp konnte nicht pausiert werden",
+      "resumeFailed": "Wisp konnte nicht fortgesetzt werden"
+    },
+    "spend": {
+      "meter": "{{spent}} von {{budget}} heute",
+      "resets": "wird in {{hours}} Std. zurückgesetzt",
+      "raise": "Heutiges Budget erhöhen",
+      "label": "Wisp-Ausgaben heute"
+    },
+    "pause": "Wisp pausieren",
+    "resume": "Fortsetzen",
+    "paused": {
+      "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen."
+    },
+    "live": {
+      "checking": "{{org}} wird geprüft…",
+      "checkingUnnamed": "Ein Kunde wird geprüft…"
+    },
+    "thread": {
+      "title": "Wisp-Thread",
+      "openChat": "Im Chat öffnen",
+      "openChatInactive": "Wisp muss aktiv sein, um in diesem Thread zu chatten.",
+      "notFound": "Dieser Wisp-Thread existiert nicht oder gehört Ihnen nicht.",
+      "loadFailed": "Dieser Wisp-Thread konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "stale": "Dieser Thread konnte nicht aktualisiert werden. Die Anzeige ist möglicherweise veraltet."
+    },
+    "activity": {
+      "title": "Aktivität",
+      "empty": "Noch nichts. Hier erscheint die Arbeit von Wisp.",
+      "loadFailed": "Aktivität konnte nicht geladen werden",
+      "loadMore": "Mehr laden",
+      "cost": "Kosten {{amount}}",
+      "kind": {
+        "assessment": "Prüfung",
+        "concern": "Anliegen",
+        "specialist": "Spezialist",
+        "approval": "Genehmigung",
+        "memory": "Gedächtnis",
+        "nudge": "Hinweis",
+        "brief": "Briefing"
+      }
+    },
+    "home": {
+      "briefTitle": "Brief von heute Morgen",
+      "briefEmpty": "Noch kein Brief. Wisp schickt jeden Morgen einen, sobald es sich umgesehen hat.",
+      "briefSentAt": "Gesendet {{time}}",
+      "briefStale": "Von einem früheren Tag",
+      "needsYouTitle": "Braucht Ihre Aufmerksamkeit",
+      "needsYouCount_one": "{{count}} Eintrag",
+      "needsYouCount_other": "{{count}} Einträge",
+      "needsYouApprovals_one": "{{count}} wartet auf Ihre Genehmigung",
+      "needsYouApprovals_other": "{{count}} warten auf Ihre Genehmigung",
+      "threadTitle": "Mit Wisp sprechen",
+      "threadPaused": "Wisp ist pausiert. Setzen Sie es oben in der Kopfzeile fort, um weiterzusprechen.",
+      "threadEnded": "Diese Berechtigung ist beendet. Starten Sie eine neue, um mit Wisp zu sprechen.",
+      "threadOpening": "Unterhaltung wird geöffnet…",
+      "threadOpenFailed": "Die Unterhaltung konnte nicht geöffnet werden.",
+      "threadDismissError": "Schließen",
+      "openChats": "Alle Chats",
+      "memory": "Gedächtnis",
+      "startTitle": "Wisp an die Arbeit schicken",
+      "startBody": "Wisp behält Ihre Geräteflotte, Supportanfragen und Abrechnung im Rahmen einer von Ihnen kontrollierten Berechtigung im Blick und bringt Ihnen, was eine Entscheidung braucht.",
+      "startAction": "Wisp starten",
+      "disabledTitle": "Wisp ist ausgeschaltet",
+      "disabledBody": "Ein Partner-Administrator hat Wisp unter Einstellungen → KI-Agenten ausgeschaltet. Ihre Chats funktionieren weiterhin.",
+      "disabledSettings": "KI-Agenten-Einstellungen öffnen",
+      "loadFailed": "Die Wisp-Startseite konnte nicht geladen werden."
+    },
+    "links": {
+      "title": "Verknüpfte Einträge",
+      "empty": "Noch nichts verknüpft. Verknüpfen Sie eine Supportanfrage, ein Gerät oder eine Rechnung, damit Wisp sie im Blick behält.",
+      "add": "Eintrag verknüpfen",
+      "remove": "{{label}} entfernen",
+      "removed": "Verknüpfung entfernt",
+      "removeFailed": "Die Verknüpfung konnte nicht entfernt werden.",
+      "addedByWisp": "Von Wisp hinzugefügt",
+      "added": "Mit Wisp verknüpft",
+      "addFailed": "Dieser Eintrag konnte nicht verknüpft werden.",
+      "count": "{{count}} von {{max}} verknüpft"
+    },
+    "picker": {
+      "title": "Eintrag mit Wisp verknüpfen",
+      "searchPlaceholder": "Nach Name oder Nummer suchen",
+      "kindsLabel": "Eintragstyp",
+      "kinds": {
+        "ticket": "Supportanfragen",
+        "quote": "Angebote",
+        "invoice": "Rechnungen",
+        "contract": "Verträge",
+        "device": "Geräte",
+        "organization": "Organisationen",
+        "site": "Standorte",
+        "alert": "Warnungen",
+        "run": "Agent-Ausführungen",
+        "task": "KI-Aufgaben",
+        "user": "Benutzer"
+      },
+      "loading": "Suche läuft…",
+      "empty": "Keine Treffer.",
+      "loadFailed": "Diese Liste konnte nicht geladen werden.",
+      "alreadyLinked": "Bereits verknüpft",
+      "close": "Schließen"
+    },
+    "linkButton": {
+      "link": "Mit Wisp verknüpfen",
+      "linked": "In Wisp verknüpft",
+      "linking": "Wird verknüpft…"
+    },
+    "sidebar": {
+      "openHome": "In Wisp öffnen",
+      "meetWisp": "Wisp kennenlernen"
+    },
+    "partnerSwitch": {
+      "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",
+      "label": "Wisp aktiviert",
+      "savedOn": "Wisp eingeschaltet",
+      "savedOff": "Wisp ausgeschaltet",
+      "saveFailed": "Die Wisp-Einstellung konnte nicht geändert werden.",
+      "adminOnly": "Nur Partner-Administratoren können das ändern.",
+      "loadFailed": "Die Wisp-Einstellung konnte nicht geladen werden."
+    }
+  },
+  "wispConcerns": {
+    "title": "Anliegen",
+    "empty": "Im Moment ist bei Wisp nichts auf dem Radar.",
+    "snooze": "Zurückstellen",
+    "snoozeOneHour": "1 Stunde",
+    "snoozeTomorrow": "Bis morgen 9:00",
+    "snoozeWeek": "7 Tage",
+    "dismiss": "Verwerfen",
+    "resolve": "Lösen",
+    "resolveOutcomePlaceholder": "Was ist passiert?",
+    "resolveSubmit": "Als gelöst markieren",
+    "snoozed": "Zurückgestellt",
+    "dismissed": "Verworfen",
+    "resolved": "Gelöst",
+    "quietUntil": "ruhig bis {{when}}",
+    "digestOnly": "nur Zusammenfassung",
+    "showAll": "Alle anzeigen",
+    "showLive": "Offene anzeigen",
+    "loadFailed": "Anliegen konnten nicht geladen werden",
+    "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+    "severity": {
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Hinweis"
+    },
+    "subject": {
+      "ticket": "Supportanfrage",
+      "device": "Gerät",
+      "alert": "Warnung",
+      "org": "Kunde",
+      "integration": "Anbindung",
+      "run": "Ausführung",
+      "task": "Aufgabe",
+      "incident": "Vorfall",
+      "quote": "Angebot",
+      "invoice": "Rechnung",
+      "contract": "Vertrag",
+      "site": "Standort"
+    },
+    "reviewApproval": "Genehmigung prüfen",
+    "useful": "Nützlich",
+    "notUseful": "Nicht nützlich",
+    "feedbackNotePlaceholder": "Was wäre besser gewesen? (optional)",
+    "feedbackSend": "Senden",
+    "feedbackGivenUseful": "Sie haben dies als nützlich markiert",
+    "feedbackGivenNotUseful": "Sie haben dies als nicht nützlich markiert",
+    "feedbackSaved": "Danke. Wisp merkt sich das."
   }
 }

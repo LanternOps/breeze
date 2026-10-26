@@ -37,6 +37,8 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       c: { json: (body: unknown, status: number) => Response },
       next: () => Promise<void>,
     ) => (mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)),
+    // The onboarding DRAFT branch re-checks MFA itself (the shared draft route has no requireMfa).
+    hasSatisfiedMfa: () => mfaOkMock(),
     buildOrgAccessClosures: actual.buildOrgAccessClosures,
   };
 });
@@ -732,12 +734,13 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
 
   it('rejects an unknown recipeKey with 400 and names the supported workflows', async () => {
     selectMock.mockReturnValueOnce(selectChain([deviceRow]));
-    const res = await post(body({ recipeKey: 'identity_offboarding' }));
+    const res = await post(body({ recipeKey: 'no_such_recipe' }));
     expect(res.status).toBe(400);
     const json = await res.json() as { code: string; supportedRecipeKeys: string[]; error: string };
     expect(json.code).toBe('OPERATOR_UNKNOWN_RECIPE');
     expect(json.supportedRecipeKeys).toContain('service_recovery');
-    expect(json.error).toContain('identity_offboarding');
+    expect(json.supportedRecipeKeys).toContain('identity_onboarding');
+    expect(json.error).toContain('no_such_recipe');
     expect(admitMock).not.toHaveBeenCalled();
   });
 
@@ -768,5 +771,689 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
       workflowKey: 'service_recovery',
       workflowVersion: 1,
     }));
+  });
+});
+
+/**
+ * W06 R1b (#6171, G2) — the read-only `plan` on `GET /tasks/:id`: every plan
+ * revision (superseded included) with its frozen effect rows, and each
+ * effect's operation state derived ONLY from the operation row the walk keys
+ * to it (same step, revision, tool, target and ordinal). Anything looser is
+ * `null`, never a guess.
+ */
+describe('GET /ai/operator/tasks/:id — plan (W06 R1b, G2)', () => {
+  const TARGET = '77777777-7777-4777-8777-777777777777';
+  const APPROVAL_R1 = '88888888-8888-4888-8888-888888888881';
+  const APPROVAL_R2 = '88888888-8888-4888-8888-888888888882';
+  // The walk's own key builder, so the test cannot drift from what it writes.
+  let planEffectOperationKey!: typeof import('../services/aiOperator/planApproval')['planEffectOperationKey'];
+  beforeEach(async () => {
+    ({ planEffectOperationKey } = await import('../services/aiOperator/planApproval'));
+  });
+  const keyFor = (planRevision: number, toolName: string, ordinal: number) =>
+    planEffectOperationKey({ stepKey: 'effects', planRevision, toolName, targetId: TARGET, ordinal });
+
+  const approvalRow = (id: string, planRevision: number, overrides: Record<string, unknown> = {}) => ({
+    id, taskId: TASK_ID, stepKey: 'effects', planRevision, effectSetDigest: 'd'.repeat(64), effectCount: 2,
+    intentId: `intent-r${planRevision}`, state: 'approved', approvedByUserId: USER_ID,
+    approvedAt: new Date('2026-09-01T00:03:00.000Z'), supersededByRevision: null,
+    createdAt: new Date('2026-09-01T00:02:00.000Z'), ...overrides,
+  });
+  const effectRow = (approvalId: string, planRevision: number, ordinal: number, toolName: string, overrides: Record<string, unknown> = {}) => ({
+    approvalId, planRevision, ordinal, toolName, provider: toolName.startsWith('google_') ? 'google' : 'm365',
+    targetId: TARGET, targetLabel: 'Dana Smith', principalLabel: 'dana@acme.example',
+    rendering: `${toolName} for dana@acme.example`, idempotencyClass: 'idempotent', ...overrides,
+  });
+
+  afterEach(() => selectMock.mockReset());
+
+  function script(opts: { approvals: unknown[]; effects: unknown[]; ops?: unknown[]; capture?: (p: unknown) => void }) {
+    // Drop any queued-but-unread rows from an earlier script in the same test.
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => selectChain([]));
+    selectMock
+      .mockReturnValueOnce(selectChain([taskRow({ deviceId: null, workflowKey: 'identity_offboarding', revision: 2 })]))
+      .mockReturnValueOnce(selectChain([])) // operations
+      .mockReturnValueOnce(selectChain([])) // runs
+      .mockReturnValueOnce(selectChain([])) // targets
+      .mockReturnValueOnce(selectChain([])) // accounts
+      .mockReturnValueOnce(selectChain([])) // steps
+      .mockReturnValueOnce(selectChain([])) // events
+      .mockReturnValueOnce(selectChain(opts.approvals, opts.capture))
+      .mockReturnValueOnce(selectChain(opts.effects, opts.capture))
+      .mockReturnValueOnce(selectChain(opts.ops ?? [], opts.capture));
+  }
+
+  it('returns every revision — superseded included — in revision order, effects in ordinal order, frozen labels as stored', async () => {
+    script({
+      approvals: [
+        approvalRow(APPROVAL_R1, 1, { state: 'superseded', supersededByRevision: 2, approvedByUserId: null, approvedAt: null }),
+        approvalRow(APPROVAL_R2, 2),
+      ],
+      effects: [
+        effectRow(APPROVAL_R1, 1, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply', { idempotencyClass: 'idempotent_by_probe' }),
+        effectRow(APPROVAL_R2, 2, 1, 'm365_disable_user', { principalLabel: null }),
+      ],
+    });
+    const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.plan.map((p: { planRevision: number; state: string }) => [p.planRevision, p.state])).toEqual([[1, 'superseded'], [2, 'approved']]);
+    expect(data.plan[0]).toMatchObject({ id: APPROVAL_R1, supersededByRevision: 2, approvedByUserId: null, approvedAt: null });
+    expect(data.plan[1]).toMatchObject({ id: APPROVAL_R2, taskId: TASK_ID, intentId: 'intent-r2', approvedAt: '2026-09-01T00:03:00.000Z' });
+    expect(data.plan[1].effects.map((e: { ordinal: number }) => e.ordinal)).toEqual([0, 1]);
+    expect(data.plan[1].effects[0]).toEqual({
+      ordinal: 0, toolName: 'm365_set_auto_reply', provider: 'm365', targetLabel: 'Dana Smith',
+      principalLabel: 'dana@acme.example', rendering: 'm365_set_auto_reply for dana@acme.example',
+      idempotencyClass: 'idempotent_by_probe', operationState: null, noop: false,
+    });
+    expect(data.plan[1].effects[1].principalLabel).toBeNull();
+  });
+
+  it('derives operationState and noop only from the operation the walk keyed to the effect', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R2, 2, 1, 'm365_revoke_sessions'),
+        effectRow(APPROVAL_R2, 2, 2, 'm365_disable_user'),
+      ],
+      ops: [
+        { operationKey: keyFor(2, 'm365_set_auto_reply', 0), taskStepKey: 'effects', planRevision: 2, resultState: 'succeeded', noop: true },
+        { operationKey: keyFor(2, 'm365_revoke_sessions', 1), taskStepKey: 'effects', planRevision: 2, resultState: 'pending', noop: false },
+        // Key matches but the row says another revision: ambiguous → null, never trusted.
+        { operationKey: keyFor(2, 'm365_disable_user', 2), taskStepKey: 'effects', planRevision: 3, resultState: 'succeeded', noop: false },
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    const states = data.plan[0].effects.map((e: { operationState: string | null; noop: boolean }) => [e.operationState, e.noop]);
+    expect(states).toEqual([['succeeded', true], ['pending', false], [null, false]]);
+  });
+
+  it('puts explicit task_id AND org_id predicates on both plan tables and on the operation link read', async () => {
+    const predicates: unknown[] = [];
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [],
+      capture: (p) => predicates.push(p),
+    });
+    await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(predicates).toHaveLength(3);
+    for (const p of predicates) {
+      const q = dialect.sqlToQuery(p as SQL);
+      expect(q.sql).toContain('"task_id"');
+      expect(q.sql).toContain('"org_id"');
+      expect(q.params).toContain(TASK_ID);
+      expect(q.params).toContain(ORG_ID);
+    }
+  });
+
+  it('returns plan: [] when nothing was proposed, appends plan after every existing field, and leaks no tripwire key', async () => {
+    script({ approvals: [], effects: [] });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan).toEqual([]);
+    const keys = Object.keys(data);
+    expect(keys[keys.length - 1]).toBe('plan');
+    expect(keys.slice(-6)).toEqual(['operations', 'runs', 'targets', 'steps', 'events', 'plan']);
+    // No approval, so neither the effects read nor the operation link read runs.
+    expect(selectMock).toHaveBeenCalledTimes(8);
+
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [{ operationKey: keyFor(2, 'm365_disable_user', 0), taskStepKey: 'effects', planRevision: 2, resultState: 'succeeded', noop: false }],
+    });
+    const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.plan[0].effects[0].operationState).toBe('succeeded');
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}":`);
+    }
+  });
+
+  it('drops an effect row whose approval is not in this task\'s read rather than inventing one', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user'),
+        effectRow('99999999-9999-4999-8999-999999999999', 2, 1, 'google_suspend_user'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan).toHaveLength(1);
+    expect(data.plan[0].effects.map((e: { toolName: string }) => e.toolName)).toEqual(['m365_disable_user']);
+  });
+
+  it('never links an operation reserved under another step key', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [{ operationKey: keyFor(2, 'm365_disable_user', 0), taskStepKey: 'execute', planRevision: 2, resultState: 'succeeded', noop: true }],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan[0].effects[0]).toMatchObject({ operationState: null, noop: false });
+  });
+
+  it('drops an effect whose revision disagrees with its approval\'s', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user'),
+        effectRow(APPROVAL_R2, 1, 1, 'google_suspend_user'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan[0].effects.map((e: { toolName: string }) => e.toolName)).toEqual(['m365_disable_user']);
+  });
+
+  it('reads newest-first under the cap and still returns revisions and effects in ascending order', async () => {
+    script({
+      approvals: [
+        approvalRow(APPROVAL_R2, 2),
+        approvalRow(APPROVAL_R1, 1, { state: 'superseded', supersededByRevision: 2 }),
+      ],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 1, 'm365_disable_user'),
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R1, 1, 0, 'm365_set_auto_reply'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan.map((p: { planRevision: number }) => p.planRevision)).toEqual([1, 2]);
+    expect(data.plan[1].effects.map((e: { ordinal: number }) => e.ordinal)).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W07 R2a Task 14 (Amendment G6, G7, G9; B6): identity_onboarding through the
+// shipped routes. APPENDED — nothing above is edited.
+//
+// This file's top-level harness mocks `taskService` with
+// `admitServiceRecoveryTask` alone and `../db` with `select` alone, and both
+// are kept as they are. The block below therefore re-imports the route module
+// in a fresh module graph (`vi.resetModules` + `vi.doMock`), with the provider
+// reads mocked at the AUDITED-READ boundary (`executeM365ReadActionByOrg`, the
+// Google directory client) so the real `identityProvisioning.ts` helpers run,
+// and a db whose every write throws.
+// ---------------------------------------------------------------------------
+
+describe('identity_onboarding through the shipped routes (W07 R2a Task 14)', () => {
+  const OB_UPN = 'priya@customer.example';
+  const OB_GMAIL = 'priya@customer.example';
+  const OB_SKU = '00000000-0000-4000-8000-00000000a001';
+  const OB_GROUP = '00000000-0000-4000-8000-0000000000c1';
+  const OB_CONTACT = '00000000-0000-4000-8000-0000000000d1';
+  const OB_HOLDER = '00000000-0000-4000-8000-0000000000f9';
+
+  const ob = {
+    selects: [] as unknown[][],
+    selectCalls: 0,
+    writes: 0,
+    tasksOn: true,
+    onboardingOn: true,
+    m365: vi.fn(),
+    dirUsersGet: vi.fn(),
+    resolveGoogle: vi.fn(),
+    admitTask: vi.fn(),
+    listAccounts: vi.fn(),
+    permissions: [] as Array<{ resource: string; action: string }>,
+  };
+  let routes: (typeof import('./aiOperatorTasks'))['aiOperatorTasksRoutes'] | null = null;
+  let apiCredentialStates: readonly string[] = [];
+  let sharedCredentialStates: readonly string[] = [];
+
+  async function load(): Promise<void> {
+    vi.resetModules();
+    vi.doMock('../db', () => {
+      const chain = () => {
+        const c: any = {
+          from: () => c, where: () => c, leftJoin: () => c, innerJoin: () => c, orderBy: () => c, $dynamic: () => c,
+          limit: () => c, for: () => c,
+          then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(ob.selects.shift() ?? []).then(res, rej),
+        };
+        return c;
+      };
+      const write = () => { ob.writes += 1; throw new Error('this route must not write'); };
+      return {
+        db: { select: () => { ob.selectCalls += 1; return chain(); }, insert: write, update: write, delete: write, execute: write },
+        hasDbAccessContext: () => true,
+        runOutsideDbContext: (fn: () => unknown) => fn(),
+        withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
+        withSystemDbAccessContext: (fn: () => unknown) => fn(),
+      };
+    });
+    vi.doMock('../config/env', async (orig) => ({
+      ...(await orig<Record<string, unknown>>()),
+      aiOperatorTasksEnabled: () => ob.tasksOn,
+      aiOperatorServiceRecoveryEnabled: () => true,
+      aiOperatorIdentityOffboardingEnabled: () => true,
+      aiOperatorIdentityOnboardingEnabled: () => ob.onboardingOn,
+    }));
+    // The REAL `recipeEnabled` (RECIPE_FLAGS → the env accessor above); only admission is mocked.
+    vi.doMock('../services/aiOperator/taskService', async (orig) => ({
+      ...(await orig<typeof import('../services/aiOperator/taskService')>()),
+      admitTask: (i: unknown) => ob.admitTask(i),
+    }));
+    vi.doMock('../services/aiOperator/recipeReadiness', async (orig) => {
+      const real = await orig<typeof import('../services/aiOperator/recipeReadiness')>();
+      const { RECIPES } = await import('../services/aiOperator/recipes');
+      const { recipeEnabled } = await import('../services/aiOperator/taskService');
+      const { M365_PERMISSION_PROFILES } = await import('@breeze/shared/m365');
+      const profile = M365_PERMISSION_PROFILES['customer-graph-actions'];
+      // Spec §6.8 / D3: onboarding runs under the helpdesk agent
+      // (RECIPE_AGENT_KINDS registers it; restated here so this mock is
+      // self-contained).
+      const kinds: Record<string, string> = { ...real.RECIPE_AGENT_KINDS, identity_onboarding: 'helpdesk' };
+      return {
+        ...real,
+        RECIPE_AGENT_KINDS: kinds,
+        // listWorkflowReadiness's own loop, over a Google-enabled, fully consented org.
+        listWorkflowReadiness: async (orgId: string) => Object.keys(RECIPES).sort().map((key) => {
+          const recipe = RECIPES[key]!;
+          const kind = Object.hasOwn(kinds, key) ? kinds[key]! : null;
+          return real.computeRecipeReadiness(recipe, {
+            orgId,
+            m365: {
+              status: 'active', permissionManifestVersion: profile.version,
+              observedGrants: [...(profile.applicationPermissionAssignments ?? [])], grantsVerifiedAt: new Date(),
+            },
+            google: { status: 'active', lastVerifiedAt: new Date() },
+            agent: kind ? { id: AGENT_ID, kind, toolAllowlist: recipe.requires.flatMap((c) => c.toolNames ?? []) } : null,
+            flagEnabled: recipeEnabled(key),
+          });
+        }),
+      };
+    });
+    vi.doMock('../services/m365ControlPlane/readActionService', () => ({
+      executeM365ReadActionByOrg: (...a: unknown[]) => ob.m365(...a),
+    }));
+    vi.doMock('../services/aiToolsGoogle', async (orig) => ({
+      ...(await orig<typeof import('../services/aiToolsGoogle')>()),
+      resolveContextByOrg: (...a: unknown[]) => ob.resolveGoogle(...a),
+    }));
+    vi.doMock('../services/googleClient', async (orig) => ({
+      ...(await orig<typeof import('../services/googleClient')>()),
+      getDirectoryClient: () => ({ users: { get: (...a: unknown[]) => ob.dirUsersGet(...a) } }),
+    }));
+    vi.doMock('../services/aiOperator/credentialHandover', async (orig) => ({
+      ...(await orig<typeof import('../services/aiOperator/credentialHandover')>()),
+      listCreatedAccountsForTask: (...a: unknown[]) => ob.listAccounts(...a),
+    }));
+    ({ aiOperatorTasksRoutes: routes } = await import('./aiOperatorTasks'));
+    ({ CREDENTIAL_STATES: apiCredentialStates } = await import('../services/aiOperator/credentialHandover'));
+    ({ AI_OPERATOR_CREDENTIAL_STATES: sharedCredentialStates } = await import('@breeze/shared'));
+  }
+
+  function obApp(authOverrides: Record<string, unknown> = {}): Hono {
+    const a = new Hono();
+    a.use('*', async (c, next) => {
+      c.set('auth', {
+        scope: 'organization', orgId: ORG_ID, partnerId: null, accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+        canAccessOrg: (id: string) => id === ORG_ID, orgCondition: () => undefined,
+        allowedSiteIds: undefined, canAccessSite: () => true, ...authOverrides,
+      } as never);
+      c.set('permissions', { permissions: ob.permissions } as never);
+      await next();
+    });
+    a.route('/ai/operator', routes!);
+    return a;
+  }
+  const obPost = (path: string, b: unknown, a = obApp()) =>
+    a.request(`/ai/operator${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+
+  const onboardingInputs = (over: Record<string, unknown> = {}) => ({
+    displayName: 'Priya Patel',
+    m365: { userPrincipalName: OB_UPN, mailNickname: 'priya', usageLocation: 'US', skuIds: [OB_SKU], groupIds: [OB_GROUP] },
+    google: {
+      primaryEmail: OB_GMAIL, givenName: 'Priya', familyName: 'Patel', orgUnitPath: '/Staff',
+      licenses: [{ productId: 'Google-Apps', skuId: '1010020020' }], groupEmails: ['all@customer.example'],
+    },
+    ...over,
+  });
+  const draftBody = (over: Record<string, unknown> = {}) =>
+    ({ recipeKey: 'identity_onboarding', recipeVersion: 1, orgId: ORG_ID, inputs: onboardingInputs(), ...over });
+  const taskBody = (over: Record<string, unknown> = {}) => ({
+    mode: 'live', recipeKey: 'identity_onboarding', recipeVersion: 1, orgId: ORG_ID,
+    inputs: onboardingInputs(), clientIdempotencyKey: 'onboard-abcdef0123', ...over,
+  });
+
+  /** Every audited M365 read of one action type. */
+  const m365Calls = (type: string) => ob.m365.mock.calls.filter((call) => (call[1] as { type: string }).type === type);
+  const httpError = (status: number, message = `http ${status}`) => Object.assign(new Error(message), { code: status });
+
+  function providersFree(): void {
+    ob.m365.mockImplementation(async (_org: string, action: { type: string }) => {
+      if (action.type === 'm365.user.get') return { ok: false, code: 'graph_not_found', message: 'not found' };
+      if (action.type === 'm365.org.skus.list') {
+        return { ok: true, kind: 'collection', truncated: false, items: [
+          { skuId: OB_SKU, skuPartNumber: 'SPE_E3', consumedUnits: 3, prepaidUnits: { enabled: 10 }, capabilityStatus: 'Enabled' },
+        ] };
+      }
+      return { ok: false, code: 'tools_disabled', message: `unexpected ${action.type}` };
+    });
+    ob.resolveGoogle.mockResolvedValue({ conn: { adminEmail: 'admin@customer.example' }, keyJson: '{}' });
+    ob.dirUsersGet.mockRejectedValue(httpError(404, 'Resource Not Found: userKey'));
+  }
+
+  beforeEach(async () => {
+    if (!routes) await load();
+    ob.selects = [];
+    ob.selectCalls = 0;
+    ob.writes = 0;
+    ob.tasksOn = true;
+    ob.onboardingOn = true;
+    ob.permissions = [{ resource: 'organizations', action: 'write' }, { resource: 'organizations', action: 'read' }];
+    ob.m365.mockReset();
+    ob.dirUsersGet.mockReset();
+    ob.resolveGoogle.mockReset();
+    ob.listAccounts.mockReset();
+    ob.admitTask.mockReset();
+    ob.admitTask.mockResolvedValue({ ok: true, taskId: TASK_ID, replayed: false });
+    hasPermMock.mockReturnValue(true);
+    mfaOkMock.mockReturnValue(true);
+    resolveEffectiveAgentMock.mockReset();
+    resolveEffectiveAgentMock.mockResolvedValue({ agentId: AGENT_ID, kind: 'helpdesk', effective: { enabled: true } });
+    providersFree();
+  });
+
+  // ---- GET /tasks/:id: accounts (G6) ---------------------------------------
+
+  /** The detail route's reads, in order: the task, six graph reads, then the plan's approvals read. */
+  function scriptDetail(workflowKey: string): void {
+    ob.selects = [[taskRow({ deviceId: null, workflowKey })], [], [], [], [], [], [], []];
+  }
+  const ACCOUNT = {
+    provider: 'm365', principalLabel: OB_UPN, externalId: OB_HOLDER, credentialState: 'available',
+    intentId: '00000000-0000-4000-8000-0000000000e1', revealableByUserId: USER_ID, revealableByName: 'Tech',
+    revealExpiresAt: '2026-10-31T12:00:00.000Z',
+  };
+
+  it('G6: an onboarding task carries `accounts` from listCreatedAccountsForTask, appended AFTER `plan`', async () => {
+    scriptDetail('identity_onboarding');
+    ob.listAccounts.mockResolvedValue([ACCOUNT]);
+    const res = await obApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(ob.listAccounts).toHaveBeenCalledTimes(1);
+    expect(ob.listAccounts).toHaveBeenCalledWith(ORG_ID, TASK_ID);
+    expect(data.accounts).toEqual([ACCOUNT]);
+    expect(Object.keys(data).slice(-2)).toEqual(['plan', 'accounts']);
+  });
+
+  it('G6: an onboarding task with no account yet carries `accounts: []`', async () => {
+    scriptDetail('identity_onboarding');
+    ob.listAccounts.mockResolvedValue([]);
+    const { data } = await (await obApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.accounts).toEqual([]);
+  });
+
+  it('G6 (deviation, see the route): a non-onboarding task\'s detail is unchanged — no `accounts` key and no read', async () => {
+    // The R1b case above pins `plan` as the LAST key of an offboarding task's
+    // detail; appending `accounts` there would move it. Every shipped
+    // recipe's response stays byte-identical instead.
+    for (const workflowKey of ['service_recovery', 'identity_offboarding']) {
+      scriptDetail(workflowKey);
+      const { data } = await (await obApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+      expect(Object.keys(data)).not.toContain('accounts');
+      expect(Object.keys(data).at(-1)).toBe('plan');
+    }
+    expect(ob.listAccounts).not.toHaveBeenCalled();
+  });
+
+  it('the shared credential-state union is the API\'s, value for value', () => {
+    expect([...sharedCredentialStates]).toEqual([...apiCredentialStates]);
+  });
+
+  // ---- GET /workflows ------------------------------------------------------
+
+  it('lists three workflows; with its flag OFF onboarding is unavailable and reports no gaps', async () => {
+    ob.onboardingOn = false;
+    const res = await obApp().request(`/ai/operator/workflows?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: Array<Record<string, any>> };
+    expect(data.map((w) => w.recipeKey)).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
+    const onboarding = data.find((w) => w.recipeKey === 'identity_onboarding')!;
+    expect(onboarding).toMatchObject({ readiness: 'unavailable', missingCapabilities: [], alwaysManualCapabilities: [], manualStepCount: 0 });
+  });
+
+  it('with its flag ON, a Google-enabled consented org sees onboarding ready, google.account.create always-manual', async () => {
+    const { data } = await (await obApp().request(`/ai/operator/workflows?orgId=${ORG_ID}`)).json() as { data: Array<Record<string, any>> };
+    const onboarding = data.find((w) => w.recipeKey === 'identity_onboarding')!;
+    expect(onboarding.readiness).toBe('ready');
+    expect(onboarding.missingCapabilities).toEqual([]);
+    expect(onboarding.alwaysManualCapabilities.map((c: { key: string }) => c.key)).toEqual(['google.account.create']);
+    expect(onboarding.manualStepCount).toBe(1);
+  });
+
+  // ---- POST /task-drafts (G7, B6) -----------------------------------------
+
+  it('G7: a free name drafts both plan previews and the human work, reading once per provider and writing nothing', async () => {
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: Record<string, any> };
+    expect(Object.keys(data)).toEqual([
+      'recipeKey', 'recipeVersion', 'input', 'workflow', 'createPlanPreview', 'provisionPlanPreview', 'flags', 'manualWork',
+    ]);
+    expect(data).toMatchObject({ recipeKey: 'identity_onboarding', recipeVersion: 1, flags: [] });
+    expect(data.workflow.recipeKey).toBe('identity_onboarding');
+    expect(data.createPlanPreview).toEqual([{
+      ordinal: 0, toolName: 'm365_create_user', provider: 'm365', principalLabel: OB_UPN,
+      arguments: { userPrincipalName: OB_UPN, displayName: 'Priya Patel', mailNickname: 'priya', usageLocation: 'US' },
+    }]);
+    // The recipe's own provider order (EFFECT_PROVIDER_ORDER), not the input's.
+    expect(data.provisionPlanPreview.map((e: { toolName: string }) => e.toolName)).toEqual([
+      'google_move_ou', 'google_assign_license', 'google_add_to_group', 'm365_assign_license', 'm365_add_to_group',
+    ]);
+    expect(data.provisionPlanPreview.map((e: { ordinal: number }) => e.ordinal)).toEqual([0, 1, 2, 3, 4]);
+    expect(data.provisionPlanPreview[2]).toEqual({
+      ordinal: 2, toolName: 'google_add_to_group', provider: 'google', principalLabel: OB_GMAIL,
+      arguments: { groupEmail: 'all@customer.example', role: 'MEMBER' },
+    });
+    expect(data.provisionPlanPreview[3]).toEqual({
+      ordinal: 3, toolName: 'm365_assign_license', provider: 'm365', principalLabel: OB_UPN, arguments: { skuIds: [OB_SKU] },
+    });
+    // The pending account placeholder never reaches the wire.
+    expect(JSON.stringify(data)).not.toContain('pending-account');
+    expect(JSON.stringify(data)).not.toContain('00000000-0000-0000-0000-000000000000');
+    const keys = data.manualWork.map((i: { key: string }) => i.key);
+    expect(keys).toContain('create_google_account');
+    expect(keys).toContain('credential_handover');
+    // At most one audited read per provider question, and nothing else.
+    expect(m365Calls('m365.user.get')).toHaveLength(1);
+    expect(m365Calls('m365.org.skus.list')).toHaveLength(1);
+    expect(ob.m365).toHaveBeenCalledTimes(2);
+    expect(ob.dirUsersGet).toHaveBeenCalledTimes(1);
+    expect(ob.dirUsersGet).toHaveBeenCalledWith({ userKey: OB_GMAIL });
+    // Writes nothing and resolves no contact: not one Breeze row read or written.
+    expect(ob.writes).toBe(0);
+    expect(ob.selectCalls).toBe(0);
+  });
+
+  it('R2a T14: an onboarding draft without organizations:write is 403 PERMISSION_DENIED and reads no provider', async () => {
+    ob.permissions = [{ resource: 'organizations', action: 'read' }];
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Permission denied', code: 'PERMISSION_DENIED' });
+    expect(ob.m365).not.toHaveBeenCalled();
+    expect(ob.resolveGoogle).not.toHaveBeenCalled();
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
+  });
+
+  it('R2a T14: an onboarding draft without satisfied MFA is 403 MFA_REQUIRED and reads no provider', async () => {
+    mfaOkMock.mockReturnValue(false);
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(ob.m365).not.toHaveBeenCalled();
+    expect(ob.resolveGoogle).not.toHaveBeenCalled();
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
+  });
+
+  it('G7: a taken sign-in name is a FLAG and an empty create plan, never an error', async () => {
+    ob.m365.mockImplementation(async (_org: string, action: { type: string }) => (action.type === 'm365.user.get'
+      ? { ok: true, kind: 'resource', resource: { id: OB_HOLDER, userPrincipalName: OB_UPN } }
+      : { ok: true, kind: 'collection', truncated: false, items: [] }));
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: Record<string, any> };
+    expect(data.createPlanPreview).toEqual([]);
+    expect(data.flags).toContainEqual(expect.objectContaining({ code: 'upn_collision', subject: OB_UPN }));
+    expect(data.provisionPlanPreview.some((e: { provider: string }) => e.provider === 'm365')).toBe(false);
+    expect(data.manualWork.map((i: { key: string }) => i.key)).toContain(`resolve_upn_collision:${OB_UPN}`);
+    expect(ob.writes).toBe(0);
+  });
+
+  it('G7: a provider failure on every read becomes a flag, not a 5xx, and no read is retried', async () => {
+    ob.m365.mockImplementation(async (_org: string, action: { type: string }) => {
+      if (action.type === 'm365.user.get') return { ok: false, code: 'graph_throttled', message: 'slow down' };
+      throw new Error('executor socket hang up');
+    });
+    ob.dirUsersGet.mockRejectedValue(httpError(503, 'backend unavailable'));
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: Record<string, any> };
+    const codes = data.flags.map((f: { code: string }) => f.code);
+    expect(codes).toContain('m365_collision_check_failed');
+    expect(codes).toContain('google_collision_check_failed');
+    expect(codes).toContain('m365_seats_read_failed');
+    expect(data.createPlanPreview).toEqual([]);
+    // Nobody could check either name, so nothing is provisioned in the preview.
+    expect(data.provisionPlanPreview).toEqual([]);
+    expect(m365Calls('m365.user.get')).toHaveLength(1);
+    expect(m365Calls('m365.org.skus.list')).toHaveLength(1);
+    expect(ob.dirUsersGet).toHaveBeenCalledTimes(1);
+    expect(ob.writes).toBe(0);
+  });
+
+  it('G7: a Google connection that cannot be resolved is a flag, and no directory read is made', async () => {
+    ob.resolveGoogle.mockRejectedValue(new Error('connection row unreadable'));
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(200);
+    const { data } = await res.json() as { data: Record<string, any> };
+    expect(data.flags.map((f: { code: string }) => f.code)).toContain('google_collision_check_failed');
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
+  });
+
+  it('B6: a licence with no free seat is not previewed, and becomes human work', async () => {
+    ob.m365.mockImplementation(async (_org: string, action: { type: string }) => (action.type === 'm365.user.get'
+      ? { ok: false, code: 'graph_not_found', message: 'not found' }
+      : { ok: true, kind: 'collection', truncated: false, items: [
+        { skuId: OB_SKU, skuPartNumber: 'SPE_E3', consumedUnits: 10, prepaidUnits: { enabled: 10 }, capabilityStatus: 'Enabled' },
+      ] }));
+    const { data } = await (await obPost('/task-drafts', draftBody())).json() as { data: Record<string, any> };
+    expect(data.provisionPlanPreview.map((e: { toolName: string }) => e.toolName)).not.toContain('m365_assign_license');
+    expect(data.manualWork.map((i: { key: string }) => i.key)).toContain('manual_license:SPE_E3');
+  });
+
+  it('G7: the same two gates as offboarding, BEFORE any provider read — site-restricted 403, flag off 422', async () => {
+    const restricted = await obPost('/task-drafts', draftBody(), obApp({ allowedSiteIds: ['s1'] }));
+    expect(restricted.status).toBe(403);
+    expect((await restricted.json()).code).toBe('SITE_RESTRICTED');
+    ob.onboardingOn = false;
+    const off = await obPost('/task-drafts', draftBody());
+    expect(off.status).toBe(422);
+    expect((await off.json()).code).toBe('OPERATOR_RECIPE_DISABLED');
+    expect(ob.m365).not.toHaveBeenCalled();
+    expect(ob.resolveGoogle).not.toHaveBeenCalled();
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
+  });
+
+  it('an invalid onboarding input is a 400, with no provider read', async () => {
+    const res = await obPost('/task-drafts', draftBody({ inputs: { displayName: 'Priya Patel' } }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('INVALID_INPUT');
+    expect(ob.m365).not.toHaveBeenCalled();
+  });
+
+  // ---- POST /tasks ---------------------------------------------------------
+
+  it('admits identity_onboarding with no deviceId (202), the helpdesk agent and the parsed input', async () => {
+    const res = await obPost('/tasks', taskBody());
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ taskId: TASK_ID, replayed: false });
+    expect(resolveEffectiveAgentMock).toHaveBeenCalledWith(expect.anything(), ORG_ID, 'helpdesk');
+    expect(ob.admitTask).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, agentId: AGENT_ID, workflowKey: 'identity_onboarding', workflowVersion: 1,
+      objective: 'Onboard Priya Patel', originKind: 'manual', requesterUserId: USER_ID,
+      clientIdempotencyKey: 'onboard-abcdef0123',
+      recipeInput: expect.objectContaining({ displayName: 'Priya Patel', startAt: null }),
+    }));
+    expect(ob.m365).not.toHaveBeenCalled();
+  });
+
+  it('flag OFF: POST /tasks answers 422 OPERATOR_RECIPE_DISABLED and admits nothing', async () => {
+    ob.onboardingOn = false;
+    const res = await obPost('/tasks', taskBody());
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe('OPERATOR_RECIPE_DISABLED');
+    expect(ob.admitTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses a site-restricted caller, a caller without organizations:write, and a deviceId — before admission', async () => {
+    expect((await obPost('/tasks', taskBody(), obApp({ allowedSiteIds: ['s1'] }))).status).toBe(403);
+    ob.permissions = [{ resource: 'organizations', action: 'read' }];
+    expect((await obPost('/tasks', taskBody())).status).toBe(403);
+    ob.permissions = [{ resource: 'organizations', action: 'write' }];
+    expect((await obPost('/tasks', taskBody({ deviceId: DEVICE_ID }))).status).toBe(400);
+    expect(ob.admitTask).not.toHaveBeenCalled();
+  });
+
+  it('a manager, model-after contact or site the caller cannot see is a non-enumerating 404, before admission', async () => {
+    for (const field of ['managerContactId', 'modelAfterContactId', 'siteId']) {
+      ob.selects = [[]];
+      const res = await obPost('/tasks', taskBody({ inputs: onboardingInputs({ [field]: OB_CONTACT }) }));
+      expect(res.status).toBe(404);
+    }
+    ob.selects = [[{ id: OB_CONTACT, siteId: OB_CONTACT }]];
+    const hidden = await obPost('/tasks', taskBody({ inputs: onboardingInputs({ siteId: OB_CONTACT }) }), obApp({ canAccessSite: () => false }));
+    expect(hidden.status).not.toBe(202);
+    expect(ob.admitTask).not.toHaveBeenCalled();
+    ob.selects = [[{ id: OB_CONTACT }]];
+    expect((await obPost('/tasks', taskBody({ inputs: onboardingInputs({ managerContactId: OB_CONTACT }) }))).status).toBe(202);
+  });
+
+  it('contact_already_exists → 409 carrying the existing contact id, read in the caller\'s own context', async () => {
+    ob.admitTask.mockResolvedValue({ ok: false, refusal: 'contact_already_exists', detail: `a contact already uses ${OB_UPN}` });
+    ob.selects = [[{ id: OB_CONTACT }]];
+    const res = await obPost('/tasks', taskBody());
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_CONTACT_ALREADY_EXISTS', existingContactId: OB_CONTACT });
+  });
+
+  it('contact_already_exists on a shared mailbox → 409 with existingContactId null', async () => {
+    ob.admitTask.mockResolvedValue({ ok: false, refusal: 'contact_already_exists', detail: `${OB_UPN} is a shared mailbox` });
+    ob.selects = [[{ id: OB_CONTACT }, { id: OB_HOLDER }]];
+    const res = await obPost('/tasks', taskBody());
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_CONTACT_ALREADY_EXISTS', existingContactId: null });
+  });
+
+  it('start_at_beyond_deadline → 422 naming the recipe\'s deadline in days', async () => {
+    ob.admitTask.mockResolvedValue({ ok: false, refusal: 'start_at_beyond_deadline', detail: 'startAt is after the deadline' });
+    const res = await obPost('/tasks', taskBody({ inputs: onboardingInputs({ startAt: '2027-01-01T09:00:00.000Z' }) }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json).toMatchObject({ code: 'START_AT_BEYOND_DEADLINE', deadlineDays: 14 });
+    expect(json.error).toContain('14 days');
+  });
+
+  it('every other refusal keeps the shipped switch: duplicate 409, cap 429, unknown 400, the rest 422', async () => {
+    const cases: Array<[Record<string, unknown>, number, string]> = [
+      [{ refusal: 'duplicate_live_task', detail: 'live', existingTaskId: TASK_ID }, 409, 'OPERATOR_DUPLICATE_LIVE_TASK'],
+      [{ refusal: 'pending_cap_reached', detail: 'cap' }, 429, 'OPERATOR_PENDING_CAP_REACHED'],
+      [{ refusal: 'unknown_recipe', detail: 'unknown' }, 400, 'OPERATOR_UNKNOWN_RECIPE'],
+      [{ refusal: 'invalid_input', detail: 'site not found in this organization' }, 422, 'INVALID_INPUT'],
+    ];
+    for (const [refusal, status, code] of cases) {
+      ob.admitTask.mockResolvedValueOnce({ ok: false, ...refusal });
+      const res = await obPost('/tasks', taskBody());
+      expect(res.status).toBe(status);
+      expect((await res.json()).code).toBe(code);
+    }
   });
 });

@@ -484,12 +484,37 @@ describe('partner tickets write surface', () => {
     expect(partnerTicketCommentWriteResponseSchema.parse(await retry.json()).idempotencyReplay).toBe(true);
     expect(mocks.addTicketComment).toHaveBeenCalledTimes(2);
 
+    // #8972: the path ticket is a merge tombstone and the comment moved to the
+    // survivor: the replay resolves the comment by id and answers 200.
+    mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'replay', resourceId: COMMENT_ID });
+    selectResults = [
+      [foundRow({ mergedIntoTicketId: OTHER_ORG_ID, mergedAt: new Date('2026-09-27T08:00:00.000Z') })],
+      [commentRow({ ticketId: OTHER_ORG_ID })],
+    ];
+    const moved = await send(`/tickets/${TICKET_ID}/comments`, 'POST', { content: 'Mirrored note', isPublic: false }, { 'X-Idempotency-Key': 'c-1' });
+    expect(moved.status, await moved.clone().text()).toBe(200);
+    const movedBody = partnerTicketCommentWriteResponseSchema.parse(await moved.json());
+    expect(movedBody.idempotencyReplay).toBe(true);
+    expect(movedBody.id).toBe(COMMENT_ID);
+
     // A linked comment on another ticket cannot happen (ticket-bound claim +
-    // fingerprint); finding one is corrupt state, not a client error.
+    // fingerprint); finding one on a LIVE path ticket is corrupt state, not a client error.
     mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'replay', resourceId: COMMENT_ID });
     selectResults = [[foundRow()], [commentRow({ ticketId: OTHER_ORG_ID })]];
     const wrongTicket = await send(`/tickets/${TICKET_ID}/comments`, 'POST', { content: 'Mirrored note', isPublic: false }, { 'X-Idempotency-Key': 'c-1' });
     expect(wrongTicket.status).toBe(500);
+  });
+
+  it('POST /tickets replays the original response when the created ticket is now a merge tombstone', async () => {
+    mocks.findIdempotencyReplay.mockResolvedValueOnce({ kind: 'replay', resourceId: TICKET_ID });
+    selectResults = [[foundRow({ mergedIntoTicketId: OTHER_ORG_ID, mergedAt: new Date('2026-09-27T08:00:00.000Z') })]];
+    const res = await send('/tickets', 'POST', createBody, { 'X-Idempotency-Key': 'psa-1' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = partnerTicketWriteResponseSchema.parse(await res.json());
+    expect(body.idempotencyReplay).toBe(true);
+    expect(body.id).toBe(TICKET_ID);
+    expect(body.data).toMatchObject({ mergedIntoTicketId: OTHER_ORG_ID, mergedAt: '2026-09-27T08:00:00.000Z' });
+    expect(mocks.createTicket).not.toHaveBeenCalled();
   });
 
   it('withholds the echoed record (data null + blocked) when a written field carries a credential, but still returns the ids', async () => {

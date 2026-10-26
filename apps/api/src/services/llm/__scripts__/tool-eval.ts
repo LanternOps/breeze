@@ -4,7 +4,7 @@
  *
  * Usage:
  *   DATABASE_URL=postgresql://unused:unused@127.0.0.1:5432/unused ANTHROPIC_API_KEY=… \
- *   pnpm --filter @breeze/api ai:tool-eval -- [--suite chat|agent] [--surface chat|helper-standard|…]
+ *   pnpm --filter @breeze/api ai:tool-eval -- [--suite chat|agent|lazy-index] [--surface chat|helper-standard|…]
  *     [--model <id>] [--tool-search default|on|off] [--surface-search production|on] [--cases g01,g02]
  *     [--concurrency 3] [--prompt-variant <id>] [--out tool-eval-report.json] [--summary-md tool-eval-summary.md]
  *
@@ -23,6 +23,10 @@
  * variant is evaluated against the base prompt before any live traffic sees it.
  * The variant's surface must match the suite and its profile must match
  * --model's (derivePromptProfile).
+ * `--suite lazy-index` (W19 #10065) runs `toolEval/lazyIndexCases.ts` on the
+ * chat surface, each case with the production `buildSystemPrompt` for its
+ * page fixture; compare `AI_TOOL_INDEX=lazy` against `AI_TOOL_INDEX=full`.
+ * Same first-call caps as the chat suite.
  * Scores and SDK errors never gate the caller; invalid usage or a missing key exits 2.
  */
 import { writeFile } from 'node:fs/promises';
@@ -41,8 +45,10 @@ import { platformLlmConfig } from '../llmConfigResolver';
 import { captureToolSearchPolicy, getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
 import { GOLDEN_CASES, type GoldenCase } from '../toolEval/goldenPrompts';
+import { LAZY_INDEX_CASES, buildLazyIndexCasePrompt, type LazyIndexCase } from '../toolEval/lazyIndexCases';
 import { renderMarkdownReport, type EvalReport } from '../toolEval/report';
 import { scoreFirstCall, summarize } from '../toolEval/score';
+import { resolveToolIndexMode } from '../../aiToolIndexMode';
 
 class UsageError extends Error {}
 
@@ -61,6 +67,8 @@ interface EvalJob {
   surface: CaptureSurface;
   /** Agent tasks carry their own production system prompt. */
   systemPrompt?: string;
+  /** Lazy-index cases: the page prompt is built (async) before the run. */
+  lazyCase?: LazyIndexCase;
 }
 
 const AGENT_SURFACE_IDS = new Set(AGENT_GOLDEN_TASKS.map((t) => t.surface));
@@ -83,13 +91,14 @@ function parseArgs(args: string[]) {
     values.set(flag, value);
   }
   const suite = values.get('--suite') ?? 'chat';
-  if (suite !== 'chat' && suite !== 'agent') throw new UsageError('--suite must be chat or agent');
+  if (suite !== 'chat' && suite !== 'agent' && suite !== 'lazy-index') throw new UsageError('--suite must be chat, agent or lazy-index');
   const surfaceArg = values.get('--surface');
   const surface = surfaceArg ?? 'chat';
   if (!Object.hasOwn(CAPTURE_SURFACES, surface)) throw new UsageError('--surface must be a capture surface ID');
   if (suite === 'agent' && surfaceArg && !AGENT_SURFACE_IDS.has(surfaceArg as never)) {
     throw new UsageError('--surface with --suite agent must be an agent surface');
   }
+  if (suite === 'lazy-index' && surface !== 'chat') throw new UsageError('--suite lazy-index runs on the chat surface only');
   const toolSearch = values.get('--tool-search') ?? 'default';
   if (!['default', 'on', 'off'].includes(toolSearch)) throw new UsageError('--tool-search must be default, on, or off');
   const surfaceSearch = values.get('--surface-search') ?? 'production';
@@ -97,7 +106,9 @@ function parseArgs(args: string[]) {
   const concurrency = Number(values.get('--concurrency') ?? '3');
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new UsageError('--concurrency must be a positive integer');
   const ids = values.get('--cases')?.split(',');
-  const known = suite === 'agent' ? AGENT_GOLDEN_TASKS.map((t) => t.id) : GOLDEN_CASES.map((c) => c.id);
+  const known = suite === 'agent' ? AGENT_GOLDEN_TASKS.map((t) => t.id)
+    : suite === 'lazy-index' ? LAZY_INDEX_CASES.map((c) => c.id)
+      : GOLDEN_CASES.map((c) => c.id);
   if (ids?.some((id) => !known.includes(id))) throw new UsageError(`--cases must contain known ${suite} golden case IDs`);
   const jobs: EvalJob[] = suite === 'agent'
     ? AGENT_GOLDEN_TASKS
@@ -107,7 +118,11 @@ function parseArgs(args: string[]) {
         surface: CAPTURE_SURFACES[t.surface],
         systemPrompt: buildAgentRunSystemPrompt(t.context),
       }))
-    : GOLDEN_CASES
+    : suite === 'lazy-index'
+      ? LAZY_INDEX_CASES
+        .filter((c) => !ids || ids.includes(c.id))
+        .map((c) => ({ golden: c, surface: CAPTURE_SURFACES.chat, lazyCase: c }))
+      : GOLDEN_CASES
       .filter((c) => !ids || ids.includes(c.id))
       .map((c) => ({ golden: c, surface: CAPTURE_SURFACES[surface as CaptureSurfaceId] }));
   const model = values.get('--model') ?? resolveDefaultModel();
@@ -122,7 +137,7 @@ function parseArgs(args: string[]) {
     if (profile !== promptVariant.profile) throw new UsageError(`--prompt-variant ${variantId} targets ${promptVariant.profile} models; --model ${model} is ${profile}`);
   }
   return {
-    suite: suite as 'chat' | 'agent', surface: surface as CaptureSurfaceId, toolSearch, concurrency, jobs,
+    suite: suite as 'chat' | 'agent' | 'lazy-index', surface: surface as CaptureSurfaceId, toolSearch, concurrency, jobs,
     surfaceSearch: surfaceSearch as 'production' | 'on',
     model, promptVariant,
     out: values.get('--out') ?? 'tool-eval-report.json',
@@ -134,6 +149,8 @@ function parseArgs(args: string[]) {
 export async function runCli(argv = process.argv.slice(2)): Promise<number> {
   try {
     const args = parseArgs(argv);
+    // W19: lazy-index cases carry the production page prompt (index mode from AI_TOOL_INDEX).
+    for (const job of args.jobs) if (job.lazyCase) job.systemPrompt = await buildLazyIndexCasePrompt(job.lazyCase);
     // CI passes the dedicated eval key as AI_TOOL_EVAL_KEY (a repo guard forbids
     // workflows from naming the platform key variable); map it for the resolver.
     if (!process.env.ANTHROPIC_API_KEY?.trim() && process.env.AI_TOOL_EVAL_KEY?.trim()) {
@@ -223,6 +240,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       toolSearch: args.toolSearch, surfaceSearch: args.surfaceSearch,
       toolSearchEnabled: cases.length > 0 && cases.every((c) => c.toolSearchEnabled),
       promptVariant: args.promptVariant?.id ?? null,
+      toolIndexMode: resolveToolIndexMode(),
+      // The first job's prompt (for lazy-index: the first case's page prompt).
       systemPromptBytes: Buffer.byteLength(
         appendPromptGuidance(args.jobs[0]?.systemPrompt ?? getCaptureSystemPrompt(promptSurface), args.promptVariant), 'utf8'),
       cases, summary: summarize(cases),

@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Confirmar la aprobación del parche",
-      "selectedOrganization": "la organización seleccionada",
-      "messageOne": "¿Aprobar el parche en el dispositivo {{count}} en {{org}}?",
-      "messageMany": "¿Aprobar el parche en dispositivos {{count}} en {{org}}?"
+      "selectedRing": "(sin nombre)",
+      "messageRingOne": "¿Aprobar el parche en {{count}} dispositivo de todas las organizaciones en el anillo {{ring}}?",
+      "messageRingMany": "¿Aprobar el parche en {{count}} dispositivos de todas las organizaciones en el anillo {{ring}}?",
+      "messagePartnerWide": "¿Aprobar el parche para todas las organizaciones de su partner?"
     },
     "checkingAccess": "Verificando tu acceso..."
   },
@@ -95,6 +96,7 @@
       "statusFilterLabel": "Filtrar por estado de cumplimiento",
       "pendingPatches": "Parches pendientes ({{count}})",
       "critical": "Crítico ({{count}})",
+      "failed": "Instalaciones fallidas ({{count}})",
       "pendingReboot": "Reinicio pendiente ({{count}})",
       "thirdPartyPending": "Pendiente de terceros ({{count}})",
       "compliant": "Cumple ({{count}})"
@@ -159,6 +161,11 @@
       "messageOne": "{{action}} en el dispositivo {{count}} en {{org}}?",
       "messageMany": "{{action}} en dispositivos {{count}} en {{org}}?",
       "messageMultiOrg": "¿{{action}} en dispositivos {{count}} en organizaciones {{orgCount}} ({{orgNames}})?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} de {{total}}",
+      "previous": "Página anterior",
+      "next": "Página siguiente"
     }
   },
   "patchInstallHistory": {
@@ -259,7 +266,9 @@
       "moderate": "Moderado",
       "low": "Bajo",
       "unrated": "Sin calificar",
-      "unratedNote": "No se aprobará automáticamente"
+      "unratedNote": "No se aprobará automáticamente",
+      "derivedNote": "Calificación derivada",
+      "derivedTooltip": "El proveedor no publicó una calificación para esta actualización. Esta gravedad se derivó de su clasificación y título."
     },
     "approval": {
       "pending": "Pendiente",
@@ -331,16 +340,12 @@
       "error": "No se pudo cargar la lista de dispositivos.",
       "showing": "Mostrando {{shown}} de {{total}}",
       "loadMore": "Cargar más",
-      "lastChecked": "Última comprobación: {{when}}",
-      "status": {
-        "online": "En línea",
-        "offline": "Sin conexión",
-        "maintenance": "Mantenimiento",
-        "decommissioned": "Dado de baja",
-        "quarantined": "En cuarentena",
-        "updating": "Actualizando",
-        "pending": "Pendiente"
-      }
+      "lastChecked": "Última comprobación: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Versión del paquete {{version}}",
+      "id": "ID de catálogo {{id}}",
+      "title": "Otra entrada del catálogo tiene el mismo título. Cada una se aprueba por separado."
     }
   },
   "patchesPage": {
@@ -381,7 +386,8 @@
       "createRing": "No se pudo crear el anillo de actualización",
       "deleteRing": "No se pudo eliminar el anillo",
       "approveUnknown": "Estado de aprobación desconocido: no se pudo leer la respuesta del servidor. Actualiza para confirmar qué parches se aprobaron.",
-      "approveAbortedWithFailures": "{{message}} (El servidor también rechazó {{count}} parches antes de esto.)"
+      "approveAbortedWithFailures": "{{message}} (El servidor también rechazó {{count}} parches antes de esto.)",
+      "checkRingLinks": "No se pudo comprobar qué políticas usan este anillo; no se eliminó nada"
     },
     "toast": {
       "ringSaved": "Anillo de actualización guardado",
@@ -411,10 +417,16 @@
       "createTitle": "Crear anillo de actualización"
     },
     "truncatedNotice": "Se muestran {{shown}} de {{total}} parches. Los filtros de aquí solo acotan lo ya cargado, así que el resto no se puede alcanzar desde esta vista: usa la API de parches para recorrer el catálogo completo.",
-    "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto."
+    "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto.",
+    "ringDelete": {
+      "title": "¿Eliminar {{name}}?",
+      "messageOne": "1 política dejará de aplicar parches programados hasta que elijas otro anillo.",
+      "messageMany": "{{count}} políticas dejarán de aplicar parches programados hasta que elijas otro anillo.",
+      "confirm": "Eliminar anillo"
+    }
   },
   "patchJobsList": {
-    "empty": "Aún no hay trabajos de parches. Los trabajos creados por políticas, anillos de actualización o el asistente de IA aparecerán aquí.",
+    "empty": "Aún no hay trabajos de parches. Los trabajos creados por políticas, anillos de actualización o Breeze AI aparecerán aquí.",
     "loading": "Cargando trabajos de parches...",
     "columns": {
       "name": "Trabajo",
@@ -613,5 +625,24 @@
     "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
     "removeRuleFor": "Eliminar regla para {{application}}",
     "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
+  },
+  "patchDetails": {
+    "unknown": "Desconocido",
+    "source": "Origen",
+    "packageId": "KB / ID de paquete",
+    "severity": "Gravedad",
+    "releaseDate": "Fecha de lanzamiento",
+    "firstSeen": "Visto por primera vez en el catálogo",
+    "rings": {
+      "title": "Anillos de actualización",
+      "note": "Cuándo aprueba automáticamente cada anillo este parche (regla a nivel de anillo; no se muestran las excepciones por categoría).",
+      "none": "No hay anillos de actualización configurados.",
+      "manual": "Sin aprobación automática — requiere aprobación manual",
+      "immediate": "Se aprueba automáticamente de inmediato",
+      "needsDate": "Retenido — sin fecha de lanzamiento para iniciar la ventana de {{count}} días",
+      "autoApproves": "Se aprueba automáticamente el {{date}}",
+      "hold_one": "Retraso de {{count}} día",
+      "hold_other": "Retraso de {{count}} días"
+    }
   }
 }

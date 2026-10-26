@@ -49,6 +49,11 @@ func TestDoKeepsServerAnswerWhenContextExpiresDuringRetryAfter(t *testing.T) {
 	if rse.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("StatusCode = %d, want 503", rse.StatusCode)
 	}
+	// #9517: the hint survives the interrupted sleep, so a caller that
+	// retries on its own schedule can still wait as long as asked.
+	if rse.RetryAfter != 30*time.Second {
+		t.Fatalf("RetryAfter = %s, want 30s", rse.RetryAfter)
+	}
 }
 
 // An earlier attempt answered 503; the next attempt hangs until the context

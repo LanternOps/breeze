@@ -61,10 +61,6 @@ export default defineConfig({
                 { slug: 'features/remote-access' },
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
-                { slug: 'features/script-ai' },
-                { slug: 'features/ai-agents' },
-                { slug: 'features/ai-analysis-runs' },
-                { slug: 'features/ai-impact' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },
                 { slug: 'features/deployments' },
@@ -99,7 +95,6 @@ export default defineConfig({
                 { slug: 'features/user-risk' },
                 { slug: 'features/management-posture' },
                 { slug: 'features/user-sessions' },
-                { slug: 'features/approval-security' },
               ],
             },
             {
@@ -150,18 +145,49 @@ export default defineConfig({
               ],
             },
             {
-              label: 'AI & Intelligence',
+              label: 'AI',
               items: [
                 { slug: 'features/ai' },
-                { slug: 'features/tool-sources' },
-                { slug: 'features/ai-script-authoring' },
-                { slug: 'features/bring-your-own-llm-key' },
-                { slug: 'features/ml-insights' },
-                { slug: 'features/fleet-hygiene' },
-                { slug: 'features/ai-computer-control' },
-                { slug: 'features/diagnostic-file-access' },
-                { slug: 'features/ai-for-office' },
-                { slug: 'features/mcp-server' },
+                { slug: 'features/breeze-ai' },
+                { slug: 'features/wisp' },
+                {
+                  label: 'The workers',
+                  items: [
+                    { slug: 'features/ai-agents' },
+                    { slug: 'features/ai-analysis-runs' },
+                    { slug: 'features/ai-tasks' },
+                    { slug: 'features/ai-impact' },
+                    { slug: 'features/fleet-hygiene' },
+                  ],
+                },
+                {
+                  label: 'Governance',
+                  items: [
+                    { slug: 'features/approval-security' },
+                    { slug: 'features/bring-your-own-llm-key' },
+                    { slug: 'features/tool-sources' },
+                    { slug: 'features/ai-script-authoring' },
+                    { slug: 'features/diagnostic-file-access' },
+                    { slug: 'features/ai-usage-chargeback' },
+                  ],
+                },
+                {
+                  label: 'For other people',
+                  items: [
+                    { slug: 'features/ai-for-office' },
+                    { slug: 'features/mcp-server' },
+                    { slug: 'agents/helper' },
+                  ],
+                },
+                {
+                  label: 'Reference',
+                  items: [
+                    { slug: 'features/ai-tools' },
+                    { slug: 'features/script-ai' },
+                    { slug: 'features/ml-insights' },
+                    { slug: 'features/ai-computer-control' },
+                  ],
+                },
               ],
             },
             {

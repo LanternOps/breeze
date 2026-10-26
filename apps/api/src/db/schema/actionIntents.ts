@@ -30,6 +30,7 @@ import { aiAgentRuns } from './aiAgents';
 import { devices } from './devices';
 import { pamActuations } from './elevations';
 import { tickets } from './portal';
+import { flowRuns } from './flowRuns';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -66,7 +67,11 @@ export type ActionIntentStatus = (typeof actionIntentStatusEnum)[number];
 // notified. computeExpiresAt (intentService.ts) gives it an explicit
 // AGENT_INTENT_EXPIRY_MS branch (wave 3b) — deliberately 24h, no longer
 // inherited from the MCP window by accident.
-export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent'] as const;
+// 'flow' (tool catalog W04, #5219): a Tier-3 flow step parked for approval.
+// Paired with origin_principal_kind = 'flow' (action_intents_flow_source_chk)
+// and requesting_flow_run_id (action_intents_flow_origin_chk) —
+// migrations/2027-01-06-130000-flow-runs.sql.
+export const actionIntentSourceEnum = ['chat', 'mcp_api', 'ai_agent', 'flow'] as const;
 export type ActionIntentSource = (typeof actionIntentSourceEnum)[number];
 
 /**
@@ -86,6 +91,9 @@ export const actionIntentOriginPrincipalKindEnum = [
   'helper',
   'system',
   'unknown',
+  // The flow run principal (tool catalog W04, #5219): the run is the single
+  // actor root (requesting_flow_run_id); no human requester.
+  'flow',
 ] as const;
 export type ActionIntentOriginPrincipalKind =
   (typeof actionIntentOriginPrincipalKindEnum)[number];
@@ -200,6 +208,20 @@ export const actionIntents = pgTable(
      * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
+    /**
+     * Tool catalog W04 (#5219): the flow_runs row whose Tier-3 step this
+     * intent parks. Set iff origin_principal_kind = 'flow'
+     * (action_intents_flow_origin_chk) and source = 'flow'
+     * (action_intents_flow_source_chk); one of the four actor roots counted by
+     * action_intents_one_actor_chk.
+     *
+     * Composite FK (requesting_flow_run_id, org_id) → flow_runs(id, org_id),
+     * ON DELETE RESTRICT, DEFERRABLE INITIALLY IMMEDIATE in SQL (table-options
+     * block below): an intent can never be filed under another org's run.
+     * Immutable (action_intents_block_content_update(),
+     * migrations/2027-01-06-130000-flow-runs.sql).
+     */
+    requestingFlowRunId: uuid('requesting_flow_run_id'),
     /** Creation-time cause, distinct from the initiator/execution lane.
      * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
      * deliberately without a FK. Build stable keys with @breeze/shared helpers.
@@ -424,6 +446,12 @@ export const actionIntents = pgTable(
     // Committed under the requester+target subject locks immediately before
     // the outbound mutation (prepareCallerDispatch). Mutable lifecycle marker.
     dispatchStartedAt: timestamp('dispatch_started_at', { withTimezone: true }),
+    // B-W06 (#6160, D-B50): the time of the last status change. Stamped ONLY
+    // by the BEFORE UPDATE trigger action_intents_stamp_status_changed_at
+    // (clock_timestamp() when status changes, else the old value — an app
+    // write can neither forge nor clear it) and by the insert default. NULL
+    // for rows that predate 2027-01-04-121000-action-intents-status-changed-at.sql.
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).defaultNow(),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),
 
@@ -481,6 +509,15 @@ export const actionIntents = pgTable(
       foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
       name: 'action_intents_requesting_agent_run_id_org_id_fkey',
     }).onDelete('restrict'),
+    // W04 (#5219): see requestingFlowRunId. DEFERRABLE in SQL only (drizzle's
+    // foreignKey() has no deferrable option).
+    requestingFlowRunOrgFk: foreignKey({
+      columns: [table.requestingFlowRunId, table.orgId],
+      foreignColumns: [flowRuns.id, flowRuns.orgId],
+      name: 'action_intents_requesting_flow_run_fk',
+    }).onDelete('restrict'),
+    requestingFlowRunIdx: index('action_intents_requesting_flow_run_id_idx')
+      .on(table.requestingFlowRunId).where(sql`${table.requestingFlowRunId} IS NOT NULL`),
     // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
     // action_intents_scope_device_idx.
     scopeDeviceIdx: index('action_intents_scope_device_idx')

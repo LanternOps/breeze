@@ -15,7 +15,7 @@ import (
 
 const maxProcessImagePath = 32768
 
-func resolveRequesterSession() (username string, sessionID uint32, source string) {
+func resolveRequesterSession() requesterResolution {
 	now := time.Now().UTC()
 	consoleSessionID := windows.WTSGetActiveConsoleSessionId()
 

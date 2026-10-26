@@ -38,6 +38,7 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     status: 'devices.status',
     partnerId: 'devices.partnerId',
+    agentId: 'devices.agentId',
   },
   users: {
     id: 'users.id',
@@ -137,6 +138,9 @@ const DEFAULT_CANDIDATE = {
   deviceOrgId: 'org-1',
   deviceStatus: 'online',
   orgType: 'customer',
+  deviceIncarnation: 1,
+  deviceInstallIncarnation: 1,
+  deviceAgentId: 'agent-1',
 };
 let candidateFor: ReturnType<typeof vi.fn>;
 function stubSingleClaimCandidate(
@@ -183,7 +187,24 @@ describe('command dispatch helpers', () => {
       status: 'claimed',
       id: 'cmd-1',
       executedAt: new Date('2026-03-31T00:00:00Z'),
+      agentId: 'agent-1',
     });
+  });
+
+  // #8318 §6.4: an in-place F3 re-enroll changes the device's agent_id without
+  // advancing its incarnation, so the flip itself re-checks the agent_id the
+  // candidate read returned; a 0-row flip is not a claim and nothing is pushed.
+  it('the single-command flip re-checks the agent_id read with the candidate, in the same statement', async () => {
+    stubSingleClaimCandidate({ deviceAgentId: 'agent-read-in-claim' });
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where }) } as any);
+
+    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+      status: 'not_claimable', id: 'cmd-1',
+    });
+    const { sql: text, params } = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM .+ WHERE .+ = .+ AND .+ = \$\d+\)/);
+    expect(params).toContain('agent-read-in-claim');
   });
 
   it('returns only commands that were successfully claimed from pending state', async () => {
@@ -208,13 +229,42 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.id).toBe('cmd-1');
     // No drain allowlist → no type filter applied.
     expect(vi.mocked(inArray)).not.toHaveBeenCalledWith('deviceCommands.type', expect.anything());
+  });
+
+  // #8318 §6.4 (review of wave 1b-1): the batch flip re-checks the agent_id
+  // the CALLER authenticated with, in the same statement, like the push flip.
+  // An in-place F3 re-enroll changes it without advancing the incarnation.
+  it('the batch flip re-checks the caller\'s authenticated agent_id in the same statement', async () => {
+    partitionClaimableMock.mockImplementationOnce(async (_tx: unknown, _device: unknown, rows: Array<{ id: string }>) => ({
+      claimable: rows, cancelled: [], held: [],
+    }));
+    const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+    const tx = {
+      select: selectChain([
+        { id: 'cmd-1', deviceId: 'dev-1', status: 'pending', deviceIncarnation: 1, createdAt: new Date('2026-03-31T00:00:00Z') },
+      ]),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where }) }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice(
+      { deviceId: 'dev-1', agentId: 'agent-authenticated', installIncarnation: 1 },
+      10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+    );
+
+    // The device changed hands since auth: the flip matched nothing, nothing is delivered.
+    expect(claimed).toEqual([]);
+    expect(where).toHaveBeenCalledTimes(1);
+    const { sql: text, params } = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM .+ WHERE .+ = .+ AND .+ = \$\d+\)/);
+    expect(params).toContain('agent-authenticated');
   });
 
   // #2774 — during an offboarding drain the claim narrows to self_uninstall.
@@ -226,7 +276,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -241,7 +291,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1',
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
@@ -263,7 +313,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1',
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       undefined,
@@ -287,7 +337,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
       rollbackProtocolVersion: 0,
       pamLifetimeProtocolVersion: 2,
@@ -306,7 +356,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
       rollbackProtocolVersion: 1,
       pamLifetimeProtocolVersion: 0,
@@ -321,7 +371,7 @@ describe('command dispatch helpers', () => {
   it.each([undefined, 0, 2, 1])('gates reset on its independent protocol capability %s while PAM is unavailable', async (resetVersion) => {
     const tx = { select: selectChain([]), update: vi.fn() };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1,
       pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: resetVersion,
     });
@@ -398,7 +448,7 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
       peripheralPolicyProtocolVersion: 2,
     });
 
@@ -444,7 +494,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toHaveLength(1);
@@ -465,7 +515,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -493,7 +543,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(partitionClaimableMock).toHaveBeenCalledWith(
@@ -538,7 +588,7 @@ describe('command dispatch helpers', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(claimed).toEqual([]);
@@ -568,7 +618,7 @@ describe('command dispatch helpers', () => {
       expect(partitionClaimableMock).toHaveBeenCalledTimes(1);
       const [tx, device, rows] = partitionClaimableMock.mock.calls[0]!;
       expect(tx).toBe(db);
-      expect(device).toEqual({ id: 'dev-1', orgId: 'org-2', status: 'online', orgType: 'customer' });
+      expect(device).toEqual({ id: 'dev-1', orgId: 'org-2', status: 'online', orgType: 'customer', installIncarnation: 1 });
       expect(rows).toEqual([
         expect.objectContaining({ id: 'cmd-1', type: 'script', createdBy: 'user-1', submittedOrgId: 'org-1' }),
       ]);
@@ -641,7 +691,9 @@ describe('command dispatch helpers', () => {
       const set = stubSentUpdate();
 
       const at = new Date('2026-03-31T00:00:00Z');
-      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ status: 'claimed', id: 'cmd-1', executedAt: at });
+      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({
+        status: 'claimed', id: 'cmd-1', executedAt: at, agentId: 'agent-1',
+      });
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent', executedAt: at }));
     });
 
@@ -706,7 +758,7 @@ describe('command dispatch helpers', () => {
     }));
 
     const claimed = await claimPendingCommandsForDevice(
-      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+      { deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
     );
 
     expect(partitionClaimableMock).toHaveBeenCalledWith(tx, parkedDevice, refusedRows);
@@ -718,7 +770,7 @@ describe('command dispatch helpers', () => {
     const tx = { select: selectChain([]), update: vi.fn() };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    await claimPendingCommandsForDevice('dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 });
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 });
 
     expect(partitionClaimableMock).not.toHaveBeenCalled();
     expect(tx.update).not.toHaveBeenCalled();

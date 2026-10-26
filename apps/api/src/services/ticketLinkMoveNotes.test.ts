@@ -17,6 +17,9 @@ vi.mock('../db', () => ({
     insert: () => ({ values: insertMock }),
   },
 }));
+// #8972 W0: every note locks its ticket row first; the lock itself is covered by ticketRowLock tests.
+const { lockMock } = vi.hoisted(() => ({ lockMock: vi.fn(async () => null) }));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock }));
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
 vi.mock('./sentry', () => ({ captureException: captureMock }));
 
@@ -60,6 +63,8 @@ describe('noteTicketLinksRemovedByOrgMove', () => {
   it('writes an internal system note naming the other ticket with the inverse label', async () => {
     await noteTicketLinksRemovedByOrgMove([link(true, false)]);
     expect(insertMock).toHaveBeenCalledTimes(1);
+    // #8972 W0: the note's ticket is locked before the insert
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), 't');
     expect(insertMock.mock.calls[0]![0]).toMatchObject({
       ticketId: 't', commentType: 'system', isPublic: false, oldValue: 's',
       content: 'Removed link "causes T-1" because of an organization move',

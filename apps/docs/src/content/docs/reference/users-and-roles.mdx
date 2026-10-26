@@ -354,7 +354,7 @@ Enforcement of the Force MFA flag is itself gated by the `MFA_FORCE_FOR_PARTNER_
 
 **Enrolment grace window (v0.113.0+).** When enforcement is on, a user who lands in a Force MFA role and has *never* held an MFA factor is not walled off immediately. Breeze grants a one-time enrolment window — **14 days** by default, configurable per partner through the `security.mfaEnrollmentGraceDays` security setting up to a maximum of 30 (0 disables the window) — timed by the database clock, not the user's device. During the window the dashboard shows a dismissible banner (*"Your role will require two-factor authentication. Enrol by &lt;date&gt;"* with a **Set up 2FA** button) and the user receives an email when the window opens and a reminder three days before the deadline. The window is **nonrenewable**: signing in again, a role change, toggling the environment variable, or an administrator resetting the user's factors never extends it, though a partner can shorten it. Once the deadline passes the `428` wall above applies exactly as before; sessions and API keys created during the window are not revoked. Users who have held a factor at any point get no window.
 
-**The variable gates the *role* flag only.** MFA required by an organisation's or partner's own security settings (**Require MFA** under Settings → Security) is enforced regardless of what `MFA_FORCE_FOR_PARTNER_ADMIN` is set to — it is not a global switch for turning MFA requirements off. Related: a settings change that *would* lock out users who have already enrolled is now refused outright with `409 mfa_policy_would_lock_out_users` and a count of the users affected, rather than applied and discovered at the next sign-in.
+**The variable gates the *role* flag only.** MFA required by an organisation's or partner's own security settings (**Require MFA** under Settings → Security) is enforced regardless of what `MFA_FORCE_FOR_PARTNER_ADMIN` is set to — it is not a global switch for turning MFA requirements off. In particular, every partner created through self-registration is seeded with **Require MFA** on, so a self-registered partner admin still gets forced TOTP enrollment at first sign-in even when `MFA_FORCE_FOR_PARTNER_ADMIN` is unset or `false`. To skip enrollment on a self-hosted dev stack, turn **Require MFA** off under Settings → Security as well (or pin the flag off *and* create the partner without it). Related: a settings change that *would* lock out users who have already enrolled is now refused outright with `409 mfa_policy_would_lock_out_users` and a count of the users affected, rather than applied and discovered at the next sign-in.
 
 ### Permission Model
 
@@ -392,6 +392,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `vulnerabilities` | Vulnerability risk-acceptance governance |
 | `ai_sessions` | Using AI chat (`use`) and cross-user session audit (`read_all`) |
 | `ai_agents` | AI agent configuration and runs |
+| `ai_workspace` | Staging, running and collecting code in AI sandbox workspaces (`execute`) |
 | `approvals` | Deciding pending action-intent approvals |
 
 The authoritative list of assignable permissions is also available at runtime via `GET /permissions/catalog`. The dashboard's role builder consumes this endpoint so the matrix of resources and actions stays in sync with the server whenever new permissions are added.
@@ -425,11 +426,15 @@ The authoritative list of assignable permissions is also available at runtime vi
 There is no `view` or `update` action -- read access is `read`, and a write/create/update is `write` (or `create` for the one resource, `agent_rollback`, that uses it). Additionally, the wildcard permission `*:*` grants full administrative access.
 
 <Aside type="note">
-  Opening and using the AI assistant (chat sessions, your own session history, the org's AI usage figures) requires `ai_sessions:use`. It is granted by default to **Org Admin**, **Org Technician** and **Partner Technician**; Partner Admin holds it through `*:*`. Viewer and billing roles do not get it, and the assistant button, the **AI Assistant** navigation entry and the `/workspace` page are all hidden for them. The permission only opens the conversation: every tool the assistant calls is checked against the same permission its HTTP route requires, so it cannot do anything the user could not do by hand. Setting the org's AI budget and flagging another user's session still need `organizations:write`. **Upgrading:** built-in roles receive the new key automatically; a custom role that was given `organizations:write` specifically so its users could open the assistant must be granted `ai_sessions:use` under **Settings → Users & Roles**, or its users lose chat.
+  Opening and using the AI assistant (chat sessions, your own session history, the org's AI usage figures) requires `ai_sessions:use`. It is granted by default to **Org Admin**, **Org Technician** and **Partner Technician**; Partner Admin holds it through `*:*`. Viewer and billing roles do not get it, and the assistant button, the **Wisp** navigation entry and the `/wisp` and `/ai/chat` pages (both need `ai_sessions:use`) are all hidden for them. The permission only opens the conversation: every tool the assistant calls is checked against the same permission its HTTP route requires, so it cannot do anything the user could not do by hand. Setting the org's AI budget and flagging another user's session still need `organizations:write`. **Upgrading:** built-in roles receive the new key automatically; a custom role that was given `organizations:write` specifically so its users could open the assistant must be granted `ai_sessions:use` under **Settings → Users & Roles**, or its users lose chat.
 </Aside>
 
 <Aside type="note">
   `ai_agents:read` and `ai_agents:write` are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organisation admin already holds. See [AI Agents](/features/ai-agents/).
+</Aside>
+
+<Aside type="note">
+  `ai_workspace:execute` gates the sandbox workspace tools (`workspace_stage`, `workspace_run`, `workspace_collect`, `workspace_cancel`), which run code. It is granted to no built-in role by name; Partner Admin holds it through `*:*`. Before it existed these tools required only `ai_agents:read`. Autonomous analysis runs are unaffected: an agent run is authorized by its policy, not by role permissions.
 </Aside>
 
 <Aside type="note">
@@ -517,6 +522,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `AI_SESSIONS_USE` | `ai_sessions` | `use` |
 | `AI_AGENTS_READ` | `ai_agents` | `read` |
 | `AI_AGENTS_WRITE` | `ai_agents` | `write` |
+| `AI_WORKSPACE_EXECUTE` | `ai_workspace` | `execute` |
 | `APPROVALS_DECIDE` | `approvals` | `decide` |
 | `PAM_APPROVE` | `pam` | `approve` |
 | `PAM_MANAGE_POLICY` | `pam` | `manage_policy` |

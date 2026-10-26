@@ -23,9 +23,11 @@
     "adminUsersDetailDevices": "Dispositivos del usuario",
     "aiAgentsImpact": "Impacto de IA",
     "aiAgentsFixMemory": "Memoria de correcciones",
+    "flows": "Flujos",
+    "flowDetail": "Flujo",
     "aiAgentsRunsDetail": "Detalle de ejecución",
     "aiAgentsRuns": "Ejecuciones de agentes",
-    "aiForOffice": "AI para Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Motor de riesgo de IA",
     "alertsDelivery": "Alertas – Entrega",
     "alertsCorrelations": "Correlaciones de alertas",
@@ -70,10 +72,10 @@
     "dnsSecurity": "DNS Seguridad",
     "dr": "Recuperación ante desastres",
     "extensionsNamePath": "Extensión",
-    "fleet": "Orquestación de flota",
+    "fleet": "Hallazgos",
     "forgotPassword": "Olvidé mi contraseña",
     "incidentsDetail": "Detalle del incidente",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de seguridad",
     "dashboard": "Panel",
     "integrations": "Integraciones",
     "integrationsPsa": "Integraciones PSA",
@@ -139,6 +141,7 @@
     "settingsBilling": "Configuración de facturación",
     "settingsCatalog": "Catálogo de productos",
     "settingsConnectedApps": "Aplicaciones conectadas",
+    "settingsDeliverableTemplates": "Plantillas de entregables",
     "settingsCustomFields": "Campos personalizados",
     "settingsEnrollmentKeys": "Claves de inscripción",
     "settingsFilters": "Filtros guardados",
@@ -152,6 +155,7 @@
     "settingsProfile": "Configuración de perfil",
     "settingsRoles": "Roles",
     "settingsSitesDetail": "Configuración del sitio",
+    "settingsSites": "Sitios",
     "settingsSso": "Inicio de sesión único (SSO)",
     "settingsUsers": "Usuarios",
     "settingsVariables": "Variables",
@@ -165,7 +169,6 @@
     "ticketsNew": "Crear ticket",
     "timesheet": "Hoja de tiempo",
     "vulnerabilities": "Vulnerabilidades",
-    "workspace": "Asistente de IA",
     "aiAgentsFleetDesign": "Diseño de flota",
     "agreementTemplates": "Plantillas de acuerdo",
     "agreementTemplateDetail": "Plantilla de acuerdo",
@@ -175,8 +178,18 @@
     "securityScans": "Escaneos de IOC",
     "devicesTime": "Sincronización de hora",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Mensajes al equipo"
+    "adminWisp": "Wisp",
+    "billingAutopay": "Pagos automáticos",
+    "endpointMessages": "Mensajes al equipo",
+    "securityDetectionRules": "Reglas de detección",
+    "settingsPlan": "Plan y funciones",
+    "settingsWispMemory": "Memoria de Wisp",
+    "wispThread": "Hilo de Wisp",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "Tareas de IA",
+    "aiTask": "Tarea de IA",
+    "settingsAi": "Configuración de IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -230,7 +243,7 @@
       },
       "connectedApps": {
         "title": "Aplicaciones conectadas",
-        "description": "Revisa y revoca asistentes de IA y clientes MCP autorizados a acceder a tu organización."
+        "description": "Revisa y revoca los clientes de IA autorizados para acceder a tu tenant."
       },
       "officeAddinBindings": {
         "title": "Vínculos del complemento de Outlook",
@@ -259,6 +272,14 @@
       },
       "alertTemplates": {
         "title": "Plantillas de alertas"
+      },
+      "plan": {
+        "title": "Plan y funciones",
+        "description": "Tu plan, qué funciones incluye y de dónde proviene cada una."
+      },
+      "wispMemory": {
+        "title": "Memoria de Wisp",
+        "description": "Revisa, confirma y retira lo que Wisp recuerda."
       }
     },
     "groups": {
@@ -281,7 +302,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Aplicaciones conectadas",
-    "description": "Asistentes de IA y otros clientes MCP autorizados a acceder a tu organización mediante OAuth. Revoca el acceso en cualquier momento — el token de la aplicación será rechazado en un plazo de 10 minutos."
+    "description": "Clientes de IA que han sido autorizados para acceder a tu tenant mediante OAuth. Revoca el acceso en cualquier momento: el token de la aplicación será rechazado en un plazo de 10 minutos."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Configuración de la organización",

@@ -1032,10 +1032,21 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
   }
 }
 
-export async function getQuote(id: string, actor: QuoteActor) {
+/**
+ * The staff read ownership path: the raw row under the caller's context, 404
+ * when RLS or a bad id hides it, then the org + site guard. `getQuote` and the
+ * staff customer-view route (#9418) both open with it, so the two reject a
+ * caller identically. Read-only: no tax-rate refresh, no view stamp.
+ */
+export async function getAccessibleQuoteRow(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
+  return q;
+}
+
+export async function getQuote(id: string, actor: QuoteActor) {
+  const q = await getAccessibleQuoteRow(id, actor);
   const blocks = sanitizeQuoteBlocksForRead(
     await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder)
   );

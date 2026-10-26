@@ -4,6 +4,7 @@ import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { cn, widthPercentClass } from "@/lib/utils";
 import { formatCurrency, formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
+import BuyCreditsLink from "./BuyCreditsLink";
 
 interface UsageData {
   daily: { totalCostCents: number; messageCount: number };
@@ -120,8 +121,13 @@ export default function AiCostIndicator({
   const costDisplay = (
     monthlyBudget
       ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
-      : `${formatCurrency(monthlyUsed / 100)} this month`
-  ) + (usage.credits ? ` · ${formatNumber(usage.credits.remaining)} credits` : '');
+      : t("aiCostIndicator.thisMonth", { amount: formatCurrency(monthlyUsed / 100) })
+  ) + (usage.credits
+    ? ` · ${t("aiCostIndicator.credits", {
+        count: usage.credits.remaining,
+        formatted: formatNumber(usage.credits.remaining),
+      })}`
+    : '');
 
   const barColor =
     percentage > 90
@@ -134,6 +140,9 @@ export default function AiCostIndicator({
     <div className="flex items-center gap-2 px-4 py-1.5 border-b">
       <Coins className="h-3 w-3 text-muted-foreground" />
       <span className="text-[10px] text-muted-foreground">{costDisplay}</span>
+      {usage.credits && (
+        <BuyCreditsLink className="text-[10px] font-medium text-primary underline underline-offset-2 hover:opacity-80" />
+      )}
       {monthlyBudget && (
         <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
           <div

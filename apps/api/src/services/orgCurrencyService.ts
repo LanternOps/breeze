@@ -37,6 +37,7 @@ import {
   OrgCurrencyServiceError, requireOrgAccessById, type DbExecutor
 } from './orgCurrencyCore';
 import { minorUnitExponent, roundToCurrency } from '@breeze/shared';
+import { laborAmountSql } from './currencySql';
 
 /** Per-currency slice of the preflight. `currencyCode` is always the ROW's own
  *  stamp — amounts are NEVER summed across currencies. */
@@ -111,8 +112,9 @@ function emptyGroup(currencyCode: string): OrgCurrencyImpactGroup {
   };
 }
 
-/** The labor rule of `invoiceAssembly.timeEntryToLineSpec`, expressed in SQL so
- *  the preflight never pulls a row into JS (review 4): the BILLED minutes
+/** The labor rule of `invoiceAssembly.timeEntryToLineSpec` — the shared
+ *  `laborAmountSql` (#9561) — so the preflight never pulls a row into JS
+ *  (review 4): the BILLED minutes
  *  (§3.5, #4628 W03 — `billable_minutes` falling back to `duration_minutes` for
  *  rows stamped before that wave, exactly as `entryHours` does), hours to 2dp
  *  FIRST (the numeric(10,2) quantity schema), then ONE half-up round at the
@@ -121,7 +123,7 @@ function emptyGroup(currencyCode: string): OrgCurrencyImpactGroup {
  *  and the caller picks the one matching each group's currency, which keeps the
  *  whole preflight to a single aggregate query per source table. */
 function laborSumSql(exp: 0 | 2) {
-  return sql<string>`coalesce(sum(round(round(coalesce(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0) / 60.0, 2) * ${timeEntries.hourlyRate}, ${exp})), 0)`;
+  return sql<string>`coalesce(sum(${laborAmountSql(sql`coalesce(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0)`, timeEntries.hourlyRate, exp)}), 0)`;
 }
 
 function partSumSql(exp: 0 | 2) {

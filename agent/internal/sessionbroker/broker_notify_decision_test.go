@@ -321,7 +321,16 @@ func TestConcurrentRequestNotificationDecisionsDoNotCollideOnEnvelopeIDs(t *test
 // Every rung that offers no postponement must keep taking the path that does not
 // wait for a helper: adding a response-bearing sibling must not quietly turn the
 // unconditional warnings into blocking round trips.
+//
+// Since #9266 the broadcast registers the notify_result it is owed (so the
+// reply is consumed instead of dropped as unsolicited at WARN), but only a
+// goroutine waits on it: the call itself must still return at once, and the
+// registration must be retired when no answer ever comes, never leaked.
 func TestBroadcastNotificationStaysFireAndForget(t *testing.T) {
+	prevTimeout := broadcastNotifyResultTimeout
+	broadcastNotifyResultTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { broadcastNotifyResultTimeout = prevTimeout })
+
 	b := New("broadcast-still-fire-and-forget", nil)
 	p := newDecisionProbe(t, b, "silent", []string{"notify"}, nil)
 
@@ -337,10 +346,17 @@ func TestBroadcastNotificationStaysFireAndForget(t *testing.T) {
 	}
 
 	p.waitForEnvelopes(t, 1)
-	p.session.mu.Lock()
-	pending := len(p.session.pending)
-	p.session.mu.Unlock()
-	if pending != 0 {
-		t.Errorf("BroadcastNotification registered %d pending response(s); it must stay uncorrelated", pending)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.session.mu.Lock()
+		pending := len(p.session.pending)
+		p.session.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("BroadcastNotification left %d pending response(s) after the result timeout; the registration leaked", pending)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

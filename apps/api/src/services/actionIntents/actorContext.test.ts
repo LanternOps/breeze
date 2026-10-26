@@ -147,6 +147,9 @@ vi.mock('../../middleware/auth', () => ({
   ),
 }));
 
+const { mcpOrigin } = vi.hoisted(() => ({ mcpOrigin: { rebuild: vi.fn() } }));
+vi.mock('../mcpPrincipalAuth', () => ({ rebuildMcpOriginAuthContext: mcpOrigin.rebuild }));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
 }));
@@ -914,6 +917,43 @@ describe('originPrincipalFor — ai_agent', () => {
   });
 });
 
+// Tool catalog W04 (#5219), plan Task A5: a flow-origin intent rebuilds the
+// RUN's flow principal (flowId = originPrincipalId, runId = the FK column).
+const { flowAuthority } = vi.hoisted(() => ({ flowAuthority: vi.fn() }));
+vi.mock('../flows/releaseAuthority', () => ({ checkFlowReleaseAuthority: flowAuthority }));
+
+describe('flow-origin intents (#5219)', () => {
+  const flowIntent = (over: Partial<ActionIntent> = {}) => baseIntent({
+    requestedByUserId: null,
+    requestingFlowRunId: 'run-f',
+    originPrincipalKind: 'flow',
+    originPrincipalId: 'flow-1',
+    source: 'flow',
+    ...over,
+  } as Partial<ActionIntent>);
+
+  it('originPrincipalFor maps a flow intent to { kind: flow, flowId, runId }', () => {
+    expect(originPrincipalFor(flowIntent())).toEqual({ kind: 'flow', flowId: 'flow-1', runId: 'run-f' });
+  });
+
+  it('originPrincipalFor falls to unknown when the run or flow id is missing', () => {
+    expect(originPrincipalFor(flowIntent({ requestingFlowRunId: null }))).toEqual({ kind: 'unknown' });
+    expect(originPrincipalFor(flowIntent({ originPrincipalId: null }))).toEqual({ kind: 'unknown' });
+  });
+
+  it('buildAuthContextForIntent rebuilds through checkFlowReleaseAuthority', async () => {
+    const auth = { principal: { kind: 'flow', flowId: 'flow-1', runId: 'run-f' } };
+    flowAuthority.mockResolvedValueOnce({ ok: true, auth });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBe(auth);
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('buildAuthContextForIntent fails closed (null) on a refused flow rebuild', async () => {
+    flowAuthority.mockResolvedValueOnce({ ok: false, code: 'ownership_mismatch' });
+    await expect(buildAuthContextForIntent(flowIntent())).resolves.toBeNull();
+  });
+});
+
 // ============================================================================
 // #5022 W01 Task 12 — the AI origin survives the approval boundary.
 //
@@ -1068,5 +1108,47 @@ describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
     const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
     expect(result!.scope).toBe('organization');
     expect(result!.principal).toEqual({ kind: 'user_session' });
+  });
+});
+
+// B-W04 (#6158, D-B26): every caller of buildAuthContextForIntent — release
+// revalidation, the worker's M365 headless dispatch (m365ToolsHeadless) and the
+// supervised approve-time RBAC re-check (decideApprovalRequest) — gets the
+// origin-credential context for an MCP-origin intent, never the user rebuild.
+describe('buildAuthContextForIntent — mcp_api origin intents', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+  });
+
+  it.each(['api_key', 'oauth_grant'])('%s origin → the rebuilt origin context (token {}, key org pin)', async (kind) => {
+    const originAuth = { principal: { kind }, token: {}, accessibleOrgIds: ['org-1'] };
+    mcpOrigin.rebuild.mockResolvedValueOnce({ auth: originAuth, credential: {} });
+    const result = await buildAuthContextForIntent(baseIntent({
+      source: 'mcp_api', originPrincipalKind: kind as never, originPrincipalId: 'origin-1',
+    }));
+    expect(result).toBe(originAuth);
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('origin rebuild failure → null (actor_invalid), never a fallback to the user rebuild', async () => {
+    mcpOrigin.rebuild.mockResolvedValueOnce({ error: 'mcp_origin_revoked' });
+    dbState.selectUsersResults.push([activeUser]);
+    const result = await buildAuthContextForIntent(baseIntent({
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1',
+    }));
+    expect(result).toBeNull();
+    expect(permState.getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('chat and user-session mcp_api intents never reach the origin rebuild', async () => {
+    for (const overrides of [
+      { source: 'chat', originPrincipalKind: 'user_session' },
+      { source: 'mcp_api', originPrincipalKind: 'user_session' },
+    ] as const) {
+      dbState.selectUsersResults.push([]);
+      await buildAuthContextForIntent(baseIntent(overrides as never));
+    }
+    expect(mcpOrigin.rebuild).not.toHaveBeenCalled();
   });
 });

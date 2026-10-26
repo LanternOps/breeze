@@ -79,6 +79,10 @@
         "categoryLabel": "Kategori",
         "categoryUnresolved": "Önerildi — bu görünümde ad kullanılamıyor"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Düzeltme belleği",
+      "fleetDesignReport": "Filo tasarımı"
     }
   },
   "aiDataPolicy": {
@@ -254,41 +258,7 @@
       "twelveHour": "12 saat",
       "twentyFourHour": "24 saat",
       "language": "Dil",
-      "languageDescription": "İş ortağı ayarları için varsayılan dil.",
-      "businessHours": {
-        "title": "Çalışma Saatleri",
-        "description": "Destek ve uyarılar için standart çalışma saatlerinizi ayarlayın.",
-        "presets": {
-          "always": {
-            "label": "7/24",
-            "description": "Her zaman ulaşılabilir"
-          },
-          "business": {
-            "label": "Çalışma Saatleri",
-            "description": "Pazartesi-Cum 9:00-17:00"
-          },
-          "extended": {
-            "label": "Uzatılmış Çalışma Saatleri",
-            "description": "Pazartesi-Cum 07:00-19:00, Cumartesi 09:00-13:00"
-          },
-          "custom": {
-            "label": "Özel",
-            "description": "Kendi programınızı belirleyin"
-          }
-        },
-        "customSchedule": "Özel Program",
-        "open": "Aç",
-        "to": "'ye"
-      },
-      "days": {
-        "mon": "Pazartesi",
-        "tue": "Salı",
-        "wed": "Çarşamba",
-        "thu": "Perşembe",
-        "fri": "Cuma",
-        "sat": "Cumartesi",
-        "sun": "Pazar"
-      }
+      "languageDescription": "İş ortağı ayarları için varsayılan dil."
     }
   },
   "partnerAiBudgets": {
@@ -319,7 +289,7 @@
     "subtitle": "Sağlayıcıları bağlayın, hangi modellerin kullanılabilir olacağını seçin ve her yapay zeka özelliği için varsayılan modeli belirleyin.",
     "forbidden": "Yapay zeka sağlayıcılarını ve modellerini yönetme yetkiniz yok.",
     "loadFailed": "Yapay zeka sağlayıcıları ve modelleri yüklenemedi.",
-    "workspaceNote": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
+    "workspaceNote": "Bilgi dizinleme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
     "connections": {
       "title": "Bağlantılar",
       "subtitle": "Yapay zeka isteklerinizin nereye gönderildiği ve bedelini kimin ödediği.",
@@ -700,7 +670,13 @@
         "quality": "Kalite"
       },
       "failovers": "Yedeğe geçişler",
-      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar"
+      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar",
+      "titleBy": {
+        "model": "Modele göre yapay zeka kullanımı",
+        "organization": "Kuruluşa göre yapay zeka kullanımı",
+        "technician": "Teknisyene göre yapay zeka kullanımı",
+        "feature": "Özelliğe göre yapay zeka kullanımı"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -777,13 +753,10 @@
     "maintenancePlaceholder": "ör. Pazar 02:00-06:00, 02:00-04:00 veya 7/24",
     "maintenanceInvalid": "<first>Sun 02:00-04:00</first> veya <second>02:00-04:00</second> veya <always>24/7</always> gibi bir UTC penceresi kullanın. her zaman açık. Kuruluşların yapılandırmasına izin vermek için boş bırakın.",
     "maintenanceHelp": "Otomatik güncellemeler ve yeniden başlatmalar için zaman penceresi (UTC). Her zaman açık için <always>24/7</always> kullanın veya kuruluşların bunu ayrı ayrı yapılandırması için boş bırakın.",
-    "deviceGroup": "Varsayılan Cihaz Grubu",
-    "alertThreshold": "Varsayılan Uyarı Eşiği",
     "autoEnrollment": {
       "title": "Otomatik Kayıt",
       "enable": "Yeni cihazlar için otomatik kaydı etkinleştirin",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz bildirimi gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "enrollment": {
       "title": "Cihaz kaydı",
@@ -1030,8 +1003,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Şirket",
+      "devices": "Cihazlar ve ajanlar",
       "security": "Güvenlik ve Erişim",
       "communications": "İletişim",
+      "ai": "Yapay Zeka",
       "branding": "Markalama"
     },
     "aiFeatures": {
@@ -1060,11 +1035,11 @@
       },
       "company": {
         "label": "Şirket",
-        "description": "İsim, adres, kişiler"
+        "description": "İsim, adres, kişiler, e-posta imzası"
       },
       "regional": {
         "label": "Bölgesel",
-        "description": "Saat dilimi, formatlar, saatler"
+        "description": "Saat dilimi, dil, formatlar, saatler"
       },
       "defaults": {
         "label": "Varsayılanlar",
@@ -1072,7 +1047,7 @@
       },
       "security": {
         "label": "Güvenlik",
-        "description": "IP izin verilenler listesi ve erişim"
+        "description": "Parolalar, oturumlar, MFA ve IP izin listesi"
       },
       "remoteAccess": {
         "label": "Uzaktan Erişim",
@@ -1080,11 +1055,11 @@
       },
       "eventLogs": {
         "label": "Olay Günlükleri",
-        "description": "İletme ve saklama"
+        "description": "Cihaz olay günlüklerini Elasticsearch’e ilet"
       },
       "notifications": {
         "label": "Bildirimler",
-        "description": "E-posta ve web kancası uyarıları"
+        "description": "Gönderen adresi, SMTP, Slack ve Pushover varsayılanları"
       },
       "ticketing": {
         "label": "Biletleme",
@@ -1109,7 +1084,7 @@
       },
       "aiFeatures": {
         "label": "Yapay Zeka Özellikleri",
-        "description": "Anomali algılama ve önerilen düzeltme varsayılanları"
+        "description": "Yapay zeka veri politikası, anomali algılama ve önerilen düzeltmeler"
       },
       "branding": {
         "label": "Markalama",
@@ -1125,7 +1100,15 @@
       },
       "aiApprovals": {
         "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
+        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
+      },
+      "callerVerification": {
+        "label": "Arayan doğrulama",
+        "description": "Destek talepleri için arayan kimliği kontrolleri"
+      },
+      "knownGuests": {
+        "label": "Bilinen konuklar",
+        "description": "MAC adresine göre onaylı ziyaretçi ve teknisyen cihazları"
       }
     },
     "saved": "İş ortağı ayarları kaydedildi",
@@ -1141,7 +1124,6 @@
     "title": "İş Ortağı Ayarları",
     "description": "{{name}} için varsayılanları yapılandırın.",
     "yourMsp": "MSP'ınız",
-    "selfSaving": "Bu bölüm kendi değişikliklerini kaydeder.",
     "saveSettings": "Ayarları Kaydet",
     "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
     "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
@@ -1170,6 +1152,27 @@
       "topologyAiDescription": "Breeze AI'nın haritayı özetlemesine ve bir lokasyonun topolojisindeki olağandışı değişiklikleri işaretlemesine izin ver.",
       "saved": "Modüller güncellendi",
       "saveFailed": "Modüller güncellenemedi"
+    },
+    "status": {
+      "clean": "Tüm değişiklikler kaydedildi · {{time}}",
+      "cleanNoTime": "Tüm değişiklikler kaydedildi",
+      "dirty": "Kaydedilmemiş değişiklikler: <tabs></tabs>.",
+      "invalid_one": "Kaydetmek için {{tab}} içindeki {{count}} alanı düzeltin.",
+      "invalid_other": "Kaydetmek için {{tab}} içindeki {{count}} alanı düzeltin.",
+      "saving": "Kaydediliyor…",
+      "partial": "<tabs></tabs> kaydedilemedi. Diğer değişiklikler kaydedildi.",
+      "failed": "<tabs></tabs> kaydedilemedi.",
+      "autosaved": "Kaydedildi · {{time}}",
+      "autosaveFailed": "Kaydedilemedi — tekrar deneyin",
+      "readOnly": "Kaydetmek için tam iş ortağı erişimi gerekir"
+    },
+    "validation": {
+      "retentionDays": "1 ile 3650 arasında tam sayı olarak gün girin."
+    },
+    "unsavedConfirm": "Kaydedilmemiş değişiklikleriniz var. Bu sayfadan çıkıp değişiklikleri silmek istiyor musunuz?",
+    "knownGuests": {
+      "added": "Bilinen misafir eklendi",
+      "removed": "Bilinen misafir kaldırıldı"
     }
   },
   "partnerSendingDomains": {
@@ -1388,6 +1391,14 @@
     "never": "Hiçbir zaman",
     "downloadInstaller": "Önceden yapılandırılmış yükleyiciyi indirin",
     "downloading": "İndiriliyor...",
+    "installerDialogTitle": "\"{{name}}\" için yükleyiciyi indir",
+    "installerDialogDescription": "Yükleyici belirli sayıda cihaz için oluşturulur. Onu çalıştıran her cihaz bir hak kullanır.",
+    "installerDeviceCount": "Cihaz sayısı",
+    "installerDeviceCountRemaining": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_one": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_other": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountUnlimited": "Bu anahtarın kullanım sınırı yok.",
+    "installerDeviceCountRange": "1 ile {{max}} arasında bir tam sayı girin.",
     "rotate": "Döndür",
     "page": "Sayfa {{current}} / {{total}}",
     "previous": "Önceki",
@@ -1401,7 +1412,10 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "defaultDeviceLimit": "50 (varsayılan)",
+    "defaultDeviceLimit": "{{count}} (kuruluş varsayılanı)",
+    "expiresAtHelp": "{{duration}} için boş bırakın (kuruluş varsayılanı).",
+    "usageFromDefault": "varsayılan",
+    "usageFromDefaultTitle": "Cihaz sınırı kuruluş varsayılanından geldi.",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",
@@ -1457,16 +1471,16 @@
       "inviter_name": "Davet edenin adı",
       "expires_days": "Davetin sona ermesine kalan gün",
       "cta_button": "Düğme",
-      "client_name": "Client name",
-      "setup_link": "Automatic payments setup link",
-      "ach_mode_text": "Available payment methods",
-      "payment_method": "Saved payment method",
-      "schedule_text": "Payment schedule",
-      "fee_text": "Processing fee terms",
-      "stopped_by": "Who stopped automatic payments",
-      "open_invoices_text": "Open invoice summary",
-      "expires_on": "Card expiry date",
-      "update_link": "Payment method update link",
+      "client_name": "Müşteri adı",
+      "setup_link": "Otomatik ödeme kurulum bağlantısı",
+      "ach_mode_text": "Kullanılabilir ödeme yöntemleri",
+      "payment_method": "Kayıtlı ödeme yöntemi",
+      "schedule_text": "Ödeme takvimi",
+      "fee_text": "İşlem ücreti koşulları",
+      "stopped_by": "Otomatik ödemeleri durduran kişi",
+      "open_invoices_text": "Ödenmemiş faturaların özeti",
+      "expires_on": "Kartın son kullanma tarihi",
+      "update_link": "Ödeme yöntemini güncelleme bağlantısı",
       "amount_due": "Ödenecek tutar",
       "charge_date": "Tahsilat tarihi",
       "fee_amount": "İşlem ücreti",
@@ -1485,22 +1499,25 @@
       "approval_ask": "Onay talebi",
       "approval_snapshot": "Onay rakamları",
       "approval_expires": "Onay son tarihi",
-      "approval_status": "Onay durumu"
+      "approval_status": "Onay durumu",
+      "merged_into_number": "Hedef bilet numarası",
+      "agreement_name": "Sözleşme adı"
     },
-    "billingPayments": "Billing & payments",
-    "supportPortal": "Support & portal",
+    "billingPayments": "Faturalandırma ve ödemeler",
+    "supportPortal": "Destek ve portal",
     "labels": {
-      "autopay_request": "Automatic payments request",
-      "autopay_enrolled": "Automatic payments confirmed",
-      "autopay_stopped": "Automatic payments stopped",
+      "autopay_request": "Otomatik ödeme talebi",
+      "autopay_enrolled": "Otomatik ödemeler onaylandı",
+      "autopay_stopped": "Otomatik ödemeler durduruldu",
       "autopay_paused": "Otomatik ödemeler duraklatıldı",
       "autopay_resumed": "Otomatik ödemeler devam ediyor",
-      "card_expiring": "Saved card expiring",
+      "card_expiring": "Kayıtlı kartın süresi dolmak üzere",
       "payment_receipt": "Çevrimiçi ödeme makbuzu",
       "payment_failed": "Ödeme tamamlanamadı",
       "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
       "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
-      "ticket_approval_decided": "İş onayı kararı"
+      "ticket_approval_decided": "İş onayı kararı",
+      "ticket_merged": "Bilet birleştirildi"
     }
   },
   "inboundEmail": {
@@ -1534,9 +1551,6 @@
     "dropUnverifiedDescription": "Kapatıldığında, doğrulanmamış postalar incelenmek üzere karantinaya alınır. Açıkken sessizce bırakılır. Bu, <all>tümü</all> doğrulanmamış gönderenler için geçerlidir; bireysel mesajları kontrolde başarısız olan eşlenen müşteriler de dahil.",
     "staffForwardRouting": "Personelin ilettiği e-postaları asıl gönderenin müşterisine kaydet",
     "staffForwardRoutingDescription": "İş ortağı düzeyindeki personelinizden biri bir müşterinin e-postasını destek adresine ilettiğinde, yeni talep sizin kuruluşunuz yerine asıl gönderenin alan adıyla eşlenen kuruluşa kaydedilir. Personelin o kuruluşa erişimi olmalıdır. Yalnızca Gmail'de yapılan ve bağlı bir Gmail posta kutusuna ulaşan iletmelerde çalışır; yerel gelen adres, Microsoft 365 posta kutuları ve Outlook iletmeleri için çalışmaz.",
-    "defaultAssignee": "Yeni gelen talepler için varsayılan atanan kişi",
-    "defaultAssigneeDescription": "Gelen e-postadan oluşturulan her yeni talep, başka bir şekilde atanmadıysa bu kişiye atanır. Talebin kuruluşuna erişimi yoksa talep atanmamış kalır.",
-    "defaultAssigneeUnavailable": "Kullanılamayan kullanıcı",
     "defaultAssigneeNotAssignable": "Bu kullanıcı varsayılan atanan kişi olamaz. Talep erişimi olan etkin bir ekip üyesi seçin.",
     "enableAutoresponse": "Yeni e-posta bildirimlerini onaylayan bir otomatik yanıt gönderin",
     "editEmailTemplates": "Onay e-postası E-posta şablonları altında düzenlenir.",
@@ -1792,27 +1806,13 @@
     "deviceGroup": {
       "title": "Varsayılan cihaz grubu",
       "description": "Yeni kaydedilen cihazlar bu gruba otomatik olarak eklenir.",
-      "options": {
-        "AllManagedDevices": "Tüm Yönetilen Cihazlar",
-        "CriticalInfrastructure": "Kritik Altyapı",
-        "RemoteStaff": "Uzaktan Personel",
-        "Contractors": "Yükleniciler"
-      }
-    },
-    "alertSeverity": {
-      "title": "Varsayılan uyarı önem derecesi",
-      "description": "Bu önem derecesinin altındaki uyarılar yalnızca özet akışına iletilir.",
-      "options": {
-        "critical": "Yalnızca kritik",
-        "high": "Yüksek ve kritik",
-        "medium": "Orta ve üzeri"
-      }
+      "none": "Yok",
+      "unavailable": "Seçilen grup (kullanılamıyor)"
     },
     "autoEnrollment": {
       "title": "Otomatik kayıt",
       "enable": "Otomatik kaydı etkinleştir",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz mesajı gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "agentUpdates": {
       "title": "Temsilci güncelleme politikası",
@@ -1863,7 +1863,7 @@
     "disabledDescription": "Bağlantı ayarlarını yapılandırmak için yukarıda günlük iletmeyi etkinleştirin.",
     "enable": {
       "title": "Günlük iletmeyi etkinleştir",
-      "description": "Etkinleştirildiğinde, olay günlükleri yinelenen bir programa göre günlük deponuza iletilir."
+      "description": "Etkinleştirildiğinde, olay günlükleri her cihaz bunları bildirdikçe günlük deponuza iletilir."
     },
     "connection": {
       "title": "Bağlantı",
@@ -1952,6 +1952,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Müşteri görünümü",
+      "subtitle": "Önizleme: {{who}} neyi görür",
+      "whoOrganization": "müşteriniz",
+      "pickerLabel": "Şu olarak görüntüle",
+      "pickerAll": "Tüm kuruluş",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Müşteri görünümü yüklenemedi.",
+      "on": "Açık",
+      "off": "Kapalı",
+      "notAvailable": "Bu bölümün ayrıntılı önizlemesi henüz yok.",
+      "permissionWithheld": "Gösterilmiyor: bunu önizlemek için {{permissions}} yetkisi gerekir.",
+      "tilesWithheld": "Bazı kutucuklar gösterilmiyor: bunları önizlemek için {{permissions}} yetkisi gerekir.",
+      "noteNoUser": "Talep kapsamındaki veriler gizlendi. Bu kişinin ne gördüğünü görmek için bir portal kullanıcısı seçin.",
+      "readinessTitle": "Hazırlık kontrolleri",
+      "readinessNone": "Sorun bulunamadı.",
+      "fix": "Düzelt",
+      "readiness": {
+        "documents_empty": "Belgeler açık, ancak portalda Görünür olarak işaretlenmiş belge yok; müşteriniz boş bir kitaplık görür.",
+        "reports_empty": "Raporlar açık, ancak henüz rapor çalıştırması yok; müşteriniz boş bir liste görür.",
+        "service_one_time_visible": "Hizmet açık ve tek seferlik öğeler müşteriniz için hâlâ görünür.",
+        "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
+        "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
+        "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      }
+    },
     "loading": "Portal ayarları yükleniyor…",
     "save": "Portal ayarlarını kaydet",
     "toasts": {
@@ -2063,6 +2089,10 @@
         "enableVulnerabilityDetail": {
           "label": "Güvenlik açığı ayrıntısı",
           "description": "Bu kuruluşun her portal girişine, her cihazın CVE bulgularını ve önem derecesini gösterir (CVE kimliği, açıklama, önem derecesi, CVSS puanı, yama durumu, durum). Bu, hangi makinelerin savunmasız olduğunu ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
+        },
+        "enablePhysicalPlacement": {
+          "label": "Fiziksel yerleşim",
+          "description": "Bu kuruluşun her portal girişine, her cihazın fiziksel olarak nerede bulunduğunu (kabin ve oda) gösterir. Bu, ortamın fiziksel düzenini ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
         },
         "enableHourBlock": {
           "label": "Destek saatleri",
@@ -2376,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Yapay Zeka Kullanımı",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Breeze AI kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
     "enabled": "Etkin",
@@ -2430,7 +2460,7 @@
     "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
     "defaultValue": "Varsayılan ({{value}})",
     "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
-    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "monitorAIAssistantUsage": "Breeze AI kullanımını izleyin",
     "effectiveBudget": "Geçerli bütçe",
     "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
     "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
@@ -2439,7 +2469,11 @@
     "sourceDefault": "Varsayılan",
     "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
     "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
-    "thresholdsOff": "Kapalı"
+    "thresholdsOff": "Kapalı",
+    "todaysCost": "Bugünkü maliyet",
+    "monthlyCost": "Aylık maliyet",
+    "messagesToday": "Bugünkü mesajlar",
+    "tokensThisMonth": "Bu ayki belirteçler"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2535,7 +2569,9 @@
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
-      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "researchLink": "Düzeltme belleğini aç",
+      "designerLink": "Filo tasarımını aç"
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -2952,6 +2988,7 @@
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
+          "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
@@ -3019,6 +3056,8 @@
           "cost": "Maliyet",
           "duration": "Süre",
           "trigger": "Tetikleyici",
+          "requestedBy": "Talep eden",
+          "wispFor": "{{name}} için Wisp",
           "queuedAt": "Sıraya alındı",
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",
@@ -3104,7 +3143,7 @@
         },
         "anomalyLink": "Açık cihaz anormallikleri",
         "budget": {
-          "title": "Maruziyet bütçesi",
+          "title": "Eylem bütçesi",
           "caption": "Kaydedilen maruziyet — son {{hours}} saat",
           "devices": "{{allowance}} cihazdan {{count}}",
           "decisionsToday": "Bugün {{max}} politika kararından {{count}}",
@@ -3332,7 +3371,7 @@
       "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
       "byOrgTruncated": "Ada göre ilk {{limit}} kuruluş gösteriliyor. Geri kalanını görmek için kuruluş seçiciden tek bir kuruluş seçin.",
       "thresholdPerOrgNote": "Her kuruluş kendi terfi eşiğini çözümler; bu nedenle doğrulanan çalışmalar burada hedefsiz gösterilir. Bir kuruluşun hedefini görmek için kuruluş seçiciden tek bir kuruluş seçin.",
-      "approvalsLink": "Bu isteği onay kutusunda izleyin",
+      "approvalsLink": "Bu isteği Onaylar bölümünde izleyin",
       "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
       "grantOnlyHint": "Bir kuruluş aracısındaki önceden yetkilendirilmiş anahtarlar yalnızca Kademeli Yetkilendirme panelinden ikinci bir onaylayan tarafından verilir ve iptalleri de orada yapılır.",
       "promote": "Yükselt",
@@ -3931,10 +3970,10 @@
       "runsPerHourCount_other": "saatte {{count}} çalıştırma",
       "minuteCount_one": "{{count}} dakika",
       "minuteCount_other": "{{count}} dakika",
-      "approvers_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
-      "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
-      "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
-      "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approvers_one": "Onaylar, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approvers_other": "Onaylar, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
+      "approversCount_one": "Onaylar, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
+      "approversCount_other": "Onaylar, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
       "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur.",
       "scriptsAuthorized_one": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi.",
       "scriptsAuthorized_other": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi."
@@ -4350,6 +4389,13 @@
     "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
+    "viewActive": "Etkin",
+    "viewArchived": "Arşivlenmiş",
+    "typeLabel": {
+      "hardware": "Donanım",
+      "software": "Yazılım",
+      "service": "Hizmet"
+    },
     "itemArchived": "Öğe arşivlendi",
     "itemRestored": "Öğe geri yüklendi",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",
@@ -4467,6 +4513,9 @@
     "notEnabledBody": "MCP OAuth bu sunucuda devre dışı. Bağlı uygulamalara izin vermek için MCP_OAUTH_ENABLED=true ayarlayın ve API'yi yeniden başlatın.",
     "revokeConfirm": "{{name}} erişimi iptal edilsin mi? Erişim jetonları 10 dakika içinde çalışmayı durduracaktır.",
     "revokeFailed": "İptal başarısız oldu ({{status}})",
+    "revokeTitle": "Bağlı uygulamayı iptal et",
+    "revokeSuccess": "{{name}} erişimi iptal edildi",
+    "revokeFailedGeneric": "İptal başarısız oldu",
     "networkError": "Ağ hatası",
     "networkErrorDuringRevoke": "İptal sırasında ağ hatası",
     "revoking": "İptal ediliyor…",
@@ -4698,6 +4747,7 @@
     "actions": "Eylemler",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Hiçbir rol bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "cloneRole": "Klon Rolü: {{name}}",
+    "cloneDescription": "{{name}} kopyası",
     "clone": "Klon",
     "edit": "Düzenle",
     "delete": "Sil",
@@ -5239,7 +5289,8 @@
     "timeTracking": "Zaman Takibi",
     "email": "E-posta",
     "templates": "Şablonlar",
-    "timeCapture": "Zaman kaydı"
+    "timeCapture": "Zaman kaydı",
+    "routing": "Yönlendirme"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -5395,7 +5446,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -5455,7 +5506,7 @@
       "ticketing": "Biletleme",
       "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
       "ai": "Yapay Zeka",
-      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
+      "aiDescription": "Breeze AI bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -5746,6 +5797,20 @@
       "sourceOrg": "Kuruluş geçersiz kılması",
       "sourcePartner": "İş ortağı varsayılanı",
       "sourceDefault": "Yerleşik varsayılan"
+    },
+    "businessCalendar": {
+      "title": "Çalışma saatleri",
+      "description": "Bu kuruluşun SLA sürelerinin sayıldığı takvim. İş ortağı varsayılanını izlemek için Devral seçeneğinde bırakın.",
+      "label": "Çalışma takvimi",
+      "inherit": "Devral",
+      "inheritedDefault": "Devralınan: {{name}} (iş ortağı varsayılanı)",
+      "inheritedNone": "Devralınan: 24×7 (iş ortağı varsayılanı yok)",
+      "partnerWideOption": "{{name}} (tüm kuruluşlar)",
+      "archivedOverride": "Arşivlenmiş takvim (artık geçerli değil)",
+      "loadFailed": "Çalışma takvimi yüklenemedi.",
+      "errors": {
+        "save": "Çalışma takvimi kaydedilemedi. Yeniden deneyin."
+      }
     }
   },
   "organizationForm": {
@@ -5757,16 +5822,12 @@
       "nameRequired": "Kuruluş adı gerekli",
       "slugRequired": "Bilgi notu gerekli",
       "slugFormat": "Yalnızca küçük harf, rakam ve kısa çizgi kullanın",
-      "maxDevicesRequired": "Maksimum cihaz sınırını girin",
-      "maxDevicesInteger": "Maksimum cihaz tam sayı olmalıdır",
-      "maxDevicesMin": "Maksimum cihaz sayısı en az 1 olmalıdır",
       "contractEndAfterStart": "Sözleşme sonu başlangıç tarihinde veya sonrasında olmalıdır"
     },
     "fields": {
       "name": "Kuruluş adı",
       "slug": "Sümüklüböcek",
       "type": "Kuruluş türü",
-      "maxDevices": "Maksimum cihaz sayısı",
       "contractStart": "Sözleşme başlangıcı",
       "contractEnd": "Sözleşme sonu"
     },
@@ -5972,8 +6033,10 @@
   "siteDetailPage": {
     "loading": "Site yükleniyor...",
     "backToOrganizations": "Kuruluşlara geri dön",
+    "backToSites": "Sitelere geri dön",
     "breadcrumbs": {
       "settings": "Ayarlar",
+      "sites": "Siteler",
       "organizations": "Kuruluşlar"
     },
     "errors": {
@@ -6059,6 +6122,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Birincil kişi"
+  },
+  "sites": {
+    "page": {
+      "title": "Siteler",
+      "description": "Cihazlarınızın bulunduğu konumlar. Ayrıntılarını ve cihazlarını görmek için bir site açın.",
+      "organizationColumn": "Kuruluş",
+      "pickOrg": "Kuruluş",
+      "pickOrgPlaceholder": "Bir kuruluş seçin",
+      "pickOrgRequired": "Bu sitenin ait olduğu kuruluşu seçin.",
+      "fleetAddDescription": "Yeni bir site ekleyin ve ait olduğu kuruluşu seçin.",
+      "empty": "Henüz site yok. Başlamak için bir kuruluşa site ekleyin.",
+      "viewDevicesAt": "{{name}} konumundaki cihazları görüntüle"
+    }
   },
   "siteList": {
     "title": "Siteler",
@@ -6659,7 +6735,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Betik yazımı",
-    "subtitle": "Asistanın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
+    "subtitle": "Breeze AI'ın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
     "partnerCard": {
       "title": "İş ortağı üst sınırı",
       "description": "Bu iş ortağına bağlı herhangi bir kuruluşun kullanabileceği en geniş ayar. Tek tek kuruluşlar bunu yalnızca daraltabilir.",
@@ -6827,13 +6903,13 @@
     "timeoutLabel": "Etkileşimli onay zaman aşımı",
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
-    "description": "Devam eden bir yapay zeka sohbet turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını ne kadar bekleyeceği.",
+    "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
     "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
-    "description": "Bir yapay zeka sohbetinin, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "description": "Breeze AI'ın, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "fieldLabel": "Etkileşimli onay zaman aşımı",
     "inherit": "Devral",
     "inheritLabel": "Devral ({{minutes}} dakika, {{source}})",
@@ -6874,5 +6950,346 @@
     "enabledToast": "Tek tuşlu kısayollar açıldı",
     "disabledToast": "Tek tuşlu kısayollar kapatıldı",
     "saveFailed": "Tek tuşlu kısayollar kaydedilemedi."
+  },
+  "businessHoursCard": {
+    "title": "Çalışma saatleri",
+    "description": "Yanıt ve çözüm SLA sürelerinin sayıldığı takvimler. Bir talep, kuruluşunun takvimini ya da varsayılan takviminizi kullanır; hiçbiri yoksa süre günün 24 saati işler.",
+    "newTicketsOnly": "Saatleri veya saat dilimini düzenlemek yalnızca yeni taleplere uygulanır. Zaten açık olan talepleri güncellemek için \"Açık taleplere uygula\" seçeneğini kullanın.",
+    "create": "Yeni takvim",
+    "loading": "Çalışma saatleri yükleniyor…",
+    "loadError": "Çalışma saatleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Henüz çalışma saatleri takvimi yok. Bir takvim oluşturup varsayılan yapana kadar talepler günün 24 saati (24×7) işler.",
+    "allOrgs": "Tüm kuruluşlar",
+    "default": "Varsayılan",
+    "archived": "Arşivlendi",
+    "edit": "Düzenle",
+    "setDefault": "Varsayılan yap",
+    "clearDefault": "Varsayılanı kaldır",
+    "applyOpen": "Açık taleplere uygula",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar",
+    "delete": "Sil",
+    "deleteTitle": "{{name}} silinsin mi?",
+    "deleteMessage": "Bu işlem takvimi ve tatillerini kalıcı olarak siler. Talepler veya kuruluşlar tarafından hâlâ kullanılan bir takvim silinemez; bunun yerine arşivleyin.",
+    "name": "Ad",
+    "timezone": "Saat dilimi",
+    "appliesTo": "Geçerli olduğu yer",
+    "ownerPartner": "Tüm kuruluşlar (iş ortağı geneli)",
+    "ownerOrg": "Tek bir kuruluş",
+    "organization": "Kuruluş",
+    "chooseOrg": "Bir kuruluş seçin",
+    "weeklyHours": "Haftalık saatler",
+    "closed": "Kapalı",
+    "to": "ile",
+    "addInterval": "Saat ekle",
+    "intervalStart": "{{day}} açılış saati",
+    "intervalEnd": "{{day}} kapanış saati",
+    "removeInterval": "{{day}} saatlerini kaldır",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "cancel": "İptal",
+    "holidays": "Tatiller",
+    "holidayHint": "Bugünün veya daha eski bir tarihin tatilleri açık talepleri değiştirmez.",
+    "noHolidays": "Tatil yok.",
+    "holidayDate": "Tarih",
+    "holidayName": "Ad",
+    "holidayAdd": "Tatil ekle",
+    "holidayRemove": "{{name}} tatilini kaldır",
+    "weekdays": {
+      "0": "Pazar",
+      "1": "Pazartesi",
+      "2": "Salı",
+      "3": "Çarşamba",
+      "4": "Perşembe",
+      "5": "Cuma",
+      "6": "Cumartesi"
+    },
+    "errors": {
+      "nameRequired": "Bir ad girin.",
+      "orgRequired": "Bir kuruluş seçin.",
+      "invalidTime": "Saatleri SS:DD biçiminde girin (örneğin 09:00); bitiş 24:00 olabilir.",
+      "order": "Her aralık başladıktan sonra bitmelidir.",
+      "overlap": "Aynı gündeki aralıklar çakışmamalıdır.",
+      "empty": "En az bir açık aralık ekleyin.",
+      "timezone": "Geçerli bir saat dilimi seçin.",
+      "save": "Takvim kaydedilemedi. Yeniden deneyin.",
+      "holidayInvalid": "Tatil için geçerli bir tarih ve ad girin.",
+      "holidayAdd": "Tatil eklenemedi. Yeniden deneyin.",
+      "holidayRemove": "Tatil kaldırılamadı. Yeniden deneyin.",
+      "inUse": "Bu takvim taleplerce veya kuruluşlarca kullanılıyor ve silinemez. Bunun yerine arşivleyin.",
+      "isDefault": "Bu takvim varsayılandır. Silmeden önce varsayılanı kaldırın.",
+      "default": "Varsayılan takvim değiştirilemedi. Yeniden deneyin.",
+      "archive": "Arşiv durumu değiştirilemedi. Yeniden deneyin.",
+      "delete": "Takvim silinemedi. Yeniden deneyin.",
+      "apply": "Takvim açık taleplere uygulanamadı. Yeniden deneyin."
+    },
+    "toasts": {
+      "created": "Takvim oluşturuldu",
+      "updated": "Takvim güncellendi",
+      "defaultSet": "Varsayılan takvim ayarlandı",
+      "defaultCleared": "Varsayılan kaldırıldı; geçersiz kılması olmayan talepler 24×7 işler",
+      "archived": "Takvim arşivlendi",
+      "unarchived": "Takvim arşivden çıkarıldı",
+      "deleted": "Takvim silindi",
+      "holidayAdded": "Tatil eklendi",
+      "holidayRemoved": "Tatil kaldırıldı",
+      "recompute": "Açık taleplerin son tarihleri güncelleniyor.",
+      "applied": "Açık taleplere uygulandı: {{count}} güncellendi",
+      "appliedPartial": "{{skipped}} talep düzenleniyordu ve eski çalışma saatlerini korudu. Yeniden denemek için tekrar uygulayın."
+    },
+    "apply": {
+      "title": "{{name}} takvimini açık taleplere uygula",
+      "explanation": "Hiç duraklatılmamış açık talepler geçerli saatlere geçer ve son tarihleri yeniden hesaplanır. Duraklatma geçmişi olan talepler olduğu gibi kalır.",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Önizleme yüklenemedi.",
+      "revisionChanged": "Saatler bu önizlemeden sonra değişti. Uygulamadan önce güncellenen sayıları gözden geçirin.",
+      "eligible": "Güncellenecek talepler: {{count}}",
+      "breached": "Bunlardan hemen süresi aşılacaklar: {{count}}",
+      "paused": "Duraklatıldıkları için atlananlar: {{count}}",
+      "confirm": "Açık taleplere uygula"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan ve özellikler",
+    "description": "Planınızın içerdikleri. Kilitli özellikler görünür kalır; böylece bir yükseltmenin neler kattığını görebilirsiniz.",
+    "currentPlan": "Mevcut plan",
+    "plans": {
+      "free": "Ücretsiz",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Sınırsız"
+    },
+    "columns": {
+      "feature": "Özellik",
+      "state": "Durum",
+      "source": "Kaynak",
+      "expires": "Bitiş",
+      "limits": "Sınırlar"
+    },
+    "state": {
+      "enabled": "Dahil",
+      "disabled": "Kilitli"
+    },
+    "source": {
+      "plan": "Plan varsayılanı",
+      "billing": "Faturalandırma",
+      "license": "Lisans",
+      "manual": "Manuel"
+    },
+    "graceWarning": "{{expiresAt}} tarihinde sona erdi — ek süre {{graceUntil}} tarihine kadar",
+    "noExpiry": "Hiçbir zaman",
+    "noLimits": "—",
+    "reason": "Neden: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Kurulum denetçisi",
+        "why": "Sıfır dokunuşlu kurulum hatalarını teşhis edip onaran bir yapay zekâ denetçisi."
+      },
+      "verified_library": {
+        "label": "Doğrulanmış yazılım kitaplığı",
+        "why": "Güvenle dağıtabileceğiniz, seçilmiş ve doğrulanmış paketler."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp filonuzu sürekli olarak önceliklendirir ve doğru kişiyi uyarır; Pro ve üzeri planlarda kullanılabilir."
+      }
+    },
+    "loadError": "Planınız yüklenemedi.",
+    "retry": "Tekrar dene"
+  },
+  "ticketRouting": {
+    "title": "Talep yönlendirme",
+    "description": "Kurallar bir talep oluşturulduğunda çalışır ve oluşturanın seçmediği atanan kişiyi, önceliği, kategoriyi, durumu ve etiketleri doldurur. Önce kuruluş kuralları, sonra iş ortağı genelindeki kurallar uygulanır. İlk eşleşen kazanır.",
+    "createRule": "Yeni kural",
+    "loadFailed": "Yönlendirme kuralları yüklenemedi.",
+    "lookupsFailed": "Bazı teknisyenler, kategoriler veya durumlar yüklenemedi, bu nedenle listeler eksik olabilir. Yeniden denemek için sayfayı yenileyin.",
+    "empty": "Henüz yönlendirme kuralı yok.",
+    "groupOrg": "{{org}} kuralları",
+    "groupPartner": "İş ortağı geneli kurallar",
+    "thisOrganization": "Bu kuruluş",
+    "allOrgs": "Tüm kuruluşlar",
+    "limitedOrgs": "Yalnızca {{count}} kuruluş",
+    "catchAll": "Her talebe uyar",
+    "noActions": "Hiçbir şey ayarlamaz",
+    "enabledLabel": "{{name}} kuralını etkinleştir",
+    "enabledOn": "Kural etkinleştirildi",
+    "enabledOff": "Kural devre dışı bırakıldı",
+    "saveFailed": "Kural kaydedilemedi. Tekrar deneyin.",
+    "deleteFailed": "Kural silinemedi. Tekrar deneyin.",
+    "saved": "Kural kaydedildi",
+    "created": "Kural oluşturuldu",
+    "deleted": "Kural silindi",
+    "reorderFailed": "Yeni sıra kaydedilemedi. Tekrar deneyin.",
+    "dragHandle": "{{name}} kuralını yeniden sıralamak için sürükleyin veya yukarı ya da aşağı ok tuşlarıyla taşıyın.",
+    "readOnly": "Bu kuralı görüntüleyebilirsiniz ancak değiştiremezsiniz.",
+    "chips": {
+      "add": "Ekle",
+      "remove": "{{value}} öğesini kaldır"
+    },
+    "errors": {
+      "keywordShort": "Anahtar sözcükler en az 2 karakter olmalıdır.",
+      "keywordLong": "Anahtar sözcükler en fazla 100 karakter olabilir.",
+      "keywordsMax": "En fazla 20 anahtar sözcük ekleyebilirsiniz.",
+      "domainInvalid": "example.com veya *.example.com gibi bir ana makine adı kullanın.",
+      "domainsMax": "En fazla 50 alan adı ekleyebilirsiniz.",
+      "tagEmpty": "Bir etiket girin.",
+      "tagLong": "Etiketler en fazla 50 karakter olabilir.",
+      "tagsMax": "En fazla 20 etiket ekleyebilirsiniz.",
+      "nameRequired": "Kural için bir ad girin.",
+      "orgRequired": "Bir kuruluş seçin.",
+      "orgLinksRequired": "En az bir kuruluş seçin veya kuralı tüm kuruluşlara uygulayın."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "E-posta",
+      "alert": "Uyarı",
+      "manual": "Manuel",
+      "api": "API",
+      "ai": "Yapay zeka"
+    },
+    "priorities": {
+      "low": "Düşük",
+      "normal": "Normal",
+      "high": "Yüksek",
+      "urgent": "Acil"
+    },
+    "drawer": {
+      "titleCreate": "Yeni yönlendirme kuralı",
+      "titleEdit": "Yönlendirme kuralını düzenle",
+      "close": "Kapat",
+      "owner": "Sahip",
+      "ownerOrg": "Yalnızca bu kuruluş",
+      "ownerPartner": "Tüm kuruluşlar (iş ortağı geneli)",
+      "organization": "Kuruluş",
+      "chooseOrg": "Bir kuruluş seçin",
+      "appliesTo": "Uygulandığı yer",
+      "orgLinksAll": "Tüm kuruluşlar",
+      "orgLinksSelected": "Yalnızca seçilen kuruluşlar",
+      "name": "Ad",
+      "conditions": "Bir talep eşleştiğinde",
+      "conditionsHelp": "Doldurulan tüm koşullar eşleşmelidir. Yok saymak için bir koşulu boş bırakın.",
+      "matchSources": "Kaynak şunlardan biri",
+      "matchPriorities": "Öncelik şunlardan biri",
+      "matchCategory": "Kategori",
+      "any": "Herhangi",
+      "matchKeywords": "Konu şunlardan birini içerir",
+      "matchKeywordsHint": "Her biri 2 ile 100 karakter, en fazla 20.",
+      "matchDomains": "Talep sahibinin e-posta alan adı şunlardan biri",
+      "matchDomainsHint": "example.com veya *.example.com, en fazla 50.",
+      "actions": "Ardından ayarla",
+      "actionsHelp": "Yalnızca oluşturanın seçmediği alanlara uygulanır. En az birini ayarlayın.",
+      "setAssignee": "Atanan kişi",
+      "setPriority": "Öncelik",
+      "setCategory": "Kategori",
+      "setStatus": "Durum",
+      "addTags": "Etiket ekle",
+      "noChange": "Değişiklik yok",
+      "unavailableUser": "Kullanılamayan kullanıcı",
+      "unavailableStatus": "Kullanılamayan durum",
+      "enabled": "Etkin",
+      "save": "Kaydet",
+      "saving": "Kaydediliyor...",
+      "delete": "Sil",
+      "deleteTitle": "Bu kural silinsin mi?",
+      "deleteMessage": "\"{{name}}\" artık yeni taleplere uygulanmayacak. Bu işlem geri alınamaz."
+    },
+    "test": {
+      "title": "Talep test et",
+      "description": "Deneme çalıştırması: yeni bir talebin hangi kuralla eşleşeceğini ve neyi değiştireceğini görün. Hiçbir şey oluşturulmaz.",
+      "org": "Kuruluş",
+      "source": "Kaynak",
+      "subject": "Konu",
+      "email": "Talep sahibinin e-postası (isteğe bağlı)",
+      "category": "Kategori (isteğe bağlı)",
+      "priority": "Öncelik (isteğe bağlı)",
+      "notChosen": "Seçilmedi",
+      "run": "Testi çalıştır",
+      "running": "Test ediliyor...",
+      "failed": "Test çalıştırılamadı. Tekrar deneyin.",
+      "matched": "Eşleşen kural: {{name}}",
+      "noMatch": "Hiçbir kural eşleşmedi",
+      "applied": "Uygulanırdı",
+      "appliedNothing": "Hiçbir şey değişmezdi",
+      "skipped": "Atlandı",
+      "actions": {
+        "set_assignee": "Atanan kişi",
+        "set_category": "Kategori",
+        "set_status": "Durum"
+      },
+      "reasons": {
+        "assignee_ineligible": "Atanan kişi bu kuruluşun taleplerine erişemiyor.",
+        "assignee_deleted": "Atanan kişi artık mevcut değil.",
+        "category_foreign": "Kategori başka bir iş ortağına ait.",
+        "status_foreign": "Durum başka bir iş ortağına ait.",
+        "status_inactive": "Durum etkin değil.",
+        "status_core_not_allowed": "Bu durum bir kural tarafından ayarlanamaz."
+      }
+    },
+    "fallback": {
+      "title": "Hiçbir kural bir e-posta talebini atamazsa",
+      "description": "Gelen e-postadan oluşturulan her yeni talep, hiçbir yönlendirme kuralı atamadığında bu kişiye atanır. Kişi talebin kuruluşuna erişemiyorsa talep atanmamış kalır.",
+      "label": "Varsayılan atanan kişi",
+      "unavailable": "Kullanılamayan kullanıcı",
+      "saveFailed": "Yedek atanan kişi kaydedilemedi. Tekrar deneyin.",
+      "saved": "Yedek atanan kişi kaydedildi",
+      "loadFailed": "Yedek atanan kişi yüklenemedi."
+    }
+  },
+  "wispMemory": {
+    "title": "Wisp belleği",
+    "description": "Wisp’in sizin, bir müşteri veya tüm ekibiniz için hatırladıklarını inceleyin; onaylayın veya geri çekin.",
+    "tabs": {
+      "mine": "Belleğim",
+      "org": "Müşteri",
+      "partner": "Tüm müşteriler",
+      "users": "Teknisyenler"
+    },
+    "empty": "Burada henüz bellek bloğu yok.",
+    "loading": "Bellek yükleniyor…",
+    "loadFailed": "Bellek yüklenemedi.",
+    "retry": "Tekrar dene",
+    "columns": {
+      "subject": "Konu",
+      "type": "Tür",
+      "status": "Durum",
+      "confidence": "Güven",
+      "updated": "Güncellendi",
+      "actions": "İşlemler"
+    },
+    "statusValue": {
+      "unconfirmed": "Onaylanmadı",
+      "confirmed": "Onaylandı",
+      "retracted": "Geri çekildi"
+    },
+    "type": {
+      "preference": "Tercih",
+      "standing_instruction": "Kalıcı talimat",
+      "fact": "Bilgi",
+      "decision": "Karar",
+      "concern_outcome": "Endişe sonucu",
+      "work_summary": "Çalışma özeti"
+    },
+    "confidenceValue": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek"
+    },
+    "confirm": "Onayla",
+    "retract": "Geri çek",
+    "confirmed": "Bellek onaylandı.",
+    "retracted": "Bellek geri çekildi.",
+    "confirmFailed": "Bellek onaylanamadı.",
+    "retractFailed": "Bellek geri çekilemedi.",
+    "fromConversation": "Görüşmeden",
+    "pickOrg": "Bir müşteri seçin",
+    "pickUser": "Bir teknisyen seçin",
+    "pickPrompt": "Belleği görmek için yukarıdan seçim yapın.",
+    "showContent": "İçeriği göster",
+    "hideContent": "İçeriği gizle",
+    "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
+    "usersLoadFailed": "Teknisyenler yüklenemedi."
   }
 }

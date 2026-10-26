@@ -34,7 +34,6 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
-  DraftingCompass,
   Bot,
   History,
   Activity,
@@ -46,7 +45,6 @@ import {
   ScanSearch,
   ArrowRightLeft,
   Usb,
-  MessagesSquare,
   Ticket,
   X,
   Cloud,
@@ -59,13 +57,15 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  MapPin,
   Cpu,
   TrendingUp,
-  BookCheck,
   Power,
   ServerCog,
   Inbox,
   Sparkles,
+  Workflow,
+  Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -74,11 +74,12 @@ import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
-import { isNavGateVisible } from '../../lib/navGates';
-import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
+import { isNavGateVisible, type NavGateContext } from '../../lib/navGates';
+import { SETTINGS_CATALOG, sidebarSettingsEntries, type SettingsGroup } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
@@ -211,7 +212,11 @@ type NavItem = {
   requiresAiForOffice?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
+  /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
+  requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
+  /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
+  requiresAiOperatorTasks?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -232,7 +237,22 @@ type NavItem = {
   requiresPartnerWideAdmin?: boolean;
   // Additional permissions the user must all hold (see navGates.ts).
   alsoRequiredPermissions?: readonly PermissionGrant[];
+  // #10135: the in-section heading this item sits under (declared once in the
+  // section's `headings`). Members of one heading are contiguous; the heading
+  // renders only while at least one member passes its gates, so a user who can
+  // see none of them never gets a label over nothing.
+  heading?: NavHeadingId;
+  // #10135: rendered locked (lock icon, reason as title and screen-reader text)
+  // when /orgs/partners/me answers wispEnabled: false. Only the Wisp home sets it.
+  lockedWhenWispOff?: boolean;
+  // #10135: this link is a settings hub for the named catalogue group; it is
+  // hidden while none of that group's cards would be visible (see isNavItemVisible).
+  hubGroup?: SettingsGroup;
 };
+
+// In-section group headings. A heading is a label, never a link or a page.
+type NavHeadingId = 'workers';
+type NavHeading = { label: string; labelKey: string };
 
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
@@ -254,11 +274,12 @@ export const topLevelNav: NavItem[] = [
   { name: 'Devices & Assets', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
-  { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Security Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
   { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
+  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -276,6 +297,8 @@ interface NavSection {
   // section does not have to repeat `requiresModule` on each entry (and cannot
   // half-hide if a later item forgets it).
   requiresModule?: 'service_management';
+  // Labels for the headings this section's items reference (`NavItem.heading`).
+  headings?: Partial<Record<NavHeadingId, NavHeading>>;
 }
 
 // Exported for structural nav tests (see Sidebar.nav.test.tsx).
@@ -285,30 +308,38 @@ export const navSections: NavSection[] = [
     label: 'AI',
     labelKey: 'nav.sectionAi',
     icon: BrainCircuit,
+    // AI surface cohesion W04 (#10135, spec §5): the section reads as the
+    // sentence "Operators run Breeze. The workers do the work. Wisp runs your
+    // day." Settings-like AI pages (usage, script authoring, tool sources) live
+    // under Settings → AI (/settings/ai); fix memory and fleet design are
+    // reports reached from the agents that write them (Agents, Runs).
+    headings: {
+      workers: { label: 'Workers', labelKey: 'nav.workersHeading' },
+    },
     items: [
-      { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
-      // #6498: /workspace drives the own-session /ai/* routes, every one of
-      // which requires ai_sessions:use (#6396). Without this gate a role holding
-      // only devices:read saw the full AI Workspace and a bare "Permission
-      // denied" on send.
-      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
-      { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Wisp W08 (#9921): the Wisp home. #6498: Wisp and the chat drive the
+      // own-session /ai/* routes, every one of which requires ai_sessions:use
+      // (#6396). Without this gate a role holding only devices:read saw the full
+      // chat page and a bare "Permission denied" on send.
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, lockedWhenWispOff: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      // The full-page multi-tab chat (formerly "AI Assistant" at /workspace,
+      // then /wisp/chat — both redirect here, AI surface cohesion W05 #10136).
+      { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/ai/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      { name: 'Agents', labelKey: 'nav.agents', href: '/settings/ai-agents', icon: Bot, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
-      { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'Runs', labelKey: 'nav.runs', href: '/ai-agents/runs', icon: History, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Operator Recipe Library W06 R1b (#6171): AI tasks + the recipe library.
+      // Same server flag as the "Delegate" action that starts one.
+      { name: 'AI Tasks', labelKey: 'nav.aiTasks', href: '/operator', icon: ListChecks, heading: 'workers', requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Cross-device patterns the workers found (formerly "Fleet Orchestration").
+      { name: 'Findings', labelKey: 'nav.findings', href: '/fleet', icon: Sparkles, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
-      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // AI Suggested Fixes W2 — observed fix track records (data, not settings).
-      { name: 'Fix memory', labelKey: 'nav.fixMemory', href: '/ai-agents/fix-memory', icon: BookCheck, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
-      // Design report, so it sits beside the other AI-report reads.
-      { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
-      { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
+      { name: 'Impact', labelKey: 'nav.impact', href: '/ai-agents/impact', icon: TrendingUp, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // A door for other people (end users in Office), not a worker.
+      { name: 'Breeze AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -319,6 +350,7 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sites', labelKey: 'nav.sites', href: '/settings/sites', icon: MapPin, testId: 'nav-sites', requiredPermission: { resource: 'sites', action: 'read' } },
       // Parked devices waiting for assignment — full partner admins only; the
       // pre-assignment routes also require devices:write and organizations:write.
       { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },
@@ -347,6 +379,8 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Overview', labelKey: 'nav.securityOverview', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'IOC Scans', labelKey: 'nav.securityScans', href: '/security/scans', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      // YARA rule sets used by IOC scans (#6267).
+      { name: 'Detection Rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: FileCode, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
         ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
@@ -441,7 +475,9 @@ export const navSections: NavSection[] = [
       // Daily-use subset of the settings catalogue (lib/settingsCatalog.ts —
       // gates are defined once there). Everything else lives on /settings, which
       // is reached through the "More settings" entry below (#6220).
-      ...sidebarSettingsEntries(),
+      // A `sidebarOnly` entry is a group hub (Settings → AI, #10135); it carries
+      // its group so visibility can require a card in that group.
+      ...sidebarSettingsEntries().map((entry) => (entry.sidebarOnly ? { ...entry, hubGroup: entry.group } : entry)),
       { name: 'More settings', labelKey: 'nav.moreSettings', href: '/settings', icon: Settings },
     ],
   },
@@ -465,6 +501,7 @@ export const navSections: NavSection[] = [
       // adds the console path once one exists. The SQL fallback documented in
       // docs/deploy/ai-kill-switch.md still works and remains the runbook.
       { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/admin/wisp', icon: Sparkles, platformAdminOnly: true },
       // System page (spec 2026-09-23-system-connections-page-design.md, D7):
       // deployment-wide Connections status plus the #6605 Deprecations report
       // as tabs. Replaces the standalone Deprecations entry; its old settings
@@ -543,7 +580,39 @@ const pathAliases: Record<string, string> = {
   // sibling route, not a child, so prefix matching would leave the item
   // unhighlighted there.
   '/agreements/signed': '/agreements/templates',
+  // #10135: fix memory and fleet design are reports reached from the agents
+  // that write them, so the roster entry stays lit (and the AI section open).
+  '/ai-agents/fix-memory': '/settings/ai-agents',
+  '/ai-agents/fleet-design': '/settings/ai-agents',
+  // #10135: the AI settings screens are cards on the Settings → AI hub, so the
+  // hub's sidebar link stays lit on them (and on their detail pages).
+  '/settings/ai-usage': '/settings/ai',
+  '/settings/ai-script-authoring': '/settings/ai',
+  '/settings/tool-sources': '/settings/ai',
+  '/settings/wisp-memory': '/settings/ai',
 };
+
+// Exact alias first, then the alias of the nearest aliased ancestor path
+// (`/settings/tool-sources/<id>` → the tool-sources alias).
+function resolvePathAlias(path: string): string {
+  if (pathAliases[path]) return pathAliases[path];
+  for (const [from, to] of Object.entries(pathAliases)) {
+    if (path.startsWith(`${from}/`)) return to;
+  }
+  return path;
+}
+
+// Splits a section's items into consecutive runs that share a heading (or have
+// none), in order, so the renderer can label each headed run.
+function groupByHeading(items: NavItem[]): Array<{ heading?: NavHeadingId; items: NavItem[] }> {
+  const runs: Array<{ heading?: NavHeadingId; items: NavItem[] }> = [];
+  for (const item of items) {
+    const last = runs[runs.length - 1];
+    if (last && last.heading === item.heading) last.items.push(item);
+    else runs.push({ heading: item.heading, items: [item] });
+  }
+  return runs;
+}
 
 // Determine which section a given href belongs to (for auto-expand)
 function sectionForHref(href: string): string | null {
@@ -694,11 +763,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  // #10135: 'unknown' until /orgs/partners/me answers (or for a non-partner
+  // token, which never asks). Only a real 'off' answer locks the Wisp entry, so
+  // a hosted page never flashes "not available" while the read is in flight.
+  const [wispServer, setWispServer] = useState<'unknown' | 'on' | 'off'>('unknown');
+  const wispEnabled = wispServer === 'on';
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
   const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
+  const { enabled: flowsEnabled } = useFlowsGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
+  const { enabled: aiOperatorTasksEnabled } = useAiOperatorTasksGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -737,7 +813,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (jwtScope !== 'partner') return;
 
     let cancelled = false;
-    fetchWithAuth('/orgs/partners/me')
+    // Shared with the other islands reading partners/me at load (#9172).
+    getPartnersMe()
       .then((r) => {
         if (!r.ok) {
           if (r.status !== 403 && r.status !== 404) {
@@ -745,18 +822,20 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{
+        return r.data as {
           name?: string;
           aiForOfficeEnabled?: boolean;
+          wispEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
-        }>;
+        };
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
         setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
+        setWispServer(data.wispEnabled === true ? 'on' : 'off');
         // Fail OPEN on anything unexpected: an older API that does not send the
         // field, or a value this build does not know, falls back to `native`
         // rather than withdrawing a module the partner is paying for. A failed
@@ -811,7 +890,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // Find the best matching active href. Includes the runtime-extension items
   // (not part of the static `allNavItems`) so an extension's own page/nav
   // link highlights correctly while it's active.
-  const resolvedPath = pathAliases[currentPath] ?? currentPath;
+  const resolvedPath = resolvePathAlias(currentPath);
   const recentEntries = useMemo(
     () => selectRecentEntries({ devices: recentDevices, pages: recentPages }, resolvedPath),
     [recentDevices, recentPages, resolvedPath],
@@ -920,18 +999,37 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // `renderNavItem` below so section-header visibility (renderCollapsibleSection)
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
-  const isNavItemVisible = (item: NavItem): boolean =>
-    isNavGateVisible(item, {
-      isPlatformAdmin,
-      permissions,
-      getScope: () => jwtScope,
-      autopayEnabled,
-      toolSourcesEnabled,
-      preAssignmentEnabled,
-      aiForOfficeEnabled,
-      serviceManagementMode,
-      canManagePartnerWide,
-    });
+  const navGateContext: NavGateContext = {
+    isPlatformAdmin,
+    permissions,
+    getScope: () => jwtScope,
+    autopayEnabled,
+    toolSourcesEnabled,
+    flowsEnabled,
+    preAssignmentEnabled,
+    aiForOfficeEnabled,
+    wispEnabled,
+    serviceManagementMode,
+    canManagePartnerWide,
+    // Extension names from the validated `/extensions/<name>/…` nav hrefs.
+    loadedExtensions: extensionNavLinks.map((link) => link.href.split('/')[2]).filter(Boolean),
+  };
+  const isNavItemVisible = (item: NavItem): boolean => {
+    if (item.requiresAiOperatorTasks && !aiOperatorTasksEnabled) return false;
+    if (!isNavGateVisible(item, navGateContext)) return false;
+    // #10135: a settings hub link (Settings → AI) never leads to an empty page —
+    // it shows only while one of the hub's cards passes the same gates.
+    if (item.hubGroup) {
+      // The hub has no permission of its own, so keep it hidden until the
+      // permission set is known (like every permission-gated item) rather than
+      // flashing it on the server render for users who can open none of it.
+      if (permissions === undefined) return false;
+      return SETTINGS_CATALOG.some(
+        (entry) => entry.group === item.hubGroup && !entry.sidebarOnly && isNavGateVisible(entry, navGateContext),
+      );
+    }
+    return true;
+  };
 
   const renderNavItem = (item: NavItem, forMobileOverlay = false) => {
     if (!isNavItemVisible(item)) return null;
@@ -946,13 +1044,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
+    // #10135 (Review Focus 1): Wisp is never hidden and never plain chat — when
+    // the server has it off the entry stays, locked, with the reason. The link
+    // still opens /wisp, which shows the same lock.
+    const lockedReason = item.lockedWhenWispOff && wispServer === 'off' ? t('nav.wispLockedServer') : null;
     return (
       <a
-        data-testid={item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined)}
+        data-testid={lockedReason ? 'nav-wisp-locked' : (item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined))}
         key={item.name}
         href={item.href}
         aria-current={isActive ? 'page' : undefined}
-        title={narrow && !hovered ? label : undefined}
+        title={lockedReason ?? (narrow && !hovered ? label : undefined)}
         onClick={(event) => {
           if (forMobileOverlay) closeMobileMenu();
           // `/tickets#type=<t>` while already on /tickets: Astro's router would
@@ -974,6 +1076,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       >
         <item.icon className="h-5 w-5 shrink-0" />
         {labels && <span className="truncate flex-1">{label}</span>}
+        {lockedReason && (
+          <>
+            {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+            <span className="sr-only">{lockedReason}</span>
+          </>
+        )}
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
@@ -1064,7 +1172,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const labels = forMobileOverlay ? true : showLabels;
 
     return (
-      <div key={section.id}>
+      <div key={section.id} data-testid={`nav-section-${section.id}`}>
         <div className="my-2 border-t" />
         {/* In collapsed mode (no labels), show only the section icon */}
         {!labels ? (
@@ -1097,7 +1205,30 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             inert={!expanded || undefined}
           >
             <div>
-              {section.items.map((item) => renderNavItem(item, forMobileOverlay))}
+              {groupByHeading(section.items).map((run) => {
+                if (!run.heading) return run.items.map((item) => renderNavItem(item, forMobileOverlay));
+                // A heading over nothing is noise (Review Focus 3): drop it
+                // when every member is hidden by its gates.
+                if (!run.items.some(isNavItemVisible)) return null;
+                const heading = section.headings?.[run.heading];
+                const headingId = `nav-heading-${section.id}-${run.heading}${forMobileOverlay ? '-mobile' : ''}`;
+                return (
+                  <div key={`heading:${run.heading}`} role="group" aria-labelledby={headingId}>
+                    <div
+                      id={headingId}
+                      data-testid={`nav-heading-${run.heading}`}
+                      className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground/80"
+                    >
+                      {heading
+                        ? t(/* i18n-dynamic */ heading.labelKey, { defaultValue: heading.label })
+                        : run.heading}
+                    </div>
+                    <div className="ml-3 border-l pl-1">
+                      {run.items.map((item) => renderNavItem(item, forMobileOverlay))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
