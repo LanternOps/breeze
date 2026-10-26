@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-ole/go-ole"
@@ -30,11 +31,35 @@ const (
 // WindowsUpdateProvider integrates with Windows Update.
 type WindowsUpdateProvider struct {
 	cfg *config.Config
+	// featurePolicy is the ring's Windows feature-release decision, pushed by
+	// the heartbeat (SetFeatureUpdatePolicy) and read by every scan. Atomic
+	// because scans run on their own goroutine. Starts as block
+	// (DefaultFeatureUpdatePolicy) until the server has said otherwise.
+	featurePolicy atomic.Pointer[FeatureUpdatePolicy]
 }
 
 // NewWindowsUpdateProvider creates a new WindowsUpdateProvider.
 func NewWindowsUpdateProvider(cfg *config.Config) *WindowsUpdateProvider {
-	return &WindowsUpdateProvider{cfg: cfg}
+	w := &WindowsUpdateProvider{cfg: cfg}
+	initial := DefaultFeatureUpdatePolicy()
+	w.featurePolicy.Store(&initial)
+	return w
+}
+
+var _ FeatureUpdatePolicySetter = (*WindowsUpdateProvider)(nil)
+
+// SetFeatureUpdatePolicy replaces the feature-release filter for later scans.
+func (w *WindowsUpdateProvider) SetFeatureUpdatePolicy(policy FeatureUpdatePolicy) {
+	w.featurePolicy.Store(&policy)
+}
+
+// currentFeatureUpdatePolicy is the policy scans filter with; block when the
+// provider was built without the constructor (tests, zero value).
+func (w *WindowsUpdateProvider) currentFeatureUpdatePolicy() FeatureUpdatePolicy {
+	if p := w.featurePolicy.Load(); p != nil {
+		return *p
+	}
+	return DefaultFeatureUpdatePolicy()
 }
 
 // ID returns the provider identifier.
@@ -409,8 +434,11 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	if typeVal == 2 {
 		updateType = "driver"
 	}
+	// A Windows feature release is BrowseOnly while it is optional, but once
+	// Microsoft pushes it (or a TargetReleaseVersion policy targets it) the
+	// flag clears while the Upgrades classification stays — so type on either.
 	browseOnly, _ := w.getBoolProperty(update, "BrowseOnly")
-	if browseOnly {
+	if browseOnly || isWindowsUpgradeClassification(categoryNames) {
 		updateType = "feature"
 	}
 
@@ -992,14 +1020,18 @@ func (w *WindowsUpdateProvider) acceptEulaIfNeeded(update *ole.IDispatch) error 
 // shouldExcludePatch returns true if the patch should be filtered out based on config.
 func (w *WindowsUpdateProvider) shouldExcludePatch(patch AvailablePatch) bool {
 	if w.cfg == nil {
-		return false
+		// No local config: the ring policy alone decides feature releases.
+		return excludeFeatureUpdate(false, w.currentFeatureUpdatePolicy(), patch)
 	}
 
 	if w.cfg.PatchExcludeDrivers && patch.UpdateType == "driver" {
 		log.Debug("excluding driver update", "title", patch.Title, "id", patch.ID)
 		return true
 	}
-	if w.cfg.PatchExcludeFeatureUpdates && patch.UpdateType == "feature" {
+	// Windows feature releases follow the ring's policy (block / allow / pin),
+	// pushed by the heartbeat; the local config key is only an operator kill
+	// switch that always excludes them.
+	if excludeFeatureUpdate(w.cfg.PatchExcludeFeatureUpdates, w.currentFeatureUpdatePolicy(), patch) {
 		log.Debug("excluding feature update", "title", patch.Title, "id", patch.ID)
 		return true
 	}
