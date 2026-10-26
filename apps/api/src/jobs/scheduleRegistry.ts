@@ -236,6 +236,11 @@ export const JOB_SCHEDULES = {
   // each integration's retentionDays (default DNS_SECURITY_RETENTION_DAYS_DEFAULT,
   // 90). :18 keeps the daily = 3 (mod 5) lane in hour 22.
   'dns-security-retention': '18 22 * * *',
+  // Tool catalog W04 (#5219, plan Task A8) — daily flow run body pruning
+  // (trigger payload, inputs, step inputs/outputs) past FLOW_RUN_RETENTION_DAYS;
+  // rows are never deleted. Hour 23 was free in the daily tier; :03 keeps the
+  // daily = 3 (mod 5) lane.
+  'flow-run-retention': '3 23 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

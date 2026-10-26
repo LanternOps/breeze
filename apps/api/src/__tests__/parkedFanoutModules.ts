@@ -12,6 +12,7 @@
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
   // --- shared resolvers -----------------------------------------------------
   'services/postureEvidence.ts': { guards: 1, reason: 'posture evidence device population (report + trust page)' },
+  'services/partnerFanoutOrgs.ts': { guards: 1, reason: 'the live partner-org predicate shared by the scheduled AI agent sweep fan-out (jobs/aiAgentSweepScheduler.ts loadPartnerOrgIds, also partner-wide flow schedules) and the partner-wide flow event trigger (#5219): holding org and Quick Support out' },
   'services/externalDeviceMatching/candidates.ts': { guards: 1, reason: 'candidate devices for external vendor endpoint matching carry the parked-device predicate' },
   'services/featureConfigResolver.ts': { guards: 6, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets, batched security_agents winner walk (no partner-level assignment for a parked device)' },
   'services/configurationPolicy.ts': { guards: 1, reason: 'effective configuration for a device (no partner-level assignment for a parked device)' },
@@ -42,7 +43,6 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/discoveryWorker.ts': { guards: 1, reason: 'discovery scan executor selection (requested-agent lookup)' },
   'jobs/discoveryAgentSelection.ts': { guards: 2, reason: 'discovery agent selection: site candidates and the pinned-agent lookup (#7969)' },
   'jobs/snmpWorker.ts': { guards: 1, reason: 'SNMP poll executor selection' },
-  'jobs/aiAgentSweepScheduler.ts': { guards: 1, reason: 'scheduled AI agent sweeps over partner orgs' },
   'services/wisp/wake.ts': { guards: 1, reason: 'Wisp wake coordinator (#9917): live partner orgs a grant\'s floor tick / onboarding / event fan-out may assess (Quick Support and holding org out)' },
   'services/aiAgents/patchPlan.ts': { guards: 1, reason: 'AI patch-plan evidence devices' },
   'services/aiAgents/sweepFindings.ts': { guards: 1, reason: 'AI sweep finding devices' },

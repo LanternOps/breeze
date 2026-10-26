@@ -28,7 +28,7 @@ import { loadReachability } from './assetReachabilityLoader';
 import { deviceSiteDenied, siteScopeCondition, SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 
 /**
@@ -42,7 +42,7 @@ import type { AiTool } from './aiTools';
  * 23503. Mirrors `aiToolsFleet.ts`'s `isAgentPrincipalCaller` (#6206).
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /** #6911: the refusal `acknowledge_network_device` returns to an agent principal. */

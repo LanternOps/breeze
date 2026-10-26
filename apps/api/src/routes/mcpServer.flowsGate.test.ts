@@ -156,7 +156,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 
 import { mcpServerRoutes } from './mcpServer';
 
-const FLOW_TOOLS = ['draft_flow', 'validate_flow', 'get_flow', 'list_flows'];
+const FLOW_TOOLS = ['draft_flow', 'validate_flow', 'get_flow', 'list_flows', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'];
 const def = (name: string) => ({ name, description: name, input_schema: { type: 'object', properties: {} } });
 
 beforeEach(() => {
@@ -165,7 +165,7 @@ beforeEach(() => {
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([def('get_invite_funnel'), ...FLOW_TOOLS.map(def)]);
   mocks.getToolTier.mockReset().mockImplementation((name: string) =>
-    name === 'get_invite_funnel' ? 1 : name === 'draft_flow' ? 2 : FLOW_TOOLS.includes(name) ? 1 : undefined,
+    name === 'get_invite_funnel' ? 1 : name === 'draft_flow' || name === 'cancel_flow_run' ? 2 : name === 'run_flow' ? 3 : FLOW_TOOLS.includes(name) ? 1 : undefined,
   );
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
@@ -186,7 +186,7 @@ async function rpc(method: string, params: Record<string, unknown>) {
 const listedNames = async () => ((await rpc('tools/list', {})).result?.tools ?? []).map((t: { name: string }) => t.name);
 
 describe('MCP flow tools gate (FLOWS_ENABLED)', () => {
-  it('flag off: tools/list omits the four flow tools', async () => {
+  it('flag off: tools/list omits the eight flow tools', async () => {
     vi.stubEnv('FLOWS_ENABLED', 'false');
     const names = await listedNames();
     expect(names).toContain('get_invite_funnel');
@@ -203,13 +203,30 @@ describe('MCP flow tools gate (FLOWS_ENABLED)', () => {
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('flag on: the flow tools are listed and callable', async () => {
+  it('flag on: the flow tools (bar the Tier 3 run_flow) are listed and callable', async () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     const names = await listedNames();
-    for (const n of FLOW_TOOLS) expect(names).toContain(n);
+    for (const n of FLOW_TOOLS.filter((t) => t !== 'run_flow')) expect(names).toContain(n);
     const r = await rpc('tools/call', { name: 'get_flow', arguments: { flowId: '33333333-3333-4333-8333-333333333333' } });
     expect(r.error).toBeUndefined();
     expect(mocks.executeTool).toHaveBeenCalled();
     expect(mocks.executeTool.mock.calls[0]?.[0]).toBe('get_flow');
+  });
+
+  it('flag off: tools/call of every run tool is answered like an unknown tool', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
+    for (const n of ['run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']) {
+      const r = await rpc('tools/call', { name: n, arguments: {} });
+      expect(r.error?.message).toBe(`Unknown tool: ${n}`);
+    }
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('flag on: MCP tools/call run_flow is refused as approval-required and never executes', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'true');
+    const r = await rpc('tools/call', { name: 'run_flow', arguments: { flowId: '33333333-3333-4333-8333-333333333333' } });
+    expect(r.result?.isError).toBe(true);
+    expect(r.result?.content?.[0]?.text).toMatch(/approval/i);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });

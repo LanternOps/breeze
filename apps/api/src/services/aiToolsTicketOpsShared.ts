@@ -10,6 +10,7 @@
  */
 import type { ZodError, ZodType } from 'zod';
 import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { getUserPermissions, hasPermission } from './permissions';
 
@@ -19,9 +20,13 @@ export function jsonError(error: string, code?: string): string {
   return JSON.stringify(code ? { error, code } : { error });
 }
 
-/** True when the call is an autonomous `ai_agent` principal (its user id is not a `users` row). */
+/**
+ * True when the call is a machine principal — an autonomous `ai_agent` or a
+ * `flow` run (#5219) — whose user id is not a `users` row, so a W06 write has
+ * no human to attribute.
+ */
 export function isAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {
-  return auth.principal?.kind === 'ai_agent';
+  return isAutomationPrincipal(auth);
 }
 
 /**

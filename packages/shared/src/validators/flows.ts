@@ -100,7 +100,24 @@ export type FlowIssueCode =
   | 'tool_not_found' | 'tool_not_allowed' | 'builtin_not_available' | 'trigger_not_available' | 'input_invalid'
   | 'input_not_supported' | 'action_not_literal' | 'tier_input_not_literal' | 'tool_blocked'
   | 'pre_approval_not_available' | 'reference_not_owned' | 'device_not_owned' | 'device_in_partner_flow' | 'group_in_partner_flow'
-  | 'event_unknown' | 'document_too_large' | 'input_too_deep' | 'too_many_templates';
+  | 'event_unknown' | 'document_too_large' | 'input_too_deep' | 'too_many_templates'
+  | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available' | 'pre_approval_not_eligible';
+
+/** Where a flow step's tool comes from. Defined here (not flowRuns.ts) so flows.ts never imports flowRuns.ts. */
+export type FlowToolSource = 'core' | 'tenant' | 'builtin';
+
+/** Why an enabled flow was paused. Re-exported from flowRuns.ts. */
+export const FLOW_PAUSED_REASONS = ['drift', 'binding_drift', 'delegator_inactive', 'org_merged', 'event_dispatch_not_durable'] as const;
+export type FlowPausedReason = (typeof FLOW_PAUSED_REASONS)[number];
+
+export type PreApprovalEligibility =
+  | { eligible: true }
+  | {
+      eligible: false;
+      reason:
+        | 'not_tier3' | 'tool_not_supported' | 'script_not_literal' | 'run_context_not_literal' | 'group_target'
+        | 'variable_dependent' | 'script_not_found' | 'four_eyes' | 'tenant_tool';
+    };
 
 export interface FlowIssue {
   code: FlowIssueCode;
@@ -113,7 +130,7 @@ export interface FlowIssue {
 export interface FlowStepSummary {
   id: string;
   tool: string;
-  source: 'core' | 'tenant' | 'builtin';
+  source: FlowToolSource;
   tier: 1 | 2 | 3 | null;
   approval: 'default' | 'pre_approved';
 }
@@ -145,4 +162,10 @@ export interface FlowDetailDto extends FlowSummaryDto {
   createdByUserId: string | null;
   aiSessionId: string | null;
   createdAt: string;
+  enabledPublicationSeq: number | null;
+  enabledAt: string | null;
+  enabledByUserId: string | null;
+  pausedReason: FlowPausedReason | null;
+  preApprovalEligibility: Record<string, PreApprovalEligibility>;
+  preApprovedStepIds: string[];
 }

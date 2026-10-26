@@ -93,7 +93,7 @@
  * Do not relitigate the value by reasoning about it — run the tool.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { AiAgentScheduleKind, AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 
@@ -113,7 +113,7 @@ import {
   type ScheduleOverrideSummary,
 } from '../services/aiAgents/scheduleService';
 import { createAndEnqueueAgentRun, type CreateAgentRunInput } from '../services/aiAgents/runService';
-import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
+import { partnerFanoutOrgCondition } from '../services/partnerFanoutOrgs';
 
 export const AI_AGENT_SWEEP_QUEUE = 'ai-agent-sweep';
 
@@ -465,14 +465,6 @@ async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBas
   return (rows[0] as OccurrenceBaselineRow | undefined) ?? null;
 }
 
-/**
- * Statuses a sweep may run against — the SAME live-org definition
- * `middleware/auth.ts`'s partner-scope org resolution uses. Everything else
- * (`suspended`, `churned`, `offboarding`, `merging`, `archived`, `purging`) is
- * a tenant in a terminal or frozen lifecycle state; `archived` is what an
- * archived_at org carries.
- */
-const SWEEPABLE_ORG_STATUSES = ['active', 'trial'] as const;
 
 /**
  * Hard admission ceiling per occurrence (review fix, #4189).
@@ -498,24 +490,26 @@ export const MAX_ORGS_PER_OCCURRENCE = 500;
  * (`partner_id` + `type <> 'quick_support'` — quick_support is the partner's
  * hidden holder for ephemeral support enrolments, which no scheduled hygiene
  * sweep may touch) and narrows it to LIVE tenants: soft-deleted orgs and orgs
- * outside `SWEEPABLE_ORG_STATUSES` are excluded from the enumeration entirely,
+ * outside `PARTNER_FANOUT_ORG_STATUSES` are excluded from the enumeration entirely,
  * so they are not merely skipped — they never appear in `orgsTotal` either.
  * A sweep is unattended, recurring, LLM-spending work; billing a churned or
  * mid-offboarding tenant for it, or raising findings a nobody will action, is
  * strictly worse than not running.
+ *
+ * Also the fan-out set of a partner-wide flow schedule (tool catalog W04,
+ * jobs/flowScheduleTick.ts): the same live-tenant rule and the same cap.
+ * Runs on the ambient `db` — call it inside a system DB context.
  */
-async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[]; capped: number }> {
+export async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[]; capped: number }> {
   const { db } = dbModule;
   const rows = await db
     .select({ id: organizations.id })
     .from(organizations)
     .where(and(
       eq(organizations.partnerId, partnerId),
-      ne(organizations.type, 'quick_support'),
-      // Nor the holding org: no sweep (or model spend) on devices not yet assigned.
-      notHoldingOrgCondition(),
-      isNull(organizations.deletedAt),
-      inArray(organizations.status, [...SWEEPABLE_ORG_STATUSES]),
+      // Live tenants only (not quick_support, not the holding org, not
+      // deleted, active/trial) — the predicate the flow event trigger shares.
+      partnerFanoutOrgCondition(),
     ))
     // Deterministic: the cap below takes a PREFIX of this list, so without a
     // stable order a capped partner would sweep an arbitrary — and different

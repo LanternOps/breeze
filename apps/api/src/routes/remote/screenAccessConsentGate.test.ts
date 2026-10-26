@@ -152,6 +152,20 @@ describe('checkScreenAccessConsentGate', () => {
     }));
   });
 
+  it('records a flow principal as a system actor attributed to the flow, never as ai_agent or a user (W04 #5219)', async () => {
+    resolveRemoteSessionPromptConfig.mockResolvedValueOnce(config('consent'));
+    await checkScreenAccessConsentGate(gateInput({
+      actor: {
+        principal: { kind: 'flow', flowId: AGENT_ID, runId: 'run-1' },
+        user: { id: AGENT_ID, email: 'flow', name: 'Flow', isPlatformAdmin: false },
+      },
+    }));
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      actorType: 'system',
+      actorId: AGENT_ID,
+    }));
+  });
+
   it('records a device helper principal as an agent actor', async () => {
     resolveRemoteSessionPromptConfig.mockResolvedValueOnce(config('consent'));
     const result = await checkScreenAccessConsentGate(gateInput({
