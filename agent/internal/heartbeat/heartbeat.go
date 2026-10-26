@@ -2166,6 +2166,11 @@ func (h *Heartbeat) Start() {
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
 
+	// #8318 — know whether a staged reattach set is on disk before the
+	// credential and certificate work below starts, so none of it runs on an
+	// unprimed view of the reattach (a new token rotation waits on one).
+	h.primeRebindState()
+
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
 	// confirmation. This runs first on purpose: if the agent was offline long
@@ -2187,9 +2192,8 @@ func (h *Heartbeat) Start() {
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
 
-	// #8318 — know before the first beat whether a staged reattach set is on
-	// disk, then resume a reattach a previous process left mid-flight (§6.6).
-	h.primeRebindState()
+	// #8318 — resume a reattach a previous process left mid-flight (§6.6);
+	// its state was primed above.
 	go h.resumeRebind()
 
 	// Proactively spawn helpers into user sessions so remote desktop works
