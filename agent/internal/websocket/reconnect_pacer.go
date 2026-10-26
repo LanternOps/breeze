@@ -32,7 +32,7 @@ func (p *ReconnectPacer) AtStart(window time.Duration) time.Duration { return p.
 // upgrade's HTTP status (0 for a transport failure); retryAfter is honoured
 // only for 429 and 503, as on the client.
 func (p *ReconnectPacer) AfterDialFailure(status int, retryAfter time.Duration) time.Duration {
-	var err error = errors.New("dial failed")
+	err := errors.New("dial failed")
 	if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
 		err = &upgradeRefusedError{StatusCode: status, RetryAfter: retryAfter}
 	}
@@ -45,7 +45,7 @@ func (p *ReconnectPacer) AfterDialFailure(status int, retryAfter time.Duration) 
 // frame outranks it, as on the client). drainWithin < 0 means no live drain
 // hint.
 func (p *ReconnectPacer) AfterDisconnect(closeCode int, local bool, lasted, drainWithin time.Duration) time.Duration {
-	var readErr error = io.ErrUnexpectedEOF
+	readErr := io.ErrUnexpectedEOF
 	if closeCode != 0 && closeCode != websocket.CloseAbnormalClosure {
 		readErr = &websocket.CloseError{Code: closeCode}
 	}

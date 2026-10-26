@@ -54,7 +54,7 @@ func TestReconnectPacerMatchesClientPolicy(t *testing.T) {
 					got, want = p.AtStart(defaultStartDialWindow), b.atStart(defaultStartDialWindow)
 				case ev.dialStatus != 0:
 					got = p.AfterDialFailure(ev.dialStatus, ev.retryAfter)
-					var err error = errors.New("dial tcp: connection refused")
+					err := errors.New("dial tcp: connection refused")
 					if ev.dialStatus == http.StatusServiceUnavailable || ev.dialStatus == http.StatusTooManyRequests {
 						err = &upgradeRefusedError{StatusCode: ev.dialStatus, RetryAfter: ev.retryAfter}
 					}
