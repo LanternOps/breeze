@@ -1,0 +1,6 @@
+{
+  "promptId": "restart:42",
+  "rev": 2,
+  "lease": { "rendererSession": "user-helper-1-3100", "epoch": 1 },
+  "reason": "fenced"
+}

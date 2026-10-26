@@ -1,0 +1,10 @@
+{
+  "telemetry": {
+    "protocolVersion": 1,
+    "kinds": ["notice.info@1"],
+    "rendererVersion": "0.2.0"
+  },
+  "settings": {
+    "enabledKinds": ["notice.info", "restart.prompt@1"]
+  }
+}
