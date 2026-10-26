@@ -1,0 +1,329 @@
+[
+  {
+    "name": "new agent + old Assist (predates the contract, advertised nothing)",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": null,
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "new agent + W02 Assist (speaks the protocol, advertises zero kinds)",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "old agent + new Assist (agent speaks no kind)",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "new agent + new Assist, kind enabled",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 1
+  },
+  {
+    "name": "native user-helper only (ships with the agent), kind enabled",
+    "kind": "restart.prompt",
+    "renderer": "native",
+    "agentSpeaks": [
+      "restart.prompt@1"
+    ],
+    "rendererAdvertises": [
+      "restart.prompt@1"
+    ],
+    "enabled": [
+      "restart.prompt"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 1
+  },
+  {
+    "name": "kind disabled server-side (empty enabledKinds = kill switch)",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "another kind enabled, this kind disabled",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1",
+      "restart.prompt@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1",
+      "restart.prompt@1"
+    ],
+    "enabled": [
+      "restart.prompt"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "kind@n entry enables only that version (both sides speak 1, server enables 2)",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [
+      "notice.info@2"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "kind@n entry matching the shared version",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [
+      "notice.info@1"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 1
+  },
+  {
+    "name": "agent speaks 1 and 2, renderer only 1: highest common version",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@1"
+    ],
+    "enabled": [
+      "remote.consent"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 1
+  },
+  {
+    "name": "both speak 1 and 2, bare kind enabled: version 2",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "enabled": [
+      "remote.consent"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 2
+  },
+  {
+    "name": "both speak 1 and 2, only version 1 enabled: version 1",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "enabled": [
+      "remote.consent@1"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 1
+  },
+  {
+    "name": "old native process survives an agent update (advertised nothing at its live auth)",
+    "kind": "restart.prompt",
+    "renderer": "native",
+    "agentSpeaks": [
+      "restart.prompt@1"
+    ],
+    "rendererAdvertises": null,
+    "enabled": [
+      "restart.prompt"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "malformed advertisement without a version is ignored",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "kind outside the registry is never sent",
+    "kind": "future.kind",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "future.kind@1"
+    ],
+    "rendererAdvertises": [
+      "future.kind@1"
+    ],
+    "enabled": [
+      "future.kind"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "renderer advertises only another kind",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "restart.prompt@1"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "agent speaks only another kind",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "restart.prompt@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@1"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  },
+  {
+    "name": "version lists out of order: highest common version still wins",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@2",
+      "remote.consent@1"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@2",
+      "remote.consent@1"
+    ],
+    "enabled": [
+      "remote.consent"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 2
+  },
+  {
+    "name": "only version 2 enabled: version 2",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "enabled": [
+      "remote.consent@2"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 2
+  },
+  {
+    "name": "both versions enabled, renderer speaks only 2",
+    "kind": "remote.consent",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "rendererAdvertises": [
+      "remote.consent@2"
+    ],
+    "enabled": [
+      "remote.consent@1",
+      "remote.consent@2"
+    ],
+    "expectedPath": "prompt",
+    "expectedVersion": 2
+  },
+  {
+    "name": "leading-zero version is malformed and ignored",
+    "kind": "notice.info",
+    "renderer": "assist",
+    "agentSpeaks": [
+      "notice.info@1"
+    ],
+    "rendererAdvertises": [
+      "notice.info@01"
+    ],
+    "enabled": [
+      "notice.info"
+    ],
+    "expectedPath": "legacy"
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "promptId": "notice:safe_mode:7f3c2a10",
+  "rev": 1,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "kind": "notice.info",
+  "kindVersion": 1,
+  "state": "pending",
+  "presentation": "card",
+  "copy": {
+    "title": "Your computer restarted in safe mode",
+    "body": "Your IT support team restarted this computer in safe mode to finish a repair. It restarts normally when the repair is done."
+  },
+  "actions": [{ "id": "ok", "label": "OK", "role": "safe" }],
+  "defaultActionId": "ok",
+  "timing": { "presentWithinMs": 10000 },
+  "focus": "no_activate",
+  "listEntry": { "persistent": true, "expiresAtUnixMs": 1793620800000 },
+  "locale": "en",
+  "direction": "ltr",
+  "identityRef": {
+    "scopeId": "bad7313391508e4129c338752b2cc809",
+    "logoSha256": "c96253573225f1fa2044af43896a96056903b359eed7af9fad90bd626127ba99"
+  }
+}

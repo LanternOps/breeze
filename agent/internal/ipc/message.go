@@ -286,6 +286,21 @@ type AuthRequest struct {
 	// nothing else). Additive: older helpers omit it and are never sent a
 	// targeted dismissal, because they would ignore the target (#8995).
 	SupportsTargetedPamDismiss bool `json:"supportsTargetedPamDismiss,omitempty"`
+
+	// PromptProtocolVersion advertises the prompt host contract this
+	// renderer speaks (ipc.PromptProtocolVersion; absent = 0 = none). The
+	// broker clamps it to its own. Additive (#10190).
+	PromptProtocolVersion int `json:"promptProtocolVersion,omitempty"`
+
+	// PromptKinds lists the prompt kinds this renderer can draw, each with
+	// its own version ("restart.prompt@1"). The broker grants the prompt /
+	// prompt_operator scopes only for advertised kinds of that copy class and
+	// the helper's role; unknown or malformed entries are ignored.
+	PromptKinds []string `json:"promptKinds,omitempty"`
+
+	// RendererVersion is the renderer build's version, recorded on the
+	// session for the technician-side observation (W02 promptHost telemetry).
+	RendererVersion string `json:"rendererVersion,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
