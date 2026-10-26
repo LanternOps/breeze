@@ -1,4 +1,4 @@
-import { foreignKey, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, foreignKey, index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { partners } from './orgs';
 import { users } from './users';
 
@@ -42,6 +42,8 @@ export const wispNudgePreferences = pgTable('wisp_nudge_preferences', {
 export const wispPartnerNudgeSettings = pgTable('wisp_partner_nudge_settings', {
   partnerId: uuid('partner_id').primaryKey().references(() => partners.id, { onDelete: 'cascade' }),
   urgentCapableSeverities: text('urgent_capable_severities').array().$type<Array<'info' | 'low' | 'medium' | 'high'>>().notNull().default([]),
+  /** W08 (w00 A35): the partner's Wisp enable switch; a missing row means enabled. */
+  enabled: boolean('enabled').notNull().default(true),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

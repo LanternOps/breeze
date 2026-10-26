@@ -36,6 +36,10 @@ type AiToolTier = 1 | 2 | 3 | 4;
 // single device, so such a caller can never confirm scope over one. Callers
 // with NEITHER restriction always pass. Mirrors the route-layer
 // browserSecurity.ts helper (AuthContext flavour).
+// Mirrors the `deviceIds` Zod cap (.max(1000)) on manage_browser_policy in
+// aiToolSchemas.ts; the implicit org-wide target set is held to the same bound.
+const MAX_BROWSER_POLICY_APPLY_DEVICES = 1000;
+
 export function policyWithinSiteWriteScope(
   auth: AuthContext,
   targetType: string,
@@ -554,6 +558,14 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
         if (targetDevices.length === 0) {
           return JSON.stringify({ error: 'No target devices found' });
+        }
+
+        // Bound the RESOLVED set (implicit org-wide or explicit) before any
+        // trust check or dispatch; refuse rather than truncate.
+        if (targetDevices.length > MAX_BROWSER_POLICY_APPLY_DEVICES) {
+          return JSON.stringify({
+            error: `Policy resolves to ${targetDevices.length} devices, over the ${MAX_BROWSER_POLICY_APPLY_DEVICES}-device limit per apply call. Pass explicit deviceIds in batches of at most ${MAX_BROWSER_POLICY_APPLY_DEVICES}.`,
+          });
         }
 
         try {

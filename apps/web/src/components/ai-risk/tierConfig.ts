@@ -28,6 +28,7 @@ export type ToolCategory =
   | 'Remote Access & Control'
   | 'Integrations'
   | 'Ticketing'
+  | 'Billing'
   | 'AI Governance'
   | 'Other';
 
@@ -41,6 +42,7 @@ export type TierIconName = 'eye' | 'shield-check' | 'shield-alert' | 'shield-off
 
 export interface TierDefinition {
   tier: 1 | 2 | 3 | 4;
+  /** `security` locale key (aiRisk.tiers.<id>.label), resolved with t() at render. */
   label: string;
   description: string;
   iconName: TierIconName;
@@ -53,7 +55,7 @@ export interface TierDefinition {
 export const TIER_DEFINITIONS: TierDefinition[] = [
   {
     tier: 1,
-    label: 'Auto-Execute (Read-Only)',
+    label: 'aiRisk.tiers.tier1.label',
     description: 'Read-only operations that execute automatically without any approval or logging overhead.',
     iconName: 'eye',
     borderColor: 'border-l-green-500',
@@ -97,6 +99,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'ioc_hunt (list_rule_sets/preview_sweep/list_sweeps/sweep_status)', description: 'Detection rule sets, IOC sweep preview, list and status', category: 'Security & Compliance' },
+      // W04 (#6758): reads of staff-written policy config, no approval needed
+      { name: 'manage_software_policy (list/get)', description: 'List or read software policies', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
       { name: 'get_compliance_status', description: 'Device-level compliance status', category: 'Security & Compliance' },
@@ -181,6 +185,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_c2c_connections', description: 'Cloud-to-cloud backup connections', category: 'Backup & Recovery' },
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
+      // Full-control W03 (#6757)
+      { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'query_monitors', description: 'List monitors with status', category: 'Monitoring & Analytics' },
@@ -211,6 +217,13 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_ticket_routing_rules', description: 'List ticket routing rules applied to new tickets', category: 'Ticketing' },
       { name: 'test_ticket_routing_rule', description: 'Dry-run which routing rule would match a sample ticket', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration and ticket-ops reads.
+      { name: 'manage_ticket_config (get_config/get_org_settings/list_categories/list_domains)', description: 'View ticket statuses, priorities, SLA overrides, categories and customer email domains', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (list/get)', description: 'View checklist templates and their steps', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (list)', description: 'List the files attached to a ticket', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (list/available)', description: 'View ticket intake forms and the ones an organization can use', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (list)', description: 'View the partner\'s canned ticket replies', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (list)', description: 'See your time-entry suggestions for a day', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
@@ -220,6 +233,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
       { name: 'list_concerns', description: 'List the loose ends Wisp is tracking inside the delegation grant', category: 'AI Governance' },
+      // Wisp thread links (W08 #9914): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'list_links', description: 'List the objects linked to the Wisp thread that you can still see', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -230,7 +245,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 2,
-    label: 'Auto-Execute + Audit',
+    label: 'aiRisk.tiers.tier2.label',
     description:
       'Low-risk mutations and audited reads, always logged to the audit trail. Read-only entries auto-execute in every approval mode; mutations auto-execute except under per-step approval, which asks a quick confirmation.',
     iconName: 'shield-check',
@@ -248,6 +263,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
+      // Backup & Recovery (full-control W03, #6757)
+      { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
+      { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
       { name: 'get_monitor_activity', description: 'Per-device breach state and recent breach episodes for a monitor', category: 'Monitoring & Analytics' },
       { name: 'reset_monitor_escalation', description: 'Clear a monitor recurrence escalation for one device and resume its automatic responses', category: 'Monitoring & Analytics' },
@@ -262,7 +281,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_scheduled_tasks (list)', description: 'List Windows scheduled tasks', category: 'Services & Processes' },
       // Network & DNS
       { name: 'acknowledge_network_device', description: 'Acknowledge network device', category: 'Network & DNS' },
-      { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
       { name: 'manage_dns_policy', description: 'DNS policy management', category: 'Network & DNS' },
       // Remote Access & Control
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
@@ -295,11 +313,26 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
       // entries here before. move_org is listed separately under Tier 3.
-      { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert/edit_comment/delete_comment)', description: 'Create and update support tickets', category: 'Ticketing' },
+      // Full-control W02 (#6756): comment/update_status/update_fields are
+      // input-aware. A public comment, resolving (or any custom status), and
+      // changing the requester escalate to Tier 3 supervised; internal notes
+      // and other updates stay here. edit_comment/delete_comment are Tier 3.
+      { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert)', description: 'Create tickets, add internal notes, and update tickets (a public comment, resolving, or changing the requester needs approval)', category: 'Ticketing' },
       { name: 'manage_tickets (link_ticket/unlink_ticket)', description: 'Link related tickets in one organization, or remove a link', category: 'Ticketing' },
-      { name: 'manage_tickets (log_time_entry/start_timer/stop_timer)', description: 'Track time against tickets', category: 'Ticketing' },
+      { name: 'manage_tickets (log_time_entry/start_timer/stop_timer/update_time_entry)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
+      // Full-control W06 (#6776): ticket operations that stay at Tier 2. Creating a checklist
+      // template is Tier 2 for an organization template; a partner-wide one needs approval (input-aware).
+      { name: 'manage_tickets (bulk_update)', description: 'Assign, change the status of (not resolve) or set the priority of up to 50 tickets in one organization', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (create)', description: 'Create an organization checklist template (a partner-wide template needs approval)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (list)', description: 'Review inbound email the router could not place (sender text is untrusted)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (read_content/attach_from_artifact)', description: 'Read a text attachment, or stage a run artifact on a ticket (a person posts it)', category: 'Ticketing' },
+      { name: 'manage_time_suggestions (confirm/dismiss/undo)', description: 'Log, dismiss or restore your own time-entry suggestions', category: 'Ticketing' },
+      // Billing (full-control W02, #6756): quote drafting and new catalog
+      // items. 'Billing' because these are the business capability, not tickets.
+      { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
+      { name: 'manage_billing_catalog (create_item)', description: 'Add a billing catalog item (inert until a quote, invoice, or contract uses it)', category: 'Billing' },
       // Wisp memory (W03 #9909): remember writes an unconfirmed block.
       { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
       // Wisp concerns and watches (W05a #9911): grant-bound, inside the delegation ceiling.
@@ -307,13 +340,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'snooze_concern', description: 'Snooze a Wisp concern for up to 30 days', category: 'AI Governance' },
       { name: 'resolve_concern', description: 'Resolve a Wisp concern and remember the outcome', category: 'AI Governance' },
       { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
+      // Wisp thread links (W08 #9914): links one object you can see to the thread.
+      { name: 'link_entity', description: 'Link a ticket, device, quote or other object to the Wisp thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
       { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
     ],
   },
   {
     tier: 3,
-    label: 'Requires Approval',
+    label: 'aiRisk.tiers.tier3.label',
     description: 'Destructive or mutating operations that require explicit user approval before execution.',
     iconName: 'shield-alert',
     borderColor: 'border-l-amber-500',
@@ -341,7 +376,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
-      { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
+      { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
@@ -350,14 +385,34 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
+      { name: 'configure_network_baseline', description: 'Configure a recurring network baseline scan (schedules on-site discovery)', category: 'Network & DNS' },
       { name: 'diagnose_connectivity', description: 'One approved topology connectivity check (fresh MFA)', category: 'Network & DNS' },
       // Scripts & Automation
       { name: 'execute_playbook', description: 'Execute self-healing playbook', category: 'Scripts & Automation' },
       // Backup & Recovery
+      // Full-control W03 (#6757): triggers and Hyper-V power are approved by the
+      // requester; restores, instant boot and DR execution need a second approver.
       { name: 'trigger_backup', description: 'Initiate on-demand backup', category: 'Backup & Recovery' },
-      { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
+      { name: 'trigger_hyperv_backup', description: 'Back up a Hyper-V VM now', category: 'Backup & Recovery' },
+      { name: 'trigger_mssql_backup', description: 'Back up a SQL Server database now', category: 'Backup & Recovery' },
+      { name: 'verify_mssql_backup', description: 'Verify a SQL Server backup on the device (RESTORE VERIFYONLY)', category: 'Backup & Recovery' },
+      { name: 'trigger_vault_sync', description: 'Copy a snapshot to the device\'s local vault', category: 'Backup & Recovery' },
+      { name: 'trigger_c2c_sync', description: 'Start a cloud-to-cloud backup sync', category: 'Backup & Recovery' },
+      { name: 'configure_vault (create/update)', description: 'Create or repoint a local vault (path, type, retention); the device is reconfigured', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
+      { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
+      { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
+      { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
+      { name: 'instant_boot_vm', description: 'Boot a snapshot as a VM (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_hyperv_vm', description: 'Restore a Hyper-V VM from backup (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_mssql_database', description: 'Restore a SQL Server database (second approver)', category: 'Backup & Recovery' },
+      { name: 'restore_c2c_items', description: 'Restore cloud-to-cloud backup items (second approver)', category: 'Backup & Recovery' },
+      { name: 'execute_dr_plan', description: 'Run a DR rehearsal, failover or failback (second approver)', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_delivery (create_routing/update_routing/delete_routing/set_default/create_escalation/update_escalation/delete_escalation)', description: 'Manage alert routing, default destinations, and escalation policies (requires approval)', category: 'Alerts & Notifications' },
+      { name: 'manage_notification_channels (create/update/delete)', description: 'Create, repoint, or delete a notification channel (the approver sees the destination host)', category: 'Alerts & Notifications' },
       // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
       // (create/update/delete/enable/disable/attach/detach) — supervised, same
       // class as the software/browser/peripheral policy tools.
@@ -384,15 +439,28 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      { name: 'manage_tickets (edit_comment/delete_comment)', description: 'Edit or delete a ticket comment (customer-visible text, no restore)', category: 'Ticketing' },
+      // Billing (full-control W02, #6756)
+      { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
+      { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
+      // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
+      // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
+      // (email domain mapping, checklist template, ticket form, canned reply) need a second approver.
+      { name: 'manage_ticket_config (update_org_settings/create_category/update_category/delete_category/reorder_categories/create_status/update_status/reorder_statuses/set_priorities/create_domain/update_domain/delete_domain)', description: 'Change ticket categories, statuses, priorities, SLA overrides or customer email domain routing (removing a domain mapping needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_checklist_templates (update/delete/add_item/update_item/remove_item/reorder_items)', description: 'Edit or delete a checklist template and its steps (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_inbox (convert/dismiss)', description: 'Turn an inbound email into a ticket in an organization, or dismiss it (neither can be undone)', category: 'Ticketing' },
+      { name: 'manage_ticket_attachments (delete)', description: 'Permanently delete a ticket attachment', category: 'Ticketing' },
+      { name: 'manage_ticket_forms (create/update/delete)', description: 'Create, change or delete a customer-visible ticket intake form (deleting needs a second approver)', category: 'Ticketing' },
+      { name: 'manage_ticket_response_templates (create/update/delete)', description: 'Create, change or delete a partner-wide canned reply (deleting needs a second approver)', category: 'Ticketing' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
-      { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      { name: 'operator_plan', description: 'Approve an AI task plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): every other kind asks first; an assessment's
       // request for one becomes the wisp_specialist_request approval card.
-      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an Operator task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
+      { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an AI task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
       { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
@@ -401,7 +469,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
   },
   {
     tier: 4,
-    label: 'Blocked',
+    label: 'aiRisk.tiers.tier4.label',
     description: 'Operations that are never allowed, such as cross-organization data access or unknown tools.',
     iconName: 'shield-off',
     borderColor: 'border-l-red-500',
@@ -430,6 +498,8 @@ export interface RateLimitConfig {
   category: ToolCategory;
 }
 
+// `tier` here is the tool's BASE (registry) tier; per-action escalations
+// (e.g. configure_vault create/update -> Tier 3) are listed in TIER_DEFINITIONS.
 export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Remote Access & Control
   { toolName: 'execute_command', tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
@@ -484,7 +554,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Integrations
   { toolName: 'test_webhook', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'trigger_agent_upgrade', tier: 3, permission: 'devices.execute', category: 'Integrations' },
-  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.execute', category: 'Integrations' },
+  { toolName: 'trigger_agent_restart', tier: 3, permission: 'devices.recover_agent', category: 'Integrations' },
   { toolName: 'manage_notification_channels', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
   { toolName: 'manage_saved_filters', tier: 1, permission: 'devices.read', category: 'Other' },
   // Fleet Operations
@@ -510,18 +580,24 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
-  { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
-  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
+  { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'edr_endpoint_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_edr_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  // Full-control W04 (#6758, quorum QW11): device-touching tools that gained a rate limit.
+  { toolName: 'manage_browser_policy', tier: 3, permission: 'devices.write / devices.execute (apply)', category: 'Security & Compliance' },
+  { toolName: 'manage_peripheral_policy', tier: 3, permission: 'organizations.write', category: 'Devices & Hardware' },
+  { toolName: 'remediate_sensitive_data', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'configure_network_baseline', tier: 3, permission: 'devices.write', category: 'Network & DNS' },
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
-  { toolName: 'trigger_vault_sync', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
   { toolName: 'instant_boot_vm', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
@@ -532,13 +608,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_hyperv_checkpoints', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'trigger_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'restore_mssql_database', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
-  { toolName: 'verify_mssql_backup', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'verify_mssql_backup', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   // Monitoring & Analytics
   { toolName: 'query_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'manage_service_monitors', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   { toolName: 'get_service_monitoring_status', tier: 1, permission: 'devices.read', category: 'Monitoring & Analytics' },
   // Integrations
-  { toolName: 'trigger_c2c_sync', tier: 2, permission: 'organizations.write', category: 'Integrations' },
+  { toolName: 'trigger_c2c_sync', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   { toolName: 'restore_c2c_items', tier: 3, permission: 'organizations.write', category: 'Integrations' },
   // Alerts & Notifications
   { toolName: 'manage_delivery', tier: 1, permission: 'alerts.read', category: 'Alerts & Notifications' },
@@ -550,12 +626,22 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'create_watch', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'snooze_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp thread links (W08 #9914)
+  { toolName: 'link_entity', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
   { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
   { toolName: 'send_endpoint_message', tier: 3, permission: 'endpoint_messages.send', category: 'Ticketing' },
+  // Full-control W06 (#6776): `tier` is the registry tier (1); the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_ticket_config', tier: 1, permission: 'tickets.read / tickets.write / organizations.write (org settings)', category: 'Ticketing' },
+  { toolName: 'manage_ticket_checklist_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_inbox', tier: 1, permission: 'tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_attachments', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_forms', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_ticket_response_templates', tier: 1, permission: 'tickets.read / tickets.write', category: 'Ticketing' },
+  { toolName: 'manage_time_suggestions', tier: 1, permission: 'time_entries.read / time_entries.write', category: 'Ticketing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -720,7 +806,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   query_compliance_policies: 'devices.read',
   get_compliance_status: 'devices.read',
   // Notification channels
-  manage_notification_channels: { list: 'alerts.read', test: 'alerts.write' },
+  manage_notification_channels: { list: 'alerts.read', test: 'alerts.write', create: 'alerts.write', update: 'alerts.write', delete: 'alerts.write' },
   // Saved filters
   manage_saved_filters: { list: 'devices.read', get: 'devices.read', create: 'devices.write', delete: 'devices.write' },
   // Fleet tools
@@ -798,6 +884,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   snooze_concern: 'ai_sessions.use',
   resolve_concern: 'ai_sessions.use',
   create_watch: 'ai_sessions.use',
+  // Wisp thread links (W08 #9914)
+  link_entity: 'ai_sessions.use',
+  list_links: 'ai_sessions.use',
   // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
   launch_specialist: 'ai_sessions.use',
   wisp_specialist_request: 'ai_sessions.use',

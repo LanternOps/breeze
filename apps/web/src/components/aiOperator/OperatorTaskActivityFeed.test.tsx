@@ -67,8 +67,8 @@ describe('OperatorTaskActivityFeed', () => {
     fetchMock.mockResolvedValueOnce(json({ data: [], nextCursor: null }));
     render(<OperatorTaskActivityFeed deviceId="device-1" />);
     await waitFor(() => expect(screen.getByTestId('operator-task-feed-empty')).toBeInTheDocument());
-    expect(screen.getByTestId('operator-task-feed-empty')).toHaveTextContent(/delegate an alert/i);
-    expect(screen.getByRole('link', { name: /learn about the ai operator/i })).toHaveAttribute('href', 'https://docs.breezermm.com/features/ai-agents/');
+    expect(screen.getByTestId('operator-task-feed-empty')).toHaveTextContent(/start an AI task/i);
+    expect(screen.getByRole('link', { name: /learn about ai tasks/i })).toHaveAttribute('href', 'https://docs.breezermm.com/features/ai-tasks/');
   });
 
   it('shows an error state with a retry button on a non-ok response', async () => {

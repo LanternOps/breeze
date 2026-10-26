@@ -53,6 +53,13 @@ vi.mock('../../aiModels/promptVariants', async (orig) => ({
     { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
   ],
 }));
+vi.mock('../toolEval/lazyIndexCases', () => ({
+  LAZY_INDEX_CASES: [
+    { id: 'l01', page: 'device', kind: 'page-expanded', prompt: 'disk?', expect: [{ tool: 'query_devices' }] },
+    { id: 'l06', page: 'dashboard', kind: 'unexpanded-domain', prompt: 'invoices?', expect: [{ tool: 'list_invoices' }] },
+  ],
+  buildLazyIndexCasePrompt: async (c: { page: string }) => `page-prompt:${c.page}`,
+}));
 vi.mock('../../aiAgents/runnerPrompt', () => ({
   buildAgentRunSystemPrompt: (ctx: { tag: string }) => `system:${ctx.tag}`,
   buildAgentRunTaskPrompt: (ctx: { tag: string }) => `task:${ctx.tag}`,
@@ -211,6 +218,31 @@ describe('--suite agent (#7428)', () => {
   it.each([
     [['--suite', 'agent', '--cases', 'g01']], [['--suite', 'agent', '--surface', 'chat']],
     [['--suite', 'nope']], [['--surface-search', 'maybe']], [['--cases', 'a01']],
+  ])('rejects %j with exit 2', async (args) => {
+    expect(await runCli(args)).toBe(2);
+    expect(runSurfaceCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('--suite lazy-index (W19 #10065)', () => {
+  it('runs each case on chat with the production prompt for its page and the chat first-call caps', async () => {
+    expect(await runCli(['--suite', 'lazy-index'])).toBe(0);
+    const calls = vi.mocked(runSurfaceCapture).mock.calls.map(([opts]) => opts);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ surface: expect.objectContaining({ id: 'chat' }), prompt: 'disk?', systemPrompt: 'page-prompt:device', maxTurns: 3 });
+    expect(calls[1]).toMatchObject({ prompt: 'invoices?', systemPrompt: 'page-prompt:dashboard' });
+    const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
+    expect(report).toMatchObject({ suite: 'lazy-index', surface: 'chat', summary: { total: 2, hits: 1 } });
+    expect(report.cases.map((c: { id: string }) => c.id)).toEqual(['l01', 'l06']);
+  });
+
+  it('keeps the strict 1-turn cap with tool search off', async () => {
+    expect(await runCli(['--suite', 'lazy-index', '--tool-search', 'off', '--cases', 'l06'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.map(([o]) => o.maxTurns)).toEqual([1]);
+  });
+
+  it.each([
+    [['--suite', 'lazy-index', '--cases', 'g01']], [['--suite', 'lazy-index', '--surface', 'helper-standard']],
   ])('rejects %j with exit 2', async (args) => {
     expect(await runCli(args)).toBe(2);
     expect(runSurfaceCapture).not.toHaveBeenCalled();

@@ -93,6 +93,13 @@ import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
 import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { registerTicketConfigTools } from './aiToolsTicketConfig';
+import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
+import { registerTicketInboxTools } from './aiToolsTicketInbox';
+import { registerTicketAttachmentTools } from './aiToolsTicketAttachments';
+import { registerTicketFormTools } from './aiToolsTicketForms';
+import { registerTicketResponseTemplateTools } from './aiToolsTicketResponseTemplates';
+import { registerTimeSuggestionTools } from './aiToolsTimeSuggestions';
 import { registerMessagingTools } from './aiToolsMessaging';
 import { registerCatalogTools } from './aiToolsCatalog';
 import { registerBillingTools } from './aiToolsBilling';
@@ -110,6 +117,7 @@ import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
+import { registerWispLinkTools } from './wisp/linkTools';
 import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
@@ -364,6 +372,14 @@ registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
 registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
+// Full-control W06 (#6776): PSA configuration + ticket operations.
+registerTicketConfigTools(aiTools);
+registerTicketChecklistTemplateTools(aiTools);
+registerTicketInboxTools(aiTools);
+registerTicketAttachmentTools(aiTools);
+registerTicketFormTools(aiTools);
+registerTicketResponseTemplateTools(aiTools);
+registerTimeSuggestionTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
@@ -403,6 +419,8 @@ registerTicketRoutingTools(aiTools);
 registerWispMemoryTools(aiTools);
 // Wisp W05a concern/watch tools: same posture — inert without auth.wispGrant.
 registerWispConcernTools(aiTools);
+// Wisp W08 thread links: same posture — inert without auth.wispGrant.
+registerWispLinkTools(aiTools);
 // Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
 // the human-only approval carrier wisp_specialist_request.
 registerWispTools(aiTools);

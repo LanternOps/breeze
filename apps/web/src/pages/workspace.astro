@@ -1,8 +1,6 @@
 ---
-import DashboardLayout from '../layouts/DashboardLayout.astro';
-import WorkspacePage from '../components/workspace/WorkspacePage';
+// Wisp W08 (#9921): the multi-tab chat moved to /wisp/chat. Permanent
+// redirect so bookmarks and `/workspace#session=<id>` links keep working —
+// browsers carry the fragment across a redirect whose Location has none.
+return Astro.redirect('/wisp/chat', 301);
 ---
-
-<DashboardLayout titleKey="titles.workspace">
-  <WorkspacePage client:load />
-</DashboardLayout>

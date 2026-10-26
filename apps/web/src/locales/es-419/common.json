@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "Asistente de IA",
+    "assistant": "Breeze AI",
     "agent": "Agente de IA",
     "originUnavailable": "Origen no disponible",
     "openSession": "Abrir conversación",
@@ -27,7 +27,7 @@
     "patches": "Parches",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI para Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Red",
     "jobs": "Trabajos",
     "flows": "Flujos",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Creación de scripts",
     "toolSources": "Fuentes de herramientas",
     "aiAgents": "Agentes de IA",
-    "aiAgentRuns": "Ejecuciones de agentes de IA",
-    "aiImpact": "Impacto de IA",
-    "fixMemory": "Memoria de correcciones",
-    "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "moreSettings": "Más configuraciones",
@@ -90,12 +86,11 @@
     "variables": "Variables",
     "llmProviderCatalog": "Catálogo de proveedores de LLM",
     "aiKillSwitch": "Interruptor de emergencia de IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestión de flota",
     "sectionBilling": "Facturación",
     "sectionAdministration": "Administración",
-    "fleetOrchestration": "Orquestación de flota",
-    "aiAssistant": "Asistente de IA",
     "software": "Software",
     "softwareInventory": "Inventario de software",
     "softwarePolicies": "Políticas de software",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Cambios",
     "endpointMessages": "Mensajes",
     "securityDetectionRules": "Reglas de detección",
-    "planAndFeatures": "Plan y funciones"
+    "planAndFeatures": "Plan y funciones",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Trabajadores",
+    "agents": "Agentes",
+    "runs": "Ejecuciones",
+    "aiTasks": "Tareas de IA",
+    "findings": "Hallazgos",
+    "impact": "Impacto",
+    "aiKnowledgeSources": "Fuentes de conocimiento",
+    "wispLockedServer": "Wisp se ejecuta en Breeze Cloud. No está disponible en este servidor."
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -670,7 +674,7 @@
     },
     "apps": {
       "title": "Aplicaciones conectadas",
-      "description": "Asistentes de AI y otros clientes MCP (Claude.ai, ChatGPT, Cursor, …) que haya autorizado para actuar en su nombre. Revoque el acceso en cualquier momento: los tokens dejarán de funcionar en un plazo de 10 minutos.",
+      "description": "Clientes de IA (Claude.ai, ChatGPT, Cursor, …) que autorizaste para actuar en tu nombre. Revoca el acceso en cualquier momento: los tokens dejan de funcionar en un plazo de 10 minutos.",
       "empty": "No hay aplicaciones conectadas",
       "emptyDescription": "Cuando autorizas un chat Claude.ai, ChatGPT, Cursor o cualquier otro cliente MCP, aparecerá aquí para que puedas revocarlo más tarde.",
       "authorized": "Autorizado",
@@ -680,7 +684,7 @@
       "revokeTitle": "¿Revocar {{app}}?",
       "revokeDescription": "Se borrarán todas las subvenciones y tokens de actualización de este cliente. Los tokens dejan de funcionar en 10 minutos. Deberá volver a autorizarlo la próxima vez que lo use.",
       "onlyAppTitle": "Esta es su única aplicación autorizada.",
-      "onlyAppDescription": "Después de revocar, deberá volver a autorizar antes de que cualquier asistente de AI pueda actuar sobre su inquilino.",
+      "onlyAppDescription": "Después de revocar, tendrás que volver a autorizar antes de que cualquier cliente de IA pueda actuar en tu tenant.",
       "reasonPlaceholder": "Ya no es necesario, actividad sospechosa,…",
       "revokeAction": "Revocar acceso"
     }
@@ -737,8 +741,8 @@
     "header": {
       "menu": "Menú",
       "openMenu": "Abrir menú de navegación",
-      "ai": "Asistente AI",
-      "aiTitle": "Asistente AI (Cmd+Mayús+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Ayuda y documentos",
       "helpTitle": "Ayuda y documentos (Cmd+Mayús+H)",
       "theme": "Tema",
@@ -807,7 +811,11 @@
         "alertRules": "Reglas de alerta",
         "alertRulesDescription": "Administrar alertas en Políticas de configuración",
         "keyboardShortcuts": "Atajos de teclado",
-        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta"
+        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta",
+        "askBreezeAi": "Preguntar a Breeze AI",
+        "askBreezeAiDescription": "Abre el panel lateral de Breeze AI",
+        "wispHome": "Abrir Wisp",
+        "wispHomeDescription": "Ir a tu inicio de Wisp"
       },
       "numberHint": "{{mod}}1–9 para abrir"
     },
@@ -1997,8 +2005,8 @@
         "errors": {
           "loadFailed": "No se pudieron cargar las estadísticas de la flota"
         },
-        "title": "Orquestación de flotas",
-        "description": "Administre políticas, implementaciones, parches y automatizaciones en toda su flota",
+        "title": "Hallazgos",
+        "description": "Patrones entre dispositivos que encontraron los trabajadores: una sola acción en lugar de muchas",
         "partialWarning": "Algunos datos pueden estar incompletos. No se pudo cargar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",
@@ -2012,7 +2020,7 @@
           "reports": "Informes"
         },
         "aiFleetActions": "AI Acciones de flota",
-        "aiFleetActionsHint": "Haga clic para preguntarle al asistente AI",
+        "aiFleetActionsHint": "Haz clic para preguntar a Breeze AI",
         "quickActions": {
           "checkCompliance": "Comprobar cumplimiento",
           "activeDeployments": "Implementaciones activas",
@@ -2399,8 +2407,8 @@
             "description": "¿Administra varios clientes? Cambie de organización aquí."
           },
           "aiHelp": {
-            "title": "Ayuda basada en IA",
-            "description": "Haga preguntas sobre su flota, solucione problemas o genere informes. Presione Cmd+Shift+A en cualquier momento."
+            "title": "Breeze AI",
+            "description": "Pregunta sobre tu flota en lenguaje natural, soluciona problemas o genera informes. Presiona ⌘⇧A en cualquier lugar."
           }
         },
         "skipTour": "Saltar recorrido",
@@ -2551,7 +2559,7 @@
           "parameters": "Parámetros"
         },
         "accept": "Aceptar",
-        "reject": "Rechazar",
+        "reject": "Denegar",
         "execute": "Ejecutar",
         "requestApprovalTitle": "Solicitar aprobación PAM antes de la ejecución",
         "requesting": "Solicitando...",

@@ -23,6 +23,12 @@ vi.mock('../../stores/auth', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispLinkButton', () => ({
+  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
+    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+  ),
+}));
 vi.mock('./ContractDetail', () => ({ default: () => <div data-testid="mock-contract-detail" /> }));
 vi.mock('./ContractEditor', async () => {
   const React = await import('react');
@@ -63,6 +69,21 @@ describe('ContractWorkspace background refresh (#9305)', () => {
     expect(screen.getByTestId('contract-workspace-loading')).toBeInTheDocument();
     await screen.findByTestId('mock-contract-editor');
     expect(screen.queryByTestId('contract-workspace-loading')).toBeNull();
+  });
+
+  it('mounts the Link-to-Wisp button in the header with the contract and its org (W08 Task 10)', async () => {
+    vi.mocked(getContract).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: { contract: { id: 'c1', name: 'A', status: 'draft', orgId: 'org-7' }, lines: [] } as unknown as ContractDetailData,
+      }),
+    } as Response);
+    render(<ContractWorkspace contractId="c1" />);
+    const button = await screen.findByTestId('wisp-link-button-mock');
+    expect(button).toHaveAttribute('data-kind', 'contract');
+    expect(button).toHaveAttribute('data-id', 'c1');
+    expect(button).toHaveAttribute('data-org', 'org-7');
   });
 
   it('keeps the editor mounted and swaps in new detail on refresh', async () => {

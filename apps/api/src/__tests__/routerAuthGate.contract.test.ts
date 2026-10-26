@@ -26,6 +26,7 @@ const EXEMPT: Record<string, string> = {
   automationWebhookRoutes: 'Inbound automation webhooks authenticate with webhook secrets.',
   invoicesPublicRoutes: 'Public invoice links authenticate via share tokens.',
   quotesPublicRoutes: 'Public quote links authenticate via share tokens.',
+  agreementsPublicRoutes: 'Public agreement signing links authenticate via signed request tokens.',
   trustPagePublicRoutes: 'Public trust pages are unauthenticated by design; non-serving cases are a generic 404 (spec trust-center §7, §13).',
   trustPageAttestationRoutes: 'Public, unauthenticated attestation of an already-public payload; generic 404 (Trust Center W3b).',
   trustAccessPublicRoutes: 'Trust Center gated-document requests are unauthenticated by design: anonymous requesters, hashed fragment tokens, generic failures (spec trust-center §12).',

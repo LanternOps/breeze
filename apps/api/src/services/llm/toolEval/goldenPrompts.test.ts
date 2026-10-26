@@ -7,8 +7,8 @@ import { GOLDEN_CASES } from './goldenPrompts';
 // A-W02 Task 5 declares the currently mute documentation tool; remove this set then.
 const PENDING_DECLARATION = new Set<string>([]); // search_documentation was declared by A-W02 (#6341)
 
-// The plan's fixed prompts also reference these pre-existing #3300 gaps from
-// aiAgentSdkTools.registryParity.contract.test.ts (KNOWN_MISSING_TOOL_TIERS).
+// The plan's fixed prompts also referenced pre-existing #3300 gaps (the
+// KNOWN_MISSING_TOOL_TIERS list, emptied and deleted in full-control W04 #6758).
 // Preserve them in the eval: unavailable tools must still count as misses, not
 // disappear from the baseline. A-W01 must not change product tool exposure.
 // Frozen at A-W01; only shrink this set as declarations land. Unlike the g57
@@ -16,21 +16,26 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 //
 // Spec 2026-09-23 W01 (#6755) declared 11 of these (the L1 reads it wired);
 // removed here rather than left stale, per this test's own "now declared;
-// remove the exception" assertion below.
-const BASELINE_UNDECLARED_TOOLS = new Set([
-  'manage_quotes',
-  'manage_tags',
-  'manage_tickets',
-  'restore_snapshot',
-  'trigger_backup',
-  'trigger_mssql_backup',
-]);
+// remove the exception" assertion below. W02 (#6756) declared manage_quotes,
+// manage_tags and manage_tickets. W03 (#6757) declared restore_snapshot,
+// trigger_backup and trigger_mssql_backup, which empties the set.
+const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 69 unique ids', () => {
+  it('has 84 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
-    expect(GOLDEN_CASES).toHaveLength(69);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(69);
+    // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
+    // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
+    // g79-g81 (full-control W04, #6758): process kill, containment, agent restart.
+    // g82-g84 (full-control W06, #6776): ticket config, checklist templates, time suggestions.
+    expect(GOLDEN_CASES).toHaveLength(84);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(84);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g82')?.expect[0]).toEqual({ tool: 'manage_ticket_config', action: 'create_category' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g83')?.expect[0]).toEqual({ tool: 'manage_ticket_checklist_templates', action: 'create' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g84')?.expect[0]).toEqual({ tool: 'manage_time_suggestions', action: 'confirm' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g79')?.expect[0]).toEqual({ tool: 'manage_processes', action: 'kill' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g80')?.expect[0]).toEqual({ tool: 'execute_containment' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g81')?.expect[0]).toEqual({ tool: 'trigger_agent_restart' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g69')?.expect[0]).toEqual({ tool: 'sync_edr_data' });
   });
   it('expects registered tools and declared actions, with only known chat-visibility gaps', () => {
@@ -64,6 +69,7 @@ describe('GOLDEN_CASES', () => {
     const structuralMisses = GOLDEN_CASES
       .filter((c) => c.expect.every((e) => undeclared.has(e.tool)))
       .map((c) => c.id);
-    expect(structuralMisses).toEqual(['g34', 'g35', 'g36']);
+    // W02 (#6756) declared manage_tickets, so g34/g35/g36 are winnable now.
+    expect(structuralMisses).toEqual([]);
   });
 });

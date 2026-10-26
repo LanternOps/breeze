@@ -148,13 +148,14 @@ function normalizeStoragePrefix(
     }
   }
 
-  // #6398: deliberately NOT `providerConfig.prefix`. A legacy_flat snapshot's
-  // objects are at `snapshots/<id>/...` verbatim whatever the destination's
-  // prefix (see the note on the GC helpers below), so applying the prefix
-  // here pointed immutability and deletion at a region that holds nothing:
-  // object lock threw "No snapshot objects found" and deletion silently
-  // stranded the real objects. Only a per-snapshot recorded `storagePrefix`
-  // (above) may relocate a snapshot.
+  // #6398: deliberately NOT `providerConfig.prefix`. This function serves
+  // legacy_flat snapshots only, whose objects are at `snapshots/<id>/...`
+  // whatever the destination's prefix is now; applying the prefix here once
+  // pointed immutability and deletion at a region that held nothing. A
+  // snapshot written under a destination prefix records `prefixed_flat` and
+  // is resolved by snapshotStoragePrefixFor from its own recorded root
+  // (#7081, backupKeyLayout.ts). Only a per-snapshot recorded `storagePrefix`
+  // (above) may relocate a legacy snapshot.
   return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`;
 }
 

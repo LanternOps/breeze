@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // W07 R2b: the accounts panel reads the viewer's id to decide who may reveal.
+  useAuthStore: (sel: (s: { user: { id: string } | null }) => unknown) => sel({ user: { id: 'u-viewer' } }),
+}));
 
 import OperatorTaskDetail from './OperatorTaskDetail';
 import { fetchWithAuth } from '../../stores/auth';
@@ -173,6 +177,85 @@ describe('OperatorTaskDetail', () => {
   });
 });
 
+describe('OperatorTaskDetail approve-in-Approvals link (#10134)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+  const INTENT = '3f2a1b9c-0000-4000-8000-0000000000aa';
+  const planRow = (over: Record<string, unknown>) => ({
+    id: 'p1', taskId: 'task-1', planRevision: 1, effectSetDigest: 'd', effectCount: 1, intentId: INTENT,
+    state: 'pending', approvedByUserId: null, approvedAt: null, supersededByRevision: null,
+    createdAt: '2026-09-07T00:00:00.000Z', effects: [], ...over,
+  });
+
+  it('links the next action to the approval card', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({})] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('links to the Approvals page when the payload carries no pending intent id', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({ intentId: null })] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', '/approvals');
+  });
+
+  it('ignores superseded plan revisions when picking the intent', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', plan: [planRow({ state: 'superseded', intentId: 'old' }), planRow({ id: 'p2', planRevision: 2 })] as never }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('uses the wait dependency intent for single-operation approvals (no plan)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'approve_in_inbox', waitDependency: { kind: 'intent', id: INTENT }, plan: [] }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const link = await screen.findByRole('link', { name: 'Approve in Approvals' });
+    expect(link).toHaveAttribute('href', `/approvals#intent-${INTENT}`);
+  });
+
+  it('other next actions stay plain text', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: buildTask({ nextAction: 'in_progress' }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    const cell = await screen.findByTestId('operator-task-next-action');
+    expect(cell.querySelector('a')).toBeNull();
+  });
+});
+
+// Wisp W07 (#9920) — "Wisp for <user>" provenance on the task's origin grid.
+describe('OperatorTaskDetail Wisp provenance', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  const WISP = {
+    grantId: '7d0c1e2f-0000-4000-8000-000000000001',
+    grantorUserId: '3f2a1b9c-0000-4000-8000-000000000002',
+    grantorName: 'Todd',
+    depth: 1 as const,
+    requestedByRunId: '9a8b7c6d-0000-4000-8000-000000000003',
+  };
+
+  it('renders "Wisp for Todd" when task.wisp is set', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: { ...buildTask(), wisp: WISP } }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('operator-task-wisp')).toBeInTheDocument());
+    expect(screen.getByTestId('operator-task-wisp')).toHaveTextContent('Wisp for Todd');
+  });
+
+  it('renders nothing wisp-related when task.wisp is null', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: { ...buildTask(), wisp: null } }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('operator-task-state')).toBeInTheDocument());
+    expect(screen.queryByTestId('operator-task-wisp')).toBeNull();
+    expect(screen.queryByText(/Wisp for/)).toBeNull();
+  });
+});
+
 /**
  * W06 R1b Task 21 — MOUNT proof: the steps, plan and timeline panels render
  * THROUGH the task page component, with the selected panel in `#panel=`.
@@ -268,5 +351,47 @@ describe('OperatorTaskDetail panels (W06 R1b)', () => {
     fetchMock.mockResolvedValueOnce(json({ data: task }));
     render(<OperatorTaskDetail taskId="task-1" />);
     expect(await screen.findByTestId('task-plan-unavailable')).toBeInTheDocument();
+  });
+});
+
+// W07 R2b (Task 19 case 8): the created-accounts panel is MOUNTED in the task
+// page behind `#panel=accounts`, and only for a task that has accounts.
+describe('OperatorTaskDetail — accounts panel (W07 R2b)', () => {
+  const accounts: NonNullable<AiOperatorTaskDto['accounts']> = [{
+    provider: 'm365', principalLabel: 'priya@customer.example', externalId: 'cccccccc-0000-4000-8000-000000000001',
+    credentialState: 'expired', intentId: 'i-create', revealableByUserId: null, revealableByName: null, revealExpiresAt: null,
+  }];
+  const onboardingTask = (overrides: Partial<AiOperatorTaskDto> = {}) => buildTask({
+    workflowKey: 'identity_onboarding', objective: 'Onboard Priya Patel',
+    target: { deviceId: null, label: null, detachedAt: null, detachedReason: null },
+    plan: [], accounts, ...overrides,
+  });
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    window.location.hash = '';
+  });
+
+  it('#panel=accounts renders task-accounts through the page; the hash round-trips and the other panels still render', async () => {
+    window.location.hash = 'panel=accounts';
+    fetchMock.mockResolvedValueOnce(json({ data: onboardingTask() }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    expect(await screen.findByTestId('task-accounts')).toBeInTheDocument();
+    expect(screen.getByTestId('task-account-credential-m365')).toHaveTextContent('Do not create a second account.');
+    fireEvent.click(screen.getByTestId('task-panel-tab-plan'));
+    expect(await screen.findByTestId('task-plan-empty')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#panel=plan');
+    fireEvent.click(screen.getByTestId('task-panel-tab-accounts'));
+    expect(await screen.findByTestId('task-accounts')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#panel=accounts');
+  });
+
+  it('a task with no accounts grows no accounts tab, and #panel=accounts falls back to the steps', async () => {
+    window.location.hash = 'panel=accounts';
+    fetchMock.mockResolvedValueOnce(json({ data: onboardingTask({ workflowKey: 'service_recovery', accounts: [] }) }));
+    render(<OperatorTaskDetail taskId="task-1" />);
+    expect(await screen.findByTestId('task-steps-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-panel-tab-accounts')).toBeNull();
+    expect(screen.queryByTestId('task-accounts')).toBeNull();
   });
 });

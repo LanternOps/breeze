@@ -91,6 +91,18 @@ const TARGET_GLOBS = [
   // listed per the W06 plan so a mutation added there later cannot go silent.
   'src/components/wisp/WispThreadPage.tsx',
   'src/components/wisp/WispGrantPauseControl.tsx',
+  // Wisp W08b (#9921): links add/remove and the partner "Wisp enabled" switch go through runAction;
+  // the home page and needs-you section are listed so a mutation added later cannot go silent.
+  'src/lib/wispLinksApi.ts',
+  'src/lib/wispPartnerSettingsApi.ts',
+  'src/components/wisp/WispHomePage.tsx',
+  'src/components/wisp/WispLinksPanel.tsx',
+  'src/components/wisp/WispNeedsYou.tsx',
+  'src/components/wisp/WispEntityPicker.tsx',
+  'src/components/wisp/WispLinkButton.tsx',
+  'src/components/settings/WispPartnerSettingsCard.tsx',
+  'src/components/wisp/WispHomeContent.tsx',
+  'src/components/wisp/WispHomeThread.tsx',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -1008,7 +1020,10 @@ describe('no silent mutations in targeted set', () => {
     // #6958 PR D adds software/BuiltinPackagesPanel.tsx: 269 → 270.
     // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 270 → 272.
     // IOC sweeps W05 PR C (#6263) adds security/sweeps/sweepsApi.ts: 272 → 273.
-    expect(absoluteFiles.length).toBe(273);
+    // Wisp W08b (#9921) adds wispLinksApi, wispPartnerSettingsApi, WispHomePage, WispLinksPanel,
+    // WispNeedsYou, WispEntityPicker, WispLinkButton, WispPartnerSettingsCard: 273 → 281; then
+    // WispHomeContent and WispHomeThread (G3): 281 → 283.
+    expect(absoluteFiles.length).toBe(283);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

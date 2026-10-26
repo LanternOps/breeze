@@ -3,7 +3,7 @@
     "separator": ", "
   },
   "aiInitiator": {
-    "assistant": "AI assistant",
+    "assistant": "Breeze AI",
     "agent": "AI agent",
     "originUnavailable": "Origin not available",
     "openSession": "Open conversation",
@@ -27,7 +27,7 @@
     "patches": "Patches",
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI for Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Network",
     "jobs": "Jobs",
     "flows": "Flows",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Script authoring",
     "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",
-    "aiAgentRuns": "AI Agent Runs",
-    "aiImpact": "AI Impact",
-    "fixMemory": "Fix memory",
-    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -90,12 +86,11 @@
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
     "aiKillSwitch": "AI Kill Switch",
+    "wisp": "Wisp",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Fleet Orchestration",
-    "aiAssistant": "AI Assistant",
     "software": "Software",
     "softwareInventory": "Software Inventory",
     "softwarePolicies": "Software Policies",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Changes",
     "endpointMessages": "Messages",
     "securityDetectionRules": "Detection Rules",
-    "planAndFeatures": "Plan & features"
+    "planAndFeatures": "Plan & features",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Workers",
+    "agents": "Agents",
+    "runs": "Runs",
+    "aiTasks": "AI Tasks",
+    "findings": "Findings",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Knowledge sources",
+    "wispLockedServer": "Wisp runs on Breeze Cloud. It is not available on this server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -670,7 +674,7 @@
     },
     "apps": {
       "title": "Connected apps",
-      "description": "AI assistants and other MCP clients (Claude.ai, ChatGPT, Cursor, …) you've authorized to act on your behalf. Revoke access at any time — tokens stop working within 10 minutes.",
+      "description": "AI clients (Claude.ai, ChatGPT, Cursor, …) you've authorized to act on your behalf. Revoke access at any time — tokens stop working within 10 minutes.",
       "empty": "No connected apps",
       "emptyDescription": "When you authorize a Claude.ai chat, ChatGPT, Cursor, or any other MCP client, it will appear here so you can revoke it later.",
       "authorized": "Authorized",
@@ -680,7 +684,7 @@
       "revokeTitle": "Revoke {{app}}?",
       "revokeDescription": "All grants and refresh tokens for this client will be wiped. Tokens stop working within 10 minutes. You'll need to re-authorize the next time you use it.",
       "onlyAppTitle": "This is your only authorized app.",
-      "onlyAppDescription": "After revoking, you'll need to re-authorize before any AI assistant can act on your tenant.",
+      "onlyAppDescription": "After revoking, you'll need to re-authorize before any AI client can act on your tenant.",
       "reasonPlaceholder": "No longer needed, suspicious activity, …",
       "revokeAction": "Revoke access"
     }
@@ -737,8 +741,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Open navigation menu",
-      "ai": "AI Assistant",
-      "aiTitle": "AI Assistant (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Help and docs",
       "helpTitle": "Help & Docs (Cmd+Shift+H)",
       "theme": "Theme",
@@ -807,7 +811,11 @@
         "alertRules": "Alert rules",
         "alertRulesDescription": "Manage alerting in Configuration Policies",
         "keyboardShortcuts": "Keyboard shortcuts",
-        "keyboardShortcutsDescription": "Every key and chord, on one card"
+        "keyboardShortcutsDescription": "Every key and chord, on one card",
+        "askBreezeAi": "Ask Breeze AI",
+        "askBreezeAiDescription": "Open the Breeze AI side panel",
+        "wispHome": "Open Wisp",
+        "wispHomeDescription": "Go to your Wisp home"
       },
       "numberHint": "{{mod}}1–9 to open"
     },
@@ -1997,8 +2005,8 @@
         "errors": {
           "loadFailed": "Failed to load fleet stats"
         },
-        "title": "Fleet Orchestration",
-        "description": "Manage policies, deployments, patches, and automations across your fleet",
+        "title": "Findings",
+        "description": "Cross-device patterns the workers found, worth one action instead of many",
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",
@@ -2012,7 +2020,7 @@
           "reports": "Reports"
         },
         "aiFleetActions": "AI Fleet Actions",
-        "aiFleetActionsHint": "Click to ask the AI assistant",
+        "aiFleetActionsHint": "Click to ask Breeze AI",
         "quickActions": {
           "checkCompliance": "Check compliance",
           "activeDeployments": "Active deployments",
@@ -2399,8 +2407,8 @@
             "description": "Managing multiple clients? Switch between organizations here."
           },
           "aiHelp": {
-            "title": "AI-powered help",
-            "description": "Ask questions about your fleet, troubleshoot issues, or generate reports. Press Cmd+Shift+A anytime."
+            "title": "Breeze AI",
+            "description": "Ask about your fleet in plain language, troubleshoot issues, or generate reports. Press ⌘⇧A anywhere."
           }
         },
         "skipTour": "Skip tour",
@@ -2551,7 +2559,7 @@
           "parameters": "Parameters"
         },
         "accept": "Accept",
-        "reject": "Reject",
+        "reject": "Deny",
         "execute": "Execute",
         "requestApprovalTitle": "Request PAM approval before execution",
         "requesting": "Requesting...",

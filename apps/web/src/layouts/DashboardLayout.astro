@@ -37,7 +37,7 @@ const getAccentClass = (path: string): string => {
   if (path.startsWith('/settings') || path.startsWith('/admin')) return 'bg-muted-foreground/30';
   if (path.startsWith('/reports') || path.startsWith('/analytics') || path.startsWith('/audit') || path.startsWith('/logs')) return 'bg-primary/50';
   if (path.startsWith('/monitoring') || path.startsWith('/snmp') || path.startsWith('/peripherals')) return 'bg-warning/70';
-  if (path.startsWith('/workspace') || path.startsWith('/ai/wisp')) return 'bg-primary/70';
+  if (path.startsWith('/wisp') || path.startsWith('/workspace') || path.startsWith('/ai/wisp')) return 'bg-primary/70';
   return '';
 };
 const accentClass = getAccentClass(currentPath);

@@ -93,6 +93,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // every create_watch is a recurring assessment that spends grant budget.
   raise_concern: { limit: 20, windowSeconds: 300 },
   create_watch: { limit: 10, windowSeconds: 3600 },
+  // Wisp W08: every link_entity is a durable row on the thread every later
+  // session is seeded with (cap 50 per thread).
+  link_entity: { limit: 20, windowSeconds: 300 },
   // Wisp W07: every launch_specialist admits a run or an Operator task (or a
   // client-facing bulk reply) that spends grant budget.
   launch_specialist: { limit: 10, windowSeconds: 3600 },
@@ -181,6 +184,23 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
+  // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the
+  // remaining device-touching W04 tools. Per tool, so reads share the budget
+  // (manage_browser_policy list) and the bound is set to leave room for them.
+  manage_browser_policy: { limit: 20, windowSeconds: 300 },     // apply queues one command per device
+  manage_peripheral_policy: { limit: 10, windowSeconds: 300 },  // every write queues a device sync
+  remediate_sensitive_data: { limit: 10, windowSeconds: 600 },  // mirrors apply_cis_remediation; encrypt/quarantine/secure_delete on devices
+  configure_network_baseline: { limit: 10, windowSeconds: 300 }, // arms recurring on-site discovery scans
+  // Full-control W06 (#6776): PSA configuration + ticket-ops. Per tool, so reads share the
+  // budget; the bounds leave room for a model that lists, edits and re-lists. None touches a
+  // device or a vendor — these cap a runaway loop of config writes and queue/attachment reads.
+  manage_ticket_config: { limit: 40, windowSeconds: 300 },
+  manage_ticket_checklist_templates: { limit: 40, windowSeconds: 300 },
+  manage_ticket_inbox: { limit: 30, windowSeconds: 300 },
+  manage_ticket_attachments: { limit: 30, windowSeconds: 60 },  // the route's own limiter: 30/60 s
+  manage_ticket_forms: { limit: 40, windowSeconds: 300 },
+  manage_ticket_response_templates: { limit: 40, windowSeconds: 300 },
+  manage_time_suggestions: { limit: 40, windowSeconds: 300 },
 };
 
 /**

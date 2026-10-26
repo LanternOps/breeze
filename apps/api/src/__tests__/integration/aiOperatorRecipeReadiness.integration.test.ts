@@ -156,7 +156,7 @@ describe('GET /workflows readiness over real rows', () => {
   runDb('the Library lists both recipes; service_recovery needs no capability', async () => {
     const t = await seedOrg();
     const dtos = await library(t);
-    expect(dtos.map((d) => d.recipeKey)).toEqual(['identity_offboarding', 'service_recovery']);
+    expect(dtos.map((d) => d.recipeKey)).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
     expect(dtos.find((d) => d.recipeKey === 'service_recovery')!.readiness).toBe('ready');
   });
 });

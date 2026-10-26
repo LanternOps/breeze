@@ -525,6 +525,7 @@ export default function Header() {
             aria-label={t('layout.header.accountMenu')}
             aria-expanded={showUserMenu}
             aria-haspopup="true"
+            data-testid="account-menu-button"
           >
             {mounted && resolvedAvatarUrl ? (
               <img
@@ -688,6 +689,7 @@ export default function Header() {
                   type="button"
                   onClick={handleSignOut}
                   disabled={isLoggingOut}
+                  data-testid="account-menu-sign-out"
                   className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <LogOut className="h-4 w-4" />

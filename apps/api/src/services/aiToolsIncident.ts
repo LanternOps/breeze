@@ -5,7 +5,7 @@
  * timeline viewing, and report generation.
  * - create_incident (Tier 2): Create a new security incident
  * - execute_containment (Tier 3): Execute containment actions on a device
- * - collect_evidence (Tier 2): Collect forensic evidence from a device
+ * - collect_evidence (Tier 2; Tier 3 supervised when evidenceTypes includes screenshot): Collect forensic evidence from a device
  * - get_incident_timeline (Tier 1): View full incident timeline
  * - generate_incident_report (Tier 1): Generate structured incident report
  */
@@ -25,6 +25,7 @@ import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { HIGH_RISK_CONTAINMENT_ACTIONS, listIncidentsSchema } from '../routes/incidents.validation';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { captureException } from './sentry';
+import { checkScreenAccessConsentGate } from '../routes/remote/screenAccessConsentGate';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -369,7 +370,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // collect_evidence — Tier 2 (medium risk)
+  // collect_evidence — Tier 2; screenshot → Tier 3 supervised (W04-D3, isInputAwareTier3)
   // ============================================
 
   registerTool({
@@ -420,6 +421,28 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       // evidence (incl. screenshots) from a device in another tenant by id.
       const deviceAccess = await verifyDeviceAccess(input.deviceId as string, auth);
       if ('error' in deviceAccess) return JSON.stringify({ error: deviceAccess.error });
+
+      // W04-D12 (#6758): bound to the incident's org, as execute_containment is
+      // (#9662) — a multi-org caller must not aim forensic collection at a
+      // device in another org under this incident.
+      if (deviceAccess.device.orgId !== incident.orgId) {
+        return JSON.stringify({ error: 'The device must belong to the same organization as the incident' });
+      }
+
+      // W04 quorum QW8 (#6758): a screenshot is screen capture, so it honours
+      // the device's remote-access consent policy exactly like take_screenshot.
+      // Other evidence types are not screen access.
+      if ((input.evidenceTypes as unknown[]).includes('screenshot')) {
+        const gate = await checkScreenAccessConsentGate({
+          deviceId: deviceAccess.device.id,
+          orgId: deviceAccess.device.orgId,
+          hostname: deviceAccess.device.hostname,
+          surface: 'collect_evidence',
+          actor: auth,
+          isEphemeral: deviceAccess.device.isEphemeral === true,
+        });
+        if (!gate.ok) return JSON.stringify(gate.body);
+      }
 
       const payload = {
         incidentId: input.incidentId as string,

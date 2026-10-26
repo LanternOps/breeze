@@ -29,6 +29,7 @@ import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketTyp
 import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
 import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
 import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
+import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, ticketDisplayNumber, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -60,6 +61,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import WispLinkButton from '@/components/wisp/WispLinkButton';
 import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
@@ -1334,6 +1336,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
           {/* Renders nothing unless the Operator flag is on and the org can run offboarding. */}
           <OffboardPersonLauncher orgId={ticket.orgId} source="ticket" contactId={ticket.requesterContactId ?? null} personHint={ticket.submitterEmail ?? null} label={ticket.submitterName ?? ticket.submitterEmail ?? null} />
+          {/* Same gate, onboarding recipe. The requester pre-fills the new hire's MANAGER, never the new hire. */}
+          <OnboardPersonLauncher orgId={ticket.orgId} source="ticket" requesterContactId={ticket.requesterContactId ?? null} requesterLabel={ticket.submitterName ?? ticket.submitterEmail ?? null} />
           {slaState(ticket).kind !== 'none' && (
             // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
             <>
@@ -1520,6 +1524,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               {t('common:actions.delete')}
             </button>
           )}
+          <WispLinkButton kind="ticket" id={ticket.id} orgId={ticket.orgId} size="sm" />
         </div>
         {!merged && (invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">

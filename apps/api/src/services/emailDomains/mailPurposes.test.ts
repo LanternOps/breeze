@@ -55,6 +55,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.contract_renewal': { lane: 'platform' },
       'staff.trust_declaration_reminder': { lane: 'platform' },
       'staff.quote_outcome': { lane: 'platform' },
+      'staff.agreement_outcome': { lane: 'platform' },
       'staff.sending_domain_status': { lane: 'platform' },
       'staff.alert_notification': { lane: 'platform' },
       'staff.workspace_drift_report': { lane: 'platform' },
@@ -70,6 +71,8 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'security.caller_verification_link': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
       'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+      'agreement.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+      'agreement.signed_copy': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
@@ -86,6 +89,8 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       return policy.lane === 'partner' && policy.fallbackFrom === 'partner_display_name';
     });
     expect(branded.sort()).toEqual([
+      'agreement.sent',
+      'agreement.signed_copy',
       'customer.connection_health_digest',
       'invoice.sent',
       'portal.invite',

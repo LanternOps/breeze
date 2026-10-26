@@ -240,9 +240,9 @@ export async function enforceWispCeiling(args: {
  * CORRUPT pin also yields '' but is logged and captured (grantAuthority's
  * contract) — the next tool call fails closed on it as gate-unavailable.
  */
-export async function wispSeedForSession(grant: WispSessionGrant): Promise<string> {
+export async function wispSeedForSession(grant: WispSessionGrant, auth: AuthContext | null = null): Promise<string> {
   try {
-    return await seedContextForSession(grant.threadId, await resolveGrantCeiling(grant.grantId, grant.revisionId));
+    return await seedContextForSession(grant.threadId, await resolveGrantCeiling(grant.grantId, grant.revisionId), auth);
   } catch (err) {
     if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
       console.error(`[Wisp] grant ${err.grantId} has a corrupt ceiling pin (thread seed): ${err.message}`);

@@ -25,7 +25,7 @@ import {
   handoffDenialForOutcome,
 } from './aiToolHandoff';
 
-const { makeHandler, makeSessionAwareHandler } = __test__;
+const { makeHandler, makeSessionAwareHandler, makeToolHandler } = __test__;
 
 const fakeAuth = {
   scope: 'organization',
@@ -165,6 +165,40 @@ describe('pre-tool-use approval handoff (#5107)', () => {
       const payload = JSON.parse(firstText(result));
       expect(payload.status).toBe('approved_executing');
       expect(payload.error).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * #10144 — a pre-approval refusal's `detail` (e.g. which params key is wrong)
+ * must reach the model beside `error`, through every wrapper, or the model
+ * keeps re-sending the same bad call.
+ */
+describe('pre-tool-use denial detail (#10144)', () => {
+  const refusal = async () => ({ allowed: false as const, error: 'invalid_params', detail: 'Unrecognized key: "goal"' });
+  const bare = async () => ({ allowed: false as const, error: 'no_sweep_schedule' });
+  const mustNotRun = async () => {
+    throw new Error('[test] the tool handler must never run on a denial');
+  };
+
+  describe.each([
+    ['makeToolHandler', (pre: typeof refusal) => makeToolHandler('launch_specialist', () => fakeAuth, undefined, pre, vi.fn())],
+    ['makeSessionAwareHandler', (pre: typeof refusal) =>
+      makeSessionAwareHandler('launch_specialist', () => fakeAuth, () => fakeSession, mustNotRun, pre, vi.fn())],
+    ['wrapExtraToolWithHooks', (pre: typeof refusal) => {
+      const wrapped = wrapExtraToolWithHooks(toolThatMustNotRun({ called: false }), pre, vi.fn());
+      return (args: Record<string, unknown>) => wrapped.handler(args, {});
+    }],
+  ])('%s', (_name, build) => {
+    it('publishes { error, detail } as an error result', async () => {
+      const result = (await build(refusal)({ kind: 'sweep' })) as { content?: unknown[]; isError?: boolean };
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(firstText(result))).toEqual({ error: 'invalid_params', detail: 'Unrecognized key: "goal"' });
+    });
+
+    it('omits detail when the denial has none', async () => {
+      const result = (await build(bare as typeof refusal)({ kind: 'sweep' })) as { content?: unknown[] };
+      expect(JSON.parse(firstText(result))).toEqual({ error: 'no_sweep_schedule' });
     });
   });
 });

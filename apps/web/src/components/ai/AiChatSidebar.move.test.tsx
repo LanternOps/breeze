@@ -1,5 +1,5 @@
 /**
- * #9840 W3 (Task 13): the side panel's "Open in AI Assistant" control.
+ * #9840 W3 (Task 13): the side panel's "Open in Breeze AI" control.
  *
  * Shown only for a bound, non-topology conversation outside History and
  * outside Wisp mode; it sits between History and New; it hands the session
@@ -59,15 +59,15 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Open in AI Assistant', () => {
+describe('Open in Breeze AI', () => {
   it('renders for a bound conversation, titled, between History and New', () => {
     withState();
     render(<AiChatSidebar />);
     const open = button();
     expect(open).not.toBeNull();
-    expect(open).toHaveAttribute('title', 'Open in AI Assistant');
+    expect(open).toHaveAttribute('title', 'Open in Breeze AI');
     const titles = [...open!.parentElement!.querySelectorAll('button')].map((b) => b.getAttribute('title'));
-    const at = titles.indexOf('Open in AI Assistant');
+    const at = titles.indexOf('Open in Breeze AI');
     expect(titles[at - 1]).toBe('Conversation history');
     expect(titles[at + 1]).toBe('New conversation');
   });

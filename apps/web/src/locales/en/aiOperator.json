@@ -15,6 +15,8 @@
   "operatorTaskDetail": {
     "loading": "Loading task...",
     "agent": "Handled by {{name}}",
+    "requestedBy": "Requested by",
+    "wispFor": "Wisp for {{name}}",
     "target": {
       "label": "Target",
       "none": "No device target"
@@ -50,7 +52,7 @@
     },
     "nextAction": {
       "label": "Next action",
-      "approveInInbox": "Approve in inbox",
+      "approveInInbox": "Approve in Approvals",
       "answerQuestion": "Answer a question",
       "waitingForDevice": "Waiting for device",
       "waitingForMaintenanceWindow": "Waiting for maintenance window",
@@ -112,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Loading Operator tasks...",
-    "loadFailed": "Operator tasks failed to load.",
-    "empty": "No Operator tasks for this device.",
-    "emptyHint": "The AI Operator investigates and resolves issues on a device when you delegate an alert to it. Tasks delegated for this device will appear here.",
-    "learnMore": "Learn about the AI Operator"
+    "loading": "Loading AI tasks…",
+    "loadFailed": "AI tasks failed to load.",
+    "empty": "No AI tasks for this device.",
+    "emptyHint": "The workers investigate and resolve issues on a device when you start an AI task from an alert. AI tasks for this device appear here.",
+    "learnMore": "Learn about AI tasks"
   },
   "delegate": {
-    "button": "Delegate to Operator",
-    "dialogTitle": "Delegate to Operator",
-    "dialogMessage": "The Operator will investigate and attempt to resolve this using the workflow below.",
+    "button": "Start an AI task",
+    "dialogTitle": "Start an AI task",
+    "dialogMessage": "The workers will investigate and try to resolve this with the recipe below.",
     "orgLabel": "Organization",
     "deviceLabel": "Device",
     "serviceNameLabel": "Service name",
     "serviceNamePlaceholder": "e.g. Spooler",
-    "serviceNameError": "Enter the service name to delegate this task.",
-    "workflowLabel": "Workflow",
+    "serviceNameError": "Enter the service name to start this AI task.",
+    "workflowLabel": "Recipe",
     "workflowName": "Service recovery",
-    "confirmLabel": "Delegate",
-    "queued": "Task delegated to the Operator.",
-    "failed": "Failed to delegate to the Operator."
-  },
-  "nav": {
-    "operator": "Operator"
+    "confirmLabel": "Start",
+    "queued": "AI task started.",
+    "failed": "Could not start the AI task."
   },
   "effectTool": {
     "googleSetVacation": "Set the Gmail auto-reply",
@@ -150,11 +149,17 @@
     "m365RemoveLicense": "Remove Microsoft 365 licences",
     "m365RetireIntuneDevice": "Retire Intune-managed phones",
     "m365RevokeSessions": "Revoke Microsoft 365 sign-in sessions",
-    "m365DisableUser": "Block Microsoft 365 sign-in"
+    "m365DisableUser": "Block Microsoft 365 sign-in",
+    "m365CreateUser": "Create the Microsoft 365 account",
+    "m365AssignLicense": "Assign Microsoft 365 licences",
+    "m365AddToGroup": "Add to a Microsoft 365 group",
+    "googleMoveOu": "Move to the organizational unit",
+    "googleAssignLicense": "Assign a Google Workspace licence",
+    "googleAddToGroup": "Add to a Google group"
   },
   "workspace": {
     "tabs": {
-      "label": "Operator sections",
+      "label": "AI task sections",
       "tasks": "Tasks",
       "library": "Library"
     },
@@ -163,7 +168,7 @@
   "taskList": {
     "loading": "Loading tasks...",
     "loadFailed": "Tasks failed to load.",
-    "empty": "No Operator tasks yet.",
+    "empty": "No AI tasks yet.",
     "emptyHint": "Tasks you start from the Library, a ticket, a contact or an alert appear here.",
     "loadMore": "Load more",
     "loadMoreFailed": "More tasks failed to load."
@@ -212,13 +217,16 @@
     "start": {
       "offboard": "Offboard a person",
       "notEnabled": "This recipe is not enabled for this deployment.",
-      "fromDeviceOrAlert": "Start this recipe from a device or an alert."
+      "fromDeviceOrAlert": "Start this recipe from a device or an alert.",
+      "onboard": "Onboard a person"
     },
     "recipe": {
       "identityOffboardingName": "Offboard a person",
       "identityOffboardingSummary": "Confirm who is leaving, route their mail, and remove their access across Microsoft 365 and Google Workspace in a safe order with one approval. Hand work is tracked on the ticket.",
       "serviceRecoveryName": "Restore a stopped service",
-      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
+      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up.",
+      "identityOnboardingName": "Onboard a person",
+      "identityOnboardingSummary": "Create a new person's Microsoft 365 account with one approval, then assign the licences and groups you choose with a second. Google Workspace accounts are created by hand from a checklist item. The temporary password is revealed once, by the approver."
     },
     "refreshFailed": "The recipe library could not be refreshed; what is shown may be out of date."
   },
@@ -312,14 +320,88 @@
     "failed": "The offboarding could not be started.",
     "duplicate": "An offboarding is already running for this person.",
     "duplicateLink": "Open the running task",
-    "replayed": "This offboarding had already been started; opening it."
+    "replayed": "This offboarding had already been started; opening it.",
+    "onboarding": {
+      "title": "Onboard a person",
+      "personLabel": "New person",
+      "displayName": "Full name",
+      "personWillBeCreated": "This person will be created as a contact when the task starts.",
+      "jobTitle": "Job title (optional)",
+      "site": "Site (optional)",
+      "noSite": "No site",
+      "providersLabel": "Accounts to create",
+      "upn": "Sign-in name (UPN)",
+      "checkAvailability": "Check availability",
+      "upnAvailable": "Available: no Microsoft 365 account holds this sign-in name.",
+      "upnTaken": "Taken: a Microsoft 365 account already holds this sign-in name.",
+      "upnUnchecked": "This sign-in name could not be checked. Breeze will not create an account on a name nobody verified.",
+      "mailNickname": "Mail nickname",
+      "usageLocation": "Usage location (two-letter country code)",
+      "usageLocationHelp": "The country where the licences will be used, for example GB or US. Required before Microsoft 365 assigns a licence.",
+      "skus": "Microsoft 365 licences (SKU ids)",
+      "skusHelp": "A licence with no free seat is kept: the task turns it into a checklist item.",
+      "groups": "Microsoft 365 groups (group ids)",
+      "groupsHelp": "Dynamic and admin-role groups are never added automatically: the task turns them into checklist items.",
+      "add": "Add",
+      "invalidEntry": "Enter a value in the format shown.",
+      "noSeats": "No free seat confirmed: becomes a checklist item",
+      "needsTechnician": "A technician will add this one by hand",
+      "googleManual": "Breeze cannot create Google accounts yet. The task will add a checklist item with the exact details for you to create it by hand, then carry on with the licences and groups.",
+      "googlePrimaryEmail": "Primary email",
+      "givenName": "First name",
+      "familyName": "Last name",
+      "orgUnitPath": "Organizational unit (optional)",
+      "orgUnitPathHelp": "Starts with a slash, for example /Staff/Sales.",
+      "googleLicenses": "Google Workspace licences",
+      "googleProductId": "Product id",
+      "googleSkuId": "SKU id",
+      "googleGroups": "Google groups (addresses)",
+      "modelAfter": "Model after (optional)",
+      "modelAfterHelp": "The task reads this person's groups and licences and asks you to confirm them at its first step. Admin and dynamic groups are never copied: the task adds those as checklist items.",
+      "manager": "Manager (optional)",
+      "managerHelp": "Recorded on the new contact and named in the handover. Breeze never changes the manager's accounts.",
+      "managerPrefilled": "Pre-filled from the ticket: its requester is set as the manager, not as the new person.",
+      "nobody": "Nobody",
+      "startAt": "Start date (optional)",
+      "startNow": "Leave empty to provision and hand over now",
+      "startScheduled": "Accounts are created now; the handover waits until this time.",
+      "startBeyondDeadline_one": "This task must finish within {{count}} day. Pick a start date within {{count}} day, or start the onboarding nearer to it.",
+      "startBeyondDeadline_other": "This task must finish within {{count}} days. Pick a start date within {{count}} days, or start the onboarding nearer to it.",
+      "invalid": "Some details are missing or not in the right format:",
+      "previewStage1": "Step 1 — account creation (you approve this first)",
+      "previewStage1Empty": "Nothing will be created automatically.",
+      "previewStage2": "Step 2 — licences, groups and organizational unit (you approve this after the account exists)",
+      "previewProvisional": "Provisional: Breeze confirms these once the account exists",
+      "flagsTitle": "What the checks found",
+      "previewNote": "The task opens its own ticket for the checklist items.",
+      "submit": "Start onboarding",
+      "started": "Onboarding started.",
+      "failed": "The onboarding could not be started.",
+      "duplicate": "An onboarding is already running for this person.",
+      "replayed": "This onboarding had already been started; opening it.",
+      "existingContactLink": "Open the organization's contacts",
+      "upnManual": "Microsoft 365 accounts are created by hand for this organization, so Breeze did not check or plan this one.",
+      "sitesFailed": "Sites failed to load.",
+      "startAtIncomplete": "Enter a full start date and time, or clear the field.",
+      "invalidNoProvider": "Turn on at least one account to create.",
+      "flagLabel": {
+        "upnCollision": "Sign-in name taken",
+        "emailCollision": "Google address taken",
+        "m365CollisionCheckFailed": "Sign-in name check",
+        "m365SeatsReadFailed": "Licence seat check",
+        "googleCollisionCheckFailed": "Google address check",
+        "googleConnectionUnavailable": "Google Workspace connection",
+        "other": "Check"
+      }
+    }
   },
   "taskPanels": {
     "tabsLabel": "Task views",
     "tabs": {
       "steps": "Steps",
       "plan": "Plan",
-      "events": "Timeline"
+      "events": "Timeline",
+      "accounts": "Accounts"
     },
     "steps": {
       "empty": "No steps have started yet.",
@@ -340,7 +422,14 @@
         "effects": "Approve and make the changes",
         "manualWork": "Checklist work",
         "verifyOutcome": "Verify the outcome",
-        "document": "Write the record"
+        "document": "Write the record",
+        "confirmDetails": "Confirm the new person's details",
+        "createAccounts": "Approve and create the accounts",
+        "manualCreateGoogle": "Create the Google account by hand",
+        "resolveAccounts": "Find the new accounts",
+        "provisionEffects": "Approve and assign licences and groups",
+        "waitStart": "Wait for the start date",
+        "handoverWork": "Handover checklist"
       },
       "kind": {
         "reason": "Reasoning",
@@ -375,7 +464,7 @@
       "state": {
         "pending": "Waiting for approval",
         "approved": "Approved",
-        "rejected": "Rejected",
+        "rejected": "Denied",
         "expired": "Expired",
         "superseded": "Superseded"
       },
@@ -391,7 +480,10 @@
         "failed": "Failed",
         "unknown": "Result unknown",
         "superseded": "Superseded"
-      }
+      },
+      "stageCreation": "Account creation",
+      "stageProvision": "Licences, groups and organizational unit",
+      "followedBy": "Approved and carried out, then followed by approval {{n}} for the next stage. Kept here as the record of what was approved."
     },
     "events": {
       "empty": "No events recorded yet.",
@@ -424,6 +516,24 @@
         "humanWorkUnticked": "Checklist item unticked",
         "taskSettled": "Task finished"
       }
-    }
+    },
+    "accounts": "Accounts created",
+    "planStage": "Approval {{n}}"
+  },
+  "credential": {
+    "availableTo": "Temporary password available to {{name}} until {{date}}",
+    "availableToNoDate": "Temporary password available to {{name}}",
+    "askTo": "Ask {{name}} to share the temporary password — only they can reveal it",
+    "reveal": "Reveal it in the AI activity feed (Approvals)",
+    "revealed": "Temporary password already revealed",
+    "expired": "Temporary password expired without being revealed",
+    "expiredRecovery": "Reset the password. Do not create a second account.",
+    "unretrievable": "The temporary password was never stored, so nobody can reveal it.",
+    "setByHand": "Password set by hand during onboarding",
+    "unknown": "Temporary password state unknown",
+    "theApprover": "the person who approved the account creation",
+    "whoReveals": "Only the person who approved the account creation can reveal a temporary password, once — not the technician who started this task. Hand it over in person or by phone.",
+    "noRevealer": "Breeze found nobody who can reveal this temporary password.",
+    "revealNeedsFeedAccess": "Only you can reveal it, in the AI activity feed (Approvals), but your role cannot open that page. Ask an administrator for AI session audit access."
   }
 }

@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { captureException } from './sentry';
+import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 import {
   devices,
   softwareComplianceStatus,
@@ -737,4 +738,51 @@ export async function recordSoftwarePolicyAudit(input: {
     });
     captureException(err);
   }
+}
+
+type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Revokes live PAM elevations minted by this policy's matches and requests
+ * device-side cleanup. Call inside the same transaction as the policy's
+ * deactivation/deletion (REST PATCH/DELETE and the AI tool both do).
+ */
+export async function cleanupSoftwarePolicyElevations(
+  tx: SoftwarePolicyTx,
+  policyId: string,
+): Promise<number> {
+  const result = await tx.execute<{ id: string }>(sql`
+    WITH matching AS (
+      SELECT id
+      FROM elevation_requests
+      WHERE metadata->>'software_policy_match_id' = ${policyId}
+        AND status IN ('approved', 'auto_approved', 'actuating')
+      FOR UPDATE
+    )
+    UPDATE elevation_requests AS request
+    SET status = 'revoked',
+        revoked_at = now(),
+        revision = request.revision + 1,
+        updated_at = now()
+    FROM matching
+    WHERE request.id = matching.id
+      AND request.status IN ('approved', 'auto_approved', 'actuating')
+    RETURNING request.id
+  `);
+  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
+  for (const row of rows) {
+    try {
+      await requestPamCleanup(tx, {
+        elevationRequestId: row.id,
+        cause: 'policy_removed',
+      });
+    } catch (err) {
+      // No pam_actuations row: the grant was approved but never actuated, so
+      // nothing reached the device and the revoke above is the whole cleanup
+      // (the expiry enforcer's reading, jobs/pamJobs.ts). Any other failure
+      // rolls the caller's transaction back.
+      if (!(err instanceof PamActuationNotFoundError)) throw err;
+    }
+  }
+  return rows.length;
 }

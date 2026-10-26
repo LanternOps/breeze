@@ -138,3 +138,23 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
   // item names sourced from the tenant's own directory/mail data.
   ['query_c2c_jobs', 'Returns job errorLog entries that can carry user principal names and item names from Graph error text.'],
 ]);
+
+/**
+ * Single ACTIONS of an otherwise agent-reachable tool that a headless agent may
+ * never call, whatever its allowlist says (spec 2026-09-23 D4, action level —
+ * class-review question 4; W02-D2 + quorum QV2, #6756). Keyed `tool:action`.
+ *
+ * Enforced in `checkAgentGuardrails` directly after the `isNeverAgentTool`
+ * deny, and filtered out of the capability picker's operations
+ * (`agentToolCatalog.ts`), so the UI can never write one to an allowlist
+ * either. Entries are added only with Todd's sign-off.
+ */
+export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<string, string>([
+  // Full-control W04 (#6758, W04-D8 — the W02 Task 16 follow-up): the group
+  // analogue of manage_tags. Membership is a live read at run admission and
+  // before tool use (runResourceScope.ts), so these are the same self-scope path.
+  ['manage_groups:add_devices', 'Group membership feeds agent run scope (triggers.deviceGroupIds, a live read in runResourceScope.ts): an allowlisted tier-2 add would let an agent put devices inside its own or another agent\'s future reach unattended.'],
+  ['manage_groups:remove_devices', 'Removing a device from a group changes which group-scoped agents, config-policy assignments and peripheral policies reach it; the same run-scope path as manage_tags:remove.'],
+  ['manage_tags:add', 'Device tags feed the agent\'s own run scope (triggers.deviceTags, runResourceScope.ts) and dynamic-group membership (triggers.deviceGroupIds): an allowlisted tier-2 add would let an agent widen its future reach unattended.'],
+  ['manage_tags:remove', 'Removing a tag can ADMIT a device to a dynamic group whose rule is negative (isEmpty / notContains, filterEngine.ts); membership is re-evaluated on every tag change and feeds the agent\'s run scope through triggers.deviceGroupIds.'],
+]);

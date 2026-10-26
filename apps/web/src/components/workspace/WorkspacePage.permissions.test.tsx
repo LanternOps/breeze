@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// #6498: /workspace is the full-page AI Assistant. #6396/#6399 gated the header
+// #6498: /wisp/chat (was /workspace, W08 #9921) is the full-page multi-tab chat. #6396/#6399 gated the header
 // button and the docked sidebar on `ai_sessions:use` but not this page, so a
 // role holding only devices:read got a composer that 403s on send. The page
 // must render the AccessDenied state instead — and must not touch /ai/sessions.
@@ -76,7 +76,7 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
 
   it('never acts on a #session= deep link without the permission (#9840 W3)', () => {
     state.permissions = [DEVICES_READ];
-    window.history.replaceState(null, '', '/workspace#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    window.history.replaceState(null, '', '/wisp/chat#session=0f8fad5b-d9cb-469f-a165-70867728950e');
     render(<WorkspacePage />);
 
     expect(screen.getByTestId('workspace-access-denied')).toBeInTheDocument();

@@ -25,6 +25,13 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispLinkButton', () => ({
+  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
+    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+  ),
+}));
+
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
 const base: Device = {
@@ -103,6 +110,14 @@ describe('DeviceDetails header state (#9026)', () => {
   it('reads "Offline · last seen <relative time>" in the status pill', () => {
     render(<DeviceDetails device={{ ...base, status: 'offline', lastSeen: minutesAgo(25) }} />);
     expect(screen.getByTestId('device-status-pill')).toHaveTextContent('Offline · last seen 25 minutes ago');
+  });
+
+  it('mounts the Link-to-Wisp button in the header with the device and its org (W08 Task 10)', () => {
+    render(<DeviceDetails device={base} />);
+    const button = screen.getByTestId('wisp-link-button-mock');
+    expect(button).toHaveAttribute('data-kind', 'device');
+    expect(button).toHaveAttribute('data-id', 'device-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('keeps the plain status label when the device is online', () => {

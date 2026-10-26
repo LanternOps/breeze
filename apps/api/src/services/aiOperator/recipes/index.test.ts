@@ -23,8 +23,8 @@ import { RECIPE_GATE_CLASSES, STEP_KINDS, TARGET_KINDS } from './types';
 import { AI_OPERATOR_TASK_PHASES } from '../../../db/schema/aiOperatorTasks';
 
 describe('RECIPES registry', () => {
-  it('contains exactly the released recipes: identity_offboarding (R1a) and service_recovery', () => {
-    expect(RECIPE_KEYS).toEqual(['identity_offboarding', 'service_recovery']);
+  it('contains exactly the released recipes: identity_offboarding (R1a), identity_onboarding (R2a) and service_recovery', () => {
+    expect(RECIPE_KEYS).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
   });
 
   it('every map key equals its recipe own key, so a lookup can never return a different recipe', () => {
@@ -185,5 +185,79 @@ describe('recipeDataProblems (R1a-0 Task 1c)', () => {
     expect(Object.hasOwn(sr, 'planningSnapshotStepKey')).toBe(false);
     expect(Object.hasOwn(sr, 'unobservableEffects')).toBe(false);
     expect(Object.hasOwn(sr, 'entryStepKey')).toBe(false);
+  });
+});
+
+// ---- R2a Task 3a (W07 Amendment B2): planningSnapshotStepFor ----
+// Synthetic, two-stage recipe objects only — nothing is registered and the
+// RECIPE_KEYS pin above is untouched. Shapes mirror onboarding's B1 spine:
+// snapshot 1 at `discover`, snapshot 2 at `resolve_accounts`.
+describe('recipeDataProblems — planningSnapshotStepFor (R2a Task 3a, B2)', () => {
+  const recipeDataProblems = (r: unknown) =>
+    (registry as unknown as { recipeDataProblems: (r: unknown) => string[] }).recipeDataProblems(r);
+  const twoStage = (over: Record<string, unknown> = {}) => ({
+    ...(RECIPES.service_recovery as unknown as Record<string, unknown>),
+    key: 'fixture_two_stage',
+    entryStepKey: 'review',
+    steps: {
+      discover: { kind: 'probe', phase: 'plan' },
+      review: { kind: 'reason', phase: 'plan' },
+      create_accounts: { kind: 'effect', phase: 'execute' },
+      resolve_accounts: { kind: 'probe', phase: 'execute' },
+      provision_effects: { kind: 'effect', phase: 'execute' },
+      document: { kind: 'document', phase: 'document', terminal: true },
+    },
+    planningSnapshotStepKey: 'discover',
+    planningSnapshotStepFor: {
+      review: 'discover', create_accounts: 'discover', resolve_accounts: 'discover',
+      provision_effects: 'resolve_accounts', document: 'resolve_accounts',
+    },
+    ...over,
+  });
+
+  it('accepts a total map whose values are probe steps and include planningSnapshotStepKey', () => {
+    expect(recipeDataProblems(twoStage())).toEqual([]);
+  });
+
+  it('reports a map key that is not a declared step', () => {
+    const problems = recipeDataProblems(twoStage({
+      planningSnapshotStepFor: { review: 'discover', no_such_consumer: 'discover' },
+    }));
+    expect(problems).toEqual([expect.stringContaining("planningSnapshotStepFor key 'no_such_consumer' is not a declared step")]);
+  });
+
+  it('reports a map value that is not a declared step', () => {
+    const problems = recipeDataProblems(twoStage({
+      planningSnapshotStepFor: { review: 'discover', provision_effects: 'no_such_snapshot' },
+    }));
+    expect(problems).toEqual([expect.stringContaining("planningSnapshotStepFor value 'no_such_snapshot'")]);
+    expect(problems[0]).toContain('is not a declared step');
+  });
+
+  it('reports a map value that is a declared step but not a probe-kind step', () => {
+    const problems = recipeDataProblems(twoStage({
+      planningSnapshotStepFor: { review: 'discover', provision_effects: 'create_accounts' },
+    }));
+    expect(problems).toEqual([expect.stringContaining("planningSnapshotStepFor value 'create_accounts' is a 'effect' step, not a probe")]);
+  });
+
+  it('reports a map declared without planningSnapshotStepKey', () => {
+    const problems = recipeDataProblems(twoStage({ planningSnapshotStepKey: undefined }));
+    expect(problems).toEqual([expect.stringContaining('planningSnapshotStepFor is declared without planningSnapshotStepKey')]);
+  });
+
+  it('reports a planningSnapshotStepKey that is not one of the map values', () => {
+    const problems = recipeDataProblems(twoStage({
+      planningSnapshotStepFor: { review: 'resolve_accounts', provision_effects: 'resolve_accounts' },
+    }));
+    expect(problems).toEqual([expect.stringContaining("planningSnapshotStepKey 'discover' is not one of planningSnapshotStepFor's values")]);
+  });
+
+  it('PIN: neither single-snapshot recipe declares the map (absent ⇒ today\'s single-snapshot path)', () => {
+    // identity_onboarding (R2a Task 3) is the one recipe that declares it.
+    for (const key of ['service_recovery', 'identity_offboarding']) {
+      expect(Object.hasOwn(RECIPES[key] as object, 'planningSnapshotStepFor'), key).toBe(false);
+    }
+    expect(Object.hasOwn(RECIPES.identity_onboarding as object, 'planningSnapshotStepFor')).toBe(true);
   });
 });

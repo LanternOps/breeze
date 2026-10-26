@@ -190,11 +190,7 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
   if (check.toolName !== undefined) {
     // The two agent deny registries are checked directly too, so the
     // never-delegable floor does not depend on how the ceiling was built.
-    if (
-      ceiling.deniedTools.has(check.toolName)
-      || AGENT_HUMAN_ONLY_TOOLS.has(check.toolName)
-      || AGENT_DENIED_READ_TOOLS.has(check.toolName)
-    ) {
+    if (ceiling.deniedTools.has(check.toolName) || isNeverDelegableTool(check.toolName)) {
       throw new CeilingViolationError('tool', `tool ${check.toolName} is never delegable`);
     }
     if (ceiling.toolAllowlist !== null && !ceiling.toolAllowlist.has(check.toolName)) {
@@ -360,9 +356,29 @@ export function buildOrgTerms(
   return out;
 }
 
+/**
+ * Agent-denied tools a HUMAN may still call from a Wisp chat turn under a
+ * grant. `launch_specialist` (W07 Task 6, spec §7.5) sits in
+ * AGENT_HUMAN_ONLY_TOOLS so an `ai_agent` principal can never hand work to a
+ * specialist — but the human's own Wisp session is the one intended caller
+ * (the coordinator re-gates by kind: sweep/analysis admitted, the rest become
+ * `wisp_specialist_request` approval cards). Folding the registry into the
+ * ceiling floor unchanged denied it there as well, which left no path to the
+ * coordinator from chat at all.
+ */
+const WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS: ReadonlySet<string> = new Set(['launch_specialist']);
+
+/** In an agent deny registry and not one a human may call under a grant. */
+export function isNeverDelegableTool(toolName: string): boolean {
+  return (
+    (AGENT_HUMAN_ONLY_TOOLS.has(toolName) || AGENT_DENIED_READ_TOOLS.has(toolName))
+    && !WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS.has(toolName)
+  );
+}
+
 /** Both agent deny registries — the floor every ceiling carries. */
 export function agentDeniedToolNames(): string[] {
-  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()];
+  return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()].filter(isNeverDelegableTool);
 }
 
 // ---------------------------------------------------------------------------

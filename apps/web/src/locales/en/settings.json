@@ -79,6 +79,10 @@
         "categoryLabel": "Category",
         "categoryUnresolved": "Suggested — name not available on this view"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Fix memory",
+      "fleetDesignReport": "Fleet design"
     }
   },
   "aiDataPolicy": {
@@ -285,7 +289,7 @@
     "subtitle": "Connect providers, choose which models are available, and set the default model for each AI feature.",
     "forbidden": "You don't have permission to manage AI providers and models.",
     "loadFailed": "Couldn't load AI providers and models.",
-    "workspaceNote": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "workspaceNote": "Knowledge indexing uses your configured AI provider and appears in your AI usage.",
     "connections": {
       "title": "Connections",
       "subtitle": "Where your AI requests are sent and who pays for them.",
@@ -1096,7 +1100,7 @@
       },
       "aiApprovals": {
         "label": "AI Approval Timeout",
-        "description": "How long AI chat waits for gated action approval"
+        "description": "How long Breeze AI waits for a gated action to be approved"
       },
       "callerVerification": {
         "label": "Caller verification",
@@ -1496,7 +1500,8 @@
       "approval_snapshot": "Approval figures",
       "approval_expires": "Approval deadline",
       "approval_status": "Approval status",
-      "merged_into_number": "Merged-into ticket number"
+      "merged_into_number": "Merged-into ticket number",
+      "agreement_name": "Agreement name"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -2401,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "AI Usage",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor AI assistant usage and configure budget limits",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor Breeze AI usage and configure budget limits",
     "budgetConfiguration": "Budget Configuration",
     "aIEnabled": "AI Enabled",
     "enabled": "Enabled",
@@ -2455,7 +2460,7 @@
     "creditsRemaining": "Breeze AI credits remaining",
     "defaultValue": "Default ({{value}})",
     "viewPartnerWideBudgets": "Partner AI budgets",
-    "monitorAIAssistantUsage": "Monitor AI assistant usage",
+    "monitorAIAssistantUsage": "Monitor Breeze AI usage",
     "effectiveBudget": "Effective budget",
     "effectiveBudgetHelp": "The limits in force for this organization right now, and where each one was set.",
     "sourcePartner": "Set by partner",
@@ -2564,7 +2569,9 @@
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
       "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
-      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+      "researchLink": "Open fix memory",
+      "designerLink": "Open fleet design"
     },
     "emptyState": {
       "title": "No agents yet",
@@ -3049,6 +3056,8 @@
           "cost": "Cost",
           "duration": "Duration",
           "trigger": "Trigger",
+          "requestedBy": "Requested by",
+          "wispFor": "Wisp for {{name}}",
           "queuedAt": "Queued",
           "startedAt": "Started",
           "finishedAt": "Finished",
@@ -3134,7 +3143,7 @@
         },
         "anomalyLink": "Open device anomalies",
         "budget": {
-          "title": "Exposure budget",
+          "title": "Action budget",
           "caption": "Recorded exposure — trailing {{hours}}h",
           "devices": "{{count}} of {{allowance}} devices",
           "decisionsToday": "{{count}} of {{max}} policy decisions today",
@@ -3362,7 +3371,7 @@
       "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
       "byOrgTruncated": "Showing the first {{limit}} organizations by name. Choose a single organization in the organization switcher to see the rest.",
       "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
-      "approvalsLink": "Track this request in the approvals inbox",
+      "approvalsLink": "Track this request in Approvals",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
       "grantOnlyHint": "Pre-authorized keys on an organization agent are granted only through the Graduation panel by a second approver, and are revoked there too.",
       "promote": "Promote",
@@ -3961,10 +3970,10 @@
       "runsPerHourCount_other": "{{count}} runs per hour",
       "minuteCount_one": "{{count}} minute",
       "minuteCount_other": "{{count}} minutes",
-      "approvers_one": "{{roles}} is asked, via inbox, chat and mobile push. First decision wins.",
-      "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
-      "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
-      "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
+      "approvers_one": "{{roles}} is asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approvers_other": "{{roles}} are asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approversCount_one": "{{count}} role is asked in Approvals, in chat and by mobile push. First decision wins.",
+      "approversCount_other": "{{count}} roles are asked in Approvals, in chat and by mobile push. First decision wins.",
       "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request.",
       "scriptsAuthorized_one": "{{count}} script is authorized to run unattended.",
       "scriptsAuthorized_other": "{{count}} scripts are authorized to run unattended."
@@ -5492,7 +5501,7 @@
       "ticketing": "Ticketing",
       "ticketingDescription": "SLA and billing overrides",
       "ai": "AI",
-      "aiDescription": "AI assistant budget, rate limits and approval mode"
+      "aiDescription": "Breeze AI budget, rate limits and approval mode"
     },
     "overview": {
       "title": "Organization overview",
@@ -6721,7 +6730,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Script authoring",
-    "subtitle": "Let the assistant and your agents write, review and — when you allow it — run scripts without a card.",
+    "subtitle": "Let Breeze AI and your agents write, review and, when you allow it, run scripts without a card.",
     "partnerCard": {
       "title": "Partner ceiling",
       "description": "The widest setting any organization under this partner may use. Individual organizations can only narrow it.",
@@ -6800,7 +6809,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "AI budget",
-    "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "description": "Spending caps, rate limits and approval mode for Breeze AI in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
     "selectOrganization": "Select an organization to configure its AI budget."
   },
   "ticketingHubPage": {
@@ -6894,13 +6903,13 @@
     "timeoutLabel": "Interactive approval timeout",
     "productDefault": "Product default ({{minutes}} minutes)",
     "range": "Choose {{min}}-{{max}} minutes.",
-    "description": "How long a live AI chat turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
+    "description": "How long a live Breeze AI turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
     "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
     "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
   },
   "orgAiApprovalTimeout": {
     "title": "AI Approval Timeout",
-    "description": "How long an AI chat waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
+    "description": "How long Breeze AI waits for someone to approve a gated (Tier 2/3) action before giving up. Organizations can override the partner default here; the org value wins when set.",
     "fieldLabel": "Interactive approval timeout",
     "inherit": "Inherit",
     "inheritLabel": "Inherit ({{minutes}} minutes, {{source}})",

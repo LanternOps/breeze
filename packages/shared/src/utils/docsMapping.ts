@@ -58,6 +58,7 @@ const docsMapping: DocsEntry[] = [
     },
   },
   { pattern: '/settings/sso', docsPath: '/reference/sso/', label: 'Single Sign-On' },
+  { pattern: '/settings/wisp-memory', docsPath: '/features/wisp/#memory', label: 'Wisp Memory' },
   { pattern: '/settings/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
   { pattern: '/settings/deliverable-templates', docsPath: '/features/contracts/#service-deliverables', label: 'Deliverable Templates' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },
@@ -113,6 +114,7 @@ const docsMapping: DocsEntry[] = [
 
   // Admin / Partner
   { pattern: '/partner', docsPath: '/reference/partner-management/', label: 'Partner Management' },
+  { pattern: '/admin/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
   { pattern: '/admin/system', docsPath: '/deploy/upgrades/', label: 'System' },
   { pattern: '/admin/third-party-catalog', docsPath: '/features/patch-management/', label: 'Third-Party Catalog' },
   { pattern: '/admin/account-deletion-requests', docsPath: '/reference/account-deletion/', label: 'Account Deletion Requests' },
@@ -256,8 +258,11 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/operator/tasks', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator Tasks' },
   { pattern: '/operator', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
-  { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
-  { pattern: '/ai/wisp', docsPath: '/features/ai/', label: 'Wisp' },
+  // W08 #9921: /wisp/chat (the multi-tab chat) before /wisp (the home) — first prefix match wins.
+  { pattern: '/wisp/chat', docsPath: '/features/ai/', label: 'AI chat' },
+  { pattern: '/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
+  { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI chat' },
+  { pattern: '/ai/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
 
   // Account
   { pattern: '/account/delete', docsPath: '/reference/account-deletion/', label: 'Account Deletion' },

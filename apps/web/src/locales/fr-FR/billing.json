@@ -2520,7 +2520,7 @@
     "ai": {
       "column": "Usage IA",
       "sectionTitle": "Usage de l'IA",
-      "sectionHelp": "Comment l'usage de l'assistant IA par les organisations utilisant ce profil de facturation est facturé. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
+      "sectionHelp": "Comment l'usage de Breeze AI par les organisations utilisant ce profil de facturation est facturé. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
       "coverage": "Facturation de l'usage IA",
       "coverageBillable": "Facturable",
       "coverageIncluded": "Inclus",

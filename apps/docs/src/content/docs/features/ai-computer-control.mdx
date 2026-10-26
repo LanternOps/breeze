@@ -1,14 +1,14 @@
 ---
 title: AI Computer Control
-description: The screenshot, screen-analysis, and mouse/keyboard control tools the AI assistant can use on a device's desktop, plus the AI Operator task-delegation preview.
+description: The screenshot, screen-analysis, and mouse/keyboard control tools Breeze AI can use on a device's desktop, plus how AI tasks use them.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Beyond querying your fleet and running scripts, the Breeze AI assistant can look at and interact with a device's own desktop: it can capture a screenshot, analyze what's on screen against a description you give it, and — with a second person's approval — move the mouse and type on the device directly. This page covers those three tools, plus the two remote-session tools that sit in the same part of the codebase, and the separate **AI Operator** preview for handing off a longer-running task.
+Beyond querying your fleet and running scripts, Breeze AI can look at and interact with a device's own desktop: it can capture a screenshot, analyze what's on screen against a description you give it, and — with a second person's approval — move the mouse and type on the device directly. This page covers those three tools, plus the two remote-session tools that sit in the same part of the codebase, and how [AI tasks](/features/ai-tasks/) use them for longer-running work.
 
 <Aside type="note">
-  This page does **not** cover the AI's broader device-management toolset — running commands and scripts, managing services, file operations, disk cleanup, security scans, and so on. Those are documented on [AI Features](/features/ai/#tool-tiers), along with the full tier system and approval workflow this page relies on.
+  This page does **not** cover the AI's broader device-management toolset — running commands and scripts, managing services, file operations, disk cleanup, security scans, and so on. Those are documented on [AI in Breeze](/features/ai/#tool-tiers), along with the full tier system and approval workflow this page relies on.
 </Aside>
 
 ---
@@ -24,7 +24,7 @@ Beyond querying your fleet and running scripts, the Breeze AI assistant can look
 | `create_remote_session` | Open a new remote terminal or file-transfer session to a device | Tier 3 | **Four-eyes** — a second person approves |
 
 <Aside type="caution">
-  `computer_control` and `create_remote_session` are classified **four-eyes**, not supervised — the requesting technician cannot approve their own request. Breeze treats direct input control and unattended remote-session creation as surveillance-grade access, so a *different* user has to approve it from **Approval History** (or the mobile app). `take_screenshot` and `analyze_screen` stay supervised: the requester approves their own screenshot request in chat. See [AI Features → Approval workflow](/features/ai/#approval-workflow) for what four-eyes and supervised mean and who can approve each.
+  `computer_control` and `create_remote_session` are classified **four-eyes**, not supervised — the requesting technician cannot approve their own request. Breeze treats direct input control and unattended remote-session creation as surveillance-grade access, so a *different* user has to approve it from **Approval History** (or the mobile app). `take_screenshot` and `analyze_screen` stay supervised: the requester approves their own screenshot request in chat. See [AI in Breeze → Approval workflow](/features/ai/#approval-workflow) for what four-eyes and supervised mean and who can approve each.
 </Aside>
 
 ---
@@ -83,7 +83,7 @@ Sends mouse and keyboard input to a device and returns a screenshot after each a
 ```
 
 <Aside>
-  Every `computer_control` invocation is **four-eyes**: the AI raises the proposed action, and a different user has to approve it from Approval History before it reaches the device. There is no self-approval path for this tool, even for a sole administrator — see [AI Features → Approving your own request](/features/ai/#approving-your-own-request-when-you-are-the-only-approver) for what happens when an organization has no second eligible approver.
+  Every `computer_control` invocation is **four-eyes**: the AI raises the proposed action, and a different user has to approve it from Approval History before it reaches the device. There is no self-approval path for this tool, even for a sole administrator — see [AI in Breeze → Approving your own request](/features/ai/#approving-your-own-request-when-you-are-the-only-approver) for what happens when an organization has no second eligible approver.
 </Aside>
 
 ---
@@ -152,13 +152,9 @@ Use a remote desktop session on these devices instead. See [Remote Access](/feat
 
 ---
 
-## AI Operator (preview)
+## AI tasks
 
-**AI Operator** is a different shape of automation from the tools above: instead of a single tool call inside a chat turn, it's a long-running *task* — investigate, act, verify, document — that keeps working after you close the browser, pausing only at the step that needs your approval.
-
-<Aside type="caution">
-  AI Operator ships **disabled**, behind two feature flags plus the main `BREEZE_AI_AGENTS_ENABLED` kill switch, and only one recipe — **service recovery** — currently exists. It's documented in full on [AI Agents → AI Operator (preview)](/features/ai-agents/#ai-operator-preview), including the **Delegate to Operator** button, what the task page shows, and the service-recovery approval flow. See [Environment Variables → AI Operator](/deploy/environment/#ai-operator-preview-off-by-default) for the flags.
-</Aside>
+The screen and input tools above can run inside an [AI task](/features/ai-tasks/): a long-running job that keeps working after you close the browser and pauses only at the step that needs your approval. AI tasks ship disabled; see [AI tasks](/features/ai-tasks/) for the flags and the service-recovery recipe.
 
 ---
 
@@ -171,7 +167,7 @@ Use a remote desktop session on these devices instead. See [Remote Access](/feat
 All five tools on this page require the device to have an active WebSocket connection. Check the device's status in the dashboard; if it shows online but commands still fail, the agent may need to be restarted.
 
 **Approval request not appearing in the UI.**
-Tier 3 actions emit an `approval_required` event to the AI chat session. `computer_control` and `create_remote_session` requests don't show a self-approve option even for the requester — a different user has to approve from **Approval History** or the mobile app. See [AI Features → Pending approvals survive a restart](/features/ai/#pending-approvals-survive-a-restart).
+Tier 3 actions emit an `approval_required` event to the AI chat session. `computer_control` and `create_remote_session` requests don't show a self-approve option even for the requester — a different user has to approve from **Approval History** or the mobile app. See [AI in Breeze → Pending approvals survive a restart](/features/ai/#pending-approvals-survive-a-restart).
 
 **"Tool rate limit exceeded" error.**
 Each tool's per-user limit resets on its own window (see [Rate limits](#rate-limits) above). The error message includes the reset time.

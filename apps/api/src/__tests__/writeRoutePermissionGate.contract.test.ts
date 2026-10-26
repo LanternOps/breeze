@@ -345,6 +345,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PUT /api/v1/portal/trust-page': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   'POST /api/v1/portal/trust-page/preview-token': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   'POST /api/v1/portal/trust-page/unpublish': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  // routes/agreementsPublic.ts (#9075 W2b)
+  'POST /api/v1/agreements/public/:token/accept': 'public: Signed agreement-request link token; persisted jti + partner continuity checked in resolveAgreementLink(); durable single-use in the service',
+  'POST /api/v1/agreements/public/:token/decline': 'public: Signed agreement-request link token; persisted jti + partner continuity checked in resolveAgreementLink(); durable single-use in the service',
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',

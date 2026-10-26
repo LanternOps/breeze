@@ -150,9 +150,9 @@ describe('chips', () => {
 describe('open elsewhere', () => {
   const label = (id: string) => within(rowEl(id)).queryByTestId('ai-conversation-open-elsewhere');
 
-  it('panel list: a workspace-held row says "Open in AI Assistant"; others say nothing', () => {
+  it('panel list: a workspace-held row says "Open in Breeze AI"; others say nothing', () => {
     renderList({ surface: 'panel', rows: [row('a', { openIn: 'workspace' }), row('b', { openIn: 'panel' }), row('c')] });
-    expect(label('a')).toHaveTextContent('Open in AI Assistant');
+    expect(label('a')).toHaveTextContent('Open in Breeze AI');
     expect(label('b')).toBeNull();
     expect(label('c')).toBeNull();
   });

@@ -27,6 +27,12 @@ import { transitionIntent, type ActionIntentTransitionPatch } from '../services/
 import { buildActionLabel } from '../services/actionIntents/actionLabel';
 import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
 import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
+import {
+  beginOperatorReleaseLedger,
+  isOperatorOriginIntent,
+  type OperatorReleaseLedger,
+  type OperatorReleaseOutcome,
+} from '../services/aiOperator/operatorReleaseLedger';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
@@ -883,6 +889,12 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // software_policies.created_by (db/schema/softwarePolicies.ts) —
   // manage_software_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
   'manage_software_policy:create',
+  // Full-control W06 (#6776). Both are tier 3 supervised, so a real approver exists to own the row:
+  // ticket_forms.created_by (db/schema/ticketForms.ts) and the ticket created from an inbound email
+  // (ticketService.createTicket actor, via convertEmailInbound). The paired handler branches check
+  // approverReleaseMismatch(auth, context) before the write.
+  'manage_ticket_forms:create',
+  'manage_ticket_inbox:convert',
   // sensitive_data_findings.remediation_metadata.updatedBy (jsonb, not an
   // actual FK — db/schema/sensitiveData.ts — but the contract's own
   // name-level over-approximation is intentional; guarded the same way
@@ -1418,6 +1430,22 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     }
     auth = mcpRelease.auth;
   }
+  // #10129: an AI Operator child (plan-approver `user_session`, task-linked)
+  // gets the same ledger row, on a synthetic `ai_operator` session, so the
+  // /ai-risk feed and its credential reveal entry list it. Same fail-closed
+  // rule as the MCP ledger: no row, no dispatch.
+  let operatorLedger: OperatorReleaseLedger | null = null;
+  if (!mcpRelease && isOperatorOriginIntent(intent)) {
+    operatorLedger = await beginOperatorReleaseLedger(intent);
+    if (!operatorLedger) {
+      await failIntent(intent, 'operator_ledger_unavailable');
+      return;
+    }
+  }
+  const finishReleaseLedgers = async (outcome: OperatorReleaseOutcome): Promise<void> => {
+    await mcpRelease?.finish(outcome);
+    await operatorLedger?.finish(outcome);
+  };
 
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
@@ -1540,7 +1568,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
   } catch (err) {
-    await mcpRelease?.finish({ status: 'failure', error: err });
+    await finishReleaseLedgers({ status: 'failure', error: err });
     // The backend dispatch guard refused right before the outbound mutation:
     // nothing was sent, so this is a clean, non-retried terminal failure that
     // keeps its typed payload (not `executed`, no rethrow).
@@ -1601,9 +1629,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // truncation guard — see its declaration. A truncated external error body is
   // still a failed release; it just stores `{truncated:true}` as its evidence.
   const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
-  // B-W04: close the MCP-origin lifecycle with the release's own classification.
-  // A secret-bearing result is never recorded on the ledger or the audit.
-  await mcpRelease?.finish(returnedToolError
+  // B-W04: close the MCP-origin lifecycle (and #10129's Operator ledger) with
+  // the release's own classification. A secret-bearing result is never
+  // recorded on the ledger or the audit.
+  await finishReleaseLedgers(returnedToolError
     ? { status: 'failure', error: new Error('tool_returned_error') }
     : carrier || isSecretBearingTool(intent.actionName)
       ? { status: 'success' }

@@ -41,7 +41,7 @@ const queryBoolean = z.preprocess((value) => {
  * caller leaves it as is), so an edit to another field of a destination saved
  * before validation existed is not refused. A new or changed prefix always
  * is. Backups to a destination whose stored prefix is invalid are refused at
- * mint from W03; until then (W01) they continue under the legacy layout.
+ * mint (`invalid_destination_prefix`), never written to the bucket root.
  */
 export function validateS3Details(
   details: Record<string, unknown>,

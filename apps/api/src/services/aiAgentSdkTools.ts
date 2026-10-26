@@ -42,8 +42,9 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureException, captureMessage } from './sentry';
@@ -117,8 +118,12 @@ export type PreToolUseResult =
    * `error` carries the model-facing text in both cases; when `handoff` is set
    * it is a status message, not a failure, and it never reaches an `error`
    * field on the wire. See services/aiToolHandoff.ts (#5107).
+   *
+   * `detail`: an optional model-actionable elaboration of a denial, published
+   * beside `error` as `{ error, detail }` — the same shape the tool's own
+   * handler returns (#10144, the launch_specialist pre-approval refusal).
    */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -443,8 +448,8 @@ export const TOOL_TIERS = {
   manage_monitors: 1,           // Read-only; retired mutations return guidance
   get_service_monitoring_status: 1,
   // W01 (spec §4.4) — read-only reachability for a discovered network asset,
-  // with the source and age of the evidence. Wired here rather than added to
-  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // with the source and age of the evidence. Wired with a tier (the registry
+  // ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS contract): without one, createSessionPreToolUse rejects
   // it as "Unknown tool" and the chat tells the user the capability does not
   // exist.
   list_network_assets: 1,
@@ -468,10 +473,9 @@ export const TOOL_TIERS = {
   // M4 Task 4 (#6000): the one topology action — approval-gated (supervised,
   // fresh second factor, pinned effect digest); runs only as a release.
   diagnose_connectivity: 3,
-  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
-  // get_monitor remain in the frozen
-  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
-  // — these two are new and wired directly instead of widening that list.
+  // Monitor definition activity/escalation tools (#5290 W03), wired directly.
+  // (The frozen KNOWN_MISSING_TOOL_TIERS baseline they avoided widening was
+  // emptied and deleted in full-control W04, #6758.)
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // #6669: the only chat path to author a monitor (e.g. software_presence
@@ -498,6 +502,12 @@ export const TOOL_TIERS = {
   snooze_concern: 2,
   resolve_concern: 2,
   create_watch: 2,
+  // Wisp W08 thread links (services/wisp/linkTools.ts). Declared to chat only
+  // when wispEnabled() (wispLinkToolDefinitions). link_entity is Tier 2 like
+  // raise_concern: auto-executes with an audit row, no approval card, and is
+  // not a plain Tier-1 read (which would bypass agent allowlists).
+  link_entity: 2,
+  list_links: 1,
   // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
   // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
   // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
@@ -598,6 +608,73 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+  // Per-action classes live in aiGuardrails (W04 class review: containment,
+  // agent maintenance and device writes supervised; remote sessions and PAM
+  // elevation requests four-eyes; collect_evidence screenshot input-aware).
+  execute_containment: 3,
+  create_incident: 2,
+  collect_evidence: 2,
+  request_elevation: 3,
+  revoke_elevation: 2,
+  create_remote_session: 3,
+  manage_processes: 1,
+  manage_scheduled_tasks: 1,
+  registry_operations: 2,
+  trigger_agent_restart: 3,
+  trigger_agent_upgrade: 3,
+  manage_software_policy: 3,
+  manage_browser_policy: 3,
+  manage_peripheral_policy: 3,
+  remediate_sensitive_data: 3,
+  remediate_software_violation: 3,
+  assign_security_training: 2,
+  configure_network_baseline: 3,
+  acknowledge_network_device: 2,
+  // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket ops. Registry tier 1 for all seven
+  // multiplexers (like manage_backup_profiles); the real per-action classes live in aiGuardrails
+  // (partner-wide config and customer-visible forms supervised, hard deletes four-eyes, inbox
+  // convert/dismiss supervised, org checklist-template create and the ticket-ops writes tier 2).
+  manage_ticket_config: 1,
+  manage_ticket_checklist_templates: 1,
+  manage_ticket_inbox: 1,
+  manage_ticket_attachments: 1,
+  manage_ticket_forms: 1,
+  manage_ticket_response_templates: 1,
+  manage_time_suggestions: 1,
+  // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
+  // in aiGuardrails (input-aware public comment / resolve / requester edit,
+  // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
+  manage_tickets: 1,
+  manage_quotes: 2,
+  manage_billing_catalog: 2,
+  manage_saved_filters: 1,
+  manage_tags: 2,
+  manage_notification_channels: 1,
+  test_webhook: 3,
+  // Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes.
+  // Per-action classes live in aiGuardrails (W03 class review: restores and
+  // DR execution four-eyes, triggers and Hyper-V power supervised, partner-
+  // wide backup profiles input-aware).
+  trigger_backup: 3,
+  trigger_hyperv_backup: 3,
+  trigger_mssql_backup: 3,
+  trigger_vault_sync: 3,
+  trigger_c2c_sync: 3,
+  verify_mssql_backup: 3,
+  restore_snapshot: 3,
+  restore_as_vm: 3,
+  restore_hyperv_vm: 3,
+  restore_mssql_database: 3,
+  restore_c2c_items: 3,
+  instant_boot_vm: 3,
+  manage_hyperv_vm: 3,
+  manage_hyperv_checkpoints: 2,
+  manage_dr_plan: 2,
+  execute_dr_plan: 3,
+  manage_backup_profiles: 1,
+  configure_backup_sla: 2,
+  configure_vault: 2,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 /**
@@ -664,12 +741,13 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
+        ...(check.detail ? { detail: check.detail } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),
@@ -775,6 +853,10 @@ const TOPOLOGY_PROPOSAL_TOOL = 'diagnose_connectivity';
  * that static scan.
  */
 function inputShape(toolName: string): z.ZodRawShape {
+  // W03-D4 (#6757): a tool whose validator is a pipe/union (restore_as_vm)
+  // exposes a flat envelope built from its arms in the schema module.
+  const envelope = TOOL_SDK_INPUT_SHAPES[toolName];
+  if (envelope) return envelope;
   const shape = (toolInputSchemas as Record<string, { shape?: z.ZodRawShape }>)[toolName]?.shape;
   if (!shape) {
     throw new Error(`toolInputSchemas.${toolName} is not a plain z.object — hand-mirror its shape instead`);
@@ -1382,6 +1464,27 @@ export function wispConcernToolDefinitions(
 }
 
 /**
+ * Wisp W08 thread-link tools — the same `wispEnabled()` EXPOSURE gate as the
+ * W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and both
+ * handlers refuse without `auth.wispGrant`.
+ */
+export function wispLinkToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('link_entity', registryDescription('link_entity'), linkEntityShape, handler('link_entity')),
+    tool('list_links', registryDescription('list_links'), listLinksShape, handler('list_links')),
+  ];
+}
+
+/**
  * Wisp W07 specialist chat tool — the same `wispEnabled()` EXPOSURE gate as
  * the W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
  * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and the
@@ -1919,6 +2022,12 @@ export function buildBreezeSdkTools(
       makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(
+      'manage_tickets',
+      registryDescription('manage_tickets'),
+      inputShape('manage_tickets'),
+      makeHandler('manage_tickets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
       'get_running_timer',
       registryDescription('get_running_timer'),
       {},
@@ -2045,6 +2154,27 @@ export function buildBreezeSdkTools(
       registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_notification_channels',
+      registryDescription('manage_notification_channels'),
+      inputShape('manage_notification_channels'),
+      makeHandler('manage_notification_channels', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_saved_filters',
+      registryDescription('manage_saved_filters'),
+      inputShape('manage_saved_filters'),
+      makeHandler('manage_saved_filters', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tags',
+      registryDescription('manage_tags'),
+      inputShape('manage_tags'),
+      makeHandler('manage_tags', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // #6930. No `done`: ticking a checklist step is a human attestation.
@@ -2360,6 +2490,13 @@ export function buildBreezeSdkTools(
       registryDescription('query_webhooks'),
       inputShape('query_webhooks'),
       makeHandler('query_webhooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'test_webhook',
+      registryDescription('test_webhook'),
+      inputShape('test_webhook'),
+      makeHandler('test_webhook', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -3334,6 +3471,196 @@ export function buildBreezeSdkTools(
       makeHandler('get_user_risk_detail', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W06 (#6776): PSA configuration + ticket operations. Classes live in
+    // aiGuardrails (W06 class review): partner-wide config and customer-visible forms supervised,
+    // hard deletes four-eyes. The shapes are the toolInputSchemas entries (inputShape).
+
+    tool(
+      'manage_ticket_config',
+      registryDescription('manage_ticket_config'),
+      inputShape('manage_ticket_config'),
+      makeHandler('manage_ticket_config', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_checklist_templates',
+      registryDescription('manage_ticket_checklist_templates'),
+      inputShape('manage_ticket_checklist_templates'),
+      makeHandler('manage_ticket_checklist_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_inbox',
+      registryDescription('manage_ticket_inbox'),
+      inputShape('manage_ticket_inbox'),
+      makeHandler('manage_ticket_inbox', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_attachments',
+      registryDescription('manage_ticket_attachments'),
+      inputShape('manage_ticket_attachments'),
+      makeHandler('manage_ticket_attachments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_forms',
+      registryDescription('manage_ticket_forms'),
+      inputShape('manage_ticket_forms'),
+      makeHandler('manage_ticket_forms', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_response_templates',
+      registryDescription('manage_ticket_response_templates'),
+      inputShape('manage_ticket_response_templates'),
+      makeHandler('manage_ticket_response_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_time_suggestions',
+      registryDescription('manage_time_suggestions'),
+      inputShape('manage_time_suggestions'),
+      makeHandler('manage_time_suggestions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+    // Classes live in aiGuardrails (W04 class review); every device write is
+    // supervised, remote sessions and elevation requests four-eyes.
+
+    tool(
+      'execute_containment',
+      registryDescription('execute_containment'),
+      inputShape('execute_containment'),
+      makeHandler('execute_containment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'create_incident',
+      registryDescription('create_incident'),
+      inputShape('create_incident'),
+      makeHandler('create_incident', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'collect_evidence',
+      registryDescription('collect_evidence'),
+      inputShape('collect_evidence'),
+      makeHandler('collect_evidence', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'request_elevation',
+      registryDescription('request_elevation'),
+      inputShape('request_elevation'),
+      makeHandler('request_elevation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'revoke_elevation',
+      registryDescription('revoke_elevation'),
+      inputShape('revoke_elevation'),
+      makeHandler('revoke_elevation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'create_remote_session',
+      registryDescription('create_remote_session'),
+      inputShape('create_remote_session'),
+      makeHandler('create_remote_session', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_processes',
+      registryDescription('manage_processes'),
+      inputShape('manage_processes'),
+      makeHandler('manage_processes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_scheduled_tasks',
+      registryDescription('manage_scheduled_tasks'),
+      inputShape('manage_scheduled_tasks'),
+      makeHandler('manage_scheduled_tasks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'registry_operations',
+      registryDescription('registry_operations'),
+      inputShape('registry_operations'),
+      makeHandler('registry_operations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_agent_restart',
+      registryDescription('trigger_agent_restart'),
+      inputShape('trigger_agent_restart'),
+      makeHandler('trigger_agent_restart', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_agent_upgrade',
+      registryDescription('trigger_agent_upgrade'),
+      inputShape('trigger_agent_upgrade'),
+      makeHandler('trigger_agent_upgrade', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_policy',
+      registryDescription('manage_software_policy'),
+      inputShape('manage_software_policy'),
+      makeHandler('manage_software_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_browser_policy',
+      registryDescription('manage_browser_policy'),
+      inputShape('manage_browser_policy'),
+      makeHandler('manage_browser_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_peripheral_policy',
+      registryDescription('manage_peripheral_policy'),
+      inputShape('manage_peripheral_policy'),
+      makeHandler('manage_peripheral_policy', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_sensitive_data',
+      registryDescription('remediate_sensitive_data'),
+      inputShape('remediate_sensitive_data'),
+      makeHandler('remediate_sensitive_data', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'remediate_software_violation',
+      registryDescription('remediate_software_violation'),
+      inputShape('remediate_software_violation'),
+      makeHandler('remediate_software_violation', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'assign_security_training',
+      registryDescription('assign_security_training'),
+      inputShape('assign_security_training'),
+      makeHandler('assign_security_training', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_network_baseline',
+      registryDescription('configure_network_baseline'),
+      inputShape('configure_network_baseline'),
+      makeHandler('configure_network_baseline', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'acknowledge_network_device',
+      registryDescription('acknowledge_network_device'),
+      inputShape('acknowledge_network_device'),
+      makeHandler('acknowledge_network_device', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     tool(
       'manage_backup_configs',
       registryDescription('manage_backup_configs'),
@@ -3355,8 +3682,8 @@ export function buildBreezeSdkTools(
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only reads, previously registered but
-    // untiered (aiAgentSdkTools.registryParity.contract.test.ts's
-    // KNOWN_MISSING_TOOL_TIERS). Backup, Hyper-V, MSSQL, vault, SLA and
+    // untiered (the since-deleted KNOWN_MISSING_TOOL_TIERS list, #3300).
+    // Backup, Hyper-V, MSSQL, vault, SLA and
     // C2C reads. Shape derived from toolInputSchemas (W01-D7).
     tool(
       'get_backup_status',
@@ -3447,6 +3774,143 @@ export function buildBreezeSdkTools(
       registryDescription('search_c2c_items'),
       inputShape('search_c2c_items'),
       makeHandler('search_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes.
+    // Classes live in aiGuardrails (W03 class review); every restore and DR
+    // execution is four-eyes, every trigger supervised.
+
+    tool(
+      'trigger_backup',
+      registryDescription('trigger_backup'),
+      inputShape('trigger_backup'),
+      makeHandler('trigger_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_hyperv_backup',
+      registryDescription('trigger_hyperv_backup'),
+      inputShape('trigger_hyperv_backup'),
+      makeHandler('trigger_hyperv_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_mssql_backup',
+      registryDescription('trigger_mssql_backup'),
+      inputShape('trigger_mssql_backup'),
+      makeHandler('trigger_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_vault_sync',
+      registryDescription('trigger_vault_sync'),
+      inputShape('trigger_vault_sync'),
+      makeHandler('trigger_vault_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_c2c_sync',
+      registryDescription('trigger_c2c_sync'),
+      inputShape('trigger_c2c_sync'),
+      makeHandler('trigger_c2c_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'verify_mssql_backup',
+      registryDescription('verify_mssql_backup'),
+      inputShape('verify_mssql_backup'),
+      makeHandler('verify_mssql_backup', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_snapshot',
+      registryDescription('restore_snapshot'),
+      inputShape('restore_snapshot'),
+      makeHandler('restore_snapshot', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_as_vm',
+      registryDescription('restore_as_vm'),
+      inputShape('restore_as_vm'),
+      makeHandler('restore_as_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_hyperv_vm',
+      registryDescription('restore_hyperv_vm'),
+      inputShape('restore_hyperv_vm'),
+      makeHandler('restore_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_mssql_database',
+      registryDescription('restore_mssql_database'),
+      inputShape('restore_mssql_database'),
+      makeHandler('restore_mssql_database', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'restore_c2c_items',
+      registryDescription('restore_c2c_items'),
+      inputShape('restore_c2c_items'),
+      makeHandler('restore_c2c_items', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'instant_boot_vm',
+      registryDescription('instant_boot_vm'),
+      inputShape('instant_boot_vm'),
+      makeHandler('instant_boot_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_hyperv_vm',
+      registryDescription('manage_hyperv_vm'),
+      inputShape('manage_hyperv_vm'),
+      makeHandler('manage_hyperv_vm', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_hyperv_checkpoints',
+      registryDescription('manage_hyperv_checkpoints'),
+      inputShape('manage_hyperv_checkpoints'),
+      makeHandler('manage_hyperv_checkpoints', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_dr_plan',
+      registryDescription('manage_dr_plan'),
+      inputShape('manage_dr_plan'),
+      makeHandler('manage_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'execute_dr_plan',
+      registryDescription('execute_dr_plan'),
+      inputShape('execute_dr_plan'),
+      makeHandler('execute_dr_plan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_backup_profiles',
+      registryDescription('manage_backup_profiles'),
+      inputShape('manage_backup_profiles'),
+      makeHandler('manage_backup_profiles', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_backup_sla',
+      registryDescription('configure_backup_sla'),
+      inputShape('configure_backup_sla'),
+      makeHandler('configure_backup_sla', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'configure_vault',
+      registryDescription('configure_vault'),
+      inputShape('configure_vault'),
+      makeHandler('configure_vault', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Playbook tools
@@ -4081,6 +4545,18 @@ export function buildBreezeSdkTools(
       },
       makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
     ),
+    tool(
+      'manage_quotes',
+      registryDescription('manage_quotes'),
+      inputShape('manage_quotes'),
+      makeHandler('manage_quotes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'manage_billing_catalog',
+      registryDescription('manage_billing_catalog'),
+      inputShape('manage_billing_catalog'),
+      makeHandler('manage_billing_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
 
     tool(
       'get_quote',
@@ -4543,6 +5019,8 @@ export function buildBreezeSdkTools(
     ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
     ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W08 link_entity / list_links — behind wispEnabled() (see the factory).
+    ...wispLinkToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
     ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a

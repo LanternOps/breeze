@@ -43,76 +43,13 @@ function humanOnlyProblems(
   map: ReadonlyMap<string, string>,
   registered: ReadonlySet<string>,
   tiers: Record<string, number>,
-  missing: ReadonlySet<string>,
 ): string[] {
   return [...map].flatMap(([name, reason]) => [
     ...(!registered.has(name) ? [`${name}: not registered`] : []),
     ...(name in tiers ? [`${name}: also in TOOL_TIERS — human-only means never tiered`] : []),
-    ...(missing.has(name) ? [`${name}: also in KNOWN_MISSING_TOOL_TIERS`] : []),
     ...(reason.trim().length < 20 ? [`${name}: reason must say why (>= 20 chars)`] : []),
   ]);
 }
-
-/**
- * Registered tools with no `TOOL_TIERS` entry, and therefore invisible to
- * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
- * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
- * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
- * (14 of them after their route-permission parity fixes landed), leaving 46.
- * Deleted entirely at the end of W04, not W01.
- *
- * **This list may only shrink.** Removing a name means the tool was given a
- * tier and is now reachable. Adding one means a new tool shipped mute, which
- * is exactly what this file exists to prevent — fix the tool, don't widen the
- * list.
- */
-const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'acknowledge_network_device',
-  'assign_security_training',
-  'collect_evidence',
-  'configure_backup_sla',
-  'configure_network_baseline',
-  'configure_vault',
-  'create_incident',
-  'create_remote_session',
-  'execute_containment',
-  'execute_dr_plan',
-  'instant_boot_vm',
-  'manage_backup_profiles',
-  'manage_browser_policy',
-  'manage_catalog',
-  'manage_dr_plan',
-  'manage_hyperv_checkpoints',
-  'manage_hyperv_vm',
-  'manage_notification_channels',
-  'manage_peripheral_policy',
-  'manage_processes',
-  'manage_quotes',
-  'manage_saved_filters',
-  'manage_scheduled_tasks',
-  'manage_software_policy',
-  'manage_tags',
-  'manage_tickets',
-  'registry_operations',
-  'remediate_sensitive_data',
-  'remediate_software_violation',
-  'request_elevation',
-  'restore_as_vm',
-  'restore_c2c_items',
-  'restore_hyperv_vm',
-  'restore_mssql_database',
-  'restore_snapshot',
-  'revoke_elevation',
-  'test_webhook',
-  'trigger_agent_restart',
-  'trigger_agent_upgrade',
-  'trigger_backup',
-  'trigger_c2c_sync',
-  'trigger_hyperv_backup',
-  'trigger_mssql_backup',
-  'trigger_vault_sync',
-  'verify_mssql_backup',
-]);
 
 /**
  * `TOOL_TIERS` keys with no registry entry. These are advertised to the SDK
@@ -127,20 +64,27 @@ const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
   'propose_action_plan',
 ]);
 
-describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {
-  it('every registered tool is tiered, human-only with a reason, or a known pre-existing gap', () => {
+/**
+ * Spec 2026-09-23 "Contracts": registry ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS, with
+ * no exceptions. The frozen `KNOWN_MISSING_TOOL_TIERS` allowlist (#3300: 86
+ * mute tools at f400fc315, re-frozen at 88 on d1cbf4fe27) reached zero when
+ * full-control W03 (#6757) and W04 (#6758) wired the last 38, and was deleted
+ * in W04. A newly registered tool with no tier now fails here outright.
+ */
+describe('aiTools registry ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS — a registered tool must be reachable from chat (#3300)', () => {
+  it('every registered tool is tiered, or human-only with a reason', () => {
     const uncovered = getAllRegisteredToolNames()
-      .filter((n) => !(n in TOOL_TIERS) && !HUMAN_ONLY_TOOLS.has(n) && !KNOWN_MISSING_TOOL_TIERS.has(n))
+      .filter((n) => !(n in TOOL_TIERS) && !HUMAN_ONLY_TOOLS.has(n))
       .sort();
     expect(
       uncovered,
-      'Give the tool a TOOL_TIERS entry, or list it in HUMAN_ONLY_TOOLS (aiToolExposure.ts) with a written reason. Never widen KNOWN_MISSING_TOOL_TIERS.',
+      'Give the tool a TOOL_TIERS entry, or list it in HUMAN_ONLY_TOOLS (aiToolExposure.ts) with a written reason.',
     ).toEqual([]);
   });
 
-  it('HUMAN_ONLY_TOOLS entries are registered, untiered, not also KNOWN_MISSING, and carry a reason', () => {
+  it('HUMAN_ONLY_TOOLS entries are registered, untiered, and carry a reason', () => {
     const registered = new Set(getAllRegisteredToolNames());
-    const bad = humanOnlyProblems(HUMAN_ONLY_TOOLS, registered, TOOL_TIERS, KNOWN_MISSING_TOOL_TIERS);
+    const bad = humanOnlyProblems(HUMAN_ONLY_TOOLS, registered, TOOL_TIERS);
     expect(bad).toEqual([]);
   });
 
@@ -149,7 +93,6 @@ describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachabl
       new Map([['query_devices', 'x']]),
       new Set(['query_devices']),
       TOOL_TIERS,
-      new Set(),
     );
     expect(bad).toEqual([
       'query_devices: also in TOOL_TIERS — human-only means never tiered',
@@ -157,19 +100,6 @@ describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachabl
     ]);
   });
 
-  it('KNOWN_MISSING_TOOL_TIERS contains no stale entries — the list may only shrink', () => {
-    const registered = new Set(getAllRegisteredToolNames());
-    const resolved = [...KNOWN_MISSING_TOOL_TIERS]
-      .filter((name) => name in TOOL_TIERS || HUMAN_ONLY_TOOLS.has(name) || !registered.has(name))
-      .sort();
-
-    expect(
-      resolved,
-      'These names are in KNOWN_MISSING_TOOL_TIERS but are no longer missing ' +
-        '(they now have a tier, are human-only, or are no longer registered). Delete them from ' +
-        'the allowlist so it keeps shrinking toward empty.',
-    ).toEqual([]);
-  });
 });
 
 describe('TOOL_TIERS ⊆ aiTools registry — an advertised tool must be executable (#3300)', () => {
@@ -332,12 +262,12 @@ describe('SDK declarations carry registry search metadata (A-W02)', () => {
 
 import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
 import { validateToolInput, toolInputSchemas } from './aiToolSchemas';
+import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 
 describe('manage_delivery has every registration', () => {
   it('does not add a frozen-gap exception', () => {
     expect(getAllRegisteredToolNames()).toContain('manage_delivery');
     expect(TOOL_TIERS.manage_delivery).toBe(1);
-    expect(KNOWN_MISSING_TOOL_TIERS.has('manage_delivery')).toBe(false);
   });
   it.each(['resolve', 'list_routing', 'list_escalation'])('%s is read-only', action => {
     expect(checkGuardrails('manage_delivery', { action }).tier).toBe(1);
@@ -383,6 +313,103 @@ describe('W01 read-only wiring (#6755)', () => {
   });
 });
 
+
+/** Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
+ * Pinned so a later wave cannot silently un-wire one. */
+const W04_WRITE_TOOLS = [
+  'execute_containment', 'create_incident', 'collect_evidence', 'request_elevation', 'revoke_elevation',
+  'create_remote_session', 'manage_processes', 'manage_scheduled_tasks', 'registry_operations',
+  'trigger_agent_restart', 'trigger_agent_upgrade', 'manage_software_policy', 'manage_browser_policy',
+  'manage_peripheral_policy', 'remediate_sensitive_data', 'remediate_software_violation',
+  'assign_security_training', 'configure_network_baseline', 'acknowledge_network_device',
+] as const;
+
+describe('W04 write wiring (#6758)', () => {
+  it.each(W04_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    // The SDK strips keys absent from its shape, so a registry-advertised key
+    // missing here would vanish before validateToolInput ever saw it (the
+    // manage_peripheral_policy `priority` drift, W04-D16).
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('configure_network_baseline is registry tier 3 (W04-D7: arms recurring scans)', () => {
+    expect(TOOL_TIERS.configure_network_baseline).toBe(3);
+  });
+
+  it('none of the W04 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W04_WRITE_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W02 (#6756): PSA and billing writes. Pinned so a later
+ * wave cannot silently un-wire one. */
+const W02_WRITE_TOOLS = [
+  'manage_tickets', 'manage_quotes', 'manage_billing_catalog', 'manage_saved_filters',
+  'manage_tags', 'manage_notification_channels', 'test_webhook',
+] as const;
+
+describe('W02 write wiring (#6756)', () => {
+  it.each(W02_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === toolInputSchemas', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    expect(Object.keys(decl!.inputSchema).sort()).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+  });
+
+  it('test_webhook is registry tier 3 (a real outbound POST)', () => {
+    expect(TOOL_TIERS.test_webhook).toBe(3);
+  });
+});
+
+/** Spec 2026-09-23 W03 (#6757): backup, DR and virtualization writes. Pinned
+ * so a later wave cannot silently un-wire one. */
+const W03_WRITE_TOOLS = [
+  'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'trigger_vault_sync', 'trigger_c2c_sync',
+  'verify_mssql_backup', 'restore_snapshot', 'restore_as_vm', 'restore_hyperv_vm', 'restore_mssql_database',
+  'restore_c2c_items', 'instant_boot_vm', 'manage_hyperv_vm', 'manage_hyperv_checkpoints', 'manage_dr_plan',
+  'execute_dr_plan', 'manage_backup_profiles', 'configure_backup_sla', 'configure_vault',
+] as const;
+
+/** The SDK shape a tool must declare: its plain z.object's shape, or its W03-D4 envelope. */
+function expectedSdkShapeKeys(name: string): string[] {
+  const envelope = TOOL_SDK_INPUT_SHAPES[name];
+  if (envelope) return Object.keys(envelope).sort();
+  return Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort();
+}
+
+describe('W03 write wiring (#6757)', () => {
+  it.each(W03_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(expectedSdkShapeKeys(name));
+    // The SDK strips keys absent from its shape, so a registry-advertised key
+    // missing here would vanish before validateToolInput ever saw it.
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('the three tools escalated to supervised are registry tier 3 (W03 class review)', () => {
+    for (const name of ['trigger_vault_sync', 'trigger_c2c_sync', 'verify_mssql_backup'] as const) {
+      expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS], name).toBe(3);
+    }
+  });
+});
 
 describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
   const configurations = [

@@ -291,7 +291,7 @@ describe('helpers', () => {
     await expect(wispSeedForSession(grant)).resolves.toBe('');
     shared.seedContextForSession.mockResolvedValueOnce('## Wisp thread\nsummary');
     await expect(wispSeedForSession(grant)).resolves.toBe('## Wisp thread\nsummary');
-    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', expect.objectContaining({ grantId: 'g-1' }));
+    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', expect.objectContaining({ grantId: 'g-1' }), null);
   });
 });
 

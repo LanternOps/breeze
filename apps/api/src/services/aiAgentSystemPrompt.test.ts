@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderToolIndexByDomain } from './aiToolIndex';
+import { renderAlwaysOnIndex, renderToolIndexByDomain } from './aiToolIndex';
 import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL, BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 
@@ -23,6 +23,13 @@ describe('AI_SYSTEM_PROMPT_TAIL vulnerability tool routing (#2605)', () => {
   it('spells out CVE vocabulary so the domain is findable', () => {
     expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/CVE/);
     expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/vulnerabilit/i);
+  });
+
+  // W19 (#10065): the default chat prompt carries the always-on index, not the
+  // whole one, so the CVE vocabulary must stay findable there too.
+  it('spells out CVE vocabulary in the always-on index the default chat ships', () => {
+    expect(renderAlwaysOnIndex(listChatSurfaceToolNames())).toMatch(/CVE/);
+    expect(renderAlwaysOnIndex(listChatSurfaceToolNames())).toMatch(/vulnerabilit/i);
   });
 
   it('does not duplicate index disambiguation in the tail', () => {

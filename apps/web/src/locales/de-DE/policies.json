@@ -358,7 +358,11 @@
         "pathPrefix": "Pfadpräfix",
         "optional": "(optional)",
         "backupsBreeze": "backups/breeze/",
-        "keyPrefixForOrganizingObjectsInThe": "Schlüsselpräfix zum Organisieren von Objekten im Bucket.",
+        "keyPrefixHelp": "Schlüsselpräfix für dieses Ziel. Neue Snapshots werden unter <prefix>/snapshots/ gespeichert. Vorhandene Snapshots bleiben, wo sie sind. Nach einer Änderung ist die nächste Sicherung eine Vollsicherung.",
+        "keyPrefixInvalidTooLong": "Ungültiges Schlüsselpräfix: höchstens {{max}} Zeichen.",
+        "keyPrefixInvalidSegment": "Ungültiges Schlüsselpräfix: leere Segmente sowie „.“ und „..“ sind nicht erlaubt.",
+        "keyPrefixInvalidCharacters": "Ungültiges Schlüsselpräfix: pro Segment nur Buchstaben, Ziffern und ! _ . * ' ( ) -, getrennt durch /.",
+        "keyPrefixInvalidReserved": "Ungültiges Schlüsselpräfix: ein Segment „snapshots“ ist nicht erlaubt.",
         "customEndpoint": "Benutzerdefinierter Endpunkt",
         "optional2": "(optional)",
         "httpsS3UsWest002Backblazeb2Com": "https://s3.us-west-002.backblazeb2.com",
@@ -1167,7 +1171,13 @@
         "binaryMissing": "{{vendors}} kann erst aktiviert werden, wenn das integrierte Paket ein bereitstellbares Installationsprogramm hat: ein Windows-MSI als neueste Version, dessen Installationsargumente SITE_TOKEN={s1_site_token} enthalten. Korrigieren Sie das auf der Registerkarte „Versionen“ des Pakets und speichern Sie dann erneut.",
         "binaryMissingLink": "Registerkarte „Versionen“ öffnen",
         "platformMacosUnsupported": "macOS: nicht unterstützt.",
-        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden."
+        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden.",
+        "catalogMissingBuiltin": "{{vendors}} ist noch nicht im Softwarekatalog dieses Partners. Fügen Sie es unter Software → Katalog → Integrierte Pakete hinzu und speichern Sie dann erneut.",
+        "catalogMissingBuiltinLink": "Integrierte Pakete öffnen",
+        "dnsBuiltinNote": "Fügen Sie {{vendor}} zuerst unter Software → Katalog → Integrierte Pakete zum Softwarekatalog dieses Partners hinzu; vorher lässt es sich nicht aktivieren.",
+        "dnsVariableNote": "Jede Organisation benötigt die Mandantenvariable {{variable}}, angelegt als normale (nicht geheime) Variable. Organisationen ohne sie werden übersprungen und als nicht zutreffend angezeigt.",
+        "dnsVariableLink": "Variablen öffnen",
+        "dnsCoverageNote": "Breeze synchronisiert die {{vendor}}-Konsole nicht. Die Abdeckung zeigt daher nur, ob ein Gerät den Client erhalten kann (ausstehend oder nicht zutreffend). Installations- und Dienststatus (fehlt, läuft nicht) erscheinen in der Compliance der generierten Softwarerichtlinie."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",

@@ -132,7 +132,7 @@
     "durationValue": "Onaydan itibaren {{minutes}} dakika",
     "purpose": "Amaç",
     "requestedBy": "Talep eden",
-    "principalUser": "Breeze yapay zekâ sohbeti",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP API anahtarı",
     "principalOauth": "MCP OAuth bağlantısı",
     "paths": "Yollar",
@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Yapay zekâ operatörü görevi için plan",
+    "title": "Yapay zekâ görevi için plan",
     "summary_one": "{{count}} etki, plan revizyonu {{revision}}",
     "summary_other": "{{count}} etki, plan revizyonu {{revision}}",
     "groupBreeze": "Breeze cihazları",
