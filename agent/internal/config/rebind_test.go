@@ -294,6 +294,46 @@ func TestFinishConfirmedRebindAfterACrashBetweenTheSaves(t *testing.T) {
 	}
 }
 
+// A failed second save leaves no reattach marker behind in viper: a later
+// save of the (source) config must not record reattach_intent_id beside the
+// source's ids, which would pin them over BREEZE_* overrides.
+func TestApplyRebindIdentityFailedIdentitySaveLeavesNoReattachMarker(t *testing.T) {
+	cfgPath := bindConfig(t)
+	orig := rebindSaveFn
+	t.Cleanup(func() { rebindSaveFn = orig })
+	saves := 0
+	rebindSaveFn = func(cfg *Config, path string, c credentialSource, i identitySource) error {
+		saves++
+		if saves == 2 {
+			return errors.New("the identity save failed")
+		}
+		return orig(cfg, path, c, i)
+	}
+	id, _ := rebindTestSet(RebindPhaseConfirmed).Identity()
+	if err := ApplyRebindIdentity(cfgPath, id); err == nil {
+		t.Fatal("ApplyRebindIdentity reported success with the second save failing")
+	}
+	rebindSaveFn = orig
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveTo(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	onDisk, err := readAgentIdentityAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk.ReattachIntentID != "" {
+		t.Fatalf("reattach_intent_id = %q beside the source's ids after a failed swap", onDisk.ReattachIntentID)
+	}
+	if onDisk.AgentID != rebindTestSourceID {
+		t.Fatalf("agent id = %q, want the source's", onDisk.AgentID)
+	}
+}
+
 // While the confirmed set is on disk (until the target authenticates), start
 // re-applies the swap whenever the disk is not exactly it, and leaves an
 // intact swap alone. No rotation runs meanwhile, so a difference is a revert.

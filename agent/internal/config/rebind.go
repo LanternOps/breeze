@@ -525,7 +525,10 @@ func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 	}
 
 	// Save 2: the new identity, recorded as a reattach so the loader keeps
-	// it over BREEZE_* environment values (reattachedIdentityPin).
+	// it over BREEZE_* environment values (reattachedIdentityPin). The marker
+	// is set in viper for this save only: if it fails, it is put back, or a
+	// later save would record it beside the source's ids and pin those.
+	prevIntent := viper.Get(reattachIntentKey)
 	viper.Set(reattachIntentKey, id.IntentID)
 	cfg.AgentID = id.AgentID
 	cfg.DeviceID = id.DeviceID
@@ -533,6 +536,7 @@ func ApplyRebindIdentity(cfgFile string, id RebindIdentity) error {
 	cfg.SiteID = id.SiteID
 	cfg.OwnershipEpoch = 0 // unset: the server's v2 assertion sets it
 	if err := rebindSaveFn(cfg, cfgPath, credentialsFromConfig, identityFromConfig); err != nil {
+		viper.Set(reattachIntentKey, prevIntent)
 		return fmt.Errorf("writing the reattached identity: %w", err)
 	}
 
