@@ -5,7 +5,7 @@ import { flows } from './flows';
 
 /**
  * Tool Catalog W05 (#5215 / #5220) — exact monthly flow run counters (plan Decision 15).
- * Migration: 2027-01-06-160000-flow-webhooks-tools-budgets.sql (CHECKs, the NULLS NOT DISTINCT
+ * Migration: 2027-01-07-140000-flow-webhooks-tools-budgets.sql (CHECKs, the NULLS NOT DISTINCT
  * key, the owner guard, RLS and DEFERRABLE clauses live there).
  *
  * One row per (flow owner, flow, UTC month `YYYY-MM`) plus one owner-total row per (owner,

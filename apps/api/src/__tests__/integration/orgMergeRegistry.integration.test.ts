@@ -207,7 +207,7 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // of a terminal state. flow_runs is leave-for-erasure; resolveFlows only
   // writes cancellation columns on loser runs, never org_id.
   'flow_runs.flow_runs_immutable_trg': 'RAISEs iff org_id (or any identity column) changed; leave-for-erasure, never repointed',
-  // Tool Catalog W5 (#5220, 2027-01-06-160000-flow-webhooks-tools-budgets.sql).
+  // Tool Catalog W5 (#5220, 2027-01-07-140000-flow-webhooks-tools-budgets.sql).
   'flow_webhook_deliveries.flow_webhook_deliveries_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
   'flow_webhook_deliveries.flow_webhook_deliveries_immutable_trg': 'BEFORE UPDATE freezing delivery facts; flow_webhook_deliveries is leave-for-erasure so a merge never updates its rows',
   'flow_usage_counters.flow_usage_counters_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',

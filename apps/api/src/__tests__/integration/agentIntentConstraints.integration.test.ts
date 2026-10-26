@@ -395,7 +395,7 @@ describe('agent-originated action_intents constraints', () => {
     // invoked_flow_id / parent_agent_run_id / triggered_by_api_key_id from the
     // immutable sets (tool catalog W05, #5220). Replay the W05 file too.
     await getTestDb().execute(sql.raw(readFileSync(
-      join(__dirname, '../../../migrations/2027-01-06-160000-flow-webhooks-tools-budgets.sql'),
+      join(__dirname, '../../../migrations/2027-01-07-140000-flow-webhooks-tools-budgets.sql'),
       'utf8',
     )));
 

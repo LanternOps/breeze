@@ -11,7 +11,7 @@ import { aiInvocations } from './aiInvocations';
 // Tool Catalog W05 (#5220) Task A2. The two new tables follow the
 // connection_health_incidents shape (partner always set, org nullable), and
 // five existing tables gain W5 columns. CHECKs, RLS, triggers and DEFERRABLE
-// clauses are in migrations/2027-01-06-160000-flow-webhooks-tools-budgets.sql.
+// clauses are in migrations/2027-01-07-140000-flow-webhooks-tools-budgets.sql.
 
 function columnsOf(table: PgTable): Map<string, { notNull: boolean }> {
   return new Map(getTableConfig(table).columns.map((c) => [c.name, { notNull: c.notNull }]));

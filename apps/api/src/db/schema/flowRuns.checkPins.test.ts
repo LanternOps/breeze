@@ -28,7 +28,7 @@ import { actionIntentOriginPrincipalKindEnum, actionIntentSourceEnum } from './a
 const MIGRATION = '2027-01-06-130000-flow-runs.sql';
 // Tool Catalog W05 (#5220) swaps W04's named CHECKs by name in its own file
 // (W04's file is never edited); a swapped CHECK is pinned against the newest file.
-const W5_MIGRATION = '2027-01-06-160000-flow-webhooks-tools-budgets.sql';
+const W5_MIGRATION = '2027-01-07-140000-flow-webhooks-tools-budgets.sql';
 
 function migrationSql(file: string = MIGRATION): string {
   return readFileSync(join(__dirname, '../../../migrations', file), 'utf8')

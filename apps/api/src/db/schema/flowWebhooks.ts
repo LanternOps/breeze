@@ -7,7 +7,7 @@ import { flowRuns } from './flowRuns';
 
 /**
  * Tool Catalog W05 (#5215 / #5220) — the authenticated webhook delivery log (plan Decision 2).
- * Migration: 2027-01-06-160000-flow-webhooks-tools-budgets.sql. CHECKs, triggers, RLS and
+ * Migration: 2027-01-07-140000-flow-webhooks-tools-budgets.sql. CHECKs, triggers, RLS and
  * the DEFERRABLE clauses live there (drizzle-orm's foreignKey() has no deferrable option;
  * `db:check-drift` replays the SQL, not this file).
  *

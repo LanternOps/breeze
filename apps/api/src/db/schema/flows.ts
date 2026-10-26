@@ -62,7 +62,7 @@ export const flows = pgTable(
     /** W04: the last schedule occurrence the tick enqueued (dedupe across ticks). */
     scheduleLastOccurrenceKey: text('schedule_last_occurrence_key'),
     /**
-     * W05 (2027-01-06-160000-flow-webhooks-tools-budgets.sql): the per-flow webhook secret,
+     * W05 (2027-01-07-140000-flow-webhooks-tools-budgets.sql): the per-flow webhook secret,
      * secretCrypto ciphertext with row-bound AAD (encryptedColumnRegistry
      * `flows.webhook_secret_encrypted`; export excludedSensitive). Set together with the
      * fingerprint and rotated_at (flows_webhook_secret_pair_chk). The fingerprint is for
