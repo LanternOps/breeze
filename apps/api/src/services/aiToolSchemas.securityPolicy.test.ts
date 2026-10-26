@@ -4,6 +4,7 @@ import { aiTools } from './aiToolNames';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { securityPolicyToolShapes } from './aiToolSchemasSecurityPolicy';
 import { toolActionEnum } from './aiToolActions';
+import { MFA_GATED_TOOL_ACTIONS } from './aiToolMfaGate';
 
 // W11 (#6781): the registry input_schema, the toolInputSchemas entry and the SDK shape must agree
 // (inputShape() takes the Zod .shape directly, so Zod IS the SDK surface).
@@ -132,6 +133,22 @@ describe('W11 human-only actions are absent from every tool schema (#6781)', () 
     expect(accessSrc).not.toMatch(/revokeAllRefreshFamilies|advanceUserEpochs|neutralizeUserIfOrphaned|delete\(partnerUsers\)|delete\(organizationUsers\)/);
     const baselineSrc = readFileSync(new URL('./aiToolsAuditBaselines.ts', import.meta.url), 'utf8');
     expect(baselineSrc).not.toMatch(/approvedBy|status: 'approved'|APPLY_AUDIT_POLICY_BASELINE|apply_audit_policy_baseline'/);
+  });
+
+  it('every MFA_GATED_TOOL_ACTIONS entry names a real registered tool and real actions (repo-wide)', () => {
+    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS)) {
+      const tool = aiTools.get(toolName);
+      expect(tool, toolName).toBeDefined();
+      if (gated === '*') continue;
+      const actionEnum = (tool!.definition.input_schema as { properties: { action?: { enum?: string[] } } }).properties.action?.enum ?? [];
+      for (const action of gated) expect(actionEnum, `${toolName}:${action}`).toContain(action);
+    }
+    // The W11 writes whose REST twins carry requireMfa() (W11-D10).
+    expect(MFA_GATED_TOOL_ACTIONS.manage_access_reviews).toEqual(['create', 'decide_item']);
+    expect(MFA_GATED_TOOL_ACTIONS.manage_compliance_policies).toBe('*');
+    expect(MFA_GATED_TOOL_ACTIONS.manage_pam_rules).toEqual([
+      'create_rule', 'update_rule', 'delete_rule', 'set_config', 'create_signer_group', 'update_signer_group', 'delete_signer_group',
+    ]);
   });
 
   it('manage_pam_rules cannot write auto_approve or re-approve a quarantined rule', () => {
