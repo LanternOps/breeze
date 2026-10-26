@@ -830,7 +830,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const data = await response.json();
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: 'totp' } : null));
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
