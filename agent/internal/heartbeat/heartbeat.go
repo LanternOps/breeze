@@ -3544,6 +3544,17 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyPatchSourceConfig(psRaw)
 	}
 
+	// Apply feature_update_settings if present: the update ring's decision on
+	// Windows feature releases (block / allow / pin). Filters the WUA scan on
+	// every platform; writes the WUfB target-release policy on Windows only.
+	fuRaw, hasFU := update["feature_update_settings"]
+	if !hasFU {
+		fuRaw, hasFU = update["featureUpdateSettings"]
+	}
+	if hasFU {
+		h.applyFeatureUpdateConfig(fuRaw)
+	}
+
 	// Backup control-plane URL (#2288). Key absent = no change; present
 	// empty string = clear. Snake_case and camelCase both accepted.
 	bsRaw, hasBS := update["backup_server_url"]
