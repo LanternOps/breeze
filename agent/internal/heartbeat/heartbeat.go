@@ -40,6 +40,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/inbox"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
@@ -378,6 +379,8 @@ type HeartbeatResponse struct {
 	// RetainState (#8258) lists features the server made no decision about this
 	// beat (keep current state); see retain_state.go. Absent = today's semantics.
 	RetainState RetainState `json:"retainState"`
+	// PromptHost is the prompt-host kill switch (#10190); absent = nothing enabled.
+	PromptHost *PromptHostSettings `json:"promptHost,omitempty"`
 }
 
 type HelperSettings struct {
@@ -1347,7 +1350,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
-		h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(h.sessionBroker)})
+		// The prompt list and its 24 h tombstones persist next to the endpoint
+		// messages (P5: one inbox, two files).
+		promptStore, err := inbox.Open(filepath.Join(config.GetDataDir(), promptInboxFile), inbox.PromptOptions())
+		if err != nil {
+			log.Warn("prompt inbox unreadable; starting empty", "error", err.Error())
+		}
+		h.promptHost = prompthost.New(prompthost.Deps{
+			Broker: prompthost.NewBrokerDirectory(h.sessionBroker),
+			Inbox:  &inbox.PromptInbox{Store: promptStore},
+		})
 		h.sessionBroker.SetPromptSink(h.promptHost)
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
@@ -5681,6 +5693,7 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.applyPromptHostSettings(response)
 	h.ackNetworkContext(response.NetworkContextReceipt)
 	// Bare-metal recovery W04a: only clear the marker once the server has
 	// actually acked it — a failed/lost beat must resend it next time.

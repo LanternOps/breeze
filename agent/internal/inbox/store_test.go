@@ -109,7 +109,9 @@ func TestLegacyMessageFileLoadsUnchanged(t *testing.T) {
 
 func TestMessageTombstonesStay168h(t *testing.T) {
 	s := openMessages(t, filepath.Join(t.TempDir(), "m.json"))
-	s.Tombstone("gone", now0)
+	if err := s.Tombstone("gone", now0); err != nil {
+		t.Fatal(err)
+	}
 	if !s.Tombstoned("gone", now0.Add(167*time.Hour)) {
 		t.Fatal("message tombstone expired before 168 h")
 	}
@@ -124,7 +126,9 @@ func TestMessageTombstonesStay168h(t *testing.T) {
 func TestPromptTombstones24h(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prompt_inbox.json")
 	s := openPrompts(t, path)
-	s.Tombstone("restart:42", now0)
+	if err := s.Tombstone("restart:42", now0); err != nil {
+		t.Fatal(err)
+	}
 	// Prompt tombstones persist: a restarted agent still refuses the id.
 	reopened := openPrompts(t, path)
 	if !reopened.Tombstoned("restart:42", now0.Add(23*time.Hour)) {
