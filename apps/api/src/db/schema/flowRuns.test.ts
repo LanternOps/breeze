@@ -4,6 +4,7 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import { flowVersions, flowRuns, flowRunSteps } from './flowRuns';
 import { flows } from './flows';
 import { actionIntents } from './actionIntents';
+import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 
 // Tool Catalog W04 (#5219) Task A2 — flow publications, runs and the step
 // ledger. Migration: 2027-01-06-130000-flow-runs.sql. Tenancy shapes are Open
@@ -21,12 +22,18 @@ const FLOW_RUN_COLUMNS = [
   'resumeSeq', 'leaseToken', 'leaseExpiresAt', 'wakeAt', 'dedupeKey', 'chainDepth', 'causedByRunId',
   'triggeredByUserId', 'aiSessionId', 'activeMs', 'lastHeartbeatAt', 'cancelRequestedAt',
   'bodiesPrunedAt', 'errorCode', 'error', 'startedAt', 'finishedAt', 'createdAt', 'updatedAt',
+  // W05 (#5220, 2027-01-07-140000-flow-webhooks-tools-budgets.sql): the per-run
+  // AI token count, the parent agent run of an ai_agent start, the API key of an
+  // api/mcp start (flow_runs_ai_tokens_chk / _agent_parent_chk / _api_key_chk).
+  'aiTokensUsed', 'parentAgentRunId', 'triggeredByApiKeyId',
 ] as const;
 
 const FLOW_RUN_STEP_COLUMNS = [
   'id', 'runId', 'orgId', 'stepId', 'itemIndex', 'attempt', 'tool', 'toolSource', 'tier', 'status',
   'approvalMode', 'renderedInput', 'output', 'outputTruncated', 'errorCode', 'error', 'actionIntentId',
   'approvedByUserId', 'startedAt', 'finishedAt', 'durationMs',
+  // W05 (#5220): model usage of an `ai` step (flow_run_steps_ai_usage_chk).
+  'aiInputTokens', 'aiOutputTokens', 'aiCostCents',
 ] as const;
 
 describe('flow run tables (Drizzle)', () => {
@@ -40,6 +47,21 @@ describe('flow run tables (Drizzle)', () => {
     expect(Object.keys(getTableColumns(flowVersions)).sort()).toEqual([...FLOW_VERSION_COLUMNS].sort());
     expect(Object.keys(getTableColumns(flowRuns)).sort()).toEqual([...FLOW_RUN_COLUMNS].sort());
     expect(Object.keys(getTableColumns(flowRunSteps)).sort()).toEqual([...FLOW_RUN_STEP_COLUMNS].sort());
+  });
+
+  it('classifies every column of the three tables in the tenant export policy (jsonb never included)', () => {
+    // The export contract fails only under Integration Tests; this makes a
+    // column added without a classification red in Test API too.
+    for (const table of [flowVersions, flowRuns, flowRunSteps]) {
+      const name = getTableName(table);
+      const policy = CORE_TENANT_EXPORT_POLICY[name];
+      expect(policy, name).toBeDefined();
+      const columns = Object.values(getTableColumns(table));
+      expect(Object.keys(policy!.columns).sort(), name).toEqual(columns.map((c) => c.name).sort());
+      for (const col of columns.filter((c) => c.getSQLType() === 'jsonb')) {
+        expect(policy!.columns[col.name]!.decision, `${name}.${col.name}`).toBe('exclude');
+      }
+    }
   });
 
   it('keeps runs and steps shape 1: org_id NOT NULL, no partner axis (Open Decision 1)', () => {

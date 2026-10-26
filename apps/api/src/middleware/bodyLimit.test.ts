@@ -21,6 +21,15 @@ describe('bodyLimitForPath', () => {
     expect(bodyLimitForPath('/api/v1/edr/connections').rule).toBe('default');
   });
 
+  it('caps the public flow webhook at 262144 bytes, exact /webhooks/flows/<uuid> only (W05)', () => {
+    expect(bodyLimitForPath('/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e')).toEqual({
+      rule: 'flow-webhook', maxSize: 262144, error: 'Request body too large',
+    });
+    expect(bodyLimitForPath('/api/v1/webhooks/flows/not-a-uuid').rule).toBe('default');
+    expect(bodyLimitForPath('/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/x').rule).toBe('default');
+    expect(bodyLimitForPath('/api/v1/webhooks/flows').rule).toBe('default');
+  });
+
   it('applies the tight 1MB default to ordinary routes', () => {
     expect(bodyLimitForPath('/api/v1/devices')).toEqual({
       rule: 'default',
@@ -273,6 +282,7 @@ describe('bodyLimitForPath', () => {
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
       'agent-workloads': '/api/v1/agents/agent-1/workloads',
       'edr-webhook': '/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
+      'flow-webhook': '/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
       'wisp-thread-attachment': '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments',
     };
     for (const [rule, path] of Object.entries(sampled)) {

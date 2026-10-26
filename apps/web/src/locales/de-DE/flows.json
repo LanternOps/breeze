@@ -158,14 +158,19 @@
     "trigger": {
       "manual": "Manuell",
       "schedule": "Zeitplan",
-      "event": "Ereignis"
+      "event": "Ereignis",
+      "webhook": "Webhook-Aufruf",
+      "tool": "Werkzeugaufruf"
     },
     "via": {
       "ui": "Über die Web-App",
       "api": "Über die API",
       "ai_tool": "Von Breeze AI",
       "scheduler": "Durch den Zeitplaner",
-      "event": "Durch ein Ereignis"
+      "event": "Durch ein Ereignis",
+      "webhook": "Per Webhook",
+      "mcp": "Per MCP",
+      "ai_agent": "Durch einen KI-Agenten"
     },
     "columns": {
       "started": "Gestartet",
@@ -205,7 +210,13 @@
       "flow_disabled": "Der Ablauf wurde deaktiviert, während diese Ausführung aktiv war.",
       "flows_disabled": "Abläufe sind auf diesem Server ausgeschaltet.",
       "delegator_inactive": "Die Person, für die diese Ausführung handelt, ist nicht mehr aktiv.",
-      "org_merged": "Die Organisation wurde mit einer anderen zusammengeführt."
+      "org_merged": "Die Organisation wurde mit einer anderen zusammengeführt.",
+      "egress_blocked": "Die ausgehende Anfrage wurde von der Egress-Richtlinie blockiert.",
+      "http_status": "Die externe API hat mit einem Fehlerstatus geantwortet.",
+      "notify_failed": "Die Benachrichtigung konnte nicht gesendet werden.",
+      "ai_budget_exhausted": "Das KI-Budget der Organisation ist aufgebraucht.",
+      "ai_output_invalid": "Das KI-Ergebnis entsprach nicht dem erwarteten Format.",
+      "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht."
     },
     "step": {
       "status": {

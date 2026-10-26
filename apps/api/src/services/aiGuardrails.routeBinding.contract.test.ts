@@ -253,6 +253,28 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'get_unifi_status', action: 'sync_runs', routeFile: 'unifi/index.ts', method: 'get', path: '/sync-runs' },
   { tool: 'get_unifi_status', action: 'controller_sites', routeFile: 'unifi/index.ts', method: 'get', path: '/controller-sites' },
   { tool: 'trigger_unifi_sync', routeFile: 'unifi/index.ts', method: 'post', path: '/sync' },
+  // Full-control W10 (#6780): the AI-agent reads bind to the route a technician uses for the same act.
+  {
+    tool: 'get_device_ai_activity', routeFile: 'devices/aiOrigin.ts', method: 'get', path: '/:id/ai-activity',
+    toolOnly: { extra: [], reason: 'Also folds in GET /:id/ai-origin (same devices:read floor); exact-device callers read only their own device, and every unreachable device is one not-found.' },
+  },
+  {
+    tool: 'list_operator_tasks', routeFile: 'aiOperatorTasks.ts', method: 'get', path: '/tasks',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions: a device-less root task can carry device targets, which the route\'s root-only site gate does not check.' },
+  },
+  {
+    tool: 'get_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'get', path: '/tasks/:id',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and the output drops every credential hand-over pointer the route relays.' },
+  },
+  { tool: 'list_ai_agent_schedules', routeFile: 'aiAgentSchedules.ts', method: 'get', path: '/', toolOnly: { extra: [], reason: 'A partner baseline\'s fleet-wide run summary is withheld unless the caller reaches every org of the partner.' } },
+  {
+    tool: 'list_fleet_designs', routeFile: 'fleetDesign.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions: a design enumerates every device function of the organization.' },
+  },
+  {
+    tool: 'get_fleet_design', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and returns counts plus the design markdown, not the stored outcome with script bodies.' },
+  },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },

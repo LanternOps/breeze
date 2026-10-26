@@ -189,6 +189,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // history that stays with the source org (the ai_agent_runs decision, plan
   // Open Decision 1); flow_versions is a plain repoint (REPOINT_TABLES).
   flow_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (flow_runs_immutable_guard); run history stays with the source org like ai_agent_runs, and keeps the action_intents (requesting_flow_run_id, org_id) FK consistent; active loser runs are cancelled in the flows resolve phase' },
+  flow_webhook_deliveries: { kind: 'leave-for-erasure', note: 'delivery history of the source org; rows reference runs, which stay (flow_runs leave-for-erasure)' },
+  flow_usage_counters: { kind: 'leave-for-erasure', note: 'derived monthly counters; a moved org flow starts a fresh row in the survivor (one month of headroom at most)' },
   flow_run_steps: { kind: 'leave-for-erasure', note: 'children of flow_runs (composite FK), erased with them' },
 
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged

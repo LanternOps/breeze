@@ -257,6 +257,9 @@ describe('action_intents immutability trigger (live DB)', () => {
     // `action_intents_external_tool_chk` gets to complain about the pairing.
     tool_source_tool_id: { toolSourceToolId: randomUUID() },
     tool_revision: { toolRevision: 'rev-2' },
+    // 2027-01-06-160000 (tool catalog W05 PR A, #5220): the invoked-flow
+    // binding. Same single-column probe reasoning as tool_source_tool_id.
+    invoked_flow_id: { invokedFlowId: randomUUID() },
     script_reviewer_evidence: {
       scriptReviewerEvidence: {
         proposalId: randomUUID(), reviewId: randomUUID(), contentDigest: 'a'.repeat(64), scannerVersion: '2026-09-11.1',
