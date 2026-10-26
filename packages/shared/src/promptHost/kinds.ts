@@ -128,7 +128,7 @@ export function isPromptDecision(state: PromptState, presentation: PromptPresent
 }
 
 /** `"<kind>@<n>"` as advertised in `AuthRequest.promptKinds`. */
-export const PROMPT_KIND_AD_PATTERN = /^[a-z]+(\.[a-z_]+)+@\d{1,3}$/;
+export const PROMPT_KIND_AD_PATTERN = /^[a-z]+(\.[a-z_]+)+@[1-9]\d{0,2}$/;
 /** A bare kind name (`"notice.info"`). */
 export const PROMPT_KIND_NAME_PATTERN = /^[a-z]+(\.[a-z_]+)+$/;
 
