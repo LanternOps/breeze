@@ -162,6 +162,32 @@ describe('Header terminal logout UX', () => {
     expect(navigationState.navigate).not.toHaveBeenCalled();
   });
 
+  it('does not restore the retained identity when retrying after failed sign-out', async () => {
+    let resolveRetry!: (outcome: { kind: 'complete' }) => void;
+    authState.apiLogout
+      .mockImplementationOnce(async () => {
+        authState.user = null;
+        authState.isAuthenticated = false;
+        return { kind: 'partial', message: 'Server sign-out is incomplete.' };
+      })
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveRetry = resolve;
+      }));
+
+    const rendered = signOut();
+
+    expect(await screen.findByTestId('logout-failure')).toHaveTextContent('Server sign-out is incomplete.');
+    rendered.rerender(<Header />);
+    fireEvent.click(screen.getByTestId('logout-retry'));
+    await waitFor(() => expect(authState.apiLogout).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText('layout.header.guest')).toBeInTheDocument();
+    expect(screen.queryByText('User One')).not.toBeInTheDocument();
+
+    resolveRetry({ kind: 'complete' });
+    await waitFor(() => expect(navigationState.navigate).toHaveBeenCalledWith('/login', { replace: true }));
+  });
+
   it('keeps the signed-in identity visible until navigation finishes after local sign-out', async () => {
     let resolveLogout!: (outcome: { kind: 'complete' }) => void;
     authState.apiLogout.mockImplementation(() => new Promise((resolve) => {

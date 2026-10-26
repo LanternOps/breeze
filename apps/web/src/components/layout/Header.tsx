@@ -96,6 +96,9 @@ export default function Header() {
   const { user, isAuthenticated } = useAuthStore();
   const [logoutUser, setLogoutUser] = useState<typeof user>(null);
   const displayUser = user ?? logoutUser;
+  useEffect(() => {
+    if (logoutFailure && !user) setLogoutUser(null);
+  }, [logoutFailure, user]);
   // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
   // paths return a blob: URL that <img> can render. External URLs pass through.
   const resolvedAvatarUrl = useAvatarBlobUrl(displayUser?.avatarUrl ?? null);
