@@ -255,6 +255,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_ai_agent_schedules', description: 'List when AI agents run on a schedule, with partner baselines and organization overrides', category: 'AI Governance' },
       { name: 'list_fleet_designs', description: 'List completed Fleet Design reports (whole organization; not for site-restricted sessions)', category: 'AI Governance' },
       { name: 'get_fleet_design', description: 'Read one Fleet Design report as markdown (applying it is a separate, approval-gated action)', category: 'AI Governance' },
+      // Full-control W11 (#6781): security policy reads. Access reviews and PAM rules are chat/MCP only (not offered to AI agents);
+      // device-reported text (hostnames, admin account names, audit deviations) is untrusted data.
+      { name: 'get_security_compliance', description: 'Security dashboard, score breakdown, trend, AV/firewall/encryption/password-policy/local-admin status by device', category: 'Security & Compliance' },
+      { name: 'manage_security_recommendations (list)', description: 'List security recommendations and their status per organization', category: 'Security & Compliance' },
+      { name: 'manage_access_reviews (list/get)', description: 'View user access reviews: members, roles, permissions and recorded decisions (chat/MCP only)', category: 'Security & Compliance' },
+      { name: 'manage_audit_baselines (list/compliance/device_results)', description: 'View audit-policy baselines, drift compliance and one device\'s deviations', category: 'Security & Compliance' },
+      { name: 'manage_security_policies (list)', description: 'List antivirus/EDR security policy templates', category: 'Security & Compliance' },
+      { name: 'manage_recovery_keys (list)', description: 'BitLocker/FileVault key escrow metadata for a device (never the key itself)', category: 'Security & Compliance' },
+      { name: 'manage_pam_rules (list_rules/get_config/list_signer_groups)', description: 'View PAM elevation rules, the default verdict and signer groups (chat/MCP only)', category: 'Security & Compliance' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -374,6 +383,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'probe_network_asset', description: 'Check now: ping a discovered asset from an online agent in its site and report reachable or not', category: 'Network & DNS' },
       { name: 'manage_known_guests (add/delete)', description: 'Add or remove a known guest MAC address for every organization of the partner', category: 'Network & DNS' },
       { name: 'trigger_unifi_sync', description: 'Queue a manual sync of the partner UniFi integration', category: 'Network & DNS' },
+      // Full-control W11 (#6781): bookkeeping that changes nothing on a device and can be undone or is only recorded.
+      { name: 'manage_security_recommendations (complete/dismiss)', description: 'Mark a security recommendation completed or dismissed for one organization (reopen in the web app)', category: 'Security & Compliance' },
+      { name: 'manage_access_reviews (decide_item)', description: 'Record keep/revoke on an access review item; nothing changes until a person completes the review (needs your MFA session)', category: 'Security & Compliance' },
+      { name: 'manage_audit_baselines (request_apply)', description: 'Request that an audit baseline be applied to devices; a different person approves it in the web app', category: 'Security & Compliance' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -505,6 +518,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W08 (#6778): publishing and applying reach partner- or organization-wide monitoring.
       { name: 'manage_topology_templates (publish_version/revoke_template)', description: 'Publish a template version so sites can apply it, or revoke a template for good (disables the checks that use it)', category: 'Network & DNS' },
       { name: 'apply_topology_template (apply)', description: 'Apply a previewed template to sites, replacing their monitoring configuration', category: 'Network & DNS' },
+      // Full-control W11 (#6781): access-review completion, the apply-request decision and recovery-key reveal stay human-only
+      // (not in any tool). Partner-wide security-policy create and partner-wide compliance-policy deactivate need a second approver.
+      { name: 'manage_access_reviews (create)', description: 'Start an access review of every member (cannot be deleted; needs your MFA session)', category: 'Security & Compliance' },
+      { name: 'manage_audit_baselines (create)', description: 'Create an audit-policy baseline (an active one starts daily collection on that OS)', category: 'Security & Compliance' },
+      { name: 'manage_security_policies (create/update)', description: 'Create or change an antivirus/EDR policy template (partner-wide create needs a second approver)', category: 'Security & Compliance' },
+      { name: 'manage_compliance_policies (deactivate)', description: 'Permanently turn off a compliance policy and close its alerts (partner-wide needs a second approver; needs your MFA session)', category: 'Security & Compliance' },
+      { name: 'manage_recovery_keys (rotate/collect)', description: 'Rotate a Windows BitLocker recovery key, or re-collect keys from a device', category: 'Security & Compliance' },
+      { name: 'manage_pam_rules (create_rule/update_rule/delete_rule/set_config/create_signer_group/update_signer_group/delete_signer_group)', description: 'Change PAM elevation rules, the default verdict or signer groups (never auto-approve; needs your MFA session)', category: 'Security & Compliance' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -720,6 +741,15 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'list_ai_agent_schedules', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
   { toolName: 'list_fleet_designs', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
   { toolName: 'get_fleet_design', tier: 1, permission: 'ai_agents.read', category: 'AI Governance' },
+  // Full-control W11 (#6781): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'get_security_compliance', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'manage_security_recommendations', tier: 1, permission: 'devices.read / devices.write', category: 'Security & Compliance' },
+  { toolName: 'manage_access_reviews', tier: 1, permission: 'users.read / users.write', category: 'Security & Compliance' },
+  { toolName: 'manage_audit_baselines', tier: 1, permission: 'audit.read / organizations.write / devices.write', category: 'Security & Compliance' },
+  { toolName: 'manage_compliance_policies', tier: 3, permission: 'devices.write', category: 'Security & Compliance' },
+  { toolName: 'manage_security_policies', tier: 1, permission: 'devices.read / devices.write', category: 'Security & Compliance' },
+  { toolName: 'manage_recovery_keys', tier: 1, permission: 'devices.read / devices.execute', category: 'Security & Compliance' },
+  { toolName: 'manage_pam_rules', tier: 1, permission: 'devices.read / pam.manage_policy', category: 'Security & Compliance' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -785,6 +815,21 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   list_ai_agent_schedules: 'ai_agents.read',
   list_fleet_designs: 'ai_agents.read',
   get_fleet_design: 'ai_agents.read',
+  // Full-control W11 (#6781): the permission each action needs (access-review, compliance and PAM writes also need your MFA session).
+  get_security_compliance: 'devices.read',
+  manage_security_recommendations: { list: 'devices.read', complete: 'devices.write', dismiss: 'devices.write' },
+  manage_access_reviews: { list: 'users.read', get: 'users.read', create: 'users.write', decide_item: 'users.write' },
+  manage_audit_baselines: {
+    list: 'audit.read', compliance: 'audit.read', device_results: 'audit.read', create: 'organizations.write', request_apply: 'devices.write',
+  },
+  manage_compliance_policies: 'devices.write',
+  manage_security_policies: { list: 'devices.read', create: 'devices.write', update: 'devices.write' },
+  manage_recovery_keys: { list: 'devices.read', rotate: 'devices.execute', collect: 'devices.execute' },
+  manage_pam_rules: {
+    list_rules: 'devices.read', get_config: 'devices.read', list_signer_groups: 'devices.read',
+    create_rule: 'pam.manage_policy', update_rule: 'pam.manage_policy', delete_rule: 'pam.manage_policy', set_config: 'pam.manage_policy',
+    create_signer_group: 'pam.manage_policy', update_signer_group: 'pam.manage_policy', delete_signer_group: 'pam.manage_policy',
+  },
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },
