@@ -826,7 +826,20 @@
         "label": "Elimina bozza",
         "success": "Bozza eliminata.",
         "error": "Impossibile eliminare la bozza."
-      }
+      },
+      "remind": {
+        "label": "Sollecita",
+        "success_one": "Sollecito inviato a {{count}} destinatario",
+        "success_other": "Sollecito inviato a {{count}} destinatari",
+        "error": "Impossibile inviare il sollecito.",
+        "notEmailed": {
+          "no_email_service": "Sollecito registrato, ma l’e-mail non è configurata. Copia il link di firma e condividilo.",
+          "no_recipients": "Sollecito registrato, ma non c’erano destinatari a cui inviare l’e-mail. Copia il link di firma e condividilo.",
+          "send_failed": "Sollecito registrato, ma l’e-mail non è stata recapitata. Copia il link di firma e condividilo."
+        }
+      },
+      "remindedCount_one": "Sollecitato {{count}} volta",
+      "remindedCount_other": "Sollecitato {{count}} volte"
     },
     "send": {
       "title": "Invia per la firma",

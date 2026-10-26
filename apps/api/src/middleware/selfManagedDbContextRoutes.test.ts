@@ -190,6 +190,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/contracts/agreement-requests/abc-123/send'],
     ['POST', '/api/v1/contracts/agreement-requests/abc-123/send/'],
     ['post', '/api/v1/contracts/agreement-requests/abc-123/send'], // method is case-insensitive
+    // Agreement request remind (#9075 W3b) — re-mails the same link, so the
+    // email must also run after the short auth transaction commits.
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/remind'],
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/remind/'],
+    ['post', '/api/v1/contracts/agreement-requests/abc-123/remind'], // method is case-insensitive
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
     ['POST', '/api/v1/tool-sources'],
     ['PATCH', '/api/v1/tool-sources/src-1'],
@@ -283,6 +288,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/contracts/agreement-requests/abc-123/send', 'send is POST-only'],
     ['POST', '/api/v1/contracts/agreement-requests//send', 'empty id segment must not match'],
     ['POST', '/api/v1/contracts/agreement-requests/abc-123/send/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/contracts/agreement-requests/abc-123/remind', 'remind is POST-only'],
+    ['POST', '/api/v1/contracts/agreement-requests//remind', 'empty id segment must not match'],
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/remind/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/agreements/public/tok/accept', 'public routes carry no auth middleware, so no ambient tx exists to release'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],

@@ -62,6 +62,7 @@ export default defineConfig({
                 { slug: 'features/scripts' },
                 { slug: 'scripts/stopping-a-running-script' },
                 { slug: 'features/automations' },
+                { slug: 'features/flows' },
                 { slug: 'features/playbooks' },
                 { slug: 'features/deployments' },
                 { slug: 'features/system-tools' },

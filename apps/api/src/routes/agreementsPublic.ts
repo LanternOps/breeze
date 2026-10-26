@@ -28,6 +28,7 @@ import {
   type AgreementResponseRevoke,
 } from '../services/agreementRequestAcceptService';
 import { notifyAgreementOutcome } from '../services/agreementOutcomeNotify';
+import { emitAgreementEvent } from '../services/agreementEvents';
 import { sendSignedAgreementCopy } from '../services/agreementSignedCopyEmail';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getRedis } from '../services/redis';
@@ -192,7 +193,12 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
       try {
         const stamped = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
           markAgreementRequestViewed(request.id, request.orgId, now)));
-        if (stamped) status = 'viewed';
+        if (stamped) {
+          status = 'viewed';
+          // First view only (the stamp is conditional on sent → viewed).
+          // Never rejects; a bus outage cannot fail the page.
+          await emitAgreementEvent({ type: 'agreement.viewed', requestId: request.id, orgId: request.orgId, partnerId: claims.partnerId });
+        }
       } catch (err) {
         console.error('[agreementsPublic] markViewed failed', { requestId: request.id, err });
         captureException(err instanceof Error ? err : new Error(String(err)));
@@ -369,7 +375,8 @@ agreementsPublicRoutes.post(
     fireAndForget('signed copy', () => sendSignedAgreementCopy({
       requestId: result.requestId, signedAgreementId: result.signedAgreementId, signerEmail: body.signerEmail,
     }));
-    // W3b: emit agreement.signed on the events bus here.
+    // agreement.signed is published by notifyAgreementOutcome (W3b) — the one
+    // funnel for customer and MSP-recorded outcomes.
     return c.json({ data: { status: 'signed' as const, signedAt: now.toISOString() } });
   },
 );
@@ -402,7 +409,7 @@ agreementsPublicRoutes.post(
     fireAndForget('outcome notify', () => notifyAgreementOutcome({
       requestId: result.requestId, outcome: 'declined', source: 'customer',
     }));
-    // W3b: emit agreement.declined on the events bus here.
+    // agreement.declined: published by notifyAgreementOutcome (W3b).
     return c.json({ data: { status: 'declined' as const } });
   },
 );

@@ -90,12 +90,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'systemTools/eventLogs.ts',
   'tenantVariables.ts',
   'tickets/export.ts',
-  'topology/manual.ts',
-  'topology/policies.ts',
-  'topology/settings.ts',
-  'topology/targets.ts',
-  'topology/templateApplications.ts',
-  'topology/templates.ts',
   'unifi/index.ts',
   'users.ts',
 ]);

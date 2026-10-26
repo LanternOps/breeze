@@ -45,7 +45,7 @@ import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
-import { listConcernsForCeiling, upsertConcern } from './concerns';
+import { listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
   CeilingViolationError,
@@ -247,9 +247,46 @@ export async function enqueueAssessment(
   }));
   if (result.created) {
     incWispAssessment('admitted');
+    await clearNoAgentReadiness(ceiling.partnerId, orgId);
     return { runId: result.run.id };
   }
+  // An agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
+  if (result.skipped === 'no_effective_agent') await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
+  else await clearNoAgentReadiness(ceiling.partnerId, orgId);
   return skipAssessment(result.skipped, 'skipped_admission');
+}
+
+/** #10143: Wisp looks idle, not blocked, when an org has no effective AI agent. */
+const noAgentSignature = (orgId: string): string => `wisp-readiness:no-effective-agent:${orgId}`;
+const NO_AGENT_SUMMARY =
+  "Wisp can't check this organization yet — no AI agent is configured. Create one under Settings → AI Agents.";
+const NO_AGENT_HREF = '/settings/ai-agents';
+
+/** Upsert (keyed by signature, so once per org however many ticks skip). Best effort: never changes the skip. */
+async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: string): Promise<void> {
+  try {
+    await upsertConcern({
+      partnerId,
+      orgId,
+      subject: { kind: 'org', id: orgId },
+      summary: NO_AGENT_SUMMARY,
+      severity: 'info',
+      evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
+      signature: noAgentSignature(orgId),
+      raisedByGrantId: grantId,
+    });
+  } catch (err) {
+    captureException(err, undefined, { wisp_op: 'raise_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'raise'] });
+  }
+}
+
+/** An assessment was admitted, so an agent exists: close the readiness concern. Best effort. */
+async function clearNoAgentReadiness(partnerId: string, orgId: string): Promise<void> {
+  try {
+    await resolveConcernBySignature(partnerId, noAgentSignature(orgId), 'ai_agent_configured');
+  } catch (err) {
+    captureException(err, undefined, { wisp_op: 'clear_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'clear'] });
+  }
 }
 
 /** Run statuses that finished an assessment cleanly enough to advance the watermark. */

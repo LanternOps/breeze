@@ -230,6 +230,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W07 (#6777): alert correlation + signal triage reads.
       { name: 'get_alert_correlations (groups/get/by_alert/links/analyze/evaluation/explain)', description: 'See which alerts are correlated, how well grouping is working, and root-cause evidence for a group (log text is untrusted)', category: 'Alerts & Notifications' },
       { name: 'manage_device_anomalies (list)', description: 'List unusual metric behaviour detected on a device', category: 'Alerts & Notifications' },
+      // Full-control W08 (#6778): network topology reads. Chat and MCP only (not offered to AI agents).
+      { name: 'get_topology_graph (graph/nodes/node/relationship/evidence/group_members/expansion/health)', description: 'Read a site\'s network map: devices and links, one device or link in detail, the evidence behind a link, and health (names are untrusted text)', category: 'Network & DNS' },
+      { name: 'run_topology_diagnostic (collectors/get)', description: 'See which devices can run a connectivity check and read a check\'s result', category: 'Network & DNS' },
+      { name: 'manage_topology_monitoring (list_policies/list_targets/get_settings)', description: 'View a site\'s recurring network checks, probe targets and effective topology settings', category: 'Network & DNS' },
+      { name: 'manage_topology_templates (list_templates/list_versions/site_options)', description: 'View topology monitoring templates, their versions, and the published ones a site can apply', category: 'Network & DNS' },
+      { name: 'apply_topology_template (status)', description: 'See how a template application is progressing, site by site', category: 'Network & DNS' },
       { name: 'get_fleet_health (history/offenders/evaluation/org_summary)', description: 'A device\'s reliability score over time, the services and components behind it, score quality, and an organization rollup', category: 'Devices & Hardware' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
@@ -344,6 +350,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alert_correlations (feedback/rca_feedback)', description: 'Tell Breeze a correlation was wrong, or a root-cause analysis was helpful', category: 'Alerts & Notifications' },
       { name: 'manage_device_anomalies (dismiss/resolve)', description: 'Dismiss or resolve a detected metric anomaly', category: 'Alerts & Notifications' },
       { name: 'reliability_feedback', description: 'Label a device\'s reliability score: failure confirmed, replaced, or false alarm', category: 'Devices & Hardware' },
+      // Full-control W08 (#6778): tenant-internal topology writes with a revision check; a diagnostic start probes from one device.
+      { name: 'run_topology_diagnostic (start/cancel)', description: 'Start a fixed gateway, DNS, internet or trace-route check from a device at a site, or stop one', category: 'Network & DNS' },
+      { name: 'manage_topology_manual (create_node/update_node/delete_node/create_relationship/delete_relationship)', description: 'Add, change or remove a hand-drawn switch, router, AP or link on a site\'s network map', category: 'Network & DNS' },
+      { name: 'manage_topology_monitoring (upsert_policy/delete_policy/upsert_target/delete_target/patch_settings)', description: 'Change a site\'s recurring network checks, probe targets or topology settings (arming a check stays in the topology page)', category: 'Network & DNS' },
+      { name: 'manage_topology_templates (create_template/update_template/create_version)', description: 'Draft a topology monitoring template or a new version of one (nothing applies until a version is published)', category: 'Network & DNS' },
+      { name: 'apply_topology_template (preview)', description: 'Preview what applying a template would change on named sites', category: 'Network & DNS' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -472,6 +484,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_ticket_response_templates (create/update/delete)', description: 'Create, change or delete a partner-wide canned reply (deleting needs a second approver)', category: 'Ticketing' },
       // Full-control W07 (#6777): promoting an anomaly raises a real alert, which notifies people.
       { name: 'manage_device_anomalies (promote)', description: 'Promote a detected anomaly to a real alert (notifies the alert channels)', category: 'Alerts & Notifications' },
+      // Full-control W08 (#6778): publishing and applying reach partner- or organization-wide monitoring.
+      { name: 'manage_topology_templates (publish_version/revoke_template)', description: 'Publish a template version so sites can apply it, or revoke a template for good (disables the checks that use it)', category: 'Network & DNS' },
+      { name: 'apply_topology_template (apply)', description: 'Apply a previewed template to sites, replacing their monitoring configuration', category: 'Network & DNS' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -666,6 +681,13 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_alert_correlations', tier: 2, permission: 'alerts.read / alerts.acknowledge / alerts.write', category: 'Alerts & Notifications' },
   { toolName: 'manage_device_anomalies', tier: 1, permission: 'devices.read / alerts.write', category: 'Alerts & Notifications' },
   { toolName: 'reliability_feedback', tier: 2, permission: 'devices.read', category: 'Devices & Hardware' },
+  // Full-control W08 (#6778): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'get_topology_graph', tier: 1, permission: 'topology.read', category: 'Network & DNS' },
+  { toolName: 'run_topology_diagnostic', tier: 1, permission: 'topology.read / topology.execute', category: 'Network & DNS' },
+  { toolName: 'manage_topology_manual', tier: 2, permission: 'topology.write', category: 'Network & DNS' },
+  { toolName: 'manage_topology_monitoring', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  { toolName: 'manage_topology_templates', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
+  { toolName: 'apply_topology_template', tier: 1, permission: 'topology.read / topology.write', category: 'Network & DNS' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -701,6 +723,19 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     promote: 'alerts.write',
   },
   reliability_feedback: 'devices.read',
+  // Full-control W08 (#6778): every topology action also needs the devices grant of its capability.
+  get_topology_graph: 'topology.read',
+  run_topology_diagnostic: { collectors: 'topology.read', get: 'topology.read', start: 'topology.execute', cancel: 'topology.execute' },
+  manage_topology_manual: 'topology.write',
+  manage_topology_monitoring: {
+    list_policies: 'topology.read', list_targets: 'topology.read', get_settings: 'topology.read',
+    upsert_policy: 'topology.write', delete_policy: 'topology.write', upsert_target: 'topology.write', delete_target: 'topology.write', patch_settings: 'topology.write',
+  },
+  manage_topology_templates: {
+    list_templates: 'topology.read', list_versions: 'topology.read', site_options: 'topology.read',
+    create_template: 'topology.write', update_template: 'topology.write', revoke_template: 'topology.write', create_version: 'topology.write', publish_version: 'topology.write',
+  },
+  apply_topology_template: { preview: 'topology.write', apply: 'topology.write', status: 'topology.read' },
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },

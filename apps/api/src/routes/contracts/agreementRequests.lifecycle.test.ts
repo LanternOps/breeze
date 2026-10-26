@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
     deleteAgreementRequest: vi.fn(),
     previewAgreementRequest: vi.fn(),
     sendAgreementRequest: vi.fn(),
+    remindAgreementRequest: vi.fn(),
     getAgreementRequestLink: vi.fn(),
     voidAgreementRequest: vi.fn(),
   },
@@ -25,6 +26,11 @@ const h = vi.hoisted(() => ({
   afterCommit: [] as Array<{ label: string; work: () => unknown }>,
   authTx: { open: 0, calls: 0 },
   deliverEmail: vi.fn(),
+  emitEvent: vi.fn(),
+}));
+
+vi.mock('../../services/agreementEvents', () => ({
+  emitAgreementEventForOrg: h.emitEvent,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -113,6 +119,10 @@ beforeEach(() => {
     expect(h.authTx.open).toBe(1);
     return { request: { ...DTO, status: 'sent' }, link: 'https://portal/agreement/t', recipients: ['a@example.com'], deliverEmail: h.deliverEmail };
   });
+  h.svc.remindAgreementRequest.mockImplementation(async () => {
+    expect(h.authTx.open).toBe(1);
+    return { request: { ...DTO, status: 'sent', reminderCount: 1 }, link: 'https://portal/agreement/t', recipients: ['a@example.com'], reissued: false, deliverEmail: h.deliverEmail };
+  });
   h.svc.getAgreementRequestLink.mockResolvedValue({ link: 'https://portal/agreement/t', reissued: false, orgId: ORG });
   h.svc.voidAgreementRequest.mockResolvedValue({ request: { ...DTO, status: 'voided', voidReason: 'wrong client' }, revoke: { jti: 'jti-1', tokenExpiresAt: null } });
 });
@@ -126,6 +136,7 @@ const ROUTES: Array<[string, string, RequestInit | undefined, string]> = [
   ['PATCH /:id', `${BASE}/${REQ}`, json('PATCH', { label: 'x' }), 'agreements:write'],
   ['DELETE /:id', `${BASE}/${REQ}`, { method: 'DELETE' }, 'agreements:write'],
   ['POST /:id/send', `${BASE}/${REQ}/send`, { method: 'POST' }, 'agreements:send'],
+  ['POST /:id/remind', `${BASE}/${REQ}/remind`, { method: 'POST' }, 'agreements:send'],
   ['GET /:id/link', `${BASE}/${REQ}/link`, undefined, 'agreements:send'],
   ['POST /:id/void', `${BASE}/${REQ}/void`, json('POST', {}), 'agreements:send'],
 ];
@@ -214,6 +225,47 @@ describe('responses + audit', () => {
     expect(h.writeRouteAudit.mock.calls[0]![1].details).toMatchObject({ emailed: false, emailReason: 'send_failed' });
   });
 
+  it('POST /:id/remind → counter bump in a short auth tx, email AFTER it commits; { emailed } and an audit without the link', async () => {
+    const res = await contractRoutes.request(`${BASE}/${REQ}/remind`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(h.authTx.calls).toBe(1);
+    expect(h.deliverEmail).toHaveBeenCalledTimes(1);
+    const body = (await res.json()).data;
+    expect(body).toMatchObject({ emailed: true, request: { reminderCount: 1 } });
+    expect(body).not.toHaveProperty('link'); // the credential is not echoed to the browser; copy-link is the dispenser
+    const audit = h.writeRouteAudit.mock.calls[0]![1];
+    expect(audit).toMatchObject({
+      action: 'billing.agreement.reminded', resourceId: REQ, orgId: ORG,
+      details: { recipientCount: 1, reminderCount: 1, emailed: true, reissued: false },
+    });
+    expect(JSON.stringify(audit)).not.toContain('agreement/t');
+  });
+
+  it('POST /:id/remind whose mail failed is still a 200 with emailed:false + emailReason, audited', async () => {
+    h.deliverEmail.mockResolvedValue({ emailed: false, emailReason: 'send_failed' });
+    const res = await contractRoutes.request(`${BASE}/${REQ}/remind`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ emailed: false, emailReason: 'send_failed' });
+    expect(h.writeRouteAudit.mock.calls[0]![1].details).toMatchObject({ emailed: false, emailReason: 'send_failed' });
+  });
+
+  it('POST /:id/remind emits NO bus event (a nudge is not a lifecycle transition)', async () => {
+    await contractRoutes.request(`${BASE}/${REQ}/remind`, { method: 'POST' });
+    expect(h.emitEvent).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/send emits agreement.sent after the email, with the acting tech', async () => {
+    await contractRoutes.request(`${BASE}/${REQ}/send`, { method: 'POST' });
+    expect(h.emitEvent).toHaveBeenCalledWith({ type: 'agreement.sent', requestId: REQ, orgId: ORG, actorUserId: 'u1' });
+  });
+
+  it('POST /:id/void emits agreement.voided with the acting tech', async () => {
+    await contractRoutes.request(`${BASE}/${REQ}/void`, json('POST', {}));
+    expect(h.emitEvent).not.toHaveBeenCalled(); // deferred to after the void's transaction commits
+    await h.afterCommit.find((a) => a.label === 'agreement-request.void.emit')!.work();
+    expect(h.emitEvent).toHaveBeenCalledWith({ type: 'agreement.voided', requestId: REQ, orgId: ORG, actorUserId: 'u1' });
+  });
+
   it('GET /:id/link audits the credential dispense without the link itself', async () => {
     const res = await contractRoutes.request(`${BASE}/${REQ}/link`);
     expect((await res.json()).data).toEqual({ link: 'https://portal/agreement/t', reissued: false });
@@ -228,7 +280,7 @@ describe('responses + audit', () => {
     expect(h.svc.voidAgreementRequest.mock.calls[0]![2]).toEqual({ reason: 'wrong client' });
     expect(h.writeRouteAudit.mock.calls[0]![1]).toMatchObject({ action: 'billing.agreement.voided', details: { reason: 'wrong client' } });
     expect(h.revoke).not.toHaveBeenCalled();
-    expect(h.afterCommit).toHaveLength(1);
+    expect(h.afterCommit.map((a) => a.label)).toEqual(['agreement-request.void.revoke-jti', 'agreement-request.void.emit']);
     await h.afterCommit[0]!.work();
     expect(h.revoke).toHaveBeenCalledWith('jti-1', null);
   });
@@ -239,14 +291,15 @@ describe('void post-commit revoke edge cases', () => {
     h.svc.voidAgreementRequest.mockResolvedValueOnce({ request: { ...DTO, status: 'voided', voidReason: null }, revoke: null });
     const res = await contractRoutes.request(`${BASE}/${REQ}/void`, json('POST', {}));
     expect(res.status).toBe(200);
-    expect(h.afterCommit).toHaveLength(0);
+    // Only the bus event is scheduled — no Redis revoke work.
+    expect(h.afterCommit.map((a) => a.label)).toEqual(['agreement-request.void.emit']);
   });
 
   it('a failed Redis revoke after commit is reported, not thrown (the durable kill already holds)', async () => {
     h.revoke.mockRejectedValueOnce(new Error('redis down'));
     const res = await contractRoutes.request(`${BASE}/${REQ}/void`, json('POST', {}));
     expect(res.status).toBe(200);
-    await expect(h.afterCommit[0]!.work()).resolves.toBeUndefined();
+    await expect(h.afterCommit.find((a) => a.label === 'agreement-request.void.revoke-jti')!.work()).resolves.toBeUndefined();
     expect(h.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }));
   });
 });

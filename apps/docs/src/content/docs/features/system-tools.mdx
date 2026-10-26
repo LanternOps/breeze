@@ -11,6 +11,8 @@ Every operation is dispatched to the Breeze agent running on the target device v
 
 <Aside>
   System Tools require authentication with MFA and a role that includes the `devices.execute` permission, for reads as well as changes. Every tool, including listing processes, services, files, registry keys, event logs and scheduled tasks, runs a live command on the device. Roles with only `devices.read` (such as the built-in Viewer roles) can still see the inventory Breeze has already collected on the device page, but cannot open Remote Tools.
+
+  Uploading, copying and moving files also require `scripts.execute`, the same permission as running a script, because the agent writes files with its own system privileges. The built-in Technician and Admin roles already include `scripts.execute`. A custom role that has `devices.execute` without `scripts.execute` can browse, download and delete files, but cannot upload, copy or move them.
 </Aside>
 
 ---
@@ -549,7 +551,9 @@ All endpoints are prefixed with `/api/v1/system-tools/devices/:deviceId`. Replac
 |--------|-------------------------|-------------------|-------------------|
 | GET    | `/files?path=...`       | List directory    | `devices.execute` |
 | GET    | `/files/download?path=...` | Download file  | `devices.execute` |
-| POST   | `/files/upload`         | Upload file       | `devices.execute` |
+| POST   | `/files/upload`         | Upload file       | `devices.execute` + `scripts.execute` |
+| POST   | `/files/copy`           | Copy files        | `devices.execute` + `scripts.execute` |
+| POST   | `/files/move`           | Move or rename files | `devices.execute` + `scripts.execute` |
 
 ### Process Manager
 
