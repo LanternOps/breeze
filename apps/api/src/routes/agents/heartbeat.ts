@@ -36,7 +36,7 @@ import {
 } from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
-import { recordPromptHostObservation } from '../../services/promptHostObservation';
+import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
 import { enabledPromptKinds } from '../../services/promptHostConfig';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
@@ -2426,9 +2426,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // keyed by the authenticated device. Absent (old agent, no renderer, or a
   // block the schema dropped) DELETES it, so what the page shows is always
   // this beat's report. Redis only, after the org transaction released;
-  // bounded and never throws, so it cannot fail or stall the beat.
+  // bounded and never throws, so it cannot fail or stall the beat. A block the
+  // schema dropped would look like "no renderer", so that collapse is logged
+  // (throttled); Hono caches the parsed body, so the re-read is free (#1121).
   if (agent.role !== 'watchdog') {
-    await recordPromptHostObservation(scoped.deviceId, data.helperCapabilities?.promptHost);
+    const promptHostReport = data.helperCapabilities?.promptHost;
+    if (promptHostReport === undefined) {
+      try {
+        notePromptHostReportDropped(scoped.deviceId, await c.req.json(), promptHostReport);
+      } catch {
+        // Raw body unavailable — nothing to report.
+      }
+    }
+    await recordPromptHostObservation(scoped.deviceId, promptHostReport);
   }
 
   // Self-health is independent from reachability and is persisted only after

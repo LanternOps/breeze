@@ -13,6 +13,7 @@ import {
   PROMPT_HOST_OBSERVATION_TTL_SECONDS,
   PROMPT_HOST_REDIS_TIMEOUT_MS,
   __resetPromptHostObservationLogThrottleForTests,
+  notePromptHostReportDropped,
   promptHostObservationKey,
   readPromptHostObservation,
   recordPromptHostObservation,
@@ -151,6 +152,20 @@ describe('readPromptHostObservation', () => {
     expect(String(error.mock.calls[0]![0])).toContain('prompt host observation read failed');
   });
 
+  it('read-fault logging is throttled (an outage does not log on every device-page view)', async () => {
+    redis.get.mockRejectedValue(new Error('down'));
+    for (let i = 0; i < 10; i += 1) expect(await readPromptHostObservation(DEVICE)).toBeNull();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('read and write faults are throttled separately (one cannot hide the other)', async () => {
+    redis.set.mockRejectedValue(new Error('down'));
+    redis.get.mockRejectedValue(new Error('down'));
+    await recordPromptHostObservation(DEVICE, REPORT, NOW);
+    expect(await readPromptHostObservation(DEVICE)).toBeNull();
+    expect(error).toHaveBeenCalledTimes(2);
+  });
+
   it('fails closed to null and logs when there is no Redis client', async () => {
     redisState.available = false;
     expect(await readPromptHostObservation(DEVICE)).toBeNull();
@@ -188,5 +203,42 @@ describe('readPromptHostObservation', () => {
     await recordPromptHostObservation(DEVICE, REPORT, NOW);
     redis.get.mockResolvedValueOnce(redis.set.mock.calls[0]![1]);
     expect(await readPromptHostObservation(DEVICE)).toEqual({ ...REPORT, observedAt: NOW.toISOString() });
+  });
+});
+
+describe('notePromptHostReportDropped', () => {
+  const rawWith = (promptHost: unknown) => ({ helperCapabilities: { callerVerify: true, usernames: [], promptHost } });
+
+  it.each([
+    ['a malformed object', { protocolVersion: 'one', kinds: [], rendererVersion: '0.2.0' }],
+    ['a string', 'assist'],
+    ['null', null],
+  ])('warns (with the device id) when the beat carried a block validation dropped: %s', (_label, promptHost) => {
+    expect(notePromptHostReportDropped(DEVICE, rawWith(promptHost), undefined)).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    const message = String(warn.mock.calls[0]![0]);
+    expect(message).toContain('helperCapabilities.promptHost');
+    expect(message).toContain(DEVICE);
+  });
+
+  it.each([
+    ['no helperCapabilities (old agent)', {}],
+    ['helperCapabilities without promptHost', { helperCapabilities: { callerVerify: true, usernames: [] } }],
+    ['a non-object body', 'garbage'],
+    ['an undefined body', undefined],
+  ])('is silent when nothing was reported: %s', (_label, raw) => {
+    expect(notePromptHostReportDropped(DEVICE, raw, undefined)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('is silent when the block parsed', () => {
+    expect(notePromptHostReportDropped(DEVICE, rawWith(REPORT), REPORT)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('is throttled to one warning a minute across devices', () => {
+    for (let i = 0; i < 5; i += 1) notePromptHostReportDropped(`device-${i}`, rawWith('bad'), undefined);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

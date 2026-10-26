@@ -10,7 +10,7 @@
  * restart, without an agent release.
  *
  * `PROMPT_HOST_ENABLED_KINDS`:
- *   - unset, or the literal `default` -> DEFAULT_ENABLED_PROMPT_KINDS. The
+ *   - unset, or `default` (any case) -> DEFAULT_ENABLED_PROMPT_KINDS. The
  *     `default` token exists because compose cannot pass "unset" through an
  *     `environment:` key; the compose files map `${PROMPT_HOST_ENABLED_KINDS-default}`
  *     so an operator who sets nothing still gets the code default when W09
@@ -18,7 +18,9 @@
  *   - empty or whitespace -> nothing (the kill switch).
  *   - otherwise a comma list of a bare `kind` (all versions) or `kind@n`
  *     (one version). Entries outside PROMPT_KINDS, or a malformed `kind@n`,
- *     are dropped with one warning per distinct value.
+ *     are dropped with one warning per distinct value; a value in which
+ *     nothing survives is logged as an error, because it silently acts as
+ *     the kill switch.
  */
 import { PROMPT_KIND_NAMES, isPromptKind, parsePromptKindAd } from '@breeze/shared/promptHost';
 
@@ -44,7 +46,8 @@ export function parseEnabledPromptKinds(
   raw: string | undefined,
   defaults: readonly string[] = DEFAULT_ENABLED_PROMPT_KINDS,
 ): string[] {
-  if (raw === undefined || raw.trim() === DEFAULT_TOKEN) return [...defaults];
+  if (raw === undefined || raw.trim().toLowerCase() === DEFAULT_TOKEN) return [...defaults];
+  if (raw.trim() === '') return [];
   const enabled = new Set<string>();
   const dropped: string[] = [];
   for (const segment of raw.split(',')) {
@@ -54,11 +57,19 @@ export function parseEnabledPromptKinds(
     if (canonical) enabled.add(canonical);
     else dropped.push(entry);
   }
-  if (dropped.length) {
+  const hint = `Use a kind (${PROMPT_KIND_NAMES.join(', ')}) or kind@n with n >= 1.`;
+  if (enabled.size === 0) {
+    // A non-empty value that enables nothing is almost always a typo, and it
+    // acts exactly like the kill switch. Loud, so nobody mistakes it for an
+    // intended "off" (the intended off is an empty value).
+    console.error(
+      `[promptHost] no valid entries in ${PROMPT_HOST_ENABLED_KINDS_ENV} — behaving as the kill switch `
+        + `(every prompt uses the legacy dialog). Ignored: ${dropped.join(', ') || '(only separators)'}. ${hint}`,
+    );
+  } else if (dropped.length) {
     console.warn(
       `[promptHost] ${PROMPT_HOST_ENABLED_KINDS_ENV}: ignoring ${dropped.length} unknown or malformed `
-        + `entr${dropped.length === 1 ? 'y' : 'ies'}: ${dropped.join(', ')}. Use a kind (${PROMPT_KIND_NAMES.join(', ')}) `
-        + 'or kind@n with n >= 1; these kinds stay on the legacy path.',
+        + `entr${dropped.length === 1 ? 'y' : 'ies'}: ${dropped.join(', ')}. ${hint} These kinds stay on the legacy path.`,
     );
   }
   return [...enabled];

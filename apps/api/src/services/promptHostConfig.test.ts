@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { PROMPT_KIND_NAMES } from '@breeze/shared/promptHost';
 import {
@@ -14,15 +16,18 @@ import {
 const STAND_IN_DEFAULT = ['notice.info', 'restart.prompt@1'] as const;
 
 let warn: MockInstance;
+let error: MockInstance;
 const originalEnv = process.env.PROMPT_HOST_ENABLED_KINDS;
 
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  error = vi.spyOn(console, 'error').mockImplementation(() => {});
   __resetEnabledPromptKindsCacheForTests();
 });
 
 afterEach(() => {
   warn.mockRestore();
+  error.mockRestore();
   if (originalEnv === undefined) delete process.env.PROMPT_HOST_ENABLED_KINDS;
   else process.env.PROMPT_HOST_ENABLED_KINDS = originalEnv;
 });
@@ -43,6 +48,8 @@ describe('parseEnabledPromptKinds', () => {
     ['unset', undefined, [...STAND_IN_DEFAULT]],
     ['the literal "default" (how compose carries "unset")', 'default', [...STAND_IN_DEFAULT]],
     ['"default" with whitespace', '  default  ', [...STAND_IN_DEFAULT]],
+    ['"DEFAULT" (case-insensitive)', 'DEFAULT', [...STAND_IN_DEFAULT]],
+    ['" Default " (case-insensitive, trimmed)', ' Default ', [...STAND_IN_DEFAULT]],
     ['empty string (the kill switch)', '', []],
     ['whitespace only (the kill switch)', '   \t ', []],
     ['one bare kind', 'notice.info', ['notice.info']],
@@ -91,17 +98,29 @@ describe('parseEnabledPromptKinds', () => {
   it('warns exactly once per parse, naming every dropped entry', () => {
     parseEnabledPromptKinds('bogus.kind,notice.info,notice.info@0,notice.info@x', STAND_IN_DEFAULT);
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
     const message = String(warn.mock.calls[0]![0]);
     expect(message).toContain('PROMPT_HOST_ENABLED_KINDS');
     for (const dropped of ['bogus.kind', 'notice.info@0', 'notice.info@x']) expect(message).toContain(dropped);
   });
 
-  it('does not warn for a clean list, the kill switch, or unset', () => {
+  it('a value with no valid entry is an ERROR: a typo silently became the kill switch', () => {
+    expect(parseEnabledPromptKinds('notice.inf,restart.promt@1', STAND_IN_DEFAULT)).toEqual([]);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    const message = String(error.mock.calls[0]![0]);
+    expect(message).toContain('no valid entries in PROMPT_HOST_ENABLED_KINDS');
+    expect(message).toContain('kill switch');
+    for (const dropped of ['notice.inf', 'restart.promt@1']) expect(message).toContain(dropped);
+  });
+
+  it('does not log for a clean list, the kill switch, or unset', () => {
     parseEnabledPromptKinds('notice.info, restart.prompt@1,', STAND_IN_DEFAULT);
     parseEnabledPromptKinds('', STAND_IN_DEFAULT);
     parseEnabledPromptKinds(undefined, STAND_IN_DEFAULT);
     parseEnabledPromptKinds('default', STAND_IN_DEFAULT);
     expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 });
 
@@ -111,9 +130,22 @@ describe('enabledPromptKinds (reads PROMPT_HOST_ENABLED_KINDS)', () => {
     expect(enabledPromptKinds()).toEqual([...DEFAULT_ENABLED_PROMPT_KINDS]);
   });
 
+  it('"default" (what compose passes when unset) gives the code default', () => {
+    process.env.PROMPT_HOST_ENABLED_KINDS = 'default';
+    expect(enabledPromptKinds()).toEqual([...DEFAULT_ENABLED_PROMPT_KINDS]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it('empty string gives nothing (kill switch)', () => {
     process.env.PROMPT_HOST_ENABLED_KINDS = '';
     expect(enabledPromptKinds()).toEqual([]);
+  });
+
+  it('a value with no valid entry logs its error once, not once per heartbeat', () => {
+    process.env.PROMPT_HOST_ENABLED_KINDS = 'notice.inf';
+    for (let i = 0; i < 5; i += 1) expect(enabledPromptKinds()).toEqual([]);
+    expect(error).toHaveBeenCalledTimes(1);
   });
 
   it('a list is parsed', () => {
@@ -139,4 +171,18 @@ describe('enabledPromptKinds (reads PROMPT_HOST_ENABLED_KINDS)', () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(enabledPromptKinds()).toEqual(['notice.info']);
   });
+});
+
+// The no-colon `-default` form is load-bearing: `${VAR:-}` passes '' when the
+// operator sets nothing, which is the kill switch, so every compose install
+// would silently stay dark after W09 flips the code default.
+describe('compose files map PROMPT_HOST_ENABLED_KINDS so unset stays distinct from empty', () => {
+  const root = resolve(__dirname, '../../../..');
+  for (const file of ['docker-compose.yml', 'deploy/docker-compose.prod.yml']) {
+    it(file, () => {
+      const text = readFileSync(resolve(root, file), 'utf8');
+      expect(text).toContain('PROMPT_HOST_ENABLED_KINDS: ${PROMPT_HOST_ENABLED_KINDS-default}');
+      expect(text).not.toContain('${PROMPT_HOST_ENABLED_KINDS:-');
+    });
+  }
 });

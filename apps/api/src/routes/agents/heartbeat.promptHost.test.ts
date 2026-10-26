@@ -420,9 +420,11 @@ vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaselin
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
 // #10190 — the observation store is a spy so each beat's report (or its
-// absence) is visible; promptHostConfig runs for real off the env.
+// absence) is visible; the dropped-report detector and promptHostConfig run
+// for real (the env drives the latter).
 const recordPromptHostObservationMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
-vi.mock('../../services/promptHostObservation', () => ({
+vi.mock('../../services/promptHostObservation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/promptHostObservation')>()),
   recordPromptHostObservation: (...args: unknown[]) => recordPromptHostObservationMock(...args),
 }));
 
@@ -430,6 +432,7 @@ import { promptHostSettingsSchema } from '@breeze/shared/promptHost';
 import { heartbeatRoutes } from './heartbeat';
 import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistry';
 import { __resetEnabledPromptKindsCacheForTests } from '../../services/promptHostConfig';
+import { __resetPromptHostObservationLogThrottleForTests } from '../../services/promptHostObservation';
 
 beforeEach(() => { __resetHotPathCachesForTests(); });
 
@@ -522,6 +525,7 @@ describe('POST /agents/:id/heartbeat — prompt host (#10190 W02)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetEnabledPromptKindsCacheForTests();
+    __resetPromptHostObservationLogThrottleForTests();
     delete process.env.PROMPT_HOST_ENABLED_KINDS;
     resetSelects();
     updateMock.mockReset();
@@ -538,8 +542,8 @@ describe('POST /agents/:id/heartbeat — prompt host (#10190 W02)', () => {
     selectMock.mockReturnValue(selectChainResolving([]));
   }
 
-  async function beat(extra: Record<string, unknown> = {}) {
-    return buildApp().request('/agents/device-1/heartbeat', {
+  async function beat(extra: Record<string, unknown> = {}, agentOverrides: Record<string, unknown> = {}) {
+    return buildApp(agentOverrides).request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ status: 'ok', ...minimalHeartbeatBody, ...extra }),
@@ -612,6 +616,56 @@ describe('POST /agents/:id/heartbeat — prompt host (#10190 W02)', () => {
       expect(recordWorkstationCapabilitiesMock).toHaveBeenCalledWith(
         'org-1', 'device-1', expect.objectContaining(READINESS),
       );
+    });
+  });
+
+  // Review: a dropped block reads like "no renderer" on the device page, so
+  // the collapse is logged (throttled), the same idea as #1121 watchdogState.
+  describe('a present-but-invalid promptHost is logged, never silent', () => {
+    function promptHostWarnings(warn: MockInstance) {
+      return warn.mock.calls.filter((call) => String(call[0]).includes('helperCapabilities.promptHost'));
+    }
+
+    it('present but invalid: one warning naming the device', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const resp = await beat({ helperCapabilities: { ...READINESS, promptHost: { protocolVersion: 'one' } } });
+      expect(resp.status).toBe(200);
+      const hits = promptHostWarnings(warn);
+      expect(hits).toHaveLength(1);
+      expect(String(hits[0]![0])).toContain('device-1');
+    });
+
+    it('absent (old agent): no warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect((await beat({ helperCapabilities: READINESS })).status).toBe(200);
+      resetSelects();
+      expect((await beat()).status).toBe(200);
+      expect(promptHostWarnings(warn)).toHaveLength(0);
+    });
+
+    it('well-formed: no warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect((await beat({ helperCapabilities: { ...READINESS, promptHost: REPORT } })).status).toBe(200);
+      expect(promptHostWarnings(warn)).toHaveLength(0);
+    });
+  });
+
+  // A watchdog beat does not describe the user session: it must neither
+  // write nor clear the main agent's observation. Paired with a main-role
+  // control carrying the same body.
+  describe('watchdog beats never touch the observation', () => {
+    const body = { helperCapabilities: { ...READINESS, promptHost: REPORT } };
+
+    it('control: the main agent role records it', async () => {
+      expect((await beat(body)).status).toBe(200);
+      expect(recordPromptHostObservationMock).toHaveBeenCalledTimes(1);
+      expect(recordPromptHostObservationMock).toHaveBeenCalledWith('device-1', REPORT);
+    });
+
+    it('the watchdog role does not', async () => {
+      const resp = await beat({ ...body, role: 'watchdog', watchdogState: 'MONITORING' }, { role: 'watchdog' });
+      expect(resp.status).toBe(200);
+      expect(recordPromptHostObservationMock).not.toHaveBeenCalled();
     });
   });
 });

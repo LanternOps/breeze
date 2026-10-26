@@ -24,7 +24,7 @@
  * throws, skips a client that is not ready (its offline queue would hold the
  * beat for as long as the retry strategy runs), is capped at
  * PROMPT_HOST_REDIS_TIMEOUT_MS, and logs a lost write at most once a minute.
- * A read fails closed to `null` and is logged.
+ * A read fails closed to `null` and is logged, also at most once a minute.
  *
  * Keyed by device id alone: device ids are globally unique and the only
  * reader (GET /devices/:id) reads after its tenant and site check.
@@ -36,7 +36,7 @@ import { getRedis } from './redis';
 export const PROMPT_HOST_OBSERVATION_TTL_SECONDS = 180;
 /** Upper bound on one observation store call; the heartbeat must not wait longer. */
 export const PROMPT_HOST_REDIS_TIMEOUT_MS = 250;
-const WRITE_FAULT_LOG_INTERVAL_MS = 60_000;
+const FAULT_LOG_INTERVAL_MS = 60_000;
 
 export type PromptHostReport = z.infer<typeof promptHostTelemetrySchema>;
 export type PromptHostObservation = PromptHostReport & {
@@ -73,29 +73,74 @@ function describeFault(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-let lastWriteFaultLogAt = Number.NEGATIVE_INFINITY;
-let suppressedWriteFaults = 0;
+/**
+ * At most one log line per interval for one class of fault, carrying the
+ * count it suppressed. Heartbeats (writes, dropped reports) arrive fleet-wide
+ * and device-page views (reads) repeat during an outage, so an unthrottled
+ * log would flood exactly when something is already wrong.
+ */
+function logThrottle(log: (message: string) => void) {
+  let lastAt = Number.NEGATIVE_INFINITY;
+  let suppressed = 0;
+  return {
+    emit(message: string): void {
+      const now = Date.now();
+      if (now - lastAt < FAULT_LOG_INTERVAL_MS) {
+        suppressed += 1;
+        return;
+      }
+      const skipped = suppressed;
+      lastAt = now;
+      suppressed = 0;
+      log(message + (skipped ? ` (${skipped} similar suppressed)` : ''));
+    },
+    reset(): void {
+      lastAt = Number.NEGATIVE_INFINITY;
+      suppressed = 0;
+    },
+  };
+}
+
+// Separate throttles, so one class of fault never hides another.
+const writeFaults = logThrottle((message) => console.error(message));
+const readFaults = logThrottle((message) => console.error(message));
+const droppedReports = logThrottle((message) => console.warn(message));
 
 function logWriteFault(deviceId: string, reason: string): void {
-  const now = Date.now();
-  if (now - lastWriteFaultLogAt < WRITE_FAULT_LOG_INTERVAL_MS) {
-    suppressedWriteFaults += 1;
-    return;
-  }
-  const suppressed = suppressedWriteFaults;
-  lastWriteFaultLogAt = now;
-  suppressedWriteFaults = 0;
-  console.error(
+  writeFaults.emit(
     `[promptHost] prompt host observation write failed (${reason}) for device ${deviceId}; `
-      + 'the device page shows no live renderer until it recovers'
-      + (suppressed ? ` (${suppressed} similar failures suppressed)` : ''),
+      + 'the device page shows no live renderer until it recovers',
   );
 }
 
-/** Test-only: re-arm the write-fault log throttle. */
+/** Test-only: re-arm every log throttle in this module. */
 export function __resetPromptHostObservationLogThrottleForTests(): void {
-  lastWriteFaultLogAt = Number.NEGATIVE_INFINITY;
-  suppressedWriteFaults = 0;
+  writeFaults.reset();
+  readFaults.reset();
+  droppedReports.reset();
+}
+
+/**
+ * The heartbeat carried `helperCapabilities.promptHost` but validation
+ * dropped it (`parsed` is undefined). The observation is then cleared, which
+ * on the device page looks exactly like "no renderer", so the collapse is
+ * logged (throttled, with the device id) instead of being silent. Same idea
+ * as the #1121 watchdogState collapse check. Returns whether it was dropped.
+ */
+export function notePromptHostReportDropped(
+  deviceId: string,
+  rawBody: unknown,
+  parsed: PromptHostReport | undefined,
+): boolean {
+  if (parsed !== undefined || !rawBody || typeof rawBody !== 'object') return false;
+  const capabilities = (rawBody as { helperCapabilities?: unknown }).helperCapabilities;
+  if (!capabilities || typeof capabilities !== 'object') return false;
+  if ((capabilities as { promptHost?: unknown }).promptHost === undefined) return false;
+  droppedReports.emit(
+    `[promptHost] heartbeat helperCapabilities.promptHost from device ${deviceId} failed validation and was `
+      + 'dropped; the device shows no live renderer (check the agent build)',
+  );
+  return true;
 }
 
 /**
@@ -109,8 +154,11 @@ export async function recordPromptHostObservation(
 ): Promise<void> {
   try {
     const redis = getRedis();
+    // No client, or one that is not ready: skip without waiting. An absent
+    // report is not logged (the common old-agent beat), but its DEL does not
+    // happen either, so a stale observation can linger until its 180 s TTL
+    // while Redis is not ready.
     if (!redis) {
-      // No store configured or it is down: an absent report has nothing to clear.
       if (report) logWriteFault(deviceId, 'redis_unavailable');
       return;
     }
@@ -132,13 +180,17 @@ export async function recordPromptHostObservation(
 }
 
 function logReadFault(deviceId: string, reason: string): null {
-  console.error(
+  readFaults.emit(
     `[promptHost] prompt host observation read failed (${reason}) for device ${deviceId}; reporting none`,
   );
   return null;
 }
 
-/** The device's fresh observation, or `null` when there is none or the store fails. */
+/**
+ * The device's fresh observation, or `null`. In W02 `null` means "none or
+ * unknown": no fresh report, OR the store could not be read (logged,
+ * throttled). The device page must not read it as "proven absent".
+ */
 export async function readPromptHostObservation(deviceId: string): Promise<PromptHostObservation | null> {
   let raw: unknown;
   try {
