@@ -1500,6 +1500,22 @@ func (b *Broker) awaitBroadcastNotifyResult(s *Session, wait func(time.Duration)
 // or a rung and a retry easily are, would lose one answer.
 var notifyDecisionSeq atomic.Uint64
 
+// notifyDecisionReplyGrace is how long RequestNotificationDecision keeps
+// listening after the dialog's own countdown has run out (#10182).
+//
+// The helper is told to count down for the same window the broker waits, but
+// its countdown starts later: it has to receive the request, decode it and draw
+// the dialog first. So "the countdown expired with no click" always reached the
+// broker a little after a wait of exactly `timeout` had given up — the waiter
+// was gone and dispatchHelperMessage logged "dropping unsolicited or
+// unauthorized helper message type=notify_result" at WARN on every unanswered
+// prompt. A click in the dialog's last moments was discarded the same way, and
+// the reboot went ahead although the user had postponed it.
+//
+// The grace only costs time when the helper never answers at all (a wedged
+// helper on a live transport). A var only so tests can shorten it.
+var notifyDecisionReplyGrace = 10 * time.Second
+
 // RequestNotificationDecision sends an interactive notification to one
 // notify-scoped session per interactive Windows session and returns the first
 // answer.
@@ -1549,11 +1565,15 @@ func (b *Broker) RequestNotificationDecision(req ipc.NotifyRequest, timeout time
 		res ipc.NotifyResult
 		err error
 	}
+	// The dialog counts down `timeout` (req.TimeoutMs); the wait covers that plus
+	// the time its answer needs to get back. Read once, on the caller's
+	// goroutine, for the same reason BroadcastNotification reads its timeout.
+	wait := timeout + notifyDecisionReplyGrace
 	results := make(chan answer, len(sessions))
 	for _, s := range sessions {
 		go func(s *Session) {
 			id := fmt.Sprintf("notify-%s-%d", s.SessionID, notifyDecisionSeq.Add(1))
-			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, timeout)
+			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, wait)
 			if err != nil {
 				results <- answer{err: fmt.Errorf("session %s: %w", s.SessionID, err)}
 				return
