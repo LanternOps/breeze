@@ -101,7 +101,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
     await confirmWithCode();
     await waitFor(() => expect(onGranted).toHaveBeenCalledTimes(1));
-    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread?orgId=org-1');
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread?orgId=org-1', { skipOrgIdInjection: true });
     expect(onGranted).toHaveBeenCalledWith({
       grantId: 'g-1', threadId: 't-1', scopeOrgId: 'org-1', focusOrgId: null, focusOrgName: null, status: 'active',
       expiresAt: '2027-01-01T00:00:00.000Z', summary: 'Last time: patched.', budgetCentsPerDay: 200, floorTickMinutes: 30,
@@ -216,7 +216,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     await waitFor(() => expect(onGranted).toHaveBeenCalledTimes(1));
     expect(calls('/wisp/grants/preview')[0]![0]).toBe('/wisp/grants/preview');
     expect(h.mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({ resource: { partnerId: 'p-1', orgId: null, requestedCeilingHash: HASH } }));
-    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread');
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true });
   });
 
   it('a non-step-up failure toasts through runAction and keeps the modal open', async () => {
