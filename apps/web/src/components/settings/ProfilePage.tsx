@@ -929,7 +929,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (disableReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
       }
-      setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
+      setUser(prev => (prev ? { ...prev, mfaEnabled: false, mfaMethod: null } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(withReauthNotice(t('profilePage.multiFactorAuthenticationDisabled'), disableReplacementAdopted));
       return true;
