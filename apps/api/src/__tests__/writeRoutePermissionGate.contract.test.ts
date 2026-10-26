@@ -334,6 +334,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/quotes/:id/accept': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/decline': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/pay': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/agreements.ts (#9075 W3a)
+  'POST /api/v1/portal/agreements/:id/accept': 'portal session: portal session auth (portalAuthMiddleware) + portalFinancialMutationGuard; recipient-email match re-checked under the row lock by acceptAgreementRequest',
+  'POST /api/v1/portal/agreements/:id/decline': 'portal session: portal session auth (portalAuthMiddleware) + portalFinancialMutationGuard; recipient-email match re-checked under the row lock by declineAgreementRequest',
   // routes/portal/reports.ts
   'POST /api/v1/portal/reports/generate': 'portal session: portal session auth (portalAuthMiddleware)',
   // routes/portal/tickets.ts

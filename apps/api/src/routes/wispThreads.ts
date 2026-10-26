@@ -9,6 +9,11 @@
  *                                    caller's own thread (W06 deep links; existence-neutral 404)
  *   GET   /:id/activity?cursor=&limit= → { data: { items: ActivityItem[], nextCursor, current } } (W06, w00 A31:
  *                                    the derived, ceiling-filtered timeline + the live "checking…" line)
+ *   GET   /:id/timeline?cursor=&limit=&excludeSessionId= → { data: { items: WispTimelineItem[], nextCursor } }
+ *                                    (W02a #10212: every attached session's messages merged with the thread's
+ *                                    posts, newest first; readable for a PAUSED grant from its stored revision;
+ *                                    409 grant_inactive for revoked / expired / Wisp off / no pinned revision,
+ *                                    500 grant_corrupt for a broken pin, 400 invalid_cursor)
  *   GET   /:id/sessions?limit=&cursor= → { data: [{ sessionId, orgId, attachedAt, title, status }], nextCursor }
  *   PATCH /:id/focus              { orgId: uuid | null } → { data: { focusOrgId, focusOrgName } }
  *   GET   /:id/attachments        → { data: ThreadAttachmentDto[] }   (live only, newest first)
@@ -44,7 +49,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { and, desc, eq, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { wispActivityQuerySchema } from '@breeze/shared';
+import { wispActivityQuerySchema, wispTimelineQuerySchema } from '@breeze/shared';
 import { aiArtifactCaptureEnabled } from '../config/env';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
@@ -72,6 +77,7 @@ import {
   type ThreadAttachment,
   type ThreadAttachmentContentType,
 } from '../services/wisp/threadAttachments';
+import { InvalidTimelineCursorError, listThreadTimeline } from '../services/wisp/threadTimeline';
 import { getOrCreateThread, setThreadFocus, WispThreadError, type WispThread } from '../services/wisp/threads';
 
 /**
@@ -245,11 +251,18 @@ type CeilingOutcome =
  * when the grant has no pinned revision or `resolveGrantCeiling` reports it
  * paused / revoked / expired / Wisp switched off; `corrupt` (→ 500
  * grant_corrupt, already logged and captured) when the pin itself is broken.
+ *
+ * `allowPaused` (READ-ONLY routes only; today GET /:id/timeline): a paused
+ * grant resolves from its stored revision with `status: 'paused'`, which
+ * assertWithinCeiling refuses, so the ceiling can read history but never act.
  */
-export async function ceilingOf(own: OwnThread): Promise<CeilingOutcome> {
+export async function ceilingOf(own: OwnThread, opts: { allowPaused?: boolean } = {}): Promise<CeilingOutcome> {
   if (!own.grant.currentRevisionId) return { ok: false, reason: 'inactive' };
   try {
-    return { ok: true, ceiling: await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId) };
+    const ceiling = opts.allowPaused
+      ? await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId, { allowPaused: true })
+      : await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId);
+    return { ok: true, ceiling };
   } catch (err) {
     if (err instanceof GrantInactiveError) {
       if (err.kind !== 'corrupt') return { ok: false, reason: 'inactive' };
@@ -376,6 +389,25 @@ wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchem
     return c.json({ data: { items: page.items, nextCursor: page.nextCursor, current: withinCeiling(outcome.ceiling, current) } });
   } catch (err) {
     if (err instanceof InvalidActivityCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
+    throw err;
+  }
+});
+
+// W02a (#10212): every attached session's messages merged with the thread's
+// posts (brief / nudge / digest), newest first. The bound session is left out
+// with excludeSessionId (the web store holds it). A paused grant still reads
+// its history; every other ceilingOf refusal applies (409 / 500).
+wispThreadRoutes.get('/:id/timeline', zValidator('query', wispTimelineQuerySchema), async (c) => {
+  const { cursor, limit, excludeSessionId } = c.req.valid('query');
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own, { allowPaused: true });
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  try {
+    const page = await listThreadTimeline(outcome.ceiling, own.thread.id, { cursor, limit, excludeSessionId });
+    return c.json({ data: { items: page.items, nextCursor: page.nextCursor } });
+  } catch (err) {
+    if (err instanceof InvalidTimelineCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
     throw err;
   }
 });

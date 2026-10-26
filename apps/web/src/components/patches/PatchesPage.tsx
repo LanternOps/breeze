@@ -776,6 +776,7 @@ export default function PatchesPage() {
               autoApprove: values.autoApprove,
               categoryRules: values.categoryRules,
               appRules: values.appRules,
+              featureUpdates: values.featureUpdates,
             }),
           }),
         errorFallback: isEditing ? t('patchesPage.errors.updateRing') : t('patchesPage.errors.createRing'),
@@ -1168,6 +1169,7 @@ export default function PatchesPage() {
               autoApprove: editingRing.autoApprove ?? { enabled: false, severities: [], deferralDays: 0 },
               categoryRules: editingRing.categoryRules,
               appRules: editingRing.appRules ?? [],
+              featureUpdates: editingRing.featureUpdates,
             } : undefined}
           />
         </div>

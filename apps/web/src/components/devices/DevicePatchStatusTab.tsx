@@ -395,6 +395,8 @@ function getEffectiveApprovalBadge(
         ? t('devicePatchStatusTab.approval.excludedSourceTitle')
         : effective.reason === 'blocked_by_app_rule'
           ? t('devicePatchStatusTab.approval.excludedAppRuleTitle')
+        : effective.reason === 'blocked_by_feature_update_policy'
+          ? t('devicePatchStatusTab.approval.excludedFeatureUpdateTitle', { ring })
           : effective.reason === 'ring_reference_invalid'
             ? t('devicePatchStatusTab.approval.excludedRingReferenceTitle')
             : effective.reason === 'explicitly_declined'

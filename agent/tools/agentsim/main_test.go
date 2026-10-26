@@ -45,12 +45,12 @@ func TestParseFlagsLoadsAStormAndGates(t *testing.T) {
 	}
 	env := map[string]string{"AGENTSIM_SERVER": "http://localhost:9", "METRICS_SCRAPE_TOKEN": "tok"}
 	cfg, err := parseFlags([]string{"--duration", "10m", "--storm", path, "--gate-heartbeat-p95", "1s",
-		"--gate-pool-min-ratio", "0.8", "--legacy-retry-fraction", "0.25"}, func(k string) string { return env[k] })
+		"--gate-pool-min-ratio", "0.8", "--legacy-retry-fraction", "0.25", "--pre-w09-fraction", "0.5"}, func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Storm == nil || cfg.Storm.Name != "drop" || cfg.ScrapeToken != "tok" || cfg.Gates.HeartbeatP95 != time.Second ||
-		cfg.Gates.PoolMinRatio != 0.8 || cfg.LegacyRetryFraction != 0.25 || cfg.StormPath != path {
+		cfg.Gates.PoolMinRatio != 0.8 || cfg.LegacyRetryFraction != 0.25 || cfg.PreW09Fraction != 0.5 || cfg.StormPath != path {
 		t.Fatalf("%+v", cfg)
 	}
 }

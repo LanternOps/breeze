@@ -67,6 +67,8 @@ import {
   type OnedriveConfigUpdate,
   type HelperSettings,
 } from './helpers';
+import { buildFeatureUpdateConfigUpdate, toFeatureUpdateSettingsWire } from './featureUpdateConfig';
+import type { RingFeatureUpdates } from '@breeze/shared/validators';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
@@ -2618,6 +2620,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: Record<string, unknown> | null;
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
+    featureUpdateSettings: RingFeatureUpdates | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
@@ -2628,6 +2631,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: null,
     pamSettings: null,
     patchSourceSettings: null,
+    featureUpdateSettings: null,
     warrantySettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
@@ -2790,6 +2794,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Windows feature-update policy from the device's update ring: same
+      // posture as patch_source — an error omits the block (the agent keeps
+      // its last policy), a successful resolve with no ring says block.
+      try {
+        policyConfigs.featureUpdateSettings = await buildFeatureUpdateConfigUpdate(scoped.deviceId, policyOpts);
+      } catch (err) {
+        console.error(`[agents] failed to build feature_update config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       // #5511 W02 HP CMSL: same shape as patch_source — an error only omits.
       try {
         policyConfigs.warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, policyOpts);
@@ -2902,6 +2916,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings,
     pamSettings,
     patchSourceSettings,
+    featureUpdateSettings,
     warrantySettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
@@ -2931,6 +2946,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (patchSourceSettings) {
     policyConfigUpdate.patch_source_settings = patchSourceSettings;
+  }
+  if (featureUpdateSettings) {
+    policyConfigUpdate.feature_update_settings = toFeatureUpdateSettingsWire(featureUpdateSettings);
   }
   // Snake_case inside the block as well as outside (contract D6): this
   // assembly is where camelCase resolver output becomes wire keys, and the

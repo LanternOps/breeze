@@ -21,7 +21,7 @@
  */
 
 import type { PatchIneligibleReason } from '@breeze/shared';
-import { canonicalAppRuleKey, policyAppRuleSchema } from '@breeze/shared/validators';
+import { canonicalAppRuleKey, policyAppRuleSchema, type RingFeatureUpdates } from '@breeze/shared/validators';
 import { captureException } from './sentry';
 
 // ============================================
@@ -92,6 +92,12 @@ export interface ApprovalEvaluationConfig {
    * "overrides a manual approval" semantics.
    */
   ringAppRules?: PolicyAppRule[];
+  /**
+   * The ring's Windows feature-release policy (`patch_policies.feature_updates`):
+   * block | allow | pin. Absent = block (the pre-control behaviour, and what a
+   * legacy job snapshot means). See patchEligibility's feature-update gate.
+   */
+  featureUpdates?: RingFeatureUpdates;
   /**
    * The policy links a ring reference that does not resolve (#8186). The
    * evaluator then denies every outstanding candidate with
@@ -430,7 +436,7 @@ export type PatchApprovalDecision =
    * is held until it can.
    */
   | { denied: 'held_by_deferral'; holdUntil: Date | null }
-  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid'> };
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'blocked_by_feature_update_policy' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid'> };
 
 export function evaluatePatchApproval(
   patch: PatchCandidate,

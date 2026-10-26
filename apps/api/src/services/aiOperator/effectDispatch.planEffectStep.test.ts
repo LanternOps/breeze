@@ -25,7 +25,10 @@ const h = vi.hoisted(() => ({
   inserts: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect }));
+// One registration for './effectProbes' (two competing vi.mock calls for the
+// same path resolved nondeterministically). `u` is declared with vi.hoisted
+// further down; the factory runs lazily, after every hoisted block.
+vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect, isStructurallyUnobservable: u.isStructurallyUnobservable }));
 vi.mock('./planApproval', async (orig) => ({
   ...(await orig<typeof import('./planApproval')>()),
   readPlanApprovalAtRevision: h.readPlanApprovalAtRevision,
@@ -485,17 +488,14 @@ describe('planEffectStep — planning snapshot (R1a-0 Task 1d)', () => {
 // R1a-0 Task 1e — the post-approval not-before gate, and declared unobservable
 // effects. Appended; the cases above are unchanged.
 //
-// The harness above mocks './effectProbes' with `probeEffect` only. The walk
-// now also calls `isStructurallyUnobservable`, so this section re-registers
-// the SAME mock with that one export added (vitest: the last `vi.mock` for a
-// path wins; `probeEffect` is still `h.probeEffect`, so every case above sees
-// an identical module). The mirror answers true for `google_signout` alone —
-// exactly the real registry, which effectProbes/index.test.ts proves.
+// The walk also calls `isStructurallyUnobservable`; the single './effectProbes'
+// mock at the top of the file wires it to `u` below. The mirror answers true
+// for `google_signout` alone — exactly the real registry, which
+// effectProbes/index.test.ts proves.
 // ---------------------------------------------------------------------------
 const u = vi.hoisted(() => ({
   isStructurallyUnobservable: vi.fn((tool: string) => tool === 'google_signout'),
 }));
-vi.mock('./effectProbes', () => ({ probeEffect: h.probeEffect, isStructurallyUnobservable: u.isStructurallyUnobservable }));
 
 /** The jsonb stamp `recordVerification` merges into an operation's result. */
 const stampOf = (i: number) => {

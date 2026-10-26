@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "grupo excluído",
         "siteDeleted": "site excluído",
-        "siteDeletedNamed": "site excluído: {{name}}"
+        "siteDeletedNamed": "site excluído: {{name}}",
+        "manualQuantityMissing": "quantidade ausente"
       },
       "lineScope": {
         "site": "Site: {{name}}"

@@ -3411,6 +3411,13 @@ export function buildBreezeSdkTools(
         })).max(200).optional().describe(
           'Per-app block/pin rules on the ring; pin requires pinnedVersion. Overrides manual approvals in patch jobs. Update replaces the list.'
         ),
+        featureUpdates: z.object({
+          mode: z.enum(['block', 'allow', 'pin']),
+          product: z.enum(['windows-11', 'windows-10']).optional(),
+          targetVersion: z.string().min(4).max(4).optional(),
+        }).optional().describe(
+          'Windows feature releases: block (default), allow newest, or pin (product + targetVersion like "25H2"; sets the WUfB target-release policy).'
+        ),
         enabled: z.boolean().optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },

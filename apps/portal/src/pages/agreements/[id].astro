@@ -1,0 +1,19 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import AgreementDetailView from '../../components/portal/AgreementDetailView';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const { id } = Astro.params;
+const response = await portalApi.getAgreement(id!, buildServerApiConfig(Astro.request));
+
+if (response.statusCode === 401) {
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
+}
+---
+
+<PortalLayout title="Agreement" sheet={false}>
+  <AgreementDetailView detail={response.data?.data ?? null} error={response.error} statusCode={response.statusCode} client:load />
+</PortalLayout>

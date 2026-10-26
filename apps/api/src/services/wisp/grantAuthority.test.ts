@@ -244,6 +244,54 @@ describe('resolveGrantCeiling', () => {
     await expect(resolveGrantCeiling('g1', 'r1')).rejects.toBeInstanceOf(GrantInactiveError);
     expect(shared.getUserPermissions).not.toHaveBeenCalled();
   });
+  describe('allowPaused (W02a: the thread timeline reads a paused grant\'s history)', () => {
+    const liveOk = () => {
+      queueSelect([{ status: 'active', partnerId: PARTNER }]);
+      shared.getUserPermissions.mockResolvedValueOnce(livePerms([
+        { resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' },
+      ]));
+      shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: 'selected' });
+      queueSelect([{ id: 'o1' }]);
+    };
+
+    it('resolves a paused grant from its stored revision ∩ the live term, carrying status paused', async () => {
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      const c = await resolveGrantCeiling('g1', 'r1', { allowPaused: true });
+      expect(c.status).toBe('paused');
+      expect([...c.orgIds]).toEqual(['o1']);
+    });
+
+    it('the paused ceiling it returns is refused by assertWithinCeiling (never usable to act)', async () => {
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      const c = await resolveGrantCeiling('g1', 'r1', { allowPaused: true });
+      expect(() => assertWithinCeiling(c, { orgId: 'o1' })).toThrow(expect.objectContaining({ code: 'inactive' }));
+    });
+
+    it('still refuses revoked, expired and a grantor whose live term fails', async () => {
+      queueSelect([grantRow({ status: 'revoked' })]);
+      queueSelect([revisionRow()]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ kind: 'ended' });
+      queueSelect([grantRow({ status: 'paused', expiresAt: new Date(Date.now() - 1000) })]);
+      queueSelect([revisionRow()]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ status: 'expired' });
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      queueSelect([{ status: 'disabled', partnerId: PARTNER }]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ kind: 'paused' });
+    });
+
+    it('an active grant resolves exactly as without the option', async () => {
+      queueSelect([grantRow()]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      expect((await resolveGrantCeiling('g1', 'r1', { allowPaused: true })).status).toBe('active');
+    });
+  });
+
   it('throws GrantInactiveError for a grant past expires_at even while status is active', async () => {
     queueSelect([grantRow({ expiresAt: new Date(Date.now() - 1000) })]);
     queueSelect([revisionRow()]);

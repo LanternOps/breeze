@@ -549,6 +549,22 @@
       "title": "Installation forcée",
       "description": "Combien de temps les appareils ont pour installer les correctifs approuvés, et combien de temps un utilisateur peut reporter le redémarrage. Le comportement du redémarrage lui-même est défini par la politique sur l’onglet Correctif."
     },
+    "featureUpdates": {
+      "title": "Mises à jour de fonctionnalités Windows",
+      "description": "Si les appareils de cet anneau reçoivent les versions de fonctionnalités Windows (par exemple 25H2). Breeze ne les installe que par les règles d'approbation ci-dessous; ajoutez une exception Mises à jour des fonctionnalités pour les approuver automatiquement.",
+      "modeBlock": "Bloquer",
+      "modeAllow": "Autoriser la version la plus récente",
+      "modePin": "Épingler à une version",
+      "productLabel": "Version de Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Version",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Windows Update sur chaque appareil est configuré pour cibler cette version (politique de version cible de Windows Update for Business). À moins que le paramètre « Breeze est la seule source Windows Update » de la politique soit activé, Windows peut télécharger et installer la version selon son propre calendrier, hors de l'approbation Breeze.",
+      "validation": {
+        "release": "Entrez une version comme 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Politique d’approbation",
       "description": "Ce qui est approuvé automatiquement dans cet anneau, et combien de temps il faut conserver un patch après sa sortie chez le fabricant. Le principe par défaut s’applique à toutes les catégories ; Ajoutez une dérogation pour traiter un autre type différemment.",
@@ -606,7 +622,9 @@
       "os": "SE : {{severities}}",
       "thirdParty": "Applications tierces",
       "appRules_one": "{{count}} règle d'application",
-      "appRules_other": "{{count}} règles d'application"
+      "appRules_other": "{{count}} règles d'application",
+      "featureUpdatesNewest": "Mises à jour de fonctionnalités : la plus récente",
+      "featureUpdatesPinned": "Mises à jour de fonctionnalités : {{release}}"
     }
   },
   "ringAppRules": {
