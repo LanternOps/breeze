@@ -152,6 +152,15 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // `promote` is NOT here: it raises a real alert (TIER3_SUPERVISED_ACTIONS).
   manage_alert_correlations: ['acknowledge_group', 'resolve_group', 'acknowledge_related', 'feedback', 'rca_feedback'],
   manage_device_anomalies: ['dismiss', 'resolve'],
+  // Full-control W08 (#6778): network topology. Starting a diagnostic dispatches a bounded probe to a device
+  // (inline, in the person's own session); the monitoring/manual/template-draft writes are tenant-internal
+  // rows with a revision compare-and-swap; a template PREVIEW persists a short-lived record only.
+  // Publishing / revoking a template and applying one are supervised (TIER3_SUPERVISED_ACTIONS).
+  run_topology_diagnostic: ['start', 'cancel'],
+  manage_topology_manual: ['create_node', 'update_node', 'delete_node', 'create_relationship', 'delete_relationship'],
+  manage_topology_monitoring: ['upsert_policy', 'delete_policy', 'upsert_target', 'delete_target', 'patch_settings'],
+  manage_topology_templates: ['create_template', 'update_template', 'create_version'],
+  apply_topology_template: ['preview'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -373,6 +382,12 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // default (no action) is the fleet list.
   get_alert_correlations: ['groups', 'get', 'by_alert', 'links', 'analyze', 'evaluation', 'explain'],
   get_fleet_health: ['list', 'history', 'offenders', 'evaluation', 'org_summary'],
+  // Full-control W08 (#6778): the topology reads (whole-tool reads declare their vocabulary too).
+  get_topology_graph: ['graph', 'nodes', 'node', 'relationship', 'evidence', 'group_members', 'expansion', 'health'],
+  run_topology_diagnostic: ['collectors', 'get'],
+  manage_topology_monitoring: ['list_policies', 'list_targets', 'get_settings'],
+  manage_topology_templates: ['list_templates', 'list_versions', 'site_options'],
+  apply_topology_template: ['status'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -545,6 +560,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Full-control W07 (#6777): promoting an anomaly raises a real alert and publishes alert.triggered,
   // which reaches notification channels and ticket automation (spec Q2: reaches a person).
   manage_device_anomalies: ['promote'],
+  // Full-control W08 (#6778): see TIER3_SUPERVISED_ACTIONS.
+  manage_topology_templates: ['publish_version', 'revoke_template'],
+  apply_topology_template: ['apply'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -854,6 +872,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_ticket_forms: ['create', 'update'],
   // Full-control W07 (#6777): see TIER3_ACTIONS.
   manage_device_anomalies: ['promote'],
+  // Full-control W08 (#6778): publishing makes a version appliable partner/org-wide and is not undoable;
+  // revoking a template is terminal and disables every policy that references it; applying rewrites the
+  // monitoring configuration of every previewed site. One approver (the requester).
+  manage_topology_templates: ['publish_version', 'revoke_template'],
+  apply_topology_template: ['apply'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -2304,6 +2327,44 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // devices:execute + both reads, org/site ceilings — is
   // requireTopologySiteAccess('execute'), applied at proposal AND at release.
   diagnose_connectivity: { resource: 'devices', action: 'execute' },
+  // Full-control W08 (#6778) — the topology routes gate on requireTopologySiteCapability (topologyPermissionPairs),
+  // which aiGuardrails.routeBinding cannot parse; aiToolsTopologyOps.permissions.contract.test.ts pins the
+  // capability -> grant mapping instead. The headline pair is here, the rest of the capability floor in the
+  // extras maps (approver eligibility reads requiredPermissionsForTool, so the whole floor must be visible).
+  get_topology_graph: { resource: 'topology', action: 'read' },
+  run_topology_diagnostic: {
+    collectors: { resource: 'topology', action: 'read' },
+    get: { resource: 'topology', action: 'read' },
+    start: { resource: 'topology', action: 'execute' },
+    cancel: { resource: 'topology', action: 'execute' },
+  },
+  manage_topology_manual: { resource: 'topology', action: 'write' },
+  manage_topology_monitoring: {
+    list_policies: { resource: 'topology', action: 'read' },
+    list_targets: { resource: 'topology', action: 'read' },
+    get_settings: { resource: 'topology', action: 'read' },
+    upsert_policy: { resource: 'topology', action: 'write' },
+    delete_policy: { resource: 'topology', action: 'write' },
+    upsert_target: { resource: 'topology', action: 'write' },
+    delete_target: { resource: 'topology', action: 'write' },
+    patch_settings: { resource: 'topology', action: 'write' },
+  },
+  // Template-library routes authorise in the service: topology + devices read for a read, write for a write.
+  manage_topology_templates: {
+    list_templates: { resource: 'topology', action: 'read' },
+    list_versions: { resource: 'topology', action: 'read' },
+    site_options: { resource: 'topology', action: 'read' },
+    create_template: { resource: 'topology', action: 'write' },
+    update_template: { resource: 'topology', action: 'write' },
+    revoke_template: { resource: 'topology', action: 'write' },
+    create_version: { resource: 'topology', action: 'write' },
+    publish_version: { resource: 'topology', action: 'write' },
+  },
+  apply_topology_template: {
+    preview: { resource: 'topology', action: 'write' },
+    apply: { resource: 'topology', action: 'write' },
+    status: { resource: 'topology', action: 'read' },
+  },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -2371,6 +2432,13 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   // tool also writes incident_actions (moves the incident to contained), which REST
   // gates on alerts:write (routes/incidentActions.ts POST /:id/contain).
   execute_containment: [{ resource: 'alerts', action: 'write' }],
+  // Full-control W08 (#6778): every topology capability includes topology:read + devices:read (topologyPermissionPairs).
+  get_topology_graph: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  run_topology_diagnostic: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  manage_topology_manual: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  manage_topology_monitoring: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  manage_topology_templates: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  apply_topology_template: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
 };
 
 /**
@@ -2401,6 +2469,30 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     // the handler also reads the quote by id to resolve the converted invoice
     // (createQuotePayLink → quotePay.ts), so quotes:read is required too.
     create_pay_link: [{ resource: 'quotes', action: 'read' }],
+  },
+  // Full-control W08 (#6778): the rest of each write capability's floor (permissionPairs.ts). `execute` adds
+  // devices:execute; `configure` adds devices:write + devices:execute; the template library and application
+  // writes need devices:write.
+  run_topology_diagnostic: {
+    start: [{ resource: 'devices', action: 'execute' }],
+    cancel: [{ resource: 'devices', action: 'execute' }],
+  },
+  manage_topology_monitoring: {
+    upsert_policy: [{ resource: 'devices', action: 'write' }, { resource: 'devices', action: 'execute' }],
+    delete_policy: [{ resource: 'devices', action: 'write' }, { resource: 'devices', action: 'execute' }],
+    upsert_target: [{ resource: 'devices', action: 'write' }, { resource: 'devices', action: 'execute' }],
+    delete_target: [{ resource: 'devices', action: 'write' }, { resource: 'devices', action: 'execute' }],
+  },
+  manage_topology_templates: {
+    create_template: [{ resource: 'devices', action: 'write' }],
+    update_template: [{ resource: 'devices', action: 'write' }],
+    revoke_template: [{ resource: 'devices', action: 'write' }],
+    create_version: [{ resource: 'devices', action: 'write' }],
+    publish_version: [{ resource: 'devices', action: 'write' }],
+  },
+  apply_topology_template: {
+    preview: [{ resource: 'devices', action: 'write' }],
+    apply: [{ resource: 'devices', action: 'write' }],
   },
   manage_invoices: {
     // Materializing a contract line reads the contract, so the

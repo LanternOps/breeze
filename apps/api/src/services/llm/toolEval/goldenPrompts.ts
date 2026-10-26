@@ -111,4 +111,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g85', prompt: 'Why did those correlated disk and service alerts on FS-01 all fire together?', expect: [{ tool: 'get_alert_correlations', action: 'explain' }, { tool: 'get_alert_correlations', action: 'groups' }, { tool: 'resolve_device_context' }] },
   { id: 'g86', prompt: 'Is there any unusual CPU or disk behaviour on WS-042 I should look at?', expect: [{ tool: 'manage_device_anomalies', action: 'list' }, { tool: 'resolve_device_context' }] },
   { id: 'g87', prompt: 'What services keep failing on FS-01 and dragging its reliability score down?', expect: [{ tool: 'get_fleet_health', action: 'offenders' }, { tool: 'resolve_device_context' }] },
+  // Full-control W08 (#6778): network topology reaches chat.
+  { id: 'g88', prompt: 'What is the core switch at the Main Office site connected to?', expect: [{ tool: 'get_topology_graph', action: 'node' }, { tool: 'get_topology_graph', action: 'nodes' }, { tool: 'list_sites' }] },
+  { id: 'g89', prompt: 'Run a gateway connectivity check from WS-042 and tell me if the gateway is reachable.', expect: [{ tool: 'run_topology_diagnostic', action: 'start' }, { tool: 'run_topology_diagnostic', action: 'collectors' }, { tool: 'resolve_device_context' }] },
+  { id: 'g90', prompt: 'What would applying the Standard monitoring template to the Main Office site change?', expect: [{ tool: 'apply_topology_template', action: 'preview' }, { tool: 'manage_topology_templates', action: 'site_options' }, { tool: 'list_sites' }] },
 ];

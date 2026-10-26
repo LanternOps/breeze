@@ -1259,3 +1259,68 @@ describe('W07 class rows (#6777)', () => {
     expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_device_anomalies')).toBe(false);
   });
 });
+
+// ── W08 class rows (#6778, spec checklist item 3) ──────────────────────────
+// Copied from the W08 plan's class review table, NOT derived from the guardrail tables. Every action-enum member
+// of the six W08 tools has a row, so a new action reds here until someone classifies it.
+const W08_EXPECTED: Record<string, Record<string, W02Class>> = {
+  get_topology_graph: {
+    graph: 't1', nodes: 't1', node: 't1', relationship: 't1', evidence: 't1', group_members: 't1', expansion: 't1', health: 't1',
+  },
+  // start dispatches a bounded probe from a device (inline, in the person's own session): tier 2, never supervised (W08-D3).
+  run_topology_diagnostic: { collectors: 't1', get: 't1', start: 't2', cancel: 't2' },
+  manage_topology_manual: {
+    create_node: 't2', update_node: 't2', delete_node: 't2', create_relationship: 't2', delete_relationship: 't2',
+  },
+  manage_topology_monitoring: {
+    list_policies: 't1', list_targets: 't1', get_settings: 't1',
+    upsert_policy: 't2', delete_policy: 't2', upsert_target: 't2', delete_target: 't2', patch_settings: 't2',
+  },
+  // publish makes a version appliable partner/org-wide; revoke is terminal and disables every referencing policy.
+  manage_topology_templates: {
+    list_templates: 't1', list_versions: 't1', site_options: 't1',
+    create_template: 't2', update_template: 't2', create_version: 't2',
+    publish_version: 'supervised', revoke_template: 'supervised',
+  },
+  apply_topology_template: { preview: 't2', apply: 'supervised', status: 't1' },
+};
+
+describe('W08 class rows (#6778)', () => {
+  it('covers the six W08 tools exactly once', () => {
+    expect(Object.keys(W08_EXPECTED).sort()).toEqual([
+      'apply_topology_template', 'get_topology_graph', 'manage_topology_manual',
+      'manage_topology_monitoring', 'manage_topology_templates', 'run_topology_diagnostic',
+    ]);
+  });
+
+  it.each(Object.keys(W08_EXPECTED))('%s: W08_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W08_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('registry tiers: manual is 2, the other five multiplexers start at 1', () => {
+    expect(getToolTier('manage_topology_manual')).toBe(2);
+    for (const tool of ['get_topology_graph', 'run_topology_diagnostic', 'manage_topology_monitoring', 'manage_topology_templates', 'apply_topology_template']) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+  });
+
+  it('exactly three W08 actions are supervised (publish, revoke, apply) and none is four-eyes', () => {
+    const rows = Object.entries(W08_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'supervised').map(([k]) => k).sort()).toEqual([
+      'apply_topology_template:apply', 'manage_topology_templates:publish_version', 'manage_topology_templates:revoke_template',
+    ]);
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+  });
+
+  it('every W08 tool is agent-human-only (W08-D1): its callers are people, resolved through user permissions', () => {
+    for (const tool of Object.keys(W08_EXPECTED)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+  });
+});

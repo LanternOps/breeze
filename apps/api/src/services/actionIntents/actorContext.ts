@@ -64,6 +64,29 @@ const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<st
  * Returns null for any intent whose tool/action is not in the allowlist
  * above, or whose recorded target-org argument is missing or not a string.
  */
+/**
+ * Full-control W08 (#6778, quorum QW4/QW5): the ONE tool/action whose release must carry the REQUESTER's
+ * live session epochs and real axis. `apply_topology_template:apply` freezes its actor with
+ * `freezeApplicationActor`, which needs a `user_session` principal whose token carries `aep` / `mep`, and
+ * re-validates that actor later (`currentApplicationAuthority`: epochs, `users.partnerId`, and for an
+ * organization-scoped actor `users.orgId`). The synthesised release token has neither epoch, so without this the
+ * approved application could never run.
+ *
+ * What the epochs mean here: a revocation fence FROM RELEASE ONWARD (the deferred application refuses if the
+ * requester signs out or changes MFA after the release). They are NOT proof of a fresh MFA and do NOT invalidate
+ * an approval that predates an epoch change. Restricted to `user_session` origins: an MCP credential, an agent or
+ * an unknown origin never gets them.
+ */
+export const SESSION_EPOCH_RELEASE_ACTIONS: ReadonlyMap<string, string> = new Map([['apply_topology_template', 'apply']]);
+
+export function releaseCarriesSessionEpochs(
+  intent: Pick<ActionIntent, 'actionName' | 'arguments'>,
+  principal: AuthContext['principal'],
+): boolean {
+  const action = SESSION_EPOCH_RELEASE_ACTIONS.get(intent.actionName);
+  return action !== undefined && intent.arguments.action === action && principal.kind === 'user_session';
+}
+
 export function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
   // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
   // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
@@ -298,6 +321,8 @@ async function buildUserOwnedAuthContext(
         name: users.name,
         status: users.status,
         isPlatformAdmin: users.isPlatformAdmin,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -352,7 +377,12 @@ async function buildUserOwnedAuthContext(
     if (partnerAxis && (perms.scope !== 'partner' || !intent.partnerId || perms.partnerId !== intent.partnerId)) {
       return null;
     }
-    const scope: 'partner' | 'organization' = partnerAxis ? 'partner' : 'organization';
+    const principal = overrides.principal ?? originPrincipalFor(intent);
+    const carryEpochs = releaseCarriesSessionEpochs(intent, principal);
+    // W08-D2 / QW5: a requester who resolves on the intent's own partner axis keeps that axis for the epoch-carrying
+    // release (a partner user has no `users.orgId`, which an organization-scoped actor is revalidated against).
+    const carriedPartnerAxis = carryEpochs && perms.scope === 'partner' && !!intent.partnerId && perms.partnerId === intent.partnerId;
+    const scope: 'partner' | 'organization' = partnerAxis || carriedPartnerAxis ? 'partner' : 'organization';
 
     // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
     // manage_tickets:move_org), widen accessibleOrgIds to also cover the
@@ -414,6 +444,7 @@ async function buildUserOwnedAuthContext(
       scope,
       type: 'access',
       mfa: true,
+      ...(carryEpochs ? { aep: user.authEpoch, mep: user.mfaEpoch } : {}),
     };
 
     return {
@@ -432,7 +463,7 @@ async function buildUserOwnedAuthContext(
       //
       // The ONE sanctioned override is `buildApproverAuthContextForIntent`
       // (#4177), which executes as the approving human on purpose.
-      principal: overrides.principal ?? originPrincipalFor(intent),
+      principal,
       // #5022 W01: read the AI origin back off the intent's own columns. This
       // context is synthesised from the `users` row, so a chat-minted origin
       // would otherwise be lost across the durable approval boundary — the
