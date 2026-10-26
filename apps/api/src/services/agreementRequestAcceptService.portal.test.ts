@@ -92,6 +92,9 @@ function portalParams(over: Partial<PortalAcceptAgreementRequestParams> = {}): P
   };
 }
 
+/** The mocked chain's where() spy (the real db type has no top-level where). */
+const whereMock = () => (db as unknown as { where: ReturnType<typeof vi.fn> }).where;
+
 /** The literal values bound into every where() call, flattened (drizzle SQL chunks). */
 function boundValues(): unknown[] {
   const out: unknown[] = [];
@@ -104,7 +107,7 @@ function boundValues(): unknown[] {
     if (Array.isArray(n.queryChunks)) for (const c of n.queryChunks) walk(c, depth + 1);
     if (Array.isArray(node)) for (const c of node) walk(c, depth + 1);
   };
-  for (const call of vi.mocked(db.where as unknown as (...a: unknown[]) => unknown).mock.calls) walk(call[0]);
+  for (const call of whereMock().mock.calls) walk(call[0]);
   return out;
 }
 
@@ -114,7 +117,7 @@ beforeEach(() => {
   updated.length = 0;
   locks.length = 0;
   vi.mocked(db.update).mockClear();
-  vi.mocked(db.where as unknown as (...a: unknown[]) => unknown).mockClear();
+  whereMock().mockClear();
   freezeMock.mockReset().mockResolvedValue({ id: 'sa-1', sha256: 'pdfsha' });
   captureMock.mockReset().mockImplementation(async (i: { signerName: string; signerEmail?: string | null }) => ({
     signerName: i.signerName.trim(), signerEmail: i.signerEmail ?? null, method: 'typed-signature',
@@ -210,7 +213,7 @@ describe('acceptAgreementRequest — portal channel success', () => {
 
     expect(events.indexOf('freeze')).toBeGreaterThan(-1);
     expect(events.indexOf('freeze')).toBeLessThan(events.lastIndexOf('update'));
-    const evidence = (freezeMock.mock.calls[0][0] as { evidence: Record<string, unknown> }).evidence;
+    const evidence = (freezeMock.mock.calls[0]![0] as { evidence: Record<string, unknown> }).evidence;
     expect(evidence).toMatchObject({
       signerName: 'Dana Buyer',
       signerEmail: EMAIL,

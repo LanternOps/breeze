@@ -318,7 +318,7 @@ describe('POST /agreements/:id/accept', () => {
       userAgent: 'portal-browser',
       renderData: expect.objectContaining({ templateVersionId: VERSION }),
     }));
-    expect(m.accept.mock.calls[0][0]).not.toHaveProperty('claims');
+    expect(m.accept.mock.calls[0]![0]).not.toHaveProperty('claims');
     expect(m.renderData).toHaveBeenCalledWith(VERSION, { includeFileData: true });
     expect(m.revoke).toHaveBeenCalledWith('jti-1', FUTURE);
     await vi.waitFor(() => {

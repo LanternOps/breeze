@@ -173,7 +173,7 @@ describe('GET /signed-agreements/:documentId/file', () => {
     expect(res.headers.get('content-disposition')).toMatch(/signed-agreement-66666666-6666-4666-8666-666666666666-original\.png/);
     expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG);
     expect(h.events).not.toContain('loader');
-    expect(m.audit.mock.calls[0][2]).toMatchObject({ format: 'original', byteCount: PNG.byteLength });
+    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original', byteCount: PNG.byteLength });
   });
 
   it('an unreadable original (PdfMergeError) degrades to the original: named + audited as such, no-store, captured', async () => {
@@ -186,7 +186,7 @@ describe('GET /signed-agreements/:documentId/file', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('content-disposition')).toMatch(/-original\.pdf/);
     expect(Buffer.from(await res.arrayBuffer())).toEqual(PDF);
-    expect(m.audit.mock.calls[0][2]).toMatchObject({ format: 'original' });
+    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original' });
     expect(m.capture).toHaveBeenCalledWith(
       expect.any(PdfMergeError),
       expect.anything(),

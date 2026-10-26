@@ -21,6 +21,8 @@ import {
   declineAgreementRequest,
   markAgreementRequestViewed,
   type AgreementResponseRevoke,
+  type PortalAcceptAgreementRequestResult,
+  type PortalDeclineAgreementRequestResult,
 } from '../../services/agreementRequestAcceptService';
 import { revokeAgreementAcceptJti } from '../../services/agreementAcceptToken';
 import { notifyAgreementOutcome } from '../../services/agreementOutcomeNotify';
@@ -331,7 +333,7 @@ portalAgreementRoutes.post('/agreements/:id/accept', zValidator('param', idParam
   const row = await loadVisibleRequest(orgId, id, now);
   if (!row) return notFound(c);
 
-  let result: Awaited<ReturnType<typeof acceptAgreementRequest>>;
+  let result: PortalAcceptAgreementRequestResult;
   try {
     const renderData = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
       loadTemplateVersionRenderData(row.templateVersionId, { includeFileData: true })));
@@ -369,7 +371,7 @@ portalAgreementRoutes.post('/agreements/:id/decline', zValidator('param', idPara
   const row = await loadVisibleRequest(orgId, id, now);
   if (!row) return notFound(c);
 
-  let result: Awaited<ReturnType<typeof declineAgreementRequest>>;
+  let result: PortalDeclineAgreementRequestResult;
   try {
     result = await runOutsideDbContext(() => withSystemDbAccessContext(() => declineAgreementRequest({
       portal: { requestId: row.id, orgId, email }, reason: reason ?? null, now,

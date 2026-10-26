@@ -196,8 +196,10 @@ function linkConsumption(responder: Responder, now: Date, outcome: 'accepted' | 
 /** The customer signs (typed name + consent). One request, one signer: the
  *  first committed response wins — the row lock + status guard + durable jti
  *  make any later response a 401/409. */
-export function acceptAgreementRequest(params: AcceptAgreementRequestParams): Promise<AcceptAgreementRequestResult>;
+// The link overload stays LAST: `ReturnType<typeof acceptAgreementRequest>`
+// resolves the last signature, and the W2b public route types its result so.
 export function acceptAgreementRequest(params: PortalAcceptAgreementRequestParams): Promise<PortalAcceptAgreementRequestResult>;
+export function acceptAgreementRequest(params: AcceptAgreementRequestParams): Promise<AcceptAgreementRequestResult>;
 export async function acceptAgreementRequest(
   params: AcceptAgreementRequestParams | PortalAcceptAgreementRequestParams,
 ): Promise<AcceptAgreementRequestResult | PortalAcceptAgreementRequestResult> {
@@ -326,15 +328,22 @@ export interface PortalDeclineAgreementRequestParams {
   now: Date;
 }
 
+export interface PortalDeclineAgreementRequestResult {
+  requestId: string;
+  orgId: string;
+  revoke: AgreementResponseRevoke | null;
+}
+
 /** The customer declines (reason optional), consuming the jti durably in the
  *  same statement as the status change (routes/quotesPublic.ts decline). The
  *  portal channel consumes nothing (see linkConsumption). */
+// Link overload last, for the same ReturnType reason as acceptAgreementRequest.
+export function declineAgreementRequest(
+  params: PortalDeclineAgreementRequestParams,
+): Promise<PortalDeclineAgreementRequestResult>;
 export function declineAgreementRequest(
   params: DeclineAgreementRequestParams,
 ): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke }>;
-export function declineAgreementRequest(
-  params: PortalDeclineAgreementRequestParams,
-): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke | null }>;
 export async function declineAgreementRequest(
   params: DeclineAgreementRequestParams | PortalDeclineAgreementRequestParams,
 ): Promise<{ requestId: string; orgId: string; revoke: AgreementResponseRevoke | null }> {
