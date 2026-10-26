@@ -58,6 +58,11 @@ test.describe('Wisp home (/wisp)', () => {
       page.getByTestId('wisp-welcome').or(page.getByTestId('ai-msg-user').first()),
     ).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-input')).toBeVisible();
+    // W02b #10213: the column reads the thread timeline (older sessions and
+    // Wisp's posts); a fresh thread has no older page to load.
+    if (await page.getByTestId('wisp-welcome').isVisible()) {
+      await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-load-earlier')).toHaveCount(0);
+    }
     // The default 1280 px viewport is wide enough for the rail beside the thread.
     await expect(page.getByTestId('wisp-rail')).toBeVisible();
     await expect(page.getByTestId('wisp-needs-you')).toBeVisible();
