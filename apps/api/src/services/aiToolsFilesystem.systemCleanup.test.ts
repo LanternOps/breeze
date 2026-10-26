@@ -274,6 +274,29 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     expect(serviceState.runArgs[0]).toMatchObject({ requestedBy: null });
   });
 
+  // Tool catalog W04 (#5219), Decision 16: a flow is deterministic automation
+  // a human enabled — never an `ai_agent` decision and never a user. Its audit
+  // row is system/automation and names the run.
+  it('audits a flow principal as system automation with its run, never as ai_agent', async () => {
+    dbMockState.userRows = [];
+    await getTool('system_cleanup').handler(
+      { deviceId: DEVICE_ID, action: 'run', actionIds: ['linux_pkg_cache_clean'] },
+      makeAuth({
+        principal: { kind: 'flow', flowId: 'flow-1', runId: 'flow-run-1' },
+        user: { id: 'flow-1', email: 'flow+flow-1@breeze.internal', name: 'Nightly' },
+        aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+      } as Partial<AuthContext>),
+    );
+    expect(serviceState.runArgs[0]).toMatchObject({ requestedBy: null, aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' } });
+    expect(auditState.rows).toHaveLength(1);
+    expect(auditState.rows[0]).toMatchObject({
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      initiatedBy: 'automation',
+      details: { aiInitiatorKind: 'flow', flowRunId: 'flow-run-1' },
+    });
+  });
+
   it('surfaces the 409 agent gate verbatim instead of dispatching', async () => {
     serviceState.listResult = {
       ok: false, status: 409, error: 'agent_update_required', minAgentVersion: '0.116.0',

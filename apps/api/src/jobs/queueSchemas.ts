@@ -496,6 +496,12 @@ const breezeEventMetadataJobSchema = z.object({
   causationId: z.string().optional(),
   userId: z.string().optional(),
   timestamp: z.string().min(1),
+  // Tool catalog W04 (#5219), Decision 14: flow ancestry stamped by
+  // publishEvent from the flowExecutionContext frame. Without these two keys
+  // this .strict() schema would drop every event a flow step causes at dequeue
+  // in 'enforce' mode (eventDispatchWorker).
+  flowRunId: z.string().uuid().optional(),
+  flowChainDepth: z.number().int().min(0).max(3).optional(),
 }).strict();
 
 const breezeEventEnvelopeSchema = z.object({
@@ -605,3 +611,13 @@ export function withQueueMeta<T extends Record<string, unknown>>(
     meta,
   };
 }
+
+/**
+ * Tool catalog W04 (#5219): the `flow-runs` queue (jobs/flowRunQueue.ts). One
+ * job = one run slice. A typed reference only: the runner re-reads the run row
+ * (status, lease, resume_seq) and never trusts anything else on the wire.
+ */
+export const flowRunJobDataSchema = z.object({
+  runId: z.string().uuid(),
+}).strict();
+export type FlowRunJobData = z.infer<typeof flowRunJobDataSchema>;

@@ -22,6 +22,7 @@ import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal, isFlowPrincipal } from '../middleware/principalKind';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
 import { warrantyHpCmslRequested } from '@breeze/shared/validators';
@@ -869,6 +870,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
+  // Tool Catalog W04 (#5219, Decision 11): starting a flow carries the upper
+  // bound of any flow's tier until W05's per-flow tiers; one requester tap.
+  'run_flow',
   // Wisp W07: the specialist approval carrier — one approver, no four-eyes and
   // no effect-digest pin (the coordinator re-runs every gate at release under
   // the approver). launch_specialist is NOT here: its base tier is 2, and its
@@ -1588,6 +1592,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   validate_flow: { resource: 'automations', action: 'read' },
   get_flow: { resource: 'automations', action: 'read' },
   list_flows: { resource: 'automations', action: 'read' },
+  // Tool Catalog W04 (#5219): flow runs.
+  run_flow: { resource: 'automations', action: 'write' },
+  list_flow_runs: { resource: 'automations', action: 'read' },
+  get_flow_run: { resource: 'automations', action: 'read' },
+  cancel_flow_run: { resource: 'automations', action: 'write' },
   // #8973 W4: business-hours calendars read with the ticket permission.
   list_business_calendars: { resource: 'tickets', action: 'read' },
   // #8883 W5: ticket routing rules (reads here; manage_ticket_routing_rules is per-action below).
@@ -3276,14 +3285,22 @@ export async function checkPermissionRequirement(
  * (e.g. a tool's base permission plus TOOL_EXTRA_PERMISSIONS) — calling the
  * single-requirement form in a loop re-fetches getUserPermissions each time.
  */
+/** The RBAC denial an automation principal (AI agent or flow run) gets. */
+function automationPermissionDenial(auth: Pick<AuthContext, 'principal'>): string {
+  return isFlowPrincipal(auth)
+    ? 'Flow principals are never granted user permissions'
+    : 'AI agent principals are never granted user permissions';
+}
+
 export async function checkPermissionRequirements(
   auth: AuthContext,
   requirements: Array<{ resource: string; action: string }>
 ): Promise<string | null> {
   // Spec 2026-08-22 §3.2: an agent has no role; this helper's "no token ⇒
-  // allowed" fallback would fail OPEN for it. Deny before anything else.
-  if (auth.principal?.kind === 'ai_agent') {
-    return 'AI agent principals are never granted user permissions';
+  // allowed" fallback would fail OPEN for it. Deny before anything else. A
+  // flow run (W04 #5219) has no role either.
+  if (isAutomationPrincipal(auth)) {
+    return automationPermissionDenial(auth);
   }
   if (requirements.length === 0) return null;
   if (!auth.token) {
@@ -3401,9 +3418,11 @@ export async function checkToolPermission(
   // EVERY tool. This must stay the first statement: checkToolPermission
   // short-circuits before it delegates to checkPermissionRequirements, so the
   // deny there does not cover this path. (aiAgentSdk's tool loop, intent
-  // release revalidation, approvals and the MCP server all enter here.)
-  if (auth.principal?.kind === 'ai_agent') {
-    return 'AI agent principals are never granted user permissions';
+  // release revalidation, approvals and the MCP server all enter here.) The
+  // same holds for a flow run (W04 #5219): the runner never calls this, and a
+  // flow must never be granted a tool through it.
+  if (isAutomationPrincipal(auth)) {
+    return automationPermissionDenial(auth);
   }
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.

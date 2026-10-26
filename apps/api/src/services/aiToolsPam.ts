@@ -21,7 +21,7 @@ import {
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
 import type { ToolExecutionContext } from './toolExecutionContext';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { currentOwnershipEpochSql } from './deviceOwnershipEpoch';
 
@@ -77,7 +77,7 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
  * `isAgentPrincipalCaller` (#6206).
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /** #6911: the refusal `revoke_elevation` returns to an agent principal. */

@@ -2,6 +2,7 @@
   "aiInitiator": {
     "assistant": "Breeze AI",
     "agent": "Yapay zekâ ajanı",
+    "flow": "Akış",
     "originUnavailable": "Kaynak kullanılamıyor",
     "openSession": "Görüşmeyi aç",
     "openAgentRun": "Ajan çalıştırmasını aç",

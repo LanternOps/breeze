@@ -53,6 +53,7 @@ import {
   deleteAgreementRequest,
   getAgreementRequestDetail,
   sendAgreementRequest,
+  remindAgreementRequest,
   getAgreementRequestLink,
   voidAgreementRequest,
   previewAgreementRequest,
@@ -477,6 +478,137 @@ describe('getAgreementRequestLink', () => {
     const res = await getAgreementRequestLink(auth, REQ, NOW);
     expect(res).toEqual({ link: sent.link, reissued: false, orgId: ORG });
     expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('remindAgreementRequest (#9075 W3b)', () => {
+  beforeEach(() => {
+    getEmailServiceMock.mockReset().mockReturnValue({ sendEmail: sendEmailMock });
+    sendEmailMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  /** Send once to get a real persisted token identity, then reset the recorders. */
+  async function sentIdentity() {
+    queue([row()]);
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([partnerRow]);
+    queue([row({ status: 'sent' })]);
+    queue([{ emailSignature: null }]);
+    const sent = await sendAgreementRequest(auth, REQ, NOW);
+    const identity = updated[0]!;
+    updated.length = 0;
+    locks.length = 0;
+    vi.mocked(db.update).mockClear();
+    return { sent, identity };
+  }
+
+  function queueRemindReads(status: 'sent' | 'viewed', identity: Record<string, unknown>, recipients = ['jane@example.com', 'ops@example.com']) {
+    queue([row({ status, reminderCount: 1, ...identity })]);
+    queue(recipients.map((email) => ({ email })));
+    queue([orgRow]);
+    queue([{ ...partnerRow, billingEmail: 'billing@example.com' }]);
+  }
+
+  for (const status of ['sent', 'viewed'] as const) {
+    it(`${status} → re-sends the SAME link (no new jti), bumps reminder_count + last_reminded_at, returns a deferred email`, async () => {
+      const { sent, identity } = await sentIdentity();
+      queueRemindReads(status, identity);
+      queue([row({ status, reminderCount: 2, lastRemindedAt: NOW })]);
+      queue([{ emailSignature: 'The Best MSP team' }]);
+      const res = await remindAgreementRequest(auth, REQ, NOW);
+
+      expect(locks).toEqual(['update']);
+      expect(res.link).toBe(sent.link);
+      expect(res.reissued).toBe(false);
+      expect(res.recipients).toEqual(['jane@example.com', 'ops@example.com']);
+      expect(updated).toHaveLength(1);
+      expect(updated[0]).toMatchObject({ lastRemindedAt: NOW, updatedAt: NOW });
+      expect(updated[0]).not.toHaveProperty('acceptTokenJti');
+      expect(updated[0]).toHaveProperty('reminderCount'); // SQL increment, never read-modify-write
+      expect(res.request).toMatchObject({ reminderCount: 2 });
+      expect(res.request).not.toHaveProperty('acceptTokenJti');
+      expect(sendEmailMock).not.toHaveBeenCalled(); // post-commit only
+    });
+  }
+
+  it('delivery uses the agreement_request_send template + the same signing link, memoised', async () => {
+    const { sent, identity } = await sentIdentity();
+    queueRemindReads('sent', identity);
+    queue([row({ status: 'sent', reminderCount: 2, label: 'BAA 2027', clientNameSnapshot: 'Acme' })]);
+    queue([{ emailSignature: 'The Best MSP team' }]);
+    const res = await remindAgreementRequest(auth, REQ, NOW);
+    const first = await res.deliverEmail();
+    expect(first).toEqual({ emailed: true });
+    expect(await res.deliverEmail()).toBe(first);
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const env = sendEmailMock.mock.calls[0]![0];
+    expect(env.purpose).toBe('agreement.sent');
+    expect(env.to).toEqual(['jane@example.com', 'ops@example.com']);
+    expect(env.html).toContain(sent.link.replace(/&/g, '&amp;'));
+  });
+
+  it('a draft → 409 (send it first)', async () => {
+    queue([row()]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a signed request → 409 AGREEMENT_ALREADY_SIGNED', async () => {
+    queue([row({ status: 'signed' })]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 409, code: 'AGREEMENT_ALREADY_SIGNED' });
+  });
+
+  for (const status of ['declined', 'voided', 'expired']) {
+    it(`a ${status} request → 409 INVALID_STATE, nothing written`, async () => {
+      queue([row({ status })]);
+      await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  }
+
+  it('past expires_at → 410 AGREEMENT_EXPIRED (the reaper may not have run yet), nothing written', async () => {
+    queue([row({ status: 'sent', expiresAt: new Date(NOW.getTime() - 1) })]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 410, code: 'AGREEMENT_EXPIRED' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('no recipients → 422 RECIPIENTS_REQUIRED', async () => {
+    const { identity } = await sentIdentity();
+    queue([row({ status: 'sent', ...identity })]);
+    queue([]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 422, code: 'RECIPIENTS_REQUIRED' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable sending partner → 422 SELLER_UNAVAILABLE, counter untouched', async () => {
+    const { identity } = await sentIdentity();
+    queue([row({ status: 'sent', ...identity })]);
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 422, code: 'SELLER_UNAVAILABLE' });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a guarded update that matches nothing (status flipped under us) → 409, no email handed back', async () => {
+    const { identity } = await sentIdentity();
+    queueRemindReads('sent', identity);
+    queue([]);
+    await expect(remindAgreementRequest(auth, REQ, NOW)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
+  it('an unreproducible identity (kid rotated out) reissues ONE conditional replacement and says so', async () => {
+    queue([row({ status: 'sent', acceptTokenJti: 'old-jti', acceptTokenIssuedAt: NOW, acceptTokenExpiresAt: LATER, acceptTokenKid: 'retired-kid' })]);
+    queue([{ email: 'jane@example.com' }]);
+    queue([orgRow]);
+    queue([partnerRow]);
+    queue([{ id: REQ }]); // conditional identity claim won
+    queue([row({ status: 'sent', reminderCount: 1 })]);
+    queue([{ emailSignature: null }]);
+    const res = await remindAgreementRequest(auth, REQ, NOW);
+    expect(res.reissued).toBe(true);
+    expect(updated[0]!.acceptTokenJti).not.toBe('old-jti');
   });
 });
 

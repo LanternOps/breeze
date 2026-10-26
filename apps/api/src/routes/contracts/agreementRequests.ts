@@ -32,6 +32,7 @@ import {
   getAgreementRequestLink,
   listAgreementRequests,
   previewAgreementRequest,
+  remindAgreementRequest,
   sendAgreementRequest,
   toAgreementRequestDto,
   updateAgreementRequest,
@@ -39,16 +40,17 @@ import {
 } from '../../services/agreementRequestLifecycle';
 import { revokeAgreementAcceptJti } from '../../services/agreementAcceptToken';
 import { captureException } from '../../services/sentry';
+import { emitAgreementEventForOrg } from '../../services/agreementEvents';
 
 // Standalone agreement requests (#8865), mounted at
 // /contracts/agreement-requests. W1c: record-signed. #9075 W2a: the staff
 // lifecycle (list / detail / draft create-patch-delete / preview / send / copy
 // link / void). The public accept routes are routes/agreementsPublic.ts (W2b);
-// portal is W3a; remind is W3b.
+// portal is W3a; remind + the agreement.* bus events are W3b.
 //
 // DB context: the lifecycle routes run in the ordinary request context (RLS on
 // breeze_has_org_access). Two are registered in SELF_MANAGED_DB_CONTEXT_ROUTES:
-// record-signed (opens a system transaction) and send (W2b: a short auth
+// record-signed (opens a system transaction) and send / remind (a short auth
 // transaction, then the email after it commits).
 export const agreementRequestRoutes = new Hono();
 
@@ -164,6 +166,13 @@ agreementRequestRoutes.post(
           }),
         ),
       );
+
+      // Post-commit bus event (before the audit write, which could throw): an integration must see an MSP-recorded
+      // signature too, tagged on_behalf (the customer path emits from
+      // notifyAgreementOutcome). Never rejects.
+      await emitAgreementEventForOrg({
+        type: 'agreement.signed', requestId: res.request.id, orgId: input.orgId, origin: 'on_behalf', actorUserId: auth.user?.id ?? null,
+      });
 
       writeRouteAudit(
         c,
@@ -304,6 +313,9 @@ agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', i
     const { id } = c.req.valid('param');
     const auth = authFrom(c);
     const res = await withAuthDbAccessContext(auth, () => sendAgreementRequest(auth, id, new Date()));
+    // Announce right after the commit, before the audit/mail steps that could
+    // throw (a lost event cannot be replayed: a retry hits a 409). Never rejects.
+    await emitAgreementEventForOrg({ type: 'agreement.sent', requestId: id, orgId: res.request.orgId, actorUserId: auth.user?.id ?? null });
     // Post-commit. Never rejects (every failure is an emailReason).
     const delivery = await res.deliverEmail();
     writeRouteAudit(c, {
@@ -325,6 +337,44 @@ agreementRequestRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', i
       emailed: delivery.emailed,
       emailReason: delivery.emailReason,
       link: res.link,
+      recipients: res.recipients,
+    } });
+  } catch (err) {
+    return handleError(c, err);
+  }
+});
+
+// POST /:id/remind — re-send the SAME link to the recipients (#9075 W3b, spec
+// §3.5). Same two-step shape as send (registered in
+// SELF_MANAGED_DB_CONTEXT_ROUTES): the status gate + counter bump commit in a
+// short auth transaction, THEN the mail round-trip runs. 409 unless
+// sent/viewed; a committed bump whose mail failed is a 200 with emailed:false.
+// Not a lifecycle transition, so no bus event. The link is not echoed back —
+// copy-link is the (audited) dispenser of the credential.
+agreementRequestRoutes.post('/:id/remind', scopes, sendPerm, zValidator('param', idParam), async (c) => {
+  try {
+    const { id } = c.req.valid('param');
+    const auth = authFrom(c);
+    const res = await withAuthDbAccessContext(auth, () => remindAgreementRequest(auth, id, new Date()));
+    const delivery = await res.deliverEmail();
+    writeRouteAudit(c, {
+      orgId: res.request.orgId,
+      action: 'billing.agreement.reminded',
+      resourceType: 'agreement_request',
+      resourceId: id,
+      result: 'success',
+      details: {
+        recipientCount: res.recipients.length,
+        reminderCount: res.request.reminderCount,
+        reissued: res.reissued,
+        emailed: delivery.emailed,
+        ...(delivery.emailReason ? { emailReason: delivery.emailReason } : {}),
+      },
+    });
+    return c.json({ data: {
+      request: res.request,
+      emailed: delivery.emailed,
+      emailReason: delivery.emailReason,
       recipients: res.recipients,
     } });
   } catch (err) {
@@ -379,6 +429,11 @@ agreementRequestRoutes.post(
           }
         });
       }
+      // Announce the committed void; a rolled-back one is dropped (commitOnly).
+      const voidedOrgId = res.request.orgId;
+      const actorUserId = authFrom(c).user?.id ?? null;
+      runAfterDbContextCommit('agreement-request.void.emit', () =>
+        emitAgreementEventForOrg({ type: 'agreement.voided', requestId: id, orgId: voidedOrgId, actorUserId }));
       writeRouteAudit(c, {
         orgId: res.request.orgId,
         action: 'billing.agreement.voided',

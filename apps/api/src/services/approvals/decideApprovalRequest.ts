@@ -59,6 +59,7 @@ import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import { loadFlowIntentPeople } from '../flows/intentRun';
 import { PERMISSION_GRANTS, requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
 import { scriptProposals } from '../../db/schema/scriptProposals';
 import { loadProposalRow } from '../scriptProposals/queries';
@@ -787,7 +788,16 @@ export async function decideApprovalRequest(
     // a lost permission or a tampered row — fail closed either way. (The
     // requester-less cancel contract for `approvals:decide` holders is the
     // cancel endpoint, Task 8 — not this handler.)
-    if (linkedIntent.approvalScope === 'supervised' && linkedIntent.requestingAgentRunId != null) {
+    //
+    // Tool catalog W04 (#5219), Decision 6: a supervised FLOW intent
+    // (`requestingFlowRunId` set, requester NULL) is the same requester-less
+    // shape and takes the same pool branch — the requester rule would answer
+    // `not_requester` to everyone. The delegator is a legitimate member of a
+    // supervised pool (spec §6.5).
+    if (
+      linkedIntent.approvalScope === 'supervised'
+      && (linkedIntent.requestingAgentRunId != null || linkedIntent.requestingFlowRunId != null)
+    ) {
       if (!(await isAgentIntentDecideAuthorized(userId, linkedIntent))) {
         recordActionIntentEvent({
           orgId: linkedIntent.orgId,
@@ -957,6 +967,46 @@ export async function decideApprovalRequest(
                 'This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.',
             },
           };
+        }
+
+        // Tool catalog W04 (#5219), Decision 6 — four-eyes on a FLOW intent.
+        // The intent has no requester (requested_by_user_id is NULL), so the
+        // requester exclusion below excludes nobody. The humans who must never
+        // be the second pair of eyes are the publication's DELEGATOR (they
+        // enabled the automation) and a manual run's TRIGGERER (its real
+        // requester) — read from the run and its pinned publication here,
+        // never from the request. Fan-out already left them out; this is the
+        // decide-time twin (a fanned-out row is a durable capability).
+        // Approve-only, like every check in this block: a deny only cancels.
+        if (linkedIntent.requestingFlowRunId) {
+          const people = await loadFlowIntentPeople(linkedIntent.requestingFlowRunId);
+          const excluded = people
+            ? [people.delegatorUserId, people.triggeredByUserId].filter((id): id is string => !!id)
+            : null;
+          if (!excluded || excluded.includes(userId)) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId: linkedIntent.id,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'approver_unauthorized',
+              actorId: userId,
+              details: {
+                approvalId: existing.id,
+                errorCode: excluded ? 'flow_delegator_self_approval' : 'flow_run_unreadable',
+              },
+            });
+            return excluded
+              ? {
+                  httpStatus: 403,
+                  body: {
+                    error: 'self_approval_forbidden',
+                    message: 'This step needs an approver other than the person who enabled or started this flow.',
+                  },
+                }
+              : { httpStatus: 403, body: { error: 'forbidden' } };
+          }
         }
 
         // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
@@ -1793,7 +1843,12 @@ export async function decideApprovalRequest(
                 // which is safe because task linkage is immutable.
                 await publishIntentTerminalOutbox(
                   tx,
-                  { id: intentId, orgId: linkedIntent.orgId, taskId: linkedIntent.taskId },
+                  {
+                    id: intentId,
+                    orgId: linkedIntent.orgId,
+                    taskId: linkedIntent.taskId,
+                    requestingFlowRunId: linkedIntent.requestingFlowRunId,
+                  },
                   'intent_rejected',
                 );
               }
