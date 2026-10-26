@@ -206,6 +206,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_compliance_status',
   'get_configuration_policy',
   'get_contract',
+  'get_device_ai_activity', // W10 (#6780) Tier-1 read, own device for a device-bound run
   'get_device_context',
   'get_device_details',
   'get_device_hardware_health',
@@ -223,6 +224,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_design', // W10 (#6780) Tier-1 read
   'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
@@ -290,6 +292,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_lookup_user',
   'google_security_drift',
   'list_ai_agent_runs', // A-W06 Tier-1 read
+  'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
   'list_business_calendars', // #8973 W4 Tier-1 read
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
@@ -298,6 +301,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_fleet_designs', // W10 (#6780) Tier-1 read
   'list_flow_runs', // Tool Catalog W04 (#5219) Tier-1 read
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
@@ -912,10 +916,12 @@ describe('Task 2 — act disposition matrix', () => {
  * as a literal so a membership change is a deliberate, reviewed edit.
  */
 const EXPECTED_AGENT_DENIED_READ_TOOLS = [
+  'get_operator_task', // W10 (#6780, QW5)
   'get_user_risk_detail',
   'get_sensitive_data_overview',
   'get_user_risk_scores',
   'm365_query_signins', // WQ1
+  'list_operator_tasks', // W10 (#6780, QW5)
   'm365_query_users', // WQ1
   'query_c2c_jobs', // WQ2
   'search_c2c_items',

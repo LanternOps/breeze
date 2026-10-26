@@ -674,6 +674,13 @@ export const TOOL_TIERS = {
   manage_known_guests: 1,
   get_unifi_status: 1,
   trigger_unifi_sync: 2,
+  // Spec 2026-09-23 W10 (#6780): AI-agent reads.
+  get_device_ai_activity: 1,
+  list_operator_tasks: 1,
+  get_operator_task: 1,
+  list_ai_agent_schedules: 1,
+  list_fleet_designs: 1,
+  get_fleet_design: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3698,6 +3705,49 @@ export function buildBreezeSdkTools(
       registryDescription('trigger_unifi_sync'),
       inputShape('trigger_unifi_sync'),
       makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W10 (#6780): AI-agent reads. All tier 1; operator-task reads are denied to headless agents.
+    tool(
+      'get_device_ai_activity',
+      registryDescription('get_device_ai_activity'),
+      inputShape('get_device_ai_activity'),
+      makeHandler('get_device_ai_activity', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_operator_tasks',
+      registryDescription('list_operator_tasks'),
+      inputShape('list_operator_tasks'),
+      makeHandler('list_operator_tasks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_operator_task',
+      registryDescription('get_operator_task'),
+      inputShape('get_operator_task'),
+      makeHandler('get_operator_task', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_ai_agent_schedules',
+      registryDescription('list_ai_agent_schedules'),
+      inputShape('list_ai_agent_schedules'),
+      makeHandler('list_ai_agent_schedules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_fleet_designs',
+      registryDescription('list_fleet_designs'),
+      inputShape('list_fleet_designs'),
+      makeHandler('list_fleet_designs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_design',
+      registryDescription('get_fleet_design'),
+      inputShape('get_fleet_design'),
+      makeHandler('get_fleet_design', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

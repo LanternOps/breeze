@@ -17,6 +17,7 @@ import {
   checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
+import { AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -1390,6 +1391,50 @@ describe('W09 class rows (#6779)', () => {
     }
     for (const tool of ['manage_snmp_templates', 'get_snmp_metrics', 'probe_network_asset']) {
       expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
+// ── W10 class rows (#6780, spec checklist item 3) ──────────────────────────
+// Copied from the W10 plan's class review table, NOT derived from the guardrail tables. None of the six tools has an action
+// enum (each is one read), so each is a whole-tool tier-1 row.
+const W10_WHOLE_TOOL: Record<string, W02Class> = {
+  get_device_ai_activity: 't1',
+  list_operator_tasks: 't1',
+  get_operator_task: 't1',
+  list_ai_agent_schedules: 't1',
+  list_fleet_designs: 't1',
+  get_fleet_design: 't1',
+};
+
+describe('W10 class rows (#6780)', () => {
+  it('covers the six W10 tools exactly once', () => {
+    expect(Object.keys(W10_WHOLE_TOOL).sort()).toEqual([
+      'get_device_ai_activity', 'get_fleet_design', 'get_operator_task',
+      'list_ai_agent_schedules', 'list_fleet_designs', 'list_operator_tasks',
+    ]);
+  });
+
+  it.each(Object.entries(W10_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(getToolTier(tool)).toBe(1);
+  });
+
+  it('nothing in W10 is supervised or four-eyes (every tool is a read of stored rows)', () => {
+    for (const tool of Object.keys(W10_WHOLE_TOOL)) {
+      expect(TIER2_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('no W10 tool is agent-human-only (that set is for self-granted authority); the operator-task reads are denied-read tools instead', () => {
+    for (const tool of Object.keys(W10_WHOLE_TOOL)) expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    expect(AGENT_DENIED_READ_TOOLS.has('list_operator_tasks')).toBe(true);
+    expect(AGENT_DENIED_READ_TOOLS.has('get_operator_task')).toBe(true);
+    for (const tool of ['get_device_ai_activity', 'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
     }
   });
 });

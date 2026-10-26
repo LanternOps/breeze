@@ -406,3 +406,26 @@ describe('flow tools in the agent tool catalog (W5 PR C)', () => {
     expect(isNeverAgentTool('run_flow')).toBe(true);
   });
 });
+
+/** Spec 2026-09-23 W10 (#6780, quorum QW5): the AI-agent reads sit with the other AI-run reads. The device, schedule and
+ * fleet-design reads run on the caller's scope so an agent can use them; the operator-task reads are free text from humans and
+ * other runs with no device axis, so they are AGENT_DENIED_READ_TOOLS and are never offered to an agent. */
+describe('W10 AI-agent reads in the agent catalog (#6780)', () => {
+  it.each([
+    'get_device_ai_activity', 'list_operator_tasks', 'get_operator_task',
+    'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design',
+  ])('%s is mapped to the tenancy capability', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('tenancy');
+  });
+
+  it.each(['get_device_ai_activity', 'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design'])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['list_operator_tasks', 'get_operator_task'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});

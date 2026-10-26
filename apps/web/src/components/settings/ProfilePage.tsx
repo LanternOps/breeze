@@ -364,7 +364,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const updatedUser = await response.json();
-      setUser(updatedUser);
+      setUser(prev => (prev ? { ...prev, ...updatedUser } : updatedUser));
       reset({
         name: updatedUser.name ?? '',
       });
@@ -609,6 +609,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     () => pickReauthTier(passkeys.length, user?.mfaMethod ?? null),
     [passkeys.length, user?.mfaMethod],
   );
+  const deletePasskeyMethod = user?.mfaMethod
+    ?? (user?.mfaEnabled ? 'totp' : passkeys.length > 0 ? 'passkey' : null);
 
   // Consume an `#ssoReauthGrant=<id>` handed back by the SSO callback: the user
   // has just re-proved their identity at the IdP. The fragment is stripped as
@@ -804,6 +806,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         : ssoReauthGrantId
           ? { ssoReauthGrantId }
           : {};
+      const generation = useAuthStore.getState().sessionGeneration;
       // runaction-exempt: inline-feedback handler. Failures land in `mfaError`; the caller
       // (MFASettings) also keys off the returned boolean, so a toast would double
       // up on the banner the enrollment step already shows.
@@ -830,9 +833,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const data = await response.json();
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
+      const enrollmentStateCommitted = useAuthStore.getState().commitMfaEnrollmentIfCurrent(
+        generation,
+        'totp',
+        data.tokens?.accessToken ? data.tokens : undefined,
+      );
+      const enrollmentReplacementAdopted = Boolean(data.tokens?.accessToken) && enrollmentStateCommitted;
+      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: 'totp' } : null));
       setRecoveryCodes(data.recoveryCodes);
-      setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
+      setMfaSuccess(withReauthNotice(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'), enrollmentReplacementAdopted));
       setQrCodeDataUrl(undefined);
       // /mfa/enable is the terminal write that BURNS the grant. Drop it so a
       // later action on this page can't retry with a proof the server has
@@ -925,11 +934,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // /login?reason=session-expired by the very action they just took.
       // A refused commit (a logout raced the request) is not an error: MFA is
       // already off, so the success message still has to be shown.
-      const disableReplacementAdopted = Boolean(data.tokens?.accessToken);
-      if (disableReplacementAdopted) {
-        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
-      }
-      setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
+      const disableStateCommitted = useAuthStore.getState().commitMfaDisableIfCurrent(
+        generation,
+        data.tokens?.accessToken ? data.tokens : undefined,
+      );
+      const disableReplacementAdopted = Boolean(data.tokens?.accessToken) && disableStateCommitted;
+      setUser(prev => (prev ? { ...prev, mfaEnabled: false, mfaMethod: null } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(withReauthNotice(t('profilePage.multiFactorAuthenticationDisabled'), disableReplacementAdopted));
       return true;
@@ -1340,7 +1350,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyError(deleteProofMissing);
       return;
     }
-    const method = user?.mfaMethod ?? 'totp';
+    const method = deletePasskeyMethod;
     if ((method === 'totp' || method === 'sms') && !passkeyFactorCode.trim()) {
       setPasskeyError(t('mFASettings.currentMfaCodeRequired', {
         defaultValue: 'Enter a current MFA code before deleting a passkey',
@@ -1740,11 +1750,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         {/* #4045: a passwordless account deletes too — its "password" is a fresh
             IdP round-trip, offered here, and it still owes the same current MFA
             code (or passkey assertion) as everyone else. */}
-        {((user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') || (isPasswordless && passkeys.length > 0)) && (
+        {((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') || (isPasswordless && passkeys.length > 0)) && (
           <div className="space-y-2 rounded-md border p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
-              {(user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+              {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && (
                 <p className="text-xs text-muted-foreground">
                   {t('profilePage.deletePasskeyVerifyHint')}
                 </p>
@@ -1764,7 +1774,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 </button>
               </div>
             )}
-            {(user?.mfaMethod === 'totp' || user?.mfaMethod === 'sms') && (
+            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && (
             <>
             <label className="text-sm font-medium" htmlFor="passkey-factor-code">
               {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
@@ -1781,7 +1791,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
                 disabled={isAddingPasskey || !!mutatingPasskeyId}
               />
-              {user.mfaMethod === 'sms' && (
+              {deletePasskeyMethod === 'sms' && (
                 <button
                   type="button"
                   onClick={() => { void handleSendRecoveryStepUpCode(); }}

@@ -2494,12 +2494,57 @@ describe('MFA enrollment API bindings', () => {
 });
 
 describe('MFA enrollment session adoption', () => {
+  it.each(['totp', 'sms', 'passkey'] as const)('records the enrolled %s method in shared user state', (method) => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, method, {
+      accessToken: `replacement-${method}`,
+      expiresInSeconds: 900,
+    })).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: method });
+    expect(useAuthStore.getState().tokens?.accessToken).toBe(`replacement-${method}`);
+  });
+
+  it('records disabled MFA in shared state while adopting the replacement session', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement-disabled', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitMfaDisableIfCurrent(generation, tokens)).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false, mfaMethod: null });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+  });
+
+  it('records the factor change without replacement tokens when the issuing session cannot be installed', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    expect(useAuthStore.getState().commitMfaDisableIfCurrent(generation)).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false, mfaMethod: null });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('does not apply a disable response to a newer login', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer-session', expiresInSeconds: 900 };
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaDisableIfCurrent(generation, {
+      accessToken: 'stale-disable',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
+  });
+
   it('refuses a terminal response after logout', () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const generation = useAuthStore.getState().sessionGeneration;
     useAuthStore.getState().logout();
 
-    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, 'totp', {
       accessToken: 'stale',
       expiresInSeconds: 900,
     })).toBe(false);
@@ -2512,7 +2557,7 @@ describe('MFA enrollment session adoption', () => {
     const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
     useAuthStore.getState().login(baseUser, newerTokens);
 
-    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, 'totp', {
       accessToken: 'stale',
       expiresInSeconds: 900,
     })).toBe(false);

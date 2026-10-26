@@ -215,6 +215,8 @@ const AUTOMATION_KIND_SETS: Record<string, string> = {
 /** Lines that are not a principal branch at all. Explicit, reviewed. */
 const OUT_OF_SCOPE_SITES: Record<string, string> = {
   "services/flows/toolRuns.ts:agent_tier1: 'ai_agent',": 'W5 PR C: triggerer kind → flow_runs.triggered_via value, not a principal branch',
+  "services/flows/agentFlowTools.ts:return startToolRun(gated, args, 'ai_agent', { kind: 'agent_tier1', agentRunId: run.id, orgId: run.orgId }, { parentAgentRunId: run.id });":
+    'W5 PR C: the flow_runs.triggered_via lane value of an agent-started run, not a principal branch',
   "middleware/principalKind.ts:export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',
   "middleware/principalKind.ts:return auth.principal?.kind === 'ai_agent';": 'the helper definition',
   "middleware/principalKind.ts:export function isAutomationPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',

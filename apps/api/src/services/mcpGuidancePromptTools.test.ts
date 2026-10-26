@@ -71,8 +71,11 @@ describe('prompt guidance references only real tools', () => {
   // count is the registry's alone — enabling any number of flows moves
   // neither the registry nor MCP_TOOL_COUNT_APPROX.
   it('dynamic flow tools are excluded from the registry count', () => {
+    // No flow tool is ever a registry entry, so the advertised count (bounded
+    // against the registry above) can never move with the number of flows.
     expect([...registered].some((name) => name.startsWith('flow__'))).toBe(false);
-    expect(MCP_TOOL_COUNT_APPROX).toBe(296);
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(`~${MCP_TOOL_COUNT_APPROX} tools`);
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/flow__/);
   });
 
   it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {

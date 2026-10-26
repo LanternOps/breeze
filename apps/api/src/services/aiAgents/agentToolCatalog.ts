@@ -202,6 +202,14 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_known_guests: 'network',
   get_unifi_status: 'network',
   trigger_unifi_sync: 'network',
+  // Full-control W10 (#6780): AI-agent reads sit with the other AI-run reads (list_ai_agent_runs). The operator-task reads are
+  // AGENT_DENIED_READ_TOOLS: they keep a capability row but are never offered to an agent.
+  get_device_ai_activity: 'tenancy',
+  list_operator_tasks: 'tenancy',
+  get_operator_task: 'tenancy',
+  list_ai_agent_schedules: 'tenancy',
+  list_fleet_designs: 'tenancy',
+  get_fleet_design: 'tenancy',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',

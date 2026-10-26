@@ -2396,6 +2396,14 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_unifi_status: { resource: 'billing', action: 'manage' },
   trigger_unifi_sync: { resource: 'billing', action: 'manage' },
+  // Full-control W10 (#6780) — each floor is read from its route by the W10 rows of aiGuardrails.routeBinding.contract.test.ts.
+  // Device AI activity: devices:read (routes/devices/aiOrigin.ts). Operator tasks, agent schedules, fleet designs: ai_agents:read.
+  get_device_ai_activity: { resource: 'devices', action: 'read' },
+  list_operator_tasks: { resource: 'ai_agents', action: 'read' },
+  get_operator_task: { resource: 'ai_agents', action: 'read' },
+  list_ai_agent_schedules: { resource: 'ai_agents', action: 'read' },
+  list_fleet_designs: { resource: 'ai_agents', action: 'read' },
+  get_fleet_design: { resource: 'ai_agents', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

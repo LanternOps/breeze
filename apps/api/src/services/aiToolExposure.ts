@@ -162,6 +162,10 @@ export const AGENT_DENIED_READ_TOOLS: ReadonlyMap<string, string> = new Map<stri
   // WQ2: errorLog can carry Graph error text naming user principal names and
   // item names sourced from the tenant's own directory/mail data.
   ['query_c2c_jobs', 'Returns job errorLog entries that can carry user principal names and item names from Graph error text.'],
+  // W10 (#6780, quorum QW5): objective, handoffSummary, outcomeDetail and step / event text are free text written by humans and by
+  // other agent runs, with no device axis to bound an autonomous run.
+  ['list_operator_tasks', 'Operator task objectives, hand-off summaries and outcome text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
+  ['get_operator_task', 'Task steps, events, plan renderings and hand-off text are free text authored by humans and other agent runs, org-wide with no device axis: a prompt-injection channel into a run that can act.'],
 ]);
 
 /**
