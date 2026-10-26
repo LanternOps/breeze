@@ -13,7 +13,7 @@ import {
 import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
 import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
-import { fetchWispThread, WispThreadReadError } from "@/lib/wispGrant";
+import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
 import { useEntitlement } from "@/hooks/useEntitlement";
 import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
@@ -49,9 +49,10 @@ type GrantLookup =
 /**
  * The caller's active Wisp grant the panel can speak under: the partner-wide
  * grant first, then one scoped to the organization selected in the header
- * (the order WispLinkButton uses). A 404 is the ordinary "no grant here"; any
- * other failure is reported as `failed` and the panel stays Breeze AI without
- * offering "Meet Wisp" — nothing about it fails loudly (Review Focus 2).
+ * (the order WispLinkButton uses). A 404 `no_active_grant` is the ordinary
+ * "no grant here"; any other failure is reported as `failed` and the panel
+ * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
+ * loudly (Review Focus 2).
  */
 async function lookUpActiveGrant(orgId: string | null): Promise<GrantLookup> {
   let failed = false;
@@ -60,7 +61,7 @@ async function lookUpActiveGrant(orgId: string | null): Promise<GrantLookup> {
       const state = await fetchWispThread(scope);
       if (isActiveGrant(state)) return { kind: "active", grant: state };
     } catch (err) {
-      if (err instanceof WispThreadReadError && err.status === 404) continue;
+      if (isNoActiveGrant(err)) continue;
       console.warn("[AiChatSidebar] could not read the Wisp thread; staying Breeze AI", err);
       failed = true;
     }
@@ -196,18 +197,25 @@ export default function AiChatSidebar() {
   const wispEntitlement = useEntitlement("wisp");
   const wispEligible = canUseAi && partnerToken && wispServerOn && wispEntitlement.state === "enabled";
   const [grantLookup, setGrantLookup] = useState<GrantLookup>({ kind: "idle" });
-  const grantLookedUpRef = useRef(false);
+  // The selected org ("" = none) the panel last asked about; null = ask on the next open.
+  const grantLookupKeyRef = useRef<string | null>(null);
 
-  // Once per page, the first time the panel is open with every gate passed.
-  // An active grant gives a panel with no conversation the Wisp voice at once.
+  // Once per page and selected org, the first time the panel is open with
+  // every gate passed (a failed read is asked again on the next open). An
+  // active grant gives a panel with no conversation the Wisp voice at once.
   // A conversation already open (a restored chat — its own Wisp state comes
   // back through the store's rehydrate — or a device task being created) is
   // never abandoned for it: the next new conversation starts on the grant.
   useEffect(() => {
-    if (!isOpen || !wispEligible || grantLookedUpRef.current) return;
-    grantLookedUpRef.current = true;
+    if (!isOpen || !wispEligible) return;
+    const key = selectedOrgId ?? "";
+    if (grantLookupKeyRef.current === key) return;
+    grantLookupKeyRef.current = key;
     if (useAiStore.getState().wisp) return;
     void lookUpActiveGrant(selectedOrgId).then((result) => {
+      // The org changed while this was in flight: the newer lookup owns the answer.
+      if (grantLookupKeyRef.current !== key) return;
+      if (result.kind === "failed") grantLookupKeyRef.current = null;
       setGrantLookup(result);
       if (result.kind !== "active") return;
       const now = useAiStore.getState();
@@ -217,7 +225,7 @@ export default function AiChatSidebar() {
   }, [isOpen, wispEligible, selectedOrgId]);
 
   // Wisp is on here but there is no active grant (none, paused, ended, or the
-  // plan lacks Wisp): point at the home, which explains and starts one.
+  // plan lacks Wisp): point at the home, which explains and starts or resumes one.
   const showMeetWisp =
     !wisp &&
     canUseAi &&
@@ -231,13 +239,20 @@ export default function AiChatSidebar() {
 
   const handleNewConversation = useCallback(async () => {
     await closeSession();
-    // The open conversation was plain while a grant is active: the new one is Wisp's.
-    if (!wisp && grantLookup.kind === "active") {
-      await enterWispMode(grantLookup.grant);
-      return;
+    // Leaving a plain conversation where Wisp can run: the new one takes the
+    // grant as it is NOW. Re-read, never the lookup from when the panel
+    // opened — a grant revoked, paused or expired since then must start a
+    // plain chat (and offer Meet Wisp), not a session the server refuses.
+    if (!wisp && wispEligible) {
+      const result = await lookUpActiveGrant(selectedOrgId);
+      setGrantLookup(result);
+      if (result.kind === "active") {
+        await enterWispMode(result.grant);
+        return;
+      }
     }
     await createSession();
-  }, [closeSession, createSession, enterWispMode, wisp, grantLookup]);
+  }, [closeSession, createSession, enterWispMode, wisp, wispEligible, selectedOrgId]);
 
   if (!canUseAi) return null;
 

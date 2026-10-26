@@ -212,6 +212,23 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().wisp).toBeNull();
   });
 
+  it('a Wisp session whose grant thread cannot be read (500) stays plain and says so in the console; a 404 is quiet', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant', error: 'none' }, 404);
+      if (url === '/wisp/thread') return response({ error: 'boom' }, 500);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().loadSession('sess-w');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/wisp/thread'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useAiStore.getState().wisp).toBeNull();
+    const wispWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes('Wisp'));
+    expect(wispWarnings).toHaveLength(1);
+    warn.mockRestore();
+  });
+
   it('loadSession of a plain session leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });

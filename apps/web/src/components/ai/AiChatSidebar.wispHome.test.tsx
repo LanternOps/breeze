@@ -9,7 +9,7 @@
  * and no /wisp/thread request is made unless the server flag, a partner token
  * and the `wisp` entitlement all pass (Review Focus 2).
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
@@ -17,13 +17,17 @@ const h = vi.hoisted(() => ({
   wispEnabledOpts: [] as Array<{ enabled?: boolean } | undefined>,
   scope: 'partner' as string | null,
   entitlement: 'enabled' as 'loading' | 'enabled' | 'locked',
-  /** GET /wisp/thread[?orgId=] → payload (status 200) or a status code. */
+  /** GET /wisp/thread[?orgId=] → payload (status 200); absent = 404 no_active_grant. */
   threads: {} as Record<string, unknown>,
+  /** GET /wisp/thread[?orgId=] → this failure status instead (e.g. 500, or 404 without the code). */
+  threadFailures: {} as Record<string, { status: number; body: unknown }>,
 }));
 
 vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
     if (url.startsWith('/wisp/thread')) {
+      const failure = h.threadFailures[url];
+      if (failure) return { ok: false, status: failure.status, json: async () => failure.body };
       const hit = h.threads[url];
       if (hit === undefined) return { ok: false, status: 404, json: async () => ({ code: 'no_active_grant' }) };
       return { ok: true, status: 200, json: async () => hit };
@@ -134,6 +138,7 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
     h.scope = 'partner';
     h.entitlement = 'enabled';
     h.threads = {};
+    h.threadFailures = {};
     useOrgStore.setState({ currentOrgId: null });
     useAiStore.setState({ ...BASE, enterWispMode, closeSession, createSession });
   });
@@ -237,6 +242,67 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
     expect(closeSession).toHaveBeenCalledTimes(1);
     expect(createSession).not.toHaveBeenCalled();
     expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-pw' });
+  });
+
+  it('New conversation re-reads the grant: one that ended since the panel opened starts a plain chat and offers Meet Wisp', async () => {
+    h.threads['/wisp/thread'] = threadBody('grant-pw', 'active');
+    useAiStore.setState({ sessionId: 'sess-plain', hydratedSessionId: 'sess-plain' });
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(wispThreadCalls()).toHaveLength(1));
+    await settle();
+    // Revoked (or paused, or expired) elsewhere: the server now answers no_active_grant.
+    delete h.threads['/wisp/thread'];
+
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(wispThreadCalls()).toHaveLength(2);
+    expect(enterWispMode).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('wisp-sidebar-meet')).toHaveAttribute('href', '/wisp');
+  });
+
+  it('New conversation without a grant is a plain new conversation', async () => {
+    useAiStore.setState({ sessionId: 'sess-plain', hydratedSessionId: 'sess-plain' });
+    render(<AiChatSidebar />);
+    await screen.findByTestId('wisp-sidebar-meet');
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+    expect(enterWispMode).not.toHaveBeenCalled();
+  });
+
+  it('a failed read (500) stays Breeze AI without Meet Wisp, and the next open asks again', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.threadFailures['/wisp/thread'] = { status: 500, body: { error: 'boom' } };
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(wispThreadCalls()).toHaveLength(1));
+    await settle();
+    expect(enterWispMode).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('wisp-sidebar-meet')).toBeNull();
+    expect(warn).toHaveBeenCalled();
+
+    delete h.threadFailures['/wisp/thread'];
+    h.threads['/wisp/thread'] = threadBody('grant-pw', 'active');
+    act(() => useAiStore.setState({ isOpen: false }));
+    act(() => useAiStore.setState({ isOpen: true }));
+    await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
+    expect(wispThreadCalls()).toHaveLength(2);
+    warn.mockRestore();
+  });
+
+  it('a 404 that is not no_active_grant (Wisp switched off mid-page) is a failure, not "no grant": no Meet Wisp', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.threadFailures['/wisp/thread'] = { status: 404, body: { error: 'Not found' } };
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(wispThreadCalls()).toHaveLength(1));
+    await settle();
+    expect(screen.queryByTestId('wisp-sidebar-meet')).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('a paused grant also offers Meet Wisp (the home is where it is resumed)', async () => {
+    h.threads['/wisp/thread'] = threadBody('grant-pw', 'paused');
+    render(<AiChatSidebar />);
+    expect(await screen.findByTestId('wisp-sidebar-meet')).toBeInTheDocument();
+    expect(enterWispMode).not.toHaveBeenCalled();
   });
 
   it('a session the store already shows as Wisp is left alone (no second lookup, no new session)', async () => {

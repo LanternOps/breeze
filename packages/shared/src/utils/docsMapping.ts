@@ -258,10 +258,13 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/operator/tasks', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator Tasks' },
   { pattern: '/operator', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
-  // W08 #9921: /wisp/chat (the multi-tab chat) before /wisp (the home) — first prefix match wins.
-  { pattern: '/wisp/chat', docsPath: '/features/ai/', label: 'AI chat' },
+  // The full-page Breeze AI chat lives at /ai/chat (W05 #10136); /wisp/chat and
+  // /workspace only redirect there. /wisp/chat stays before /wisp (the home) —
+  // first prefix match wins.
+  { pattern: '/ai/chat', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
+  { pattern: '/wisp/chat', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
   { pattern: '/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
-  { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI chat' },
+  { pattern: '/workspace', docsPath: '/features/breeze-ai/', label: 'Breeze AI' },
   { pattern: '/ai/wisp', docsPath: '/features/wisp/', label: 'Wisp' },
 
   // Account

@@ -102,22 +102,37 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
 }
 
 /**
- * `GET /wisp/thread` did not yield a thread. `status` is the HTTP status: 404
- * is the ordinary "no active grant for this scope" (`no_active_grant`); a 200
- * here means the body was unreadable.
+ * `GET /wisp/thread` did not yield a thread. `status` is the HTTP status and
+ * `code` the server's machine code when it sent one; a 200 here means the body
+ * was unreadable. See `isNoActiveGrant` for the ordinary "no grant" answer.
  */
 export class WispThreadReadError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
     this.name = 'WispThreadReadError';
   }
 }
 
+/**
+ * The ordinary "you have no active grant for this scope" answer (404
+ * `no_active_grant`), as opposed to a failure. A bare 404 (the hub's answer
+ * while the server has Wisp switched off) is not it.
+ */
+export function isNoActiveGrant(err: unknown): boolean {
+  return err instanceof WispThreadReadError && err.status === 404 && err.code === 'no_active_grant';
+}
+
 /** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
   const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread');
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new WispThreadReadError(extractApiError(body, 'Could not open the Wisp thread.'), res.status);
+  const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
+  if (!res.ok) {
+    throw new WispThreadReadError(
+      extractApiError(body, 'Could not open the Wisp thread.'),
+      res.status,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
   const state = wispStateFromThread(body);
   if (!state) throw new WispThreadReadError('Could not open the Wisp thread.', res.status);
   return state;

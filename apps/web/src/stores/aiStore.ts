@@ -297,10 +297,15 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   const orgId = typeof session?.orgId === 'string' ? session.orgId : null;
   try {
     // Lazy: the step-up/WebAuthn graph stays out of every page's chat bundle.
-    const { fetchWispThread } = await import('@/lib/wispGrant');
+    const { fetchWispThread, isNoActiveGrant } = await import('@/lib/wispGrant');
     // An org grant is keyed by the session's org; a partner-wide one by none.
     for (const scope of orgId ? [orgId, null] : [null]) {
-      const state = await fetchWispThread(scope).catch(() => null);
+      const state = await fetchWispThread(scope).catch((err: unknown) => {
+        // "No grant for this scope" is the expected miss; anything else leaves
+        // the header off over a session the server still runs under a grant.
+        if (!isNoActiveGrant(err)) console.warn('[AiStore] Could not read the Wisp thread to restore the session header:', { sessionId, grantId, scope, err });
+        return null;
+      });
       if (state?.grantId === grantId && isActiveGrant(state)) {
         if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
         return;
