@@ -164,7 +164,7 @@ export type ToolExecutionContext = {
    * imported, because this file must not depend on the artifact service
    * layer for an otherwise-unrelated execution-input bag.
    *
-   * Set by `executeTool` ONLY for `read_artifact` (a name check, not a
+   * Set by `executeTool` ONLY for `read_artifact` and `run_flow` (a name check, not a
    * blanket computation folded into every call's context) so every other
    * tool's `context` identity is unaffected — see the comment at the call
    * site in `aiTools.ts`. Absent for a call with no attributable org/run/
@@ -175,14 +175,6 @@ export type ToolExecutionContext = {
    * is attached to a Wisp thread; it lets the read also match that thread's
    * attachments (see `ArtifactCallerAnchor.wispThreadId`).
    */
-  /**
-   * The chat session (`ai_sessions.id`) a `run_flow` call runs in: set by
-   * `executeTool` ONLY for `run_flow`, from the chat path's `capture.sessionId`,
-   * and always OVERWRITTEN there (a caller-supplied value is dropped). Absent
-   * for MCP, agent and script callers, which is what makes `run_flow` refuse
-   * them (`run_flow_requires_chat`). Never taken from tool input.
-   */
-  chatSessionId?: string;
   captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
