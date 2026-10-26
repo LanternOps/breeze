@@ -14,7 +14,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 const mocks = vi.hoisted(() => ({
   reconcile: vi.fn((..._a: unknown[]) => undefined),
@@ -31,7 +31,7 @@ vi.mock('../../services/agentOrgSettingsCache', async (importOriginal) => ({
 
 import type { DbAccessContext } from '../../db';
 import { withDbAccessContext } from '../../db';
-import { automationPolicies, devices, securityPolicies, securityStatus } from '../../db/schema';
+import { auditLogs, automationPolicies, devices, securityPolicies, securityPostureSnapshots, securityStatus } from '../../db/schema';
 import { executeTool } from '../../services/aiTools';
 import { checkGuardrails } from '../../services/aiGuardrails';
 import { clearPermissionCache } from '../../services/permissions';
@@ -197,6 +197,63 @@ describe('manage_security_policies', () => {
     expect(row!.name).toBe('renamed');
     expect(row!.settings).toMatchObject({ exclusions: ['C:\\Tools'], scanSchedule: 'weekly' });
     expect(row!.settings).not.toHaveProperty('name');
+  });
+
+  runDb('a partner-wide create by an org-scope caller that has a partnerId is refused and writes no row (CONTROL: partnerAll lands it)', async () => {
+    const refused = await run(f, 'orgAdmin', 'manage_security_policies', { action: 'create', name: 'org-scope wide', ownerScope: 'partner' });
+    expect(refused.body.code, refused.raw).toBe('ACCESS_DENIED');
+    const named = () => getTestDb().select({ id: securityPolicies.id }).from(securityPolicies).where(eq(securityPolicies.name, 'org-scope wide'));
+    expect(await named()).toHaveLength(0);
+    const ok = await run(f, 'partnerAll', 'manage_security_policies', { action: 'create', name: 'org-scope wide', ownerScope: 'partner' });
+    expect(ok.body.created, ok.raw).toBe(true);
+    expect(await named()).toHaveLength(1);
+  });
+
+  runDb('orgId together with ownerScope partner is a VALIDATION_ERROR and writes no row (CONTROL: without orgId it lands)', async () => {
+    const named = () => getTestDb().select({ id: securityPolicies.id }).from(securityPolicies).where(eq(securityPolicies.name, 'wide with org'));
+    const bad = await run(f, 'partnerAll', 'manage_security_policies', { action: 'create', name: 'wide with org', ownerScope: 'partner', orgId: f.orgA });
+    expect(bad.body.code, bad.raw).toBe('VALIDATION_ERROR');
+    expect(await named()).toHaveLength(0);
+    const ok = await run(f, 'partnerAll', 'manage_security_policies', { action: 'create', name: 'wide with org', ownerScope: 'partner' });
+    expect(ok.body.created, ok.raw).toBe(true);
+    expect(await named()).toHaveLength(1);
+  });
+});
+
+describe('manage_security_recommendations', () => {
+  async function seedFirewallPosture(): Promise<void> {
+    const rows = [[f.devA, f.orgA], [f.devOther, f.orgB]] as const;
+    await getTestDb().insert(securityPostureSnapshots).values(rows.map(([deviceId, orgId]) => ({
+      orgId, deviceId, capturedAt: new Date(Date.now() - 3_600_000), overallScore: 60, riskLevel: 'medium' as const,
+      patchComplianceScore: 100, encryptionScore: 100, avHealthScore: 100, firewallScore: 40,
+      openPortsScore: 100, passwordPolicyScore: 100, osCurrencyScore: 100, adminExposureScore: 100,
+    })));
+  }
+  const statusRows = (orgId: string) => getTestDb().select().from(auditLogs)
+    .where(and(eq(auditLogs.orgId, orgId), eq(auditLogs.resourceType, 'security_recommendation')));
+
+  runDb('dismiss records an org-scoped audit row that list reads back as dismissed; a foreign orgId is not found and writes nothing', async () => {
+    await seedFirewallPosture();
+    const open = await run(f, 'orgAdmin', 'manage_security_recommendations', { action: 'list' });
+    expect(open.body.recommendations, open.raw).toEqual([expect.objectContaining({ id: 'rec-enable-firewall', status: 'open', affectedDevices: 1 })]);
+
+    const foreign = await run(f, 'orgAdmin', 'manage_security_recommendations', { action: 'dismiss', recommendationId: 'rec-enable-firewall', orgId: f.orgB });
+    expect(foreign.body.code, foreign.raw).toBe('NOT_FOUND');
+    expect(await statusRows(f.orgB)).toHaveLength(0);
+    expect(await statusRows(f.orgA)).toHaveLength(0);
+
+    const ok = await run(f, 'orgAdmin', 'manage_security_recommendations', { action: 'dismiss', recommendationId: 'rec-enable-firewall' });
+    expect(ok.body, ok.raw).toMatchObject({ id: 'rec-enable-firewall', orgId: f.orgA, status: 'dismissed' });
+    const rows = await statusRows(f.orgA);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ orgId: f.orgA, action: 'security.recommendation.dismiss', resourceType: 'security_recommendation', resourceName: 'rec-enable-firewall' });
+    expect(await statusRows(f.orgB)).toHaveLength(0);
+
+    const after = await run(f, 'orgAdmin', 'manage_security_recommendations', { action: 'list' });
+    expect(after.body.recommendations, after.raw).toEqual([expect.objectContaining({ id: 'rec-enable-firewall', status: 'dismissed' })]);
+    // The other org's identical recommendation is still open.
+    const other = await run(f, 'otherOrg', 'manage_security_recommendations', { action: 'list' });
+    expect(other.body.recommendations, other.raw).toEqual([expect.objectContaining({ id: 'rec-enable-firewall', status: 'open' })]);
   });
 });
 

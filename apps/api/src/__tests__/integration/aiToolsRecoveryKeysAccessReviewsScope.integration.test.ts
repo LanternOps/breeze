@@ -36,14 +36,14 @@ import type { DbAccessContext } from '../../db';
 import { withDbAccessContext } from '../../db';
 import {
   accessReviewItems, accessReviews, auditBaselineApplyApprovals, auditBaselineResults, auditBaselines,
-  deviceRecoveryKeys, devices, organizationUsers, recoveryKeyAccessEvents,
+  deviceRecoveryKeys, devices, organizationUsers, partnerUsers, recoveryKeyAccessEvents,
 } from '../../db/schema';
 import { executeTool } from '../../services/aiTools';
 import { checkGuardrails } from '../../services/aiGuardrails';
 import { validateToolInput } from '../../services/aiToolSchemas';
 import { clearPermissionCache } from '../../services/permissions';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
-import { createOrganization, createPartner, createRole, createSite, createUser } from './db-utils';
+import { assignUserToPartner, createOrganization, createPartner, createRole, createSite, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -137,7 +137,7 @@ async function seedFixture(): Promise<Fixture> {
 }
 
 function ctxFor(f: Fixture, who: Who, auth: AuthContext = f.auth[who]): DbAccessContext {
-  return buildDbAccessContext({ scope: 'organization', orgId: auth.orgId, accessibleOrgIds: auth.accessibleOrgIds ?? [], partnerId: f.partnerId, userId: auth.user.id });
+  return buildDbAccessContext({ scope: auth.scope, orgId: auth.orgId, accessibleOrgIds: auth.accessibleOrgIds ?? [], partnerId: f.partnerId, userId: auth.user.id });
 }
 
 async function run(f: Fixture, who: Who, tool: string, input: Record<string, unknown>, auth: AuthContext = f.auth[who]) {
@@ -229,6 +229,120 @@ describe('manage_access_reviews', () => {
     expect(after).toMatchObject({ decision: 'revoked', reviewedBy: f.adminA });
     // Recorded only: the member keeps the membership until a person completes the review in the web app.
     expect(await getTestDb().select().from(organizationUsers).where(and(eq(organizationUsers.orgId, f.orgA), eq(organizationUsers.userId, f.memberA)))).toHaveLength(1);
+  });
+
+  /** A second org member whose role grants users:write: an eligible decider other than adminA. */
+  async function addCoAdmin(): Promise<{ userId: string; auth: AuthContext }> {
+    const role = await createRole({ scope: 'organization', orgId: f.orgA, partnerId: f.partnerId });
+    await grantRolePermissions(role.id, [{ resource: 'users', action: 'write' }]);
+    const u = await createUser({ partnerId: f.partnerId, orgId: f.orgA, email: `w11-co-admin-${randomUUID()}@example.com` });
+    await getTestDb().insert(organizationUsers).values({ userId: u.id, orgId: f.orgA, roleId: role.id });
+    return { userId: u.id, auth: makeAuth(u.id, f.partnerId, f.orgA) };
+  }
+  const itemRow = async (id: string) => (await getTestDb().select().from(accessReviewItems).where(eq(accessReviewItems.id, id)))[0]!;
+
+  runDb('separation of duties: deciding your OWN item while another eligible decider exists is refused and the item is unchanged (CONTROL: the other admin decides it)', async () => {
+    const co = await addCoAdmin();
+    const { reviewId, itemFor } = await createReview();
+    const own = await itemFor(f.adminA);
+    const refused = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: own, decision: 'approved', notes: 'self' });
+    expect(refused.body.code, refused.raw).toBe('ACCESS_REVIEW_SELF_DECISION');
+    expect(await itemRow(own)).toMatchObject({ decision: 'pending', reviewedBy: null, reviewedAt: null, notes: null, selfDecided: false });
+    expect((await getTestDb().select().from(accessReviews).where(eq(accessReviews.id, reviewId)))[0]!.status).toBe('pending');
+
+    // get reports the same shape as 'blocked'.
+    const got = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'get', reviewId });
+    expect(got.body.viewer, got.raw).toEqual({ userId: f.adminA, selfDecision: 'blocked' });
+
+    // CONTROL: the other eligible admin decides the very same item.
+    const landed = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: own, decision: 'approved' }, co.auth);
+    expect(landed.body.updated, landed.raw).toBe(true);
+    expect(landed.body.item.selfDecided).toBe(false);
+    expect(await itemRow(own)).toMatchObject({ decision: 'approved', reviewedBy: co.userId, selfDecided: false });
+  });
+
+  runDb('sole eligible decider: deciding your own item lands as selfDecided, a follow-up pending reset clears it, and a co-admin joining re-blocks it', async () => {
+    const { reviewId, itemFor } = await createReview();
+    const own = await itemFor(f.adminA);
+    const got = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'get', reviewId });
+    expect(got.body.viewer, got.raw).toEqual({ userId: f.adminA, selfDecision: 'single_admin_exception' });
+
+    const approved = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: own, decision: 'approved', notes: 'sole admin' });
+    expect(approved.body.updated, approved.raw).toBe(true);
+    expect(approved.body.item.selfDecided, approved.raw).toBe(true);
+    expect(await itemRow(own)).toMatchObject({ decision: 'approved', reviewedBy: f.adminA, selfDecided: true, notes: 'sole admin' });
+
+    const reset = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: own, decision: 'pending' });
+    expect(reset.body.updated, reset.raw).toBe(true);
+    expect(reset.body.item.selfDecided, reset.raw).toBe(false);
+    expect(await itemRow(own)).toMatchObject({ decision: 'pending', selfDecided: false });
+
+    // The flip: once another eligible decider exists, the same call is refused and the row stays as it was.
+    await addCoAdmin();
+    const blocked = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: own, decision: 'revoked' });
+    expect(blocked.body.code, blocked.raw).toBe('ACCESS_REVIEW_SELF_DECISION');
+    expect(await itemRow(own)).toMatchObject({ decision: 'pending', selfDecided: false });
+  });
+
+  runDb('a completed review refuses a decision with INVALID_STATE and the item is unchanged (CONTROL: a pending review lands)', async () => {
+    const { reviewId, itemFor } = await createReview();
+    const item = await itemFor(f.memberA);
+    await getTestDb().update(accessReviews).set({ status: 'completed', completedAt: new Date() }).where(eq(accessReviews.id, reviewId));
+    const refused = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId, itemId: item, decision: 'revoked' });
+    expect(refused.body.code, refused.raw).toBe('INVALID_STATE');
+    expect(await itemRow(item)).toMatchObject({ decision: 'pending', reviewedBy: null, selfDecided: false });
+    expect((await getTestDb().select().from(accessReviews).where(eq(accessReviews.id, reviewId)))[0]!.status).toBe('completed');
+
+    const second = await createReview();
+    const ok = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'decide_item', reviewId: second.reviewId, itemId: await second.itemFor(f.memberA), decision: 'revoked' });
+    expect(ok.body.updated, ok.raw).toBe(true);
+  });
+
+  runDb('partner scope: a full-partner caller creates a partner-owned review (partner_users items, org NULL); an org caller neither lists nor gets it', async () => {
+    const db = getTestDb();
+    const role = await createRole({ scope: 'partner', partnerId: f.partnerId });
+    const member = async (tag: string) => {
+      const u = await createUser({ partnerId: f.partnerId, email: `w11-pu-${tag}-${randomUUID()}@example.com` });
+      await assignUserToPartner(u.id, f.partnerId, role.id, 'all');
+      return u.id;
+    };
+    const puA = await member('a');
+    const puB = await member('b');
+    const partnerAuth = (userId: string, access: 'all' | 'selected'): AuthContext => ({
+      ...makeAuth(userId, f.partnerId, f.orgA),
+      orgId: null, scope: 'partner', partnerOrgAccess: access, accessibleOrgIds: [f.orgA, f.orgB],
+      orgCondition: (col: any) => inArray(col, [f.orgA, f.orgB]),
+      canAccessOrg: (id: string) => [f.orgA, f.orgB].includes(id),
+    } as unknown as AuthContext);
+
+    // Refusal + CONTROL: a 'selected'-access partner caller is refused and writes nothing.
+    const selected = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'create', name: 'Partner Q4' }, partnerAuth(puA, 'selected'));
+    expect(selected.body.code, selected.raw).toBe('ACCESS_DENIED');
+    expect(await db.select().from(accessReviews).where(eq(accessReviews.partnerId, f.partnerId))).toHaveLength(0);
+
+    const created = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'create', name: 'Partner Q4' }, partnerAuth(puA, 'all'));
+    expect(created.body.created, created.raw).toBe(true);
+    expect(created.body.itemCount).toBe(2);
+    const reviewId = created.body.id as string;
+    const [row] = await db.select().from(accessReviews).where(eq(accessReviews.id, reviewId));
+    expect(row).toMatchObject({ partnerId: f.partnerId, orgId: null, reviewerId: puA, status: 'pending' });
+    const items = await db.select({ userId: accessReviewItems.userId }).from(accessReviewItems).where(eq(accessReviewItems.reviewId, reviewId));
+    expect(items.map((i) => i.userId).sort()).toEqual([puA, puB].sort());
+    expect((await db.select().from(partnerUsers).where(eq(partnerUsers.partnerId, f.partnerId))).length).toBe(2);
+
+    const listed = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'list' }, partnerAuth(puA, 'all'));
+    expect((listed.body.reviews as { id: string }[]).map((r) => r.id), listed.raw).toEqual([reviewId]);
+
+    // The org-scope caller (same partner) sees none of it.
+    const orgList = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'list' });
+    expect(orgList.body.reviews, orgList.raw).toEqual([]);
+    const orgGet = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'get', reviewId });
+    const orgMiss = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'get', reviewId: randomUUID() });
+    expect(orgGet.body.code, orgGet.raw).toBe('NOT_FOUND');
+    expect(orgGet.raw).toBe(orgMiss.raw);
+    // CONTROL: the partner caller reads it.
+    const partnerGet = await run(f, 'orgAdmin', 'manage_access_reviews', { action: 'get', reviewId }, partnerAuth(puA, 'all'));
+    expect(partnerGet.body.review?.id, partnerGet.raw).toBe(reviewId);
   });
 
   runDb('a site-restricted session is refused outright (CONTROL: the unrestricted admin lists)', async () => {

@@ -169,9 +169,83 @@ describe('manage_pam_rules', () => {
     expect(await ruleRow(f.ruleB)).toBeUndefined();
   });
 
+  runDb('a quarantined rule (suspended_verdict auto_approve) counts as auto-approve: edits to another rule are refused; deleting the quarantined rule itself lands', async () => {
+    const db = getTestDb();
+    // CONTROL first: orgB has no auto-approve and no quarantined rule, so a narrowing edit lands.
+    const control = await run(f, 'otherOrg', { action: 'update_rule', ruleId: f.ruleB, priority: 300 });
+    expect(control.body.updated, control.raw).toBe(true);
+    expect((await ruleRow(f.ruleB))!.priority).toBe(300);
+
+    const [q] = await db.insert(pamRules).values({
+      orgId: f.orgB, name: 'Quarantined approve', verdict: 'require_approval', suspendedVerdict: 'auto_approve',
+      priority: 50, matchPathGlob: 'C:\\Vendor\\**',
+    }).returning({ id: pamRules.id });
+    const quarantinedId = q!.id;
+
+    const widen = await run(f, 'otherOrg', { action: 'update_rule', ruleId: f.ruleB, matchHash: HASH('f') });
+    expect(widen.body.code, widen.raw).toBe('PAM_AUTO_APPROVE_GUARD');
+    const reprioritise = await run(f, 'otherOrg', { action: 'update_rule', ruleId: f.ruleB, priority: 5 });
+    expect(reprioritise.body.code, reprioritise.raw).toBe('PAM_AUTO_APPROVE_GUARD');
+    expect(await ruleRow(f.ruleB)).toMatchObject({ matchHash: HASH('d'), priority: 300 });
+    // The plain rule cannot be deleted either while a latent auto-approver exists.
+    const delPlain = await run(f, 'otherOrg', { action: 'delete_rule', ruleId: f.ruleB });
+    expect(delPlain.body.code, delPlain.raw).toBe('PAM_AUTO_APPROVE_GUARD');
+    expect(await ruleRow(f.ruleB)).toBeDefined();
+
+    // Removing the quarantined rule itself never widens the auto-approved set.
+    const delQ = await run(f, 'otherOrg', { action: 'delete_rule', ruleId: quarantinedId });
+    expect(delQ.body.deleted, delQ.raw).toBe(true);
+    expect(await ruleRow(quarantinedId)).toBeUndefined();
+    // CONTROL: with it gone, the same edit lands again.
+    const after = await run(f, 'otherOrg', { action: 'update_rule', ruleId: f.ruleB, matchHash: HASH('f') });
+    expect(after.body.updated, after.raw).toBe(true);
+    expect((await ruleRow(f.ruleB))!.matchHash).toBe(HASH('f'));
+  });
+
+  runDb('deleting an auto-approve rule lands even while another auto-approve rule exists', async () => {
+    const [second] = await getTestDb().insert(pamRules).values({
+      orgId: f.orgA, name: 'Approve more tools', verdict: 'auto_approve', priority: 300, matchPathGlob: 'C:\\More\\**', approvalDurationMinutes: 15,
+    }).returning({ id: pamRules.id });
+    const del = await run(f, 'orgAdmin', { action: 'delete_rule', ruleId: f.autoA });
+    expect(del.body.deleted, del.raw).toBe(true);
+    expect(await ruleRow(f.autoA)).toBeUndefined();
+    expect(await ruleRow(second!.id)).toMatchObject({ verdict: 'auto_approve', enabled: true });
+    // The shadowing rule is still guarded: the remaining auto-approve rule keeps the org in guard mode.
+    const guarded = await run(f, 'orgAdmin', { action: 'delete_rule', ruleId: f.shadowA });
+    expect(guarded.body.code, guarded.raw).toBe('PAM_AUTO_APPROVE_GUARD');
+  });
+
+  runDb('delete_signer_group: IN_USE while a rule references it; an unreferenced group deletes even in an org with an auto-approve rule; a foreign id is an opaque not-found', async () => {
+    const db = getTestDb();
+    const [ref] = await db.insert(pamRules).values({ orgId: f.orgA, name: 'By group', verdict: 'require_approval', priority: 100, matchSignerGroupId: f.groupA }).returning({ id: pamRules.id });
+    const inUse = await run(f, 'orgAdmin', { action: 'delete_signer_group', signerGroupId: f.groupA });
+    expect(inUse.body.code, inUse.raw).toBe('IN_USE');
+    expect(await groupRow(f.groupA)).toBeDefined();
+    expect((await ruleRow(ref!.id))!.matchSignerGroupId).toBe(f.groupA);
+
+    // Deliberate: orgA has an auto-approve rule, yet deleting an unreferenced group cannot change matching.
+    const [spare] = await db.insert(pamSignerGroups).values({ orgId: f.orgA, name: 'Spare A', signers: [{ thumbprint: HASH('e') }] }).returning({ id: pamSignerGroups.id });
+    const ok = await run(f, 'orgAdmin', { action: 'delete_signer_group', signerGroupId: spare!.id });
+    expect(ok.body, ok.raw).toMatchObject({ deleted: true, signerGroupId: spare!.id });
+    expect(await groupRow(spare!.id)).toBeUndefined();
+
+    // Another org's group (the referenced one) is not found, identical to a random-UUID miss, and untouched.
+    const foreign = await run(f, 'otherOrg', { action: 'delete_signer_group', signerGroupId: f.groupA });
+    const missing = await run(f, 'otherOrg', { action: 'delete_signer_group', signerGroupId: randomUUID() });
+    expect(foreign.body.code, foreign.raw).toBe('NOT_FOUND');
+    expect(foreign.raw).toBe(missing.raw);
+    expect(await groupRow(f.groupA)).toBeDefined();
+    // CONTROL: the owning org's group B deletes for its own org (nothing references it).
+    const own = await run(f, 'otherOrg', { action: 'delete_signer_group', signerGroupId: f.groupB });
+    expect(own.body.deleted, own.raw).toBe(true);
+  });
+
   runDb('the tool never writes auto_approve, and a rule may reference only its own org\'s signer group', async () => {
     const auto = await run(f, 'otherOrg', { action: 'create_rule', name: 'sneaky', verdict: 'auto_approve', matchHash: HASH('9') });
-    expect(auto.body.error, auto.raw).toBeTruthy();
+    // Rejected by the executeTool validation layer (verdict enum has no auto_approve) before the handler runs,
+    // so the envelope carries an error string and no handler `code`.
+    expect(auto.body.code, auto.raw).toBeUndefined();
+    expect(auto.body.error, auto.raw).toMatch(/^Invalid input: verdict:/);
     const crossGroup = await run(f, 'orgAdmin', { action: 'create_rule', name: 'by group', verdict: 'require_approval', matchSignerGroupId: f.groupB });
     expect(crossGroup.body.code, crossGroup.raw).toBe('NOT_FOUND');
     const rows = await getTestDb().select({ name: pamRules.name, verdict: pamRules.verdict }).from(pamRules);

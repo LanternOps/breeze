@@ -31,15 +31,20 @@ const h = vi.hoisted(() => ({
   getPolicy: vi.fn(),
   queue: vi.fn(),
   audit: vi.fn(),
+  transaction: vi.fn(),
+  enqueueDrift: vi.fn(),
+  trend: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
-  db: { select: h.select, selectDistinct: h.select, selectDistinctOn: h.select, insert: h.insert, update: h.update, transaction: vi.fn() },
+  db: { select: h.select, selectDistinct: h.select, selectDistinctOn: h.select, insert: h.insert, update: h.update, transaction: h.transaction },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withDbAccessContext: (_c: unknown, fn: () => unknown) => fn(),
 }));
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: h.verify }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: h.audit }));
+vi.mock('../jobs/auditBaselineJobs', () => ({ enqueueAuditDriftEvaluation: h.enqueueDrift }));
+vi.mock('./securityPosture', async (importOriginal) => ({ ...(await importOriginal<object>()), getSecurityPostureTrend: h.trend }));
 vi.mock('./aiDispatch', () => ({ aiQueueCommand: h.queue }));
 vi.mock('../routes/policyManagement/helpers', () => ({ getPolicyWithOrgCheck: h.getPolicy }));
 vi.mock('../routes/security/helpers', async (importOriginal) => ({
@@ -50,6 +55,7 @@ vi.mock('../routes/security/helpers', async (importOriginal) => ({
 }));
 
 import type { AuthContext } from '../middleware/auth';
+import { RemoteToolsDisabledByPolicyError } from './aiRemoteToolsPolicy';
 import type { AiTool } from './aiTools';
 import { registerSecurityComplianceTools } from './aiToolsSecurityCompliance';
 import { registerSecurityRecommendationTools } from './aiToolsSecurityRecommendations';
@@ -297,5 +303,170 @@ describe('manage_audit_baselines', () => {
 
   it('create is refused to a site-restricted caller (org-wide config)', async () => {
     expect((await run('manage_audit_baselines', { action: 'create', name: 'x', osType: 'windows', profile: 'cis_l1' }, siteRestricted())).code).toBe('ACCESS_DENIED');
+  });
+});
+
+describe('W11 review follow-ups', () => {
+  const winDevice = { device: { id: DEV, orgId: ORG, hostname: 'win-1', osType: 'windows' } };
+  const partnerAuth = (over: Record<string, unknown> = {}) => makeAuth({
+    scope: 'partner', partnerId: PARTNER, partnerOrgAccess: 'all', orgId: null,
+    accessibleOrgIds: [ORG, OTHER_ORG], canAccessOrg: (id: string) => id === ORG || id === OTHER_ORG, ...over,
+  });
+
+  describe('manage_recovery_keys', () => {
+    it('rotate and collect surface a remote-tools policy denial as POLICY_DENIED and record no audit', async () => {
+      h.verify.mockResolvedValue(winDevice);
+      h.queue.mockRejectedValue(new RemoteToolsDisabledByPolicyError(DEV, 'encryption_rotate_key', 'AI remote tools are disabled'));
+      expect((await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV, volumeMount: 'C:' })).code).toBe('POLICY_DENIED');
+      expect((await run('manage_recovery_keys', { action: 'collect', deviceId: DEV })).code).toBe('POLICY_DENIED');
+      expect(h.audit).not.toHaveBeenCalled();
+    });
+
+    it.each(['C:\\; evil', 'CC:', 'C', '1:'])('rotate refuses volumeMount %j in the handler and queues nothing', async (volumeMount) => {
+      h.verify.mockResolvedValue(winDevice);
+      const out = await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV, volumeMount });
+      expect(out.code).toBe('VALIDATION_ERROR');
+      expect(h.queue).not.toHaveBeenCalled();
+    });
+
+    it('rotate without volumeMount needs exactly one escrowed active volume', async () => {
+      h.verify.mockResolvedValue(winDevice);
+      h.select.mockImplementationOnce(() => chain([]));
+      const none = await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV });
+      expect(none.code).toBe('VALIDATION_ERROR');
+      expect(String(none.error)).toMatch(/no escrowed volume/);
+      h.select.mockImplementationOnce(() => chain([{ volumeMount: 'C:' }, { volumeMount: 'D:' }]));
+      const several = await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV });
+      expect(several.code).toBe('VALIDATION_ERROR');
+      expect(String(several.error)).toMatch(/several escrowed volumes/);
+      expect(h.queue).not.toHaveBeenCalled();
+    });
+
+    it('rotate defaults the volume when exactly one is escrowed (duplicate rows collapse)', async () => {
+      h.verify.mockResolvedValue(winDevice);
+      h.select.mockImplementationOnce(() => chain([{ volumeMount: 'C:' }, { volumeMount: 'C:' }]));
+      h.queue.mockResolvedValue({ id: 'cmd-2' });
+      const out = await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV });
+      expect(out).toMatchObject({ queued: true, volumeMount: 'C:' });
+    });
+
+    it('rotate on linux is NOT_SUPPORTED', async () => {
+      h.verify.mockResolvedValue({ device: { id: DEV, orgId: ORG, hostname: 'lx-1', osType: 'linux' } });
+      expect((await run('manage_recovery_keys', { action: 'rotate', deviceId: DEV, volumeMount: 'C:' })).code).toBe('NOT_SUPPORTED');
+      expect(h.queue).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('manage_security_recommendations write org', () => {
+    it('with no orgId the accessible write default owns the status row and the build', async () => {
+      h.buildRecs.mockResolvedValue({ recommendations: [{ id: 'rec-enable-av' }] });
+      const values: unknown[] = [];
+      h.insert.mockImplementation(() => chain([], (m, args) => { if (m === 'values') values.push(args[0]); }));
+      const out = await run('manage_security_recommendations', { action: 'dismiss', recommendationId: 'rec-enable-av' }, partnerAuth({ aiWriteDefaultOrgId: OTHER_ORG }));
+      expect(out).toMatchObject({ orgId: OTHER_ORG, status: 'dismissed' });
+      expect(values[0]).toMatchObject({ orgId: OTHER_ORG });
+      expect(h.buildRecs).toHaveBeenCalledWith(expect.anything(), OTHER_ORG);
+    });
+
+    it('a partner with two orgs, no orgId and no write default gets VALIDATION_ERROR and no insert', async () => {
+      const out = await run('manage_security_recommendations', { action: 'dismiss', recommendationId: 'rec-enable-av' }, partnerAuth());
+      expect(out.code).toBe('VALIDATION_ERROR');
+      expect(String(out.error)).toMatch(/orgId is required/);
+      expect(h.insert).not.toHaveBeenCalled();
+      expect(h.buildRecs).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('manage_audit_baselines create drift evaluation', () => {
+    const created = (isActive: boolean) => ({ id: POLICY, orgId: ORG, name: 'B', osType: 'windows', profile: 'custom', isActive });
+    const create = (isActive?: boolean) => {
+      h.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+        fn({ update: () => chain([]), insert: () => chain([created(isActive !== false)]) }));
+      return run('manage_audit_baselines', {
+        action: 'create', name: 'B', osType: 'windows', profile: 'custom', settings: { a: 1 }, ...(isActive === undefined ? {} : { isActive }),
+      });
+    };
+
+    it('an inactive baseline enqueues nothing', async () => {
+      const out = await create(false);
+      expect(out).toMatchObject({ created: true, driftEvaluation: 'inactive' });
+      expect(h.enqueueDrift).not.toHaveBeenCalled();
+    });
+
+    it('a failed enqueue still reports created, with not_queued and a note', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      h.enqueueDrift.mockRejectedValue(new Error('redis down'));
+      const out = await create();
+      expect(out).toMatchObject({ created: true, driftEvaluation: 'not_queued' });
+      expect(String(out.note)).toMatch(/saved/);
+    });
+
+    it('an active baseline with a healthy queue reports queued and no note', async () => {
+      h.enqueueDrift.mockResolvedValue('job-1');
+      const out = await create();
+      expect(out).toMatchObject({ created: true, driftEvaluation: 'queued' });
+      expect(h.enqueueDrift).toHaveBeenCalledWith(ORG);
+      expect(out.note).toBeUndefined();
+    });
+  });
+
+  describe('get_security_compliance trends', () => {
+    it('zero data points is no_data', async () => {
+      h.trend.mockResolvedValue([]);
+      const out = await run('get_security_compliance', { view: 'trends' });
+      expect((out.summary as { trend: string }).trend).toBe('no_data');
+    });
+
+    it('rising, falling and flat points are improving, declining and stable', async () => {
+      const trendFor = async (a: number, b: number) => {
+        h.trend.mockResolvedValue([{ overall: a }, { overall: b }]);
+        return (await run('get_security_compliance', { view: 'trends' })).summary as { trend: string; change: number };
+      };
+      expect(await trendFor(60, 70)).toMatchObject({ trend: 'improving', change: 10 });
+      expect(await trendFor(70, 60)).toMatchObject({ trend: 'declining', change: -10 });
+      expect(await trendFor(65, 65)).toMatchObject({ trend: 'stable', change: 0 });
+    });
+  });
+
+  describe('manage_pam_rules update with an empty returning()', () => {
+    let consoleError: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => { consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined); });
+    // The specific throw, not any exception inside the transaction.
+    const loggedNoRow = (what: string) => JSON.stringify(consoleError.mock.calls).includes(`${what} matched no row after the locked read`);
+
+    it('update_rule answers with the generic thrown error, never updated:true / rule:null', async () => {
+      const existing = { id: POLICY, orgId: ORG, siteId: null, name: 'r', enabled: true, verdict: 'require_approval', suspendedVerdict: null, matchHash: 'a'.repeat(64) };
+      const selects = [[existing], []];
+      h.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+        fn({ select: () => chain(selects.shift() ?? []), update: () => chain([]) }));
+      const out = await run('manage_pam_rules', { action: 'update_rule', ruleId: POLICY, name: 'renamed' });
+      expect(out.error).toBe('Operation failed. Check server logs for details.');
+      expect(out.updated).toBeUndefined();
+      expect(out.rule).toBeUndefined();
+      expect(loggedNoRow('PAM rule update')).toBe(true);
+    });
+
+    it('update_signer_group answers with the generic thrown error, never updated:true', async () => {
+      const existing = { id: POLICY, orgId: ORG, name: 'g' };
+      h.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
+        fn({ select: () => chain([existing]), update: () => chain([]) }));
+      const out = await run('manage_pam_rules', { action: 'update_signer_group', signerGroupId: POLICY, name: 'renamed' });
+      expect(out.error).toBe('Operation failed. Check server logs for details.');
+      expect(out.updated).toBeUndefined();
+      expect(loggedNoRow('signer group update')).toBe(true);
+    });
+  });
+
+  describe('bounded results', () => {
+    it('a list over 96 KB is refused with result_too_large and a hint to pass orgId', async () => {
+      const big = 'x'.repeat(2000);
+      const rows = Array.from({ length: 80 }, (_, i) => ({
+        id: `g${i}`, orgId: ORG, name: `group-${i}`, description: big, signers: [], updatedAt: new Date(0),
+      }));
+      h.select.mockImplementationOnce(() => chain(rows));
+      const out = await run('manage_pam_rules', { action: 'list_signer_groups' });
+      expect(out.code).toBe('result_too_large');
+      expect(String(out.error)).toMatch(/orgId/);
+    });
   });
 });
