@@ -42,7 +42,7 @@ import {
   type SourceChanges,
 } from './sourceChanges';
 import { deleteObjectsOfDeletedReservations, type FetchImportAttachment } from './storeAttachments';
-import { chargeWindowBytes, chargeWindowThroughput } from './throughput';
+import { chargeWindowBytes, chargeWindowThroughput, refundWindowBytes } from './throughput';
 export type { CommentChangedInSource, SourceChanges } from './sourceChanges';
 export type { ImportAttachmentSkip, ImportAttachmentSkipReason } from './importAttachments';
 export { ImportAttachmentFetchError, type FetchImportAttachment } from './storeAttachments';
@@ -983,6 +983,7 @@ export async function importTicket(
         stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
         fetchAttachment: options.fetchAttachment!,
         chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
+        refundBytes: (bytes) => refundWindowBytes(descriptor, bytes),
       })
       : { merged: null, files: NO_CHUNK_FILES };
     if (prepared.merged) return mergedInBreeze(ticketId, prepared.merged.mergedIntoTicketId, counts);

@@ -65,6 +65,7 @@ function harness(
     stillPending: vi.fn(async () => true),
     fetchAttachment: vi.fn(),
     chargeBytes: vi.fn(),
+    refundBytes: vi.fn(),
   };
   return { input, reserveCalls, costs, marked };
 }

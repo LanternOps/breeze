@@ -11,7 +11,15 @@ vi.mock('../migrationWindows', () => ({
   },
 }));
 
-import { BYTE_BUCKET_LUA, chargeWindowBytes, chargeWindowThroughput, migrationWindowBytesKey, migrationWindowRateKey } from './throughput';
+import {
+  BYTE_BUCKET_LUA,
+  BYTE_BUCKET_REFUND_LUA,
+  chargeWindowBytes,
+  chargeWindowThroughput,
+  migrationWindowBytesKey,
+  migrationWindowRateKey,
+  refundWindowBytes,
+} from './throughput';
 
 const WINDOW = { id: '55555555-5555-4555-8555-555555555555', writesPerHour: 6000 };
 
@@ -119,5 +127,43 @@ describe('the import byte bucket (spec 2026-10-19 §4.5)', () => {
     expect(BYTE_BUCKET_LUA).toContain("redis.call('TIME')");
     expect(BYTE_BUCKET_LUA).toContain('local rate = capacity / 3600000');
     expect(BYTE_BUCKET_LUA).toMatch(/if tokens >= cost then\s+tokens = tokens - cost/);
+  });
+});
+
+describe('refundWindowBytes (W1 review: a transient fetch failure gives its charge back)', () => {
+  const MIB = 1024 * 1024;
+  let evalMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    delete process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR;
+    evalMock = vi.fn(async () => 0);
+    mocks.getRedis.mockReturnValue({ eval: evalMock });
+    mocks.assertOutside.mockClear();
+  });
+
+  it("gives the bytes back to the window's own bucket, clamped to its capacity, outside any DB context", async () => {
+    await refundWindowBytes(WINDOW, 4 * MIB);
+    expect(evalMock).toHaveBeenCalledWith(BYTE_BUCKET_REFUND_LUA, 1, `migration_window_bytes:${WINDOW.id}`, String(2048 * MIB), String(4 * MIB), String(7_200_000));
+    expect(mocks.assertOutside).toHaveBeenCalledWith('refundWindowBytes');
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = String(10 * MIB);
+    await refundWindowBytes(WINDOW, 50 * MIB);
+    expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_REFUND_LUA, 1, expect.any(String), String(10 * MIB), String(10 * MIB), expect.any(String));
+  });
+
+  it('refunds nothing for nothing, and is best effort: no Redis or a Redis error never throws', async () => {
+    await refundWindowBytes(WINDOW, 0);
+    expect(evalMock).not.toHaveBeenCalled();
+    mocks.getRedis.mockReturnValueOnce(null);
+    await expect(refundWindowBytes(WINDOW, MIB)).resolves.toBeUndefined();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    evalMock.mockRejectedValueOnce(new Error('READONLY'));
+    await expect(refundWindowBytes(WINDOW, MIB)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('the script never fills past capacity and leaves an expired bucket (already full) alone', () => {
+    expect(BYTE_BUCKET_REFUND_LUA).toContain("redis.call('TIME')");
+    expect(BYTE_BUCKET_REFUND_LUA).toMatch(/if tokens == nil or at == nil then\s+return capacity/);
+    expect(BYTE_BUCKET_REFUND_LUA).toMatch(/tokens = tokens \+ refund\s+if tokens > capacity then\s+tokens = capacity/);
   });
 });

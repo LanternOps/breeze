@@ -28,11 +28,12 @@ const MIB = 1024 * 1024;
 
 function run(fetchAttachment: (id: string, max: number) => Promise<Uint8Array>, declaredBytes?: number, pending = true) {
   const chargeBytes = vi.fn(async () => undefined);
+  const refundBytes = vi.fn(async () => undefined);
   const stillPending = vi.fn(async () => pending);
   const promise = storeReservedAttachment({
-    id: ID, sourceId: 'zammad-store-7', ...(declaredBytes !== undefined ? { declaredBytes } : {}), fetchAttachment, chargeBytes, stillPending,
+    id: ID, sourceId: 'zammad-store-7', ...(declaredBytes !== undefined ? { declaredBytes } : {}), fetchAttachment, chargeBytes, refundBytes, stillPending,
   });
-  return { promise, chargeBytes, stillPending };
+  return { promise, chargeBytes, refundBytes, stillPending };
 }
 
 beforeEach(() => {
@@ -68,7 +69,7 @@ describe('storeReservedAttachment', () => {
     const chargeBytes = vi.fn(async (bytes: number) => {
       if (bytes !== 10) throw new MigrationWindowError('MIGRATION_WINDOW_RATE_LIMITED', 'limit', 429, { kind: 'bytes', retryAfterSeconds: 9 });
     });
-    await expect(storeReservedAttachment({ id: ID, sourceId: 's', declaredBytes: 10, fetchAttachment: async () => PNG, chargeBytes, stillPending: async () => true }))
+    await expect(storeReservedAttachment({ id: ID, sourceId: 's', declaredBytes: 10, fetchAttachment: async () => PNG, chargeBytes, refundBytes: vi.fn(), stillPending: async () => true }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', status: 429, details: { kind: 'bytes' } });
     expect(putBytesMock).not.toHaveBeenCalled();
   });
@@ -90,7 +91,7 @@ describe('storeReservedAttachment', () => {
     const chargeBytes = vi.fn(async () => {
       throw new MigrationWindowError('MIGRATION_WINDOW_RATE_LIMITED', 'limit', 429, { kind: 'bytes', retryAfterSeconds: 30 });
     });
-    await expect(storeReservedAttachment({ id: ID, sourceId: 's', fetchAttachment: fetch, chargeBytes, stillPending: async () => true }))
+    await expect(storeReservedAttachment({ id: ID, sourceId: 's', fetchAttachment: fetch, chargeBytes, refundBytes: vi.fn(), stillPending: async () => true }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', details: { kind: 'bytes' } });
     expect(fetch).not.toHaveBeenCalled();
     expect(putBytesMock).not.toHaveBeenCalled();
@@ -121,6 +122,29 @@ describe('storeReservedAttachment', () => {
     expect(err).toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503, details: { attachmentSourceId: 'zammad-store-7', stage: 'fetch' } });
     expect((err as Error).cause).toBe(error);
     expect(putBytesMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the declared size', PNG.length, PNG.length],
+    ['the cap, when no size was declared', undefined, 10 * MIB],
+  ])('a transient fetch failure refunds exactly what it charged (%s)', async (_name, declared, charged) => {
+    const { promise, chargeBytes, refundBytes } = run(async () => { throw new ImportAttachmentFetchError('transient'); }, declared);
+    await expect(promise).rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE' });
+    expect(chargeBytes.mock.calls).toEqual([[charged]]);
+    expect(refundBytes.mock.calls).toEqual([[charged]]);
+  });
+
+  it('keeps the charge for a permanent failure, a skip after the fetch, a stored file and a storage fault', async () => {
+    const notFound = run(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    await notFound.promise;
+    const blocked = run(async () => MZ);
+    await blocked.promise;
+    const stored = run(async () => PNG);
+    await stored.promise;
+    putBytesMock.mockRejectedValueOnce(new Error('S3 down'));
+    const fault = run(async () => PNG);
+    await fault.promise.catch(() => undefined);
+    for (const r of [notFound, blocked, stored, fault]) expect(r.refundBytes).not.toHaveBeenCalled();
   });
 
   it('a storage fault is transient too', async () => {

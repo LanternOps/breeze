@@ -100,7 +100,10 @@ function transient(attachmentSourceId: string, stage: 'fetch' | 'store', cause: 
  * throws `503 TICKET_IMPORT_ATTACHMENT_UNAVAILABLE`, and a refused byte
  * charge `429 MIGRATION_WINDOW_RATE_LIMITED` (the bytes downloaded are then
  * not stored). Either way the reservation stays for the next run, or for the
- * reaper.
+ * reaper. A transient fetch failure refunds the first charge (W1 review): the
+ * next run charges it again, so a flaky source does not drain the bucket by
+ * the cap per retry. A permanent one keeps it (the file is never fetched
+ * again), and so does everything after a fetch that returned bytes.
  */
 export async function storeReservedAttachment(input: {
   id: string;
@@ -108,6 +111,8 @@ export async function storeReservedAttachment(input: {
   declaredBytes?: number;
   fetchAttachment: FetchImportAttachment;
   chargeBytes: (bytes: number) => Promise<void>;
+  /** Gives back a charge (refundWindowBytes); best effort, never throws. */
+  refundBytes: (bytes: number) => Promise<void>;
   /** Re-checks, right before the put, that the reservation is still pending and unclaimed (isReservationPending). */
   stillPending: () => Promise<boolean>;
 }): Promise<StoreOutcome> {
@@ -122,6 +127,7 @@ export async function storeReservedAttachment(input: {
     if (err instanceof ImportAttachmentFetchError && err.permanent) {
       return { kind: 'skipped', reason: err.failure as ImportAttachmentSkipReason };
     }
+    await input.refundBytes(charged);
     throw transient(input.sourceId, 'fetch', err);
   }
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);

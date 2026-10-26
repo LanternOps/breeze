@@ -139,3 +139,57 @@ export async function chargeWindowBytes(window: { id: string }, bytes: number): 
   }
   if (admitted !== 1) throw bytesRefused(capacity, Math.max(1, Math.ceil((Number.isFinite(waitMs) ? waitMs : 60_000) / 1000)));
 }
+
+/**
+ * KEYS[1] the bucket; ARGV[1] its capacity; ARGV[2] the refund; ARGV[3] the
+ * TTL in ms. Refills as the charge script does, then gives the refund back,
+ * never above capacity. A bucket that expired meanwhile is full already and
+ * is left alone. Returns the tokens it now holds.
+ */
+export const BYTE_BUCKET_REFUND_LUA = `
+local capacity = tonumber(ARGV[1])
+local refund = tonumber(ARGV[2])
+local rate = capacity / 3600000
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local state = redis.call('HMGET', KEYS[1], 'tokens', 'at')
+local tokens = tonumber(state[1])
+local at = tonumber(state[2])
+if tokens == nil or at == nil then
+  return capacity
+end
+if now > at then
+  tokens = tokens + (now - at) * rate
+end
+tokens = tokens + refund
+if tokens > capacity then
+  tokens = capacity
+end
+redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'at', tostring(now))
+redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]))
+return tokens
+`;
+
+/**
+ * Gives back `bytes` charged before a download that failed transiently
+ * (W1 review, Todd 2026-10-26): the file is fetched again on the next run and
+ * charged again then, so a flaky source must not drain the bucket by the cap
+ * per retry. Never above capacity. Best effort: a Redis fault only logs (the
+ * charge stands, which errs on the side of fewer bytes). Runs outside any DB
+ * context, like the charge.
+ */
+export async function refundWindowBytes(window: { id: string }, bytes: number): Promise<void> {
+  if (!(bytes > 0)) return;
+  assertOutsideHeldDbContextSafe('refundWindowBytes');
+  const capacity = ticketImportMaxBytesPerHour();
+  const refund = Math.min(capacity, Math.ceil(bytes));
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.eval(BYTE_BUCKET_REFUND_LUA, 1, migrationWindowBytesKey(window.id), String(capacity), String(refund), String(BYTE_BUCKET_TTL_MS));
+  } catch (err) {
+    console.warn('[ticket-import] could not refund the byte bucket for window:', window.id, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}

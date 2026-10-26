@@ -77,6 +77,8 @@ export type ChunkAttachmentsInput = {
   fetchAttachment: FetchImportAttachment;
   /** The window's byte bucket (chargeWindowBytes). */
   chargeBytes: (bytes: number) => Promise<void>;
+  /** Gives a charge back after a transient fetch failure (refundWindowBytes). */
+  refundBytes: (bytes: number) => Promise<void>;
 };
 
 /** Whether any comment of `comments` carries a file. */
@@ -164,6 +166,7 @@ export async function prepareChunkAttachments(
       ...(p.declaredBytes !== undefined ? { declaredBytes: p.declaredBytes } : {}),
       fetchAttachment: input.fetchAttachment,
       chargeBytes: input.chargeBytes,
+      refundBytes: input.refundBytes,
       stillPending: () => input.stillPending(row.id),
     });
     if (outcome.kind === 'gone') {

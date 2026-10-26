@@ -820,6 +820,25 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     await expect(chargeWindowBytes({ id: crypto.randomUUID() }, 10 * MIB)).resolves.toBeUndefined();
   });
 
+  runDb('a transient fetch failure refunds its byte charge, never past capacity (Lua on real Redis)', async () => {
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = String(10 * MIB);
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const tokens = async () => Number(await getRedis()!.hget(migrationWindowBytesKey(window.id), 'tokens'));
+    // No declared size: each attempt charges the 10 MiB cap, the whole bucket.
+    const ticket = source(fx, [comment('c1', 10, 'Flaky.', [file('f1', 'one.png')])]);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: new ImportAttachmentFetchError('transient') }) }))
+        .rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE' });
+      // Refunded: the next attempt is admitted, and the bucket is back to (about) full.
+      expect(await tokens()).toBeGreaterThan(10 * MIB - 1024);
+      expect(await tokens()).toBeLessThanOrEqual(10 * MIB);
+    }
+    // The file comes back: it is fetched, charged once and attached.
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG }) });
+    expect(result).toMatchObject({ attachmentsWritten: 1 });
+  }, CASE_TIMEOUT);
+
   runDb('a summary frozen before W1 reads and publishes attachmentsImported 0', async () => {
     const fx = await seed();
     const window = await openWindow(fx);

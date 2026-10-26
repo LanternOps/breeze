@@ -86,6 +86,7 @@ vi.mock('./windowLock', () => ({
 vi.mock('./throughput', () => ({
   chargeWindowThroughput: vi.fn(async (_window: unknown, cost: number) => { if (cost > 0) h.charges.push(cost); }),
   chargeWindowBytes: vi.fn(async (_window: unknown, bytes: number) => { h.byteCharges.push(bytes); }),
+  refundWindowBytes: vi.fn(async (_window: unknown, bytes: number) => { h.byteCharges.push(-bytes); }),
 }));
 
 // #8313 W1: the object store and the two attachment statements. The rules
@@ -537,6 +538,8 @@ describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2
     await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f8', filename: 'a.png', inline: false }] }] }), { fetchAttachment }))
       .rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503 });
     expect(h.writes.map((w) => w[0])).toEqual(['createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments']);
+    // The charge taken before the fetch (the cap: no size declared) is given back.
+    expect(h.byteCharges).toEqual([10 * 1024 * 1024, -10 * 1024 * 1024]);
   });
 
   it('a reservation that finds the ticket merged in Breeze returns merged_in_breeze and stores nothing', async () => {
