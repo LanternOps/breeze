@@ -117,6 +117,41 @@ func TestCancelOutcomes(t *testing.T) {
 	}
 }
 
+// TestCancelWhileAnEarlierCancelIsAbortingIsNotANoOp: the first Cancel clears
+// the schedule and then aborts the OS countdown outside the lock. A second
+// Cancel landing in that window has nothing to do, but the abort can still
+// fail and the machine still go down — so it must not get the sentinel the
+// handler reports as a successful "nothing to cancel".
+func TestCancelWhileAnEarlierCancelIsAbortingIsNotANoOp(t *testing.T) {
+	rm, timers, _, _ := newTestManager(t, 3)
+	inAbort := make(chan struct{})
+	release := make(chan struct{})
+	rm.abortOSReboot = func() error {
+		close(inAbort)
+		<-release
+		return errors.New("no cancel flag on this platform")
+	}
+	mustSchedule(t, rm, 5*time.Minute)
+	timers.runAt(PlanReboot(5 * time.Minute).OSInvokeAt)
+
+	first := make(chan error, 1)
+	go func() { first <- rm.Cancel() }()
+	<-inAbort
+
+	err := rm.Cancel()
+	close(release)
+	if err == nil || errors.Is(err, ErrNoRebootScheduled) {
+		t.Fatalf("second Cancel during the first one's OS abort = %v, want a refusal that is not ErrNoRebootScheduled", err)
+	}
+	if err := <-first; err == nil {
+		t.Fatal("first Cancel = nil although its abort failed")
+	}
+	// Once the abort has settled there really is nothing left.
+	if err := rm.Cancel(); !errors.Is(err, ErrNoRebootScheduled) {
+		t.Fatalf("Cancel after the abort settled = %v, want ErrNoRebootScheduled", err)
+	}
+}
+
 func mustSchedule(t *testing.T, rm *RebootManager, delay time.Duration) {
 	t.Helper()
 	if err := rm.Schedule(delay, time.Time{}, "Patch install", "patch_job"); err != nil {

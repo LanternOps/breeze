@@ -45,10 +45,13 @@ func rebootPromptFunc(request notifyDecisionRequester) patching.PromptFunc {
 				// The helper never reported back, not even when its dialog's own
 				// countdown ran out: an unanswered dialog normally comes back as
 				// shown=true with no click (the broker waits out the countdown
-				// plus a reply grace, #10182). Not worth a warning on every rung,
-				// but it is "nothing was confirmed shown", so the manager falls
+				// plus a reply grace, #10182). So this is a helper that took the
+				// request on a live transport and went quiet — abnormal, hence
+				// Info rather than Debug, but not shipped as a warning on every
+				// rung. It is "nothing was confirmed shown", so the manager falls
 				// back rather than assuming a dialog the helper never acknowledged.
-				log.Debug("reboot prompt got no answer from the helper; proceeding as scheduled")
+				log.Info("reboot prompt got no answer from the helper; falling back to a plain notification",
+					"window", timeout.String(), "error", err.Error())
 				return "", false
 			}
 			// A transport or helper error. This one IS worth seeing: it means the

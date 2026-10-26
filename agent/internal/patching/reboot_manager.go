@@ -514,6 +514,15 @@ func (r *RebootManager) Cancel() error {
 		r.mu.Unlock()
 		return fmt.Errorf("the restart command is being handed to the operating system and can no longer be cancelled")
 	}
+	// An earlier Cancel cleared the schedule and is aborting the OS countdown
+	// outside the lock. Nothing is left for this call to do, but that abort can
+	// still fail and leave the machine going down, so "nothing scheduled" —
+	// which the handler reports as success — would be premature. The first
+	// Cancel reports the outcome.
+	if r.osAborting {
+		r.mu.Unlock()
+		return fmt.Errorf("this restart is already being cancelled; the operating system countdown is still being aborted")
+	}
 	if !r.state.RebootScheduled && !r.osInvoked {
 		r.mu.Unlock()
 		return ErrNoRebootScheduled
