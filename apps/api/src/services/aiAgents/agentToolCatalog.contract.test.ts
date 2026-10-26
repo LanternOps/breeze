@@ -409,3 +409,30 @@ describe('W10 AI-agent reads in the agent catalog (#6780)', () => {
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
   });
 });
+
+/** Spec 2026-09-23 W11 (#6781): security policy tools. Reads and the recommendation / recovery-key / policy writes are
+ * offered (writes become proposals); access reviews and PAM rules are AGENT_HUMAN_ONLY_TOOLS (explicit D4 exceptions). */
+describe('W11 security policy tools in the agent catalog (#6781)', () => {
+  it.each([
+    ['get_security_compliance', 'security_response'], ['manage_security_recommendations', 'security_response'],
+    ['manage_recovery_keys', 'security_response'], ['manage_pam_rules', 'security_response'],
+    ['manage_access_reviews', 'security_response'], ['manage_security_policies', 'config_policies'],
+    ['manage_compliance_policies', 'config_policies'], ['manage_audit_baselines', 'config_policies'],
+  ])('%s is mapped to %s', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it.each([
+    'get_security_compliance', 'manage_security_recommendations', 'manage_recovery_keys',
+    'manage_security_policies', 'manage_compliance_policies', 'manage_audit_baselines',
+  ])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['manage_access_reviews', 'manage_pam_rules'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});

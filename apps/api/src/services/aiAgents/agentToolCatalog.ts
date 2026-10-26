@@ -274,6 +274,17 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   request_elevation: 'security_response', // PAM
   revoke_elevation: 'security_response',
   get_elevation_history: 'security_response',
+  // Full-control W11 (#6781): security posture reads and actions sit with security_response; policy authoring
+  // (security policies, compliance-policy deactivate, audit baselines) with config_policies. manage_access_reviews
+  // and manage_pam_rules are AGENT_HUMAN_ONLY_TOOLS: they keep a capability row but are never offered to an agent.
+  get_security_compliance: 'security_response',
+  manage_security_recommendations: 'security_response',
+  manage_recovery_keys: 'security_response',
+  manage_pam_rules: 'security_response',
+  manage_access_reviews: 'security_response',
+  manage_security_policies: 'config_policies',
+  manage_compliance_policies: 'config_policies',
+  manage_audit_baselines: 'config_policies',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
