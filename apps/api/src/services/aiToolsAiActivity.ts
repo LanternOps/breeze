@@ -118,8 +118,13 @@ export function registerAiActivityTools(aiTools: Map<string, AiTool>): void {
           .map((row) => (row.ownerScope === 'partner' && !full ? { ...row, lastRunSummary: null } : row));
         return bounded({ schedules, showing: schedules.length, total: rows.length, hasMore: rows.length > limit });
       } catch (error) {
-        // An org the caller cannot reach and a missing org read the same.
-        if (error instanceof AgentAccessDeniedError) return notFound('Organization');
+        // An org the caller cannot reach and a missing org read the same; a caller with no org context of its own is told to name one.
+        if (error instanceof AgentAccessDeniedError) {
+          if (!str(input.orgId) && /context required/i.test(error.message)) {
+            return jsonError('orgId is required for this session', 'VALIDATION_ERROR');
+          }
+          return notFound('Organization');
+        }
         return thrown('list_ai_agent_schedules', error);
       }
     },

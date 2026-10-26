@@ -28,9 +28,11 @@ import type {
 import { AI_OPERATOR_TASK_STATES } from '@breeze/shared';
 import type { AiTool } from './aiTools';
 import { listOperatorTasks, loadOperatorTaskDetail, type OperatorTaskDetail } from './aiOperator/taskReadQueries';
-import { bounded, clampInt, jsonError, notFound, restrictedReadDenied, str, thrown } from './aiToolsAiReadsShared';
+import { bounded, clampInt, clip, jsonError, notFound, restrictedReadDenied, str, thrown } from './aiToolsAiReadsShared';
 
 const TASK = 'Task';
+/** Same bound as `bounded()`: no single result may flood the model's context. */
+const TASK_DETAIL_MAX_CHARS = 96 * 1024;
 
 export function projectTaskListItem(task: AiOperatorTaskListItemDto) {
   return {
@@ -231,9 +233,22 @@ export function registerOperatorTaskReadTools(aiTools: Map<string, AiTool>): voi
         if (!task) return notFound(TASK);
         const full = projectTaskDetail(task);
         const text = JSON.stringify(full);
-        if (text.length <= 96 * 1024) return text;
-        // A very long task: keep the newest events and the first steps, and say so rather than refuse.
-        return bounded({ ...full, events: full.events.slice(-100), steps: full.steps.slice(0, 100), truncated: true });
+        if (text.length <= TASK_DETAIL_MAX_CHARS) return text;
+        // A very long task: shrink until it fits (newest events, first steps, then clipped free text) and say what was cut.
+        for (const keep of [100, 25, 5]) {
+          const trimmed = {
+            ...full,
+            objective: clip(full.objective, 4000),
+            handoffSummary: clip(full.handoffSummary, 4000),
+            outcomeDetail: clip(full.outcomeDetail, 4000),
+            events: full.events.slice(-keep).map((e) => ({ ...e, detail: clip(e.detail, 500) })),
+            steps: full.steps.slice(0, keep).map((s) => ({ ...s, detail: clip(s.detail, 500) })),
+            truncated: { eventsShown: Math.min(keep, full.events.length), eventsTotal: full.events.length, stepsShown: Math.min(keep, full.steps.length), stepsTotal: full.steps.length },
+          };
+          const out = JSON.stringify(trimmed);
+          if (out.length <= TASK_DETAIL_MAX_CHARS) return out;
+        }
+        return jsonError('This task is too large to show in one result; use list_operator_tasks for its summary.', 'result_too_large');
       } catch (error) {
         return thrown('get_operator_task', error);
       }

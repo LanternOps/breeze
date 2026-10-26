@@ -100,6 +100,7 @@ export function registerFleetDesignReadTools(aiTools: Map<string, AiTool>): void
           unavailable: design?.unavailable ?? [],
           markdown: markdown.length > FLEET_DESIGN_MARKDOWN_MAX ? markdown.slice(0, FLEET_DESIGN_MARKDOWN_MAX) : markdown,
           markdownTruncated: markdown.length > FLEET_DESIGN_MARKDOWN_MAX,
+          markdownTotalChars: markdown.length,
           downloadPath: `/api/reports/runs/${row.reportRunId}/download`,
         });
       } catch (error) {

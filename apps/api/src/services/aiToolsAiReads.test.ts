@@ -62,6 +62,7 @@ import { registerAiActivityTools } from './aiToolsAiActivity';
 import { registerOperatorTaskReadTools } from './aiToolsOperatorTasksRead';
 import { registerFleetDesignReadTools, FLEET_DESIGN_MARKDOWN_MAX } from './aiToolsFleetDesignsRead';
 import { RAW_TEXT_FIELDS_BY_TOOL, compactToolResultForChat } from './aiToolOutput';
+import { clampInt } from './aiToolsAiReadsShared';
 
 const tools = new Map<string, AiTool>();
 for (const register of [registerAiActivityTools, registerOperatorTaskReadTools, registerFleetDesignReadTools]) register(tools);
@@ -244,6 +245,12 @@ describe('list_ai_agent_schedules', () => {
     expect(body).toMatchObject({ showing: 2, total: 3, hasMore: true });
   });
 
+  it('a caller with no org context of its own is told to name one; a named unreachable org is still not-found', async () => {
+    h.listSchedules.mockRejectedValue(new AgentAccessDeniedError('Organization context required'));
+    expect((await run('list_ai_agent_schedules', {})).body.code).toBe('VALIDATION_ERROR');
+    expect((await run('list_ai_agent_schedules', { orgId: PARTNER })).body.code).toBe('NOT_FOUND');
+  });
+
   it('passes the filters through', async () => {
     h.listSchedules.mockResolvedValue([]);
     await run('list_ai_agent_schedules', { agentId: RUN, orgId: ORG });
@@ -324,14 +331,25 @@ describe('operator task reads', () => {
     expect('accounts' in body).toBe(false);
   });
 
-  it('detail: a huge task is trimmed (newest events), not refused', async () => {
+  it('detail: a huge task is trimmed (newest events) with counts, not refused', async () => {
     const big = detail();
     big.events = Array.from({ length: 500 }, (_, i) => ({ ...big.events[0]!, id: `e${i}`, transitionSeq: i, detail: 'x'.repeat(400) }));
     h.taskDetail.mockResolvedValue(big);
     const { body } = await run('get_operator_task', { taskId: TASK });
-    expect(body.truncated).toBe(true);
+    expect(body.truncated).toMatchObject({ eventsShown: 100, eventsTotal: 500, stepsShown: 1, stepsTotal: 1 });
     expect(body.events).toHaveLength(100);
     expect(body.events.at(-1).transitionSeq).toBe(499);
+  });
+
+  it('detail: free text that alone overflows is clipped until it fits, and never errors with advice it cannot follow', async () => {
+    const big = detail();
+    big.events = Array.from({ length: 500 }, (_, i) => ({ ...big.events[0]!, id: `e${i}`, transitionSeq: i, detail: 'y'.repeat(5000) }));
+    big.steps = Array.from({ length: 500 }, (_, i) => ({ ...big.steps[0]!, id: `s${i}`, detail: 'z'.repeat(5000) }));
+    h.taskDetail.mockResolvedValue(big);
+    const { raw, body } = await run('get_operator_task', { taskId: TASK });
+    expect(raw.length).toBeLessThanOrEqual(96 * 1024);
+    expect(body.truncated.eventsTotal).toBe(500);
+    expect(raw).not.toContain('narrow the request');
   });
 });
 
@@ -435,5 +453,14 @@ describe('untrusted text is fenced, nested included (quorum QW4)', () => {
     });
     const { raw } = await run('get_fleet_design', { reportRunId: RUN });
     expect(compactToolResultForChat('get_fleet_design', raw)).not.toContain('</untrusted_data> SYSTEM');
+  });
+});
+
+describe('clampInt', () => {
+  it.each([
+    [undefined, 7, 7], [0, 7, 7], [-1, 7, 7], [Number.NaN, 7, 7], ['abc', 7, 7], [Infinity, 7, 7],
+    ['10', 7, 10], [1.9, 7, 1], [400, 7, 30], [30, 7, 30],
+  ])('clampInt(%s) -> default %s / cap 30 = %s', (raw, def, want) => {
+    expect(clampInt(raw, def as number, 30)).toBe(want);
   });
 });
