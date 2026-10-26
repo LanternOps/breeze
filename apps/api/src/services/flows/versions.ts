@@ -221,7 +221,6 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   if (document.trigger.type === 'event' && !isFlowEventDeliveryDurable()) return { ok: false, error: 'event_dispatch_not_durable' };
   // W5 (#5220, Decision 3): a webhook flow goes live only with a secret to verify against.
   if (document.trigger.type === 'webhook' && !row.webhookSecretEncrypted) return { ok: false, error: 'webhook_secret_missing' };
-  if (document.steps.some((s) => (s.forEach?.concurrency ?? 1) > 1)) return { ok: false, error: 'foreach_concurrency_not_available' };
 
   let pins: FlowStepPin[];
   try {
@@ -239,6 +238,13 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
         issues: [...validation.issues, { code: 'tool_not_found', severity: 'error', stepId: err.stepId, message: 'This step\'s tool is not available to the flow\'s owner.' }],
       },
     };
+  }
+  // W5 (#5220, Decision 11): parallel for-each only where it can be honoured —
+  // a Tier-3 item would park for approval and a wait parks the run, and
+  // parallel parking would need several live intents per run.
+  const pinTier = new Map(pins.map((p) => [p.stepId, p.tier]));
+  if (document.steps.some((st) => (st.forEach?.concurrency ?? 1) > 1 && ((pinTier.get(st.id) ?? 3) > 2 || st.tool === 'wait'))) {
+    return { ok: false, error: 'foreach_concurrency_not_available' };
   }
   const missing = missingPermissionsFor(document, pins, perms);
   if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };

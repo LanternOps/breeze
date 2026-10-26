@@ -38,6 +38,9 @@ const h = vi.hoisted(() => {
     flowsEnabled: vi.fn(() => true),
     maxRunning: 20,
     uuidSeq: 0,
+    /** W5: every flow_runs patch the fenced update applied, in order. */
+    patches: [] as Row[],
+    forEachMaxParallel: 5,
   };
 });
 
@@ -120,6 +123,7 @@ vi.mock('../services/flows/runStore', () => {
     fencedRunUpdate: async (_runId: string, token: string, patch: Row, mode: 'renew' | 'release') => {
       const run = h.state.run;
       if (!run || run.leaseToken !== token || TERMINAL.includes(run.status)) return false;
+      h.patches.push({ ...patch });
       Object.assign(run, patch);
       if (mode === 'release') { run.leaseToken = null; run.leaseExpiresAt = null; } else { run.leaseExpiresAt = lease(); }
       assertRunChecks(run);
@@ -197,6 +201,7 @@ vi.mock('./flowRunQueue', () => ({
 vi.mock('../config/env', () => ({
   flowsEnabled: () => h.flowsEnabled(),
   flowMaxRunningPerOwner: () => h.maxRunning,
+  flowForEachMaxParallel: () => h.forEachMaxParallel,
 }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/flowValidator', async () => {
@@ -238,7 +243,7 @@ interface StepDef {
   tool?: string;
   input?: Record<string, unknown>;
   onFailure?: 'stop' | 'continue';
-  forEach?: { items: string; maxItems?: number };
+  forEach?: { items: string; maxItems?: number; concurrency?: number };
   timeoutSec?: number;
 }
 
@@ -255,7 +260,11 @@ function seed(opts: {
     tool: s.tool ?? `tool_${s.id}`,
     input: s.input ?? {},
     ...(s.onFailure ? { onFailure: s.onFailure } : {}),
-    ...(s.forEach ? { forEach: { items: s.forEach.items, ...(s.forEach.maxItems ? { maxItems: s.forEach.maxItems } : {}) } } : {}),
+    ...(s.forEach ? { forEach: {
+      items: s.forEach.items,
+      ...(s.forEach.maxItems ? { maxItems: s.forEach.maxItems } : {}),
+      ...(s.forEach.concurrency ? { concurrency: s.forEach.concurrency } : {}),
+    } } : {}),
     ...(s.timeoutSec ? { timeoutSec: s.timeoutSec } : {}),
   }));
   const definition = {
@@ -334,6 +343,8 @@ beforeEach(() => {
   h.state.ownerRunning = 0;
   h.state.orgPartnerId = PARTNER_ID;
   h.maxRunning = 20;
+  h.patches.length = 0;
+  h.forEachMaxParallel = 5;
   h.flowsEnabled.mockReturnValue(true);
   h.assertDelegatorAuthority.mockResolvedValue(true);
   h.execute.mockImplementation(async (i: { step: { id: string } }) => completed({ from: i.step.id }));
@@ -789,6 +800,180 @@ describe('processFlowRunJob — failures', () => {
     await run();
     expect(execOrder()).toEqual(['fix[0]', 'fix[1]']);
     expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+});
+
+describe('processFlowRunJob — W5 parallel for-each (#5220 A7)', () => {
+  /** Items that each wait for an explicit release, to observe overlap and finish order. */
+  function gated() {
+    let inFlight = 0;
+    let max = 0;
+    const gates = new Map<number, () => void>();
+    h.execute.mockImplementation(async (i: { itemIndex: number | null; step: { id: string } }) => {
+      if (i.itemIndex === null) return completed({ from: i.step.id });
+      inFlight += 1;
+      max = Math.max(max, inFlight);
+      await new Promise<void>((resolve) => gates.set(i.itemIndex!, resolve));
+      inFlight -= 1;
+      return completed({ item: i.itemIndex });
+    });
+    const open = async (i: number) => {
+      for (let n = 0; n < 50 && !gates.has(i); n++) await new Promise((r) => setTimeout(r, 0));
+      gates.get(i)!();
+      await new Promise((r) => setTimeout(r, 0));
+    };
+    return { open, get max() { return max; } };
+  }
+
+  it('a tier-1 step with concurrency 3 overlaps its items and keeps their outputs in order', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }, { id: 'after' }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    const g = gated();
+    const job = run();
+    await g.open(2);
+    await g.open(0);
+    await g.open(3);
+    await g.open(1);
+    await job;
+    expect(g.max).toBe(3);
+    const afterScope = (h.execute.mock.calls.find(([i]) => (i as { step: { id: string } }).step.id === 'after')![0] as {
+      scope: { steps: Record<string, { status: string; output: unknown }> };
+    }).scope.steps.fix!;
+    expect(afterScope).toEqual({ status: 'completed', output: [{ item: 0 }, { item: 1 }, { item: 2 }, { item: 3 }] });
+    expect(h.state.run!.status).toBe('completed');
+    for (const i of [0, 1, 2, 3]) expect(stepRow('fix', i)).toMatchObject({ status: 'completed', attempt: 1 });
+  });
+
+  it('concurrency is capped by FLOW_FOREACH_MAX_PARALLEL', async () => {
+    h.forEachMaxParallel = 2;
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 5 } }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    const g = gated();
+    const job = run();
+    for (const i of [0, 1, 2, 3]) await g.open(i);
+    await job;
+    expect(g.max).toBe(2);
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('item checkpoints never patch activeMs or the cursor; one batch checkpoint does', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }, { id: 'after' }], inputs: { hosts: ['h1', 'h2', 'h3'] } });
+    await run();
+    const itemPatches = h.patches.filter((p) => Object.keys(p).length === 0);
+    // insert + outcome per item, all empty run patches
+    expect(itemPatches.length).toBe(6);
+    const batch = h.patches.filter((p) => p.currentStepId === 'after' && p.currentItemIndex === null && 'activeMs' in p);
+    expect(batch.length).toBeGreaterThanOrEqual(1);
+    // No item-level patch ever names an item cursor.
+    expect(h.patches.some((p) => p.currentStepId === 'fix' && typeof p.currentItemIndex === 'number')).toBe(false);
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('stop: the first failure launches nothing more, awaits in-flight items and fails the run', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }, { id: 'after' }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null }) => (
+      i.itemIndex === 0 ? { kind: 'failed', code: 'step_failed', message: 'boom', policy: false } : completed({ item: i.itemIndex })));
+    await run();
+    expect(execOrder().filter((x) => x.startsWith('fix['))).toEqual(['fix[0]', 'fix[1]']);
+    expect(execOrder()).not.toContain('after');
+    expect(stepRow('fix', 1)!.status).toBe('completed');
+    expect(stepRow('fix', 2)).toBeUndefined();
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('continue: every item runs, the step fails and the run ends failed', async () => {
+    seed({ steps: [{ id: 'fix', onFailure: 'continue', forEach: { items: 'inputs.hosts', concurrency: 3 } }, { id: 'after' }], inputs: { hosts: ['h1', 'h2', 'h3'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null; step: { id: string } }) => (
+      i.itemIndex === 1 ? { kind: 'failed', code: 'step_failed', message: 'x', policy: false } : completed({ from: i.step.id, item: i.itemIndex })));
+    await run();
+    expect(execOrder().filter((x) => x.startsWith('fix[')).sort()).toEqual(['fix[0]', 'fix[1]', 'fix[2]']);
+    const afterScope = (h.execute.mock.calls.find(([i]) => (i as { step: { id: string } }).step.id === 'after')![0] as {
+      scope: { steps: Record<string, { status: string; output: unknown }> };
+    }).scope.steps.fix!;
+    expect(afterScope.status).toBe('failed');
+    expect((afterScope.output as unknown[])[1]).toBeNull();
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+  });
+
+  it('a tier-2 unknown outcome in the batch ends the run unknown_outcome', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }], tiers: { fix: 2 }, inputs: { hosts: ['h1', 'h2'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null }) => (
+      i.itemIndex === 1 ? { kind: 'unknown_outcome', message: 'timed out', renderedInput: {} } : completed()));
+    await run();
+    expect(stepRow('fix', 1)!.status).toBe('unknown_outcome');
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+  });
+
+  it('cancel between launches stops new items', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null }) => {
+      if (i.itemIndex === 0) h.state.run!.cancelRequestedAt = new Date();
+      return completed();
+    });
+    await run();
+    expect(execOrder().length).toBeLessThan(4);
+    expect(h.state.run).toMatchObject({ status: 'cancelled', errorCode: 'cancelled' });
+  });
+
+  it('resume skips items with settled rows (no re-execution)', async () => {
+    seed({
+      steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }], inputs: { hosts: ['h1', 'h2', 'h3'] },
+      run: { status: 'running', currentStepId: 'fix', currentItemIndex: null, leaseToken: 'aaaaaaaa-0000-4000-8000-0000000000dd', leaseExpiresAt: new Date(Date.now() - 1) },
+    });
+    ledger({ stepId: 'fix', itemIndex: 0, status: 'completed', output: { prev: 0 }, finishedAt: new Date() });
+    ledger({ stepId: 'fix', itemIndex: 2, status: 'completed', output: { prev: 2 }, finishedAt: new Date() });
+    await run();
+    expect(execOrder()).toEqual(['fix[1]']);
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('two stalled running tier-1 rows both retry', async () => {
+    seed({
+      steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }], inputs: { hosts: ['h1', 'h2', 'h3'] },
+      run: { status: 'running', currentStepId: 'fix', leaseToken: 'aaaaaaaa-0000-4000-8000-0000000000dd', leaseExpiresAt: new Date(Date.now() - 1) },
+    });
+    ledger({ stepId: 'fix', itemIndex: 0, status: 'running' });
+    ledger({ stepId: 'fix', itemIndex: 1, status: 'completed', finishedAt: new Date() });
+    ledger({ stepId: 'fix', itemIndex: 2, status: 'running' });
+    await run();
+    expect(execOrder().sort()).toEqual(['fix[0]', 'fix[2]']);
+    for (const i of [0, 2]) {
+      expect(stepRow('fix', i, 1)).toMatchObject({ status: 'failed', errorCode: 'worker_lost' });
+      expect(stepRow('fix', i, 2)!.status).toBe('completed');
+    }
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('a stalled running tier-2 row is unknown_outcome', async () => {
+    seed({
+      steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }], tiers: { fix: 2 }, inputs: { hosts: ['h1', 'h2'] },
+      run: { status: 'running', currentStepId: 'fix', leaseToken: 'aaaaaaaa-0000-4000-8000-0000000000dd', leaseExpiresAt: new Date(Date.now() - 1) },
+    });
+    ledger({ stepId: 'fix', itemIndex: 0, tier: 2, status: 'running' });
+    await run();
+    expect(h.execute).not.toHaveBeenCalled();
+    expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'unknown_outcome' });
+  });
+
+  it('lost lease mid-batch launches nothing more and writes nothing', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 2 } }], inputs: { hosts: ['h1', 'h2', 'h3', 'h4'] } });
+    h.execute.mockImplementation(async (i: { itemIndex: number | null }) => {
+      // Another slice took the run over while item 0 ran.
+      if (i.itemIndex === 0) h.state.run!.leaseToken = 'aaaaaaaa-0000-4000-8000-0000000000ee';
+      return completed();
+    });
+    await run();
+    expect(execOrder().length).toBeLessThanOrEqual(2);
+    expect(h.state.run!.status).toBe('running');
+    expect(stepRow('fix', 2)).toBeUndefined();
+  });
+
+  it('a tier-3 step with concurrency still runs its items one at a time (sequential W04 path)', async () => {
+    seed({ steps: [{ id: 'fix', forEach: { items: 'inputs.hosts', concurrency: 3 } }], tiers: { fix: 3 }, inputs: { hosts: ['h1', 'h2'] } });
+    const g = gated();
+    const job = run();
+    await g.open(0);
+    await g.open(1);
+    await job;
+    expect(g.max).toBe(1);
   });
 });
 

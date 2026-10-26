@@ -295,11 +295,29 @@ describe('enableFlow — refusals', () => {
     }
   });
 
-  it('forEach concurrency 2 refused', async () => {
-    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[0]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
+  // W5 (#5220, Decision 11): concurrency is refused only where it cannot be honoured.
+  it('tier-3 step with concurrency 2 is foreach_concurrency_not_available', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[1]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
     queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([PINS[1]!]);
     expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
       .toEqual({ ok: false, error: 'foreach_concurrency_not_available' });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it('wait in for-each with concurrency 2 is refused', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ id: 'pause', tool: 'wait', input: { minutes: 1 }, ...STEP_DEFAULTS, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
+    queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([{ stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null }]);
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+      .toEqual({ ok: false, error: 'foreach_concurrency_not_available' });
+  });
+
+  it('tier-2 step with concurrency 5 enables', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[0]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 5 } }] };
+    queueEnable(row({ definition: doc }));
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([{ ...PINS[0]!, tier: 2 }]);
+    expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
   });
 
   // W05 (#5220) Task A5, validator mocked (B1 adds the webhook trigger rules).
