@@ -47,12 +47,25 @@ test.describe('Wisp home (/wisp)', () => {
     'needs BREEZE_WISP_ENABLED and a seeded active Wisp grant (set E2E_WISP_ENABLED=1)',
   );
 
-  test('shows the home sections', async ({ authedPage: page }) => {
+  test('shows the conversation column and the rail', async ({ authedPage: page }) => {
+    // W01 #10211: the conversation is the page. A fresh grant's empty thread
+    // shows Wisp's welcome (its chips stay when a brief exists); a grant whose
+    // last session is still live resumes that conversation instead.
     await page.goto('/wisp');
     await expect(page.getByTestId('wisp-home')).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId('wisp-brief-card')).toBeVisible();
-    await expect(page.getByTestId('wisp-needs-you')).toBeVisible();
     await expect(page.getByTestId('wisp-home-thread')).toBeVisible();
+    await expect(
+      page.getByTestId('wisp-welcome').or(page.getByTestId('ai-msg-user').first()),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-input')).toBeVisible();
+    // W02b #10213: the column reads the thread timeline (older sessions and
+    // Wisp's posts); a fresh thread has no older page to load.
+    if (await page.getByTestId('wisp-welcome').isVisible()) {
+      await expect(page.getByTestId('wisp-home-thread').getByTestId('ai-chat-load-earlier')).toHaveCount(0);
+    }
+    // The default 1280 px viewport is wide enough for the rail beside the thread.
+    await expect(page.getByTestId('wisp-rail')).toBeVisible();
+    await expect(page.getByTestId('wisp-needs-you')).toBeVisible();
     await expect(page.getByTestId('wisp-links-panel')).toBeVisible();
   });
 

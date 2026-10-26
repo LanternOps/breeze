@@ -171,6 +171,17 @@ func (c *Config) ValidateTiered() ValidationResult {
 		c.HeartbeatIntervalSeconds = 3600
 	}
 
+	// ws_first_reconnect_window_seconds: 0 is meaningful (the 1-5 s spread of
+	// #9145), so only negatives fall back to the default and only values above
+	// the ceiling are clamped.
+	if c.WsFirstReconnectWindowSeconds < 0 {
+		result.Warnings = append(result.Warnings, fmt.Errorf("ws_first_reconnect_window_seconds %d is negative, using default %d", c.WsFirstReconnectWindowSeconds, DefaultWsFirstReconnectWindowSeconds))
+		c.WsFirstReconnectWindowSeconds = DefaultWsFirstReconnectWindowSeconds
+	} else if c.WsFirstReconnectWindowSeconds > MaxWsFirstReconnectWindowSeconds {
+		result.Warnings = append(result.Warnings, fmt.Errorf("ws_first_reconnect_window_seconds %d exceeds maximum %d, clamped to %d", c.WsFirstReconnectWindowSeconds, MaxWsFirstReconnectWindowSeconds, MaxWsFirstReconnectWindowSeconds))
+		c.WsFirstReconnectWindowSeconds = MaxWsFirstReconnectWindowSeconds
+	}
+
 	if c.MetricsIntervalSeconds < 5 {
 		result.Warnings = append(result.Warnings, fmt.Errorf("metrics_interval_seconds %d is below minimum 5, clamped to 5", c.MetricsIntervalSeconds))
 		c.MetricsIntervalSeconds = 5

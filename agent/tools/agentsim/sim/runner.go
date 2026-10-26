@@ -141,7 +141,12 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 			exe = osExecutor{}
 		}
 		sched = &Scheduler{Scenario: *cfg.Storm, Exec: exe, Rec: rec, PreWindow: cfg.StormPreWindow,
-			Internal: map[string]func() int{ActionDropSockets: hub.CloseAll}}
+			Internal: map[string]func(Action) int{
+				ActionDropSockets: func(Action) int { return hub.CloseAll() },
+				ActionDrainSockets: func(a Action) int {
+					return hub.Drain(time.Duration(*a.WithinMs) * time.Millisecond)
+				},
+			}}
 		wg.Add(1)
 		go func() { defer wg.Done(); sched.Run(runCtx, start.Add(open)) }()
 	}

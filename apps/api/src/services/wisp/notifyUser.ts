@@ -15,7 +15,11 @@
  *      urgent-capable set and the user's push targets. The context closes.
  *   2. `deliverInApp` (W05's single `createNotification` site, A18) writes the
  *      in-app row under its own system context; its dedupe key makes a repeat
- *      call inside one backoff window a no-op.
+ *      call inside one backoff window a no-op. The delivery is also recorded
+ *      as a thread post (W02a #10212, quorum B) WHATEVER the channels: with
+ *      the in-app channel on, `deliverInApp` writes notification and post in
+ *      one callback; with it off, `recordThreadPost` runs under its own
+ *      system context here. Same dedupe key, so a retry writes no second post.
  *   3. A concern nudge is COUNTED (`recordNudge`) whenever it got past the
  *      recipient backoff gate — delivered, filtered by preferences or quiet
  *      hours, throttled, or found already delivered by an earlier attempt that
@@ -37,11 +41,15 @@ import { captureException } from '../sentry';
 import { isInQuietHours, type QuietHoursConfig } from '../quietHours';
 import { userPushTargetsQuery } from '../ticketPush';
 import { recipientState, recordNudge } from './concerns';
-import { deliverInApp } from './deliver';
+import { deliverInApp, type ThreadPostDraft } from './deliver';
 import { webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
+import { recordThreadPost, type ThreadPostKind } from './threadPosts';
 import { incWispNudge } from '../wispMetrics';
+
+/** The post kind of each nudge kind (explicit: a budget notice is never a post). */
+const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = { concern: 'nudge', digest: 'digest', brief: 'brief' };
 
 export type NudgePayload = {
   userId: string;
@@ -210,11 +218,11 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     const prefs = await loadNudgePrefs(p.userId);
     const urgent = concern ? await loadUrgentCapableSeverities(thread.partnerId) : [];
     const devices = (await userPushTargetsQuery([p.userId])) as DeviceRow[];
-    return { backoff: false as const, concern, state, prefs, urgent, devices };
+    return { backoff: false as const, partnerId: thread.partnerId, concern, state, prefs, urgent, devices };
   }));
   if (read.backoff) return BACKOFF;
 
-  const { concern, state, prefs } = read;
+  const { concern, state, prefs, partnerId } = read;
   const decision = decideNudgeDelivery({
     prefs,
     kind: p.kind,
@@ -225,32 +233,54 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     now,
   });
 
-  // Phase 2 — the in-app row (its own system context, closed on return).
+  // Phase 2 — the in-app row and the thread post (one system context, closed
+  // on return). The post is written whatever the channels (W02a, quorum B):
+  // a push-only or all-off user still keeps the history on the thread.
+  const orgId = concern?.orgId ?? null;
+  const link = webDeepLink(p.threadId, p.concernId);
+  const dedupeKey = nudgeDedupeKey({
+    kind: p.kind,
+    concernId: p.concernId,
+    grantId: p.grantId,
+    threadId: p.threadId,
+    nextEligibleNudgeAt: state?.nextEligibleNudgeAt ?? null,
+    now,
+    digestCadenceMinutes: prefs.digestCadenceMinutes,
+    briefLocalDate: p.briefLocalDate,
+  });
+  const post: ThreadPostDraft = {
+    threadId: p.threadId,
+    partnerId,
+    grantId: p.grantId,
+    orgId,
+    kind: POST_KIND[p.kind],
+    title: p.title,
+    body: p.body,
+    link,
+    sections: p.kind === 'brief' ? p.briefSections ?? null : null,
+    concernId: p.concernId,
+  };
   let created = false;
-  if (decision.inApp) {
+  if (!decision.inApp) {
+    // Throws like deliverInApp would: nothing is committed yet, the caller retries.
+    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      recordThreadPost({ ...post, dedupeKey, notificationId: null })));
+  } else {
     const res = await deliverInApp({
       userId: p.userId,
-      orgId: concern?.orgId ?? null,
+      orgId,
       title: p.title,
       body: p.body,
-      link: webDeepLink(p.threadId, p.concernId),
+      link,
       priority: concern?.severity === 'high' ? 'high' : 'normal',
-      dedupeKey: nudgeDedupeKey({
-        kind: p.kind,
-        concernId: p.concernId,
-        grantId: p.grantId,
-        threadId: p.threadId,
-        nextEligibleNudgeAt: state?.nextEligibleNudgeAt ?? null,
-        now,
-        digestCadenceMinutes: prefs.digestCadenceMinutes,
-        briefLocalDate: p.briefLocalDate,
-      }),
+      dedupeKey,
       concernId: p.concernId,
       approvalIntentId: p.approvalIntentId ?? null,
       threadId: p.threadId,
       grantId: p.grantId,
       deepLink: p.deepLink,
       ...(p.kind === 'brief' && p.briefSections ? { brief: p.briefSections } : {}),
+      post,
     });
     created = res.created;
     if (!created) {

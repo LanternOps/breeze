@@ -67,6 +67,8 @@ import {
   type OnedriveConfigUpdate,
   type HelperSettings,
 } from './helpers';
+import { buildFeatureUpdateConfigUpdate, toFeatureUpdateSettingsWire } from './featureUpdateConfig';
+import type { RingFeatureUpdates } from '@breeze/shared/validators';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
@@ -121,6 +123,8 @@ import {
   signAgentIdentityAssertion,
   type AgentIdentityAssertion,
 } from '../../services/agentIdentityAssertion';
+import { normalizeRebindProtocolVersion } from '../../services/deviceReattach/protocol';
+import { rebindDirectiveForBeat } from '../../services/deviceReattach/rebindDirective';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1166,6 +1170,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // agent that stops reporting it self-heals back to 0.
     workloadInventoryProtocolVersion: normalizeWorkloadInventoryProtocolVersion(
       data.securityCapabilities?.workloadInventoryProtocolVersion,
+    ),
+    // #8318 §6.2 — rebind capability, same non-sticky contract: a downgrade
+    // reports back down to 0, which also stops the `rebind` directive.
+    rebindProtocolVersion: normalizeRebindProtocolVersion(
+      data.securityCapabilities?.rebindProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
@@ -2535,6 +2544,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
+  // #8318 §6.2 — the signed `rebind` directive, while this device is the
+  // source of an open reattach intent. Only a device that declared the rebind
+  // capability on THIS beat is looked up (one indexed system read, outside
+  // the org transaction like the assertion above, #1105); every other beat
+  // costs nothing. Non-fatal: a missed directive is re-sent next beat.
+  const rebind = await rebindDirectiveForBeat({
+    deviceId: scoped.deviceId,
+    agentId: agent.agentId,
+    rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
+  });
+
   let manifestTrustKeys: ManifestTrustKey[] = [];
   try {
     manifestTrustKeys = await getActiveTrustKeysetCached();
@@ -2618,6 +2638,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: Record<string, unknown> | null;
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
+    featureUpdateSettings: RingFeatureUpdates | null;
     warrantySettings: { hpCmslEnabled: boolean } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
@@ -2628,6 +2649,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: null,
     pamSettings: null,
     patchSourceSettings: null,
+    featureUpdateSettings: null,
     warrantySettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
@@ -2790,6 +2812,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Windows feature-update policy from the device's update ring: same
+      // posture as patch_source — an error omits the block (the agent keeps
+      // its last policy), a successful resolve with no ring says block.
+      try {
+        policyConfigs.featureUpdateSettings = await buildFeatureUpdateConfigUpdate(scoped.deviceId, policyOpts);
+      } catch (err) {
+        console.error(`[agents] failed to build feature_update config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       // #5511 W02 HP CMSL: same shape as patch_source — an error only omits.
       try {
         policyConfigs.warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId, policyOpts);
@@ -2902,6 +2934,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings,
     pamSettings,
     patchSourceSettings,
+    featureUpdateSettings,
     warrantySettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
@@ -2931,6 +2964,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (patchSourceSettings) {
     policyConfigUpdate.patch_source_settings = patchSourceSettings;
+  }
+  if (featureUpdateSettings) {
+    policyConfigUpdate.feature_update_settings = toFeatureUpdateSettingsWire(featureUpdateSettings);
   }
   // Snake_case inside the block as well as outside (contract D6): this
   // assembly is where camelCase resolver output becomes wire keys, and the
@@ -2979,6 +3015,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     helperSettings: settingsDecision.helperSettings,
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
+    ...(rebind ? { rebind } : {}),
     ...(settingsDecision.retainState ? { retainState: settingsDecision.retainState } : {}),
   });
 });

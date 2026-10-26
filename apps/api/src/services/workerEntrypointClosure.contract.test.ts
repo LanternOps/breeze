@@ -294,7 +294,7 @@ const EXPECTED_NAMES = [
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'migrationWindowSweep', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
-  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
+  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'deviceReattachIntentSweep', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).
   'helperScreenshotRetentionWorker',
   // Endpoint messaging (#8742 W02): message/delivery row retention.

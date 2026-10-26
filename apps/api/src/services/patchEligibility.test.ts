@@ -623,6 +623,116 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
   });
 });
 
+// Windows feature releases follow the ring's feature-update policy
+// (block | allow | pin). The gate sits after the category filter and before
+// app rules, and like those it overrides a manual approval.
+describe('evaluatePatchInstallEligibility — Windows feature-update policy', () => {
+  const feature = (patchId: string, title: string) =>
+    row({ patchId, title, category: 'feature', severity: 'unknown', source: 'microsoft' });
+
+  it('block denies a manually approved feature release', async () => {
+    mockEvaluatorReads(
+      [feature(P1, 'Windows 11, version 25H2')],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, config: ringConfig({ featureUpdates: { mode: 'block' } }),
+    });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_feature_update_policy' }]);
+    expect(res.eligible).toEqual([]);
+  });
+
+  it('an absent policy (legacy snapshot) means block', async () => {
+    mockEvaluatorReads(
+      [feature(P1, 'Windows 11, version 25H2')],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig() });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_feature_update_policy' }]);
+    expect(res.eligible).toEqual([]);
+  });
+
+  it('allow lets a feature release reach the approval rules', async () => {
+    mockEvaluatorReads(
+      [feature(P1, 'Windows 11, version 26H2')],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, config: ringConfig({ featureUpdates: { mode: 'allow' } }),
+    });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it('pin allows exactly the pinned release and denies every other one', async () => {
+    mockEvaluatorReads(
+      [
+        feature(P1, 'Windows 11, version 25H2'),
+        feature(P2, 'Windows 11, version 26H2'),
+        feature(P3, 'Feature update to Windows 10, version 22H2 via Enablement Package (KB5015684)'),
+      ],
+      [
+        { patchId: P1, status: 'approved', ringId: RING },
+        { patchId: P2, status: 'approved', ringId: RING },
+        { patchId: P3, status: 'approved', ringId: RING },
+      ],
+    );
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG,
+      config: ringConfig({ featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' } }),
+    });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(res.ineligible).toEqual(expect.arrayContaining([
+      { patchId: P2, reason: 'blocked_by_feature_update_policy' },
+      { patchId: P3, reason: 'blocked_by_feature_update_policy' },
+    ]));
+  });
+
+  it('a cumulative update that names the release is not a feature update and is untouched by block', async () => {
+    mockEvaluatorReads(
+      [row({ patchId: P1, title: '2026-10 Cumulative Update for Windows 11 Version 25H2 for x64-based Systems (KB5066835)', category: 'security' })],
+      [{ patchId: P1, status: 'approved', ringId: RING }],
+    );
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, config: ringConfig({ featureUpdates: { mode: 'block' } }),
+    });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it('the live resolver carries the ring policy, and an invalid or missing ring resolves to block', async () => {
+    const ringResolution = (o: Record<string, unknown> = {}) => ({
+      classification: 'valid_ring', valid: true, ringId: RING, ringName: 'Ring A',
+      categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules: [],
+      featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' },
+      ...o,
+    });
+    const local = (ring: Record<string, unknown>) => ({
+      configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
+      featurePolicyId: RING, sourcePolicyId: 'cp-1', inherited: false,
+      settings: { sources: ['os'] },
+      ring,
+    });
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER }]) as never);
+    expect((await resolveDevicePatchEvaluationConfig(DEV)).featureUpdates)
+      .toEqual({ mode: 'pin', product: 'windows-11', targetVersion: '25H2' });
+
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+      classification: 'null', valid: true, ringId: null, ringName: null, featureUpdates: { mode: 'block' },
+    })) as never);
+    expect((await resolveDevicePatchEvaluationConfig(DEV)).featureUpdates).toEqual({ mode: 'block' });
+
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+      classification: 'missing_target', valid: false, ringId: null, ringName: null, featureUpdates: { mode: 'block' },
+    })) as never);
+    expect((await resolveDevicePatchEvaluationConfig(DEV)).featureUpdates ?? { mode: 'block' }).toEqual({ mode: 'block' });
+
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null);
+    expect((await resolveDevicePatchEvaluationConfig(DEV)).featureUpdates ?? { mode: 'block' }).toEqual({ mode: 'block' });
+  });
+});
+
 // #9369: a decline (status='rejected') is a terminal deny — ring auto-approve must not override it.
 describe('evaluatePatchInstallEligibility — explicit decline is terminal (#9369)', () => {
   const unrated = (id = P1) => row({ patchId: id, category: null, severity: null, source: 'linux', releaseDate: null });

@@ -30,6 +30,7 @@ vi.mock('./elevationRequests',async()=>({elevationRequestsRoutes:new (await impo
 vi.mock('./processSample',async()=>({processSampleRoutes:new (await import('hono')).Hono()}));
 vi.mock('./unifiTelemetry',async()=>({unifiTelemetryRoutes:new (await import('hono')).Hono()}));
 vi.mock('./wingetBootstrap',async()=>({wingetBootstrapRoutes:new (await import('hono')).Hono()}));
+vi.mock('./rebind',async()=>({rebindRoutes:new (await import('hono')).Hono()}));
 import { agentRoutes } from './index';
 import { hardwareHealthSnapshotSchema } from '@breeze/shared';
 import { createGlobalBodyLimitMiddleware } from '../../middleware/bodyLimitGate';

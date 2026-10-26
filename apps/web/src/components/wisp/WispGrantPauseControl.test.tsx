@@ -56,6 +56,13 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
     expect(screen.queryByTestId('wisp-paused-by-you')).toBeNull();
   });
 
+  it('offers no Resume for a partner-disabled pause and says why (#10145)', () => {
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'partner_disabled' })} onChange={vi.fn()} />);
+    expect(screen.queryByTestId('wisp-resume')).toBeNull();
+    expect(screen.getByTestId('wisp-paused-partner-disabled')).toHaveTextContent('turned off');
+    expect(screen.queryByTestId('wisp-paused-by-you')).toBeNull();
+  });
+
   it('learns an unknown pause reason from GET /wisp/grants (read, not runAction)', async () => {
     h.fetchWithAuth.mockResolvedValue(ok({ grants: [{ id: 'other', pausedReason: null }, { id: 'g-1', status: 'paused', pausedReason: 'user_paused' }] }));
     const onChange = vi.fn();

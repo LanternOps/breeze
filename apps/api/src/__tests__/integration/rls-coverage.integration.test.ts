@@ -464,6 +464,18 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // scope on top of the partner-axis policy asserted here.
   // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
   ['device_pool_assignment_events', 'partner_id'],
+  // #8318 wave 1b (reattach, spec §4.3/§4.4). Both partner-axis (Shape 3) with
+  // no org_id column — source/target org ids are authorization snapshots, not
+  // tenancy keys — so no cascade / export / merge registration; the intents'
+  // device FKs cascade, the ledger's device ids are FK-less snapshots.
+  // Both: RESTRICTIVE writes system-only (every writer runs in system scope),
+  // RESTRICTIVE reads narrowed to rows whose target org (and real source org)
+  // the caller can access. device_reattach_intents: source_parked is derived
+  // by a SECURITY DEFINER trigger. device_reattachments: append-only (UPDATE
+  // trigger).
+  // Functional proof: deviceReattachIntentsRls.integration.test.ts.
+  ['device_reattach_intents', 'partner_id'],
+  ['device_reattachments', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
@@ -712,6 +724,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // read branch. Functional forge proof:
   // wispThreadLinksRls.integration.test.ts.
   'wisp_thread_links',
+  // Wisp companion W02a (#10212): wisp_thread_posts is the same shape —
+  // partner_id always set, org_id NULL for a partner-level post (brief,
+  // digest, org-less concern), no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispThreadPostsRls.integration.test.ts.
+  'wisp_thread_posts',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR

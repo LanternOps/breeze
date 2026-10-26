@@ -118,7 +118,9 @@ func TestRebootPromptFuncTranslatesTheBrokerResult(t *testing.T) {
 			wantShown: false,
 		},
 		{
-			name:      "the prompt went unanswered",
+			// Since #10182 an unanswered dialog comes back as Delivered with no
+			// click (the case above); a timeout means the helper never answered.
+			name:      "the helper never answered, even after its countdown",
 			err:       fmt.Errorf("session s1: %w", sessionbroker.ErrCommandTimeout),
 			wantShown: false,
 		},

@@ -376,7 +376,7 @@ export function canAccessOrg(
 }
 
 export function canAccessSite(
-  userPerms: UserPermissions,
+  userPerms: Pick<UserPermissions, 'allowedSiteIds'>,
   siteId: string
 ): boolean {
   // undefined = unrestricted; a malformed (non-array) allowlist fails closed (#6790).

@@ -481,6 +481,7 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              assistantLabel={wisp ? t("wisp.title") : undefined}
             />
 
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}

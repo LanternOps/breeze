@@ -65,7 +65,15 @@ export const enrollSchema = z.object({
     mac: z.string().optional(),
     ip: z.string().optional(),
     isPrimary: z.boolean().optional()
-  })).max(100).optional()
+  })).max(100).optional(),
+  // #8318 wave 1b — the capabilities a new install declares at enrollment.
+  // Only the rebind protocol so far: enroll records it, because a freshly
+  // enrolled install is exactly the device a reattach makes the SOURCE (§6.2).
+  // Same tolerant contract as the heartbeat's securityCapabilities: a
+  // malformed value drops this field alone and never fails the enrollment.
+  securityCapabilities: z.object({
+    rebindProtocolVersion: z.number().int().optional().catch(undefined),
+  }).optional().catch(undefined),
 });
 
 // ============================================
@@ -431,6 +439,11 @@ export const heartbeatSchema = z.object({
     // (never persisted): the beat being answered is the only source of truth.
     // Same tolerant contract; anything but exactly 1 gets the legacy payload.
     retainStateProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8318 wave 1b — the bounded rebind (reinstall reattach, §6.2). Recorded
+    // non-sticky on every main and parked beat; 1 makes the device eligible to
+    // be the source of a reattach and to receive the signed `rebind`
+    // directive. Same tolerant contract as its siblings.
+    rebindProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),

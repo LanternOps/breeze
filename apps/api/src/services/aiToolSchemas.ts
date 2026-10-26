@@ -40,6 +40,7 @@ import {
   proposeScriptInputSchema,
   ringAutoApproveSchema,
   ringAppRulesSchema,
+  ringFeatureUpdatesSchema,
   scriptVerificationClaimSchema,
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
@@ -56,6 +57,7 @@ import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
 import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
+import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -586,6 +588,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...alertTriageToolSchemas,
   // Full-control W08 (#6778): network topology tools.
   ...topologyOpsToolSchemas,
+  // Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
+  ...networkMonitoringToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -2433,6 +2437,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     excludeCategories: z.array(z.string().max(100)).max(50).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
     appRules: ringAppRulesSchema.optional(),
+    featureUpdates: ringFeatureUpdatesSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),

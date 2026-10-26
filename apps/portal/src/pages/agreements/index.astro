@@ -1,0 +1,26 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import AgreementList from '../../components/portal/AgreementList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+const config = buildServerApiConfig(Astro.request);
+const [pending, signed] = await Promise.all([
+  portalApi.getAgreements(config),
+  portalApi.getSignedAgreements(config),
+]);
+
+if (pending.statusCode === 401 || signed.statusCode === 401) {
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
+}
+---
+
+<PortalLayout title="Agreements">
+  <AgreementList
+    pending={pending.data?.data ?? []}
+    signed={signed.data?.data ?? []}
+    error={pending.error ?? signed.error}
+  />
+</PortalLayout>

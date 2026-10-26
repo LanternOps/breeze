@@ -11,6 +11,10 @@ import (
 // avoid a circular import (httputil already imports logging).
 const retryAfterMaxCap = 300 * time.Second
 
+// RetryAfterMaxCap exports the cap so httputil's parity test can assert the
+// two copies agree. It MUST equal httputil.retryAfterMaxCap.
+const RetryAfterMaxCap = retryAfterMaxCap
+
 // parseRetryAfter returns the duration to wait per RFC 7231 §7.1.3.
 //
 // The Retry-After header may be either:
