@@ -53,8 +53,12 @@ export default function HelperTab({
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
+  // OD-11 (#10190): a helper policy being created deploys Breeze Assist by
+  // default (the API applies the same default on create). A stored link that
+  // does not decide `enabled` resolves to off on the server, so it shows off.
   const [settings, setSettings] = useState<HelperSettings>(() => ({
     ...defaults,
+    enabled: !effectiveLink,
     ...storedSettings(effectiveLink?.inlineSettings),
   }));
   useEffect(() => {
@@ -62,6 +66,7 @@ export default function HelperTab({
     if (link?.inlineSettings) {
       setSettings((prev) => ({
         ...prev,
+        enabled: false,
         ...storedSettings(link.inlineSettings),
       }));
     }

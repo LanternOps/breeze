@@ -1842,6 +1842,22 @@ export type FeatureLinkWriteOptions = {
   securityAgentsArmAuthorized?: boolean;
 };
 
+/**
+ * OD-11 (#10190): a newly created Breeze Assist (helper) feature link deploys
+ * Assist unless the request decides `enabled` itself. Create path only:
+ * updates store what they are sent. Devices with no helper policy are
+ * unaffected (HELPER_DEFAULTS.enabled stays false in helperSettings.ts),
+ * because defaulting those on would silently install software on every
+ * existing customer's machines (OD-11 option c, rejected).
+ */
+function withHelperCreateDefaults(inlineSettings: unknown): Record<string, unknown> {
+  const settings =
+    inlineSettings !== null && typeof inlineSettings === 'object' && !Array.isArray(inlineSettings)
+      ? (inlineSettings as Record<string, unknown>)
+      : {};
+  return settings.enabled === undefined ? { ...settings, enabled: true } : settings;
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1853,6 +1869,10 @@ export async function addFeatureLink(
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'helper') {
+    inlineSettings = withHelperCreateDefaults(inlineSettings);
   }
 
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {

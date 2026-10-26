@@ -1412,7 +1412,24 @@
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist è abilitato ma non installato (dal {{since}}): il server non ha offerto una versione di Breeze Assist da installare su questo dispositivo, che quindi resta senza installazione. Verifica che sia pubblicata una build di Breeze Assist per la piattaforma di questo dispositivo.",
       "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
+      "webview2Outdated": "Breeze Assist è installato, ma l’agente non lo avvia (dal {{since}}): il WebView2 Runtime di questo dispositivo è più vecchio di quanto Breeze Assist richieda. Le richieste usano le finestre di dialogo standard di Windows finché il WebView2 Runtime non viene aggiornato. Il log dell’agente indica la versione trovata.",
+      "crashLoop": "Breeze Assist si chiudeva subito dopo l’avvio (dal {{since}}), quindi l’agente ha smesso di riavviarlo. Riproverà dopo 6 ore o non appena verrà installata una nuova versione di Breeze Assist. Il log dell’agente contiene i codici di uscita.",
+      "unmanagedInstall": "Breeze Assist non è stato installato da Breeze su questo dispositivo (dal {{since}}). La distribuzione è disattivata nel criterio di questo dispositivo, quindi l’agente lascia invariata questa copia: non la avvia, non la aggiorna e non la rimuove. Attiva la distribuzione perché l’agente la gestisca.",
       "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
+    },
+    "assistStatus": {
+      "label": "Breeze Assist",
+      "installed": "Installato",
+      "unavailable": "Non disponibile: {{reason}}",
+      "notDeployed": "Non distribuito",
+      "reason": {
+        "webview2Outdated": "WebView2 Runtime troppo vecchio",
+        "crashLoop": "si chiude di continuo",
+        "unmanagedInstall": "non installato da Breeze",
+        "awaitingServerOffer": "non ancora installato",
+        "installAbandoned": "installazione non riuscita",
+        "unknown": "vedi il log dell’agente"
+      }
     },
     "watchdogInstall": {
       "gaveUp": "Non è stato possibile installare automaticamente il watchdog (dal {{since}}): {{reason}}. Esegui <code>breeze-agent service install --watchdog</code> sull’host per riprovare.",
@@ -1805,9 +1822,13 @@
     "updateStuckTooltip": "Questo dispositivo riprova da oltre un'ora l'aggiornamento dell'agent a {{target}} senza completarlo.",
     "updateWithheldTooltip": "Il server non offre aggiornamenti a questo dispositivo perché non è possibile confermare che la build del suo agente accetti l'edizione servita. Resta alla versione attuale fino al ripristino.",
     "helperNotInstalled": "Non installato",
+    "helperUnavailable": "Assist non disponibile",
     "helperInstallIssueTooltip": {
       "awaitingServerOffer": "Breeze Assist è abilitato ma non installato: il server non ha offerto alcuna versione di Breeze Assist da installare su questo dispositivo.",
       "installAbandoned": "Breeze Assist è abilitato ma non installato: l’installazione della versione offerta non è riuscita più volte e i tentativi sono sospesi.",
+      "webview2Outdated": "Breeze Assist è installato ma non viene avviato: il WebView2 Runtime del dispositivo è troppo vecchio.",
+      "crashLoop": "Breeze Assist si chiudeva subito dopo l’avvio; l’agente riproverà dopo 6 ore.",
+      "unmanagedInstall": "Breeze Assist non è stato installato da Breeze e la distribuzione è disattivata, quindi l’agente lo lascia invariato.",
       "unknown": "Breeze Assist è abilitato ma non installato."
     },
     "agentVersionRelation": {
