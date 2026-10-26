@@ -50,11 +50,12 @@
 -- the DELETE arm has no trigger-depth exception. Deleting a row still cascades
 -- OUT to service_deliverable_evidence (ON DELETE CASCADE, 2027-01-02-100710).
 --
--- PRIVILEGES: breeze_app loses table-level UPDATE, DELETE and TRUNCATE (it
--- never had TRUNCATE; revoked anyway, as for every append-only table) and gets
+-- PRIVILEGES: breeze_app loses table-level UPDATE, DELETE and TRUNCATE
+-- (TRUNCATE defensively, as for every append-only table) and gets
 -- column-level UPDATE (contract_id, org_id) back — exactly what link-later,
--- contract adopt and the merge re-point write (orgMergeRegistry
--- ORG_ID_COLUMN_UPDATE_REPOINT_TABLES). An evidence write as breeze_app is
+-- contract adopt and the merge re-point write (orgMergeRegistry REPOINT_TABLES;
+-- asserted by ORG_ID_COLUMN_UPDATE_REPOINT_TABLES in
+-- orgMergeRegistry.integration.test.ts). An evidence write as breeze_app is
 -- therefore 42501 before the trigger runs; the trigger (55000) is the wall for
 -- every other role, the table owner included. ensureAppRole.ts re-applies the
 -- REVOKE and the column GRANT on every boot, after its blanket GRANT (#4371;
@@ -64,8 +65,9 @@
 -- THREAT MODEL: this stops application code — a bug, a future bulk/admin
 -- endpoint, a mistaken query — from rewriting or deleting a signed agreement.
 -- It does not stop arbitrary SQL as breeze_app: breeze.scope is a GUC the app
--- sets itself, and breeze_app is a member of breeze_audit_admin (erasure uses
--- that). A superuser can also skip triggers (session_replication_role,
+-- sets itself, and while breeze_app holds breeze_audit_admin membership (the
+-- #915 REVOKE is a manual operator step, 2026-06-11-e) it can delete through
+-- that role, as org erasure does. A superuser can also skip triggers (session_replication_role,
 -- DISABLE TRIGGER, TRUNCATE). Same boundary as the audit-log tables.
 --
 -- ROLLBACK: DROP TRIGGER contract_documents_block_update / _block_delete ON

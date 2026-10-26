@@ -37,11 +37,20 @@ const sys = <T,>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 // wired, so the back-fill's RAISE WARNING row count can be asserted.
 const notices: string[] = [];
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: (n) => { notices.push(String(n.message)); } });
-afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+afterAll(async () => {
+  // A crashed withEvidenceGuardOff() must not leave the guard off for the
+  // suites that run after this file in the same shard.
+  await adminSql`ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update`;
+  const [t] = await adminSql`
+    SELECT tgenabled FROM pg_trigger
+     WHERE tgrelid = 'contract_documents'::regclass AND tgname = 'contract_documents_block_update'`;
+  await adminSql.end({ timeout: 5 });
+  expect(t?.tgenabled).toBe('O');
+});
 /**
- * Both back-fills ran in production BEFORE 2027-01-06-150000 made the evidence
- * columns write-once; contract_documents_append_only now refuses exactly their
- * UPDATE (55000). A replay simulates that history, so it runs with the update
+ * Both back-fills sort (and so apply) BEFORE 2027-01-06-150000 made the
+ * evidence columns write-once; contract_documents_append_only now refuses
+ * exactly their UPDATE (55000). A replay simulates that history, so it runs with the update
  * guard disabled. Integration files run one at a time (fileParallelism: false)
  * and `finally` re-enables it.
  */

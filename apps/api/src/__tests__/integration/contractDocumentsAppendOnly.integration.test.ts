@@ -79,6 +79,36 @@ async function seedQuoteDocument() {
   });
 }
 
+type Exec = (q: ReturnType<typeof sql>) => Promise<unknown>;
+type InTx = (fn: (exec: Exec) => Promise<void>) => Promise<void>;
+const asApp: InTx = (fn) => sys(() => fn((q) => db.execute(q)));
+const asOwner: InTx = (fn) => admin().transaction((tx) => fn((q) => tx.execute(q)));
+
+/**
+ * Runs `body` (PL/pgSQL) inside a pg_temp AFTER INSERT trigger, so its UPDATE
+ * reaches contract_documents at pg_trigger_depth() = 2, in one transaction of
+ * `inTx`. Returns the error the INSERT raised, or undefined if it succeeded.
+ * A setup failure is rethrown, never returned: it would prove nothing.
+ */
+async function fireFromTrigger(inTx: InTx, body: string): Promise<{ code?: string; message?: string } | undefined> {
+  let reachedInsert = false;
+  try {
+    await inTx(async (exec) => {
+      await exec(sql`CREATE TEMP TABLE w4b_probe (x int) ON COMMIT DROP`);
+      await exec(sql.raw(`CREATE OR REPLACE FUNCTION pg_temp.w4b_probe_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN ${body} RETURN NEW; END $$`));
+      await exec(sql`CREATE TRIGGER w4b_probe_trg AFTER INSERT ON w4b_probe FOR EACH ROW EXECUTE FUNCTION pg_temp.w4b_probe_fn()`);
+      reachedInsert = true;
+      await exec(sql`INSERT INTO w4b_probe VALUES (1)`);
+    });
+    return undefined;
+  } catch (err) {
+    if (!reachedInsert) throw err;
+    const e = err as { cause?: { code?: string; message?: string }; code?: string; message?: string };
+    return e.cause ?? e;
+  }
+}
+
 function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   return { scope: 'partner', orgId: null, accessibleOrgIds: orgIds, accessiblePartnerIds: [partnerId], userId: null };
 }
@@ -101,6 +131,35 @@ describe('contract_documents append-only (#9075 W4b)', () => {
       sel: true, ins: true, upd: false, upd_contract: true, upd_org: true, upd_quote: false, upd_pdf: false,
       del: false, trunc: false, admin_del: true, admin_upd: false,
     });
+    // Exhaustive: of EVERY column, breeze_app may update exactly these two. A
+    // stray column grant (e.g. on a provenance pointer) would reopen the
+    // temp-trigger depth bypass for that column.
+    const updatable = rows(await db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'contract_documents'
+         AND has_column_privilege('breeze_app', 'public.contract_documents', column_name, 'UPDATE')
+       ORDER BY column_name`)).map((r) => r.column_name);
+    expect(updatable).toEqual(['contract_id', 'org_id']);
+  });
+
+  runDb('every column but contract_id and org_id is frozen for the table owner (55000), new columns included', async () => {
+    // Generic over information_schema, so a column added later is covered
+    // without editing this test: clearing any non-NULL value is a change, and
+    // the BEFORE trigger refuses it before NOT NULL is even checked.
+    const s = await seedQuoteDocument();
+    const before = (await docRow(s.docId))!;
+    const cols = rows(await db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'contract_documents'
+       ORDER BY ordinal_position`)).map((r) => r.column_name as string)
+      .filter((c) => c !== 'contract_id' && c !== 'org_id' && before[c] !== null);
+    expect(cols.length).toBeGreaterThanOrEqual(20); // vacuity guard: the seed fills the evidence
+    for (const col of cols) {
+      const code = await sqlstate(() => admin().execute(sql`
+        UPDATE contract_documents SET ${sql.identifier(col)} = NULL WHERE id = ${s.docId}::uuid`));
+      expect([col, code]).toEqual([col, '55000']);
+    }
+    expect(await docRow(s.docId)).toEqual(before);
   });
 
   runDb.each([
@@ -134,10 +193,15 @@ describe('contract_documents append-only (#9075 W4b)', () => {
 
   runDb('a no-op UPDATE passes: the guard compares values, not the SET list', async () => {
     const s = await seedQuoteDocument();
-    expect(await sqlstate(() => admin().execute(sql`
-      UPDATE contract_documents SET signer_name = signer_name, pdf_data = pdf_data WHERE id = ${s.docId}::uuid`))).toBeUndefined();
-    expect(await sqlstate(() => sys(() => db.execute(sql`
-      UPDATE contract_documents SET contract_id = contract_id, org_id = org_id WHERE id = ${s.docId}::uuid`)))).toBeUndefined();
+    // RETURNING proves the row matched, so the trigger really ran.
+    const byOwner = rows(await admin().execute(sql`
+      UPDATE contract_documents SET signer_name = signer_name, pdf_data = pdf_data
+       WHERE id = ${s.docId}::uuid RETURNING id`));
+    expect(byOwner).toHaveLength(1);
+    const byApp = rows(await sys(() => db.execute(sql`
+      UPDATE contract_documents SET contract_id = contract_id, org_id = org_id
+       WHERE id = ${s.docId}::uuid RETURNING id`)));
+    expect(byApp).toHaveLength(1);
   });
 
   runDb('linkContractDocument still files an unattached agreement under a contract (contract_id only)', async () => {
@@ -191,19 +255,31 @@ describe('contract_documents append-only (#9075 W4b)', () => {
     // UPDATE grant (contract_id, org_id only) is what stops it; the real RI
     // action runs as the table owner and is unaffected (previous test).
     const s = await seedQuoteDocument();
-    const code = await sqlstate(() => sys(async () => {
-      await db.execute(sql`CREATE TEMP TABLE w4b_probe (x int) ON COMMIT DROP`);
-      await db.execute(sql.raw(`
-        CREATE FUNCTION pg_temp.w4b_clear_quote() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-          UPDATE public.contract_documents SET quote_id = NULL WHERE id = '${s.docId}'::uuid;
-          RETURN NEW;
-        END $$`));
-      await db.execute(sql`CREATE TRIGGER w4b_probe_trg AFTER INSERT ON w4b_probe FOR EACH ROW EXECUTE FUNCTION pg_temp.w4b_clear_quote()`);
-      await db.execute(sql`INSERT INTO w4b_probe VALUES (1)`);
-    }));
-    expect(code).toBe('42501');
+    const err = await fireFromTrigger(asApp,
+      `UPDATE public.contract_documents SET quote_id = NULL WHERE id = '${s.docId}'::uuid;`);
+    // The INSERT's own error (setup errors fail the test instead), and it is the
+    // contract_documents column privilege, not some other 42501.
+    expect(err?.code).toBe('42501');
+    expect(err?.message).toMatch(/contract_documents/);
     expect((await docRow(s.docId))!.quote_id).toBe(s.quoteId);
+  });
+
+  runDb('at trigger depth > 1 the guard admits clearing a pointer and nothing else (owner, 55000 on a re-point)', async () => {
+    // The table owner holds every grant, so only the trigger decides here. The
+    // depth gate is not authentication (the owner is outside the threat model,
+    // see the migration header); what it must still guarantee is NULL-only.
+    const s = await seedQuoteDocument();
+    const repoint = await fireFromTrigger(asOwner,
+      `UPDATE public.contract_documents SET quote_id = gen_random_uuid() WHERE id = '${s.docId}'::uuid;`);
+    expect(repoint?.code).toBe('55000');
+    const smuggle = await fireFromTrigger(asOwner,
+      `UPDATE public.contract_documents SET quote_id = NULL, signer_name = 'Mallory' WHERE id = '${s.docId}'::uuid;`);
+    expect(smuggle?.code).toBe('55000');
+    expect((await docRow(s.docId))!.quote_id).toBe(s.quoteId);
+
+    expect(await fireFromTrigger(asOwner,
+      `UPDATE public.contract_documents SET quote_id = NULL WHERE id = '${s.docId}'::uuid;`)).toBeUndefined();
+    expect(await docRow(s.docId)).toMatchObject({ quote_id: null, signer_name: 'Jane Doe' });
   });
 
   runDb('deleting the agreement request clears agreement_request_id and keeps the signed agreement', async () => {
