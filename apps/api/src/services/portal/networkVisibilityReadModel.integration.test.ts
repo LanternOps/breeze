@@ -2,7 +2,7 @@ import '../../__tests__/integration/setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
-import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   alerts,
   devices,
@@ -988,6 +988,7 @@ describe('networkAssets physical placement (CPEV-W1)', () => {
     // Forged cross-org filter inputs resolve to nothing, never to A's data.
     const forged = await withDbAccessContext(orgContext(orgB.id, partner.id), () =>
       networkAssets(orgB.id, { siteId: siteA.id }, NOW, false, true));
+    expect(forged.data).toHaveLength(0);
     expect(JSON.stringify(forged)).not.toContain('Room');
   });
 
@@ -1002,10 +1003,26 @@ describe('networkAssets physical placement (CPEV-W1)', () => {
         expect(batch.get(placementKey('discovered', subject.id))).toEqual(await resolvePlacementAuthority(subject));
       }
       const refs = [...batch.values()].map((r) => ({ kind: r.authority.kind, id: r.authority.id }));
-      const placements = await readPlacements(refs);
+      const placements = await readPlacements(refs, orgA.id);
       for (const ref of refs) {
-        expect(placements.get(placementKey(ref.kind, ref.id)) ?? null).toEqual(await readPlacement(ref.kind, ref.id));
+        expect(placements.get(placementKey(ref.kind, ref.id)) ?? null).toEqual(await readPlacement(ref.kind, ref.id, orgA.id));
       }
+    });
+  });
+
+  it('batch helpers stay inside the given org without RLS (system context, mixed-org ids)', async () => {
+    const { orgA, plain, assetB } = await seed();
+    await withSystemDbAccessContext(async () => {
+      const refs = [plain, assetB].map((a) => ({ kind: 'discovered' as const, id: a.id }));
+      const placements = await readPlacements(refs, orgA.id);
+      expect(placements.has(placementKey('discovered', plain.id))).toBe(true);
+      expect(placements.has(placementKey('discovered', assetB.id))).toBe(false);
+      expect(await readPlacement('discovered', assetB.id, orgA.id)).toBeNull();
+
+      // B's asset id presented as an org A subject never resolves to B's row.
+      const forged = { kind: 'discovered' as const, id: assetB.id, orgId: orgA.id, siteId: plain.siteId };
+      const authorities = await resolvePlacementAuthorities([forged]);
+      expect(authorities.get(placementKey('discovered', assetB.id))).toEqual({ authority: forged, linked: false });
     });
   });
 });

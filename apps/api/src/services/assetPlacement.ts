@@ -113,11 +113,16 @@ function subjectColumn(kind: PlacementSubjectKind) {
   return kind === 'device' ? assetPhysicalPlacements.deviceId : assetPhysicalPlacements.discoveredAssetId;
 }
 
-export async function readPlacement(kind: PlacementSubjectKind, id: string): Promise<PlacementFields | null> {
+/** Org-scoped in SQL; RLS is defense in depth, not the only fence. */
+export async function readPlacement(
+  kind: PlacementSubjectKind,
+  id: string,
+  orgId: string,
+): Promise<PlacementFields | null> {
   const [row] = await db
     .select()
     .from(assetPhysicalPlacements)
-    .where(eq(subjectColumn(kind), id))
+    .where(and(eq(subjectColumn(kind), id), eq(assetPhysicalPlacements.orgId, orgId)))
     .limit(1);
   return row ? toFields(row) : null;
 }
@@ -127,9 +132,10 @@ export function placementKey(kind: PlacementSubjectKind, id: string): string {
   return `${kind}:${id}`;
 }
 
-/** Batch {@link readPlacement}: absent subjects have no entry. */
+/** Batch {@link readPlacement}, org-scoped in SQL: absent subjects have no entry. */
 export async function readPlacements(
   refs: ReadonlyArray<Pick<PlacementSubject, 'kind' | 'id'>>,
+  orgId: string,
 ): Promise<Map<string, PlacementFields>> {
   const result = new Map<string, PlacementFields>();
   const deviceIds = [...new Set(refs.filter((r) => r.kind === 'device').map((r) => r.id))];
@@ -140,7 +146,10 @@ export async function readPlacements(
   ].filter((f) => f !== undefined);
   if (filters.length === 0) return result;
 
-  const rows = await db.select().from(assetPhysicalPlacements).where(or(...filters));
+  const rows = await db
+    .select()
+    .from(assetPhysicalPlacements)
+    .where(and(eq(assetPhysicalPlacements.orgId, orgId), or(...filters)));
   for (const row of rows) {
     if (row.deviceId) result.set(placementKey('device', row.deviceId), toFields(row));
     else if (row.discoveredAssetId) result.set(placementKey('discovered', row.discoveredAssetId), toFields(row));
@@ -235,7 +244,10 @@ export async function resolvePlacementAuthorities(
     })
     .from(discoveredAssets)
     .leftJoin(devices, eq(devices.id, discoveredAssets.linkedDeviceId))
-    .where(inArray(discoveredAssets.id, [...new Set(discovered.map((s) => s.id))]));
+    .where(and(
+      inArray(discoveredAssets.id, [...new Set(discovered.map((s) => s.id))]),
+      inArray(discoveredAssets.orgId, [...new Set(discovered.map((s) => s.orgId))]),
+    ));
   const rowById = new Map(rows.map((r) => [r.id, r]));
 
   for (const subject of discovered) {

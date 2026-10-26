@@ -305,6 +305,7 @@ export async function loadPhysicalPlacements(
   );
   const placements = await readPlacements(
     [...authorities.values()].map(({ authority }) => ({ kind: authority.kind, id: authority.id })),
+    orgId,
   );
 
   const siteIds = new Set<string>();
