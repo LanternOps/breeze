@@ -173,6 +173,10 @@ export const patchPolicies = pgTable('patch_policies', {
   // Per-app block/pin rules (#8184), validated by ringAppRulesSchema.
   // CHECK patch_policies_app_rules_array_chk (array) lives in the migration.
   appRules: jsonb('app_rules').notNull().default([]),
+  // Windows feature-release policy (block | allow | pin), validated by
+  // ringFeatureUpdatesSchema. CHECK patch_policies_feature_updates_object_chk
+  // (object) lives in the migration. Default block = pre-control behaviour.
+  featureUpdates: jsonb('feature_updates').notNull().default({ mode: 'block' }),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
