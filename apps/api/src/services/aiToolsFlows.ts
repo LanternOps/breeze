@@ -205,8 +205,9 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
       // Decision 11: an unattended MCP principal (MCP_UNATTENDED_TIER3_PRINCIPALS)
       // can reach a Tier 3 handler without a tap. Only an interactive user session
       // inside a chat session, which already passed the approval card, may start a
-      // flow. The session id comes from the server-owned context, never from input.
-      const chatSessionId = str(context?.chatSessionId);
+      // flow. The session id comes from the server-owned capture anchor
+      // (`executeTool` sets it for run_flow), never from input.
+      const chatSessionId = str(context?.captureAnchor?.sessionId);
       if (auth.principal?.kind !== 'user_session' || !chatSessionId) return { error: 'run_flow_requires_chat' };
       const flowId = str(input.flowId);
       if (!flowId) return { error: 'flow_not_found' };

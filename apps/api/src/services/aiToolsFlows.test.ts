@@ -132,7 +132,7 @@ describe('isToolEnvGatedOff', () => {
 const RUN_ID = '44444444-4444-4444-8444-444444444444';
 const userAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'user_session' } } as unknown as AuthContext;
 const apiKeyAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'api_key', apiKeyId: 'k' } } as unknown as AuthContext;
-const chatCtx = { chatSessionId: '55555555-5555-4555-8555-555555555555' };
+const chatCtx = { captureAnchor: { orgId: 'o', sessionId: '55555555-5555-4555-8555-555555555555' } };
 const callAs = (a: AuthContext, name: string, input: Record<string, unknown>, ctx?: Record<string, unknown>) =>
   tools().get(name)!.handler(input, a, ctx as never).then((s) => JSON.parse(s));
 
@@ -165,7 +165,7 @@ describe('flow run AI tools (W04)', () => {
     vi.mocked(startManualRun).mockResolvedValue({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: false });
     const out = await callAs(userAuth, 'run_flow', { flowId: FLOW_ID, orgId: 'o', inputs: { a: 1 }, idempotencyKey: 'k1', aiSessionId: 'attacker' }, chatCtx);
     expect(out).toEqual({ ok: true, runId: RUN_ID, duplicate: false, preApprovalsHonored: false, runPath: `/flows/runs/${RUN_ID}` });
-    expect(startManualRun).toHaveBeenCalledWith(userAuth, FLOW_ID, { orgId: 'o', inputs: { a: 1 }, idempotencyKey: 'k1' }, 'ai_tool', chatCtx.chatSessionId);
+    expect(startManualRun).toHaveBeenCalledWith(userAuth, FLOW_ID, { orgId: 'o', inputs: { a: 1 }, idempotencyKey: 'k1' }, 'ai_tool', chatCtx.captureAnchor.sessionId);
   });
 
   it('run_flow passes a service refusal through without a runPath', async () => {
