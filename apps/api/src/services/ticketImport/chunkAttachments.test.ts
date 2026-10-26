@@ -8,7 +8,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const store = vi.hoisted(() => ({ outcomes: new Map<string, unknown>(), calls: [] as string[] }));
-vi.mock('./storeAttachments', () => ({
+const deleteObjectKeysMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./storeAttachments', async (orig) => ({
+  ...(await orig<typeof import('./storeAttachments')>()),
   storeReservedAttachment: vi.fn(async (input: { id: string; sourceId: string }) => {
     store.calls.push(input.sourceId);
     const outcome = store.outcomes.get(input.sourceId);
@@ -17,7 +19,7 @@ vi.mock('./storeAttachments', () => ({
   }),
 }));
 vi.mock('../../db', () => ({ db: {} }));
-vi.mock('../ticketAttachmentStorage', () => ({ objectKeyFor: (id: string) => `ticket-attachments/${id}`, putBytes: vi.fn() }));
+vi.mock('../ticketAttachmentStorage', () => ({ objectKeyFor: (id: string) => `ticket-attachments/${id}`, putBytes: vi.fn(), deleteObjectKeys: deleteObjectKeysMock }));
 
 import { hasAttachments, prepareChunkAttachments, type ChunkAttachmentsInput } from './chunkAttachments';
 import type { ReservationFile } from './importAttachments';
@@ -63,6 +65,7 @@ function harness(
       return true;
     }),
     stillPending: vi.fn(async () => true),
+    reservationExists: vi.fn(async () => true),
     fetchAttachment: vi.fn(),
     chargeBytes: vi.fn(),
     refundBytes: vi.fn(),
@@ -73,6 +76,8 @@ function harness(
 beforeEach(() => {
   store.outcomes.clear();
   store.calls.length = 0;
+  deleteObjectKeysMock.mockReset();
+  deleteObjectKeysMock.mockResolvedValue(undefined);
 });
 
 describe('prepareChunkAttachments', () => {
@@ -151,6 +156,36 @@ describe('prepareChunkAttachments', () => {
     if (out.merged) throw new Error('unexpected merge');
     expect(out.files.byComment.get('c1')).toEqual({ claims: [], skips: [{ sourceId: 'gone', filename: 'a.png', reason: 'present_elsewhere' }] });
     expect(out.files.skippedReservations).toEqual([]);
+    // Its row still exists (claimed or re-pointed by another run, which owns the key): the object stays.
+    expect(input.reservationExists).toHaveBeenCalledWith('id-gone');
+    expect(deleteObjectKeysMock).not.toHaveBeenCalled();
+  });
+
+  it('a refused mark whose row is gone (reaped since the put) deletes the object just put', async () => {
+    const { input } = harness([comment('c1', [file('reaped', 'a.png', 10)])]);
+    input.markStored = vi.fn(async () => false);
+    input.reservationExists = vi.fn(async () => false);
+    const out = await prepareChunkAttachments(input);
+    if (out.merged) throw new Error('unexpected merge');
+    expect(out.files.byComment.get('c1')).toEqual({ claims: [], skips: [{ sourceId: 'reaped', filename: 'a.png', reason: 'present_elsewhere' }] });
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/id-reaped']);
+  });
+
+  it('the orphan delete is best effort: a failed existence check or delete keeps the object and the chunk goes on', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { input } = harness([comment('c1', [file('x1', 'a.png', 10), file('x2', 'b.png', 10)])]);
+    input.markStored = vi.fn(async () => false);
+    input.reservationExists = vi.fn(async (id: string) => {
+      if (id === 'id-x1') throw new Error('db down');
+      return false;
+    });
+    deleteObjectKeysMock.mockRejectedValueOnce(new Error('s3 down'));
+    const out = await prepareChunkAttachments(input);
+    if (out.merged) throw new Error('unexpected merge');
+    expect(out.files.byComment.get('c1')!.skips.map((s) => s.reason)).toEqual(['present_elsewhere', 'present_elsewhere']);
+    expect(deleteObjectKeysMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 
   it('a file the reservation does not return (attached under the lock, or held where the window cannot see) is present elsewhere', async () => {

@@ -44,6 +44,28 @@ export async function deleteObjectsOfDeletedReservations(ids: readonly string[])
 }
 
 /**
+ * Deletes the object this run just put for reservation `id` when
+ * markReservationStored refused it and its row no longer exists (W1 review,
+ * Todd 2026-10-26): reaped, or deleted as a skip by another run, after this
+ * run's last stillPending check. Without this the object would stay for good,
+ * since the reaper finds objects only through their rows. A row that still
+ * exists (claimed or re-pointed by another run) owns the same key, so its
+ * object is never touched. Best effort, with no DB context: a failure only
+ * warns, naming the key and never content.
+ */
+export async function deleteObjectIfReservationGone(id: string, exists: (id: string) => Promise<boolean>): Promise<void> {
+  const key = objectKeyFor(id);
+  try {
+    if (await exists(id)) return;
+    await deleteObjectKeys([key]);
+  } catch (err) {
+    console.warn('[ticketImport] could not delete the object of a reservation that is gone; it stays orphaned:', key, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Reads one source file's original bytes, at most `maxBytes` (the module's
  * `ImportTicketOptions.fetchAttachment`). Its failures say whether they are
  * permanent: an `ImportAttachmentFetchError` with `not_found` (the source

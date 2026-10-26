@@ -553,6 +553,43 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect(s3.objects.get(otherRow!.storageKey!)?.body).toEqual(PNG);
   }, CASE_TIMEOUT);
 
+  runDb('a reservation reaped between the put and the mark: the run deletes the object it put, and a claimed one keeps its object', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    // Header (1st charge), reservation (2nd), then right before the mark-stored
+    // transaction (3rd) the reaper takes the row (and the object then present).
+    const ticket = source(fx, [comment('c1', 10, 'Reaped.', [file('f1', 'one.png', PNG.length)])]);
+    let reaped: { id: string; storageKey: string | null } | undefined;
+    chargeHook.before = async (call) => {
+      if (call !== 3) return;
+      [reaped] = await bySource(fx.principal.id, 'f1');
+      await getTestDb().delete(ticketAttachments).where(eq(ticketAttachments.id, reaped!.id));
+    };
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG }) });
+    chargeHook.before = null;
+    expect(result).toMatchObject({ commentsWritten: 1, attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f1', reason: 'present_elsewhere' }] });
+    expect(s3.puts).toContain(reaped!.storageKey);
+    expect(s3.deleted).toContain(reaped!.storageKey);
+    expect(s3.objects.has(reaped!.storageKey!)).toBe(false);
+
+    // Another ticket's file claimed by another run between the put and the
+    // mark: the row exists, so the object (the same key) stays.
+    const other = source(fx, [comment('c1', 10, 'Claimed.', [file('f2', 'two.png', PNG.length)])]);
+    let claimed: { id: string; ticketId: string; storageKey: string | null } | undefined;
+    const before = chargeHook.costs.length;
+    chargeHook.before = async (call) => {
+      if (call !== before + 3) return;
+      [claimed] = await bySource(fx.principal.id, 'f2');
+      const [c] = await getTestDb().insert(ticketComments).values({ ticketId: claimed!.ticketId, authorType: 'internal', commentType: 'internal', content: 'other run', isPublic: false }).returning();
+      await getTestDb().update(ticketAttachments).set({ commentId: c!.id, attachedAt: new Date(), sha256: sha(PNG), contentType: 'image/png', byteSize: PNG.length })
+        .where(eq(ticketAttachments.id, claimed!.id));
+    };
+    await importTicket(window.id, other, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f2: PNG }) });
+    chargeHook.before = null;
+    expect(s3.deleted).not.toContain(claimed!.storageKey);
+    expect(s3.objects.get(claimed!.storageKey!)?.body).toEqual(PNG);
+  }, CASE_TIMEOUT);
+
   runDb('past the grace the reaper deletes a crashed reservation and its object, and a later pass reserves again', async () => {
     const fx = await seed();
     const window = await openWindow(fx);

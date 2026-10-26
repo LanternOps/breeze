@@ -28,6 +28,7 @@ import {
   importAttachmentStates,
   isReservationPending,
   markReservationStored,
+  reservationRowExists,
   reserveImportAttachments,
   withAttachmentSkipNote,
   type ImportAttachmentSkip,
@@ -981,6 +982,7 @@ export async function importTicket(
           return markReservationStored(ticketId, scope.window.principalId, claim);
         }),
         stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
+        reservationExists: (id) => reservationRowExists(id),
         fetchAttachment: options.fetchAttachment!,
         chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
         refundBytes: (bytes) => refundWindowBytes(descriptor, bytes),

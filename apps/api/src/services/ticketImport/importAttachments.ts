@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { ticketAttachments } from '../../db/schema';
 import { sniffAttachmentMime } from '../attachmentSniff';
 import { objectKeyFor } from '../ticketAttachmentStorage';
@@ -435,6 +435,30 @@ export async function isReservationPending(id: string, principalId: string): Pro
     ))
     .limit(1);
   return Boolean(row);
+}
+
+/**
+ * Whether any row still has id `id`, wherever it is (W1 review, Todd
+ * 2026-10-26): asked when markReservationStored refused a reservation whose
+ * bytes this run had just put. A refused row that still exists was claimed or
+ * re-pointed by another run, which owns the same key, so its object stays; a
+ * row that no longer exists (reaped, or deleted as a skip by another run) can
+ * never come back, since ids are never reused, and its object is orphaned.
+ *
+ * A one-row read by primary key in system scope, like readWindowDescriptor:
+ * in the window's context a row moved to an org outside the window would read
+ * as gone, and its live object would be deleted. It returns a boolean and
+ * decides nothing else. Called with no DB context (the store step's).
+ */
+export async function reservationRowExists(id: string): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ id: ticketAttachments.id })
+      .from(ticketAttachments)
+      .where(eq(ticketAttachments.id, id))
+      .limit(1);
+    return Boolean(row);
+  });
 }
 
 /**

@@ -10,7 +10,7 @@ import {
   type ReservationFile,
   type ReservedRow,
 } from './importAttachments';
-import { storeReservedAttachment, type FetchImportAttachment } from './storeAttachments';
+import { deleteObjectIfReservationGone, storeReservedAttachment, type FetchImportAttachment } from './storeAttachments';
 
 /**
  * Reserve and store, for one comment chunk of importTicket (#8313 W1; spec
@@ -74,6 +74,8 @@ export type ChunkAttachmentsInput = {
   markStored: (claim: ImportedAttachmentClaim) => Promise<boolean>;
   /** Whether a reservation is still pending and unclaimed (isReservationPending, in the window's context). */
   stillPending: (id: string) => Promise<boolean>;
+  /** Whether any row still has this id, wherever it is (reservationRowExists, system scope). */
+  reservationExists: (id: string) => Promise<boolean>;
   fetchAttachment: FetchImportAttachment;
   /** The window's byte bucket (chargeWindowBytes). */
   chargeBytes: (bytes: number) => Promise<void>;
@@ -174,8 +176,10 @@ export async function prepareChunkAttachments(
       continue;
     }
     if (outcome.kind === 'stored') {
-      // Not pending any more (claimed, re-pointed or reaped since): not ours to claim.
+      // Not pending any more (claimed, re-pointed or reaped since): not ours
+      // to claim. If its row is gone, the object just put is nobody's.
       if (!(await input.markStored(outcome.claim))) {
+        await deleteObjectIfReservationGone(row.id, input.reservationExists);
         elsewhere(p);
         continue;
       }
