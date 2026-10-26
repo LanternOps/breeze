@@ -23,6 +23,7 @@
 import type {
   AiOperatorPlanApprovalDto,
   AiOperatorTaskListItemDto,
+  AiOperatorTaskState,
 } from '@breeze/shared';
 import { AI_OPERATOR_TASK_STATES } from '@breeze/shared';
 import type { AiTool } from './aiTools';
@@ -158,7 +159,8 @@ export function registerOperatorTaskReadTools(aiTools: Map<string, AiTool>): voi
     tier: 1,
     domain: 'ai',
     searchHint: 'AI operator tasks, workflows the AI is running or finished, tasks waiting on approval or a device, task state',
-    deviceArgs: [],
+    // The device filter is checked by the executor like any other device argument; restricted sessions never reach it (refused below).
+    deviceArgs: ['device_id'],
     definition: {
       name: 'list_operator_tasks',
       description:
@@ -166,7 +168,7 @@ export function registerOperatorTaskReadTools(aiTools: Map<string, AiTool>): voi
       input_schema: {
         type: 'object' as const,
         properties: {
-          deviceId: { type: 'string', description: 'Only tasks targeting this device UUID' },
+          device_id: { type: 'string', description: 'Only tasks targeting this device UUID' },
           state: { type: 'string', enum: [...AI_OPERATOR_TASK_STATES], description: 'Only tasks in this state' },
           limit: { type: 'number', description: 'Max results (default 25, max 50)' },
           cursor: { type: 'string', description: 'nextCursor from a previous call with the same filters' },
@@ -183,8 +185,8 @@ export function registerOperatorTaskReadTools(aiTools: Map<string, AiTool>): voi
         const result = await listOperatorTasks(auth, {
           cursorToken: str(input.cursor),
           limit,
-          deviceId: str(input.deviceId),
-          state: str(input.state),
+          deviceId: str(input.device_id),
+          state: str(input.state) as AiOperatorTaskState | undefined,
         });
         if (!result.ok) return jsonError('cursor is not a nextCursor value from a previous call', 'CURSOR_INVALID');
         return bounded({

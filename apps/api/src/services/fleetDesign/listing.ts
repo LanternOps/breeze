@@ -34,7 +34,7 @@ export function sectionCounts(summary: FleetDesignReportSummary | null | undefin
 export interface FleetDesignListItem {
   reportRunId: string;
   reportId: string;
-  orgId: string;
+  orgId: string | null;
   generatedAt: string | null;
   runId: string | null;
   functionCount: number;

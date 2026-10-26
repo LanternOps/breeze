@@ -735,6 +735,21 @@ These tools read and manage SNMP monitoring templates, read SNMP metric history,
 
 Connecting or disconnecting UniFi, editing site mappings and collectors, and the retired per-device SNMP polling, test and threshold pages are not available as tools. The old SNMP device and threshold endpoints are deprecated; per-asset SNMP settings and network-monitor alert rules replace them.
 
+#### AI agent read tools
+
+These tools let you ask the assistant what the AI has done and is planning. They only read: starting, changing or cancelling a schedule, an operator task or a Fleet Design is a separate, approval-gated action. Text they return (task objectives, hand-off notes, step and timeline text, Fleet Design markdown) is shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_device_ai_activity` | 1 | Count the scripts and commands the AI dispatched to one device in the last 7 to 30 days. Add `source` (`execution` or `command`) and `sourceId` to see who started that one action (AI assistant, AI agent or flow). A device you cannot see is reported as not found |
+| `list_operator_tasks` | 1 | List the multi-step tasks the AI operator is running or has finished, newest first, with state, objective and what happens next |
+| `get_operator_task` | 1 | One operator task: targets, steps, the newest 500 timeline events, the plan it proposed and the agent runs behind it. Credential hand-over details are never shown; an account the task created shows only its credential state |
+| `list_ai_agent_schedules` | 1 | When AI agents run on a schedule, including the effective schedule after an organization override of a partner baseline. A partner baseline's fleet-wide run summary is shown only to callers with access to every organization of the partner |
+| `list_fleet_designs` | 1 | List completed Fleet Design reports (up to 100) with function, watch and rule counts |
+| `get_fleet_design` | 1 | One Fleet Design report as markdown (capped at 60,000 characters), with counts and when it was generated |
+
+The operator task and Fleet Design tools describe a whole organization, so a session limited to some sites or devices cannot use them. The operator task tools are available in AI chat and over MCP only: AI agents are never offered them, because task text is written by people and by other agent runs. The device, schedule and Fleet Design tools are also available to AI agents; a device-bound agent can read only its own device.
+
 All seven tools are now available in the assistant chat, not just over MCP. AI agents get the read actions by default and the write actions only when the agent's tool allowlist names them; tag changes are never available to agents. Public ticket comments, resolving a ticket, and changing a ticket's requester need approval, while internal notes do not. The billing price book tool is `manage_billing_catalog` (renamed from `manage_catalog`; the old name keeps working over MCP for one release).
 
 Financially binding or high-impact actions — issuing or voiding an invoice, recording or voiding a payment, contract lifecycle changes, sending a quote, changing a catalog price, and moving a ticket to another organization — are classified Tier 3, so they wait for a human approval rather than auto-executing. Drafting and editing (create_draft, adding lines, updating a draft) stays Tier 2 no matter how large the draft's total is — the tier boundary here is reversibility, not financial size: a draft is an internal, editable record until the commit action (send/issue/activate) exposes it beyond Breeze. See the [MCP Server documentation](/features/mcp-server/#ticketing-tools) for per-tool tiers, scopes, and required role permissions, including the note on why this differs from the tenant-structure gating on tools like `create_org`.

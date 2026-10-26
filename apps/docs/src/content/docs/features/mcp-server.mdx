@@ -488,6 +488,12 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `manage_known_guests` | 1/2 | The partner-wide known-guest MAC list. `list` is Tier 1 (`organizations:read`); `add` and `delete` are Tier 2 (`organizations:write`, MFA). Requires full partner access; not offered to AI agents. |
 | `get_unifi_status` | 1 | Read the partner UniFi integration (`status`, `hosts`, `collectors`, `mappings`, `telemetry`, `sync_runs`, `controller_sites`). Requires `billing:manage` and full partner access; not offered to AI agents. |
 | `trigger_unifi_sync` | 2 | Queue a manual UniFi sync. Requires `billing:manage`, full partner access and a session that has satisfied MFA; not offered to AI agents. |
+| `get_device_ai_activity` | 1 | Count the AI-dispatched scripts and commands on one device in a window (`days`, 1 to 30) and, with `source` and `sourceId`, who started one action. Requires `devices:read`; a device outside your sites is reported as not found. |
+| `list_operator_tasks` | 1 | List AI operator tasks, newest first (`deviceId`, `state`, `limit`, `cursor`). Requires `ai_agents:read`; refused for a site- or device-restricted session; not offered to AI agents. |
+| `get_operator_task` | 1 | One operator task with its steps, timeline and plan. Requires `ai_agents:read`; credential hand-over details are never returned; refused for a site- or device-restricted session; not offered to AI agents. |
+| `list_ai_agent_schedules` | 1 | AI agent schedules and their effective state (`agentId`, `orgId`). Requires `ai_agents:read`. |
+| `list_fleet_designs` | 1 | Completed Fleet Design reports (`orgId`). Requires `ai_agents:read`; refused for a site- or device-restricted session. |
+| `get_fleet_design` | 1 | One Fleet Design report as markdown. Requires `ai_agents:read`; refused for a site- or device-restricted session. |
 | `get_fleet_health` | 1 | Also takes `action`: `history` and `offenders` (a `deviceId`), `evaluation`, and `org_summary` (an `orgId`), alongside the default fleet list. |
 | `list_time_entries` | 1 | List logged work by ticket, user, organization, dates, billing status, or approval. Requires partner or system scope; non-admins see their own entries. |
 | `get_running_timer` | 1 | Retrieve the caller's running time entry, or null when no timer is running. Requires partner or system scope and a user principal. |

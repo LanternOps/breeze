@@ -36,7 +36,7 @@ export function registerAiActivityTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_device_ai_activity', {
     tier: 1,
     domain: 'ai',
-    searchHint: 'what did the AI do on this device; AI assistant or agent actions dispatched to a device; AI origin of a script or command',
+    searchHint: 'what the AI did on a device; AI-dispatched scripts and commands; who started an action',
     deviceArgs: ['device_id'],
     definition: {
       name: 'get_device_ai_activity',
@@ -91,7 +91,7 @@ export function registerAiActivityTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_ai_agent_schedules', {
     tier: 1,
     domain: 'ai',
-    searchHint: 'when do AI agents run; sweep or report schedules; cron, enabled, last enqueued; partner baseline and organization override',
+    searchHint: 'when AI agents run; sweep or report schedules, cron, enabled; baseline and override',
     deviceArgs: [],
     definition: {
       name: 'list_ai_agent_schedules',
@@ -102,6 +102,7 @@ export function registerAiActivityTools(aiTools: Map<string, AiTool>): void {
         properties: {
           agentId: { type: 'string', description: 'Only this AI agent UUID' },
           orgId: { type: 'string', description: 'Organization UUID (partner callers: the org whose overrides to resolve)' },
+          limit: { type: 'number', description: 'Max results (default 50, max 200)' },
         },
         additionalProperties: false,
       },
@@ -111,8 +112,11 @@ export function registerAiActivityTools(aiTools: Map<string, AiTool>): void {
       try {
         const rows = await listSchedules(auth, { agentId: str(input.agentId), orgId: str(input.orgId) });
         const full = reachesWholePartner(auth);
-        const schedules = rows.map((row) => (row.ownerScope === 'partner' && !full ? { ...row, lastRunSummary: null } : row));
-        return bounded({ schedules, showing: schedules.length });
+        const limit = clampInt(input.limit, 50, 200);
+        const schedules = rows
+          .slice(0, limit)
+          .map((row) => (row.ownerScope === 'partner' && !full ? { ...row, lastRunSummary: null } : row));
+        return bounded({ schedules, showing: schedules.length, total: rows.length, hasMore: rows.length > limit });
       } catch (error) {
         // An org the caller cannot reach and a missing org read the same.
         if (error instanceof AgentAccessDeniedError) return notFound('Organization');

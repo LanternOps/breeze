@@ -26,7 +26,7 @@ export const aiReadToolShapes = {
     sourceId: uuid.optional(),
   },
   list_operator_tasks: {
-    deviceId: uuid.optional(),
+    device_id: uuid.optional(),
     state: z.enum(AI_OPERATOR_TASK_STATES).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     cursor: z.string().max(256).optional(),
@@ -37,9 +37,11 @@ export const aiReadToolShapes = {
   list_ai_agent_schedules: {
     agentId: uuid.optional(),
     orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
   },
   list_fleet_designs: {
     orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   },
   get_fleet_design: {
     reportRunId: uuid,

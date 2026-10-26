@@ -15,7 +15,7 @@
 import type { AiTool } from './aiTools';
 import { loadFleetDesignReport } from './aiAgents/fleetDesignReport';
 import { listFleetDesigns, sectionCounts } from './fleetDesign/listing';
-import { bounded, jsonError, notFound, restrictedReadDenied, str, thrown } from './aiToolsAiReadsShared';
+import { bounded, clampInt, jsonError, notFound, restrictedReadDenied, str, thrown } from './aiToolsAiReadsShared';
 
 /** Characters of design markdown handed to the model; the rest is behind the report download. */
 export const FLEET_DESIGN_MARKDOWN_MAX = 60_000;
@@ -24,7 +24,7 @@ export function registerFleetDesignReadTools(aiTools: Map<string, AiTool>): void
   aiTools.set('list_fleet_designs', {
     tier: 1,
     domain: 'ai',
-    searchHint: 'fleet design reports the AI designer produced; device functions, monitoring watches and alert rules designed for an organization',
+    searchHint: 'fleet design reports the AI designer produced; functions, watches and alert rules',
     deviceArgs: [],
     definition: {
       name: 'list_fleet_designs',
@@ -34,6 +34,7 @@ export function registerFleetDesignReadTools(aiTools: Map<string, AiTool>): void
         type: 'object' as const,
         properties: {
           orgId: { type: 'string', description: 'Only this organization UUID' },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
         },
         additionalProperties: false,
       },
@@ -43,8 +44,10 @@ export function registerFleetDesignReadTools(aiTools: Map<string, AiTool>): void
       const denied = restrictedReadDenied(auth, 'Fleet designs');
       if (denied) return denied;
       try {
-        const designs = await listFleetDesigns(auth, str(input.orgId));
-        return bounded({ designs, showing: designs.length });
+        const all = await listFleetDesigns(auth, str(input.orgId));
+        const limit = clampInt(input.limit, 25, 100);
+        const designs = all.slice(0, limit);
+        return bounded({ designs, showing: designs.length, total: all.length, hasMore: all.length > limit });
       } catch (error) {
         return thrown('list_fleet_designs', error);
       }

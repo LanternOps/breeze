@@ -238,6 +238,12 @@ describe('list_ai_agent_schedules', () => {
     expect(raw).not.toContain('denied to');
   });
 
+  it('limit slices the rows and reports hasMore', async () => {
+    h.listSchedules.mockResolvedValue([baseline({ id: 'a' }), baseline({ id: 'b' }), baseline({ id: 'c' })]);
+    const { body } = await run('list_ai_agent_schedules', { limit: 2 });
+    expect(body).toMatchObject({ showing: 2, total: 3, hasMore: true });
+  });
+
   it('passes the filters through', async () => {
     h.listSchedules.mockResolvedValue([]);
     await run('list_ai_agent_schedules', { agentId: RUN, orgId: ORG });
@@ -257,7 +263,7 @@ describe('operator task reads', () => {
 
   it('list: clamps the limit, passes filters and cursor, and projects an allow-list of fields', async () => {
     h.listTasks.mockResolvedValue({ ok: true, data: [listItem()], nextCursor: 'next-token' });
-    const { body, raw } = await run('list_operator_tasks', { limit: 500, state: 'waiting', deviceId: DEV, cursor: 'c0' });
+    const { body, raw } = await run('list_operator_tasks', { limit: 500, state: 'waiting', device_id: DEV, cursor: 'c0' });
     expect(h.listTasks).toHaveBeenCalledWith(expect.anything(), { cursorToken: 'c0', limit: 50, deviceId: DEV, state: 'waiting' });
     expect(body).toMatchObject({ showing: 1, limit: 50, hasMore: true, nextCursor: 'next-token' });
     expect(Object.keys(body.tasks[0]).sort()).toEqual([
@@ -358,7 +364,13 @@ describe('fleet design reads', () => {
     h.listFleet.mockResolvedValue([{ reportRunId: RUN, orgId: ORG, functionCount: 3 }]);
     const { body } = await run('list_fleet_designs', { orgId: ORG });
     expect(h.listFleet).toHaveBeenCalledWith(expect.anything(), ORG);
-    expect(body).toEqual({ designs: [{ reportRunId: RUN, orgId: ORG, functionCount: 3 }], showing: 1 });
+    expect(body).toEqual({ designs: [{ reportRunId: RUN, orgId: ORG, functionCount: 3 }], showing: 1, total: 1, hasMore: false });
+  });
+
+  it('list: limit slices the rows and reports hasMore', async () => {
+    h.listFleet.mockResolvedValue([{ reportRunId: 'a' }, { reportRunId: 'b' }, { reportRunId: 'c' }]);
+    const { body } = await run('list_fleet_designs', { limit: 2 });
+    expect(body).toMatchObject({ showing: 2, total: 3, hasMore: true });
   });
 
   it('detail: counts and markdown, never the stored outcome or script bodies', async () => {

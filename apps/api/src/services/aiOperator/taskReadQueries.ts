@@ -12,6 +12,7 @@ import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type {
   AiOperatorPlanApprovalDto,
   AiOperatorPlanEffectDto,
+  AiOperatorTaskState,
   AiOperatorTaskDto,
   AiOperatorTaskListItemDto,
   CreatedAccountView,
@@ -119,7 +120,7 @@ export interface OperatorTaskListQuery {
   cursorToken?: string;
   limit: number;
   deviceId?: string;
-  state?: string;
+  state?: AiOperatorTaskState;
 }
 
 export type OperatorTaskListResult =

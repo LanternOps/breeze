@@ -45,9 +45,10 @@ describe('W10 AI-agent read tool input schemas', () => {
     }
   });
 
-  it('only get_device_ai_activity names a device, so the executor pre-checks it', () => {
+  it('only the two device-naming tools declare deviceArgs, so the executor pre-checks the id', () => {
     expect(aiTools.get('get_device_ai_activity')!.deviceArgs).toEqual(['device_id']);
-    for (const name of W10_TOOLS.filter((n) => n !== 'get_device_ai_activity')) {
+    expect(aiTools.get('list_operator_tasks')!.deviceArgs).toEqual(['device_id']);
+    for (const name of W10_TOOLS.filter((n) => n !== 'get_device_ai_activity' && n !== 'list_operator_tasks')) {
       expect(aiTools.get(name)!.deviceArgs ?? [], name).toEqual([]);
     }
   });
@@ -71,9 +72,9 @@ describe('W10 AI-agent read tool input schemas', () => {
 
   it('accepts representative valid inputs', () => {
     expect(validateToolInput('get_device_ai_activity', { device_id: UUID, days: 30, source: 'command', sourceId: UUID }).success).toBe(true);
-    expect(validateToolInput('list_operator_tasks', { deviceId: UUID, state: 'queued', limit: 50, cursor: 'abc' }).success).toBe(true);
-    expect(validateToolInput('list_ai_agent_schedules', { agentId: UUID, orgId: UUID }).success).toBe(true);
-    expect(validateToolInput('list_fleet_designs', { orgId: UUID }).success).toBe(true);
+    expect(validateToolInput('list_operator_tasks', { device_id: UUID, state: 'queued', limit: 50, cursor: 'abc' }).success).toBe(true);
+    expect(validateToolInput('list_ai_agent_schedules', { agentId: UUID, orgId: UUID, limit: 200 }).success).toBe(true);
+    expect(validateToolInput('list_fleet_designs', { orgId: UUID, limit: 100 }).success).toBe(true);
   });
 
   it('rejects malformed ids, out-of-range numbers and unknown enum values', () => {
@@ -83,6 +84,8 @@ describe('W10 AI-agent read tool input schemas', () => {
     expect(validateToolInput('get_device_ai_activity', { device_id: UUID, source: 'script' }).success).toBe(false);
     expect(validateToolInput('list_operator_tasks', { limit: 51 }).success).toBe(false);
     expect(validateToolInput('list_operator_tasks', { state: 'exploded' }).success).toBe(false);
+    expect(validateToolInput('list_fleet_designs', { limit: 101 }).success).toBe(false);
+    expect(validateToolInput('list_ai_agent_schedules', { limit: 201 }).success).toBe(false);
     expect(validateToolInput('get_operator_task', { taskId: 'nope' }).success).toBe(false);
     expect(validateToolInput('get_fleet_design', {}).success).toBe(false);
   });
