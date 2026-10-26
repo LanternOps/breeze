@@ -607,7 +607,8 @@
         "active": "Active",
         "paused": "Paused",
         "revoked": "Revoked",
-        "expired": "Expired"
+        "expired": "Expired",
+        "budgetReached": "Budget reached"
       },
       "refresh": "Refresh grant",
       "revoke": "Turn off Wisp",
@@ -673,7 +674,8 @@
     "pause": "Pause Wisp",
     "resume": "Resume",
     "paused": {
-      "byYou": "You paused Wisp. It won't check in or nudge you until you resume."
+      "byYou": "You paused Wisp. It won't check in or nudge you until you resume.",
+      "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on."
     },
     "live": {
       "checking": "Checking {{org}}…",
@@ -728,7 +730,8 @@
       "disabledTitle": "Wisp is turned off",
       "disabledBody": "A partner administrator turned Wisp off under Settings → AI Agents. Your chats still work.",
       "disabledSettings": "Open AI Agents settings",
-      "loadFailed": "Could not load the Wisp home."
+      "loadFailed": "Could not load the Wisp home.",
+      "noAccess": "You don't have access to Wisp"
     },
     "links": {
       "title": "Linked items",

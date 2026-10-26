@@ -24,6 +24,7 @@ import {
   wispGrants,
   wispNudgePreferences,
   wispPartnerNudgeSettings,
+  wispThreadPosts,
 } from '../../db/schema';
 import type { GrantCeiling } from '../../services/wisp/grantAuthority';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -100,6 +101,8 @@ async function seed() {
   return { partner, org, userA, userB, grantId, thread, ctxB, concern, device, payload, ceiling };
 }
 
+const postsFor = (threadId: string) => withSystemDbAccessContext(() =>
+  db.select().from(wispThreadPosts).where(eq(wispThreadPosts.threadId, threadId)));
 const notificationsFor = (userId: string) => withSystemDbAccessContext(() =>
   db.select().from(userNotifications).where(eq(userNotifications.userId, userId)));
 const recipient = (concernId: string, grantId: string) => withSystemDbAccessContext(async () => (await db.select()
@@ -156,7 +159,7 @@ describe('notifyUser — real DB', () => {
     expect(h.dispatch).toHaveBeenCalledTimes(1);
   });
 
-  runDb('both channels off → prefs, no row, no push', async () => {
+  runDb('both channels off → prefs, no row, no push; W02a: the nudge is still kept as a thread post', async () => {
     const fx = await seed();
     await fx.device();
     await withSystemDbAccessContext(() => db.insert(wispNudgePreferences)
@@ -165,6 +168,42 @@ describe('notifyUser — real DB', () => {
     await expect(notifyUser(fx.payload(c))).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'prefs' });
     expect(await notificationsFor(fx.userA.id)).toHaveLength(0);
     expect(h.dispatch).not.toHaveBeenCalled();
+    const posts = await postsFor(fx.thread.id);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      kind: 'nudge', orgId: fx.org.id, concernId: c, notificationId: null, grantId: fx.grantId, partnerId: fx.partner.id,
+      link: `/ai/wisp/thread/${fx.thread.id}#concern=${c}`, dedupeKey: `wisp.nudge:${c}:${fx.grantId}:first`,
+    });
+  });
+
+  runDb('W02a Review Focus 1: a brief with both channels off is a post with its sections and no notification', async () => {
+    const fx = await seed();
+    await withSystemDbAccessContext(() => db.insert(wispNudgePreferences)
+      .values({ userId: fx.userA.id, partnerId: fx.partner.id, channels: { inApp: false, push: false } }));
+    const sections = [{ heading: 'Needs you', lines: ['Approve the patch'] }];
+    const brief = fx.payload(null, { kind: 'brief', title: 'Your morning brief', briefLocalDate: '2026-10-25', briefSections: sections });
+    await notifyUser(brief);
+    await notifyUser(brief); // a retried brief writes no second post
+    expect(await notificationsFor(fx.userA.id)).toHaveLength(0);
+    const posts = await postsFor(fx.thread.id);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ kind: 'brief', orgId: null, sections, notificationId: null, dedupeKey: `wisp.brief:${fx.thread.id}:2026-10-25` });
+  });
+
+  runDb('W02a Review Focus 2: in-app on writes notification and post together (linked); a retry writes neither again', async () => {
+    const fx = await seed();
+    const c = await fx.concern();
+    expect((await notifyUser(fx.payload(c))).inApp).toBe(true);
+    await expect(notifyUser(fx.payload(c))).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
+    const notes = await notificationsFor(fx.userA.id);
+    const posts = await postsFor(fx.thread.id);
+    expect(notes).toHaveLength(1);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ kind: 'nudge', notificationId: notes[0]!.id, dedupeKey: notes[0]!.dedupeKey });
+
+    // Clearing the notification keeps the post (ON DELETE SET NULL).
+    await withSystemDbAccessContext(() => db.delete(userNotifications).where(eq(userNotifications.id, notes[0]!.id)));
+    expect((await postsFor(fx.thread.id))[0]).toMatchObject({ notificationId: null, concernId: c });
   });
 
   runDb('a payload whose grant is not the thread\'s grant throws and writes nothing', async () => {

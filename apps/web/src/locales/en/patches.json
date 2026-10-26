@@ -549,6 +549,22 @@
       "title": "Install enforcement",
       "description": "How long devices have to install approved patches, and how long a user can defer the reboot. Reboot behavior itself is set per policy on the Patch tab."
     },
+    "featureUpdates": {
+      "title": "Windows feature updates",
+      "description": "Whether devices in this ring receive Windows feature releases (for example 25H2). Breeze installs them only through the approval rules below; add a Feature Updates override to approve them automatically.",
+      "modeBlock": "Block",
+      "modeAllow": "Allow the newest release",
+      "modePin": "Pin to a release",
+      "productLabel": "Windows version",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Release",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Windows Update on each device is set to target this release (Windows Update for Business target-release policy). Unless the policy's \"Breeze is the only Windows Update source\" setting is on, Windows may download and install the release on its own schedule, outside Breeze approval.",
+      "validation": {
+        "release": "Enter a release like 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Approval policy",
       "description": "What auto-approves in this ring, and how long to hold a patch after its vendor release. The default applies to every category; add an override to treat one differently.",
@@ -606,7 +622,9 @@
       "os": "OS: {{severities}}",
       "thirdParty": "3rd-party apps",
       "appRules_one": "{{count}} app rule",
-      "appRules_other": "{{count}} app rules"
+      "appRules_other": "{{count}} app rules",
+      "featureUpdatesNewest": "Feature updates: newest",
+      "featureUpdatesPinned": "Feature updates: {{release}}"
     }
   },
   "ringAppRules": {

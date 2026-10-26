@@ -213,14 +213,17 @@ describe('notifyBudgetExhaustedOnce', () => {
     expect(h.deliverInApp).toHaveBeenCalledWith({
       userId: USER,
       orgId: ORG,
-      title: 'Wisp paused for today — budget reached',
-      body: 'Raise the daily budget from the thread header to resume.',
+      // The grant stays active (w00), so the copy must not say "paused" (#10145).
+      title: "Wisp hit today's budget — it resumes at 00:00 UTC",
+      body: 'The daily budget resets at 00:00 UTC. Raise it from the thread header to continue sooner.',
       link: `/ai/wisp/thread/${THREAD}`,
       threadId: THREAD,
       grantId: GRANT,
       deepLink: `/ai/wisp/thread/${THREAD}`,
       dedupeKey: `wisp-budget-${GRANT}-2027-01-05`,
     });
+    // W02a: a budget notice is never a thread post (explicit post kinds only).
+    expect(h.deliverInApp.mock.calls[0]![0]).not.toHaveProperty('post');
   });
 
   it('second call in the same window returns false (dedupe key collides)', async () => {

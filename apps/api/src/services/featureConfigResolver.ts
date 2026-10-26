@@ -44,6 +44,7 @@ import {
   securityAgentsInlineSettingsSchema,
   type SecurityAgentsInlineSettings,
 } from '@breeze/shared/validators';
+import { DEFAULT_RING_FEATURE_UPDATES, ringFeatureUpdatesSchema, type RingFeatureUpdates } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
@@ -669,6 +670,38 @@ export function patchExclusiveWindowsUpdateFromPolicySet(set: DevicePolicySet): 
       : []);
   if (rows.length === 0) return false;
   return sortByHierarchy(rows)[0]!.exclusiveWindowsUpdate;
+}
+
+/**
+ * The heartbeat's feature_update_settings block from a loaded policy set: the
+ * `feature_updates` of the update ring the same patch winner links
+ * (patchExclusiveWindowsUpdateFromPolicySet picks it), read off the set's
+ * joined `ring` row so a steady beat costs no extra statement. Fails closed to
+ * block when no patch policy applies, the winner links no ring, the ring is
+ * not an enabled `ring` row of the device's own partner, or the stored value
+ * does not validate.
+ */
+export function patchFeatureUpdatesFromPolicySet(set: DevicePolicySet): RingFeatureUpdates {
+  const rows = candidatesWithLink(set, 'patch', PATCH_APPLICABILITY).flatMap(({ candidate, link }) =>
+    link.patch
+      ? [{
+        assignmentLevel: candidate.level, assignmentPriority: candidate.priority,
+        assignmentCreatedAt: candidate.assignmentCreatedAt, ring: link.ring ?? null,
+      }]
+      : []);
+  if (rows.length === 0) return DEFAULT_RING_FEATURE_UPDATES;
+  const ring = sortByHierarchy(rows)[0]!.ring;
+  if (!ring || ring.kind !== 'ring' || ring.enabled !== true) return DEFAULT_RING_FEATURE_UPDATES;
+  // A config policy's featurePolicyId is an unconstrained uuid: never honour
+  // another partner's ring (the evaluator denies with ring_reference_invalid).
+  const partnerId = set.hierarchy.org?.partnerId ?? null;
+  if (!partnerId || ring.partnerId !== partnerId) return DEFAULT_RING_FEATURE_UPDATES;
+  const parsed = ringFeatureUpdatesSchema.safeParse(ring.featureUpdates);
+  if (!parsed.success) {
+    console.warn(`[featureConfigResolver] ring ${ring.id} has malformed feature_updates; sending block to device ${set.deviceId}`);
+    return DEFAULT_RING_FEATURE_UPDATES;
+  }
+  return parsed.data;
 }
 
 /** The policy that wins a device's patch hierarchy, as the batch resolver below reports it. */

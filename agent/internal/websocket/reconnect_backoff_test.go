@@ -110,8 +110,10 @@ func TestReconnectBackoff_NormalCloseAfterHealthyConnection(t *testing.T) {
 		b := newReconnectBackoff(fixedRand(r))
 		b.step = maxBackoff // left over from earlier failures
 		d := b.afterDisconnect(disconnectServerNormal, time.Minute)
-		if d < serverCloseSpreadMin || d > serverCloseSpreadMax {
-			t.Fatalf("r=%v: delay = %v, want within [%v, %v]", r, d, serverCloseSpreadMin, serverCloseSpreadMax)
+		// W09 (#8148, D1): a stable socket's server close spreads over the
+		// first-reconnect window (30 s), not #9145's 1–5 s.
+		if d < serverCloseSpreadMin || d > defaultFirstReconnectWindow {
+			t.Fatalf("r=%v: delay = %v, want within [%v, %v]", r, d, serverCloseSpreadMin, defaultFirstReconnectWindow)
 		}
 		if b.step != initialBackoff {
 			t.Fatalf("r=%v: step after healthy normal close = %v, want reset to %v", r, b.step, initialBackoff)

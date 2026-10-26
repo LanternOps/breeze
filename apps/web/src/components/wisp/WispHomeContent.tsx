@@ -20,6 +20,7 @@ type View =
   | { kind: 'loading' }
   | { kind: 'error' }
   | { kind: 'locked' }
+  | { kind: 'forbidden' }
   /** No usable grant: `partnerEnabled` false shows why there is no start button. */
   | { kind: 'start'; partnerEnabled: boolean }
   | { kind: 'ready'; payload: WispHomePayload; wisp: Wisp; current: CurrentActivity; links: WispThreadLink[]; stale: boolean };
@@ -66,6 +67,12 @@ export default function WispHomeContent() {
       if (token !== loadToken.current) return;
       failedPolls.current = 0;
       if (home.kind === 'locked') { setView({ kind: 'locked' }); return; }
+      if (home.kind === 'forbidden') {
+        // A 403 on a background poll must not tear down a working page: treat it as a failed poll.
+        if (silent && viewRef.current.kind === 'ready') throw new Error('wisp home poll refused (403)');
+        setView({ kind: 'forbidden' });
+        return;
+      }
       if (home.kind === 'noGrant') {
         // A missing switch read must not hide the start card: the grant route refuses PARTNER_DISABLED itself.
         const partnerEnabled = await fetchWispPartnerEnabled().catch((err: unknown) => {
@@ -148,6 +155,14 @@ export default function WispHomeContent() {
 
   if (entitlement.state === 'loading' || view.kind === 'loading') {
     return <HomeFrame><div className="p-6" data-testid="wisp-home-loading-body" aria-busy="true" /></HomeFrame>;
+  }
+
+  if (view.kind === 'forbidden') {
+    return (
+      <HomeFrame>
+        <p className="p-6 text-sm text-muted-foreground" data-testid="wisp-home-forbidden" role="status">{t('wisp.home.noAccess')}</p>
+      </HomeFrame>
+    );
   }
 
   if (view.kind === 'error') {
