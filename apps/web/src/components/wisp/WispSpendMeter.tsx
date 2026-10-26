@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { formatCurrency } from '@/lib/i18n/format';
 import { hoursUntil, spendMeterState, type SpendMeterState } from './wispSpend';
 
 export type WispSpendMeterProps = {
@@ -22,7 +23,7 @@ const TEXT: Record<SpendMeterState, string> = {
   exhausted: 'text-destructive',
 };
 
-/** "42¢ of 200¢ today · resets in 6 h" (w00 A32). */
+/** "$0.42 of $2.00 today · resets in 6 h" (w00 A32). The API stays in cents. */
 export default function WispSpendMeter({ spentCents, budgetCents, resetsAt, onRaise }: WispSpendMeterProps) {
   const { t } = useTranslation('ai');
   const state = spendMeterState(spentCents, budgetCents);
@@ -32,7 +33,7 @@ export default function WispSpendMeter({ spentCents, budgetCents, resetsAt, onRa
   return (
     <div className="space-y-1" data-testid="wisp-spend-meter" data-state={state}>
       <div className={`flex flex-wrap items-center gap-x-1 ${TEXT[state]}`}>
-        <span>{t('wisp.spend.meter', { spent: spentCents, budget: budgetCents })}</span>
+        <span>{t('wisp.spend.meter', { spent: formatCurrency(spentCents / 100), budget: formatCurrency(budgetCents / 100) })}</span>
         {hours !== null && <span>· {t('wisp.spend.resets', { hours })}</span>}
         {state === 'exhausted' && onRaise && (
           <button

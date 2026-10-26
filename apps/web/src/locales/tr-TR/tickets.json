@@ -530,7 +530,7 @@
         "device_vulnerabilities": "Güvenlik açıkları: {{count}}",
         "organization_key_dates": "Önemli tarih hatırlatıcıları: {{count}}",
         "service_deliverable_occurrences": "Teslimat oluşumları: {{count}}",
-        "ai_operator_task_targets": "Yapay zeka operatörü hedefleri: {{count}}",
+        "ai_operator_task_targets": "Yapay zekâ görevi hedefleri: {{count}}",
         "ticket_drafts": "Atılan taslaklar: {{count}}"
       },
       "droppedHeading": "Kaldırılan bağlantılar",

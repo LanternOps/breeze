@@ -718,7 +718,15 @@
       },
       "fileType": {
         "image": "copie numérisée"
-      }
+      },
+      "sendForSignature": "Envoyer pour signature",
+      "filter": {
+        "pending": "En attente de signature",
+        "signed": "Signées",
+        "closed": "Refusées / annulées / expirées"
+      },
+      "downloadOriginal": "Original",
+      "certifiedUnavailable": "La copie certifiée n’a pas pu être générée pour cet accord ; le fichier original a été téléchargé à la place."
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} conventions signées",
@@ -764,6 +772,101 @@
       "submit": "Enregistrer la convention signée",
       "success": "Convention signée enregistrée.",
       "error": "Impossible d'enregistrer la convention signée."
+    },
+    "requests": {
+      "columns": {
+        "template": "Modèle",
+        "organization": "Organisation",
+        "recipients": "Destinataires",
+        "sent": "Envoyée",
+        "expires": "Expire",
+        "status": "Statut"
+      },
+      "status": {
+        "draft": "Brouillon",
+        "sent": "En attente de signature",
+        "viewed": "Consultée",
+        "signed": "Signée",
+        "declined": "Refusée",
+        "voided": "Annulée",
+        "expired": "Expirée"
+      },
+      "empty": {
+        "pending": {
+          "title": "Rien en attente de signature",
+          "description": "Les conventions envoyées pour signature apparaissent ici jusqu’à ce que le client signe."
+        },
+        "closed": {
+          "title": "Aucune demande refusée, annulée ou expirée",
+          "description": "Les demandes refusées, annulées ou expirées apparaissent ici."
+        }
+      },
+      "loadError": "Impossible de charger les demandes de convention.",
+      "recipientsMore": "+{{count}} autres",
+      "notSent": "Non envoyée",
+      "declinedReason": "Refusée : {{reason}}",
+      "voidedReason": "Annulée : {{reason}}",
+      "copyLink": {
+        "label": "Copier le lien",
+        "success": "Lien de signature copié",
+        "error": "Impossible de copier le lien de signature.",
+        "clipboardError": "Impossible de copier dans le presse-papiers. Lien de signature : {{link}}"
+      },
+      "void": {
+        "label": "Annuler",
+        "title": "Annuler cette demande de convention ?",
+        "description": "Le lien de signature cesse de fonctionner et les destinataires ne peuvent plus signer cette convention.",
+        "reasonLabel": "Motif (facultatif)",
+        "confirm": "Annuler la demande",
+        "confirming": "Annulation…",
+        "success": "Demande de convention annulée.",
+        "error": "Impossible d’annuler la demande de convention."
+      },
+      "deleteDraft": {
+        "label": "Supprimer le brouillon",
+        "success": "Brouillon supprimé.",
+        "error": "Impossible de supprimer le brouillon."
+      }
+    },
+    "send": {
+      "title": "Envoyer pour signature",
+      "contract": "Classer avec un contrat (facultatif)",
+      "contractsError": "Impossible de charger les contrats de cette organisation. Vous pouvez tout de même envoyer la convention et la lier à un contrat plus tard.",
+      "recipients": "Destinataires",
+      "recipientsHelp": "Adresses courriel, séparées par des virgules ou des sauts de ligne. Préremplies avec le contact de facturation de l’organisation.",
+      "recipientsRequired": "Ajoutez au moins une adresse de destinataire.",
+      "recipientsInvalid": "Ces valeurs ne sont pas des adresses valides : {{emails}}",
+      "recipientsTooMany": "50 destinataires au maximum.",
+      "cover": "Message d’accompagnement (facultatif)",
+      "expiry": "Le lien expire le",
+      "expiryPast": "Choisissez une date d’expiration future.",
+      "label": "Libellé (facultatif)",
+      "createDraft": "Créer le brouillon et prévisualiser",
+      "creating": "Création…",
+      "preview": {
+        "title": "Aperçu",
+        "loading": "Chargement de l’aperçu…",
+        "error": "Impossible de charger l’aperçu.",
+        "uploaded": "Ce modèle est un document téléversé. Le client signe le fichier téléversé."
+      },
+      "unresolved": {
+        "title": "Renseignez les valeurs manquantes avant l’envoi"
+      },
+      "updatePreview": "Mettre à jour l’aperçu",
+      "updating": "Mise à jour…",
+      "submit": "Envoyer",
+      "sending": "Envoi…",
+      "createError": "Impossible de créer le brouillon.",
+      "updateError": "Impossible de mettre à jour la convention.",
+      "sendError": "Impossible d’envoyer la convention.",
+      "discardError": "Impossible de supprimer le brouillon ; il figure toujours sous En attente de signature, où vous pouvez le supprimer.",
+      "sent_one": "Convention envoyée à {{count}} destinataire",
+      "sent_other": "Convention envoyée à {{count}} destinataires",
+      "notEmailed": {
+        "no_email_service": "Envoyée, mais le courriel n’est pas configuré. Copiez le lien de signature depuis « En attente de signature » et partagez-le.",
+        "no_recipients": "Envoyée, mais il n’y avait aucun destinataire à joindre. Copiez le lien de signature depuis « En attente de signature » et partagez-le.",
+        "send_failed": "Envoyée, mais le courriel n’a pas pu être livré. Copiez le lien de signature depuis « En attente de signature » et partagez-le."
+      }
     }
   },
   "quotes": {
@@ -2520,7 +2623,7 @@
     "ai": {
       "column": "Usage IA",
       "sectionTitle": "Usage de l'IA",
-      "sectionHelp": "Comment l'usage de l'assistant IA par les organisations utilisant ce profil de facturation est facturé. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
+      "sectionHelp": "Comment l'usage de Breeze AI par les organisations utilisant ce profil de facturation est facturé. Facturez le coût Breeze majoré d'une marge, ou fixez un prix par modèle.",
       "coverage": "Facturation de l'usage IA",
       "coverageBillable": "Facturable",
       "coverageIncluded": "Inclus",

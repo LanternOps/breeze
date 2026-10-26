@@ -15,7 +15,7 @@
  *
  * RT1 panel → workspace mid-turn, approval pending, approve from the tab (leg a)
  * RT2 workspace → panel mid-turn (the reverse of leg a)
- * RT3 leave /workspace mid-turn and return (leg c; component variant in
+ * RT3 leave /ai/chat mid-turn and return (leg c; component variant in
  *     components/workspace/WorkspacePage.reattach.test.tsx)
  * RT4 a partial join (replay over the byte cap) on both surfaces
  * RT5 a send from the destination while a turn runs elsewhere → 409 cycle
@@ -35,6 +35,9 @@ vi.mock('./orgStore', async () => {
 vi.mock('../components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('astro:transitions/client', () => ({ navigate: vi.fn() }));
 vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ permissions: [], can: () => true }) }));
+// The side panel's Wisp grant lookup (W05 #10136) is AiChatSidebar.wispHome.test.tsx's;
+// an unresolved token keeps it out of this harness.
+vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' }) }));
 // Surface children that are irrelevant to the joined-mid-response line (RT4).
 vi.mock('../components/ai/AiChatMessages', () => ({ default: () => null }));
 vi.mock('../components/ai/AiChatInput', () => ({ default: () => null }));
@@ -42,7 +45,6 @@ vi.mock('../components/ai/AiContextBadge', () => ({ default: () => null }));
 vi.mock('../components/ai/AiCostIndicator', () => ({ default: () => null }));
 vi.mock('../components/ai/AiModelPicker', () => ({ default: () => null }));
 vi.mock('../components/ai/AiContinuationPrompt', () => ({ default: () => null }));
-vi.mock('../components/ai/WispToggle', () => ({ default: () => null }));
 vi.mock('../components/ai/WispThreadHeader', () => ({ default: () => null }));
 vi.mock('../components/ai/WispThreadAttachments', () => ({ default: () => null }));
 vi.mock('../components/ai/WispConcernsPanel', () => ({ WispConcernsPanel: () => null }));
@@ -261,7 +263,7 @@ describe('RT1 panel → workspace mid-turn, approval pending, approved from the 
     });
 
     const moved = moveToAssistant(S, { draft: useAiStore.getState().composerDraft });
-    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/wisp/chat#session=${S}`));
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith(`/ai/chat#session=${S}`));
 
     // The destination, exactly as WorkspaceSessionLink drives it.
     const handed = takeHandoff(S);
@@ -385,7 +387,7 @@ describe('RT2 workspace → panel mid-turn (the reverse of leg (a))', () => {
   });
 });
 
-describe('RT3 leave /workspace mid-turn and return (plan T17 Step 3 (c))', () => {
+describe('RT3 leave /ai/chat mid-turn and return (plan T17 Step 3 (c))', () => {
   it('cleanup stops both attaches (old frames write nothing); the return re-hydrates and re-attaches each tab to the still-running turn', async () => {
     const first: Record<string, Live> = { [S]: liveSse(), [S2]: liveSse() };
     const second: Record<string, Live> = { [S]: liveSse(), [S2]: liveSse() };
@@ -409,7 +411,7 @@ describe('RT3 leave /workspace mid-turn and return (plan T17 Step 3 (c))', () =>
       expect(tabOf(id)!.pendingApproval?.executionId).toBe('ex1');
     }
 
-    // Leaving /workspace: WorkspacePage's unmount calls cleanupAllStreams.
+    // Leaving /ai/chat: WorkspacePage's unmount calls cleanupAllStreams.
     useWorkspaceStore.getState().cleanupAllStreams();
     expect(first[S]!.cancel).toHaveBeenCalled();
     expect(first[S2]!.cancel).toHaveBeenCalled();

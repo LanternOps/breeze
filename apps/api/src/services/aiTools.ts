@@ -93,6 +93,16 @@ import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
 import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { registerAlertCorrelationTools } from './aiToolsAlertCorrelations';
+import { registerAnomalyTools } from './aiToolsAnomalies';
+import { registerReliabilityTriageTools } from './aiToolsReliabilityTriage';
+import { registerTicketConfigTools } from './aiToolsTicketConfig';
+import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
+import { registerTicketInboxTools } from './aiToolsTicketInbox';
+import { registerTicketAttachmentTools } from './aiToolsTicketAttachments';
+import { registerTicketFormTools } from './aiToolsTicketForms';
+import { registerTicketResponseTemplateTools } from './aiToolsTicketResponseTemplates';
+import { registerTimeSuggestionTools } from './aiToolsTimeSuggestions';
 import { registerMessagingTools } from './aiToolsMessaging';
 import { registerCatalogTools } from './aiToolsCatalog';
 import { registerBillingTools } from './aiToolsBilling';
@@ -365,6 +375,18 @@ registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
 registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
+// Full-control W06 (#6776): PSA configuration + ticket operations.
+registerTicketConfigTools(aiTools);
+registerTicketChecklistTemplateTools(aiTools);
+registerTicketInboxTools(aiTools);
+registerTicketAttachmentTools(aiTools);
+registerTicketFormTools(aiTools);
+registerTicketResponseTemplateTools(aiTools);
+registerTimeSuggestionTools(aiTools);
+// Full-control W07 (#6777): alert correlation + signal triage.
+registerAlertCorrelationTools(aiTools);
+registerAnomalyTools(aiTools);
+registerReliabilityTriageTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
@@ -702,10 +724,16 @@ export async function executeTool(
   // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
   // thread's attachments — the key is added ONLY when the capture scope
   // carries one, so every other anchor keeps its exact shape.
-  const writeAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const writeAnchor = toolName === 'read_artifact' || toolName === 'run_flow' ? captureContextFrom(auth, opts, toolName) : null;
   const wispThreadId = opts?.capture?.wispThreadId;
   const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+  // `run_flow` trusts the anchor's session id, so a caller-supplied anchor is
+  // dropped when the server computed none (no chat session => run_flow refuses).
+  if (toolName === 'run_flow' && !captureAnchor && handlerContext?.captureAnchor) {
+    const { captureAnchor: _dropped, ...rest } = handlerContext;
+    handlerContext = rest;
+  }
 
   // Topology M4-D1 (#6000): every topology tool runs only against the site a
   // server-owned context pins — the active topology session, or a one-site

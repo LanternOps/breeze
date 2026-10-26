@@ -16,6 +16,7 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
+import { isFlowPrincipal } from '../middleware/principalKind';
 import {
   getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
 } from '../db';
@@ -124,6 +125,9 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
     },
     handler: async (input, auth) => {
       if (!aiScriptAuthoringEnabled()) return disabled();
+      // Tool catalog W04 (#5219): a proposal's author is an agent run or a chat
+      // session; a flow is neither, and its run id is not an agent run id.
+      if (isFlowPrincipal(auth)) return JSON.stringify({ error: 'flow_principal_unsupported', action: 'propose_script' });
       const parsed = proposeScriptInputSchema.safeParse(input);
       if (!parsed.success) {
         return JSON.stringify({ error: `invalid_input: ${parsed.error.issues.map((i) => i.message).join('; ')}` });

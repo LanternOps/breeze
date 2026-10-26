@@ -91,7 +91,7 @@ describe('Sidebar — Flows server gate', () => {
     mockConfig({ features: { flows: false } });
     const { container } = render(<Sidebar currentPath="/flows" />);
     // Wait for the sidebar to be rendered at all before asserting an absence.
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/flows"]')).toBeNull();
   });
 
@@ -100,7 +100,7 @@ describe('Sidebar — Flows server gate', () => {
     state.user.permissions = [{ resource: 'devices', action: 'read' }];
     try {
       const { container } = render(<Sidebar currentPath="/flows" />);
-      await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+      await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
       expect(container.querySelector('a[href="/flows"]')).toBeNull();
     } finally {
       state.user.permissions = [{ resource: 'automations', action: 'read' }];
@@ -110,7 +110,7 @@ describe('Sidebar — Flows server gate', () => {
   it('hides the nav item when /config is unreachable (fails closed)', async () => {
     mockConfig({}, false);
     const { container } = render(<Sidebar currentPath="/flows" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/flows"]')).toBeNull();
   });
 });
@@ -136,21 +136,21 @@ describe('Sidebar — Operator workspace server gate', () => {
   it('hides /operator when the flag is false', withAiRead(async () => {
     mockConfig({ features: { aiOperatorTasks: false } });
     const { container } = render(<Sidebar currentPath="/operator" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/operator"]')).toBeNull();
   }));
 
   it('hides /operator when /config is unreachable (fails closed)', withAiRead(async () => {
     mockConfig({}, false);
     const { container } = render(<Sidebar currentPath="/operator" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/operator"]')).toBeNull();
   }));
 
   it('hides /operator from a user without ai_agents:read even when the flag is on', async () => {
     mockConfig({ features: { aiOperatorTasks: true } });
     const { container } = render(<Sidebar currentPath="/operator" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/operator"]')).toBeNull();
   });
 });

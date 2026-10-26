@@ -281,6 +281,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
   'agents/workloads.ts': { exempt: 'agent_transport' },
+  // #9075 W2b: the client's unauthenticated signing link (token-bearer, like quotesPublic.ts).
+  'agreementsPublic.ts': { exempt: 'portal' },
   'ai.ts': { exempt: 'ai_transport', note: 'Chat session transport (sessions, messages, interrupt, approve-plan); usage/budget/admin sub-routes are AI governance.' },
   'ai/dataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Org override of the AI data policy (device file read level, tool-output retention) -- the AI must not loosen the limits on what it may read or how long its outputs persist.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
@@ -299,12 +301,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
   'aiOperatorTasks.ts': { gap: '#6780' },
-  'alertTemplates/correlations.ts': { gap: '#6777' },
+  'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
-  'alerts/correlations.ts': { gap: '#6777' },
+  'alerts/correlations.ts': { tools: ['get_alert_correlations', 'manage_alert_correlations'] }, // W07 (#6777)
   'alerts/delivery.ts': { tools: ['manage_delivery'] },
   'alerts/deliveryRails.ts': { tools: ['manage_delivery'] },
   'alerts/policies.ts': { tools: ['manage_delivery'] },
@@ -419,7 +421,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'connectionHealth.ts': { exempt: 'tool_in_later_wave', note: 'Connection health incidents: read-only panel feed (W2 UI); no MCP tool planned yet (#8844).' },
   'connectionHealthSettings.ts': { exempt: 'tool_in_later_wave', note: 'Customer-notice setting (partner default / org override, W5); no MCP tool planned yet (#8844).' },
   'contracts/adopt.ts': { exempt: 'human_only_bulk_destructive', note: 'Adopt draft (#9346): moves every deliverable off a draft contract, re-links its documents, then deletes the draft. The single-item path (manage_deliverables update contractId) already has a tool.' },
-  'contracts/agreementRequests.ts': { exempt: 'human_only_legal_evidence', note: 'Record signed agreement (#8865 W1c): a named MSP user files a client\'s signature obtained elsewhere, with its evidence reference and optional signed copy. Like quote accept-on-behalf it has no AI tool by design -- an agent could fabricate a signed legal record.' },
+  'contracts/agreementRequests.ts': { exempt: 'human_only_legal_evidence', note: 'Record signed agreement (#8865 W1c): a named MSP user files a client\'s signature obtained elsewhere, with its evidence reference and optional signed copy. Like quote accept-on-behalf it has no AI tool by design -- an agent could fabricate a signed legal record. The #9075 W2a request lifecycle in the same file (draft create/edit/delete, preview, send for signature, copy the signing link, void) is the same legal signature flow: sending a document for a client\'s signature or dispensing its bearer link is not delegated to an agent.' },
   'contracts/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/cancel; the single-item equivalents already have tools.' },
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
@@ -443,7 +445,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/agentRecovery.ts': { tools: ['trigger_agent_restart'] },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
-  'devices/anomalies.ts': { gap: '#6777' },
+  'devices/anomalies.ts': { tools: ['manage_device_anomalies'] }, // W07 (#6777): per-row anomalies; anomaly EPISODES (list/get/action) are not exposed yet
   'devices/billing.ts': { gap: '#6784' },
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
@@ -584,7 +586,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgPortalSettings.ts': { gap: '#6789' },
   'orgPortalUsers.ts': { gap: '#6789' },
   'orgSummary.ts': { gap: '#6789' },
-  'orgTicketSettings.ts': { gap: '#6776' },
+  'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
   'packageSearch.ts': { gap: '#6782' },
@@ -661,7 +663,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'quotes/lifecycle.ts': { tools: ['manage_quotes'] },
   'quotes/quotes.ts': { tools: ['list_quotes', 'get_quote', 'manage_quotes'] },
   'quotesPublic.ts': { exempt: 'portal' },
-  'reliability.ts': { gap: '#6777' },
+  'reliability.ts': { tools: ['get_fleet_health', 'reliability_feedback'] }, // W07 (#6777): list, history, offenders, evaluation, org summary, feedback; baseline create/clear stays human
   'remediationSuggestions.ts': { tools: ['list_remediation_suggestions', 'find_proven_fixes'] },
   'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
@@ -726,21 +728,21 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'terminalWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'thirdPartyCatalog/list.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'thirdPartyCatalog/operations.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
-  'ticketCategories.ts': { gap: '#6776' },
-  // Reads are on manage_ticket_checklist (#6930); template/item authoring is still the #6776 gap.
-  'ticketChecklistTemplates.ts': { gap: '#6776' },
-  'ticketConfig.ts': { gap: '#6776' },
+  'ticketCategories.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): list/create/update/delete/reorder_categories
+  // Reads, apply, save-as and duplicate are on manage_ticket_checklist (#6930); template and item authoring is manage_ticket_checklist_templates (W06, #6776).
+  'ticketChecklistTemplates.ts': { tools: ['manage_ticket_checklist', 'manage_ticket_checklist_templates'] },
+  'ticketConfig.ts': { tools: ['manage_ticket_config', 'manage_ticket_inbox'] }, // W06 (#6776): statuses, priorities, sender domains; email-inbound queue
   'tickets/aiDrafts.ts': { tools: ['manage_tickets'] },
   'tickets/approvals.ts': { exempt: 'human_only_approval', note: 'Customer work approval staff actions (#4617 spec §6.5): recording a customer decision on their behalf, writing off held time, and raising/cancelling/re-asking a request commit or withhold the customer\'s money and are human-only. The one read, GET /tickets/:id/approval-summary, is exposed read-only as get_ticket_approval_status; nothing else here is reachable by an AI tool.' },
   'tickets/approvalSettings.ts': { exempt: 'human_only_approval', note: 'Customer work approval POLICY (partner default + org override, #4617 spec §6.5): AI may read request status, but may not set the policy that decides when a customer must consent to billable work.' },
-  'tickets/attachments.ts': { gap: '#6776' },
-  'tickets/bulk.ts': { gap: '#6776' },
+  'tickets/attachments.ts': { tools: ['manage_ticket_attachments'] }, // W06 (#6776): list, read_content (text only), attach_from_artifact, delete; multipart upload stays human
+  'tickets/bulk.ts': { tools: ['manage_tickets'] }, // W06 (#6776): bulk_update (assign/status/priority); bulk delete deliberately not exposed
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
   'tickets/links.ts': { tools: ['manage_tickets'] },
   'tickets/merge.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
-  'tickets/forms.ts': { gap: '#6776' },
+  'tickets/forms.ts': { tools: ['manage_ticket_forms'] }, // W06 (#6776)
   'tickets/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'tickets/mailboxConnect.ts': { exempt: 'vendor_console_admin' },
   'tickets/moveOrg.ts': { tools: ['manage_tickets'] },
@@ -748,11 +750,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
-  'tickets/ticketResponseTemplates.ts': { gap: '#6776' },
+  'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'timeEntries/locationSites.ts': { exempt: 'mobile_surface', note: 'Feed for the mobile arrival prompt (#4186): the partner flag plus candidate sites the phone matches its own position against. An agent has no position to match; site reads are covered by list_sites/get_site.' },
-  'timeEntries/suggestions.ts': { gap: '#6776' },
+  'timeEntries/suggestions.ts': { tools: ['manage_time_suggestions'] }, // W06 (#6776)
   'timeEntries/timeEntries.ts': { tools: ['list_time_entries', 'get_running_timer', 'get_timesheet', 'manage_tickets'] },
   'timeStatus.ts': { tools: ['list_time_sync_issues'] },
   'toolSources.ts': { exempt: 'human_only_ai_governance', note: 'BYO MCP tool sources and per-tool tier/enable -- the AI must not widen its own tool authority.' },
@@ -786,7 +788,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { gap: '#6778' },
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { gap: '#6778' },
-  'flows.ts': { tools: ['list_flows', 'get_flow'] }, // Tool Catalog W03 (#5218): read-only list/detail; drafts are written via draft_flow.
+  'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },

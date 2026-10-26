@@ -192,8 +192,9 @@ export const POLICY_DECIDABLE_TIER3: readonly PolicyDecidableEntry[] = Object.fr
   // open-ended, free-form command surface — no fixed, reviewable action list
   // to scope a policy decision to.
   //
-  // manage_processes:kill: the tool is currently unregistered from dispatch
-  // (#4149) — nothing to authorize yet.
+  // manage_processes:kill: wired to chat/agents in full-control W04 (#6758),
+  // supervised (an agent's kill is a proposal). Not decidable until the
+  // dispatch-time pid→name identity pin exists (#4149, actManifest.ts).
   //
   // file_operations / registry_operations: unbounded target surface (any
   // path / any registry key). Each needs its own per-entry target pin design

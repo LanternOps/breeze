@@ -400,6 +400,16 @@ vi.mock('../services/mcpTier3Lifecycle', () => ({
   beginMcpReleaseLifecycle: mcpReleaseMock.beginMcpReleaseLifecycle,
   writeMcpIntentOutcomeAudit: mcpReleaseMock.writeMcpIntentOutcomeAudit,
 }));
+// #10129: the AI Operator release ledger seam. The real predicate runs; the
+// ledger writes are covered by aiOperatorRevealFeed.integration.test.ts.
+const operatorLedgerMock = vi.hoisted(() => ({
+  finish: vi.fn(async () => undefined),
+  beginOperatorReleaseLedger: vi.fn(),
+}));
+vi.mock('../services/aiOperator/operatorReleaseLedger', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  beginOperatorReleaseLedger: operatorLedgerMock.beginOperatorReleaseLedger,
+}));
 vi.mock('../services/mcpPrincipalAuth', () => ({
   rebuildMcpOriginAuthContext: mcpReleaseMock.rebuildMcpOriginAuthContext,
   checkMcpOriginReleaseAuthority: mcpReleaseMock.checkMcpOriginReleaseAuthority,
@@ -4324,6 +4334,104 @@ describe('releaseApprovedIntent', () => {
       expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
       expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
     });
+
+    describe('AI Operator release ledger (#10129)', () => {
+      const operatorIntent = (o: Partial<ActionIntent> = {}) => taskIntent({
+        source: 'mcp_api', originPrincipalKind: 'user_session', ...o,
+      } as Partial<ActionIntent>);
+
+      beforeEach(() => {
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValue({
+          sessionId: 'operator-session-1', executionId: 'operator-exec-1', finish: operatorLedgerMock.finish,
+        });
+      });
+
+      it('an operator child opens the ledger before dispatch and closes it with a compact result', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).toHaveBeenCalledWith(expect.objectContaining({ id: intent.id, taskId: 'task-1' }));
+        const beganAt = operatorLedgerMock.beginOperatorReleaseLedger.mock.invocationCallOrder[0]!;
+        expect(beganAt).toBeLessThan(aiToolsMock.executeTool.mock.invocationCallOrder[0]!);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success', ledgerResult: expect.any(String) });
+        // Not MCP-origin: the MCP lifecycle never runs for it.
+        expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+        // The dispatched auth is untouched (no aiOrigin swap, unlike MCP).
+        expect(aiToolsMock.executeTool.mock.calls[0]?.[2]).toBe(fakeAuth);
+      });
+
+      it('ledger unavailable → failed operator_ledger_unavailable, a clean dispatch failure, nothing dispatched', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        operatorLedgerMock.beginOperatorReleaseLedger.mockResolvedValueOnce(null);
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(operationServiceMock.markOperationDispatchFailed).toHaveBeenCalledWith(intent.id, 'operator_ledger_unavailable');
+        const failed = intentServiceMock.transitionIntent.mock.calls.find((c) => c[2] === 'failed');
+        expect(failed?.[3]).toMatchObject({ errorCode: 'operator_ledger_unavailable' });
+        expect(operatorLedgerMock.finish).not.toHaveBeenCalled();
+      });
+
+      it('a thrown dispatch closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure', error: expect.any(Error) }));
+      });
+
+      it('a returned tool error closes the ledger as failure', async () => {
+        const intent = operatorIntent();
+        primeTaskLinkedThroughClaim(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ error: 'nope' }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+      });
+
+      it('a secret-bearing child (m365_create_user) records no result body on the ledger', async () => {
+        const intent = operatorIntent({ actionName: 'm365_create_user' });
+        primeTaskLinkedThroughClaim(intent);
+        m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(true);
+        m365HeadlessMock.executeM365ToolHeadless.mockResolvedValueOnce(
+          JSON.stringify({ success: true, action: 'm365.user.create', userId: 'u1' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(operatorLedgerMock.finish).toHaveBeenCalledWith({ status: 'success' });
+      });
+
+      it.each([
+        ['a chat-source task intent', { source: 'chat', originPrincipalKind: 'user_session' }],
+        ['a user_session mcp_api intent with no task', { source: 'mcp_api', originPrincipalKind: 'user_session', taskId: null, taskStepKey: null, operationKey: null }],
+      ] as const)('%s is not wrapped', async (_label, o) => {
+        const intent = operatorIntent(o as Partial<ActionIntent>);
+        if (intent.taskId) primeTaskLinkedThroughClaim(intent);
+        else primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+        expect(operatorLedgerMock.beginOperatorReleaseLedger).not.toHaveBeenCalled();
+      });
+    });
   });
 });
 
@@ -5634,5 +5742,218 @@ describe('releaseApprovedIntent — Wisp delegation ceiling at durable release (
 
     expect(wispReleaseMock.checkWispCeilingForRelease).not.toHaveBeenCalled();
     expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth, expect.anything());
+  });
+});
+
+// ============================================================================
+// Tool catalog W04 (#5219), plan Task A5 — flow-origin releases.
+//
+// A flow intent takes the flow-aware dispatch claim (never the plain CAS),
+// revalidates through the structural flow branch (real
+// revalidateApprovedIntentForRelease; only its flow-authority collaborator is
+// mocked), executes under the run's flow principal INSIDE the run's
+// flowExecutionContext frame, and never notifies a requester — the run
+// timeline is the outcome surface.
+// ============================================================================
+const { flowClaimMock, flowAuthorityMock } = vi.hoisted(() => ({
+  flowClaimMock: { claimFlowLinkedIntentForDispatch: vi.fn() },
+  flowAuthorityMock: { checkFlowReleaseAuthority: vi.fn() },
+}));
+vi.mock('../services/flows/intentClaim', () => flowClaimMock);
+vi.mock('../services/flows/releaseAuthority', () => flowAuthorityMock);
+
+describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
+  const RUN_ID = '77777777-7777-4777-8777-777777777777';
+  const FLOW_ID = '66666666-6666-4666-8666-666666666666';
+  const flowAuth = {
+    principal: { kind: 'flow', flowId: FLOW_ID, runId: RUN_ID },
+    aiOrigin: { kind: 'flow', flowRunId: RUN_ID },
+    user: { id: FLOW_ID, email: `flow+${FLOW_ID}@breeze.internal`, name: 'Disk cleanup', isPlatformAdmin: false },
+    token: null,
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    scope: 'organization' as const,
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: (id: string) => id === 'org-1',
+  };
+
+  function flowIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+    return baseIntent({
+      requestedByUserId: null,
+      requestingFlowRunId: RUN_ID,
+      originPrincipalKind: 'flow',
+      originPrincipalId: FLOW_ID,
+      source: 'flow',
+      approvalScope: 'supervised',
+      ...overrides,
+    } as Partial<ActionIntent>);
+  }
+
+  function primeFlow(intent: ActionIntent, claim: unknown = { claimed: true, runId: RUN_ID, chainDepth: 2 }) {
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockResolvedValueOnce(claim);
+    flowAuthorityMock.checkFlowReleaseAuthority.mockResolvedValue({ ok: true, auth: flowAuth });
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    flowAuthorityMock.checkFlowReleaseAuthority.mockReset();
+    flowClaimMock.claimFlowLinkedIntentForDispatch.mockReset();
+    intentServiceMock.transitionIntent.mockReset();
+    aiToolsMock.executeTool.mockReset();
+  });
+
+  it('goes through the flow claim, executes with the flow principal auth inside the run frame, and never checks user RBAC', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let frameDuringExecute: unknown;
+    const { currentFlowExecutionFrame } = await import('../services/flows/flowExecutionContext');
+    aiToolsMock.executeTool.mockImplementationOnce(async () => {
+      frameDuringExecute = currentFlowExecutionFrame();
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(flowClaimMock.claimFlowLinkedIntentForDispatch).toHaveBeenCalledWith(intent.id);
+    // The plain approved -> executing CAS is NOT taken for a flow intent.
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+      intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+    );
+    expect(dispatchClaimMock.claimTaskLinkedIntentForDispatch).not.toHaveBeenCalled();
+    expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, flowAuth, expect.anything());
+    expect(frameDuringExecute).toEqual({ runId: RUN_ID, chainDepth: 2 });
+    expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+      intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+    );
+  });
+
+  // aiDispatch.requireAiOrigin (the device-dispatch gate) reads exactly
+  // `auth.aiOrigin` and throws MissingAiOriginError without it; the flow
+  // principal passing it is pinned in flowAuthContext.test.ts. Here: the auth
+  // the RELEASE hands the tool carries it.
+  it('released flow run_script reaches aiDispatch with aiOrigin kind flow', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    let origin: unknown;
+    aiToolsMock.executeTool.mockImplementationOnce(async (_name: string, _args: unknown, auth: { aiOrigin?: unknown }) => {
+      if (!auth.aiOrigin) throw new Error('MissingAiOriginError');
+      origin = auth.aiOrigin;
+      return JSON.stringify({ ok: true });
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(origin).toEqual({ kind: 'flow', flowRunId: RUN_ID });
+  });
+
+  it('a tenant-tool flow release passes actor { kind: flow, id: runId }', async () => {
+    const TOOL_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+    const descriptor = { id: TOOL_ID, qualifiedName: 'acme__restart' };
+    const args = { name: 'svc' };
+    const intent = flowIntent({
+      actionName: 'acme__restart',
+      arguments: args,
+      argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-7',
+    } as Partial<ActionIntent>);
+    primeFlow(intent);
+    aiToolsMock.getToolTier.mockReturnValue(undefined);
+    aiToolsMock.requiresLiveSession.mockReturnValue(false);
+    toolSourcesMock.loadTenantToolBindingState.mockResolvedValue({
+      tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3 },
+      source: { id: 'src-1', status: 'active' },
+    });
+    toolSourcesMock.loadTenantToolForExecution.mockResolvedValue({ descriptor, source: {} });
+    toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: JSON.stringify({ ok: 1 }) });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
+      descriptor, args, flowAuth, { surface: 'flow', orgId: intent.orgId, actor: { kind: 'flow', id: RUN_ID } },
+    );
+    expect(aiGuardrailsMock.checkPermissionRequirements).not.toHaveBeenCalled();
+  });
+
+  it('a terminal transition publishes the terminal outbox once, carrying the run id (the run wake)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    const { publishIntentTerminalOutbox } = await import('../services/aiOperator/taskOutbox');
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(publishIntentTerminalOutbox).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(publishIntentTerminalOutbox).mock.calls[0]![1]).toMatchObject({
+      id: intent.id, orgId: intent.orgId, requestingFlowRunId: RUN_ID,
+    });
+  });
+
+  it('lost_race returns without writing anything', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'lost_race' });
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(flowAuthorityMock.checkFlowReleaseAuthority).not.toHaveBeenCalled();
+  });
+
+  it.each(['run_terminal', 'run_not_waiting', 'flow_not_enabled', 'publication_moved', 'tool_revision_changed', 'approval_scope_changed', 'delegator_inactive', 'run_cancel_requested'])(
+    'a %s refusal (the claim already wrote its outcome) executes nothing and writes nothing more',
+    async (reason) => {
+      const intent = flowIntent();
+      primeFlow(intent, { claimed: false, reason });
+      await releaseApprovedIntent(intent.id);
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('run_leased throws a retryable error so BullMQ redelivers the release (nothing written)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent, { claimed: false, reason: 'run_leased' });
+    await expect(releaseApprovedIntent(intent.id)).rejects.toThrow(/flow run .* is leased/);
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('notifyRequesterOfOutcome is a no-op for a flow intent (approve and every terminal event)', async () => {
+    const intent = flowIntent();
+    primeFlow(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+    // The notifier re-reads the intent.
+    dbState.selectActionIntentsResults.push([{ ...intent, status: 'completed' }]);
+
+    await processIntentReleaseJob({ intentId: intent.id, eventType: 'intent_approved' });
+
+    for (const eventType of ['intent_rejected', 'intent_expired', 'intent_cancelled'] as const) {
+      dbState.selectActionIntentsResults.push([{ ...intent, status: eventType.replace('intent_', '') }]);
+      await processIntentReleaseJob({ intentId: intent.id, eventType });
+    }
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+    expect(recipientsMock.resolveRecipientUserIds).not.toHaveBeenCalled();
   });
 });

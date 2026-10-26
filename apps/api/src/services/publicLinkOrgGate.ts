@@ -1,6 +1,7 @@
 /**
  * Tenant-status gate for the UNAUTHENTICATED, capability-token public link
- * surfaces (`routes/quotesPublic.ts`, `routes/invoicesPublic.ts`).
+ * surfaces (`routes/quotesPublic.ts`, `routes/invoicesPublic.ts`,
+ * `routes/agreementsPublic.ts`).
  *
  * Those routers carry no auth middleware, so every query runs under a SYSTEM
  * context — which means RLS cannot answer "is this tenant still allowed to
@@ -42,6 +43,7 @@ import {
 import { organizations, partners } from '../db/schema';
 import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { quotes } from '../db/schema/quotes';
+import { agreementRequests, type AgreementRequestRow } from '../db/schema/contractDocuments';
 
 /**
  * Statuses whose public links keep working. Deliberately the same pair
@@ -163,6 +165,54 @@ export async function resolveQuoteLinkOrgGate(
       .limit(1),
   );
   return toGate(row?.orgId ?? null, row?.status ?? null, row?.partnerStatus ?? null);
+}
+
+export interface AgreementRequestLinkResolution {
+  /** The request row, or null when nothing matched id + orgIds. */
+  request: AgreementRequestRow | null;
+  /** The partner that owns the request's org TODAY (requests carry no
+   *  partner_id column) — the resolver compares it to the token's partnerId. */
+  partnerId: string | null;
+  partnerName: string | null;
+  gate: PublicLinkOrgGate;
+}
+
+/**
+ * Agreement-request public link (#9075 W2b): ONE system read of the request
+ * (by id AND org_id IN the merged-org set), joined to its CURRENT org and that
+ * org's partner. Returns the row too, so the resolver can check the persisted
+ * jti and partner continuity without a second query. Same `toGate` semantics as
+ * the quote gate; a missing row leaves the gate open (the resolver's 401 owns
+ * "resolves to nothing").
+ */
+export async function resolveAgreementRequestLinkOrgGate(
+  requestId: string,
+  orgIds: string[],
+): Promise<AgreementRequestLinkResolution> {
+  if (orgIds.length === 0) return { request: null, partnerId: null, partnerName: null, gate: PUBLIC_LINK_ORG_GATE_OPEN };
+  const [row] = await readAsSystem(() =>
+    db
+      .select({
+        request: agreementRequests,
+        orgId: organizations.id,
+        status: organizations.status,
+        partnerId: organizations.partnerId,
+        partnerStatus: partners.status,
+        partnerName: partners.name,
+      })
+      .from(agreementRequests)
+      .innerJoin(organizations, eq(organizations.id, agreementRequests.orgId))
+      .innerJoin(partners, eq(partners.id, organizations.partnerId))
+      .where(and(eq(agreementRequests.id, requestId), inArray(agreementRequests.orgId, orgIds)))
+      .limit(1),
+  );
+  if (!row) return { request: null, partnerId: null, partnerName: null, gate: PUBLIC_LINK_ORG_GATE_OPEN };
+  return {
+    request: row.request,
+    partnerId: row.partnerId,
+    partnerName: row.partnerName,
+    gate: toGate(row.orgId, row.status, row.partnerStatus),
+  };
 }
 
 /** Gate for a row whose owning org id the caller already resolved. */

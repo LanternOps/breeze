@@ -9,8 +9,8 @@ describe('WispSpendMeter (W06 T15, w00 A32)', () => {
     render(<WispSpendMeter spentCents={42} budgetCents={200} resetsAt={RESETS} onRaise={vi.fn()} />);
     const meter = screen.getByTestId('wisp-spend-meter');
     expect(meter.getAttribute('data-state')).toBe('ok');
-    expect(meter.textContent).toContain('42');
-    expect(meter.textContent).toContain('200');
+    expect(meter.textContent).toContain('$0.42 of $2.00 today');
+    expect(meter.textContent).not.toContain('¢');
     expect(meter.textContent).toContain('6');
     expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
   });

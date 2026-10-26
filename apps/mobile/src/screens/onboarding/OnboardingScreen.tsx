@@ -106,7 +106,7 @@ export function OnboardingScreen({ onComplete }: Props) {
           <Copy
             eyebrow="ASK THE FLEET"
             headline="Your fleet, in one chat."
-            body="Ask Breeze about your devices, alerts, or recent activity. The AI runs the queries and shows you the answer inline."
+            body="Ask Breeze AI about your devices, alerts, or recent activity. The AI runs the queries and shows you the answer inline."
           />
         </Page>
 

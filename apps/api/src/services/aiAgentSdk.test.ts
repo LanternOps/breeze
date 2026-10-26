@@ -2087,7 +2087,7 @@ describe('createSessionPreToolUse', () => {
       // context through createActionIntent).
       expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
         expect.anything(),
-        { id: 'intent-6', orgId: 'org-1', taskId: null },
+        { id: 'intent-6', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
         'intent_completed',
       );
     });
@@ -3724,7 +3724,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     // terminal outbox event.
     expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
       expect.anything(),
-      { id: 'intent-leak', orgId: 'org-1', taskId: null },
+      { id: 'intent-leak', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
   });
@@ -4292,7 +4292,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // failure drives must also publish the terminal outbox event.
     expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
       expect.anything(),
-      { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null },
+      { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
   });
@@ -4487,7 +4487,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     // #5205 W05 (#5210): same CAS win must publish the terminal outbox event.
     expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
       expect.anything(),
-      { id: 'intent-plan-digest-mismatch', orgId: 'org-1', taskId: null },
+      { id: 'intent-plan-digest-mismatch', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
   });
@@ -5070,7 +5070,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     // failure drives must also publish the terminal outbox event.
     expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
       expect.anything(),
-      { id: 'intent-task3-revalidate', orgId: 'org-1', taskId: null },
+      { id: 'intent-task3-revalidate', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
   });
@@ -5174,7 +5174,7 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     // would silently never wake anything watching for the outcome.
     expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
       expect.anything(),
-      { id: 'intent-selfheal', orgId: 'org-1', taskId: null },
+      { id: 'intent-selfheal', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
       'intent_failed',
     );
   });

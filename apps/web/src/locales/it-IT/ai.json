@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} azioni rifiutate",
     "refusedToast": "Approvazione respinta. La richiesta è stata rifiutata.",
     "runContextLabel": "Contesto di esecuzione:",
-    "runContextChosenByAssistant": "scelto dall'assistente",
+    "runContextChosenByAssistant": "scelto da Breeze AI",
     "runContextScriptDefault": "il valore predefinito salvato dello script",
-    "runContextOverrides": "scelto dall'assistente, sostituendo il valore predefinito salvato dello script ({{context}})"
+    "runContextOverrides": "scelto da Breeze AI, sostituendo il valore predefinito salvato dello script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "In attesa della risposta...",
@@ -56,7 +56,7 @@
     "sendShortcut": "Cmd+Enter per inviare"
   },
   "aiChatMessages": {
-    "title": "Breeze AI Assistant",
+    "title": "Breeze AI",
     "description": "Chiedi informazioni su dispositivi, avvisi, metriche o risoluzione dei problemi.",
     "unknownTool": "Strumento sconosciuto",
     "toolResult": "Risultato dello strumento",
@@ -107,10 +107,10 @@
     "dismiss": "Ignora"
   },
   "aiConversationMove": {
-    "openInAssistant": "Apri nelle chat di Wisp",
+    "openInAssistant": "Apri in Breeze AI",
     "continueInPanel": "Continua nel pannello laterale",
     "openPastConversation": "Apri una conversazione precedente",
-    "closeTabInAssistant": "Chiudi una scheda nelle chat di Wisp per aprire questa conversazione",
+    "closeTabInAssistant": "Chiudi una scheda in Breeze AI per aprire questa conversazione",
     "closeTabToOpen": "Chiudi una scheda per aprire questa conversazione",
     "notAvailable": "Questa conversazione non è disponibile",
     "wasClosed": "Questa conversazione è stata chiusa",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} msg",
     "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msg"
+    "messageCount_other": "{{count}} msg",
+    "thisMonth": "{{amount}} questo mese",
+    "credits_one": "{{formatted}} credito",
+    "credits_other": "{{formatted}} crediti"
   },
   "aiPlanProgressBar": {
     "completed": "Piano completato ({{completed}}/{{total}})",
@@ -160,7 +163,7 @@
     "outputExpired": "Output scaduto in base al criterio di conservazione"
   },
   "aiForOfficePage": {
-    "title": "AI per Office",
+    "title": "Breeze AI for Office",
     "description": "Assistente AI governato in Excel per i tuoi clienti — provisioning, criteri, audit, utilizzo e template",
     "tabs": {
       "orgs": "Organizzazioni",
@@ -194,7 +197,7 @@
       "description": "Imposta <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (la registrazione app Entra dell'add-in) sull'API e ricarica."
     },
     "title": "Organizzazioni clienti",
-    "description": "Provisiona l'assistente AI Excel per ogni organizzazione cliente: mappa il tenant Entra, concedi il consenso amministratore, abilita il criterio e distribuisci l'add-in.",
+    "description": "Provisiona Breeze AI for Office per ogni organizzazione cliente: mappa il tenant Entra, concedi il consenso amministratore, abilita il criterio e distribuisci l'add-in.",
     "columns": {
       "aiEnabled": "AI abilitata",
       "entraTenant": "Tenant Entra",
@@ -208,7 +211,7 @@
     "noOrganizations": "Nessuna organizzazione",
     "removeMapping": {
       "title": "Rimuovi mappatura tenant",
-      "message": "Gli utenti nel tenant Entra di {{orgName}} non potranno più accedere all'assistente Excel. Il criterio dell'organizzazione e la cronologia di utilizzo vengono mantenuti.",
+      "message": "Gli utenti nel tenant Entra di {{orgName}} non potranno più accedere a Breeze AI for Office. Il criterio dell'organizzazione e la cronologia di utilizzo vengono mantenuti.",
       "confirm": "Rimuovi mappatura"
     },
     "wizard": {
@@ -230,7 +233,7 @@
       "openNewTab": "Apri in una nuova scheda",
       "afterConsent": "Dopo la concessione, Microsoft reindirizza a una pagina di conferma Breeze. Il consenso risulta concesso qui dopo il primo accesso da Excel — non viene eseguito polling in tempo reale verso Microsoft (decisione Plan-4 1).",
       "consentGranted": "Ho concesso il consenso",
-      "enableDescription": "Abilita l'assistente per questa organizzazione. Questo scrive <code>enabled: true</code> nel criterio dell'organizzazione con impostazioni predefinite sicure (tutti gli utenti, read/write con approvazione dell'utente finale, redazione DLP per dati finanziari/credenziali). Potrai poi regolare tutto nell'editor criteri.",
+      "enableDescription": "Abilita Breeze AI for Office per questa organizzazione. Questo scrive <code>enabled: true</code> nel criterio dell'organizzazione con impostazioni predefinite sicure (tutti gli utenti, read/write con approvazione dell'utente finale, redazione DLP per dati finanziari/credenziali). Potrai poi regolare tutto nell'editor criteri.",
       "enabling": "Abilitazione…",
       "alreadyEnabled": "Già abilitato — continua",
       "enableAi": "Abilita AI per Office",
@@ -257,7 +260,7 @@
     },
     "organizations": "Organizzazioni",
     "title": "Criterio organizzazione",
-    "description": "Tutto ciò che l'assistente Excel di questa organizzazione cliente è autorizzato a fare.",
+    "description": "Tutto ciò che Breeze AI for Office di questa organizzazione cliente è autorizzato a fare.",
     "sections": {
       "general": "Generale",
       "userAccess": "Accesso utenti",
@@ -454,8 +457,8 @@
     "dismiss": "Ignora"
   },
   "workspaceEmptyState": {
-    "title": "Chat di Wisp",
-    "description": "Esegui più conversazioni AI contemporaneamente. Analizza un problema su un dispositivo in una scheda mentre configuri un criterio in un'altra.",
+    "title": "Breeze AI",
+    "description": "Esegui più conversazioni contemporaneamente. Analizza un problema su un dispositivo in una scheda mentre configuri un criterio in un'altra.",
     "newConversation": "Nuova conversazione",
     "limit": "Fino a 5 conversazioni simultanee"
   },
@@ -576,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Attiva Wisp",
-      "turningOn": "Attivazione di Wisp…"
-    },
     "locked": {
-      "why": "Wisp è disponibile con i piani Pro e superiori."
+      "why": "Wisp è disponibile con i piani Pro e superiori.",
+      "server": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
     },
     "modal": {
       "title": "Attiva Wisp",
@@ -598,7 +598,8 @@
       "cancel": "Annulla",
       "stepUpUnavailable": "Impossibile verificare il tuo fattore. Riprova.",
       "reverify": "Il tuo accesso è cambiato durante la conferma. Inserisci un nuovo codice per continuare.",
-      "invalidCode": "Il codice non è stato accettato. Riprova."
+      "invalidCode": "Il codice non è stato accettato. Riprova.",
+      "turningOn": "Attivazione di Wisp…"
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
@@ -616,7 +617,7 @@
     },
     "settings": {
       "title": "Budget e controllo periodico",
-      "budget": "Budget giornaliero (¢)",
+      "budget": "Budget giornaliero",
       "tick": "Controllo ogni (minuti)",
       "save": "Salva"
     },
@@ -661,7 +662,7 @@
       "resumeFailed": "Impossibile riprendere Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ su {{budget}}¢ oggi",
+      "meter": "{{spent}} su {{budget}} oggi",
       "resets": "si azzera tra {{hours}} h",
       "raise": "Aumenta il budget di oggi",
       "label": "Spesa di Wisp oggi"
@@ -690,7 +691,7 @@
       "empty": "Ancora niente. Il lavoro di Wisp comparirà qui.",
       "loadFailed": "Impossibile caricare l'attività",
       "loadMore": "Carica altro",
-      "cost": "{{cents}} ¢",
+      "cost": "Costo {{amount}}",
       "kind": {
         "assessment": "Controllo",
         "concern": "Segnalazione",
@@ -754,7 +755,7 @@
         "site": "Sedi",
         "alert": "Avvisi",
         "run": "Esecuzioni dell’agente",
-        "task": "Attività dell’operatore",
+        "task": "Attività IA",
         "user": "Utenti"
       },
       "loading": "Ricerca in corso…",
@@ -769,7 +770,8 @@
       "linking": "Collegamento in corso…"
     },
     "sidebar": {
-      "openHome": "Apri in Wisp"
+      "openHome": "Apri in Wisp",
+      "meetWisp": "Scopri Wisp"
     },
     "partnerSwitch": {
       "description": "Consenti ai tecnici di delegare lavoro a Wisp. Disattivandolo, ogni autorizzazione in corso viene messa in pausa al controllo successivo e le nuove vengono bloccate; non viene eliminato nulla e, riattivandolo, ciò che era in pausa riprende.",

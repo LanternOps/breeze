@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { notificationChannels, notificationRoutingRules, escalationPolicies } from '../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { deliveryToolSchema } from './aiToolSchemas';
@@ -75,8 +76,8 @@ async function execute(input: Input, auth: AuthContext): Promise<unknown> {
   if (!['organization','partner','system'].includes(auth.scope)) fail(403, 'Scope not permitted');
   if (!READS.has(input.action)) {
     if (!canMutateOrgWideGovernance(auth)) fail(403, SITE_CEILING_WRITE_DENIED_MESSAGE);
-    // Agent writes require upstream Tier-3 supervised approval instead of human MFA.
-    if (auth.principal?.kind !== 'ai_agent' && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');
+    // Agent and flow writes require upstream Tier-3 approval instead of human MFA.
+    if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');
   }
   if (input.action === 'resolve') return previewDelivery({ orgId: input.orgId!, severity: input.severity!, kind: input.kind, siteId: input.siteId, monitorId: input.monitorId }, auth);
   if (input.action === 'list_routing' || input.action === 'list_escalation') {

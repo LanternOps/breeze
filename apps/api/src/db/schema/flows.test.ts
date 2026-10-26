@@ -13,10 +13,12 @@ const COLUMNS = [
   'definitionVersion', 'effectiveTier', 'status', 'pausedReason',
   'enabledByUserId', 'enabledAt', 'createdByUserId', 'aiSessionId',
   'managedByAgentId', 'createdAt', 'updatedAt',
+  // W04 (#5219): live publication pointer + schedule occurrence key.
+  'enabledPublicationSeq', 'scheduleLastOccurrenceKey',
 ] as const;
 
 describe('flows schema', () => {
-  it('declares the W3 columns and no webhook secret (Decision 4: W05)', () => {
+  it('declares the W3 + W4 columns and no webhook secret (Decision 4: W05)', () => {
     expect(getTableName(flows)).toBe('flows');
     const cols = Object.keys(getTableColumns(flows));
     expect(cols.sort()).toEqual([...COLUMNS].sort());

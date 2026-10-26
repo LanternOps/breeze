@@ -176,6 +176,94 @@ it('makes delivery reachable without changing prior frozen gaps', () => {
   // (#6756) wired it; see the W02 pins below.
 });
 
+/** Spec 2026-09-23 W04 (#6758): every W04 tool is agent-reachable; its writes
+ * are allowlisted (t2) or proposals (supervised / four-eyes), never unattended. */
+const W04_AGENT_CAPABILITY: Readonly<Record<string, string>> = {
+  execute_containment: 'security_response', create_incident: 'security_response', collect_evidence: 'security_response',
+  request_elevation: 'security_response', revoke_elevation: 'security_response', remediate_sensitive_data: 'security_response',
+  assign_security_training: 'security_response', create_remote_session: 'remote_access',
+  manage_processes: 'scripts_commands', manage_scheduled_tasks: 'scripts_commands', registry_operations: 'scripts_commands',
+  trigger_agent_restart: 'endpoint_agent', trigger_agent_upgrade: 'endpoint_agent',
+  manage_software_policy: 'patching_software', remediate_software_violation: 'patching_software',
+  manage_browser_policy: 'config_policies', manage_peripheral_policy: 'config_policies',
+  configure_network_baseline: 'network', acknowledge_network_device: 'network',
+};
+
+describe('W04 security/device-ops writes in the agent catalog (#6758)', () => {
+  it('pins all 19 W04 tools', () => {
+    expect(Object.keys(W04_AGENT_CAPABILITY)).toHaveLength(19);
+  });
+
+  it.each(Object.entries(W04_AGENT_CAPABILITY))('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('only the pre-existing scheduled-task keys are pre-authorisable; every other W04 tier-3 call is a proposal', () => {
+    // manage_scheduled_tasks run/disable/enable were quorum-approved policy-
+    // decidable keys before W04 (policyDecidableKeys.ts, the manage_services:
+    // restart class: one device, one named task). Wiring the tool makes them
+    // live for an agent an admin explicitly grants them to (W04 PR, Todd).
+    const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => key.split(':')[0]! in W04_AGENT_CAPABILITY);
+    expect(decidable.sort()).toEqual(['manage_scheduled_tasks:disable', 'manage_scheduled_tasks:enable', 'manage_scheduled_tasks:run']);
+  });
+
+  it('W04-D8: the picker never offers manage_groups add_devices/remove_devices (agent human-only actions)', () => {
+    const groups = buildAgentToolCatalog().tools.find((t) => t.name === 'manage_groups');
+    expect(groups, 'manage_groups is agent-reachable').toBeDefined();
+    const keys = groups!.operations.map((op) => op.key);
+    expect(keys).not.toContain('manage_groups:add_devices');
+    expect(keys).not.toContain('manage_groups:remove_devices');
+    expect(keys).toContain('manage_groups:list');
+  });
+});
+
+/** Spec 2026-09-23 W06 (#6776): the seven PSA configuration / ticket-ops tools are agent-reachable
+ * under `tickets`. An agent reads; every write is a proposal (supervised / four-eyes) or an
+ * allowlisted tier-2 call, and each write handler refuses an `ai_agent` principal (W06-D8). */
+const W06_AGENT_CAPABILITY: Readonly<Record<string, string>> = {
+  manage_ticket_config: 'tickets', manage_ticket_checklist_templates: 'tickets', manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets', manage_ticket_forms: 'tickets', manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
+};
+
+describe('W06 PSA configuration and ticket ops in the agent catalog (#6776)', () => {
+  it('pins all seven W06 tools', () => {
+    expect(Object.keys(W06_AGENT_CAPABILITY)).toHaveLength(7);
+  });
+
+  it.each(Object.entries(W06_AGENT_CAPABILITY))('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('no W06 tier-3 key is pre-authorisable for an agent (every such call is a proposal)', () => {
+    const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => key.split(':')[0]! in W06_AGENT_CAPABILITY);
+    expect(decidable).toEqual([]);
+  });
+
+  it('the picker offers the tier-1 reads as read-only operations and the inbox list / attachment read as allowlisted tier 2', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const op = (tool: string, action: string) => tools.find((t) => t.name === tool)!.operations.find((o) => o.key === `${tool}:${action}`)!;
+    for (const [tool, action] of [
+      ['manage_ticket_config', 'get_config'], ['manage_ticket_config', 'list_categories'], ['manage_ticket_checklist_templates', 'list'],
+      ['manage_ticket_attachments', 'list'], ['manage_ticket_forms', 'list'], ['manage_ticket_response_templates', 'list'],
+    ] as const) {
+      expect(op(tool, action), `${tool}:${action}`).toMatchObject({ tier: 1, readOnly: true });
+    }
+    // Plain tier 2, not read-only: an agent needs an allowlist entry (quorum QW1).
+    expect(op('manage_ticket_inbox', 'list')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('manage_ticket_attachments', 'read_content')).toMatchObject({ tier: 2, readOnly: false });
+    // Writes: supervised or four-eyes are tier 3.
+    expect(op('manage_ticket_config', 'create_category').tier).toBe(3);
+    expect(op('manage_ticket_config', 'delete_domain').tier).toBe(3);
+    expect(op('manage_ticket_forms', 'delete').tier).toBe(3);
+    expect(op('manage_ticket_attachments', 'delete').tier).toBe(3);
+  });
+});
+
 // Spec 2026-09-23 W02 (#6756): PSA and billing write tools are agent-reachable.
 // Their tier-3 actions still become proposals for a human (none is
 // policy-decidable), and manage_tags add/remove stay human-only (QV2).
@@ -217,5 +305,46 @@ describe('W03 backup/DR writes in the agent catalog (#6757)', () => {
     const w03 = new Set<string>(W03_AGENT_REACHABLE);
     const decidable = POLICY_DECIDABLE_TIER3.map((e) => e.key).filter((key) => w03.has(key.split(':')[0]!));
     expect(decidable).toEqual([]);
+  });
+});
+
+/** Spec 2026-09-23 W07 (#6777): the alert-triage tools in the agent catalog. An agent reads correlations
+ * and anomalies and can propose the anomaly / reliability writes (released as the approver). The
+ * correlation GROUP writes are human-only: a supervised release rebuilds the approver's auth and drops
+ * the originating run's exact-device ceiling, and a group spans devices (quorum QW3). */
+describe('W07 alert correlation and signal triage in the agent catalog (#6777)', () => {
+  it.each([
+    ['get_alert_correlations', 'alerts_monitoring'],
+    ['manage_device_anomalies', 'alerts_monitoring'],
+    ['reliability_feedback', 'automations_reports'],
+  ] as const)('%s is agent-reachable under %s', (name, capability) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(listUnreachableRegisteredTools()).not.toContain(name);
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it('manage_alert_correlations is never offered to an agent (human-only), though the catalog still maps it', () => {
+    expect(listAgentReachableTools()).not.toContain('manage_alert_correlations');
+    expect(listUnreachableRegisteredTools()).toContain('manage_alert_correlations');
+    expect(TOOL_CAPABILITY['manage_alert_correlations']).toBe('alerts_monitoring');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain('manage_alert_correlations');
+  });
+
+  it('manage_device_anomalies:promote is tier 3 and not pre-authorisable (every promotion is a proposal)', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const op = (action: string) => tools.find((t) => t.name === 'manage_device_anomalies')!.operations.find((o) => o.key === `manage_device_anomalies:${action}`)!;
+    expect(op('list')).toMatchObject({ tier: 1, readOnly: true });
+    expect(op('dismiss')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('resolve')).toMatchObject({ tier: 2, readOnly: false });
+    expect(op('promote').tier).toBe(3);
+    expect(POLICY_DECIDABLE_TIER3.map((e) => e.key)).not.toContain('manage_device_anomalies:promote');
+  });
+
+  it('the extra get_fleet_health actions are read-only operations', () => {
+    const tools = buildAgentToolCatalog().tools;
+    const ops = tools.find((t) => t.name === 'get_fleet_health')!.operations;
+    for (const action of ['history', 'offenders', 'evaluation', 'org_summary']) {
+      expect(ops.find((o) => o.key === `get_fleet_health:${action}`), action).toMatchObject({ tier: 1, readOnly: true });
+    }
   });
 });

@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Décrivez le script dont vous avez besoin...",
-      "opening": "Ouverture de l’assistant IA..."
+      "opening": "Ouverture de Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Arrêter la génération",
@@ -826,12 +826,12 @@
       "reject": "Rejeter"
     },
     "empty": {
-      "title": "Assistant IA de script",
-      "description": "Décrivez votre besoin et j’écrirai le script pour vous."
+      "title": "Breeze AI",
+      "description": "Demandez à Breeze AI d’écrire ou de relire ce script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistant IA de script",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Réappliquer la modification IA",
       "redo": "Rétablir",
@@ -1134,8 +1134,8 @@
       "exitCodeSeverity": "Sévérité des codes de sortie"
     },
     "ai": {
-      "toggleTitle": "Activer/désactiver l’assistant IA de script (⌘⇧I)",
-      "button": "Assistant IA"
+      "toggleTitle": "Activer/désactiver Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",

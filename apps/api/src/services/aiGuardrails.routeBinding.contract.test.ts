@@ -417,6 +417,55 @@ const BINDINGS: readonly Binding[] = [
   },
   { tool: 'manage_billing_catalog', action: 'archive_item', routeFile: 'catalog/catalog.ts', method: 'post', path: '/:id/archive' },
   { tool: 'test_webhook', routeFile: 'webhooks.ts', method: 'post', path: '/:id/test' },
+  // Full-control W04 (#6758) — every write action of the security / incident /
+  // device-operation tools is bound to the route it mirrors (spec #6096/#6110:
+  // a tool is never weaker than its route). Actions with no single REST twin
+  // are in UNBOUND below.
+  { tool: 'collect_evidence', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands' },
+  { tool: 'create_incident', routeFile: 'incidents.ts', method: 'post', path: '/' },
+  {
+    tool: 'execute_containment', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands',
+    toolOnly: {
+      extra: ['alerts:write'],
+      reason: 'the tool dispatches the containment command (the route bound here) AND writes incident_actions, which moves the incident to contained; REST gates that incident mutation separately on alerts:write (routes/incidentActions.ts POST /:id/contain), so the single AI call must hold both (W04-D9, quorum QW6).',
+    },
+  },
+  { tool: 'revoke_elevation', routeFile: 'pam.ts', method: 'post', path: '/elevation-requests/:id/revoke' },
+  { tool: 'manage_processes', action: 'kill', routeFile: 'systemTools/processes.ts', method: 'post', path: '/devices/:deviceId/processes/:pid/kill', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'run', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/run', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'disable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/disable', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'enable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/enable', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'set_value', routeFile: 'systemTools/registry.ts', method: 'put', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'create_key', routeFile: 'systemTools/registry.ts', method: 'post', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'delete_key', routeFile: 'systemTools/registry.ts', method: 'delete', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'trigger_agent_restart', routeFile: 'devices/agentRecovery.ts', method: 'post', path: '/:id/agent-recovery' },
+  { tool: 'manage_software_policy', action: 'list', routeFile: 'softwarePolicies.ts', method: 'get', path: '/' },
+  { tool: 'manage_software_policy', action: 'get', routeFile: 'softwarePolicies.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'create', routeFile: 'softwarePolicies.ts', method: 'post', path: '/' },
+  { tool: 'manage_software_policy', action: 'update', routeFile: 'softwarePolicies.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'delete', routeFile: 'softwarePolicies.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_browser_policy', action: 'list', routeFile: 'browserSecurity.ts', method: 'get', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'create', routeFile: 'browserSecurity.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'update', routeFile: 'browserSecurity.ts', method: 'put', path: '/policies/:policyId' },
+  // manage_peripheral_policy: create and update share POST /policies (update = body `id`);
+  // add_exception and remove_exception share POST /exceptions (body `operation`).
+  { tool: 'manage_peripheral_policy', action: 'create', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'update', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'disable', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies/:id/disable' },
+  { tool: 'manage_peripheral_policy', action: 'add_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'manage_peripheral_policy', action: 'remove_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'remediate_sensitive_data', action: 'encrypt', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'quarantine', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'secure_delete', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'accept_risk', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'false_positive', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'mark_remediated', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_software_violation', routeFile: 'softwarePolicies.ts', method: 'post', path: '/:id/remediate' },
+  { tool: 'assign_security_training', routeFile: 'userRisk.ts', method: 'post', path: '/assign-training' },
+  // configure_network_baseline has no action enum: it creates AND updates. POST / and
+  // PATCH /:id both gate on devices:write, so the create route stands for both.
+  { tool: 'configure_network_baseline', routeFile: 'networkBaselines.ts', method: 'post', path: '/' },
+  { tool: 'acknowledge_network_device', routeFile: 'networkChanges.ts', method: 'post', path: '/:id/acknowledge' },
   // W02 (#6756) — every write action of the PSA/billing write tools is bound
   // to its route (W02-D11). The only actions with no REST twin are the
   // agent-only ticket-triage executors (link_device, draft): their
@@ -514,6 +563,81 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },
   { tool: 'get_script_execution_history', routeFile: 'scripts.ts', method: 'get', path: '/:id/executions' },
+
+  // Full-control W06 (#6776): every PSA configuration / ticket-ops action binds to the route a technician uses for the same act.
+  { tool: 'manage_ticket_config', action: 'get_org_settings', routeFile: 'orgTicketSettings.ts', method: 'get', path: '/organizations/:id/ticket-settings' },
+  { tool: 'manage_ticket_config', action: 'update_org_settings', routeFile: 'orgTicketSettings.ts', method: 'patch', path: '/organizations/:id/ticket-settings' },
+  { tool: 'manage_ticket_config', action: 'list_categories', routeFile: 'ticketCategories.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_config', action: 'create_category', routeFile: 'ticketCategories.ts', method: 'post', path: '/' },
+  { tool: 'manage_ticket_config', action: 'update_category', routeFile: 'ticketCategories.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_ticket_config', action: 'delete_category', routeFile: 'ticketCategories.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_ticket_config', action: 'reorder_categories', routeFile: 'ticketCategories.ts', method: 'put', path: '/reorder' },
+  { tool: 'manage_ticket_config', action: 'get_config', routeFile: 'ticketConfig.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_config', action: 'create_status', routeFile: 'ticketConfig.ts', method: 'post', path: '/statuses' },
+  { tool: 'manage_ticket_config', action: 'update_status', routeFile: 'ticketConfig.ts', method: 'patch', path: '/statuses/:id' },
+  { tool: 'manage_ticket_config', action: 'reorder_statuses', routeFile: 'ticketConfig.ts', method: 'post', path: '/statuses/reorder' },
+  { tool: 'manage_ticket_config', action: 'set_priorities', routeFile: 'ticketConfig.ts', method: 'put', path: '/priorities' },
+  { tool: 'manage_ticket_config', action: 'list_domains', routeFile: 'ticketConfig.ts', method: 'get', path: '/inbound-domains' },
+  { tool: 'manage_ticket_config', action: 'create_domain', routeFile: 'ticketConfig.ts', method: 'post', path: '/inbound-domains' },
+  { tool: 'manage_ticket_config', action: 'update_domain', routeFile: 'ticketConfig.ts', method: 'patch', path: '/inbound-domains/:id' },
+  { tool: 'manage_ticket_config', action: 'delete_domain', routeFile: 'ticketConfig.ts', method: 'delete', path: '/inbound-domains/:id' },
+  // The email-inbound LIST is gated on tickets:write (writePerm) like its mutations; the admin predicate is applied in the handler.
+  { tool: 'manage_ticket_inbox', action: 'list', routeFile: 'ticketConfig.ts', method: 'get', path: '/email-inbound' },
+  { tool: 'manage_ticket_inbox', action: 'convert', routeFile: 'ticketConfig.ts', method: 'post', path: '/email-inbound/:id/convert' },
+  { tool: 'manage_ticket_inbox', action: 'dismiss', routeFile: 'ticketConfig.ts', method: 'patch', path: '/email-inbound/:id/dismiss' },
+  { tool: 'manage_ticket_checklist_templates', action: 'list', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_checklist_templates', action: 'get', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'create', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/' },
+  { tool: 'manage_ticket_checklist_templates', action: 'update', routeFile: 'ticketChecklistTemplates.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'delete', routeFile: 'ticketChecklistTemplates.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'add_item', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/:id/items' },
+  { tool: 'manage_ticket_checklist_templates', action: 'update_item', routeFile: 'ticketChecklistTemplates.ts', method: 'patch', path: '/items/:itemId' },
+  { tool: 'manage_ticket_checklist_templates', action: 'remove_item', routeFile: 'ticketChecklistTemplates.ts', method: 'delete', path: '/items/:itemId' },
+  { tool: 'manage_ticket_checklist_templates', action: 'reorder_items', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/:id/items/reorder' },
+  // `list` has no REST twin of its own: attachments ride the ticket detail feed (GET /tickets/:id, tickets:read).
+  { tool: 'manage_ticket_attachments', action: 'list', routeFile: 'tickets/tickets.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_ticket_attachments', action: 'read_content', routeFile: 'tickets/attachments.ts', method: 'get', path: '/:id/attachments/:attachmentId/content' },
+  { tool: 'manage_ticket_attachments', action: 'attach_from_artifact', routeFile: 'tickets/attachments.ts', method: 'post', path: '/:id/attachments/from-artifact' },
+  { tool: 'manage_ticket_attachments', action: 'delete', routeFile: 'tickets/attachments.ts', method: 'delete', path: '/:id/attachments/:attachmentId' },
+  { tool: 'manage_ticket_forms', action: 'list', routeFile: 'tickets/forms.ts', method: 'get', path: '/ticket-forms' },
+  { tool: 'manage_ticket_forms', action: 'available', routeFile: 'tickets/forms.ts', method: 'get', path: '/ticket-forms/available' },
+  { tool: 'manage_ticket_forms', action: 'create', routeFile: 'tickets/forms.ts', method: 'post', path: '/ticket-forms' },
+  { tool: 'manage_ticket_forms', action: 'update', routeFile: 'tickets/forms.ts', method: 'put', path: '/ticket-forms/:id' },
+  { tool: 'manage_ticket_forms', action: 'delete', routeFile: 'tickets/forms.ts', method: 'delete', path: '/ticket-forms/:id' },
+  { tool: 'manage_ticket_response_templates', action: 'list', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'get', path: '/ticket-response-templates' },
+  { tool: 'manage_ticket_response_templates', action: 'create', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'post', path: '/ticket-response-templates' },
+  { tool: 'manage_ticket_response_templates', action: 'update', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'patch', path: '/ticket-response-templates/:id' },
+  { tool: 'manage_ticket_response_templates', action: 'delete', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'delete', path: '/ticket-response-templates/:id' },
+  { tool: 'manage_time_suggestions', action: 'list', routeFile: 'timeEntries/suggestions.ts', method: 'get', path: '/' },
+  { tool: 'manage_time_suggestions', action: 'confirm', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/confirm' },
+  { tool: 'manage_time_suggestions', action: 'dismiss', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/dismiss' },
+  { tool: 'manage_time_suggestions', action: 'undo', routeFile: 'timeEntries/suggestions.ts', method: 'delete', path: '/dismiss' },
+  { tool: 'manage_tickets', action: 'bulk_update', routeFile: 'tickets/bulk.ts', method: 'post', path: '/bulk' },
+  // Full-control W07 (#6777): alert correlation + signal triage. Each action binds to the route a technician uses for the same act.
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/evaluation' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/:groupId' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/explain' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/:alertId/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'post', path: '/correlations/analyze' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/acknowledge' },
+  { tool: 'manage_alert_correlations', action: 'resolve_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/resolve' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_related', routeFile: 'alerts/correlations.ts', method: 'post', path: '/:alertId/correlations/acknowledge' },
+  // Both feedback routes are gated on alerts:read (not a write grant); the tool mirrors them exactly.
+  { tool: 'manage_alert_correlations', action: 'feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/feedback' },
+  { tool: 'manage_alert_correlations', action: 'rca_feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/rca-feedback' },
+  { tool: 'manage_device_anomalies', action: 'list', routeFile: 'devices/anomalies.ts', method: 'get', path: '/:id/anomalies' },
+  { tool: 'manage_device_anomalies', action: 'dismiss', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'resolve', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'promote', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  // The reliability label route is gated on devices:read (requireReliabilityRead), like the reads.
+  { tool: 'reliability_feedback', routeFile: 'reliability.ts', method: 'post', path: '/:deviceId/feedback' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/evaluation' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/org/:orgId/summary' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/history' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/offenders' },
 ];
 
 /**
@@ -536,6 +660,20 @@ const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> 
   {
     tool: 'list_script_templates',
     reason: 'global template table with no matching HTTP route: no endpoint reads script_templates directly',
+  },
+  // Full-control W04 (#6758)
+  {
+    tool: 'request_elevation',
+    reason: 'no human REST create route; requests are agent-ingested (routes/agents/elevationRequests.ts) or remediation-created',
+  },
+  {
+    tool: 'trigger_agent_upgrade',
+    reason: "no per-device REST upgrade route; agentRecovery.ts deliberately rejects update_agent ('a release decision, not a button'); upgrades are heartbeat/pin-driven",
+  },
+  {
+    tool: 'manage_browser_policy',
+    action: 'apply',
+    reason: 'no REST twin: applying queues browser-policy deviceCommands from the AI tool only; it requires devices:execute (parity with apply_cis_remediation)',
   },
   {
     tool: 'query_agent_versions',

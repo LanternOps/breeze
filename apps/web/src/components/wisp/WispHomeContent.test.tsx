@@ -126,7 +126,7 @@ describe('WispHomeContent (W08 Task 9)', () => {
     expect(screen.getByTestId('wisp-activity-mock')).toBeInTheDocument();
     expect(h.threadProps).toMatchObject({ lastSessionId: 's-9', wisp: expect.objectContaining({ threadId: 'th-1' }) });
     expect(h.linksProps).toMatchObject({ threadId: 'th-1', canAdd: true, links: [expect.objectContaining({ id: 'l-1' })] });
-    expect(screen.getByTestId('wisp-home-chats')).toHaveAttribute('href', '/wisp/chat');
+    expect(screen.getByTestId('wisp-home-chats')).toHaveAttribute('href', '/ai/chat');
     expect(screen.getByTestId('wisp-home-memory')).toHaveAttribute('href', '/settings/wisp-memory');
     expect(screen.queryByTestId('wisp-home-disabled')).toBeNull();
   });

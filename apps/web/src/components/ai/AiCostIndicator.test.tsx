@@ -111,6 +111,24 @@ describe('AiCostIndicator credit balance (#4388 W04)', () => {
     expect(container.textContent).toContain('0 credits');
   });
 
+  it('uses the singular for one credit and the catalogue "this month" wording', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 250, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 1, includedBalance: 0, purchasedBalance: 1, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('$2.50 this month');
+    expect(container.textContent).toContain('1 credit');
+    expect(container.textContent).not.toContain('1 credits');
+  });
+
   it('does not append anything when usage.credits is null', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({

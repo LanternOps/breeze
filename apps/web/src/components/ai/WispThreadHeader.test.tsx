@@ -119,10 +119,10 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     fireEvent.click(screen.getByTestId('wisp-settings'));
     const budget = screen.getByTestId('wisp-settings-budget') as HTMLInputElement;
     const tick = screen.getByTestId('wisp-settings-tick') as HTMLInputElement;
-    expect(budget.max).toBe('1000');
+    expect(budget.max).toBe('10.00');
     expect(tick.min).toBe('20');
     expect(tick.max).toBe('240');
-    fireEvent.change(budget, { target: { value: '5000' } });
+    fireEvent.change(budget, { target: { value: '50.00' } });
     fireEvent.click(screen.getByTestId('wisp-settings-save'));
     await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
     const [url, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
@@ -130,6 +130,38 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(init).toMatchObject({ method: 'PATCH' });
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 1000 });
     expect(h.updateWisp).toHaveBeenCalledWith({ budgetCentsPerDay: 1000, floorTickMinutes: 30 });
+  });
+
+  it('the budget input shows dollars with two decimals and submits cents', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 250, floorTickMinutes: 30 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    const budget = screen.getByTestId('wisp-settings-budget') as HTMLInputElement;
+    expect(budget.value).toBe('2.00');
+    fireEvent.change(budget, { target: { value: '2.50' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 250 });
+  });
+
+  it('rounds typed dollars to whole cents (0.29 is 29, not 28.999…)', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 29, floorTickMinutes: 30 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '0.29' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ budgetCentsPerDay: 29 });
+  });
+
+  it('an unchanged dollars field sends no budget patch', async () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-settings-panel')).toBeNull());
+    expect(h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')).toBeUndefined();
   });
 
   it('settings tick below the plan minimum is raised to it', async () => {
@@ -183,7 +215,7 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     h.runAction.mockRejectedValueOnce(new Error('400 SETTINGS_OUT_OF_BOUNDS'));
     render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
     fireEvent.click(screen.getByTestId('wisp-settings'));
-    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '900' } });
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '9.00' } });
     fireEvent.click(screen.getByTestId('wisp-settings-save'));
     await waitFor(() => expect(h.runAction).toHaveBeenCalled());
     expect(h.updateWisp).not.toHaveBeenCalled();

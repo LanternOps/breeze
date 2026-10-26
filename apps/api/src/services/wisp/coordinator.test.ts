@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   resolveGrantCeiling: vi.fn(),
   chargeableUnderGrant: vi.fn(async () => ({ ok: true }) as { ok: true } | { ok: false; reason: 'budget_exhausted' }),
   launch: {} as Record<string, ReturnType<typeof vi.fn<(ctx: unknown) => Promise<unknown>>>>,
+  prereq: {} as Record<string, ReturnType<typeof vi.fn<(args: unknown) => Promise<unknown>>>>,
   raiseSpecialistIntent: vi.fn(async () => ({ intentId: 'intent-1' })),
   getUserPermissions: vi.fn(),
   incSpecialistRequest: vi.fn(),
@@ -58,10 +59,13 @@ vi.mock('./specialistLaunchers', async (orig) => {
   const actual = await orig<typeof import('./specialistLaunchers')>();
   const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply'];
   for (const k of kinds) h.launch[k] = vi.fn(async () => ({ admitted: true, runId: `run-${k}` }));
+  for (const k of kinds) h.prereq[k] = vi.fn(async () => null);
   return {
     specialistDedupeKey: actual.specialistDedupeKey,
     parseSpecialistParams: actual.parseSpecialistParams,
+    specialistParamsError: actual.specialistParamsError,
     SPECIALIST_LAUNCHERS: Object.fromEntries(kinds.map((k) => [k, (ctx: unknown) => h.launch[k]!(ctx)])),
+    SPECIALIST_PREREQUISITES: Object.fromEntries(kinds.map((k) => [k, (args: unknown) => h.prereq[k]!(args)])),
   };
 });
 vi.mock('./specialistIntent', () => ({ raiseSpecialistIntent: h.raiseSpecialistIntent }));
@@ -71,7 +75,7 @@ vi.mock('../permissions', async (orig) => ({
 }));
 vi.mock('../wispMetrics', () => ({ incSpecialistRequest: h.incSpecialistRequest }));
 
-import { deriveRequestId, requestSpecialist, type SpecialistRequester } from './coordinator';
+import { deriveRequestId, precheckSpecialistRequest, requestSpecialist, type SpecialistRequester } from './coordinator';
 import { GrantInactiveError } from './grantAuthority';
 import { bulkReplyDigest } from './specialists/bulkTicketReply';
 import type { SpecialistKind } from './specialistPolicy';
@@ -149,7 +153,61 @@ beforeEach(() => {
   h.raiseSpecialistIntent.mockResolvedValue({ intentId: 'intent-1' });
   h.getUserPermissions.mockResolvedValue(perms([{ resource: '*', action: '*' }]));
   for (const f of Object.values(h.launch)) f.mockResolvedValue({ admitted: true, runId: 'run-x' });
+  for (const f of Object.values(h.prereq)) f.mockResolvedValue(null);
   seed();
+});
+
+// #10144: the cheap, deterministic gates the chat tool runs BEFORE raising an
+// approval card, so a call that would be refused never asks first. Advisory:
+// requestSpecialist re-runs every gate after the approval.
+describe('precheckSpecialistRequest (#10144)', () => {
+  const check = (o: { kind?: string; params?: Record<string, unknown> } = {}) =>
+    precheckSpecialistRequest({ orgId: ORG, partnerId: PARTNER, kind: o.kind ?? 'sweep', params: o.params ?? {} });
+  const touchedNothingElse = () => {
+    expect(launchCalls()).toBe(0);
+    expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.incSpecialistRequest).not.toHaveBeenCalled();
+  };
+
+  it('refuses unknown_kind without reading anything', async () => {
+    await expect(check({ kind: 'run_script' })).resolves.toEqual({ ok: false, refused: 'unknown_kind' });
+    expect(Object.values(h.prereq).every((f) => f.mock.calls.length === 0)).toBe(true);
+    touchedNothingElse();
+  });
+
+  it('refuses invalid_params with a detail naming the offending key (goal is not a sweep param)', async () => {
+    const r = await check({ kind: 'sweep', params: { goal: 'check disks' } });
+    expect(r).toMatchObject({ ok: false, refused: 'invalid_params' });
+    expect((r as { detail?: string }).detail).toMatch(/goal/);
+    expect(h.prereq.sweep).not.toHaveBeenCalled();
+    touchedNothingElse();
+  });
+
+  it('refuses analysis while the sandbox is off, as the coordinator does', async () => {
+    h.workspaceEnabled = false;
+    await expect(check({ kind: 'analysis', params: PARAMS.analysis })).resolves.toEqual({
+      ok: false, refused: 'admission_skipped', detail: 'analysis_not_available',
+    });
+    touchedNothingElse();
+  });
+
+  it('passes the kind prerequisite refusal through (no_sweep_schedule, no_effective_agent)', async () => {
+    h.prereq.sweep!.mockResolvedValue({ refused: 'no_sweep_schedule' });
+    await expect(check({ kind: 'sweep' })).resolves.toEqual({ ok: false, refused: 'no_sweep_schedule' });
+    expect(h.prereq.sweep).toHaveBeenCalledWith({ orgId: ORG, partnerId: PARTNER, params: {} });
+    h.prereq.patch_plan!.mockResolvedValue({ refused: 'no_effective_agent' });
+    await expect(check({ kind: 'patch_plan' })).resolves.toEqual({ ok: false, refused: 'no_effective_agent' });
+    touchedNothingElse();
+  });
+
+  it('a call that would be admitted passes with the org name for the approval card', async () => {
+    h.tables.organizations = [[{ name: 'Default Organization' }]];
+    await expect(check({ kind: 'sweep' })).resolves.toEqual({ ok: true, orgName: 'Default Organization' });
+    h.tables.organizations = [[]];
+    await expect(check({ kind: 'patch_plan' })).resolves.toEqual({ ok: true, orgName: null });
+    touchedNothingElse();
+  });
 });
 
 describe('requestSpecialist gating matrix', () => {

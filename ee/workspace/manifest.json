@@ -13,8 +13,8 @@
   "web": {
     "entry": "web/index.js",
     "pages": [{ "id": "sources", "path": "/extensions/workspace/sources", "element": "workspace-sources-page" }, { "id": "dashboard", "path": "/extensions/workspace/dashboard", "element": "workspace-dashboard" }],
-    "navigation": [{ "id": "sources", "label": "Wisp Sources", "path": "/extensions/workspace/sources", "order": 100 }, { "id": "dashboard", "label": "Wisp Dashboard", "path": "/extensions/workspace/dashboard", "order": 50 }],
-    "slots": [{ "id": "device-index", "slot": "device.detail.tabs", "contractVersion": 1, "label": "Wisp", "element": "workspace-device-index", "order": 100 }]
+    "navigation": [{ "id": "sources", "label": "Knowledge sources", "path": "/extensions/workspace/sources", "order": 100 }, { "id": "dashboard", "label": "Knowledge dashboard", "path": "/extensions/workspace/dashboard", "order": 50 }],
+    "slots": [{ "id": "device-index", "slot": "device.detail.tabs", "contractVersion": 1, "label": "Knowledge", "element": "workspace-device-index", "order": 100 }]
   },
   "migrationsDir": "migrations",
   "schemaCompatibilityFloor": "0.2.0",

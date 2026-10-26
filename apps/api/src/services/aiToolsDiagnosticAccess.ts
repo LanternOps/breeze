@@ -21,7 +21,8 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, diagnosticAccessGrants } from '../db/schema';
-import { isAiAgentPrincipal, type AuthContext } from '../middleware/auth';
+import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import type { AiTool } from './aiTools';
 import { aiExecuteCommand } from './aiDispatch';
 import { CommandTypes } from './commandTypes';
@@ -313,7 +314,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
     handler: async (input, auth) => {
       // Writes auth.user.id as the requester; an AI operator agent has no
       // user identity and can never hold a grant (see beneficiaryOf).
-      if (isAiAgentPrincipal(auth)) return refuseAgentPrincipal('request_diagnostic_access');
+      if (isAutomationPrincipal(auth)) return refuseAgentPrincipal('request_diagnostic_access');
       const device = await loadDevice(input.deviceId as string, auth);
       if (!device) return out({ error: 'Device not found or access denied' });
       try {
@@ -395,7 +396,7 @@ export function registerDiagnosticAccessTools(aiTools: Map<string, AiTool>): voi
       },
     },
     handler: async (input, auth) => {
-      if (isAiAgentPrincipal(auth)) return refuseAgentPrincipal('revoke_diagnostic_access');
+      if (isAutomationPrincipal(auth)) return refuseAgentPrincipal('revoke_diagnostic_access');
       const r = await revokeDiagnosticGrant(auth, input.grantId as string, (input.reason as string | undefined) ?? null);
       if (!r.ok) return out({ error: r.message, condition: r.code });
       return out({ ...grantView(r.grant), message: 'Revoked.' });

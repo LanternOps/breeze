@@ -17,11 +17,11 @@
     "selfApproveTitle": "Your Approval Is Required",
     "pendingApproverDescription": "This action needs approval in the Approvals area or the Breeze mobile app.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} seconds remaining",
-    "urgentWarning": "Less than 30 seconds remaining. This request will be auto-rejected.",
-    "progressLabel": "Time remaining before auto-rejection",
+    "urgentWarning": "Less than 30 seconds remaining. This request will be denied automatically.",
+    "progressLabel": "Time left before this is denied automatically",
     "showParameters": "Show parameters",
     "approve": "Approve",
-    "reject": "Reject",
+    "reject": "Deny",
     "approveVerify": "Verify & Approve",
     "verifying": "Waiting for verification…",
     "approving": "Approving…",
@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} actions denied",
     "refusedToast": "Approval refused. The request was denied.",
     "runContextLabel": "Run context:",
-    "runContextChosenByAssistant": "chosen by the assistant",
+    "runContextChosenByAssistant": "chosen by Breeze AI",
     "runContextScriptDefault": "the script's saved default",
-    "runContextOverrides": "chosen by the assistant, overriding the script's saved default ({{context}})"
+    "runContextOverrides": "chosen by Breeze AI, overriding the script's saved default ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Waiting for response...",
@@ -56,7 +56,7 @@
     "sendShortcut": "Cmd+Enter to send"
   },
   "aiChatMessages": {
-    "title": "Breeze AI Assistant",
+    "title": "Breeze AI",
     "description": "Ask about your devices, alerts, metrics, or troubleshoot issues.",
     "unknownTool": "Unknown tool",
     "toolResult": "Tool result",
@@ -107,10 +107,10 @@
     "dismiss": "Dismiss"
   },
   "aiConversationMove": {
-    "openInAssistant": "Open in Wisp chats",
+    "openInAssistant": "Open in Breeze AI",
     "continueInPanel": "Continue in side panel",
     "openPastConversation": "Open a past conversation",
-    "closeTabInAssistant": "Close a tab in Wisp chats to open this conversation",
+    "closeTabInAssistant": "Close a tab in Breeze AI to open this conversation",
     "closeTabToOpen": "Close a tab to open this conversation",
     "notAvailable": "This conversation isn't available",
     "wasClosed": "This conversation was closed",
@@ -131,7 +131,10 @@
   "aiCostIndicator": {
     "messageCount": "{{count}} msgs",
     "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msgs"
+    "messageCount_other": "{{count}} msgs",
+    "thisMonth": "{{amount}} this month",
+    "credits_one": "{{formatted}} credit",
+    "credits_other": "{{formatted}} credits"
   },
   "aiPlanProgressBar": {
     "completed": "Plan completed ({{completed}}/{{total}})",
@@ -146,7 +149,7 @@
     "stepCount_one": "{{count}} step",
     "stepCount_other": "{{count}} steps",
     "approveAll": "Approve All",
-    "reject": "Reject"
+    "reject": "Deny"
   },
   "aiToolCallCard": {
     "running": "Running...",
@@ -160,7 +163,7 @@
     "outputExpired": "Output expired under the retention policy"
   },
   "aiForOfficePage": {
-    "title": "AI for Office",
+    "title": "Breeze AI for Office",
     "description": "Governed AI assistant in your clients' Excel — provisioning, policy, audit, usage and templates",
     "tabs": {
       "orgs": "Organizations",
@@ -194,7 +197,7 @@
       "description": "Set <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (the Entra add-in app registration) on the API and reload."
     },
     "title": "Client organizations",
-    "description": "Provision the Excel AI assistant per client org: map the Entra tenant, grant admin consent, enable the policy, deploy the add-in.",
+    "description": "Provision Breeze AI for Office per client org: map the Entra tenant, grant admin consent, enable the policy, deploy the add-in.",
     "columns": {
       "aiEnabled": "AI enabled",
       "entraTenant": "Entra tenant",
@@ -208,7 +211,7 @@
     "noOrganizations": "No organizations",
     "removeMapping": {
       "title": "Remove tenant mapping",
-      "message": "Users in {{orgName}}'s Entra tenant will no longer be able to sign in to the Excel assistant. The org policy and usage history are kept.",
+      "message": "Users in {{orgName}}'s Entra tenant will no longer be able to sign in to Breeze AI for Office. The org policy and usage history are kept.",
       "confirm": "Remove mapping"
     },
     "wizard": {
@@ -230,7 +233,7 @@
       "openNewTab": "Open in new tab",
       "afterConsent": "After granting, Microsoft redirects to a Breeze confirmation page. Consent shows as granted here once the first user signs in from Excel — there is no live poll against Microsoft (Plan-4 decision 1).",
       "consentGranted": "I've granted consent",
-      "enableDescription": "Enable the assistant for this org. This writes <code>enabled: true</code> to the org policy with safe defaults (all users, read/write with end-user approval, DLP redaction for financial/credential types). Tune everything in the policy editor afterwards.",
+      "enableDescription": "Enable Breeze AI for Office for this org. This writes <code>enabled: true</code> to the org policy with safe defaults (all users, read/write with end-user approval, DLP redaction for financial/credential types). Tune everything in the policy editor afterwards.",
       "enabling": "Enabling…",
       "alreadyEnabled": "Already enabled — continue",
       "enableAi": "Enable AI for Office",
@@ -257,7 +260,7 @@
     },
     "organizations": "Organizations",
     "title": "Org policy",
-    "description": "Everything this client org's Excel assistant is allowed to do.",
+    "description": "Everything this client org's Breeze AI for Office is allowed to do.",
     "sections": {
       "general": "General",
       "userAccess": "User access",
@@ -454,8 +457,8 @@
     "dismiss": "Dismiss"
   },
   "workspaceEmptyState": {
-    "title": "Wisp chats",
-    "description": "Run multiple AI conversations simultaneously. Investigate a device issue in one tab while configuring a policy in another.",
+    "title": "Breeze AI",
+    "description": "Run several conversations at once. Investigate a device in one tab while you set up a policy in another.",
     "newConversation": "New Conversation",
     "limit": "Up to 5 concurrent conversations"
   },
@@ -576,12 +579,9 @@
   },
   "wisp": {
     "title": "Wisp",
-    "toggle": {
-      "turnOn": "Turn on Wisp",
-      "turningOn": "Turning on Wisp…"
-    },
     "locked": {
-      "why": "Wisp is available on Pro and higher plans."
+      "why": "Wisp is available on Pro and higher plans.",
+      "server": "Wisp runs on Breeze Cloud. It is not available on this server."
     },
     "modal": {
       "title": "Turn on Wisp",
@@ -598,7 +598,8 @@
       "cancel": "Cancel",
       "stepUpUnavailable": "Could not verify your factor. Try again.",
       "reverify": "Your access changed while you were confirming. Enter a new code to continue.",
-      "invalidCode": "That code was not accepted. Try again."
+      "invalidCode": "That code was not accepted. Try again.",
+      "turningOn": "Turning on Wisp…"
     },
     "header": {
       "scopeAll": "All organizations",
@@ -616,7 +617,7 @@
     },
     "settings": {
       "title": "Budget and check-in",
-      "budget": "Daily budget (¢)",
+      "budget": "Daily budget",
       "tick": "Check-in every (minutes)",
       "save": "Save"
     },
@@ -661,7 +662,7 @@
       "resumeFailed": "Could not resume Wisp"
     },
     "spend": {
-      "meter": "{{spent}}¢ of {{budget}}¢ today",
+      "meter": "{{spent}} of {{budget}} today",
       "resets": "resets in {{hours}} h",
       "raise": "Raise today's budget",
       "label": "Wisp spend today"
@@ -690,7 +691,7 @@
       "empty": "Nothing yet. Wisp's work shows up here.",
       "loadFailed": "Couldn't load activity",
       "loadMore": "Load more",
-      "cost": "{{cents}}¢",
+      "cost": "Cost {{amount}}",
       "kind": {
         "assessment": "Check",
         "concern": "Concern",
@@ -754,7 +755,7 @@
         "site": "Sites",
         "alert": "Alerts",
         "run": "Agent runs",
-        "task": "Operator tasks",
+        "task": "AI tasks",
         "user": "Users"
       },
       "loading": "Searching…",
@@ -769,7 +770,8 @@
       "linking": "Linking…"
     },
     "sidebar": {
-      "openHome": "Open in Wisp"
+      "openHome": "Open in Wisp",
+      "meetWisp": "Meet Wisp"
     },
     "partnerSwitch": {
       "description": "Let technicians delegate work to Wisp. Turning it off pauses every running delegation at its next check and blocks new ones; nothing is deleted, and turning it back on resumes what it paused.",

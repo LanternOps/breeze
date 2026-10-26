@@ -31,6 +31,7 @@ import type {
 import { db } from '../db';
 import { deviceGroupMemberships, devices, organizations, sites, yaraRuleSets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { canonicalizeArguments, computeArgumentDigest } from './actionIntents/canonicalize';
 import { getUserPermissions, hasPermission, type UserPermissions } from './permissions';
 import { normalizeSiteAllowlist } from './siteAllowlist';
@@ -127,7 +128,7 @@ export function createOrgPermissionResolver(auth: AuthContext) {
   const cache = new Map<string, Promise<UserPermissions | null>>();
   const axisless = auth.scope === 'system' && !auth.partnerId && !auth.orgId;
   return (orgId: string): Promise<UserPermissions | null> => {
-    if (auth.principal?.kind === 'ai_agent') return Promise.resolve(null);
+    if (isAutomationPrincipal(auth)) return Promise.resolve(null);
     const key = axisless ? '*' : orgId;
     let pending = cache.get(key);
     if (!pending) {

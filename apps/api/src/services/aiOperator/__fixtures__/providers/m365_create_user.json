@@ -1,0 +1,59 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{userPrincipalName} (read profile); POST /users with passwordProfile.forceChangePasswordNextSignIn (actions executor, m365.user.create)",
+  "_notes": "The create's only typed refusal is user_already_exists (POST /users rejected AND a follow-up read found that userPrincipalName). The temporary password below is a SYNTHETIC marker: the real one is never recorded (README).",
+  "_meaning": {
+    "preSatisfied": "a COLLISION, not a completed creation: a user with this UPN already exists — for a non_idempotent effect this is a HANDOFF, never a no-op (D-R2-4). The holder's object id is deliberately not the id the create returns."
+  },
+  "toolName": "m365_create_user",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0199",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true
+      }
+    }
+  },
+  "preUnsatisfied": {
+    "read:m365.user.get": {
+      "ok": false,
+      "code": "graph_not_found",
+      "message": "Resource 'priya@customer.example' does not exist or one of its queried reference-property objects are not present."
+    }
+  },
+  "writeOk": {
+    "write:m365.user.create": {
+      "ok": true,
+      "result": {
+        "success": true,
+        "action": "m365.user.create",
+        "userId": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "temporaryPassword": "REDACTED-FIXTURE-VALUE",
+        "forceChangeNextSignIn": true
+      }
+    }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": {
+      "ok": true,
+      "kind": "resource",
+      "resource": {
+        "id": "00000000-0000-4000-8000-0000000a0101",
+        "userPrincipalName": "priya@customer.example",
+        "accountEnabled": true
+      }
+    }
+  },
+  "writeRefusal": {
+    "write:m365.user.create": {
+      "ok": false,
+      "code": "user_already_exists",
+      "message": "A user with this sign-in name already exists in Microsoft 365."
+    }
+  }
+}

@@ -977,8 +977,8 @@
     "strip": "banda",
     "networkAsset": "Activo de red",
     "networkAssets": "Activos de red",
-    "operatorTasks": "Tareas del operador",
-    "operatorTasksForThisDevice": "Tareas del operador de IA para este dispositivo",
+    "operatorTasks": "Tareas de IA",
+    "operatorTasksForThisDevice": "Tareas de IA para este dispositivo",
     "tabGroups": {
       "monitoring": "Monitoreo",
       "inventory": "Inventario",
@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Duración: {{duration}}",
     "empty": "No se encontraron ejecuciones del libro de jugadas para este dispositivo.",
-    "emptyHelp": "Los libros de estrategias se pueden activar a través del asistente AI para automatizar las tareas de corrección.",
+    "emptyHelp": "Los playbooks se pueden activar mediante Breeze AI para automatizar tareas de remediación.",
     "loading": "Cargando el historial del libro de jugadas...",
     "noStepResults": "No se registraron resultados de pasos.",
     "rollbackExecuted": "Se ejecutó la reversión",

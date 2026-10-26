@@ -185,6 +185,11 @@ describe('isSelfManagedDbContextRoute', () => {
     // short auth-context reads, then the insert + freeze in a system context.
     ['POST', '/api/v1/contracts/agreement-requests/record-signed'],
     ['POST', '/api/v1/contracts/agreement-requests/record-signed/'],
+    // Agreement request send (#9075 W2b) — same shape as quotes/:id/send:
+    // a short auth transaction for the transition, the email after it commits.
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/send'],
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/send/'],
+    ['post', '/api/v1/contracts/agreement-requests/abc-123/send'], // method is case-insensitive
     // Task A9 — the tool test-call route dispatches a real outbound MCP call.
     ['POST', '/api/v1/tool-sources'],
     ['PATCH', '/api/v1/tool-sources/src-1'],
@@ -273,6 +278,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/quotes/abc-123/accept-on-behalf', 'accept-on-behalf is POST-only'],
     ['GET', '/api/v1/contracts/agreement-requests/record-signed', 'record-signed is POST-only'],
     ['POST', '/api/v1/contracts/agreement-requests/record-signed/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/contracts/agreement-requests/abc-123/link', 'copy link mails nothing and keeps the ambient tx'],
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/void', 'void is DB-only (its Redis revoke is runAfterDbContextCommit)'],
+    ['GET', '/api/v1/contracts/agreement-requests/abc-123/send', 'send is POST-only'],
+    ['POST', '/api/v1/contracts/agreement-requests//send', 'empty id segment must not match'],
+    ['POST', '/api/v1/contracts/agreement-requests/abc-123/send/extra', 'extra path segment must not match'],
+    ['POST', '/api/v1/agreements/public/tok/accept', 'public routes carry no auth middleware, so no ambient tx exists to release'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],

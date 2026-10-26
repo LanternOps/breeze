@@ -90,13 +90,16 @@ forceRebootRoutes.post(
   zValidator('json', forceRebootSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    const deviceId = c.req.param('id')!;
     const { stepUpGrant } = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    const device = await getDeviceWithOrgCheck(c.req.param('id')!, auth);
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // From here on, the device's canonical id, never the raw path segment: an
+    // uppercase uuid in the URL finds the same device, and the step-up binding,
+    // trust check, command row and audit must all use one spelling (#9380 review).
+    const deviceId = device.id;
     if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }

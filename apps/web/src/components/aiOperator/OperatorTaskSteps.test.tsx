@@ -76,3 +76,41 @@ describe('OperatorTaskSteps', () => {
     expect(screen.getByTestId('task-step-intake')).not.toHaveAttribute('aria-current');
   });
 });
+
+// W07 R2b (Task 19): identity_onboarding's twelve step keys (Amendment B1).
+describe('OperatorTaskSteps — identity_onboarding (W07 R2b)', () => {
+  const ONBOARDING_KEYS = [
+    'intake', 'confirm_details', 'discover', 'review', 'create_accounts', 'manual_create_google',
+    'resolve_accounts', 'provision_effects', 'wait_start', 'manual_work', 'verify_outcome', 'document',
+  ];
+
+  it('labels every one of the twelve step keys (none falls through to its raw key)', () => {
+    const steps = ONBOARDING_KEYS.map((k, i) => step(k, { startedAt: new Date(Date.UTC(2026, 9, 20, 10, i)).toISOString() }));
+    render(<OperatorTaskSteps task={{ ...task({ steps }), workflowKey: 'identity_onboarding' }} />);
+    const groups = screen.getAllByTestId(/^task-step-[a-z_]+$/).map((el) => el.getAttribute('data-testid'));
+    expect(groups).toEqual(ONBOARDING_KEYS.map((k) => `task-step-${k}`));
+    for (const k of ONBOARDING_KEYS) {
+      const label = screen.getByTestId(`task-step-${k}`).querySelector('.font-medium')?.textContent ?? '';
+      expect(label, k).not.toBe(k);
+      expect(label.length, k).toBeGreaterThan(0);
+    }
+    expect(screen.getByTestId('task-step-manual_work')).toHaveTextContent('Handover checklist');
+  });
+
+  it('offboarding\'s manual_work keeps its R1 label', () => {
+    render(<OperatorTaskSteps task={{ ...task({ steps: [step('manual_work')] }), workflowKey: 'identity_offboarding' }} />);
+    expect(screen.getByTestId('task-step-manual_work')).toHaveTextContent('Checklist work');
+  });
+
+  it('manual_create_google is human work: it waits on the checklist ticket and shows the item\'s instructions verbatim', () => {
+    const instructions = 'waiting on a person: Create Priya Patel\'s Google Workspace account\nPrimary email: priya@customer-mail.example';
+    const steps = [step('manual_create_google', {
+      stepKind: 'human_work', state: 'waiting', settledAt: null, dependency: { kind: 'user_answer', id: 'item-g' }, detail: instructions,
+    })];
+    render(<OperatorTaskSteps task={task({ steps, targets: [ticketTarget], currentStepKey: 'manual_create_google', waitReason: 'information', state: 'waiting' })} />);
+    const row = screen.getByTestId('task-step-manual_create_google-0');
+    expect(row).toHaveTextContent('Waiting for a technician to tick the checklist item on the ticket.');
+    expect(row).toHaveTextContent('Primary email: priya@customer-mail.example');
+    expect(within(row).getByRole('link')).toHaveAttribute('href', `/tickets/${TICKET}`);
+  });
+});

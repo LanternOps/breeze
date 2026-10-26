@@ -1,10 +1,10 @@
 {
   "title": "Fluxos",
   "subtitle": "Automações em várias etapas que encadeiam ferramentas.",
-  "previewNotice": "Os fluxos são somente leitura nesta versão. Elabore-os no chat de IA; a ativação e as execuções chegarão em uma versão posterior.",
+  "previewNotice": "Os fluxos são somente leitura nesta versão. Elabore-os no Breeze AI; a ativação e as execuções chegarão em uma versão posterior.",
   "empty": {
     "title": "Ainda não há fluxos",
-    "body": "Peça ao assistente de IA para elaborar um fluxo e depois revise-o aqui."
+    "body": "Peça ao Breeze AI para elaborar um fluxo e depois revise-o aqui."
   },
   "list": {
     "name": "Nome",
@@ -33,7 +33,7 @@
     "inputs": "Entradas",
     "steps": "Etapas",
     "version": "Versão {{version}}",
-    "createdInChat": "Criado no chat de IA"
+    "createdInChat": "Criado no Breeze AI"
   },
   "step": {
     "tool": "Ferramenta",
