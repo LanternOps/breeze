@@ -25,8 +25,10 @@ vi.mock('../../services/email', async (importOriginal) => ({
   getEmailService: () => ({ sendEmail: sendEmailMock }),
 }));
 
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
+import { PDFDocument } from 'pdf-lib';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { portalUsers } from '../../db/schema';
 import { hashPassword } from '../../services/password';
@@ -117,12 +119,32 @@ function as(token: string) {
   };
 }
 
-async function createAndSend(s: Seed, recipients: string[]) {
+/** A partner-wide UPLOADED template whose file is a real one-page PDF. */
+async function seedUploadedTemplate(partnerId: string): Promise<{ templateId: string; bytes: Buffer }> {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([612, 792]);
+  const bytes = Buffer.from(await pdf.save());
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  const r = await sys(async () => rows(await db.execute(sql`
+    WITH t AS (
+      INSERT INTO contract_templates (partner_id, name) VALUES (${partnerId}::uuid, 'Scanned NDA') RETURNING id
+    )
+    INSERT INTO contract_template_versions
+      (template_id, partner_id, version_number, status, source_type, file_data, mime, byte_size, sha256,
+       declared_variables, published_at)
+    SELECT t.id, ${partnerId}::uuid, 1, 'published', 'uploaded', ${bytes}, 'application/pdf',
+           ${bytes.length}, ${sha}, '[]'::jsonb, now()
+      FROM t
+    RETURNING template_id`))[0]!);
+  return { templateId: r.template_id as string, bytes };
+}
+
+async function createAndSend(s: Seed, recipients: string[], templateId = s.templateId) {
   const ctx = partnerCtx(s.partner.id, s.org.id, s.tech.id);
   const auth = staffAuth(s.partner.id, s.org.id, s.tech.id);
   const now = new Date();
   const draft = await withDbAccessContext(ctx, () => createAgreementRequest(auth, {
-    orgId: s.org.id, templateId: s.templateId, contractId: null, recipients, label: 'BAA 2027', variableValues: {},
+    orgId: s.org.id, templateId, contractId: null, recipients, label: 'BAA 2027', variableValues: {},
   }, now));
   const sent = await withDbAccessContext(ctx, () => sendAgreementRequest(auth, draft.id, now));
   const token = decodeURIComponent(sent.link.split('/agreement/')[1]!);
@@ -322,6 +344,103 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     expect((await app().request(`/agreements/public/${encodeURIComponent(token)}`)).status).toBe(401);
     // Declined stays readable history.
     expect((await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data.request.status).toBe('declined');
+  });
+
+  runDb('a recipient of request A cannot sign or decline request B of the same org (the recipient match is per request)', async () => {
+    const s = await seed();
+    const users = await threeUsers(s);
+    await createAndSend(s, [users.recipientEmail]);
+    const other = await createAndSend(s, [`ops-${unique()}@customer.example`]);
+    expect((await (await users.recipient.get(`/portal/agreements/${other.requestId}`)).json()).data.canSign).toBe(false);
+    for (const action of ['accept', 'decline'] as const) {
+      const res = await users.recipient.post(`/portal/agreements/${other.requestId}/${action}`, { signerName: 'Dana Buyer' });
+      expect(res.status, action).toBe(404);
+      expect(await res.json()).toEqual(NOT_FOUND);
+    }
+    expect((await requestRow(other.requestId)).status).toBe('sent');
+    expect(await documentsFor(other.requestId)).toHaveLength(0);
+  });
+
+  runDb('link first, then portal: the portal gets the 409 and the certificate keeps "emailed link"', async () => {
+    const s = await seed();
+    const users = await threeUsers(s);
+    const { requestId, token } = await createAndSend(s, [users.recipientEmail]);
+    const viaLink = await app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ signerName: 'Dana Buyer', signerEmail: users.recipientEmail }),
+    });
+    expect(viaLink.status).toBe(200);
+    const viaPortal = await users.recipient.post(`/portal/agreements/${requestId}/accept`, { signerName: 'Dana Buyer' });
+    expect(viaPortal.status).toBe(409);
+    expect((await viaPortal.json()).code).toBe('AGREEMENT_ALREADY_SIGNED');
+    const docs = await documentsFor(requestId);
+    expect(docs).toHaveLength(1);
+    expect((await loadCertifiedAgreementInput(docs[0]!.id as string))?.how).toMatchObject({ kind: 'customer', channel: 'emailed_link' });
+  });
+
+  runDb('portal and emailed link racing: exactly one answer wins, one signed agreement', async () => {
+    const s = await seed();
+    const users = await threeUsers(s);
+    const { requestId, token } = await createAndSend(s, [users.recipientEmail]);
+    const [portal, link] = await Promise.all([
+      users.recipient.post(`/portal/agreements/${requestId}/accept`, { signerName: 'Dana Buyer' }),
+      app().request(`/agreements/public/${encodeURIComponent(token)}/accept`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ signerName: 'Office Manager', signerEmail: 'office@customer.example' }),
+      }),
+    ]);
+    const statuses = [portal.status, link.status].sort();
+    expect(statuses[0]).toBe(200);
+    expect([401, 409]).toContain(statuses[1]);
+    expect(await documentsFor(requestId)).toHaveLength(1);
+    expect((await requestRow(requestId)).status).toBe('signed');
+  });
+
+  runDb('answer ordering on the real row: declined cannot be signed, signed cannot be declined', async () => {
+    const s = await seed();
+    const users = await threeUsers(s);
+    const declined = await createAndSend(s, [users.recipientEmail]);
+    expect((await users.recipient.post(`/portal/agreements/${declined.requestId}/decline`, {})).status).toBe(200);
+    const signAfter = await users.recipient.post(`/portal/agreements/${declined.requestId}/accept`, { signerName: 'Dana Buyer' });
+    expect(signAfter.status).toBe(409);
+    expect((await signAfter.json()).code).toBe('INVALID_STATE');
+    expect((await users.recipient.post(`/portal/agreements/${declined.requestId}/decline`, {})).status).toBe(409);
+    expect((await requestRow(declined.requestId)).status).toBe('declined');
+    expect(await documentsFor(declined.requestId)).toHaveLength(0);
+
+    const signed = await createAndSend(s, [users.recipientEmail]);
+    expect((await users.recipient.post(`/portal/agreements/${signed.requestId}/accept`, { signerName: 'Dana Buyer' })).status).toBe(200);
+    const declineAfter = await users.recipient.post(`/portal/agreements/${signed.requestId}/decline`, { reason: 'changed my mind' });
+    expect(declineAfter.status).toBe(409);
+    expect((await declineAfter.json()).code).toBe('AGREEMENT_ALREADY_SIGNED');
+    const row = await requestRow(signed.requestId);
+    expect(row).toMatchObject({ status: 'signed', decline_reason: null });
+  });
+
+  runDb('an uploaded template end to end: the portal file route serves the bytes; signing freezes them; certified = original + certificate page', async () => {
+    const s = await seed();
+    const users = await threeUsers(s);
+    const uploaded = await seedUploadedTemplate(s.partner.id);
+    const { requestId } = await createAndSend(s, [users.recipientEmail], uploaded.templateId);
+
+    const detail = (await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data;
+    expect(detail).toMatchObject({ html: null, fileUrl: `/portal/agreements/${requestId}/file`, template: { sourceType: 'uploaded' } });
+    const file = await users.recipient.get(`/portal/agreements/${requestId}/file`);
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toBe('application/pdf');
+    expect(file.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(Buffer.from(await file.arrayBuffer()).equals(uploaded.bytes)).toBe(true);
+    expect((await users.outsider.get(`/portal/agreements/${requestId}/file`)).status).toBe(404);
+
+    const signed = await users.recipient.post(`/portal/agreements/${requestId}/accept`, { signerName: 'Dana Buyer' });
+    expect(signed.status).toBe(200);
+    const { signedAgreementId } = (await signed.json()).data;
+    const original = await users.recipient.get(`/portal/signed-agreements/${signedAgreementId}/file?copy=original`);
+    expect(Buffer.from(await original.arrayBuffer()).equals(uploaded.bytes)).toBe(true);
+    const certified = await users.recipient.get(`/portal/signed-agreements/${signedAgreementId}/file`);
+    expect(certified.headers.get('x-agreement-copy')).toBe('certified');
+    const pages = (await PDFDocument.load(Buffer.from(await certified.arrayBuffer()))).getPageCount();
+    expect(pages).toBe(2);
   });
 
   runDb('the read model lists BOTH source kinds: a proposal-sourced signed agreement reads beside a request-sourced one', async () => {

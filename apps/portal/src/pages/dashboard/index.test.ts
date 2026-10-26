@@ -44,7 +44,9 @@ describe('dashboard page agreements card', () => {
   it('starts the agreements read alongside the dashboard read and never lets it fail the page', () => {
     expect(pageSource).toContain('portalApi.getAgreements');
     expect(pageSource.indexOf('agreementsPromise')).toBeLessThan(pageSource.indexOf('portalApi.getDashboard'));
-    expect(pageSource).toMatch(/\.catch\(\(\) => \[\]\)/);
+    // Never rejects (a catch that resolves to []), and a failure is traced.
+    expect(pageSource).toMatch(/\.catch\(\(err: unknown\) => \{[\s\S]*?return \[\];/);
+    expect(pageSource).toContain("console.warn('[portal] dashboard agreements read");
   });
 
   it('renders the awaiting-signature card above the tiles, in the success branch only', () => {

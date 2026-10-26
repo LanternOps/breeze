@@ -185,12 +185,23 @@ async function revokeLinkPostCommit(revoke: AgreementResponseRevoke | null): Pro
   }
 }
 
+/** A visible request whose own data is broken (its pinned template version is
+ *  gone, render data mismatched, any 5xx service error): an operator fault,
+ *  never dressed up as the customer-facing "not found". */
+function isServerFault(err: AgreementRequestServiceError | ContractTemplateServiceError): boolean {
+  return err.status >= 500 || err.code === 'VERSION_NOT_FOUND';
+}
+
 function respondError(c: Context, err: unknown): Response {
-  if (err instanceof AgreementRequestServiceError) {
-    if (MISS_CODES.has(err.code)) return notFound(c);
+  if (err instanceof AgreementRequestServiceError || err instanceof ContractTemplateServiceError) {
+    if (err instanceof AgreementRequestServiceError && MISS_CODES.has(err.code)) return notFound(c);
+    if (isServerFault(err)) {
+      console.error('[portal/agreements] agreement unavailable', { code: err.code, message: err.message });
+      captureException(err, c, { area: 'portal-agreements', code: err.code });
+      return c.json({ error: 'This agreement cannot be opened right now. Please contact your provider.', code: 'AGREEMENT_UNAVAILABLE' }, 500);
+    }
     return c.json({ error: err.message, code: err.code }, err.status);
   }
-  if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -279,6 +290,14 @@ portalAgreementRoutes.get('/agreements/:id', zValidator('param', idParam), async
       .where(and(eq(contractDocuments.agreementRequestId, row.id), eq(contractDocuments.orgId, orgId)))
       .limit(1);
     signedAgreementId = doc?.id ?? null;
+    if (!doc) {
+      // Signed and frozen in one transaction, so a signed request with no
+      // signed agreement is an integrity fault: the customer has nothing to
+      // download. The page still renders (signed, no download links).
+      const msg = `[portal/agreements] signed request ${row.id} has no signed agreement row`;
+      console.error(msg);
+      captureException(new Error(msg), c, { area: 'portal-agreements' });
+    }
   }
 
   const presentation = toPublicAgreementPresentation({

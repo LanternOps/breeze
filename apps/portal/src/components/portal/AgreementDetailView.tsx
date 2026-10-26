@@ -67,6 +67,7 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [justSigned, setJustSigned] = useState(false);
+  const [justDeclined, setJustDeclined] = useState(false);
   const [signedAgreementId, setSignedAgreementId] = useState<string | null>(detail?.signedAgreementId ?? null);
 
   const view = useMemo(() => {
@@ -159,9 +160,26 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
       successMessage: '',
       errorFallback,
     });
-    setBusy(false);
-    if (result) return result;
+    if (result) {
+      setBusy(false);
+      return result;
+    }
     const failed = failure as ApiResponse<unknown> | null;
+    if (failed?.statusCode === 409) {
+      // Already answered — possibly by THIS user on an attempt whose response
+      // was lost. Show the request's real state instead of "try again".
+      try {
+        const fresh = await portalApi.getAgreement(request.id, { redirectOnUnauthorized: false });
+        const latest = fresh.data?.data;
+        if (latest && latest.request.status !== live) {
+          setSignedAgreementId(latest.signedAgreementId ?? null);
+          setStatus(latest.request.status);
+        }
+      } catch (err) {
+        console.error('[AgreementDetailView] refresh after 409 failed', err);
+      }
+    }
+    setBusy(false);
     setMsg(failed?.statusCode === 404 ? UNAVAILABLE : failed?.error || errorFallback);
     return null;
   };
@@ -179,6 +197,7 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
     if (busy) return;
     const result = await run(() => portalApi.declineAgreement(request.id, reason), DECLINE_FALLBACK);
     if (!result) return;
+    setJustDeclined(true);
     setStatus('declined');
   };
 
@@ -222,7 +241,8 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
 
       {live === 'signed' && (
         <div data-testid="agreement-signed" role="status" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
-          <p>{justSigned ? 'Signed. A copy is on its way to your email.' : 'This agreement has been signed.'}</p>
+          {/* No email promise: delivery depends on the provider's mail setup. */}
+          <p>{justSigned ? 'Signed. You can download your signed copy below.' : 'This agreement has been signed.'}</p>
           {signedAgreementId && (
             <div className="flex flex-wrap gap-2">
               <a
@@ -246,7 +266,9 @@ export function AgreementDetailView({ detail: detailProp, initial, error, status
       )}
       {live === 'declined' && (
         <div data-testid="agreement-declined" role="status" className="rounded-md bg-muted p-3 text-sm">
-          You declined this agreement — {parties.partnerName} has been notified.
+          {justDeclined
+            ? `You declined this agreement — ${parties.partnerName} has been notified.`
+            : 'This agreement was declined.'}
         </div>
       )}
     </div>

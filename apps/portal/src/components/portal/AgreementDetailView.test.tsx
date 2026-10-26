@@ -62,7 +62,9 @@ describe('AgreementDetailView', () => {
     sign();
     await waitFor(() => expect(accept).toHaveBeenCalledWith(ID, 'Dana Buyer'));
     const signed = await screen.findByTestId('agreement-signed');
-    expect(signed.textContent).toContain('Signed. A copy is on its way to your email.');
+    // No email promise: delivery depends on the provider's mail setup.
+    expect(signed.textContent).toContain('Signed. You can download your signed copy below.');
+    expect(signed.textContent).not.toMatch(/email/i);
     expect(screen.queryByTestId('agreement-sign')).toBeNull();
     const certified = screen.getByTestId('agreement-download-certified');
     expect(certified.getAttribute('href')).toBe(`/api/v1/portal/signed-agreements/${DOC}/file?copy=certified`);
@@ -102,15 +104,31 @@ describe('AgreementDetailView', () => {
     expect(screen.queryByTestId('agreement-not-found')).toBeNull();
   });
 
-  it('a 409 shows the server message and keeps the panel', async () => {
+  it('a 409 shows the server message and keeps the panel when the request is still open', async () => {
     vi.spyOn(portalApi, 'acceptAgreement').mockResolvedValue({
       error: 'This agreement has already been signed.', code: 'AGREEMENT_ALREADY_SIGNED', statusCode: 409,
     });
+    vi.spyOn(portalApi, 'getAgreement').mockResolvedValue({ data: { data: detail() } });
     render(<AgreementDetailView detail={detail()} />);
     sign();
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('This agreement has already been signed.');
     expect(screen.getByTestId('agreement-sign')).toBeTruthy();
+  });
+
+  it('a 409 after a lost response re-reads the request and shows it signed, with the downloads (never "try again")', async () => {
+    vi.spyOn(portalApi, 'acceptAgreement').mockResolvedValue({
+      error: 'This agreement request can no longer be signed', code: 'INVALID_STATE', statusCode: 409,
+    });
+    const refetch = vi.spyOn(portalApi, 'getAgreement').mockResolvedValue({
+      data: { data: detail({ signedAgreementId: DOC }, { status: 'signed', signedAt: '2026-11-02T10:00:00.000Z' }) },
+    });
+    render(<AgreementDetailView detail={detail()} />);
+    sign();
+    expect(await screen.findByTestId('agreement-signed')).toBeTruthy();
+    expect(refetch).toHaveBeenCalledWith(detail().request.id, { redirectOnUnauthorized: false });
+    expect(screen.queryByTestId('agreement-sign')).toBeNull();
+    expect(screen.getByTestId('agreement-download-certified').getAttribute('href')).toContain(`/signed-agreements/${DOC}/file?copy=certified`);
   });
 
   it('a loaded-signed agreement shows the downloads and no panel', () => {
@@ -127,10 +145,12 @@ describe('AgreementDetailView', () => {
     expect(screen.queryByTestId('agreement-download-certified')).toBeNull();
   });
 
-  it('a loaded-declined agreement is read-only', () => {
+  it('a loaded-declined agreement is read-only and never tells a colleague "you declined"', () => {
     render(<AgreementDetailView detail={detail({}, { status: 'declined', declinedAt: '2026-11-02T10:00:00.000Z' })} />);
     expect(screen.queryByTestId('agreement-sign')).toBeNull();
-    expect(screen.getByTestId('agreement-declined').textContent).toContain('Lantern IT has been notified');
+    const declined = screen.getByTestId('agreement-declined').textContent ?? '';
+    expect(declined).toContain('This agreement was declined.');
+    expect(declined).not.toContain('You declined');
   });
 
   it('embeds an uploaded template from the portal file route, not the public one', () => {

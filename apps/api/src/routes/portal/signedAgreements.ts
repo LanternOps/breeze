@@ -138,6 +138,7 @@ portalSignedAgreementRoutes.get(
       format: download.served === 'certified' ? 'pdf-certified' : 'original',
       rowCount: 1,
       byteCount: download.byteLength,
+      fallback: copy === 'certified' && download.served === 'original',
     });
     return download.response;
   },

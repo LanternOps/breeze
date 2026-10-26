@@ -12,9 +12,17 @@ import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../l
 // Started alongside the dashboard read (never rejects; any failure is null) so the link adds no round trip.
 const trustPathPromise = fetchTrustPageLink(buildServerApiConfig(Astro.request));
 // Agreements awaiting this user's signature: never rejects; any error, 401 or non-200 reads as none.
+// Hidden, never a page error — but traced, so a broken read is not invisible.
 const agreementsPromise = portalApi.getAgreements(buildServerApiConfig(Astro.request))
-  .then((res) => (res.statusCode === 200 ? (res.data?.data ?? []) : []))
-  .catch(() => []);
+  .then((res) => {
+    if (res.statusCode === 200) return res.data?.data ?? [];
+    if (res.statusCode !== 401) console.warn('[portal] dashboard agreements read failed', { status: res.statusCode, error: res.error });
+    return [];
+  })
+  .catch((err: unknown) => {
+    console.warn('[portal] dashboard agreements read threw', err);
+    return [];
+  });
 const response = await portalApi.getDashboard(
   buildServerApiConfig(Astro.request),
 );

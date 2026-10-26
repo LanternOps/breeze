@@ -63,7 +63,11 @@ export function auditSensitiveRead(
 export function auditPortalSensitiveRead(
   c: RequestLike,
   portalUser: { id: string; email: string },
-  input: SensitiveReadAuditInput,
+  input: SensitiveReadAuditInput & {
+    /** The certified copy was asked for but the original was served (spec §3.8
+     *  fallback) — so a reader can tell it from an explicit original. */
+    fallback?: boolean;
+  },
 ): void {
   try {
     writeAuditEvent(c, {
@@ -80,6 +84,7 @@ export function auditPortalSensitiveRead(
         rowCount: input.rowCount,
         byteCount: input.byteCount,
         principal: 'portal_user',
+        ...(input.fallback ? { fallback: true } : {}),
       },
     });
   } catch (err) {

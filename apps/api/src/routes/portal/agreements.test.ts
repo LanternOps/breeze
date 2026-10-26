@@ -63,6 +63,8 @@ import {
 import { partners } from '../../db/schema/orgs';
 import { portalBranding } from '../../db/schema/portal';
 import { AgreementRequestServiceError } from '../../services/agreementRequestService';
+import { ContractTemplateServiceError } from '../../services/contractTemplateService';
+import { CSRF_HEADER_NAME, PORTAL_CSRF_COOKIE_NAME } from './schemas';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '99999999-9999-4999-8999-999999999999';
@@ -74,12 +76,12 @@ const FUTURE = new Date(Date.now() + 7 * 86_400_000);
 const PAST = new Date(Date.now() - 60_000);
 const SESSION_EMAIL = 'Dana@Customer.Example';
 
-function app() {
+function app(authMethod: 'bearer' | 'cookie' = 'bearer') {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
       user: { id: 'pu-1', orgId: ORG, email: SESSION_EMAIL, name: 'Dana', contactId: null, receiveNotifications: true, status: 'active' },
-      token: 't', authMethod: 'bearer', partnerId: PARTNER, timezone: 'UTC',
+      token: 't', authMethod, partnerId: PARTNER, timezone: 'UTC',
     });
     await next();
   });
@@ -259,6 +261,32 @@ describe('GET /agreements/:id', () => {
     expect(m.markViewed).not.toHaveBeenCalled();
   });
 
+  it('a signed request with no signed-agreement row is captured as an integrity fault (page still renders)', async () => {
+    h.rows.set(agreementRequests, [request({ status: 'signed', signedAt: new Date('2026-10-21T09:00:00Z') })]);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await app().request(`/agreements/${REQ}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.signedAgreementId).toBeNull();
+    expect(m.capture).toHaveBeenCalledWith(expect.any(Error), expect.anything(), { area: 'portal-agreements' });
+    err.mockRestore();
+  });
+
+  it('a visible request whose pinned version is gone is an operator fault: captured 500, never the customer "not found"', async () => {
+    h.rows.set(agreementRequests, [request()]);
+    m.renderData.mockRejectedValue(new ContractTemplateServiceError('Agreement template version not found', 404, 'VERSION_NOT_FOUND'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    for (const path of [`/agreements/${REQ}`, `/agreements/${REQ}/file`]) {
+      const res = await app().request(path);
+      expect(res.status, path).toBe(500);
+      expect((await res.json()).code).toBe('AGREEMENT_UNAVAILABLE');
+    }
+    const accept = await app().request(`/agreements/${REQ}/accept`, json({ signerName: 'Dana' }));
+    expect(accept.status).toBe(500);
+    expect(m.accept).not.toHaveBeenCalled();
+    expect(m.capture).toHaveBeenCalledWith(expect.any(ContractTemplateServiceError), expect.anything(), { area: 'portal-agreements', code: 'VERSION_NOT_FOUND' });
+    err.mockRestore();
+  });
+
   it('an uploaded template points at the portal file route, never the public token route', async () => {
     h.rows.set(agreementRequests, [request()]);
     m.renderData.mockResolvedValue(authoredRender({ sourceType: 'uploaded', bodyHtml: null }));
@@ -386,6 +414,35 @@ describe('POST /agreements/:id/accept', () => {
     expect(res.status).toBe(200);
     expect(m.capture).toHaveBeenCalled();
     err.mockRestore();
+  });
+});
+
+describe('cookie sessions: the router\'s own CSRF guard on accept/decline', () => {
+  const CSRF = 'csrf-token-1234567890';
+  const post = (path: string, withCsrf: boolean) => app('cookie').request(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(withCsrf ? { [CSRF_HEADER_NAME]: CSRF, cookie: `${PORTAL_CSRF_COOKIE_NAME}=${CSRF}` } : {}),
+    },
+    body: JSON.stringify({ signerName: 'Dana' }),
+  });
+
+  it.each(['accept', 'decline'])('POST %s without the double-submit token → 403, nothing read or written', async (action) => {
+    h.rows.set(agreementRequests, [request()]);
+    const res = await post(`/agreements/${REQ}/${action}`, false);
+    expect(res.status).toBe(403);
+    expect(m.accept).not.toHaveBeenCalled();
+    expect(m.decline).not.toHaveBeenCalled();
+    expect(m.renderData).not.toHaveBeenCalled();
+  });
+
+  it('with the matching token the signature goes through', async () => {
+    h.rows.set(agreementRequests, [request()]);
+    m.accept.mockResolvedValue({ requestId: REQ, orgId: ORG, signedAgreementId: DOC, contentSha256: 'c', revoke: null });
+    const res = await post(`/agreements/${REQ}/accept`, true);
+    expect(res.status).toBe(200);
+    expect(m.accept).toHaveBeenCalledTimes(1);
   });
 });
 

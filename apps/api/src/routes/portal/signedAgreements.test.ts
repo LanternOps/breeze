@@ -160,7 +160,7 @@ describe('GET /signed-agreements/:documentId/file', () => {
     expect(Buffer.from(await res.arrayBuffer())).toEqual(CERTIFIED);
     expect(m.audit).toHaveBeenCalledWith(expect.anything(), { id: 'pu-1', email: 'dana@customer.example' }, {
       action: 'contract.document.download', orgId: ORG, partnerId: PARTNER, resourceType: 'contract_document',
-      resourceId: DOC, format: 'pdf-certified', rowCount: 1, byteCount: CERTIFIED.byteLength,
+      resourceId: DOC, format: 'pdf-certified', rowCount: 1, byteCount: CERTIFIED.byteLength, fallback: false,
     });
   });
 
@@ -173,7 +173,7 @@ describe('GET /signed-agreements/:documentId/file', () => {
     expect(res.headers.get('content-disposition')).toMatch(/signed-agreement-66666666-6666-4666-8666-666666666666-original\.png/);
     expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG);
     expect(h.events).not.toContain('loader');
-    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original', byteCount: PNG.byteLength });
+    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original', byteCount: PNG.byteLength, fallback: false });
   });
 
   it('an unreadable original (PdfMergeError) degrades to the original: named + audited as such, no-store, captured', async () => {
@@ -186,7 +186,8 @@ describe('GET /signed-agreements/:documentId/file', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('content-disposition')).toMatch(/-original\.pdf/);
     expect(Buffer.from(await res.arrayBuffer())).toEqual(PDF);
-    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original' });
+    // Audited as the original AND as a fallback, so it is never mistaken for an explicit original.
+    expect(m.audit.mock.calls[0]![2]).toMatchObject({ format: 'original', fallback: true });
     expect(m.capture).toHaveBeenCalledWith(
       expect.any(PdfMergeError),
       expect.anything(),

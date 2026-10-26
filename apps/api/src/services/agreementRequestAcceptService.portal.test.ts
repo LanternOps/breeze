@@ -95,8 +95,8 @@ function portalParams(over: Partial<PortalAcceptAgreementRequestParams> = {}): P
 /** The mocked chain's where() spy (the real db type has no top-level where). */
 const whereMock = () => (db as unknown as { where: ReturnType<typeof vi.fn> }).where;
 
-/** The literal values bound into every where() call, flattened (drizzle SQL chunks). */
-function boundValues(): unknown[] {
+/** The literal values bound into ONE where() predicate (drizzle SQL chunks). */
+function valuesOf(predicate: unknown): unknown[] {
   const out: unknown[] = [];
   const walk = (node: unknown, depth = 0) => {
     if (depth > 12 || node == null) return;
@@ -107,8 +107,13 @@ function boundValues(): unknown[] {
     if (Array.isArray(n.queryChunks)) for (const c of n.queryChunks) walk(c, depth + 1);
     if (Array.isArray(node)) for (const c of node) walk(c, depth + 1);
   };
-  for (const call of whereMock().mock.calls) walk(call[0]);
+  walk(predicate);
   return out;
+}
+
+/** Bound values per where() call, in call order. */
+function wherePredicates(): unknown[][] {
+  return whereMock().mock.calls.map((call: unknown[]) => valuesOf(call[0]));
 }
 
 beforeEach(() => {
@@ -131,7 +136,11 @@ describe('acceptAgreementRequest — portal channel refusals (every miss is the 
     queue([{ id: REQ }]);
     await acceptAgreementRequest(portalParams());
     expect(locks).toEqual(['update']);
-    expect(boundValues()).toContain(EMAIL);
+    // The recipient lookup (the predicate that binds the email) is scoped to
+    // THIS request and its org, not "any request of the org naming this email".
+    const recipientLookup = wherePredicates().filter((values) => values.includes(EMAIL));
+    expect(recipientLookup).toHaveLength(1);
+    expect(recipientLookup[0]).toEqual(expect.arrayContaining([REQ, ORG, EMAIL]));
   });
 
   it('unknown id → 404 REQUEST_NOT_FOUND', async () => {
