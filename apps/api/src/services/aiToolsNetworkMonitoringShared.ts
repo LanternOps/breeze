@@ -57,6 +57,12 @@ export function bounded(value: unknown): string {
     : text;
 }
 
+/** Stored or device-supplied error text is data for the model, not a channel for whole vendor bodies: bound it. */
+export function clip(value: unknown, max = 240): string | null {
+  if (typeof value !== 'string' || value === '') return null;
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
 /** Drop undefined keys so a shared schema sees only what the caller supplied. */
 export function defined<T extends Record<string, unknown>>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;

@@ -22,13 +22,14 @@ import { sites, unifiClients, unifiDeviceTelemetry, unifiSiteMappings, unifiSync
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { siteAllowlistOf } from './aiToolsSiteScope';
 import { createUnifiClient, UnifiApiError } from './unifi/unifiClient';
 import { getConnection, getDecryptedApiKey } from './unifi/unifiConnectionService';
 import { listCollectors } from './unifi/unifiCollectorService';
 import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteService';
 import { enqueueUnifiSync } from '../jobs/unifiWorker';
 import { UNIFI_STATUS_ACTIONS } from './aiToolSchemasNetworkMonitoring';
-import { bounded, jsonError, json, mfaDenied, requireFields, thrown } from './aiToolsNetworkMonitoringShared';
+import { bounded, clip, jsonError, json, mfaDenied, requireFields, thrown } from './aiToolsNetworkMonitoringShared';
 
 type Action = (typeof UNIFI_STATUS_ACTIONS)[number];
 
@@ -80,6 +81,11 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
       const partner = resolvePartnerId(auth, typeof input.partnerId === 'string' ? input.partnerId : undefined);
       if ('error' in partner) return jsonError(partner.error, 'ACCESS_DENIED');
       const { partnerId } = partner;
+      // hosts (vendor-wide) and controller_sites (no site id) cannot be narrowed to a site allowlist, so a
+      // site-restricted session is refused rather than shown the whole integration (review finding).
+      if ((action === 'hosts' || action === 'controller_sites') && siteAllowlistOf(auth) !== undefined) {
+        return jsonError('This view spans every site of the integration; a site-restricted session cannot read it', 'ACCESS_DENIED');
+      }
 
       try {
         const conn = await getConnection(db, partnerId);
@@ -94,7 +100,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
               accountLabel: conn.accountLabel,
               lastSyncAt: conn.lastSyncAt,
               lastSyncStatus: conn.lastSyncStatus,
-              lastSyncError: conn.lastSyncError,
+              lastSyncError: clip(conn.lastSyncError),
             });
           }
           case 'hosts': {
@@ -117,10 +123,14 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
                   .map((h) => ({ id: h.id, name: h.name, model: h.model, sites: sitesByHost.get(h.id) ?? [] })),
               });
             } catch (error) {
+              // Only a vendor API error is an upstream failure; anything else is ours and goes to thrown() (logged in full).
+              if (!(error instanceof UnifiApiError)) throw error;
+              console.warn('[get_unifi_status] hosts lookup failed', { partnerId, status: error.status });
               // The vendor's error body is not relayed (it can echo request details).
-              const status = error instanceof UnifiApiError ? error.status : undefined;
-              console.warn('[get_unifi_status] hosts lookup failed', status ?? 'unknown');
-              return jsonError(`The UniFi cloud request failed${status ? ` (HTTP ${status})` : ''}`, 'UPSTREAM_ERROR');
+              if (error.status === 401 || error.status === 403) {
+                return jsonError('The UniFi API key was rejected; reconnect the integration in Settings', 'UPSTREAM_AUTH');
+              }
+              return jsonError(`The UniFi cloud request failed (HTTP ${error.status})`, 'UPSTREAM_ERROR');
             }
           }
           case 'collectors': {
@@ -134,7 +144,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
                   id: c.id, siteId: c.siteId, unifiHostId: c.unifiHostId, controllerUrl: c.controllerUrl,
                   isEnabled: c.isEnabled, pollIntervalSeconds: c.pollIntervalSeconds, status: c.status,
                   firmwareOk: c.firmwareOk, lastPollAt: c.lastPollAt, lastPollStatus: c.lastPollStatus,
-                  lastPollError: c.lastPollError,
+                  lastPollError: clip(c.lastPollError),
                 })),
             });
           }
@@ -184,7 +194,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
               runs: runs.map((r) => ({
                 id: r.id, trigger: r.trigger, status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt,
                 hostsSeen: r.hostsSeen, devicesCreated: r.devicesCreated, devicesUpdated: r.devicesUpdated,
-                devicesUnchanged: r.devicesUnchanged, devicesRemoved: r.devicesRemoved, error: r.error,
+                devicesUnchanged: r.devicesUnchanged, devicesRemoved: r.devicesRemoved, error: clip(r.error),
               })),
             });
           }

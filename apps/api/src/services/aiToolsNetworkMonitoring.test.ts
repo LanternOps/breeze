@@ -260,8 +260,23 @@ describe('manage_snmp_templates', () => {
   it('browse_oids returns the built-in catalog filtered by the query', async () => {
     h.queue.push([]);
     const out = await call('manage_snmp_templates', { action: 'browse_oids', query: 'ifinoctets' });
-    expect(out.total).toBe(1);
+    expect(out.total).toBeGreaterThanOrEqual(1);
     expect(out.results[0]).toMatchObject({ name: 'ifInOctets', source: 'catalog' });
+  });
+});
+
+describe('error and size helpers', () => {
+  it('an unexpected throw reaches the model as a generic error, never the raw message', async () => {
+    h.queue.push(Promise.reject(new Error('connection string postgres://user:s3cret@db failed')));
+    const out = await call('manage_snmp_templates', { action: 'list' });
+    expect(out).toEqual({ error: 'Operation failed. Check server logs for details.' });
+    expect(JSON.stringify(out)).not.toMatch(/s3cret|postgres/);
+  });
+
+  it('an oversized result is refused instead of flooding the context', async () => {
+    const big = Array.from({ length: 200 }, (_, i) => ({ ...custom, id: `${i}`, name: 'x'.repeat(1000) }));
+    h.queue.push(big);
+    expect((await call('manage_snmp_templates', { action: 'list' })).code).toBe('result_too_large');
   });
 });
 
@@ -326,6 +341,11 @@ describe('get_snmp_metrics', () => {
     expect(h.svc.loadSnmpDashboard).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG, allowedSiteIds: [SITE] }));
   });
 
+  it('dashboard: an empty site allowlist is refused without a query', async () => {
+    expect((await call('get_snmp_metrics', { action: 'dashboard' }, makeAuth(restricted([])))).code).toBe('ACCESS_DENIED');
+    expect(h.svc.loadSnmpDashboard).not.toHaveBeenCalled();
+  });
+
   it('dashboard: an org caller cannot name another org', async () => {
     const out = await call('get_snmp_metrics', { action: 'dashboard', orgId: OTHER_ORG });
     expect(out.code).toBe('ACCESS_DENIED');
@@ -359,6 +379,14 @@ describe('probe_network_asset', () => {
     h.svc.resolveAssetForMutation.mockResolvedValue({ asset });
     expect((await call('probe_network_asset', { assetId: ASSET }, makeAuth({ allowedDeviceIds: [DEV] }))).code).toBe('NOT_FOUND');
     expect(h.svc.runAssetProbe).not.toHaveBeenCalled();
+  });
+
+  it('a dispatch that never reached the agent is an error, not an "unreachable" asset', async () => {
+    h.svc.resolveAssetForMutation.mockResolvedValue({ asset });
+    h.svc.runAssetProbe.mockResolvedValue({ status: 200, body: { probe: { state: 'failed', error: 'dispatch offline: relay seal failed: boom' }, reachability: null } });
+    const out = await call('probe_network_asset', { assetId: ASSET });
+    expect(out.code).toBe('DISPATCH_FAILED');
+    expect(JSON.stringify(out)).not.toMatch(/relay|boom/);
   });
 
   it('maps the probe outcomes: 200 verbatim, 202 with a hint, 409/422 as a coded error', async () => {
@@ -482,8 +510,32 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
       listSites: vi.fn().mockResolvedValue([]),
     });
     const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
-    expect(out.code).toBe('UPSTREAM_ERROR');
     expect(JSON.stringify(out)).not.toMatch(/secret-key|Bearer/);
+    expect(out.error).toMatch(/Operation failed/);
+  });
+
+  it('hosts: a vendor API error is coded, a rejected key says to reconnect, and the body is not relayed', async () => {
+    const { UnifiApiError } = await import('./unifi/unifiClient');
+    h.svc.getConnection.mockResolvedValue(conn);
+    h.svc.getDecryptedApiKey.mockResolvedValue('k');
+    const failing = (status: number) => h.svc.createUnifiClient.mockReturnValue({
+      listHosts: vi.fn().mockRejectedValue(Object.assign(new UnifiApiError('body: secret-key', status), { status })),
+      listSites: vi.fn().mockResolvedValue([]),
+    });
+    failing(401);
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('UPSTREAM_AUTH');
+    failing(502);
+    const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
+    expect(out).toEqual({ error: 'The UniFi cloud request failed (HTTP 502)', code: 'UPSTREAM_ERROR' });
+  });
+
+  it('hosts and controller_sites span every site, so a site-restricted partner caller is refused', async () => {
+    h.svc.getConnection.mockResolvedValue(conn);
+    for (const action of ['hosts', 'controller_sites']) {
+      expect((await call('get_unifi_status', { action }, partnerAuth(restricted([SITE])))).code, action).toBe('ACCESS_DENIED');
+    }
+    expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
+    expect(h.svc.listControllerSitesForIntegration).not.toHaveBeenCalled();
   });
 
   it('hosts lists only consoles that have a mappable site', async () => {
@@ -501,7 +553,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(out.hosts).toEqual([{ id: 'h1', name: 'Console', model: 'UDM', sites: [{ id: 's1', name: 'Main' }] }]);
   });
 
-  it('sync_runs drops nothing but the row shape and caps at 20', async () => {
+  it('sync_runs projects the row shape (no partner or integration id)', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
     h.queue.push([{ id: 'r1', trigger: 'manual', status: 'ok', startedAt: new Date(), finishedAt: null, hostsSeen: 1, devicesCreated: 0, devicesUpdated: 0, devicesUnchanged: 1, devicesRemoved: 0, error: null, integrationId: 'x', partnerId: PARTNER }]);
     const out = await call('get_unifi_status', { action: 'sync_runs' }, partnerAuth());

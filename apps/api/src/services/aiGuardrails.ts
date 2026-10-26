@@ -2374,7 +2374,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     apply: { resource: 'topology', action: 'write' },
     status: { resource: 'topology', action: 'read' },
   },
-  // Full-control W09 (#6779) — each floor is read from its route by aiToolsNetworkMonitoring.permissions.contract.test.ts.
+  // Full-control W09 (#6779) — each floor is read from its route by the W09 rows of aiGuardrails.routeBinding.contract.test.ts.
   // SNMP templates / metrics / probe: devices:read|write (routes/snmp.ts, monitoringAssetMetrics.ts, discoveryAssetProbe.ts).
   // Known guests: organizations:read|write. UniFi: billing:manage for reads AND the sync (routes/unifi/index.ts).
   manage_snmp_templates: {

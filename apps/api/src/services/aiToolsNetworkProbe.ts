@@ -18,7 +18,7 @@ import type { AiTool } from './aiTools';
 import { resolveAssetForMutation, type AssetAuthContext } from './assetAccessScope';
 import { deviceSiteDenied, siteAllowlistOf } from './aiToolsSiteScope';
 import { runAssetProbe } from './assetProbeRun';
-import { jsonError, json, mfaDenied, thrown } from './aiToolsNetworkMonitoringShared';
+import { clip, jsonError, json, mfaDenied, thrown } from './aiToolsNetworkMonitoringShared';
 
 const NOT_FOUND = 'Asset not found or access denied';
 
@@ -66,6 +66,12 @@ export function registerNetworkProbeTools(aiTools: Map<string, AiTool>): void {
         if (result.status === 409 || result.status === 422) {
           return json({ error: result.body.error, code: result.body.code });
         }
+        const probe = result.body.probe as { state?: string; error?: string | null } | undefined;
+        // A dispatch that never reached the agent says nothing about the asset: do not let it read as "unreachable".
+        if (probe?.error && /^dispatch /.test(probe.error)) {
+          return jsonError('The probe could not be sent to an agent in the asset’s site, so the asset was not checked. Try again shortly.', 'DISPATCH_FAILED');
+        }
+        if (probe && typeof probe.error === 'string') probe.error = clip(probe.error, 200);
         return json({
           ...result.body,
           ...(result.status === 202

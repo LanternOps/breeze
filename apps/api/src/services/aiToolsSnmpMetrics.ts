@@ -96,6 +96,9 @@ export function registerSnmpMetricsTools(aiTools: Map<string, AiTool>): void {
         if (auth.allowedDeviceIds !== undefined) {
           return jsonError('The SNMP dashboard aggregates the whole organization; a device-restricted session cannot read it', 'ACCESS_DENIED');
         }
+        if (siteAllowlistOf(auth)?.length === 0) {
+          return jsonError('No sites are within your access, so there is nothing to summarize', 'ACCESS_DENIED');
+        }
         const orgResult = resolveOrgId(auth, typeof input.orgId === 'string' ? input.orgId : undefined);
         if ('error' in orgResult) return jsonError(orgResult.error ?? 'Access denied', 'ACCESS_DENIED');
         const visibility = templateVisibilityCondition(auth, orgResult.orgId ?? undefined);
