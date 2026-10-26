@@ -1,4 +1,13 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const h=vi.hoisted(()=>({rows:[] as unknown[][],select:vi.fn(),disclosure:vi.fn(),method:vi.fn(),readiness:vi.fn(),settings:vi.fn()}));
 vi.mock('./billingPaymentSettings',()=>({resolveBillingPaymentSettings:h.settings}));
 vi.mock('../../db',()=>({db:{select:h.select},runOutsideDbContext:(fn:()=>unknown)=>fn(),withSystemDbAccessContext:(fn:()=>unknown)=>fn()}));

@@ -14,7 +14,9 @@ vi.mock('../../services/stripeSessionRevocation', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.9' }));
+vi.mock('../../services/invoiceBillingGate', () => ({ assertInvoiceBillingEnabled: vi.fn() }));
 vi.mock('../../db', () => ({
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }),
   },
@@ -36,6 +38,7 @@ import * as checkout from '../../services/invoiceCheckout';
 import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { assertInvoiceBillingEnabled } from '../../services/invoiceBillingGate';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const payLink = vi.mocked(checkout.createInvoicePayLink);
@@ -56,6 +59,26 @@ describe('POST /invoices/:id/pay-link', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { url: 'https://checkout.stripe.com/c/pay/abc' } });
     expect(payLink).toHaveBeenCalledWith(ID, expect.objectContaining({ partnerId: 'p1' }));
+  });
+
+  it('answers 404 BILLING_DISABLED before minting a link when billing is off', async () => {
+    selectRows.value = [{ orgId: 'org-1' }];
+    vi.mocked(assertInvoiceBillingEnabled).mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(assertInvoiceBillingEnabled).toHaveBeenCalledWith('org-1');
+    expect(payLink).not.toHaveBeenCalled();
+    selectRows.value = [];
+  });
+
+  it('mints the link when billing is on', async () => {
+    selectRows.value = [{ orgId: 'org-1' }];
+    payLink.mockResolvedValue({ url: 'https://checkout.stripe.com/c/pay/on' });
+    const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(assertInvoiceBillingEnabled).toHaveBeenCalledWith('org-1');
+    selectRows.value = [];
   });
 
   it('surfaces the currency-mismatch warning verbatim to the partner (warn-don\'t-block)', async () => {

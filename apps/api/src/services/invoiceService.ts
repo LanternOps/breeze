@@ -75,6 +75,7 @@ import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import { lockTicketsForWrite } from './ticketRowLock';
+import { assertInvoiceBillingEnabled, assertInvoiceBillingEnabledById } from './invoiceBillingGate';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 import { documentLabelsFor, type CustomerInvoiceHeaderDto, type CustomerInvoiceLineCore, type DocumentBillToAddress, type DocumentSellerSnapshot } from '@breeze/shared/documents';
@@ -211,6 +212,7 @@ export async function createManualInvoice(input: { orgId: string; siteId?: strin
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  await assertInvoiceBillingEnabled(input.orgId);
   // Stamp the document currency at creation (spec §5): the explicit override
   // (used internally by contract generation, which copies the CONTRACT's stamp)
   // or the org's currency — never the partner's, and never a DB default.
@@ -336,7 +338,7 @@ async function insertLineAndRecompute(
 
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     const unitPrice = Number(input.unitPrice).toFixed(2);
     const costBasis = input.costBasis != null ? Number(input.costBasis).toFixed(2) : null;
     assertRepresentable(unitPrice, inv.currencyCode);
@@ -353,7 +355,7 @@ export async function addManualLine(invoiceId: string, input: ManualLineInput, a
 
 export async function addCatalogLine(invoiceId: string, catalogItemId: string, quantity: number, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     // Price book in the invoice's currency (org override → catalog_item_prices),
     // never another currency's row, never converted.
     const resolved = await resolveInvoicePrice(tx, catalogItemId, inv, actor);
@@ -374,7 +376,7 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
 
 export async function addBundleLine(invoiceId: string, bundleId: string, quantity: number, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     // Economics in the INVOICE's currency on the locked tx (throws NOT_A_BUNDLE etc.).
     // The bundle's own gap and any component gap are typed 409s — a bundle is
     // never billed from a partial price book (wave 3, #3775).
@@ -629,7 +631,7 @@ export async function addContractLine(
 
 export async function updateLine(invoiceId: string, lineId: string, patch: { name?: string | null; description?: string | null; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     const [existing] = await tx.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);
     if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
     const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
@@ -671,7 +673,7 @@ export async function refreshDraftTimeLines(invoiceId: string, actor: InvoiceAct
   invoiceId: string; orgId: string; summary: TimeLineRefreshSummary; lines: TimeLineRefreshOutcome[];
 }> {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     const lines = await tx.select({
       id: invoiceLines.id, sourceId: invoiceLines.sourceId, description: invoiceLines.description,
       descriptionEdited: invoiceLines.descriptionEdited, quantity: invoiceLines.quantity,
@@ -715,7 +717,7 @@ export async function refreshDraftTimeLines(invoiceId: string, actor: InvoiceAct
 
 export async function removeLine(invoiceId: string, lineId: string, actor: InvoiceActor) {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     // cascade FK removes bundle children when a parent is deleted
     await tx.delete(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)));
     await recomputeInvoiceTotals(invoiceId, undefined, tx);
@@ -726,7 +728,7 @@ export async function removeLine(invoiceId: string, lineId: string, actor: Invoi
 /** Returns the deleted invoice's id and org so the caller can audit the delete. */
 export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor): Promise<{ id: string; orgId: string }> {
   return db.transaction(async (tx) => {
-    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
+    const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     await tx.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
     return { id: inv.id, orgId: inv.orgId };
   });
@@ -748,7 +750,7 @@ export async function updateInvoice(
 ) {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId);
-    requireInvoiceAccess(actor, inv);
+    requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     // A site-restricted caller may not move the invoice to a site it can't access
     // (nor clear it to null, which a restricted caller can never see).
     if (patch.siteId !== undefined) requireSiteAccess(actor, patch.siteId);
@@ -788,7 +790,7 @@ export async function changeInvoiceCurrency(
     // concurrent issue or line write serializes against the restamp instead of
     // deadlocking or observing a half-changed draft.
     const inv = await lockDraftInvoice(tx, invoiceId);
-    requireInvoiceAccess(actor, inv);
+    requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     if (inv.currencyCode === input.currencyCode) return inv; // no-op restamp
 
     const lineRows = await tx.select({
@@ -862,7 +864,7 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
   return db.transaction(async tx => {
     const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
     if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
-    requireInvoiceAccess(actor, inv);
+    requireInvoiceAccess(actor, inv); await assertInvoiceBillingEnabled(inv.orgId);
     if (!['sent', 'partially_paid', 'overdue'].includes(inv.status)) {
       throw new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE');
     }
@@ -1568,6 +1570,7 @@ export async function assembleDraftFromOrg(
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  await assertInvoiceBillingEnabled(input.orgId);
   // Read BEFORE the draft insert so a failed read cannot orphan an empty draft.
   const { timeZone, documentLocale } = await readPartnerAssemblyDefaults(partnerId);
   const from = new Date(input.from + 'T00:00:00Z');
@@ -1602,6 +1605,7 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   const [tk] = await db.select({ orgId: tickets.orgId }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
   if (!tk) throw new InvoiceServiceError('Ticket not found', 404, 'INVOICE_NOT_FOUND');
   requireOrgAccess(actor, tk.orgId);
+  await assertInvoiceBillingEnabled(tk.orgId);
   // This path produces an org-level (null-site) invoice; a site-restricted caller
   // can never see such a row, so deny it up front rather than orphan an invoice.
   requireSiteAccess(actor, null);
@@ -1632,6 +1636,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   const pre = await getOwnedInvoiceOr404(invoiceId);
   assertDraft(pre);
   requireInvoiceAccess(actor, pre);
+  await assertInvoiceBillingEnabled(pre.orgId);
 
   // Everything below runs in ONE system transaction (withSystemDbAccessContext
   // wraps its callback in baseDb.transaction — db/index.ts). Lock order is the
@@ -2496,6 +2501,8 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
  * issue validation is never bypassed (owner-fixed: no conversion, snapshots rule).
  */
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
+  // Billing master switch BEFORE the revocation request below, which writes.
+  await assertInvoiceBillingEnabledById(invoiceId);
   // FAIL-CLOSED, phases 1-2, BEFORE the transaction. #5180 already
   // refuses a void with applied payments, so a voidable invoice has no
   // legitimate open payment capability — a Checkout session that survives the

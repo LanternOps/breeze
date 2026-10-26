@@ -4,13 +4,14 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { db } from '../../db';
+import { db, withSystemDbAccessContext } from '../../db';
 import { invoices } from '../../db/schema';
 import { createInvoicePayLink } from '../../services/invoiceCheckout';
 import { requireOrgAccess, requireSiteAccess } from '../../services/invoiceService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { assertInvoiceBillingEnabled } from '../../services/invoiceBillingGate';
 import { invoiceActorFrom, handleServiceError } from './invoices';
 
 export const invoiceStripeRoutes = new Hono();
@@ -24,7 +25,16 @@ const idParam = z.object({ id: z.string().guid() });
 // invoice balance (to share with the customer). Gated on the partner's Stripe
 // Connect being active; 409 STRIPE_NOT_CONNECTED otherwise.
 invoiceStripeRoutes.post('/:id/pay-link', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await createInvoicePayLink(c.req.valid('param').id, invoiceActorFrom(c)) }); }
+  try {
+    const id = c.req.valid('param').id;
+    // Self-managed DB context route: resolve the org in a short system context
+    // (as createInvoicePayLink does). Unknown id falls through to its own 404.
+    await withSystemDbAccessContext(async () => {
+      const [inv] = await db.select({ orgId: invoices.orgId }).from(invoices).where(eq(invoices.id, id)).limit(1);
+      if (inv) await assertInvoiceBillingEnabled(inv.orgId);
+    });
+    return c.json({ data: await createInvoicePayLink(id, invoiceActorFrom(c)) });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 

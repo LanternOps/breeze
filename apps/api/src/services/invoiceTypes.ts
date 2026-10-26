@@ -30,6 +30,8 @@ export type InvoiceServiceErrorCode =
   // asked to mint another session while the revocation is in flight.
   | 'STRIPE_REVOCATION_PENDING'
   | 'PARTNER_UNRESOLVABLE'
+  // Partner billing master switch is off (services/billingEnabled.ts).
+  | 'BILLING_DISABLED'
   | 'ORG_DENIED'
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'

@@ -116,7 +116,7 @@ publicAutopayRoutes.post('/:token/confirm',boundary('confirm_payment'),publicJso
   zValidator('json',z.object({}).strict()),async c=>{
     try{return c.json(await confirmInvoicePayment(c.req.param('token')));}
     catch(error){
-      if(error instanceof InvoiceServiceError&&error.status===404)return c.json({error:'Link unavailable'},404);
+      if(error instanceof InvoiceServiceError&&error.status===404&&error.code!=='BILLING_DISABLED')return c.json({error:'Link unavailable'},404);
       console.error('[autopay] Public confirmation failed',error);
       captureException(error,undefined,{autopay_phase:'confirm'});
       // R5: code and reason let the page tell "under review" from "still processing".
