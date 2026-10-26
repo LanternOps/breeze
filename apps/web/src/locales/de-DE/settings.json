@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Durch das Aufschubfenster zurückgehalten",
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
+          "blocked_by_feature_update_policy": "Durch die Richtlinie des Rings für Windows-Funktionsupdates ausgeschlossen",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
           "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",

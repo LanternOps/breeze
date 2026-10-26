@@ -11,6 +11,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from './WispGrantStepUpModal';
 import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
 import WispSpendMeter from '../wisp/WispSpendMeter';
+import { spendMeterState } from '../wisp/wispSpend';
 import type { CurrentActivity } from '@breeze/shared';
 
 export type WispThreadHeaderProps = {
@@ -29,6 +30,11 @@ export type WispThreadHeaderProps = {
   showFocus?: boolean;
   /** The running assessment, for the live "Checking …" line (w00 A31); the panel passes none. */
   currentActivity?: CurrentActivity;
+  /**
+   * Scope label and status badge (default on). The Wisp rail turns them off:
+   * its identity card already states both, so the header keeps only the controls.
+   */
+  showIdentity?: boolean;
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
@@ -72,6 +78,7 @@ export default function WispThreadHeader({
   onRevoked,
   showFocus = true,
   currentActivity = null,
+  showIdentity = true,
 }: WispThreadHeaderProps) {
   const { t } = useTranslation('ai');
   const exitWispMode = useAiStore((s) => s.exitWispMode);
@@ -172,16 +179,23 @@ export default function WispThreadHeader({
     }
   };
 
+  // The grant stays active when the day's budget is spent (w00: the digest keeps running), so say so here.
+  const budgetReached =
+    wisp.status === 'active' && typeof wisp.spentTodayCents === 'number' && spendMeterState(wisp.spentTodayCents, wisp.budgetCentsPerDay) === 'exhausted';
   const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
   const iconButton = 'rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground';
 
   return (
     <div className="space-y-2 border-b px-4 py-2 text-xs" data-testid="wisp-thread-header">
       <div className="flex items-center gap-2">
-        <span className="truncate font-medium text-foreground" data-testid="wisp-scope">{scopeLabel}</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[wisp.status]}`} data-testid="wisp-grant-status">
-          {t(/* i18n-dynamic */ `wisp.header.status.${wisp.status}`)}
-        </span>
+        {showIdentity && (
+          <>
+            <span className="truncate font-medium text-foreground" data-testid="wisp-scope">{scopeLabel}</span>
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_TONE[budgetReached ? 'paused' : wisp.status]}`} data-testid="wisp-grant-status">
+              {t(/* i18n-dynamic */ `wisp.header.status.${budgetReached ? 'budgetReached' : wisp.status}`)}
+            </span>
+          </>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -225,7 +239,7 @@ export default function WispThreadHeader({
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
           resetsAt={wisp.budgetResetsAt}
-          onRaise={() => openSettings(true)}
+          onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
       )}
 

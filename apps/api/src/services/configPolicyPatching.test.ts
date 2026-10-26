@@ -800,6 +800,7 @@ describe('resolvePatchPolicyReference — disabled (soft-deleted) ring (#8678)',
       excludeCategories: [],
       autoApprove: {},
       appRules: [],
+      featureUpdates: { mode: 'block' },
     });
   });
 

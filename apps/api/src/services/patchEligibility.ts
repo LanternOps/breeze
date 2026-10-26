@@ -35,6 +35,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { PatchIneligibleReason } from '@breeze/shared';
+import { DEFAULT_RING_FEATURE_UPDATES, featureUpdateAllowed, isWindowsFeatureUpdateCandidate } from '@breeze/shared/validators';
 import { db } from '../db';
 import {
   devicePatches, devices, organizations, patches, patchPolicies,
@@ -244,6 +245,27 @@ export async function evaluatePatchInstallEligibility(args: {
 
   if (categoryFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
+  // Windows feature releases ("Windows 11, version 25H2") follow the ring's
+  // feature-update policy: block (default, and what an absent value means),
+  // allow, or pin to one release. Like the source/category/app-rule gates it
+  // only narrows the candidate set and therefore overrides a manual approval —
+  // a blocked or off-pin release is never installed. Non-feature patches pass.
+  const featurePolicy = ringConfig.featureUpdates ?? DEFAULT_RING_FEATURE_UPDATES;
+  const featureFiltered = categoryFiltered.filter((p) => {
+    if (!isWindowsFeatureUpdateCandidate(p)) return true;
+    if (featureUpdateAllowed(featurePolicy, p.title)) return true;
+    const policyLabel = featurePolicy.mode === 'pin'
+      ? `pin ${featurePolicy.product} ${featurePolicy.targetVersion}`
+      : featurePolicy.mode;
+    console.warn(
+      `[PatchApproval] device ${deviceId}: feature update ${p.patchId} ("${p.title}") excluded by ring feature-update policy (${policyLabel})`
+    );
+    deny(p.patchId, 'blocked_by_feature_update_policy');
+    return false;
+  });
+
+  if (featureFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
+
   // App rules filter before manual approvals are loaded — a block/pin
   // overrides even an explicit manual approval in the job flow; manual
   // per-device installs bypass this evaluator entirely. The live path fills
@@ -252,7 +274,7 @@ export async function evaluatePatchInstallEligibility(args: {
   const appRuleMaps = [buildAppRuleMap(ringConfig.ringAppRules), buildAppRuleMap(ringConfig.apps)]
     .filter((m) => m.size > 0);
   const finalCandidates = appRuleMaps.length > 0
-    ? categoryFiltered.filter((p) => {
+    ? featureFiltered.filter((p) => {
       if (!p.packageId && isThirdPartyPatchSource(p.source)) {
         // Deliberate allow-with-warn: holding every unidentified third-party
         // patch because one unrelated app is pinned/blocked would be
@@ -272,7 +294,7 @@ export async function evaluatePatchInstallEligibility(args: {
       }
       return true;
     })
-    : categoryFiltered;
+    : featureFiltered;
 
   if (finalCandidates.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
@@ -440,6 +462,8 @@ export async function resolveDevicePatchEvaluation(
     // The ring owns the app rules (#8186); the resolver already normalised
     // them (coerceRingAppRules). The policy's inline `apps` is not read.
     ringAppRules: ringId ? ring.appRules : [],
+    // The ring's Windows feature-release policy; no ring → block.
+    featureUpdates: ringId ? ring.featureUpdates : DEFAULT_RING_FEATURE_UPDATES,
   };
 
   if (ringId) {

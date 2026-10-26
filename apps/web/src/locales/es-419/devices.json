@@ -2096,6 +2096,7 @@
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
       "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
+      "excludedFeatureUpdateTitle": "El anillo de actualización {{ring}} bloquea esta versión de funciones de Windows (o fija los dispositivos a otra), por lo que las ejecuciones de parches programadas la omiten.",
       "excludedDeclinedTitle": "Rechazado: este parche fue rechazado explícitamente, por lo que la aprobación automática del anillo no lo instalará. Apruébelo de nuevo para permitirlo.",
       "pending": "Aprobación pendiente",
       "needsApprovalRingTitle": "El anillo de actualización {{ring}} no aprueba este parche automáticamente. Apruébelo manualmente para instalarlo.",

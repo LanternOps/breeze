@@ -27,4 +27,10 @@ describe('WispSpendMeter (W06 T15, w00 A32)', () => {
     fireEvent.click(screen.getByTestId('wisp-spend-raise'));
     expect(onRaise).toHaveBeenCalledTimes(1);
   });
+
+  it('with no onRaise (raising cannot help) the exhausted meter shows no raise link (#10145)', () => {
+    render(<WispSpendMeter spentCents={200} budgetCents={200} resetsAt={RESETS} />);
+    expect(screen.getByTestId('wisp-spend-meter').getAttribute('data-state')).toBe('exhausted');
+    expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+  });
 });

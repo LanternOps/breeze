@@ -91,6 +91,10 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
           {t('wisp.pause')}
         </button>
       ) : (
+        wisp.pausedReason === 'partner_disabled' ? (
+          // A partner administrator's switch, not the grantor's pause: nothing to resume here (#10145).
+          <span className="text-amber-600 dark:text-amber-400" data-testid="wisp-paused-partner-disabled">{t('wisp.paused.partnerDisabled')}</span>
+        ) : (
         <>
           {wisp.pausedReason === 'user_paused' && (
             <span className="text-amber-600 dark:text-amber-400" data-testid="wisp-paused-by-you">{t('wisp.paused.byYou')}</span>
@@ -106,6 +110,7 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
             {t('wisp.resume')}
           </button>
         </>
+        )
       )}
     </div>
   );

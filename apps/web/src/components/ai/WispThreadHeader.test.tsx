@@ -63,6 +63,15 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(screen.getByTestId('wisp-scope').textContent).toBe('Alpha');
   });
 
+  it('showIdentity=false drops the scope and status (the Wisp rail identity card carries them) and keeps the controls', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} showIdentity={false} />);
+    expect(screen.queryByTestId('wisp-scope')).toBeNull();
+    expect(screen.queryByTestId('wisp-grant-status')).toBeNull();
+    expect(screen.getByTestId('wisp-refresh-grant')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-settings')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-revoke')).toBeInTheDocument();
+  });
+
   it.each([
     ['active', 'Active'],
     ['paused', 'Paused'],
@@ -251,6 +260,35 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
     );
     fireEvent.click(screen.getByTestId('wisp-spend-raise'));
     expect(screen.getByTestId('wisp-settings-panel')).toBeTruthy();
+  });
+
+  it('an active grant over budget reads "Budget reached", not "Active" (#10145)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 201, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Budget reached');
+  });
+
+  it('under budget the badge stays Active (#10145)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Active');
+  });
+
+  it('partner-disabled: no Resume and no "Raise today\'s budget", even when over budget (#10145)', () => {
+    render(
+      <WispThreadHeader
+        wisp={wisp({ status: 'paused', pausedReason: 'partner_disabled', spentTodayCents: 300, budgetResetsAt: '2099-01-01T00:00:00.000Z' })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.queryByTestId('wisp-resume')).toBeNull();
+    expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+    expect(screen.getByTestId('wisp-spend-meter')).toBeTruthy();
+    // a paused grant is Paused, never "Budget reached"
+    expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Paused');
   });
 
   it('pause merges the server answer into the store by default', async () => {

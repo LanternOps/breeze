@@ -742,7 +742,11 @@ window.
 
 ### `cancel_reboot`
 
-No payload parameters. Returns `{ cancelled: true }`.
+No payload parameters. Returns `{ cancelled: true }` when a restart was
+cancelled. When nothing is pending the command still completes, with
+`{ cancelled: false, reason: "no_reboot_scheduled" }` — the restart you wanted
+off is off, so it is not reported as a failure. Older agents fail that case
+with `no reboot scheduled` instead.
 
 Cancellation always stops the agent's own timers. If the OS shutdown countdown
 has already started (the final minute), the agent also aborts it where the

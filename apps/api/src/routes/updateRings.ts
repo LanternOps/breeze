@@ -24,7 +24,13 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   canManagePartnerWidePolicies,
 } from '../services/partnerWideAccess';
-import { ringAutoApproveSchema, ringAppRulesSchema, mergeRingAutoApproveWrite } from '@breeze/shared/validators';
+import {
+  ringAutoApproveSchema,
+  ringAppRulesSchema,
+  ringFeatureUpdatesSchema,
+  DEFAULT_RING_FEATURE_UPDATES,
+  mergeRingAutoApproveWrite,
+} from '@breeze/shared/validators';
 
 // Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
 // auto-provisioned ring auto-approves nothing until an operator opts in.
@@ -133,6 +139,8 @@ const createRingSchema = z.object({
   autoApprove: ringAutoApproveSchema.optional(),
   // Per-app block/pin rules (#8184). Omitted on update leaves the column alone.
   appRules: ringAppRulesSchema.optional(),
+  // Windows feature-release policy; omitted on create = block.
+  featureUpdates: ringFeatureUpdatesSchema.optional(),
   targets: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -151,6 +159,8 @@ const updateRingSchema = z.object({
   autoApprove: ringAutoApproveSchema.optional(),
   // Per-app block/pin rules (#8184). Omitted on update leaves the column alone.
   appRules: ringAppRulesSchema.optional(),
+  // Windows feature-release policy; omitted on update leaves the column alone.
+  featureUpdates: ringFeatureUpdatesSchema.optional(),
   targets: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -215,6 +225,7 @@ updateRingRoutes.get(
         categoryRules: patchPolicies.categoryRules,
         // Read-only until W02 adds a writer (#8184).
         appRules: patchPolicies.appRules,
+        featureUpdates: patchPolicies.featureUpdates,
         targets: patchPolicies.targets,
         createdAt: patchPolicies.createdAt,
         updatedAt: patchPolicies.updatedAt,
@@ -277,6 +288,7 @@ updateRingRoutes.post(
           : DEFAULT_RING_AUTO_APPROVE,
         categoryRules: data.categoryRules ?? [],
         appRules: data.appRules ?? [],
+        featureUpdates: data.featureUpdates ?? DEFAULT_RING_FEATURE_UPDATES,
         targets: data.targets ?? {},
         createdBy: auth.user.id,
       })
@@ -402,6 +414,7 @@ updateRingRoutes.patch(
     }
     if (data.categoryRules !== undefined) updateFields.categoryRules = data.categoryRules;
     if (data.appRules !== undefined) updateFields.appRules = data.appRules;
+    if (data.featureUpdates !== undefined) updateFields.featureUpdates = data.featureUpdates;
     if (data.targets !== undefined) updateFields.targets = data.targets;
 
     // Disabling a ring fails closed for every policy linked to it (#8909):

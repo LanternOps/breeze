@@ -341,6 +341,7 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
           lineType: 'manual',
           description: 'Pax8 subscription',
           unitPrice: '10.00',
+          manualQuantity: '1.00', // contract_lines_manual_quantity_chk (#9664)
         })
         .returning({ id: contractLines.id });
       if (!contractLine) throw new Error('failed to seed contract line');

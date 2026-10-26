@@ -38,6 +38,7 @@ import {
   configPolicyPatchSettings,
   configPolicyTimeSyncSettings,
   configurationPolicies,
+  patchPolicies,
 } from '../db/schema';
 import type { DeviceHierarchy, DeviceHierarchyOpts } from './deviceHierarchy';
 import type { DbExecutor } from './monitors/monitorCompiler';
@@ -64,6 +65,13 @@ export type EventLogSettingsRow = Pick<typeof configPolicyEventLogSettings.$infe
 export type HardwareMonitoringSettingsRow = Pick<typeof configPolicyHardwareMonitoringSettings.$inferSelect,
   'id' | 'enabled' | 'pollIntervalMinutes' | 'diskHealthIntervalMinutes'>;
 export type PatchSourceSettingsRow = Pick<typeof configPolicyPatchSettings.$inferSelect, 'id' | 'exclusiveWindowsUpdate'>;
+/**
+ * The update ring a patch link names (`patch_policies` by `featurePolicyId`),
+ * joined into the set statement so the heartbeat's feature-update block costs
+ * no extra statement. `featureUpdates` is the raw jsonb; the reader validates
+ * it. Null when the link names no ring or RLS hides it.
+ */
+export type PatchRingRow = Pick<typeof patchPolicies.$inferSelect, 'id' | 'kind' | 'enabled' | 'partnerId' | 'featureUpdates'>;
 export type TimeSyncSettingsRow = Pick<typeof configPolicyTimeSyncSettings.$inferSelect,
   'id' | 'enforceNtp' | 'ntpServers' | 'pollIntervalMinutes' | 'timezoneExpected' | 'pinnedTimezone' | 'timezoneAutoFix'>;
 export type OnedriveSettingsRow = Pick<typeof configPolicyOnedriveSettings.$inferSelect,
@@ -78,6 +86,8 @@ export interface PolicySetLink {
   readonly eventLog: EventLogSettingsRow | null;
   readonly hardwareMonitoring: HardwareMonitoringSettingsRow | null;
   readonly patch: PatchSourceSettingsRow | null;
+  /** The patch link's update ring; optional so older fixtures need not carry it. */
+  readonly ring?: PatchRingRow | null;
   readonly timeSync: TimeSyncSettingsRow | null;
   readonly onedrive: OnedriveSettingsRow | null;
 }
@@ -126,6 +136,7 @@ export interface PolicySetRow {
   eventLog: EventLogSettingsRow | null;
   hardwareMonitoring: HardwareMonitoringSettingsRow | null;
   patch: PatchSourceSettingsRow | null;
+  ring?: PatchRingRow | null;
   timeSync: TimeSyncSettingsRow | null;
   onedrive: OnedriveSettingsRow | null;
 }
@@ -143,6 +154,7 @@ export async function loadDevicePolicySet(hierarchy: DeviceHierarchy, executor: 
     eventLog: present(r.eventLog),
     hardwareMonitoring: present(r.hardwareMonitoring),
     patch: present(r.patch),
+    ring: present(r.ring),
     timeSync: present(r.timeSync),
     onedrive: present(r.onedrive),
   })));
@@ -170,6 +182,7 @@ export function policySetQuery(hierarchy: DeviceHierarchy, executor: DbExecutor 
   const ev = configPolicyEventLogSettings;
   const hw = configPolicyHardwareMonitoringSettings;
   const pt = configPolicyPatchSettings;
+  const pp = patchPolicies;
   const ts = configPolicyTimeSyncSettings;
   const od = configPolicyOnedriveSettings;
 
@@ -200,6 +213,7 @@ export function policySetQuery(hierarchy: DeviceHierarchy, executor: DbExecutor 
         id: hw.id, enabled: hw.enabled, pollIntervalMinutes: hw.pollIntervalMinutes, diskHealthIntervalMinutes: hw.diskHealthIntervalMinutes,
       },
       patch: { id: pt.id, exclusiveWindowsUpdate: pt.exclusiveWindowsUpdate },
+      ring: { id: pp.id, kind: pp.kind, enabled: pp.enabled, partnerId: pp.partnerId, featureUpdates: pp.featureUpdates },
       timeSync: {
         id: ts.id, enforceNtp: ts.enforceNtp, ntpServers: ts.ntpServers, pollIntervalMinutes: ts.pollIntervalMinutes,
         timezoneExpected: ts.timezoneExpected, pinnedTimezone: ts.pinnedTimezone, timezoneAutoFix: ts.timezoneAutoFix,
@@ -222,6 +236,10 @@ export function policySetQuery(hierarchy: DeviceHierarchy, executor: DbExecutor 
     .leftJoin(ev, and(eq(ev.featureLinkId, link.id), eq(link.featureType, 'event_log')))
     .leftJoin(hw, and(eq(hw.featureLinkId, link.id), eq(link.featureType, 'hardware_monitoring')))
     .leftJoin(pt, and(eq(pt.featureLinkId, link.id), eq(link.featureType, 'patch')))
+    // The patch link's update ring, for the heartbeat's feature-update block.
+    // Partner-axis: the agent context sees its own partner's rings in place;
+    // a row RLS hides joins as null, which the reader treats as block.
+    .leftJoin(pp, and(eq(pp.id, link.featurePolicyId), eq(link.featureType, 'patch')))
     .leftJoin(ts, and(eq(ts.featureLinkId, link.id), eq(link.featureType, 'time_sync')))
     .leftJoin(od, and(eq(od.featureLinkId, link.id), eq(link.featureType, 'onedrive_helper')))
     .where(and(ownership, or(...targets)))
@@ -251,6 +269,7 @@ export function groupPolicySetRows(hierarchy: DeviceHierarchy, rows: readonly Po
       eventLog: row.eventLog,
       hardwareMonitoring: row.hardwareMonitoring,
       patch: row.patch,
+      ring: row.ring ?? null,
       timeSync: row.timeSync,
       onedrive: row.onedrive,
     });

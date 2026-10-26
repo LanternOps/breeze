@@ -33,6 +33,10 @@ vi.mock('./agreementCertificate', () => ({
   renderCertifiedAgreementPdf: renderMock,
 }));
 
+// #9075 W3a: the portal link the email falls back to.
+const { portalBaseMock } = vi.hoisted(() => ({ portalBaseMock: vi.fn(() => 'https://portal.example.test/portal') }));
+vi.mock('./portalUrl', () => ({ portalBase: portalBaseMock }));
+
 import {
   buildSignedCopyTemplate,
   loadSignedCopyAttachment,
@@ -90,7 +94,7 @@ describe('sendSignedAgreementCopy', () => {
     queuePrepared(['ops@example.com', 'dana@example.com']);
     queueCertified();
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: ' Dana@Example.com ' });
-    expect(res).toEqual({ sent: true, recipients: ['dana@example.com', 'ops@example.com'], attached: true, certified: true });
+    expect(res).toEqual({ sent: true, recipients: ['dana@example.com', 'ops@example.com'], attached: true, certified: true, portalLink: false });
     const env = sendEmailMock.mock.calls[0]![0];
     expect(env.to).toEqual(['dana@example.com', 'ops@example.com']);
     expect(env.purpose).toBe('agreement.signed_copy');
@@ -143,7 +147,7 @@ describe('sendSignedAgreementCopy', () => {
     loadInputMock.mockResolvedValueOnce(certInput());
     renderMock.mockRejectedValueOnce(new PdfMergeError('bad xref'));
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: true, certified: false });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: true, certified: false, portalLink: true });
     // The transport gets only filename/content/contentType — no internal flags.
     expect(sendEmailMock.mock.calls[0]![0].attachments).toEqual([
       { filename: 'Business Associate Agreement (signed, original).pdf', content: Buffer.from('%PDF-signed'), contentType: 'application/pdf' },
@@ -166,7 +170,7 @@ describe('sendSignedAgreementCopy', () => {
     // Both the certified copy AND the original are over the limit.
     queueCertified(certInput({ name: 'BAA', pdfData: Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 1) }), Buffer.alloc(SIGNED_COPY_ATTACHMENT_MAX_BYTES + 2));
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false, portalLink: true });
     const env = sendEmailMock.mock.calls[0]![0];
     expect(env.attachments).toBeUndefined();
     expect(env.text).toContain('too large to attach');
@@ -226,7 +230,7 @@ describe('sendSignedAgreementCopy', () => {
     queuePrepared(['ops@example.com']);
     loadInputMock.mockResolvedValueOnce(null); // the signed agreement row is gone
     const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
-    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false });
+    expect(res).toEqual({ sent: true, recipients: ['ops@example.com'], attached: false, certified: false, portalLink: true });
     expect(sendEmailMock.mock.calls[0]![0].text).toContain('could not be attached');
     expect(captureException).toHaveBeenCalledTimes(1);
     err.mockRestore();
@@ -255,5 +259,64 @@ describe('buildSignedCopyTemplate', () => {
     expect(t.text).toContain('A copy is attached');
     expect(t.text).toContain('Need another copy? Please contact Acme <MSP>.');
     expect(t.html).not.toMatch(/href=/);
+  });
+
+  it('with a portal URL (the W3a fallback) names the client portal and links it, escaped', () => {
+    const t = buildSignedCopyTemplate({
+      partnerName: 'Acme', agreementName: 'BAA', signerName: 'Dana', signedDate: 'January 11, 2027',
+      attached: false, portalUrl: 'https://portal.example.test/portal/agreements?a=1&b="2"',
+    });
+    expect(t.text).toContain('client portal: https://portal.example.test/portal/agreements?a=1&b="2"');
+    expect(t.html).toContain('href="https://portal.example.test/portal/agreements?a=1&amp;b=&quot;2&quot;"');
+    expect(`${t.html}${t.text}`).not.toMatch(/signed by/i);
+  });
+});
+
+describe('portal-link fallback (#9075 W3a, spec §3.6/§3.8)', () => {
+  const PORTAL_LINK = 'https://portal.example.test/portal/agreements';
+
+  it('the certified copy attached → no portal link', async () => {
+    queuePrepared(['ops@example.com']);
+    queueCertified();
+    const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
+    expect(res).toMatchObject({ sent: true, attached: true, certified: true, portalLink: false });
+    const env = sendEmailMock.mock.calls[0]![0];
+    expect(env.text).not.toContain(PORTAL_LINK);
+    expect(env.html).not.toMatch(/href=/);
+  });
+
+  it('only the ORIGINAL could be attached → the mail adds the portal link for the certified copy', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    queuePrepared(['ops@example.com']);
+    loadInputMock.mockResolvedValueOnce(certInput());
+    renderMock.mockRejectedValueOnce(new PdfMergeError('bad xref'));
+    const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
+    expect(res).toMatchObject({ sent: true, attached: true, certified: false, portalLink: true });
+    const env = sendEmailMock.mock.calls[0]![0];
+    expect(env.text).toContain(PORTAL_LINK);
+    expect(env.html).toContain(`href="${PORTAL_LINK}"`);
+    warn.mockRestore();
+  });
+
+  it('nothing attached (too large / gone / load failed) → the portal link', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queuePrepared(['ops@example.com']);
+    loadInputMock.mockResolvedValueOnce(null);
+    const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
+    expect(res).toMatchObject({ sent: true, attached: false, portalLink: true });
+    expect(sendEmailMock.mock.calls[0]![0].text).toContain(PORTAL_LINK);
+    err.mockRestore();
+  });
+
+  it('a misconfigured portal URL never blocks delivery: sent without the link, logged + captured', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    portalBaseMock.mockImplementationOnce(() => { throw new Error('[portalUrl] Cannot build a customer portal URL'); });
+    queuePrepared(['ops@example.com']);
+    loadInputMock.mockResolvedValueOnce(null);
+    const res = await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: null });
+    expect(res).toMatchObject({ sent: true, attached: false, portalLink: false });
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalled();
+    err.mockRestore();
   });
 });

@@ -387,6 +387,14 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             const estimate = await computeContractEstimate(contractId, contractActor, deviceEvidence, { includeHourBlock: false });
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
+            // #9664: an unresolved line's quantity 0 is a placeholder, never a
+            // billable count. Refuse like generateDueInvoice instead of adding a silent $0 line.
+            if (est.unresolved) {
+              return JSON.stringify({
+                error: `Contract line "${line.description}" has no resolvable quantity (${est.unresolved}); fix the contract line first`,
+                code: 'CONTRACT_LINE_UNRESOLVED', unresolved: est.unresolved,
+              });
+            }
 
             const materialized = await materializeContractLineOntoInvoice(actor, {
               invoiceId: String(input.invoiceId),

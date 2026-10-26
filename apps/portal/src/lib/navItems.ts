@@ -13,6 +13,9 @@ export interface PortalNavItem {
  * approve a proposal or pay a bill, so those lead once Dashboard (opt-in) is
  * out of the way.
  *
+ * Proposals, Invoices and Agreements are always on (no flag): they are the
+ * documents a customer is asked to act on.
+ *
  * "Proposals", not "Quotes": every page this leads to is titled Proposal, and
  * a customer does not connect the two labels.
  *
@@ -57,6 +60,7 @@ export function buildPortalNavItems(
       : null,
     { href: '/quotes', label: 'Proposals' },
     { href: '/invoices', label: 'Invoices' },
+    { href: '/agreements', label: 'Agreements' },
     paymentMethodsAvailable ? { href: '/payment-methods', label: 'Payment methods' } : null,
     branding.enableTickets !== false
       ? { href: '/tickets', label: 'Support' }
