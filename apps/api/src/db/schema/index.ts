@@ -238,4 +238,5 @@ export * from './partnerEntitlements';
 export * from './wisp';
 export * from './wispThreads';
 export * from './wispConcerns';
+export * from './wispThreadLinks';
 export * from './aiMemoryBlocks';

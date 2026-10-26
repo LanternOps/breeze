@@ -132,7 +132,7 @@
     "durationValue": "{{minutes}} Minuten ab Genehmigung",
     "purpose": "Zweck",
     "requestedBy": "Angefordert von",
-    "principalUser": "Breeze-KI-Chat",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP-API-Schlüssel",
     "principalOauth": "MCP-OAuth-Verbindung",
     "paths": "Pfade",
@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan für die Aufgabe des KI-Operators",
+    "title": "Plan für die KI-Aufgabe",
     "summary_one": "{{count}} Auswirkung, Planrevision {{revision}}",
     "summary_other": "{{count}} Auswirkungen, Planrevision {{revision}}",
     "groupBreeze": "Breeze-Geräte",

@@ -79,6 +79,7 @@ import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import { EntityLink } from "@/components/shared/EntityLink";
+import WispLinkButton from "@/components/wisp/WispLinkButton";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -1011,6 +1012,7 @@ export default function DeviceDetails({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <WispLinkButton kind="device" id={device.id} orgId={device.orgId} />
             <DeviceActions device={device} onAction={onAction} />
           </div>
         </div>

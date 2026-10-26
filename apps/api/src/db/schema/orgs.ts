@@ -190,6 +190,10 @@ export const partners = pgTable('partners', {
   // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
   // which is a platform-granted entitlement).
   serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // Partner billing toggle (spec 2026-10-16-partner-billing-enabled-design.md §5.6):
+  // a dedicated column, not partners.settings, because gates and job predicates query it.
+  // Migration 2027-01-05-120000 backfills existing partners, then sets DEFAULT true + NOT NULL.
+  billingEnabled: boolean('billing_enabled').notNull().default(true),
   // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
   // only: integrations.ts already imports orgs.ts, so a `.references()` here
   // would close an import cycle. Paired with the mode by

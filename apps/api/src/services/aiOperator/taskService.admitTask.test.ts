@@ -32,9 +32,10 @@ const h = vi.hoisted(() => ({
   resolveProviderAccounts: vi.fn(),
   pinContact: vi.fn(),
   createContactForTask: vi.fn(),
+  createNewContactForTask: vi.fn(),
   lockContactForRecipe: vi.fn(),
   findLiveTaskForContact: vi.fn(),
-  flags: { tasks: true, sr: true, identity: true },
+  flags: { tasks: true, sr: true, identity: true, onboarding: true },
 }));
 
 vi.mock('../../db', () => {
@@ -67,6 +68,7 @@ vi.mock('../../config/env', () => ({
   aiOperatorTasksEnabled: () => h.flags.tasks,
   aiOperatorServiceRecoveryEnabled: () => h.flags.sr,
   aiOperatorIdentityOffboardingEnabled: () => h.flags.identity,
+  aiOperatorIdentityOnboardingEnabled: () => h.flags.onboarding,
 }));
 vi.mock('./taskLimitsLoader', () => ({
   lockOrgTaskAdmission: async () => { h.calls.push('lockOrgTaskAdmission'); },
@@ -101,6 +103,7 @@ vi.mock('./contactResolution', () => ({
   resolveProviderAccounts: (...a: unknown[]) => { h.calls.push('resolveProviderAccounts'); return h.resolveProviderAccounts(...a); },
   pinContact: (...a: unknown[]) => { h.calls.push('pinContact'); return h.pinContact(...a); },
   createContactForTask: (...a: unknown[]) => { h.calls.push('createContactForTask'); return h.createContactForTask(...a); },
+  createNewContactForTask: (...a: unknown[]) => { h.calls.push('createNewContactForTask'); return h.createNewContactForTask(...a); },
   lockContactForRecipe: (...a: unknown[]) => { h.calls.push('lockContactForRecipe'); return h.lockContactForRecipe(...a); },
   findLiveTaskForContact: (...a: unknown[]) => { h.calls.push('findLiveTaskForContact'); return h.findLiveTaskForContact(...a); },
 }));
@@ -123,7 +126,7 @@ beforeEach(() => {
   h.inserts = [];
   h.insertReturn = [{ id: 'inserted' }];
   h.executes = [];
-  h.flags = { tasks: true, sr: true, identity: true };
+  h.flags = { tasks: true, sr: true, identity: true, onboarding: true };
   h.countPendingTasks.mockResolvedValue(0);
   h.resolveEffectiveAgentSystem.mockResolvedValue(null);
   vi.spyOn(Math, 'random').mockReturnValue(0.5); // jitter = 1.0
@@ -424,5 +427,221 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(r).toMatchObject({ ok: false, refusal: 'unknown_recipe' });
     expect((r as { detail: string }).detail).toContain('service_recovery');
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe('parseTaskCheckpointResult over the three-arm union (R2a Task 2)', () => {
+  const onboardingInput = {
+    displayName: 'Priya Raman',
+    m365: { userPrincipalName: 'priya@customer.example', mailNickname: 'priya', usageLocation: 'CA' },
+  };
+
+  it('parses a valid identity_onboarding row', () => {
+    const r = parseTaskCheckpointResult({ version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput });
+    expect(r.ok).toBe(true);
+  });
+
+  it('a row that CLAIMS identity_onboarding names the onboarding arm\'s failing path first', () => {
+    const r = parseTaskCheckpointResult({
+      version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput, onboardingWorkCursor: 99,
+    });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail.startsWith('onboardingWorkCursor: ')).toBe(true);
+  });
+
+  it('a row that does not claim identity_onboarding is not described by the onboarding arm', () => {
+    const r = parseTaskCheckpointResult({ version: 1, recipeInput: { foo: 1 } });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail).not.toContain('checkpointKind');
+    expect((r as { detail: string }).detail).not.toContain('displayName');
+  });
+});
+
+describe('admitTask — identity_onboarding (R2a Task 10, G4)', () => {
+  const NOW = new Date('2026-10-23T12:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+  const SITE = '00000000-0000-4000-8000-000000000051';
+  const NEW_CONTACT = '00000000-0000-4000-8000-000000000031';
+  const helpdesk = { id: AGENT, kind: 'helpdesk', name: 'Helpdesk', orgId: null };
+  const onboardingInput = {
+    displayName: 'Priya Raman',
+    jobTitle: 'Analyst',
+    siteId: SITE,
+    m365: { userPrincipalName: 'priya@customer.example', mailNickname: 'priya', usageLocation: 'CA' },
+  };
+  const base = {
+    orgId: ORG, agentId: AGENT, objective: 'Onboard Priya', originKind: 'manual' as const, requesterUserId: 'user-1',
+    workflowKey: 'identity_onboarding', workflowVersion: 1, now: NOW,
+    recipeInput: onboardingInput,
+  };
+
+  beforeEach(() => {
+    h.createNewContactForTask.mockResolvedValue({ ok: true, contactId: NEW_CONTACT });
+    h.findLiveTaskForContact.mockResolvedValue(null);
+  });
+
+  it('the flag accessor reads AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED at call time, default false', async () => {
+    const env = await vi.importActual<typeof import('../../config/env')>('../../config/env');
+    const prior = process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED;
+    try {
+      delete process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED;
+      expect(env.aiOperatorIdentityOnboardingEnabled()).toBe(false);
+      process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED = 'true';
+      expect(env.aiOperatorIdentityOnboardingEnabled()).toBe(true);
+      process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED = 'false';
+      expect(env.aiOperatorIdentityOnboardingEnabled()).toBe(false);
+    } finally {
+      if (prior === undefined) delete process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED;
+      else process.env.AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED = prior;
+    }
+    expect(taskService.RECIPE_FLAGS.identity_onboarding?.name).toBe('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED');
+  });
+
+  it('7. with the recipe flag off it refuses recipe_disabled BEFORE any lookup or db call', async () => {
+    h.flags.onboarding = false;
+    expect(await taskService.admitTask(base)).toEqual({
+      ok: false, refusal: 'recipe_disabled', detail: 'AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED is off',
+    });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('a strict input refuses invalid_input before any lookup', async () => {
+    expect(await taskService.admitTask({ ...base, recipeInput: { ...onboardingInput, providers: { m365: true } } }))
+      .toMatchObject({ ok: false, refusal: 'invalid_input' });
+    expect(await taskService.admitTask({ ...base, recipeInput: { displayName: 'Priya Raman' } }))
+      .toMatchObject({ ok: false, refusal: 'invalid_input' });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('8/11/12. CREATES the contact, then lock → liveness; no person lookup, no provider read, no freeze, no device', async () => {
+    h.selectQueue = [[helpdesk]];
+    const r = await taskService.admitTask(base);
+    expect(r).toMatchObject({ ok: true, replayed: false });
+    expect(h.calls).toEqual([
+      'tx', 'select', 'lockOrgTaskAdmission', 'countPendingTasks',
+      'createNewContactForTask', 'lockContactForRecipe', 'findLiveTaskForContact',
+      'insert:task', 'target:contact', 'openStep:intake', 'event:task_admitted',
+    ]);
+    expect(h.identifyTaskPerson).not.toHaveBeenCalled();
+    expect(h.resolveProviderAccounts).not.toHaveBeenCalled();
+    expect(h.pinContact).not.toHaveBeenCalled();
+    expect(h.createContactForTask).not.toHaveBeenCalled();
+    expect(h.freezeTargetAccount).not.toHaveBeenCalled();
+    expect(h.upsertContactExternalLinks).not.toHaveBeenCalled();
+
+    expect(h.createNewContactForTask).toHaveBeenCalledWith(
+      ORG,
+      { displayName: 'Priya Raman', email: 'priya@customer.example', title: 'Analyst', siteId: SITE },
+      'user-1',
+    );
+    expect(h.lockContactForRecipe).toHaveBeenCalledWith(ORG, 'identity_onboarding', NEW_CONTACT);
+    expect(h.findLiveTaskForContact).toHaveBeenCalledWith(ORG, 'identity_onboarding', NEW_CONTACT);
+    // Exactly one target: the created contact at ordinal 0.
+    expect(h.createTaskTarget.mock.calls.map((c) => c[0])).toEqual([
+      expect.objectContaining({ targetKind: 'contact', contactId: NEW_CONTACT, targetOrdinal: 0, targetLabel: 'Priya Raman' }),
+    ]);
+    expect(h.inserts[0]!.values).toMatchObject({
+      workflowKey: 'identity_onboarding', workflowVersion: 1, deviceId: null, targetLabel: 'Priya Raman',
+      phase: 'investigate', currentStepKey: 'intake', agentKind: 'helpdesk',
+    });
+    expect(h.appendTaskEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'task_admitted', stepKey: 'intake', targetId: 'target-contact-0', actor: { kind: 'user', userId: 'user-1' },
+    }));
+  });
+
+  it('a Google-only onboarding names the contact by its primaryEmail', async () => {
+    h.selectQueue = [[helpdesk]];
+    const google = { primaryEmail: 'priya@customer.example', givenName: 'Priya', familyName: 'Raman' };
+    expect(await taskService.admitTask({ ...base, recipeInput: { displayName: 'Priya Raman', google } }))
+      .toMatchObject({ ok: true });
+    expect(h.createNewContactForTask).toHaveBeenCalledWith(
+      ORG, { displayName: 'Priya Raman', email: 'priya@customer.example', title: null, siteId: null }, 'user-1',
+    );
+  });
+
+  it('writes the identity_onboarding checkpoint arm — and the offboarding predicate rejects it', async () => {
+    h.selectQueue = [[helpdesk]];
+    await taskService.admitTask(base);
+    const shared = await import('@breeze/shared');
+    const checkpoint = h.inserts[0]!.values.checkpoint;
+    expect(checkpoint).toEqual(shared.identityOnboardingCheckpointSchema.parse({
+      version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput,
+    }));
+    expect(checkpoint).toMatchObject({ checkpointKind: 'identity_onboarding', onboardingWorkCursor: 0, createPlanRevision: null });
+    expect(checkpoint).not.toHaveProperty('manualWorkCursor');
+    expect(checkpoint).not.toHaveProperty('criterion');
+    const parsed = parseTaskCheckpointResult(JSON.parse(JSON.stringify(checkpoint)));
+    expect(parsed.ok).toBe(true);
+    const cp = (parsed as unknown as { checkpoint: never }).checkpoint;
+    expect(cp).toEqual(checkpoint); // the stored bytes re-parse to themselves
+    expect(shared.isIdentityOnboardingCheckpoint(cp)).toBe(true);
+    expect(shared.isIdentityOffboardingCheckpoint(cp)).toBe(false);
+    expect(shared.isServiceRecoveryCheckpoint(cp)).toBe(false);
+    expect(h.openStep).toHaveBeenCalledWith(expect.objectContaining({
+      stepKey: 'intake', attemptOrdinal: 0, planRevision: 1, targetId: 'target-contact-0', checkpoint,
+    }));
+  });
+
+  it('10. start_at_beyond_deadline: refused before the contact is created; accepted inside the deadline', async () => {
+    // Default policy ceiling 72 h (the 14-day recipe bound is capped by it).
+    h.selectQueue = [[helpdesk]];
+    const late = await taskService.admitTask({
+      ...base, recipeInput: { ...onboardingInput, startAt: new Date(NOW.getTime() + 100 * HOUR).toISOString() },
+    });
+    expect(late).toMatchObject({ ok: false, refusal: 'start_at_beyond_deadline' });
+    expect((late as { detail: string }).detail).toContain(new Date(NOW.getTime() + 72 * HOUR).toISOString());
+    expect(h.calls).not.toContain('createNewContactForTask');
+    expect(h.calls).not.toContain('lockContactForRecipe');
+    expect(h.inserts).toHaveLength(0);
+
+    // With the policy ceiling raised, the 14-day recipe bound decides: 30 days out refuses, 13 days out admits.
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: AGENT, effective: { limits: { taskDeadlineHours: 720 } } });
+    h.selectQueue = [[helpdesk]];
+    expect(await taskService.admitTask({
+      ...base, recipeInput: { ...onboardingInput, startAt: new Date(NOW.getTime() + 30 * 24 * HOUR).toISOString() },
+    })).toMatchObject({ ok: false, refusal: 'start_at_beyond_deadline' });
+    expect(h.inserts).toHaveLength(0);
+    h.selectQueue = [[helpdesk]];
+    expect(await taskService.admitTask({
+      ...base, recipeInput: { ...onboardingInput, startAt: new Date(NOW.getTime() + 13 * 24 * HOUR).toISOString() },
+    })).toMatchObject({ ok: true });
+    expect(h.inserts).toHaveLength(1);
+  });
+
+  it('9. contact_already_exists (a match or a shared mailbox) inserts no task row and takes no contact lock', async () => {
+    for (const refusal of [
+      { ok: false, reason: 'contact_already_exists', existingContactId: CONTACT, detail: `a contact already uses priya@customer.example: ${CONTACT}` },
+      { ok: false, reason: 'contact_already_exists', existingContactId: null, detail: 'priya@customer.example is a shared mailbox' },
+    ]) {
+      h.calls = [];
+      h.selectQueue = [[helpdesk]];
+      h.createNewContactForTask.mockResolvedValue(refusal);
+      const r = await taskService.admitTask(base);
+      expect(r).toEqual({ ok: false, refusal: 'contact_already_exists', detail: refusal.detail });
+      expect(h.calls).not.toContain('lockContactForRecipe');
+      expect(h.calls).not.toContain('insert:task');
+    }
+    expect(h.inserts).toHaveLength(0);
+  });
+
+  it('a siteId outside the org is refused with no row written', async () => {
+    h.selectQueue = [[helpdesk]];
+    h.createNewContactForTask.mockResolvedValue({ ok: false, reason: 'site_not_in_org', detail: 'site not found in this organization' });
+    const r = await taskService.admitTask(base);
+    expect(r).toMatchObject({ ok: false, refusal: 'invalid_input', detail: 'site not found in this organization' });
+    expect(h.calls).not.toContain('lockContactForRecipe');
+    expect(h.inserts).toHaveLength(0);
+  });
+
+  it('duplicate_live_task is checked in R1\'s order: create → lock → liveness → refusal, no row', async () => {
+    h.selectQueue = [[helpdesk]];
+    h.findLiveTaskForContact.mockResolvedValue({ taskId: 'live-task-2' });
+    const r = await taskService.admitTask(base);
+    expect(r).toMatchObject({ ok: false, refusal: 'duplicate_live_task', existingTaskId: 'live-task-2' });
+    const order = h.calls;
+    expect(order.slice(order.indexOf('createNewContactForTask'))).toEqual([
+      'createNewContactForTask', 'lockContactForRecipe', 'findLiveTaskForContact',
+    ]);
+    expect(h.inserts).toHaveLength(0);
   });
 });

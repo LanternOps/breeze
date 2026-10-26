@@ -358,7 +358,11 @@
         "pathPrefix": "Yol Öneki",
         "optional": "(isteğe bağlı)",
         "backupsBreeze": "yedeklemeler/esinti/",
-        "keyPrefixForOrganizingObjectsInThe": "Paketteki nesneleri düzenlemek için kullanılan anahtar öneki.",
+        "keyPrefixHelp": "Bu hedefin anahtar öneki. Yeni anlık görüntüler <prefix>/snapshots/ altında saklanır. Mevcut anlık görüntüler yerinde kalır. Değiştirilirse bir sonraki yedekleme tam yedekleme olur.",
+        "keyPrefixInvalidTooLong": "Geçersiz anahtar öneki: en fazla {{max}} karakter olmalıdır.",
+        "keyPrefixInvalidSegment": "Geçersiz anahtar öneki: boş, \".\" veya \"..\" segment içeremez.",
+        "keyPrefixInvalidCharacters": "Geçersiz anahtar öneki: her segmentte yalnızca harf, rakam ve ! _ . * ' ( ) - kullanın; segmentleri / ile ayırın.",
+        "keyPrefixInvalidReserved": "Geçersiz anahtar öneki: \"snapshots\" segmenti içeremez.",
         "customEndpoint": "Özel Uç Nokta",
         "optional2": "(isteğe bağlı)",
         "httpsS3UsWest002Backblazeb2Com": "https://s3.us-west-002.backblazeb2.com",
@@ -1167,7 +1171,13 @@
         "binaryMissing": "Yerleşik paketin dağıtılabilir bir yükleyicisi olana kadar şu sağlayıcı açılamaz: {{vendors}}. En son sürüm, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içeren bir Windows MSI olmalıdır. Bunu paketin Sürümler sekmesinde düzeltin, ardından tekrar kaydedin.",
         "binaryMissingLink": "Sürümler sekmesini aç",
         "platformMacosUnsupported": "macOS: desteklenmiyor.",
-        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içerecek şekilde yerleşik SentinelOne paketinin Sürümler sekmesine ekleyin. Breeze yükleyiciyi sağlamaz ve dosya eklenene kadar SentinelOne açılamaz."
+        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içerecek şekilde yerleşik SentinelOne paketinin Sürümler sekmesine ekleyin. Breeze yükleyiciyi sağlamaz ve dosya eklenene kadar SentinelOne açılamaz.",
+        "catalogMissingBuiltin": "{{vendors}} henüz bu iş ortağının yazılım kataloğunda değil. Yazılım → Katalog → Yerleşik paketler bölümünden ekleyin, ardından yeniden kaydedin.",
+        "catalogMissingBuiltinLink": "Yerleşik paketleri aç",
+        "dnsBuiltinNote": "Önce {{vendor}} istemcisini Yazılım → Katalog → Yerleşik paketler bölümünden bu iş ortağının yazılım kataloğuna ekleyin; orada olmadan etkinleştirilemez.",
+        "dnsVariableNote": "Her kuruluşun normal (gizli olmayan) bir değişken olarak tanımlanmış {{variable}} kiracı değişkenine ihtiyacı vardır. Bu değişkeni olmayan kuruluşlar atlanır ve uygulanamaz olarak gösterilir.",
+        "dnsVariableLink": "Değişkenleri aç",
+        "dnsCoverageNote": "Breeze {{vendor}} konsolunu eşitlemez; bu nedenle kapsam yalnızca her cihazın istemciyi alıp alamayacağını gösterir (beklemede veya uygulanamaz). Kurulum ve hizmet durumu (eksik, çalışmıyor) oluşturulan yazılım politikasının uyumluluğunda görünür."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",

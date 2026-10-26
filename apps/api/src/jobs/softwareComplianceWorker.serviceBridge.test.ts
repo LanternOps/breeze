@@ -69,6 +69,25 @@ vi.mock('../services/softwarePolicyService', async (importOriginal) => {
   };
 });
 
+// #6960 W05 (managed DNS describe at the end): tenant variables at the
+// resolver seam, and the coverage store. Neither is reached by the unmanaged
+// policies the #6958 cases above use (managedByLinkId null).
+const { tenantVarsByOrg, recordCoverageMock } = vi.hoisted(() => ({
+  tenantVarsByOrg: new Map<string, Record<string, { value: string; isSecret: boolean }>>(),
+  recordCoverageMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
+}));
+vi.mock('../services/tenantVariableResolution', () => ({
+  loadTenantVariableScope: vi.fn(async (orgIds: string[]) => ({ orgIds: new Set(orgIds) })),
+  resolveForOrg: (_scope: unknown, orgId: string) => new Map(
+    Object.entries(tenantVarsByOrg.get(orgId) ?? {}).map(([key, v]) => [key, { key, ...v, variableId: 'v', version: 1, ownerScope: 'organization' }]),
+  ),
+  unreadableForOrg: () => new Set<string>(),
+}));
+vi.mock('../services/securityAgents/coverageStatusStore', () => ({
+  recordManagedPolicyApplicability: recordCoverageMock,
+  pruneAllForPolicy: vi.fn(async () => ({ upserted: 0, pruned: 0 })),
+}));
+
 import { processCheckPolicy } from './softwareComplianceWorker';
 import { captureException } from '../services/sentry';
 import type { SoftwarePolicyViolation } from '../db/schema';
@@ -388,5 +407,171 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
     await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
 
     expect(upserted()).toMatchObject({ installRemediationAttempts: 0, installRemediationStatus: 'completed' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6960 W05: a GENERATED (security agents) policy with tenant-variable (DNS)
+// rules, through the REAL managed-applicability filter and the REAL readiness
+// preflight (tenant variables mocked at the resolver), then the bridge.
+//
+// db.select FIFO for a managed pass: policy → devices → catalog rows →
+// authored link (applicability) → compliance state → software_versions.
+// ---------------------------------------------------------------------------
+
+describe('processCheckPolicy — managed DNS rules: applicability before the bridge (#6960 W05)', () => {
+  const NEXTDNS = 'catalog-nextdns-win';
+  const CONTROLD = 'catalog-controld-win';
+  const MANAGED = {
+    ...POLICY,
+    id: POLICY_ID,
+    orgId: null,
+    partnerId: 'partner-1',
+    name: 'Security agents: Baseline',
+    remediationOptions: { autoInstall: true, autoUninstall: false },
+    managedByLinkId: 'link-dns',
+    rules: {
+      software: [
+        { name: 'Control D (Windows)', catalogId: CONTROLD },
+        { name: 'NextDNS CLI (Windows)', catalogId: NEXTDNS },
+      ],
+      allowUnknown: true,
+    },
+  };
+  const CATALOG_ROWS = [
+    { id: CONTROLD, integrationProvider: null, builtinPackageKey: 'controld_windows' },
+    { id: NEXTDNS, integrationProvider: null, builtinPackageKey: 'nextdns_windows' },
+  ];
+  const LINK = [{ inlineSettings: { version: 1, agents: [{ vendor: 'controld', enabled: true }, { vendor: 'nextdns', enabled: true }] } }];
+  const versionFor = (catalogId: string, orgId: string, serviceName: string) => ({
+    catalogId,
+    orgId,
+    supportedOs: ['windows'],
+    detectionRules: [{ type: 'service_running', serviceName }],
+  });
+
+  function primeManaged(opts: { devices: Device[]; existing?: unknown[]; inventory?: unknown[] }) {
+    const versions = opts.devices.flatMap((d) => [
+      versionFor(CONTROLD, d.orgId, 'ctrld'),
+      versionFor(NEXTDNS, d.orgId, 'nextdns'),
+    ]);
+    primeSelects([[MANAGED], opts.devices, CATALOG_ROWS, LINK, opts.existing ?? [], versions]);
+    resolveDeviceIdsMock.mockResolvedValueOnce(opts.devices.map((d) => d.id));
+    inventoryMock.mockResolvedValueOnce(new Map(opts.devices.map((d) => [d.id, opts.inventory ?? []])));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbSelectMock.mockReset();
+    dbSelectDistinctOnMock.mockReset();
+    tenantVarsByOrg.clear();
+  });
+
+  it('two vendors, one not ready (var_missing): the not-ready rule yields no violation of any kind and burns no attempt; the ready one installs at attempt 1 (Review Focus 3)', async () => {
+    tenantVarsByOrg.set('org-1', { controld_provisioning_code: { value: '<provisioning-code>', isSecret: false } });
+    primeManaged({ devices: [WIN_NEW] });
+    primeObservations([
+      { deviceId: 'device-1', name: 'ctrld', status: 'not_found', timestamp: fresh() },
+      { deviceId: 'device-1', name: 'nextdns', status: 'not_found', timestamp: fresh() },
+    ]);
+    scheduleInstallMock.mockResolvedValueOnce(['device-1']);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const violations = upserted().violations as SoftwarePolicyViolation[];
+    expect(violations.map((v) => [v.type, v.rule?.catalogId])).toEqual([['missing', CONTROLD]]);
+    expect(scheduleInstallMock).toHaveBeenCalledTimes(1);
+    expect(scheduleInstallMock.mock.calls[0]![1]).toEqual([{ deviceId: 'device-1', catalogIds: [CONTROLD], attempt: 1 }]);
+    expect(result).toMatchObject({ notApplicable: 1, notApplicableByReason: { var_missing: 1 } });
+    // Coverage: one row per (device, vendor), keyed on the device's org.
+    const entries = (recordCoverageMock.mock.calls[0]![0] as { entries: unknown[] }).entries;
+    expect(entries).toEqual([
+      { deviceId: 'device-1', orgId: 'org-1', vendor: 'controld', notApplicableReason: null },
+      { deviceId: 'device-1', orgId: 'org-1', vendor: 'nextdns', notApplicableReason: 'var_missing' },
+    ]);
+  });
+
+  it('a var_missing org with NO telemetry never gets service_unverified for its rules, nothing is queued, and the counter is not held', async () => {
+    primeManaged({
+      devices: [WIN_NEW],
+      existing: [{ deviceId: 'device-1', status: 'violation', violations: [], installRemediationStatus: 'failed', installRemediationAttempts: 2 }],
+    });
+    primeObservations([]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const row = upserted();
+    expect(row).toMatchObject({ status: 'compliant', violations: [] });
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    // Nothing applicable is missing or unverified: the install axis settles.
+    expect(row).toMatchObject({ installRemediationAttempts: 0, installRemediationStatus: 'completed' });
+  });
+
+  it('a var_secret org is not applicable too (its secret never reaches a script)', async () => {
+    tenantVarsByOrg.set('org-1', {
+      controld_provisioning_code: { value: '<provisioning-code>', isSecret: true },
+      nextdns_profile_id: { value: '<profile-id>', isSecret: true },
+    });
+    primeManaged({ devices: [WIN_NEW] });
+    primeObservations([]);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted()).toMatchObject({ status: 'compliant', violations: [] });
+    expect(result).toMatchObject({ notApplicableByReason: { var_secret: 2 } });
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  describe('D4 outcomes for a ready managed DNS rule with no inventory match (the rule name matches no ARP entry)', () => {
+    beforeEach(() => {
+      tenantVarsByOrg.set('org-1', {
+        controld_provisioning_code: { value: '<provisioning-code>', isSecret: false },
+        nextdns_profile_id: { value: '<profile-id>', isSecret: false },
+      });
+    });
+
+    // An ARP entry that LOOKS like the vendor's (the NextDNS GUI app) must not
+    // count as the managed client.
+    const lookalikeInventory = [{ name: 'NextDNS', version: '3.0.0', vendor: 'NextDNS Inc.', catalogId: null }, { name: 'Control D', version: '1.0.0', vendor: 'Control D Inc.', catalogId: null }];
+
+    it.each([
+      ['not_found', ['missing', 'missing'], true],
+      ['stopped', ['not_running', 'not_running'], false],
+      ['running', [], false],
+    ] as const)('fresh %s → %j (install queued: %s)', async (status, types, queued) => {
+      primeManaged({ devices: [WIN_NEW], inventory: lookalikeInventory });
+      primeObservations([
+        { deviceId: 'device-1', name: 'ctrld', status, timestamp: fresh() },
+        { deviceId: 'device-1', name: 'nextdns', status, timestamp: fresh() },
+      ]);
+      scheduleInstallMock.mockResolvedValueOnce(queued ? ['device-1'] : []);
+
+      await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+      const row = upserted();
+      expect((row.violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(types);
+      expect(row.serviceWatches).toEqual([{ name: 'ctrld' }, { name: 'nextdns' }]);
+      expect(scheduleInstallMock).toHaveBeenCalledTimes(queued ? 1 : 0);
+      if (queued) {
+        expect(scheduleInstallMock.mock.calls[0]![1]).toEqual([{ deviceId: 'device-1', catalogIds: [CONTROLD, NEXTDNS], attempt: 1 }]);
+      }
+    });
+
+    it('no telemetry → service_unverified (no install, counter held, not reset)', async () => {
+      primeManaged({
+        devices: [WIN_NEW],
+        inventory: lookalikeInventory,
+        existing: [{ deviceId: 'device-1', status: 'violation', violations: [], installRemediationStatus: 'failed', installRemediationAttempts: 2 }],
+      });
+      primeObservations([]);
+
+      await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+      const row = upserted();
+      expect((row.violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(['service_unverified', 'service_unverified']);
+      expect(scheduleInstallMock).not.toHaveBeenCalled();
+      expect(row.installRemediationAttempts).toBeUndefined();
+      expect(row.installRemediationStatus).toBeUndefined();
+    });
   });
 });

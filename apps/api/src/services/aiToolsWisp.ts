@@ -138,7 +138,9 @@ export function registerWispTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'hand work to a specialist agent: sweep, sandbox analysis, Operator task, patch plan, research, bulk ticket reply',
     definition: {
       name: 'launch_specialist',
-      description: 'Hand bounded work to a specialist agent under your Wisp grant: a sweep, sandbox analysis, Operator task, patch plan, remediation research, or one reply to a set of tickets. Sweeps and analysis start at once; other kinds need approval first.',
+      // #10144: the params of the two long kinds live here (the params field's
+      // description is capped at 160 chars and lists the rest).
+      description: 'Hand bounded work to a specialist agent under your Wisp grant. Sweeps and analysis start at once; other kinds need approval first. params for bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
       input_schema: jsonSchema(launchSpecialistShape),
     },
     handler: (input, auth) => launchSpecialistHandler(input, auth),

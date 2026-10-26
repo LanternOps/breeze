@@ -50,9 +50,11 @@ function normalizeS3Endpoint(endpoint: string | null | undefined): string {
 
 /**
  * Identity = provider + endpoint + bucket (S3) or provider + resolved root
- * path (local) — deliberately EXCLUDING providerConfig.prefix (the agent
- * ignores prefix when writing, so two configs differing only by prefix are
- * the same physical namespace).
+ * path (local) — deliberately EXCLUDING providerConfig.prefix. Identity is
+ * the physical bucket; a prefix only selects a key root inside it (#7081),
+ * which every snapshot, reservation and retirement records on its own row
+ * (`key_layout`/`key_prefix`), and GC, reconcile and base selection work per
+ * key root within an identity (backupKeyLayout.ts `keyRootId`).
  */
 export function normalizeStorageIdentity(provider: string, providerConfig: Record<string, unknown>): string {
   if (provider === 'local') {

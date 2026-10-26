@@ -14,6 +14,7 @@ import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { formatRelativeTime } from '@/lib/utils';
 import { concernIdFromHash } from '../wisp/wispThreadHash';
+import { needsYouOrder } from '../wisp/wispHome';
 
 const LIVE: ConcernStatus[] = ['open', 'snoozed'];
 const ALL: ConcernStatus[] = ['open', 'snoozed', 'resolved', 'dismissed'];
@@ -44,11 +45,17 @@ export function WispConcernsPanel({
   grantId,
   threadId,
   crossOrg = false,
+  title,
+  onLoaded,
 }: {
   grantId: string;
   threadId: string;
   /** List the whole grant, ignoring the org switcher (the thread page); the sidebar keeps the ambient narrowing. */
   crossOrg?: boolean;
+  /** Replaces the panel's own title (the Wisp home heads the section itself). */
+  title?: string;
+  /** Every committed load, so a host can keep its own counts in step (W08 home "needs you"). */
+  onLoaded?: (concerns: Concern[]) => void;
 }) {
   const { t } = useTranslation('ai');
   const [concerns, setConcerns] = useState<Concern[]>([]);
@@ -65,6 +72,9 @@ export function WispConcernsPanel({
 
   // Only the newest load may commit (grant switch, filter flip, unmount).
   const loadToken = useRef(0);
+  // A ref so an inline callback from the host never re-triggers the load.
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
   const load = useCallback(async () => {
     const token = ++loadToken.current;
     try {
@@ -73,6 +83,7 @@ export function WispConcernsPanel({
       if (token !== loadToken.current) return;
       setConcerns(next);
       setLoadFailed(false);
+      onLoadedRef.current?.(next);
     } catch (err) {
       console.error('[WispConcernsPanel] loading concerns failed', err);
       if (token === loadToken.current) setLoadFailed(true);
@@ -216,7 +227,8 @@ export function WispConcernsPanel({
 
   const grouped = useMemo(
     () => SEVERITY_ORDER
-      .map((severity) => ({ severity, items: concerns.filter((c) => c.severity === severity) }))
+      // Within a severity, approvals first: they block work (W08 needsYouOrder).
+      .map((severity) => ({ severity, items: needsYouOrder(concerns.filter((c) => c.severity === severity)) }))
       .filter((g) => g.items.length > 0),
     [concerns],
   );
@@ -350,7 +362,7 @@ export function WispConcernsPanel({
   return (
     <div className="space-y-2 border-b px-4 py-2 text-xs" data-testid="wisp-concerns">
       <div className="flex items-center justify-between">
-        <span className="font-medium">{t('wispConcerns.title')}</span>
+        <span className="font-medium">{title ?? t('wispConcerns.title')}</span>
         <button
           type="button"
           data-testid="wisp-concerns-filter"

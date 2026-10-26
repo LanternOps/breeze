@@ -267,6 +267,22 @@ export async function getWispActivity(
   };
 }
 
+/**
+ * W08 (w00 A35) `GET /wisp/home?grantId=` — one read for the home sections.
+ * Returns the body UNNORMALISED (`homeSectionsFromPayload` in
+ * screens/wisp/wispHomeSections.ts reads the parts the screen draws). The
+ * thread routes wrap in `{ data }`; an unwrapped body is accepted as well.
+ * A 404 (flag off, no active grant, or a server older than W08) rejects like
+ * any other error — the caller hides the sections, it never blocks the thread.
+ */
+export async function getWispHome(grantId: string): Promise<Obj> {
+  const res = await coreRequest<unknown>(`/wisp/home?grantId=${encodeURIComponent(grantId)}`);
+  const record = (v: unknown): v is Obj => isObj(v) && !Array.isArray(v);
+  const body = record(res) && 'data' in res ? res.data : res;
+  if (!record(body)) throw new Error('wisp home payload malformed');
+  return body;
+}
+
 /** Pause/resume return the top-level grant DTO (NOT wrapped). */
 async function grantTransition(
   grantId: string,

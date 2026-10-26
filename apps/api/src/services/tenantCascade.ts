@@ -551,6 +551,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'contract_hour_periods',
   'contract_lines',
   'contract_renewal_notices',
+  'contract_skipped_billing_periods',
   // contract_template_versions sorts before contract_templates: localeCompare
   // puts '_' (versions) before 's' (templates) at the diverging character —
   // same prefix-extension trap as custom_field_definitions/customer_email_domains
@@ -1165,6 +1166,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'wisp_concern_recipients',
   'wisp_concerns',
   'wisp_thread_attachments',
+  // Wisp W08a (#9914). Partner-anchored / org-optional like wisp_concerns
+  // (DUAL_AXIS_TENANT_TABLES): this pass deletes its org rows only; a
+  // partner-level link (org_id NULL) leaves with its thread / partner. It
+  // references wisp_threads, users and organizations ON DELETE CASCADE and
+  // wisp_grants ON DELETE SET NULL (added_by_grant_id).
+  'wisp_thread_links',
   'wisp_thread_sessions',
   'wisp_watches',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,

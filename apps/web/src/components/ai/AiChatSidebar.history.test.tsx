@@ -17,6 +17,9 @@ vi.mock('@/stores/orgStore', async () => {
   return { useOrgStore };
 });
 vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ permissions: [], can: () => true }) }));
+// The panel's Wisp grant lookup (W05 #10136) is AiChatSidebar.wispHome.test.tsx's;
+// an unresolved token keeps it out of this harness.
+vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' }) }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('astro:transitions/client', () => ({ navigate: vi.fn() }));
@@ -26,7 +29,6 @@ vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
 vi.mock('./AiModelPicker', () => ({ default: () => null }));
 vi.mock('./AiContinuationPrompt', () => ({ default: () => null }));
-vi.mock('./WispToggle', () => ({ default: () => null }));
 vi.mock('./WispThreadHeader', () => ({ default: () => null }));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => null }));
@@ -145,13 +147,13 @@ describe('History list', () => {
     expect(rowEl(TOPO)).toBeDefined();
   });
 
-  it('a row a workspace tab holds says "Open in AI Assistant"; the label follows tabs opening and closing', async () => {
+  it('a row a workspace tab holds says "Open in Breeze AI"; the label follows tabs opening and closing', async () => {
     await openHistory();
     const label = (id: string) => within(rowEl(id)!).queryByTestId('ai-conversation-open-elsewhere');
-    expect(label(S)).toHaveTextContent('Open in AI Assistant');
+    expect(label(S)).toHaveTextContent('Open in Breeze AI');
     expect(label(PLAIN)).toBeNull();
     act(() => useWorkspaceStore.setState((s) => ({ tabs: [...s.tabs, tab({ id: 'tab-p', sessionId: PLAIN })] })));
-    await waitFor(() => expect(label(PLAIN)).toHaveTextContent('Open in AI Assistant'));
+    await waitFor(() => expect(label(PLAIN)).toHaveTextContent('Open in Breeze AI'));
     act(() => useWorkspaceStore.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== 'tab-p') })));
     await waitFor(() => expect(label(PLAIN)).toBeNull());
   });

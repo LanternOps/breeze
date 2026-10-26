@@ -83,6 +83,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // handful of requests. The Stripe-backed mutations (/pay, /settle-return)
   // carry an additional per-token limiter inside the route.
   { prefix: '/api/v1/invoices/public/', name: 'invoicepublic', limit: 60 },
+  // Public agreement signing links (#9075 W2b): the same unauthenticated
+  // bearer-URL shape and the same reasoning and size as invoicepublic — a human
+  // signing an agreement makes a handful of requests. The portal page fetches
+  // client-side (no SSR call, which would key every visitor to the portal's own
+  // IP). Accept/decline also carry a per-token limiter inside the route.
+  { prefix: '/api/v1/agreements/public/', name: 'agreementpublic', limit: 60 },
   // Bare-metal recovery (2026-09-09 assurance campaign, D13): the recovery
   // helper fetches ONE object per file through /backup/bmr/recover/download,
   // so a 10k-file server would be capped at 300 files/min by the shared

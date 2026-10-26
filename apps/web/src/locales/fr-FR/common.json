@@ -1,6 +1,6 @@
 {
   "aiInitiator": {
-    "assistant": "Assistant IA",
+    "assistant": "Breeze AI",
     "agent": "Agent IA",
     "originUnavailable": "Origine non disponible",
     "openSession": "Ouvrir la conversation",
@@ -27,7 +27,7 @@
     "patches": "Correctifs",
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
-    "aiForOffice": "IA pour Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "flows": "Flux",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Rédaction de scripts",
     "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
-    "aiAgentRuns": "Exécutions des agents IA",
-    "aiImpact": "Impact de l’IA",
-    "fixMemory": "Mémoire des correctifs",
-    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "moreSettings": "Plus de paramètres",
@@ -90,12 +86,11 @@
     "variables": "Variables",
     "llmProviderCatalog": "Catalogue des fournisseurs LLM",
     "aiKillSwitch": "Coupe-circuit IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Orchestration de la flotte",
-    "aiAssistant": "Assistant IA",
     "software": "Logiciels",
     "softwareInventory": "Inventaire logiciel",
     "softwarePolicies": "Politiques logicielles",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Changements",
     "endpointMessages": "Messagerie",
     "securityDetectionRules": "Règles de détection",
-    "planAndFeatures": "Offre et fonctionnalités"
+    "planAndFeatures": "Offre et fonctionnalités",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Travailleurs",
+    "agents": "Agents",
+    "runs": "Exécutions",
+    "aiTasks": "Tâches IA",
+    "findings": "Constats",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Sources de connaissances",
+    "wispLockedServer": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -670,7 +674,7 @@
     },
     "apps": {
       "title": "Applications connectées",
-      "description": "Les assistants IA et autres clients MCP (Claude.ai, ChatGPT, Cursor, ...) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
+      "description": "Clients IA (Claude.ai, ChatGPT, Cursor, …) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
       "empty": "Aucune application connectée",
       "emptyDescription": "Lorsque vous autorisez un chat Claude.ai, ChatGPT, Cursor ou tout autre client MCP, il apparaîtra ici afin que vous puissiez le révoquer plus tard.",
       "authorized": "Autorisé",
@@ -680,7 +684,7 @@
       "revokeTitle": "Annuler {{app}} ?",
       "revokeDescription": "Toutes les autorisations et tous les jetons d’actualisation de ce client seront supprimés. Les jetons cesseront de fonctionner en moins de 10 minutes. Vous devrez accorder une nouvelle autorisation lors de la prochaine utilisation.",
       "onlyAppTitle": "C’est votre seule application autorisée.",
-      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un assistant IA puisse agir sur votre locataire.",
+      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un client IA puisse agir sur votre locataire.",
       "reasonPlaceholder": "Plus besoin, activité suspecte, ...",
       "revokeAction": "Révoquer l’accès"
     }
@@ -737,8 +741,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Ouvrir le menu de navigation",
-      "ai": "Assistant IA",
-      "aiTitle": "Assistant IA (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aide et documentation",
       "helpTitle": "Aide & Documentation (Cmd+Shift+H)",
       "theme": "Thème",
@@ -807,7 +811,11 @@
         "alertRules": "Règles d'alerte",
         "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
         "keyboardShortcuts": "Raccourcis clavier",
-        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte",
+        "askBreezeAi": "Demander à Breeze AI",
+        "askBreezeAiDescription": "Ouvrir le panneau latéral Breeze AI",
+        "wispHome": "Ouvrir Wisp",
+        "wispHomeDescription": "Accéder à votre accueil Wisp"
       },
       "numberHint": "{{mod}}1–9 pour ouvrir"
     },
@@ -875,7 +883,7 @@
       "help": "Ouvrir le panneau d'aide",
       "showThis": "Afficher cette carte",
       "orgSwitcher": "Ouvrir le sélecteur d'organisation",
-      "aiSidebar": "Afficher ou masquer la barre latérale IA",
+      "aiSidebar": "Afficher ou masquer Breeze AI",
       "close": "Fermer une boîte de dialogue ou un menu",
       "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ.",
       "create": "Créer",
@@ -1997,8 +2005,8 @@
         "errors": {
           "loadFailed": "Impossible de charger les statistiques de flotte"
         },
-        "title": "Orchestration de la flotte",
-        "description": "Gérez les politiques, les déploiements, les correctifs et les automatisations à travers votre flotte",
+        "title": "Constats",
+        "description": "Tendances communes à plusieurs appareils repérées par les travailleurs : une seule action au lieu de plusieurs",
         "partialWarning": "Certaines données peuvent être incomplètes. Échec du chargement : {{endpoints}}",
         "cards": {
           "policies": "Politiques",
@@ -2012,7 +2020,7 @@
           "reports": "Rapports"
         },
         "aiFleetActions": "Actions de flotte IA",
-        "aiFleetActionsHint": "Cliquez pour demander à l’assistant IA",
+        "aiFleetActionsHint": "Cliquez pour demander à Breeze AI",
         "quickActions": {
           "checkCompliance": "Vérifier la conformité",
           "activeDeployments": "Déploiements actifs",
@@ -2399,8 +2407,8 @@
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {
-            "title": "Aide alimentée par l’IA",
-            "description": "Posez des questions sur votre flotte, dépannez les problèmes ou générez des rapports. Appuyez sur Cmd+Maj+A à tout moment."
+            "title": "Breeze AI",
+            "description": "Posez des questions sur votre flotte, dépannez les problèmes ou générez des rapports. Appuyez sur ⌘⇧A à tout moment."
           }
         },
         "skipTour": "Ignorer la visite",
@@ -2551,7 +2559,7 @@
           "parameters": "Paramètres"
         },
         "accept": "Accepter",
-        "reject": "Rejeter",
+        "reject": "Refuser",
         "execute": "Exécuter",
         "requestApprovalTitle": "Demander l’approbation du PAM avant exécution",
         "requesting": "Demande...",

@@ -44,7 +44,7 @@ const baseState = {
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
-  // #9840 W3: the Open in AI Assistant control reads both.
+  // #9840 W3: the Open in Breeze AI control reads both.
   topologySiteId: null, wisp: null,
 };
 
@@ -176,8 +176,9 @@ describe('AiChatSidebar keyboard shortcut (#9613)', () => {
 });
 
 // Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
-// suites cover them; this pins where the sidebar mounts them.
-vi.mock('./WispToggle', () => ({ default: () => <button data-testid="wisp-toggle-stub" /> }));
+// suites cover them; this pins where the sidebar mounts them. W05 (#10136)
+// removed the "Turn on Wisp" toggle: the grant decides the voice
+// (AiChatSidebar.wispHome.test.tsx covers the lookup).
 vi.mock('./WispThreadHeader', () => ({
   default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
     <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
@@ -191,18 +192,13 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
   };
 
-  it('renders WispToggle in the header when wisp is null', () => {
+  it('without Wisp mode the header says Breeze AI and offers no Wisp toggle', () => {
     vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
     render(<AiChatSidebar />);
-    expect(screen.getByTestId('wisp-toggle-stub')).toBeInTheDocument();
     expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
     expect(screen.getByText('Breeze AI')).toBeInTheDocument();
-  });
-
-  it('hides WispToggle while the history panel is open', () => {
-    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null, showHistory: true });
-    render(<AiChatSidebar />);
-    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+    expect(screen.queryByTestId('wisp-toggle')).toBeNull();
+    expect(screen.queryByText('Turn on Wisp')).toBeNull();
   });
 
   it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
@@ -210,7 +206,6 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     render(<AiChatSidebar />);
     expect(screen.getByText('Wisp')).toBeInTheDocument();
     expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
-    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
   });
 
   it('shows the thread attachments behind a disclosure', () => {
@@ -222,5 +217,35 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     fireEvent.click(toggle);
     expect(screen.getByTestId('wisp-attachments-stub')).toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+
+// #9840 W5: the E2E (e2e-tests/tests/ai-move-conversation.spec.ts) drives the
+// header by data-testid only. Each id must sit on the control it names.
+describe('AiChatSidebar header test ids (#9840 W5)', () => {
+  it('History, New and Close carry their ids and their own handlers', () => {
+    const toggleHistory = vi.fn();
+    const close = vi.fn();
+    const closeSession = vi.fn(async () => undefined);
+    vi.mocked(useAiStore).mockReturnValue({
+      ...baseState, isOpen: true, sessionId: 's-1', toggleHistory, close, closeSession,
+    });
+    render(<AiChatSidebar />);
+    fireEvent.click(screen.getByTestId('ai-chat-history-toggle'));
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('ai-chat-close'));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('New is absent without a bound session; History and Close are always there', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-history-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-new-conversation')).toBeNull();
   });
 });

@@ -79,6 +79,10 @@
         "categoryLabel": "Catégorie",
         "categoryUnresolved": "Suggéré — nom non disponible dans cette vue"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Mémoire des correctifs",
+      "fleetDesignReport": "Conception de flotte"
     }
   },
   "aiDataPolicy": {
@@ -285,7 +289,7 @@
     "subtitle": "Connectez des fournisseurs, choisissez les modèles disponibles et définissez le modèle par défaut de chaque fonctionnalité d'IA.",
     "forbidden": "Vous n'avez pas l'autorisation de gérer les fournisseurs et modèles d'IA.",
     "loadFailed": "Impossible de charger les fournisseurs et modèles d'IA.",
-    "workspaceNote": "L'enrichissement de contenu Workspace utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
+    "workspaceNote": "L'indexation des connaissances utilise votre fournisseur d'IA configuré et apparaît dans votre utilisation de l'IA.",
     "connections": {
       "title": "Connexions",
       "subtitle": "Où vos requêtes d'IA sont envoyées et qui les paie.",
@@ -1096,7 +1100,7 @@
       },
       "aiApprovals": {
         "label": "Délai d'approbation IA",
-        "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
+        "description": "Durée d'attente de Breeze AI pour l'approbation d'une action contrôlée"
       },
       "callerVerification": {
         "label": "Vérification de l’appelant",
@@ -1496,7 +1500,8 @@
       "approval_snapshot": "Chiffres de l’approbation",
       "approval_expires": "Date limite d’approbation",
       "approval_status": "Statut de l’approbation",
-      "merged_into_number": "Numéro du ticket de destination"
+      "merged_into_number": "Numéro du ticket de destination",
+      "agreement_name": "Nom de l’accord"
     },
     "billingPayments": "Facturation et paiements",
     "supportPortal": "Assistance et portail",
@@ -2401,7 +2406,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilisation de l’IA",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de Breeze AI et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
     "enabled": "Activé",
@@ -2455,7 +2460,7 @@
     "creditsRemaining": "Crédits IA Breeze restants",
     "defaultValue": "Par défaut ({{value}})",
     "viewPartnerWideBudgets": "Budgets IA du partenaire",
-    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de Breeze AI",
     "effectiveBudget": "Budget en vigueur",
     "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
     "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
@@ -2564,7 +2569,9 @@
       "patch": "Passe en revue les correctifs manquants et propose ceux à installer.",
       "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes.",
       "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
-      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien."
+      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+      "researchLink": "Ouvrir la mémoire des correctifs",
+      "designerLink": "Ouvrir la conception de flotte"
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -3049,6 +3056,8 @@
           "cost": "Coût",
           "duration": "Durée",
           "trigger": "Déclencheur",
+          "requestedBy": "Demandé par",
+          "wispFor": "Wisp pour {{name}}",
           "queuedAt": "En file d'attente",
           "startedAt": "Démarré",
           "finishedAt": "Terminé",
@@ -3134,7 +3143,7 @@
         },
         "anomalyLink": "Anomalies d’appareils ouverts",
         "budget": {
-          "title": "Budget d'exposition",
+          "title": "Budget d’actions",
           "caption": "Exposition enregistrée — {{hours}} dernières heures",
           "devices": "{{count}} sur {{allowance}} appareils",
           "decisionsToday": "{{count}} sur {{max}} décisions de politique aujourd'hui",
@@ -3362,7 +3371,7 @@
       "readOnlyNote": "L’exécution préautorisée est désactivée sur ce déploiement ; ces chiffres sont fournis à titre indicatif.",
       "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
       "thresholdPerOrgNote": "Chaque organisation résout son propre seuil d’habilitation : les exécutions vérifiées sont donc affichées ici sans cible. Choisissez une seule organisation dans le sélecteur d’organisations pour voir sa cible.",
-      "approvalsLink": "Suivre cette demande dans la boîte des approbations",
+      "approvalsLink": "Suivre cette demande dans Approbations",
       "ceilingHint": "Les clés au niveau du partenaire sont un plafond, pas une autorisation. L’agent de chaque organisation doit recevoir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
       "grantOnlyHint": "Les clés préautorisées d’un agent d’organisation ne sont accordées que via le panneau d’habilitation progressive par un second approbateur, et elles y sont également révoquées.",
       "promote": "Promouvoir",
@@ -3961,10 +3970,10 @@
       "runsPerHourCount_other": "{{count}} exécutions par heure",
       "minuteCount_one": "{{count}} minute",
       "minuteCount_other": "{{count}} minutes",
-      "approvers_one": "{{roles}} est sollicité, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
-      "approvers_other": "{{roles}} sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
-      "approversCount_one": "{{count}} rôle est sollicité, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
-      "approversCount_other": "{{count}} rôles sont sollicités, par boîte de réception, messagerie et notification push mobile. La première décision l'emporte.",
+      "approvers_one": "{{roles}} est sollicité, par Approbations, messagerie et notification push mobile. La première décision l'emporte.",
+      "approvers_other": "{{roles}} sont sollicités, par Approbations, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversCount_one": "{{count}} rôle est sollicité, par Approbations, messagerie et notification push mobile. La première décision l'emporte.",
+      "approversCount_other": "{{count}} rôles sont sollicités, par Approbations, messagerie et notification push mobile. La première décision l'emporte.",
       "scriptGateNote": "{{list}} ne s'exécutera sans intervention qu'une fois un script autorisé pour cet agent ; d'ici là, une demande d'approbation est déclenchée.",
       "scriptsAuthorized_one": "{{count}} script est autorisé à s'exécuter sans intervention.",
       "scriptsAuthorized_other": "{{count}} scripts sont autorisés à s'exécuter sans intervention."
@@ -5384,7 +5393,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Budget IA",
-    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
   "orgSettingsPage": {
@@ -5444,7 +5453,7 @@
       "ticketing": "Ticketterie",
       "ticketingDescription": "SLA et les dérogations de facturation",
       "ai": "IA",
-      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
+      "aiDescription": "Budget de Breeze AI, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -6726,7 +6735,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Rédaction de scripts",
-    "subtitle": "Permettez à l'assistant et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
+    "subtitle": "Permettez à Breeze AI et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
     "partnerCard": {
       "title": "Plafond du partenaire",
       "description": "Le paramètre le plus large que toute organisation de ce partenaire peut utiliser. Chaque organisation ne peut que le restreindre.",
@@ -6894,13 +6903,13 @@
     "timeoutLabel": "Délai d'approbation interactive",
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
-    "description": "Durée pendant laquelle un tour de chat IA en cours attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner.",
+    "description": "Durée pendant laquelle un tour de Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
     "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
     "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
   },
   "orgAiApprovalTimeout": {
     "title": "Délai d'approbation IA",
-    "description": "Durée pendant laquelle un chat IA attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner. Les organisations peuvent remplacer ici la valeur par défaut du partenaire ; la valeur de l'organisation prévaut si elle est définie.",
+    "description": "Durée pendant laquelle Breeze AI attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner. Les organisations peuvent remplacer ici la valeur par défaut du partenaire ; la valeur de l'organisation prévaut si elle est définie.",
     "fieldLabel": "Délai d'approbation interactive",
     "inherit": "Hériter",
     "inheritLabel": "Hériter ({{minutes}} minutes, {{source}})",

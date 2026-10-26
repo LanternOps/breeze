@@ -5,6 +5,8 @@ import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
+  notificationChannels, ticketForms, ticketResponseTemplates,
+  ticketChecklistTemplates, ticketChecklistTemplateItems,
 } from '../../db/schema';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
 import { yaraRuleSets } from '../../db/schema/yara';
@@ -299,6 +301,57 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     }
   },
 
+  // W06 (#6776) hard deletes. The approver signs off on deleting a specific
+  // row by its CONTENT, so pin the content fields (not just updated_at):
+  // an edit between approval and release changes the digest and the release
+  // fails closed instead of destroying a different template than was approved.
+  'manage_ticket_forms:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database.select().from(ticketForms).where(eq(ticketForms.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, description: row.description, categoryId: row.categoryId,
+      fields: row.fields, titleTemplate: row.titleTemplate, descriptionIntro: row.descriptionIntro,
+      defaultPriority: row.defaultPriority, defaultTags: row.defaultTags, showInPortal: row.showInPortal,
+      isActive: row.isActive, version: row.version, updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  'manage_ticket_response_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketResponseTemplates).where(eq(ticketResponseTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      name: row.name, body: row.body, category: row.category, isActive: row.isActive,
+      updatedAt: row.updatedAt.toISOString(),
+    }));
+  },
+
+  // Items are separate rows (item edits do not always bump the template's
+  // updated_at), so they are hashed explicitly, ordered for stability.
+  'manage_ticket_checklist_templates:delete': async (args, database) => {
+    const id = typeof args.id === 'string' ? args.id : null;
+    if (!id) return MISSING_ARG;
+    const [row] = await database
+      .select().from(ticketChecklistTemplates).where(eq(ticketChecklistTemplates.id, id)).limit(1);
+    if (!row) return TARGET_ABSENT;
+    const items = await database
+      .select({
+        id: ticketChecklistTemplateItems.id, label: ticketChecklistTemplateItems.label,
+        detail: ticketChecklistTemplateItems.detail, sortOrder: ticketChecklistTemplateItems.sortOrder,
+      })
+      .from(ticketChecklistTemplateItems)
+      .where(eq(ticketChecklistTemplateItems.templateId, id))
+      .orderBy(ticketChecklistTemplateItems.sortOrder, ticketChecklistTemplateItems.id);
+    return material(JSON.stringify({
+      name: row.name, description: row.description, instructions: row.instructions,
+      isActive: row.isActive, updatedAt: row.updatedAt.toISOString(), items,
+    }));
+  },
+
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
   // deterministic snapshot of its line items — a header-only updated_at
   // covers header edits, but line edits (add/remove/reprice) don't always
@@ -557,6 +610,31 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     if (!ticket) return TARGET_ABSENT;
     return material(JSON.stringify({ orgId: ticket.orgId, status: ticket.status }));
+  },
+
+  // manage_notification_channels:delete (full-control W02, #6756; four_eyes
+  // per QV3) — pins the channel's IDENTITY (name, type, org/partner scope),
+  // deliberately NOT updated_at: a `test` run or a delivery-status write
+  // touches the row without changing which channel the approvers agreed to
+  // destroy. The destination lives in notification_channel_configs and is
+  // destroyed with the channel, so a repointed destination does not change
+  // what the delete does. A rename or re-scope does: the approvers signed
+  // off on "delete <name>", and that name now identifies something else.
+  'manage_notification_channels:delete': async (args, database) => {
+    const channelId = typeof args.channelId === 'string' ? args.channelId : null;
+    if (!channelId) return MISSING_ARG;
+    const [channel] = await database
+      .select({
+        name: notificationChannels.name,
+        type: notificationChannels.type,
+        orgId: notificationChannels.orgId,
+        partnerId: notificationChannels.partnerId,
+      })
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, channelId))
+      .limit(1);
+    if (!channel) return TARGET_ABSENT;
+    return material(JSON.stringify(channel));
   },
 
   // execute_dr_plan — structurally the same TOCTOU shape as run_script: the

@@ -34,6 +34,8 @@ import {
   parseToolLabel,
   type ClaimedTierEntry,
 } from './aiGuardrailsTierParity.shared';
+import { toolActionEnum } from './aiToolActions';
+import './aiTools'; // populates the registry toolActionEnum reads
 
 // apps/api/src/services -> repo root is 4 levels up.
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -152,7 +154,69 @@ const W01_DOCUMENTED_TOOLS = [
   'get_user_risk_detail',
 ];
 
+/**
+ * Spec 2026-09-23 W02 (#6756): the seven PSA/billing write tools reach chat
+ * and agents, so every action-enum member must carry a documented tier (and
+ * test_webhook, which has no actions, its bare row). Customers read this page
+ * to learn what the AI may do without approval.
+ */
+const W02_DOCUMENTED_TOOLS = [
+  'manage_tickets', 'manage_quotes', 'manage_billing_catalog', 'manage_saved_filters',
+  'manage_tags', 'manage_notification_channels', 'test_webhook',
+] as const;
+
+/**
+ * Spec 2026-09-23 W04 (#6758): the 19 security / incident / device-operation
+ * write tools reach chat and agents. Every tool must appear in a
+ * `| Tool | Tier | Description |` row and every action-enum member must carry a
+ * documented tier, so a customer can read what needs approval.
+ */
+const W04_DOCUMENTED = [
+  'execute_containment', 'create_incident', 'collect_evidence', 'request_elevation',
+  'revoke_elevation', 'create_remote_session', 'manage_processes', 'manage_scheduled_tasks',
+  'registry_operations', 'trigger_agent_restart', 'trigger_agent_upgrade', 'manage_software_policy',
+  'manage_browser_policy', 'manage_peripheral_policy', 'remediate_sensitive_data',
+  'remediate_software_violation', 'assign_security_training', 'configure_network_baseline',
+  'acknowledge_network_device',
+] as const;
+
+/**
+ * Spec 2026-09-23 W03 (#6757): the 19 backup, DR and virtualization write
+ * tools reach chat and agents — every action-enum member (or, for a
+ * single-purpose tool, a bare row) carries a documented tier.
+ */
+const W03_DOCUMENTED_TOOLS = [
+  'trigger_backup', 'trigger_hyperv_backup', 'trigger_mssql_backup', 'trigger_vault_sync', 'trigger_c2c_sync',
+  'verify_mssql_backup', 'restore_snapshot', 'restore_as_vm', 'restore_hyperv_vm', 'restore_mssql_database',
+  'restore_c2c_items', 'instant_boot_vm', 'manage_hyperv_vm', 'manage_hyperv_checkpoints', 'manage_dr_plan',
+  'execute_dr_plan', 'manage_backup_profiles', 'configure_backup_sla', 'configure_vault',
+] as const;
+
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(W04_DOCUMENTED)('W04 (#6758): %s is documented in a tool table with every action', (tool) => {
+    const rows = claims.filter((c) => c.tool === tool);
+    expect(rows.length, `${tool} needs a \`| Tool | Tier | Description |\` row in ${DOC_REL}`).toBeGreaterThan(0);
+    const actions = toolActionEnum(tool) ?? [];
+    if (actions.length === 0) {
+      expect(rows.some((c) => c.actions.length === 0), `${tool} needs a bare row in ${DOC_REL}`).toBe(true);
+      return;
+    }
+    const documented = new Set(rows.flatMap((c) => c.actions));
+    expect(actions.filter((a) => !documented.has(a)), `Undocumented ${tool} actions in ${DOC_REL}`).toEqual([]);
+  });
+
+  it.each([...W02_DOCUMENTED_TOOLS, ...W03_DOCUMENTED_TOOLS])('W02/W03 (#6756, #6757): every %s action has a documented tier row', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    const rows = claims.filter((c) => c.tool === tool);
+    if (actions.length === 0) {
+      expect(rows.some((c) => c.actions.length === 0), `${tool} needs a bare row in ${DOC_REL}`).toBe(true);
+      return;
+    }
+    const documented = new Set(rows.flatMap((c) => c.actions));
+    const missing = actions.filter((a) => !documented.has(a));
+    expect(missing, `Undocumented ${tool} actions in ${DOC_REL}`).toEqual([]);
+  });
+
   it.each(['get', 'create', 'update', 'delete'])('documents manage_monitors:%s at Tier 1', (action) => {
     const entries = claims.filter((entry) => entry.tool === 'manage_monitors' && entry.actions.includes(action));
     expect(entries.map((entry) => entry.claimedTier)).toEqual([1]);

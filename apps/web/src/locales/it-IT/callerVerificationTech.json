@@ -207,7 +207,7 @@
     "title": "Verifica del chiamante richiesta",
     "tier": "Questa azione richiede una verifica di livello {{tier}}.",
     "verify": "Verifica chiamante",
-    "verifiedRetry": "Chiamante verificato. Chiedi all’assistente di riprovare.",
+    "verifiedRetry": "Chiamante verificato. Chiedi a Breeze AI di riprovare.",
     "reasons": {
       "no_fresh_verification": "Il chiamante non è stato verificato di recente.",
       "grant_consumed": "L’ultima verifica è già stata utilizzata per un’altra azione.",

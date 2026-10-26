@@ -18,7 +18,7 @@ import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import {
-  TOOL_ACTION_INPUT_KEYS,
+  AGENT_HUMAN_ONLY_ACTIONS, TOOL_ACTION_INPUT_KEYS,
   checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
@@ -167,6 +167,24 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_tickets: 'tickets',
   send_endpoint_message: 'tickets',
   manage_ticket_checklist: 'tickets',
+  // Full-control W06 (#6776): PSA configuration + ticket ops. Reachable in the catalog; the
+  // classes (aiGuardrails) make every write a proposal, and each handler refuses an ai_agent
+  // principal for the write actions (users-FK actors; an agent must not reconfigure its queue).
+  manage_ticket_config: 'tickets',
+  manage_ticket_checklist_templates: 'tickets',
+  manage_ticket_inbox: 'tickets',
+  manage_ticket_attachments: 'tickets',
+  manage_ticket_forms: 'tickets',
+  manage_ticket_response_templates: 'tickets',
+  manage_time_suggestions: 'tickets',
+  // Full-control W07 (#6777): alert correlation + signal triage. The reads are agent-reachable;
+  // manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS (group writes span devices, QW3): it keeps a
+  // capability row (the catalog maps every registered tool) but is never offered. Anomaly dismiss/resolve
+  // and the reliability label are proposals released as the approver (USER_OWNED_RELEASE_ACTIONS).
+  get_alert_correlations: 'alerts_monitoring',
+  manage_alert_correlations: 'alerts_monitoring',
+  manage_device_anomalies: 'alerts_monitoring',
+  reliability_feedback: 'automations_reports',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
   get_timesheet: 'tickets',
@@ -377,7 +395,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   list_deliverable_templates: 'business',
   manage_deliverables: 'business',
   manage_key_dates: 'business',
-  manage_catalog: 'business',
+  manage_billing_catalog: 'business',
   search_catalog: 'business',
   lookup_distributor_product: 'business',
   get_catalog_item: 'business',
@@ -409,6 +427,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   snooze_concern: 'tenancy',
   resolve_concern: 'tenancy',
   create_watch: 'tenancy',
+  // Wisp W08 thread links (domain 'ai'), as W03/W05a chose.
+  link_entity: 'tenancy',
+  list_links: 'tenancy',
   // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
   // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
   // (raised only by the coordinator); mapped for completeness.
@@ -556,7 +577,11 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
   if (memo) return memo;
   const tools: AgentToolCatalogToolDto[] = listAgentReachableTools().map((name) => {
     const actions = toolActionEnum(name);
-    const operations = actions ? actions.sort().map((a) => resolveOperation(name, a)) : [resolveOperation(name, null)];
+    // W02-D2 (#6756): a human-only ACTION is never offered as a picker
+    // operation, so it can never be written to an agent's allowlist.
+    const operations = actions
+      ? actions.sort().filter((a) => !AGENT_HUMAN_ONLY_ACTIONS.has(`${name}:${a}`)).map((a) => resolveOperation(name, a))
+      : [resolveOperation(name, null)];
     const baseTier = aiTools.get(name)!.tier;
     // Same reachability invariant as resolveOperation's tier check above —
     // throw rather than silently clamp a tier-4 tool into a false tier 3.

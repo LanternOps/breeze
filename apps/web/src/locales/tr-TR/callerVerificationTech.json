@@ -207,7 +207,7 @@
     "title": "Arayan doğrulaması gerekli",
     "tier": "Bu işlem düzey {{tier}} doğrulaması gerektirir.",
     "verify": "Arayanı doğrula",
-    "verifiedRetry": "Arayan doğrulandı. Asistandan yeniden denemesini isteyin.",
+    "verifiedRetry": "Arayan doğrulandı. Breeze AI'dan yeniden denemesini isteyin.",
     "reasons": {
       "no_fresh_verification": "Arayan yakın zamanda doğrulanmadı.",
       "grant_consumed": "Son doğrulama zaten başka bir işlem için kullanıldı.",

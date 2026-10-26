@@ -126,6 +126,15 @@ describe('getRouteScope', () => {
     expect(isGlobalScopeRoute('/ai/wisp/thread/abc')).toBe(false);
   });
 
+  it('classifies the Wisp home (W08 #9921) as partner-settings like the thread page, and the Breeze AI chat (/ai/chat) as org-or-all', () => {
+    expect(getRouteScope('/wisp')).toBe('partner-settings');
+    expect(isGlobalScopeRoute('/wisp')).toBe(false);
+    expect(getRouteScope('/ai/chat')).toBe('org-or-all');
+    // /wisp/chat and /workspace only redirect to /ai/chat now; keep classifying the redirect hop.
+    expect(getRouteScope('/wisp/chat')).toBe('org-or-all');
+    expect(getRouteScope('/workspace')).toBe('org-or-all');
+  });
+
   it('returns null for routes outside the registry', () => {
     expect(getRouteScope('/definitely-not-a-page')).toBeNull();
   });

@@ -39,6 +39,10 @@ describe('invariant 1: env coverage ratchet', () => {
     expect(BUILTINS.length).toBeGreaterThan(0);
     for (const key of ENV_SCHEMA_KEYS) expect(scanned.has(key), key).toBe(true);
     for (const builtin of BUILTINS) expect(scanned.has(builtin.enableEnvVar), builtin.enableEnvVar).toBe(true);
+    for (const builtin of BUILTINS) {
+      for (const alias of builtin.enableEnvAliases ?? []) expect(scanned.has(alias), alias).toBe(true);
+    }
+    expect(scanned.has('BREEZE_WISP_CONNECTOR_ENABLED')).toBe(true); // builtin enableEnvAliases
   });
 
   it('every env name the API reads is in the registry or INTERNAL_ENV_VARS', () => {

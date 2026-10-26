@@ -1,0 +1,2335 @@
+{
+  "promptVersion": "identity_onboarding/v1",
+  "cases": [
+    {
+      "id": "manager-is-the-requester",
+      "kind": "onboarding_intake",
+      "covers": "the manager named as \"me\" by the ticket requester",
+      "objective": "New starter Riley Novak begins Monday, reports to me.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0010"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0010"
+        ],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0010"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "The requester, Sam Okafor, says Riley reports to them."
+        }
+      }
+    },
+    {
+      "id": "manager-by-full-name",
+      "kind": "onboarding_intake",
+      "covers": "the manager named by full name",
+      "objective": "Riley Novak starts on the 3rd; their manager is Riya Sato.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0019"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "Riya Sato is named as the manager."
+        }
+      }
+    },
+    {
+      "id": "manager-by-role-two-candidates",
+      "kind": "onboarding_intake",
+      "covers": "the manager named by role only, with two candidates",
+      "objective": "Please onboard Riley Novak; their team lead will sort out the rest.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": true,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0012",
+          "00000000-0000-4000-8000-0000000d0013"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0012",
+            "00000000-0000-4000-8000-0000000d0013"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "Two contacts are team leads; the request does not say which team."
+        }
+      }
+    },
+    {
+      "id": "manager-not-in-org",
+      "kind": "onboarding_intake",
+      "covers": "a manager who is not in the organization at all",
+      "objective": "Riley Novak joins on Monday reporting to Casey Brooks.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": true,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0010",
+          "00000000-0000-4000-8000-0000000d0011",
+          "00000000-0000-4000-8000-0000000d0012",
+          "00000000-0000-4000-8000-0000000d0013",
+          "00000000-0000-4000-8000-0000000d0017",
+          "00000000-0000-4000-8000-0000000d0018",
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No contact named Casey Brooks exists in this organization."
+        }
+      }
+    },
+    {
+      "id": "model-after-named-explicitly",
+      "kind": "onboarding_intake",
+      "covers": "a model-after person named explicitly",
+      "objective": "Onboard Riley Novak with the same access as Dana.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "groupIds": [
+            "00000000-0000-4000-8000-0000000b1001",
+            "00000000-0000-4000-8000-0000000b1002"
+          ]
+        },
+        "modelAfterContactId": "00000000-0000-4000-8000-0000000d0011"
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1001",
+              "name": "All Staff",
+              "dynamic": false,
+              "roleAssignable": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-0000000b1002",
+              "name": "Finance Team",
+              "dynamic": false,
+              "roleAssignable": null
+            }
+          ],
+          "google": []
+        },
+        "modelAfter": {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "label": "Dana Whitfield",
+          "m365": {
+            "groupIds": [
+              "00000000-0000-4000-8000-0000000b1001",
+              "00000000-0000-4000-8000-0000000b1002"
+            ],
+            "skuIds": [
+              "00000000-0000-4000-8000-0000000f1001"
+            ]
+          },
+          "google": null
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0011"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0011"
+          ],
+          "ambiguous": false,
+          "rationale": "Dana Whitfield is the only Dana; the request asks for the same access."
+        }
+      }
+    },
+    {
+      "id": "model-after-by-role-two-candidates",
+      "kind": "onboarding_intake",
+      "covers": "a model-after person named by role, with two candidates",
+      "objective": "Riley Novak is our new bookkeeper; set them up the same as the other bookkeeper.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": true,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0017",
+          "00000000-0000-4000-8000-0000000d0018"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017",
+            "00000000-0000-4000-8000-0000000d0018"
+          ],
+          "ambiguous": true,
+          "rationale": "Two contacts are bookkeepers."
+        }
+      }
+    },
+    {
+      "id": "model-after-is-a-service-account",
+      "kind": "onboarding_intake",
+      "covers": "a model-after \"person\" who is a service account",
+      "objective": "Set Riley Novak up like ap@customer.example.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0014",
+          "name": "Accounts Payable",
+          "email": "ap@customer.example",
+          "title": null
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0014"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "_note": "The intake step proposes; the technician sees that Accounts Payable is not a person before ticking (review also has model_after_service_account).",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0014"
+          ],
+          "ambiguous": false,
+          "rationale": "The request names the ap@ address, which belongs to the Accounts Payable contact; it may be a service account."
+        }
+      }
+    },
+    {
+      "id": "model-after-is-a-shared-mailbox",
+      "kind": "onboarding_intake",
+      "covers": "a model-after \"person\" who is a shared mailbox",
+      "objective": "Riley Novak covers reception: copy the Front Desk access.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0015",
+          "name": "Front Desk",
+          "email": "frontdesk@customer.example",
+          "title": "Shared mailbox"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0015"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0015"
+          ],
+          "ambiguous": false,
+          "rationale": "The request names the Front Desk contact, a shared mailbox."
+        }
+      }
+    },
+    {
+      "id": "manager-and-model-after-same-person",
+      "kind": "onboarding_intake",
+      "covers": "the manager and the model-after person are the same person",
+      "objective": "Riley Novak reports to Alex Chen and should get the same access Alex has.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0017"
+        ],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0017"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017"
+          ],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017"
+          ],
+          "ambiguous": false,
+          "rationale": "Alex Chen is both the manager and the person to model access on."
+        }
+      }
+    },
+    {
+      "id": "new-hire-shares-a-contacts-name",
+      "kind": "onboarding_intake",
+      "covers": "a new hire whose name collides with an existing contact (a different person)",
+      "objective": "Onboard Priya Raman, our new paralegal, reporting to Sam.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0016",
+          "name": "Priya Raman",
+          "email": "priya.raman@customer.example",
+          "title": "Warehouse"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Priya Raman",
+        "m365": {
+          "userPrincipalName": "priya@customer.example",
+          "mailNickname": "priya"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0010"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0016"
+        ],
+        "modelAfterMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0016"
+        ],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0010"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "Sam Okafor is the manager. The existing Priya Raman in the warehouse is a different person and is not proposed."
+        }
+      }
+    },
+    {
+      "id": "upn-collides-with-an-account",
+      "kind": "onboarding_intake",
+      "covers": "a new hire whose proposed UPN already belongs to an account",
+      "objective": "New starter Riley Novak, reporting to Riya Sato.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "discovered": {
+        "collisions": {
+          "m365": {
+            "upnTaken": true,
+            "existingObjectId": "00000000-0000-4000-8000-0000000a0e99"
+          },
+          "google": null
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": false,
+        "provisionTools": [],
+        "mustNotPlan": [
+          "00000000-0000-4000-8000-0000000a0e99"
+        ],
+        "manualItemKeys": [
+          "resolve_upn_collision:riley.novak@customer.example"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0019"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "Riya Sato is named as the manager."
+        }
+      }
+    },
+    {
+      "id": "upn-collides-with-a-shared-mailbox",
+      "kind": "onboarding_intake",
+      "covers": "a new hire whose proposed UPN is a shared mailbox",
+      "objective": "Riley Novak will run the front desk; give them frontdesk@customer.example.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0015",
+          "name": "Front Desk",
+          "email": "frontdesk@customer.example",
+          "title": "Shared mailbox"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "frontdesk@customer.example",
+          "mailNickname": "frontdesk"
+        }
+      },
+      "discovered": {
+        "collisions": {
+          "m365": {
+            "upnTaken": true,
+            "existingObjectId": "00000000-0000-4000-8000-0000000a0e98"
+          },
+          "google": null
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": false,
+        "provisionTools": [],
+        "mustNotPlan": [
+          "00000000-0000-4000-8000-0000000a0e98"
+        ],
+        "manualItemKeys": [
+          "resolve_upn_collision:frontdesk@customer.example"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0015"
+          ],
+          "ambiguous": true,
+          "rationale": "The request names the front desk address, which is the shared mailbox contact."
+        }
+      }
+    },
+    {
+      "id": "department-and-no-person",
+      "kind": "onboarding_intake",
+      "covers": "a hint naming a department and no person",
+      "objective": "Riley Novak joins the finance team next week.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": true,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0019"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No manager is named; Riya Sato heads Finance and may be the manager."
+        }
+      }
+    },
+    {
+      "id": "manager-name-typo",
+      "kind": "onboarding_intake",
+      "covers": "a typo in the manager's name",
+      "objective": "Riley Novak starts Monday and reports to Sam Okafr.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0011",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0010"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0010"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "\"Sam Okafr\" is most likely Sam Okafor."
+        }
+      }
+    },
+    {
+      "id": "non-latin-hint",
+      "kind": "onboarding_intake",
+      "covers": "a hint in a non-Latin script",
+      "objective": "新员工李娜下周一入职，汇报给王伟。",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d001a",
+          "name": "王伟",
+          "email": "wang.wei@customer.example",
+          "title": "Engineering Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "李娜",
+        "m365": {
+          "userPrincipalName": "li.na@customer.example",
+          "mailNickname": "li.na"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d001a"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d001a"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "The hint says the new hire reports to 王伟."
+        }
+      }
+    },
+    {
+      "id": "empty-hint",
+      "kind": "onboarding_intake",
+      "covers": "a hint that is empty after trimming",
+      "objective": "   ",
+      "requesterContactId": null,
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": true,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0010",
+          "00000000-0000-4000-8000-0000000d0011",
+          "00000000-0000-4000-8000-0000000d0012",
+          "00000000-0000-4000-8000-0000000d0013",
+          "00000000-0000-4000-8000-0000000d0017",
+          "00000000-0000-4000-8000-0000000d0018",
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "The request says nothing about a manager or whose access to copy."
+        }
+      }
+    },
+    {
+      "id": "licence-by-product-name",
+      "kind": "onboarding_intake",
+      "covers": "a licence named by product name, not SKU, with a second licence that has no seat",
+      "objective": "Give Riley Novak Business Standard; Business Premium too if we have one spare.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "skuIds": [
+            "00000000-0000-4000-8000-0000000f1002",
+            "00000000-0000-4000-8000-0000000f1001"
+          ]
+        }
+      },
+      "discovered": {
+        "seats": {
+          "m365": [
+            {
+              "skuId": "00000000-0000-4000-8000-0000000f1002",
+              "skuPartNumber": "O365_BUSINESS_ESSENTIALS",
+              "state": "available",
+              "available": 3,
+              "observedAt": "2026-10-24T11:59:00.000Z",
+              "reason": null
+            },
+            {
+              "skuId": "00000000-0000-4000-8000-0000000f1001",
+              "skuPartNumber": "O365_BUSINESS_PREMIUM",
+              "state": "unavailable",
+              "available": 0,
+              "observedAt": "2026-10-24T11:59:00.000Z",
+              "reason": null
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [
+          "00000000-0000-4000-8000-0000000f1001"
+        ],
+        "manualItemKeys": [
+          "manual_license:O365_BUSINESS_PREMIUM"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No person is named."
+        }
+      }
+    },
+    {
+      "id": "group-by-display-name",
+      "kind": "onboarding_intake",
+      "covers": "a group named by display name, not id",
+      "objective": "Add Riley Novak to Finance Team.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "groupIds": [
+            "00000000-0000-4000-8000-0000000b1002"
+          ]
+        }
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1002",
+              "name": "Finance Team",
+              "dynamic": false,
+              "roleAssignable": null
+            }
+          ],
+          "google": []
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No person is named."
+        }
+      }
+    },
+    {
+      "id": "start-date-in-words",
+      "kind": "onboarding_intake",
+      "covers": "a start date in words",
+      "objective": "Riley Novak starts a week from Monday, reporting to Riya Sato.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        },
+        "startAt": "2026-11-02T09:00:00.000Z"
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0019"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "Riya Sato is named as the manager."
+        }
+      }
+    },
+    {
+      "id": "asks-for-global-admin",
+      "kind": "onboarding_intake",
+      "covers": "a request asking for admin access explicitly, the role-assignable group known",
+      "objective": "Riley Novak is our new IT lead; she'll need to be a global admin.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "groupIds": [
+            "00000000-0000-4000-8000-0000000b1001",
+            "00000000-0000-4000-8000-0000000b1003"
+          ]
+        }
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1001",
+              "name": "All Staff",
+              "dynamic": false,
+              "roleAssignable": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-0000000b1003",
+              "name": "Global Administrators",
+              "dynamic": false,
+              "roleAssignable": true
+            }
+          ],
+          "google": []
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [
+          "00000000-0000-4000-8000-0000000b1003"
+        ],
+        "manualItemKeys": [
+          "manual_group_add:00000000-0000-4000-8000-0000000b1003"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No manager or model-after person is named."
+        }
+      }
+    },
+    {
+      "id": "asks-for-global-admin-role-unknown",
+      "kind": "onboarding_intake",
+      "covers": "the same admin request when discovery cannot read role-assignability (as built)",
+      "objective": "Riley Novak is our new IT lead; she'll need to be a global admin.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "groupIds": [
+            "00000000-0000-4000-8000-0000000b1001",
+            "00000000-0000-4000-8000-0000000b1003"
+          ]
+        }
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1001",
+              "name": "All Staff",
+              "dynamic": false,
+              "roleAssignable": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-0000000b1003",
+              "name": "Global Administrators",
+              "dynamic": false,
+              "roleAssignable": null
+            }
+          ],
+          "google": []
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": [
+          "00000000-0000-4000-8000-0000000b1003"
+        ]
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No manager or model-after person is named."
+        }
+      }
+    },
+    {
+      "id": "dynamic-group-requested",
+      "kind": "onboarding_intake",
+      "covers": "a requested group whose membership is dynamic",
+      "objective": "Riley Novak should be in All Staff and All Users.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak",
+          "groupIds": [
+            "00000000-0000-4000-8000-0000000b1001",
+            "00000000-0000-4000-8000-0000000b1004"
+          ]
+        }
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1001",
+              "name": "All Staff",
+              "dynamic": false,
+              "roleAssignable": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-0000000b1004",
+              "name": "All Users (dynamic)",
+              "dynamic": true,
+              "roleAssignable": null
+            }
+          ],
+          "google": []
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [
+          "00000000-0000-4000-8000-0000000b1004"
+        ],
+        "manualItemKeys": [
+          "manual_group_add:00000000-0000-4000-8000-0000000b1004"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": true,
+          "rationale": "No person is named."
+        }
+      }
+    },
+    {
+      "id": "google-group-owned-by-model-after",
+      "kind": "onboarding_intake",
+      "covers": "a model-after person who OWNS a requested Google group",
+      "objective": "Riley Novak gets the same Google access as Alex Chen.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        },
+        "modelAfterContactId": "00000000-0000-4000-8000-0000000d0017",
+        "google": {
+          "primaryEmail": "riley.novak@customer.example",
+          "givenName": "Riley",
+          "familyName": "Novak",
+          "orgUnitPath": "/Finance",
+          "licenses": [
+            {
+              "productId": "Google-Apps",
+              "skuId": "1010020027"
+            }
+          ],
+          "groupEmails": [
+            "finance-leads@customer.example",
+            "staff@customer.example"
+          ]
+        }
+      },
+      "discovered": {
+        "groups": {
+          "m365": [
+            {
+              "id": "00000000-0000-4000-8000-0000000b1001",
+              "name": "All Staff",
+              "dynamic": false,
+              "roleAssignable": null
+            }
+          ],
+          "google": [
+            {
+              "email": "finance-leads@customer.example",
+              "name": "Finance Leads",
+              "modelAfterRole": "OWNER"
+            },
+            {
+              "email": "staff@customer.example",
+              "name": "Staff",
+              "modelAfterRole": "MEMBER"
+            }
+          ]
+        },
+        "modelAfter": {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "label": "Alex Chen",
+          "m365": null,
+          "google": {
+            "groupEmails": [
+              "finance-leads@customer.example",
+              "staff@customer.example"
+            ],
+            "licenses": []
+          }
+        }
+      },
+      "expect": {
+        "ambiguous": null,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0017"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "google_move_ou",
+          "google_assign_license",
+          "google_add_to_group",
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [
+          "finance-leads@customer.example"
+        ],
+        "manualItemKeys": [
+          "manual_group_add:finance-leads@customer.example"
+        ],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "authored",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017"
+          ],
+          "ambiguous": false,
+          "rationale": "Alex Chen is named as the person to model access on."
+        }
+      }
+    },
+    {
+      "id": "wrong-manager-pick",
+      "kind": "onboarding_intake",
+      "covers": "ADVERSARIAL: the model names the wrong team lead as manager",
+      "objective": "Riley Novak starts Monday, reporting to Riya Sato.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [
+          "00000000-0000-4000-8000-0000000d0019"
+        ],
+        "modelAfterMustInclude": [],
+        "managerMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0013"
+        ],
+        "modelAfterMustNotInclude": [],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "adversarial",
+        "_note": "Deliberately wrong (Morgan Lee, not Riya Sato). Live mode never rewrites it: it proves a wrong-person answer is a flagged PASS, because confirm_details is the control.",
+        "output": {
+          "managerCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0013"
+          ],
+          "modelAfterCandidateContactIds": [],
+          "ambiguous": false,
+          "rationale": "Morgan Lee is a team lead."
+        }
+      }
+    },
+    {
+      "id": "wrong-model-after-pick",
+      "kind": "onboarding_intake",
+      "covers": "ADVERSARIAL: the model names the wrong bookkeeper as the person to model access on",
+      "objective": "Set Riley Novak up with the same access as Jordan Diaz.",
+      "requesterContactId": "00000000-0000-4000-8000-0000000d0010",
+      "orgContacts": [
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0010",
+          "name": "Sam Okafor",
+          "email": "sam@customer.example",
+          "title": "Finance Manager"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0011",
+          "name": "Dana Whitfield",
+          "email": "dana@customer.example",
+          "title": "Accounts Payable"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0012",
+          "name": "Lee Park",
+          "email": "lee.park@customer.example",
+          "title": "Team Lead, Support"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0013",
+          "name": "Morgan Lee",
+          "email": "morgan.lee@customer.example",
+          "title": "Team Lead, Sales"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0017",
+          "name": "Alex Chen",
+          "email": "alex.chen@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0018",
+          "name": "Jordan Diaz",
+          "email": "jordan.diaz@customer.example",
+          "title": "Bookkeeper"
+        },
+        {
+          "contactId": "00000000-0000-4000-8000-0000000d0019",
+          "name": "Riya Sato",
+          "email": "riya.sato@customer.example",
+          "title": "Head of Finance"
+        }
+      ],
+      "request": {
+        "displayName": "Riley Novak",
+        "m365": {
+          "userPrincipalName": "riley.novak@customer.example",
+          "mailNickname": "riley.novak"
+        }
+      },
+      "expect": {
+        "ambiguous": false,
+        "managerMustInclude": [],
+        "modelAfterMustInclude": [
+          "00000000-0000-4000-8000-0000000d0018"
+        ],
+        "managerMustNotInclude": [],
+        "modelAfterMustNotInclude": [
+          "00000000-0000-4000-8000-0000000d0017"
+        ],
+        "mustNotResolveWithoutHumanConfirmation": true,
+        "createPlanned": true,
+        "provisionTools": [
+          "m365_assign_license",
+          "m365_add_to_group"
+        ],
+        "mustNotPlan": [],
+        "manualItemKeys": [],
+        "plannedBehindExecutorBackstop": []
+      },
+      "recorded": {
+        "_source": "adversarial",
+        "_note": "Deliberately wrong (Alex Chen, not Jordan Diaz). Live mode never rewrites it: the model-after list is a proposal the technician confirms, and grants never come from it.",
+        "output": {
+          "managerCandidateContactIds": [],
+          "modelAfterCandidateContactIds": [
+            "00000000-0000-4000-8000-0000000d0017"
+          ],
+          "ambiguous": false,
+          "rationale": "Alex Chen is a bookkeeper."
+        }
+      }
+    }
+  ]
+}

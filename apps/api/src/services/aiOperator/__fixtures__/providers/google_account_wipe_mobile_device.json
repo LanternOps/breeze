@@ -1,0 +1,27 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API users.get, mobiledevices.list (query email:) and mobiledevices.action (action admin_account_wipe)",
+  "_notes": "Whether a device that received admin_account_wipe reports WIPING/WIPED is UNCONFIRMED (R1a follow-up). postSatisfied assumes it does; the lab run must record the real status (lab-run doc row). The tool is unclassified, hence non_idempotent: a satisfied pre-probe hands off instead of settling noop.",
+  "toolName": "google_account_wipe_mobile_device",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example" } },
+    "directory.mobiledevices.list": { "data": { "mobiledevices": [ { "resourceId": "md-res-1", "email": [ "dana@customer.example" ], "model": "Pixel 8", "status": "WIPING" } ] } }
+  },
+  "preUnsatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example" } },
+    "directory.mobiledevices.list": { "data": { "mobiledevices": [ { "resourceId": "md-res-1", "email": [ "dana@customer.example" ], "model": "Pixel 8", "status": "APPROVED" } ] } }
+  },
+  "writeOk": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example" } },
+    "directory.mobiledevices.list": { "data": { "mobiledevices": [ { "resourceId": "md-res-1", "email": [ "dana@customer.example" ], "model": "Pixel 8", "status": "APPROVED" } ] } },
+    "directory.mobiledevices.action": { "data": "" }
+  },
+  "postSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example" } },
+    "directory.mobiledevices.list": { "data": { "mobiledevices": [ { "resourceId": "md-res-1", "email": [ "dana@customer.example" ], "model": "Pixel 8", "status": "WIPING" } ] } }
+  },
+  "writeRefusal": {
+    "directory.users.get": { "error": { "code": 404, "message": "Resource Not Found: userKey" } }
+  }
+}

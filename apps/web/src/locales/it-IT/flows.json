@@ -1,10 +1,10 @@
 {
   "title": "Flussi",
   "subtitle": "Automazioni in più passaggi che collegano più strumenti in sequenza.",
-  "previewNotice": "In questa versione i flussi sono di sola lettura. Redigili nella chat IA; attivazione ed esecuzioni arriveranno in una versione successiva.",
+  "previewNotice": "In questa versione i flussi sono di sola lettura. Redigili in Breeze AI; attivazione ed esecuzioni arriveranno in una versione successiva.",
   "empty": {
     "title": "Nessun flusso per ora",
-    "body": "Chiedi all’assistente IA di redigere un flusso, poi rivedilo qui."
+    "body": "Chiedi a Breeze AI di redigere un flusso, poi rivedilo qui."
   },
   "list": {
     "name": "Nome",
@@ -33,7 +33,7 @@
     "inputs": "Input",
     "steps": "Passaggi",
     "version": "Versione {{version}}",
-    "createdInChat": "Creato nella chat IA"
+    "createdInChat": "Creato in Breeze AI"
   },
   "step": {
     "tool": "Strumento",

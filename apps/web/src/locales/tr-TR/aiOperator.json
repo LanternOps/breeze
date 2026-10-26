@@ -15,6 +15,8 @@
   "operatorTaskDetail": {
     "loading": "Görev yükleniyor...",
     "agent": "{{name}} tarafından işleniyor",
+    "requestedBy": "Talep eden",
+    "wispFor": "{{name}} için Wisp",
     "target": {
       "label": "Hedef",
       "none": "Hedef cihaz yok"
@@ -50,7 +52,7 @@
     },
     "nextAction": {
       "label": "Sonraki eylem",
-      "approveInInbox": "Gelen kutusunda onayla",
+      "approveInInbox": "Onaylar bölümünde onayla",
       "answerQuestion": "Bir soruyu yanıtla",
       "waitingForDevice": "Cihaz bekleniyor",
       "waitingForMaintenanceWindow": "Bakım penceresi bekleniyor",
@@ -112,29 +114,26 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Operator görevleri yükleniyor...",
-    "loadFailed": "Operator görevleri yüklenemedi.",
-    "empty": "Bu cihaz için Operator görevi yok.",
-    "emptyHint": "Yapay Zekâ Operatörü, bir uyarıyı ona devrettiğinizde cihazdaki sorunları inceler ve çözer. Bu cihaz için devredilen görevler burada görünür.",
-    "learnMore": "Yapay Zekâ Operatörü hakkında bilgi edinin"
+    "loading": "Yapay zekâ görevleri yükleniyor…",
+    "loadFailed": "Yapay zekâ görevleri yüklenemedi.",
+    "empty": "Bu cihaz için yapay zekâ görevi yok.",
+    "emptyHint": "Bir uyarıdan yapay zekâ görevi başlattığınızda yapay zekâ çalışanları cihazdaki sorunları inceler ve çözer. Bu cihazın yapay zekâ görevleri burada görünür.",
+    "learnMore": "Yapay zekâ görevleri hakkında bilgi edinin"
   },
   "delegate": {
-    "button": "Operatöre Devret",
-    "dialogTitle": "Operatöre Devret",
-    "dialogMessage": "Operatör bunu aşağıdaki iş akışını kullanarak inceleyecek ve çözmeye çalışacaktır.",
+    "button": "Yapay zekâ görevi başlat",
+    "dialogTitle": "Yapay zekâ görevi başlat",
+    "dialogMessage": "Yapay zekâ çalışanları bunu aşağıdaki tarifi kullanarak inceleyecek ve çözmeye çalışacaktır.",
     "orgLabel": "Organizasyon",
     "deviceLabel": "Cihaz",
     "serviceNameLabel": "Hizmet adı",
     "serviceNamePlaceholder": "ör. Yazdırma Kuyruğu",
-    "serviceNameError": "Bu görevi devretmek için hizmet adını girin.",
-    "workflowLabel": "İş akışı",
+    "serviceNameError": "Bu yapay zekâ görevini başlatmak için hizmet adını girin.",
+    "workflowLabel": "Tarif",
     "workflowName": "Hizmet kurtarma",
-    "confirmLabel": "Devret",
-    "queued": "Görev Operatöre devredildi.",
-    "failed": "Görev Operatöre devredilemedi."
-  },
-  "nav": {
-    "operator": "Operatör"
+    "confirmLabel": "Başlat",
+    "queued": "Yapay zekâ görevi başlatıldı.",
+    "failed": "Yapay zekâ görevi başlatılamadı."
   },
   "effectTool": {
     "googleSetVacation": "Gmail otomatik yanıtını ayarla",
@@ -150,11 +149,17 @@
     "m365RemoveLicense": "Microsoft 365 lisanslarını kaldır",
     "m365RetireIntuneDevice": "Intune ile yönetilen telefonları devre dışı bırak",
     "m365RevokeSessions": "Microsoft 365 oturum açma oturumlarını iptal et",
-    "m365DisableUser": "Microsoft 365 oturum açmayı engelle"
+    "m365DisableUser": "Microsoft 365 oturum açmayı engelle",
+    "m365CreateUser": "Microsoft 365 hesabını oluştur",
+    "m365AssignLicense": "Microsoft 365 lisanslarını ata",
+    "m365AddToGroup": "Bir Microsoft 365 grubuna ekle",
+    "googleMoveOu": "Kuruluş birimine taşı",
+    "googleAssignLicense": "Bir Google Workspace lisansı ata",
+    "googleAddToGroup": "Bir Google grubuna ekle"
   },
   "workspace": {
     "tabs": {
-      "label": "Operatör bölümleri",
+      "label": "Yapay zekâ görevi bölümleri",
       "tasks": "Görevler",
       "library": "Kitaplık"
     },
@@ -163,7 +168,7 @@
   "taskList": {
     "loading": "Görevler yükleniyor...",
     "loadFailed": "Görevler yüklenemedi.",
-    "empty": "Henüz Operatör görevi yok.",
+    "empty": "Henüz yapay zekâ görevi yok.",
     "emptyHint": "Kitaplıktan, bir talepten, bir kişiden veya bir uyarıdan başlattığınız görevler burada görünür.",
     "loadMore": "Daha fazla yükle",
     "loadMoreFailed": "Daha fazla görev yüklenemedi."
@@ -212,13 +217,16 @@
     "start": {
       "offboard": "Bir kişinin ayrılış işlemlerini yap",
       "notEnabled": "Bu tarif bu dağıtım için etkin değil.",
-      "fromDeviceOrAlert": "Bu tarifi bir cihazdan veya bir uyarıdan başlatın."
+      "fromDeviceOrAlert": "Bu tarifi bir cihazdan veya bir uyarıdan başlatın.",
+      "onboard": "Bir kişinin işe giriş işlemlerini yap"
     },
     "recipe": {
       "identityOffboardingName": "Bir kişinin ayrılış işlemlerini yap",
       "identityOffboardingSummary": "Kimin ayrıldığını doğrulayın, e-postalarını yönlendirin ve Microsoft 365 ile Google Workspace'teki erişimini güvenli bir sırayla, tek bir onayla kaldırın. Elle yapılan işler talepte izlenir.",
       "serviceRecoveryName": "Durmuş bir hizmeti geri getir",
-      "serviceRecoverySummary": "Durmuş bir Windows hizmetini inceleyin, onayla yeniden başlatın ve çalışmaya devam ettiğini doğrulayın."
+      "serviceRecoverySummary": "Durmuş bir Windows hizmetini inceleyin, onayla yeniden başlatın ve çalışmaya devam ettiğini doğrulayın.",
+      "identityOnboardingName": "Bir kişinin işe giriş işlemlerini yap",
+      "identityOnboardingSummary": "Yeni bir kişinin Microsoft 365 hesabını tek bir onayla oluşturun, ardından seçtiğiniz lisansları ve grupları ikinci bir onayla atayın. Google Workspace hesapları kontrol listesi öğesinden elle oluşturulur. Geçici şifre bir kez, onaylayan kişi tarafından gösterilir."
     },
     "refreshFailed": "Tarif kitaplığı yenilenemedi; gösterilen bilgiler güncel olmayabilir."
   },
@@ -312,14 +320,88 @@
     "failed": "Ayrılış işlemleri başlatılamadı.",
     "duplicate": "Bu kişi için zaten devam eden bir ayrılış işlemi var.",
     "duplicateLink": "Çalışan görevi aç",
-    "replayed": "Bu ayrılış işlemleri zaten başlatılmıştı; açılıyor."
+    "replayed": "Bu ayrılış işlemleri zaten başlatılmıştı; açılıyor.",
+    "onboarding": {
+      "title": "Bir kişinin işe giriş işlemlerini yap",
+      "personLabel": "Yeni kişi",
+      "displayName": "Ad soyad",
+      "personWillBeCreated": "Görev başladığında bu kişi bir kişi kaydı olarak oluşturulacak.",
+      "jobTitle": "Unvan (isteğe bağlı)",
+      "site": "Site (isteğe bağlı)",
+      "noSite": "Site yok",
+      "providersLabel": "Oluşturulacak hesaplar",
+      "upn": "Oturum açma adı (UPN)",
+      "checkAvailability": "Uygunluğu denetle",
+      "upnAvailable": "Uygun: hiçbir Microsoft 365 hesabı bu oturum açma adını kullanmıyor.",
+      "upnTaken": "Kullanımda: bir Microsoft 365 hesabı bu oturum açma adını zaten kullanıyor.",
+      "upnUnchecked": "Bu oturum açma adı denetlenemedi. Breeze, kimsenin doğrulamadığı bir ad üzerinde hesap oluşturmaz.",
+      "mailNickname": "E-posta takma adı",
+      "usageLocation": "Kullanım konumu (iki harfli ülke kodu)",
+      "usageLocationHelp": "Lisansların kullanılacağı ülke, örneğin TR veya US. Microsoft 365 bir lisans atamadan önce gereklidir.",
+      "skus": "Microsoft 365 lisansları (SKU kimlikleri)",
+      "skusHelp": "Boşta lisans hakkı olmayan bir lisans korunur: görev bunu bir kontrol listesi öğesine dönüştürür.",
+      "groups": "Microsoft 365 grupları (grup kimlikleri)",
+      "groupsHelp": "Dinamik gruplar ve yönetici rolü grupları hiçbir zaman otomatik eklenmez: görev bunları kontrol listesi öğelerine dönüştürür.",
+      "add": "Ekle",
+      "invalidEntry": "Gösterilen biçimde bir değer girin.",
+      "noSeats": "Boşta lisans hakkı doğrulanmadı: kontrol listesi öğesine dönüşür",
+      "needsTechnician": "Bunu bir teknisyen elle ekleyecek",
+      "googleManual": "Breeze henüz Google hesabı oluşturamıyor. Görev, hesabı elle oluşturmanız için tam ayrıntıları içeren bir kontrol listesi öğesi ekler, ardından lisanslar ve gruplarla devam eder.",
+      "googlePrimaryEmail": "Birincil e-posta",
+      "givenName": "Ad",
+      "familyName": "Soyad",
+      "orgUnitPath": "Kuruluş birimi (isteğe bağlı)",
+      "orgUnitPathHelp": "Eğik çizgiyle başlar, örneğin /Staff/Sales.",
+      "googleLicenses": "Google Workspace lisansları",
+      "googleProductId": "Ürün kimliği",
+      "googleSkuId": "SKU kimliği",
+      "googleGroups": "Google grupları (adresler)",
+      "modelAfter": "Örnek alınacak kişi (isteğe bağlı)",
+      "modelAfterHelp": "Görev bu kişinin gruplarını ve lisanslarını okur ve ilk adımında bunları onaylamanızı ister. Yönetici ve dinamik gruplar hiçbir zaman kopyalanmaz: görev bunları kontrol listesi öğesi olarak ekler.",
+      "manager": "Yönetici (isteğe bağlı)",
+      "managerHelp": "Yeni kişi kaydında saklanır ve devirde anılır. Breeze yöneticinin hesaplarını hiçbir zaman değiştirmez.",
+      "managerPrefilled": "Talepten önceden dolduruldu: talebi açan kişi yönetici olarak ayarlandı, yeni kişi olarak değil.",
+      "nobody": "Hiç kimse",
+      "startAt": "Başlangıç tarihi (isteğe bağlı)",
+      "startNow": "Hesapları hemen oluşturup teslim etmek için boş bırakın",
+      "startScheduled": "Hesaplar şimdi oluşturulur; teslim bu zamana kadar bekler.",
+      "startBeyondDeadline_one": "Bu görev {{count}} gün içinde bitmelidir. {{count}} gün içinde bir başlangıç tarihi seçin veya işe giriş işlemlerini son tarihe daha yakın başlatın.",
+      "startBeyondDeadline_other": "Bu görev {{count}} gün içinde bitmelidir. {{count}} gün içinde bir başlangıç tarihi seçin veya işe giriş işlemlerini son tarihe daha yakın başlatın.",
+      "invalid": "Bazı bilgiler eksik veya doğru biçimde değil:",
+      "previewStage1": "Adım 1 — hesap oluşturma (önce bunu onaylarsınız)",
+      "previewStage1Empty": "Otomatik olarak hiçbir şey oluşturulmayacak.",
+      "previewStage2": "Adım 2 — lisanslar, gruplar ve kuruluş birimi (hesap oluştuktan sonra bunu onaylarsınız)",
+      "previewProvisional": "Geçici: Breeze bunları hesap oluştuktan sonra doğrular",
+      "flagsTitle": "Denetimlerde bulunanlar",
+      "previewNote": "Görev, kontrol listesi öğeleri için kendi talebini açar.",
+      "submit": "İşe giriş işlemlerini başlat",
+      "started": "İşe giriş işlemleri başlatıldı.",
+      "failed": "İşe giriş işlemleri başlatılamadı.",
+      "duplicate": "Bu kişi için zaten devam eden bir işe giriş işlemi var.",
+      "replayed": "Bu işe giriş işlemleri zaten başlatılmıştı; açılıyor.",
+      "existingContactLink": "Kuruluşun kişilerini aç",
+      "upnManual": "Bu kuruluş için Microsoft 365 hesapları elle oluşturulur, bu yüzden Breeze bunu ne denetledi ne de planladı.",
+      "sitesFailed": "Siteler yüklenemedi.",
+      "startAtIncomplete": "Başlangıç için tam bir tarih ve saat girin veya alanı temizleyin.",
+      "invalidNoProvider": "Oluşturulacak en az bir hesabı açın.",
+      "flagLabel": {
+        "upnCollision": "Oturum açma adı kullanımda",
+        "emailCollision": "Google adresi kullanımda",
+        "m365CollisionCheckFailed": "Oturum açma adı denetimi",
+        "m365SeatsReadFailed": "Lisans hakkı denetimi",
+        "googleCollisionCheckFailed": "Google adresi denetimi",
+        "googleConnectionUnavailable": "Google Workspace bağlantısı",
+        "other": "Denetim"
+      }
+    }
   },
   "taskPanels": {
     "tabsLabel": "Görev görünümleri",
     "tabs": {
       "steps": "Adımlar",
       "plan": "Uygulama planı",
-      "events": "Zaman çizelgesi"
+      "events": "Zaman çizelgesi",
+      "accounts": "Hesaplar"
     },
     "steps": {
       "empty": "Henüz başlayan adım yok.",
@@ -340,7 +422,14 @@
         "effects": "Onayla ve değişiklikleri yap",
         "manualWork": "Kontrol listesi işi",
         "verifyOutcome": "Sonucu doğrula",
-        "document": "Kaydı yaz"
+        "document": "Kaydı yaz",
+        "confirmDetails": "Yeni kişinin bilgilerini onayla",
+        "createAccounts": "Hesapları onayla ve oluştur",
+        "manualCreateGoogle": "Google hesabını elle oluştur",
+        "resolveAccounts": "Yeni hesapları bul",
+        "provisionEffects": "Lisansları ve grupları onayla ve ata",
+        "waitStart": "Başlangıç tarihini bekle",
+        "handoverWork": "Devir kontrol listesi"
       },
       "kind": {
         "reason": "Akıl yürütme",
@@ -391,7 +480,10 @@
         "failed": "Başarısız",
         "unknown": "Sonuç bilinmiyor",
         "superseded": "Değiştirildi"
-      }
+      },
+      "stageCreation": "Hesap oluşturma",
+      "stageProvision": "Lisanslar, gruplar ve kuruluş birimi",
+      "followedBy": "Onaylandı ve uygulandı, ardından sonraki aşama için {{n}}. onay gelir. Neyin onaylandığının kaydı olarak burada tutulur."
     },
     "events": {
       "empty": "Henüz kaydedilmiş olay yok.",
@@ -424,6 +516,24 @@
         "humanWorkUnticked": "Kontrol listesi öğesinin işareti kaldırıldı",
         "taskSettled": "Görev bitti"
       }
-    }
+    },
+    "accounts": "Oluşturulan hesaplar",
+    "planStage": "{{n}}. onay"
+  },
+  "credential": {
+    "availableTo": "Geçici şifre {{date}} tarihine kadar {{name}} için kullanılabilir",
+    "availableToNoDate": "Geçici şifre {{name}} için kullanılabilir",
+    "askTo": "{{name}} kişisinden geçici şifreyi paylaşmasını isteyin — yalnızca o gösterebilir",
+    "reveal": "Yapay zekâ etkinliğinde (Onaylar) gösterin",
+    "revealed": "Geçici şifre zaten gösterildi",
+    "expired": "Geçici şifrenin süresi, gösterilmeden doldu",
+    "expiredRecovery": "Şifreyi sıfırlayın. İkinci bir hesap oluşturmayın.",
+    "unretrievable": "Geçici şifre hiçbir yerde saklanmadı, bu yüzden kimse gösteremez.",
+    "setByHand": "Şifre, işe giriş sırasında elle belirlendi",
+    "unknown": "Geçici şifrenin durumu bilinmiyor",
+    "theApprover": "hesap oluşturmayı onaylayan kişi",
+    "whoReveals": "Geçici şifreyi yalnızca hesap oluşturmayı onaylayan kişi, yalnızca bir kez gösterebilir — bu görevi başlatan teknisyen gösteremez. Şifreyi yüz yüze veya telefonla iletin.",
+    "noRevealer": "Breeze bu geçici şifreyi gösterebilecek kimseyi bulamadı.",
+    "revealNeedsFeedAccess": "Bunu yalnızca siz yapay zekâ etkinliğinde (Onaylar) gösterebilirsiniz, ancak rolünüz bu sayfayı açamıyor. Bir yöneticiden yapay zekâ oturumu denetimi erişimi isteyin."
   }
 }

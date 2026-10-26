@@ -4,7 +4,7 @@
  * Provides AI tools over the partner product catalog:
  *  - `search_catalog`   — list/search active catalog items (hardware/software/service/bundle)
  *  - `get_catalog_item` — full detail for one item, plus bundle components if it is a bundle
- *  - `manage_catalog`   — create/update/archive items, bundle components, and org price overrides
+ *  - `manage_billing_catalog`   — create/update/archive items, bundle components, and org price overrides
  *
  * The catalog is partner-scoped (RLS shape 3). Every query is filtered by
  * `auth.partnerId`; a context without a partner gets an error string. Listing
@@ -36,13 +36,14 @@ import {
   setItemPrice,
   setOrgPriceOverride,
   updateCatalogItem,
+  readCatalogPreviousState,
   type CatalogActor
 } from './catalogService';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 import { lookupEcExpressProducts, TdSynnexEcExpressError, type TdSynnexEcProduct } from './tdSynnexEcExpress';
 
 /**
- * Params each manage_catalog action requires, presence-checked BEFORE any
+ * Params each manage_billing_catalog action requires, presence-checked BEFORE any
  * `String(...)` coercion so a missing id can't become the literal string
  * "undefined" and die downstream as an opaque uuid/DB 500 (#2362 sweep).
  */
@@ -75,7 +76,7 @@ function serviceErrorToJson(err: unknown): string | null {
 // Payload parsers wrap the value under its param name so ZodError paths are
 // self-describing ("item.unitPrice: ...", "override.unitPrice: ..."). These
 // are the SAME schemas the HTTP catalog routes validate with — one source of
-// truth. Without this, a malformed manage_catalog call skipped validation
+// truth. Without this, a malformed manage_billing_catalog call skipped validation
 // entirely (the type-cast reached catalogService with no Zod layer at all)
 // and died as an opaque DB constraint 500 instead of a structured
 // VALIDATION_ERROR the model could act on.
@@ -466,15 +467,15 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     }
   });
 
-  aiTools.set('manage_catalog', {
+  aiTools.set('manage_billing_catalog', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
     domain: 'billing',
     searchHint: 'product catalog: create, update items, set/remove currency prices, manage organization overrides and bundles',
     definition: {
-      name: 'manage_catalog',
+      name: 'manage_billing_catalog',
       description:
-        'Create and manage partner catalog items, per-currency price-book entries (set_price / remove_price), organization price overrides (with currency), and bundle components. Actions: create_item, update_item, archive_item, set_price, remove_price, set_org_price, remove_org_price, set_bundle_components.',
+        'Billing price book (not the software catalog): partner catalog items, per-currency prices, organization price overrides (with currency) and bundle components. Actions: create_item, update_item, archive_item, set_price, remove_price, set_org_price, remove_org_price, set_bundle_components.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -524,57 +525,63 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       if (missing) return missing;
 
       try {
+        // W02 (#6756): every write that REPLACES something returns the value it
+        // replaced (`previous`), read after validation and before the write,
+        // so the approving human can undo it within a minute.
+        const withPrevious = (result: unknown, previous: unknown) =>
+          JSON.stringify(result && typeof result === 'object' && !Array.isArray(result)
+            ? { ...(result as Record<string, unknown>), previous }
+            : { result, previous });
+        const catalogId = String(input.catalogId);
         switch (action) {
           case 'create_item':
             return JSON.stringify(await createCatalogItem(
               createItemPayload.parse({ item: input.item }).item,
               actor
             ));
-          case 'update_item':
-            return JSON.stringify(await updateCatalogItem(
-              String(input.catalogId),
-              updateItemPayload.parse({ item: input.item }).item,
-              actor
-            ));
-          case 'archive_item':
-            return JSON.stringify(await archiveCatalogItem(String(input.catalogId), actor));
-          case 'set_price':
-            return JSON.stringify(await setItemPrice(
-              String(input.catalogId),
-              currencyParam.parse(input.currencyCode),
-              pricePayload.parse({ price: input.price }).price,
-              actor
-            ));
-          case 'remove_price':
-            return JSON.stringify(await removeItemPrice(
-              String(input.catalogId),
-              currencyParam.parse(input.currencyCode),
-              actor
-            ));
-          case 'set_org_price':
-            return JSON.stringify(await setOrgPriceOverride(
-              String(input.catalogId),
-              String(input.orgId),
-              overridePayload.parse({ override: input.override }).override,
-              actor
-            ));
-          case 'remove_org_price':
-            return JSON.stringify(await removeOrgPriceOverride(
-              String(input.catalogId),
-              String(input.orgId),
-              actor
-            ));
+          case 'update_item': {
+            const patch = updateItemPayload.parse({ item: input.item }).item;
+            const previous = await readCatalogPreviousState(action, { catalogId, fields: Object.keys(patch) }, actor);
+            return withPrevious(await updateCatalogItem(catalogId, patch, actor), previous);
+          }
+          case 'archive_item': {
+            const previous = await readCatalogPreviousState(action, { catalogId, fields: ['isActive'] }, actor);
+            return withPrevious(await archiveCatalogItem(catalogId, actor), previous);
+          }
+          case 'set_price': {
+            const currencyCode = currencyParam.parse(input.currencyCode);
+            const price = pricePayload.parse({ price: input.price }).price;
+            const previous = await readCatalogPreviousState(action, { catalogId, currencyCode }, actor);
+            return withPrevious(await setItemPrice(catalogId, currencyCode, price, actor), previous);
+          }
+          case 'remove_price': {
+            const currencyCode = currencyParam.parse(input.currencyCode);
+            const previous = await readCatalogPreviousState(action, { catalogId, currencyCode }, actor);
+            return withPrevious(await removeItemPrice(catalogId, currencyCode, actor), previous);
+          }
+          case 'set_org_price': {
+            const orgId = String(input.orgId);
+            const override = overridePayload.parse({ override: input.override }).override;
+            const previous = await readCatalogPreviousState(action, { catalogId, orgId }, actor);
+            return withPrevious(await setOrgPriceOverride(catalogId, orgId, override, actor), previous);
+          }
+          case 'remove_org_price': {
+            const orgId = String(input.orgId);
+            const previous = await readCatalogPreviousState(action, { catalogId, orgId }, actor);
+            return withPrevious(await removeOrgPriceOverride(catalogId, orgId, actor), previous);
+          }
           case 'set_bundle_components': {
             const parsed = setBundleComponentsSchema.parse({
               components: input.components ?? [],
               ...(input.allocationCurrency != null ? { allocationCurrency: input.allocationCurrency } : {}),
             });
-            return JSON.stringify(await setBundleComponents(
-              String(input.catalogId),
+            const previous = await readCatalogPreviousState(action, { catalogId }, actor);
+            return withPrevious(await setBundleComponents(
+              catalogId,
               parsed.components,
               actor,
               parsed.allocationCurrency
-            ));
+            ), previous);
           }
           default:
             return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });

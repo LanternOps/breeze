@@ -718,7 +718,15 @@
       },
       "fileType": {
         "image": "taranmış kopya"
-      }
+      },
+      "sendForSignature": "İmzaya gönder",
+      "filter": {
+        "pending": "İmza bekleyen",
+        "signed": "İmzalanan",
+        "closed": "Reddedilen / iptal edilen / süresi dolan"
+      },
+      "downloadOriginal": "Orijinal",
+      "certifiedUnavailable": "Bu sözleşme için onaylı kopya oluşturulamadı; bunun yerine özgün dosya indirildi."
     },
     "templateEditor": {
       "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
@@ -764,6 +772,101 @@
       "submit": "İmzalı anlaşmayı kaydet",
       "success": "İmzalı anlaşma kaydedildi.",
       "error": "İmzalı anlaşma kaydedilemedi."
+    },
+    "requests": {
+      "columns": {
+        "template": "Şablon",
+        "organization": "Organizasyon",
+        "recipients": "Alıcılar",
+        "sent": "Gönderildi",
+        "expires": "Bitiş",
+        "status": "Durum"
+      },
+      "status": {
+        "draft": "Taslak",
+        "sent": "İmza bekliyor",
+        "viewed": "Görüntülendi",
+        "signed": "İmzalandı",
+        "declined": "Reddedildi",
+        "voided": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "empty": {
+        "pending": {
+          "title": "İmza bekleyen bir şey yok",
+          "description": "İmzaya gönderdiğiniz anlaşmalar, müşteri imzalayana kadar burada görünür."
+        },
+        "closed": {
+          "title": "Reddedilen, iptal edilen veya süresi dolan istek yok",
+          "description": "Reddedilen, iptal edilen veya süresi dolan istekler burada görünür."
+        }
+      },
+      "loadError": "Anlaşma istekleri yüklenemedi.",
+      "recipientsMore": "+{{count}} daha",
+      "notSent": "Gönderilmedi",
+      "declinedReason": "Reddedildi: {{reason}}",
+      "voidedReason": "İptal edildi: {{reason}}",
+      "copyLink": {
+        "label": "Bağlantıyı kopyala",
+        "success": "İmza bağlantısı kopyalandı",
+        "error": "İmza bağlantısı kopyalanamadı.",
+        "clipboardError": "Panoya kopyalanamadı. İmza bağlantısı: {{link}}"
+      },
+      "void": {
+        "label": "İptal et",
+        "title": "Bu anlaşma isteği iptal edilsin mi?",
+        "description": "İmza bağlantısı çalışmaz hale gelir ve alıcılar bu anlaşmayı artık imzalayamaz.",
+        "reasonLabel": "Neden (isteğe bağlı)",
+        "confirm": "İsteği iptal et",
+        "confirming": "İptal ediliyor…",
+        "success": "Anlaşma isteği iptal edildi.",
+        "error": "Anlaşma isteği iptal edilemedi."
+      },
+      "deleteDraft": {
+        "label": "Taslağı sil",
+        "success": "Taslak silindi.",
+        "error": "Taslak silinemedi."
+      }
+    },
+    "send": {
+      "title": "İmzaya gönder",
+      "contract": "Bir sözleşmeye bağla (isteğe bağlı)",
+      "contractsError": "Bu organizasyonun sözleşmeleri yüklenemedi. Anlaşmayı yine de gönderip daha sonra bir sözleşmeye bağlayabilirsiniz.",
+      "recipients": "Alıcılar",
+      "recipientsHelp": "E-posta adresleri; virgül veya yeni satırla ayırın. Organizasyonun fatura kişisiyle önceden doldurulur.",
+      "recipientsRequired": "En az bir alıcı e-postası ekleyin.",
+      "recipientsInvalid": "Bunlar geçerli e-posta adresleri gibi görünmüyor: {{emails}}",
+      "recipientsTooMany": "En fazla 50 alıcı.",
+      "cover": "Eşlik eden mesaj (isteğe bağlı)",
+      "expiry": "Bağlantının bitiş tarihi",
+      "expiryPast": "Gelecekte bir son geçerlilik tarihi seçin.",
+      "label": "Etiket (isteğe bağlı)",
+      "createDraft": "Taslak oluştur ve önizle",
+      "creating": "Oluşturuluyor…",
+      "preview": {
+        "title": "Önizleme",
+        "loading": "Önizleme yükleniyor…",
+        "error": "Önizleme yüklenemedi.",
+        "uploaded": "Bu şablon yüklenmiş bir belgedir. Müşteri yüklenen dosyayı imzalar."
+      },
+      "unresolved": {
+        "title": "Göndermeden önce eksik değerleri doldurun"
+      },
+      "updatePreview": "Önizlemeyi güncelle",
+      "updating": "Güncelleniyor…",
+      "submit": "Gönder",
+      "sending": "Gönderiliyor…",
+      "createError": "Taslak oluşturulamadı.",
+      "updateError": "Anlaşma güncellenemedi.",
+      "sendError": "Anlaşma gönderilemedi.",
+      "discardError": "Taslak silinemedi; hâlâ İmza bekleyen altında listeleniyor, oradan silebilirsiniz.",
+      "sent_one": "Anlaşma {{count}} alıcıya gönderildi",
+      "sent_other": "Anlaşma {{count}} alıcıya gönderildi",
+      "notEmailed": {
+        "no_email_service": "Gönderildi, ancak e-posta yapılandırılmamış. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın.",
+        "no_recipients": "Gönderildi, ancak e-posta gönderilecek alıcı yoktu. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın.",
+        "send_failed": "Gönderildi, ancak e-posta iletilemedi. İmza bağlantısını “İmza bekleyen” bölümünden kopyalayıp paylaşın."
+      }
     }
   },
   "quotes": {
@@ -2520,7 +2623,7 @@
     "ai": {
       "column": "Yapay zeka kullanımı",
       "sectionTitle": "Yapay zeka kullanımı",
-      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların yapay zeka asistanı kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
+      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların Breeze AI kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
       "coverage": "Yapay zeka kullanımı faturalandırması",
       "coverageBillable": "Faturalandırılabilir",
       "coverageIncluded": "Dahil",

@@ -951,6 +951,7 @@ const REPOINT_TABLES: readonly string[] = [
   "contract_hour_periods",
   "contract_lines",
   "contract_renewal_notices",
+  "contract_skipped_billing_periods",
   "contract_template_versions",
   "contract_templates",
   "contracts",
@@ -1366,6 +1367,11 @@ const REPOINT_TABLES: readonly string[] = [
   // the grant and, by ON DELETE CASCADE, those rows.
   "wisp_concern_recipients",
   "wisp_concerns",
+  // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the
+  // repoint; the only unique key is (thread_id, entity_kind, entity_id), which
+  // has no org_id in it, so a repoint cannot collide. The thread is
+  // partner-axis and not a merge participant.
+  "wisp_thread_links",
   "wisp_watches",
   // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
   // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns

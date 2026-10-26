@@ -358,7 +358,11 @@
         "pathPrefix": "Préfixe de chemin",
         "optional": "(optionnel)",
         "backupsBreeze": "Sauvegardes/Breeze/",
-        "keyPrefixForOrganizingObjectsInThe": "Préfixe de clé pour organiser les objets dans le bucket.",
+        "keyPrefixHelp": "Préfixe de clé de cette destination. Les nouveaux instantanés sont stockés sous <prefix>/snapshots/. Les instantanés existants restent où ils sont. Le modifier fait de la prochaine sauvegarde une sauvegarde complète.",
+        "keyPrefixInvalidTooLong": "Préfixe de clé invalide : il doit comporter au plus {{max}} caractères.",
+        "keyPrefixInvalidSegment": "Préfixe de clé invalide : il ne doit pas contenir de segment vide, « . » ou « .. ».",
+        "keyPrefixInvalidCharacters": "Préfixe de clé invalide : utilisez uniquement des lettres, des chiffres et ! _ . * ' ( ) - dans chaque segment, séparés par /.",
+        "keyPrefixInvalidReserved": "Préfixe de clé invalide : il ne doit pas contenir de segment « snapshots ».",
         "customEndpoint": "Point de terminaison personnalisé",
         "optional2": "(optionnel)",
         "httpsS3UsWest002Backblazeb2Com": "https://s3.us-west-002.backblazeb2.com",
@@ -1167,7 +1171,13 @@
         "binaryMissing": "{{vendors}} ne peut pas être activé tant que le paquet intégré n’a pas de programme d’installation déployable : un MSI Windows comme dernière version, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Corrigez-le dans l’onglet Versions du paquet, puis enregistrez de nouveau.",
         "binaryMissingLink": "Ouvrir l’onglet Versions",
         "platformMacosUnsupported": "macOS : non pris en charge.",
-        "sentinelOneMsiNote": "Ajoutez d’abord le MSI SentinelOne dans l’onglet Versions du paquet SentinelOne intégré, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Breeze ne fournit pas le programme d’installation, et SentinelOne ne peut pas être activé tant qu’il n’y est pas."
+        "sentinelOneMsiNote": "Ajoutez d’abord le MSI SentinelOne dans l’onglet Versions du paquet SentinelOne intégré, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Breeze ne fournit pas le programme d’installation, et SentinelOne ne peut pas être activé tant qu’il n’y est pas.",
+        "catalogMissingBuiltin": "{{vendors}} n'est pas encore dans le catalogue logiciel de ce partenaire. Ajoutez-le depuis Logiciels → Catalogue → Paquets intégrés, puis enregistrez à nouveau.",
+        "catalogMissingBuiltinLink": "Ouvrir Paquets intégrés",
+        "dnsBuiltinNote": "Ajoutez d'abord {{vendor}} au catalogue logiciel de ce partenaire depuis Logiciels → Catalogue → Paquets intégrés ; il ne peut pas être activé avant.",
+        "dnsVariableNote": "Chaque organisation doit disposer de la variable de locataire {{variable}}, créée comme variable normale (non secrète). Les organisations qui ne l'ont pas sont ignorées et affichées comme non applicables.",
+        "dnsVariableLink": "Ouvrir les variables",
+        "dnsCoverageNote": "Breeze ne synchronise pas la console {{vendor}} : la couverture indique seulement si chaque appareil peut recevoir le client (en attente ou non applicable). L'état de l'installation et du service (manquant, arrêté) apparaît dans la conformité de la stratégie logicielle générée."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Les alertes de garantie sont facultatives : les appareils sans stratégie de garantie attribuée ne génèrent aucune alerte. Les seuils ci-dessous s’appliquent uniquement aux couvertures à durée déterminée. Les abonnements AppleCare actifs se renouvellent au lieu d’expirer ; leurs alertes d’expiration sont donc toujours masquées.",

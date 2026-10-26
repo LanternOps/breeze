@@ -1022,3 +1022,4 @@ export * from './restorePoint';
 export * from './wispMemory';
 export * from './wispConcerns';
 export * from './wispActivity';
+export * from './wisp';

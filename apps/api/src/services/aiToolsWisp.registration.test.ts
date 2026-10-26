@@ -17,6 +17,7 @@ import { TOOL_TIERS } from './aiAgentSdkTools';
 import {
   checkAgentGuardrails,
   checkGuardrails,
+  describeSpecialistRequest,
   TIER3_SUPERVISED_TOOLS,
   TOOL_PERMISSIONS,
 } from './aiGuardrails';
@@ -102,6 +103,51 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
         expect(check.requiresApproval, kind).toBe(true);
       }
     }
+  });
+
+  // #10144: ONE approval per call. The chat gate raises exactly one card from
+  // one guardrail verdict — the Tier-2 bridge card (per_step only) for an
+  // auto-admit kind, or one supervised Tier-3 intent for an asks-first kind —
+  // never a Tier-2 card followed by a Tier-3 one. So each kind must resolve to
+  // a single tier, with one approver (supervised, never four_eyes), in every
+  // chat context, and the coordinator must not mint a second (carrier) card on
+  // the user path (coordinator.test.ts: `operator_recipe from user → admitted`).
+  it('every kind resolves to exactly one approval: Tier 2 (no intent) or one supervised Tier-3 intent', () => {
+    for (const kind of SPECIALIST_KINDS) {
+      for (const context of [undefined, { chatSession: true as const }]) {
+        const check = checkGuardrails('launch_specialist', { orgId: 'o', kind, reason: 'because' }, context);
+        if (SPECIALIST_KIND_POLICY[kind].autoAdmit) {
+          expect(check, kind).toMatchObject({ tier: 2, allowed: true, requiresApproval: false });
+          expect('approvalScope' in check, kind).toBe(false);
+        } else {
+          expect(check, kind).toMatchObject({ tier: 3, allowed: true, requiresApproval: true, approvalScope: 'supervised' });
+        }
+      }
+    }
+  });
+
+  it('the card names the org, not a raw id prefix, when the chat gate resolved its name', () => {
+    const input = { orgId: '64233cbe-0000-4000-8000-000000000001', kind: 'sweep', reason: 'disks are filling' };
+    expect(describeSpecialistRequest(input, 'Default Organization'))
+      .toBe('Wisp wants to run a health sweep at Default Organization: disks are filling');
+    // No resolved name → never the raw id prefix.
+    expect(describeSpecialistRequest(input)).toBe('Wisp wants to run a health sweep at this organization: disks are filling');
+    expect(checkGuardrails('launch_specialist', input).description).not.toContain('64233cbe');
+    // Tenant-controlled: one line, bounded.
+    expect(describeSpecialistRequest(input, `Acme\n${'x'.repeat(200)}`))
+      .toBe(`Wisp wants to run a health sweep at ${`Acme ${'x'.repeat(200)}`.slice(0, 80)}…: disks are filling`);
+  });
+
+  it('the tool tells the model which params each kind takes (goal is analysis-only)', () => {
+    const def = aiTools.get('launch_specialist')!.definition;
+    const paramsField = (def.input_schema.properties as Record<string, { description?: string }>).params!.description ?? '';
+    // The params field lists the short kinds; the tool description the two long ones.
+    const text = `${def.description} ${paramsField}`;
+    for (const kind of SPECIALIST_KINDS) expect(text, kind).toMatch(new RegExp(`${kind} \\{`));
+    expect(paramsField).toMatch(/sweep \{sweepKinds\?\}/);
+    expect(paramsField).toMatch(/patch_plan \{\}/);
+    expect(text.match(/goal/g)).toHaveLength(1);
+    expect(paramsField).toMatch(/analysis \{goal/);
   });
 
   it('an agent principal is denied launch_specialist whatever its allowlist says', () => {

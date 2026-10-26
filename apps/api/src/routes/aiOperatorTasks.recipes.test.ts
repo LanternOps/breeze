@@ -263,7 +263,7 @@ describe('POST /task-drafts', () => {
   it('an unknown key is a 400 naming both supported workflows; bad inputs are a 400', async () => {
     const unknown = await post('/task-drafts', { recipeKey: 'no_such_recipe', recipeVersion: 1, orgId: ORG, inputs: {} });
     expect(unknown.status).toBe(400);
-    expect(((await unknown.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'service_recovery']);
+    expect(((await unknown.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
     const bad = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT, personHint: 'x' } });
     expect(bad.status).toBe(400);
   });
@@ -341,7 +341,7 @@ describe('POST /tasks — identity_offboarding', () => {
     h.selectQueue = [[{ id: DEVICE, orgId: ORG, siteId: 's', hostname: 'WIN-1' }]];
     const res = await post('/tasks', body({ recipeKey: 'no_such_recipe', deviceId: DEVICE, inputs: { serviceName: 'spooler' } }));
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'service_recovery']);
+    expect(((await res.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'identity_onboarding', 'service_recovery']);
   });
 });
 

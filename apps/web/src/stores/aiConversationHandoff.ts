@@ -94,12 +94,13 @@ export function takeHandoff(sessionId: string): { draft?: string; signal: AbortS
 
 // ── The two moves (#9427 W3, T13) ───────────────────────────────────────────
 
-const onWorkspacePage = () => /^\/workspace\/?$/.test(window.location.pathname);
+// The multi-tab chat page (Breeze AI, /ai/chat; /wisp/chat and /workspace redirect there).
+const onWorkspacePage = () => /^\/ai\/chat\/?$/.test(window.location.pathname);
 
 /**
  * Side panel → AI Assistant. The tab cap is checked first (panel untouched,
  * no navigation). Then the hand-off starts — NOT awaited — and the browser
- * goes to `/workspace#session=<id>`; the workspace opens the tab and calls
+ * goes to `/ai/chat#session=<id>`; the workspace opens the tab and calls
  * completeHandoff, the only place the panel is released. A destination that
  * never answers leaves the panel as it was after HANDOFF_TIMEOUT_MS. Never a
  * DELETE: release is local.
@@ -132,11 +133,11 @@ export async function moveToAssistant(
       if (window.location.hash === `#${target}`) window.dispatchEvent(new HashChangeEvent('hashchange'));
       else window.location.hash = target;
     } else {
-      navigate(`/workspace#${target}`);
+      navigate(`/ai/chat#${target}`);
     }
   } catch (err) {
     // A failed chunk load or navigation: keep the panel as it is, now.
-    console.error('[AI] Open in AI Assistant failed:', err);
+    console.error('[AI] Open in Breeze AI failed:', err);
     abortHandoff(sessionId);
     showToast({ type: 'error', message: i18n.t('ai:aiConversationMove.notAvailable') });
     return 'aborted';

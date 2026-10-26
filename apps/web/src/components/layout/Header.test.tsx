@@ -108,6 +108,16 @@ describe('Header terminal logout UX', () => {
     return rendered;
   }
 
+  // #9840 W5: e2e-tests/pages/BasePage.ts signs out by these ids (testid-only suite).
+  it('the account menu trigger and its Sign out item carry the ids BasePage.signOut uses', async () => {
+    render(<Header />);
+    expect(screen.getByTestId('account-menu-button')).toBe(screen.getByLabelText('layout.header.accountMenu'));
+    fireEvent.click(screen.getByTestId('account-menu-button'));
+    expect(screen.getByTestId('account-menu-sign-out')).toHaveTextContent('layout.header.signOut');
+    fireEvent.click(screen.getByTestId('account-menu-sign-out'));
+    await waitFor(() => expect(authState.apiLogout).toHaveBeenCalled());
+  });
+
   it('never navigates to a ticketless GET when Cloudflare preparation fails and offers retry', async () => {
     featureState.cfEnabled = true;
     authState.apiPrepare.mockResolvedValue({ kind: 'partial', message: 'Durable preparation failed.' });
@@ -223,10 +233,10 @@ describe('Header terminal logout UX', () => {
   });
 });
 
-// #6396: the AI assistant button is gated on ai_sessions:use so a role that
+// #6396: the Breeze AI button is gated on ai_sessions:use so a role that
 // cannot open a chat session (Org Viewer, billing roles) does not get a button
 // that only ever 403s. UX only — the route re-checks the permission.
-describe('Header AI assistant button gating (#6396)', () => {
+describe('Header Breeze AI button gating (#6396)', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,

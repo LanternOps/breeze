@@ -267,7 +267,8 @@ const createBreezeMcpServer = vi.hoisted(() =>
 // #7427: the names the REAL SDK server declares. Default (set in the
 // top-level beforeEach) is the whole `aiTools` registry, i.e. "every exposure
 // name is declared"; a test narrows it to model the real
-// KNOWN_MISSING_TOOL_TIERS gap (registry tools with no `tool()` declaration).
+// gap of registry tools with no `tool()` declaration (historically #3300's
+// KNOWN_MISSING_TOOL_TIERS, emptied in full-control W04 #6758).
 const listChatSurfaceToolNames = vi.hoisted(() => vi.fn<() => string[]>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
@@ -3590,8 +3591,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
   });
 
   // #7427: `fullRunToolExposure` walks the `aiTools` registry, which carries
-  // tools the SDK server never declares (KNOWN_MISSING_TOOL_TIERS —
-  // manage_tags, manage_tickets, …). Passing one as `onlyTools` makes
+  // tools the SDK server may not declare (historically #3300's
+  // KNOWN_MISSING_TOOL_TIERS, emptied in W04 #6758). Passing one as `onlyTools` makes
   // `createBreezeMcpServer` throw outside production and log an error on
   // every full run in production. Exposure — `onlyTools` AND `allowedTools` —
   // must be the floor intersected with what the server actually declares.

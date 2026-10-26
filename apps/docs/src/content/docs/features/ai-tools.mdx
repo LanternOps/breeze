@@ -385,7 +385,7 @@ Device sets cannot be attached to one-time lines or bundle components. On existi
 
 For a product not yet in the catalog, use `lookup_distributor_product` before pricing a quote. It makes a partner-scoped, read-only outbound TD SYNNEX EC Express lookup for one distributor SKU or manufacturer part number, returning reseller cost, MSRP, currency, total stock, and per-warehouse availability. Use `search_catalog` for existing catalog items.
 
-When `manage_catalog` uses `set_bundle_components`, `allocationCurrency` is the ISO-4217 currency for component `revenueAllocation` amounts and is required if any component specifies an allocation. Allocations apply only in that currency and are never converted.
+When `manage_billing_catalog` uses `set_bundle_components`, `allocationCurrency` is the ISO-4217 currency for component `revenueAllocation` amounts and is required if any component specifies an allocation. Allocations apply only in that currency and are never converted.
 
 ## Accounts
 

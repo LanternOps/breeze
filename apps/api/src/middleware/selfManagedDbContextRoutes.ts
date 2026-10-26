@@ -462,6 +462,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // Without this entry the ambient request transaction stays held alongside
   // the system one — two pooled connections for the whole freeze.
   { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/record-signed\/?$/ },
+  // Agreement request send (#9075 W2b) — the quotes/:id/send shape: the
+  // handler runs the draft→sent transition in a short withAuthDbAccessContext
+  // and the returned deferred email (agreementRequestLifecycle,
+  // DeferredAgreementRequestEmail) after it COMMITS, so no request-row lock
+  // and no pooled connection is held across SMTP. `/link` and `/void` stay on
+  // the ambient transaction (they mail nothing). The public
+  // /agreements/public/* routes need no entry: they carry no auth middleware,
+  // so no ambient transaction is ever opened there.
+  { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/[^/]+\/send\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,
