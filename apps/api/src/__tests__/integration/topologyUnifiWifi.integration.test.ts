@@ -243,48 +243,114 @@ describe('UniFi Wi-Fi current-state materializer', () => {
   });
 });
 
-describe('legacy reconcile writer fence', () => {
+describe('legacy reconcile device- and family-scoped writer fence', () => {
   const legacyPayload = (collectorId: string, over: Record<string, unknown> = {}) => ({
     collectorId, polledAt: new Date().toISOString(), firmwareOk: true, clients: [], deviceId: undefined,
     devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', txBytes: 5, rxBytes: 6, raw: {} }], ...over,
   });
-  const seed = async (f: Awaited<ReturnType<typeof fixture>>) => {
+  const rowsAfter = async (f: Awaited<ReturnType<typeof fixture>>, id = 'ap-1') => (await f.rows()).get(id)!;
+  const legacy = (f: Awaited<ReturnType<typeof fixture>>, over: Record<string, unknown> = {}) =>
+    sys(() => reconcileTelemetry(db as never, legacyPayload(f.collectorId, over) as never));
+
+  it('same-org AP measured statistics (including 0) and client counts survive legacy queue processing; byte counters still update', async () => {
+    const f = await fixture();
     await f.adapt(await f.report([
-      f.resource('device_list', [apRow('ap-1')]), f.resource('client_list', [clientRow('c1', 'ap-1')]),
-      f.resource('statistics', [statRow('ap-1', { uptimeSeconds: 777, cpuUtilizationPct: 9, memoryUtilizationPct: 55 })]),
+      f.resource('device_list', [apRow('ap-1'), apRow('ap-2')]), f.resource('client_list', [clientRow('c1', 'ap-1')]),
+      f.resource('statistics', [statRow('ap-1', { uptimeSeconds: 777, cpuUtilizationPct: 9, memoryUtilizationPct: 55 }), statRow('ap-2', { uptimeSeconds: 0, cpuUtilizationPct: 0, memoryUtilizationPct: 0 })]),
     ], -30_000));
-    expect((await f.rows()).get('ap-1')).toMatchObject({ num_clients: 1 });
-  };
+    const before = await rowsAfter(f);
+    await legacy(f, { devices: [
+      { unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', txBytes: 5, rxBytes: 6, raw: {} },
+      { unifiDeviceId: 'ap-2', unifiSiteId: 'default', mac: null, name: 'ap-2', raw: {} }] });
+    const row = await rowsAfter(f);
+    expect([Number(row.uptime_seconds), Number(row.cpu_pct), Number(row.mem_pct), row.num_clients]).toEqual([777, 9, 55, 1]);
+    expect(row.wifi_statistics_observed_at).toEqual(before.wifi_statistics_observed_at);
+    expect(row.wifi_clients_observed_at).toEqual(before.wifi_clients_observed_at);
+    expect([Number(row.tx_bytes), Number(row.rx_bytes)]).toEqual([5, 6]);
+    const zero = await rowsAfter(f, 'ap-2');
+    expect([Number(zero.uptime_seconds), Number(zero.cpu_pct), Number(zero.mem_pct), zero.num_clients]).toEqual([0, 0, 0, 0]);
+  });
 
-  it('a request that carried topologyV2 cannot null or overwrite the v2-owned columns, even though the legacy body omits them', async () => {
+  it('rotated, failed-statistics and incomplete-client-list APs retain values and observation timestamps through a later poll and legacy processing', async () => {
     const f = await fixture();
-    await seed(f);
-    await sys(() => reconcileTelemetry(db as never, legacyPayload(f.collectorId, { topologyV2Present: true }) as never));
-    const row = (await f.rows()).get('ap-1')!;
-    expect(Number(row.uptime_seconds)).toBe(777);
+    await f.adapt(await f.report([
+      f.resource('device_list', [apRow('ap-1')]), f.resource('client_list', [clientRow('c1', 'ap-1')]), f.resource('statistics', [statRow('ap-1', { uptimeSeconds: 42 })]),
+    ], -60_000));
+    const before = await rowsAfter(f);
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('client_list', [], 'partial')], -30_000));
+    await legacy(f);
+    const row = await rowsAfter(f);
+    expect([Number(row.uptime_seconds), row.num_clients]).toEqual([42, 1]);
+    expect(row.wifi_statistics_observed_at).toEqual(before.wifi_statistics_observed_at);
+    expect(row.wifi_clients_observed_at).toEqual(before.wifi_clients_observed_at);
+  });
+
+  it('a rejected v2 attempt does not erase previously verified family values', async () => {
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -60_000));
+    expect((await f.adapt({ ...(await f.report([], -30_000)), producerEpoch: 'wrong' })).accepted).toBe(false);
+    await legacy(f);
+    expect(Number((await rowsAfter(f)).cpu_pct)).toBe(9);
+  });
+
+  it('only the statistics family is fenced when no client count was ever materialized, and legacy keeps the other family', async () => {
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -30_000));
+    await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', numClients: 7, cpuPct: 99, raw: {} }] });
+    const row = await rowsAfter(f);
     expect(Number(row.cpu_pct)).toBe(9);
-    expect(Number(row.mem_pct)).toBe(55);
-    expect(row.num_clients).toBe(1);
-    // Legacy-owned fields still update.
-    expect(Number(row.tx_bytes)).toBe(5);
-    expect(Number(row.rx_bytes)).toBe(6);
+    expect(row.num_clients).toBe(7);
   });
 
-  it('a v1 / old-agent request keeps the existing legacy behaviour for every field', async () => {
+  it('switches/gateways keep legacy num_clients and metrics', async () => {
     const f = await fixture();
-    await seed(f);
-    await sys(() => reconcileTelemetry(db as never, legacyPayload(f.collectorId) as never));
-    const row = (await f.rows()).get('ap-1')!;
-    expect(row.uptime_seconds).toBeNull();
-    expect(row.cpu_pct).toBeNull();
-    expect(row.mem_pct).toBeNull();
-    expect(row.num_clients).toBeNull();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1'), switchRow('sw-1')]), f.resource('client_list', [clientRow('c1', 'ap-1')])], -30_000));
+    await legacy(f, { devices: [{ unifiDeviceId: 'sw-1', unifiSiteId: 'default', mac: null, name: 'sw-1', numClients: 4, uptimeSeconds: 10, cpuPct: 2, raw: {} }] });
+    expect(await rowsAfter(f, 'sw-1')).toMatchObject({ num_clients: 4 });
+    expect(Number((await rowsAfter(f, 'sw-1')).uptime_seconds)).toBe(10);
   });
 
-  it('a legacy-created row under the fence starts with null v2-owned columns instead of the legacy body values', async () => {
+  it('a row owned in a different org/site (cross-org / re-homed) is not fenced: legacy re-homes and writes its values', async () => {
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -30_000));
+    const other = (await createTopologyTenant()).siteId;
+    await f.test.execute(sql`UPDATE unifi_device_telemetry SET site_id=${other}::uuid WHERE collector_id=${f.collectorId}::uuid`);
+    await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 50, raw: {} }] });
+    expect(Number((await rowsAfter(f)).cpu_pct)).toBe(50);
+  });
+
+  it('interfaceHealth-off v2 uploads never freeze metrics, and turning it off after ownership resumes legacy semantics', async () => {
+    const off = await fixture({ materialization: true, physical: true, interfaceHealth: false });
+    await off.adapt(await off.report([off.resource('device_list', [apRow('ap-1')]), off.resource('statistics', [statRow('ap-1')])], -30_000));
+    await legacy(off, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 33, raw: {} }] });
+    expect(Number((await rowsAfter(off)).cpu_pct)).toBe(33);
+
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -30_000));
+    await f.test.execute(sql`UPDATE organizations SET settings=${JSON.stringify({ topologyFeatureFlags: { materialization: true, physical: true, interfaceHealth: false } })}::jsonb WHERE id=${f.scope.orgId}::uuid`);
+    await legacy(f);
+    expect((await rowsAfter(f)).cpu_pct).toBeNull();
+  });
+
+  it('a legacy poll with no v2 ownership writes its values (ambiguous v2 itself is covered by the route unit test)', async () => {
+    const f = await fixture();
+    await legacy(f, { devices: [{ unifiDeviceId: 'ap-1', unifiSiteId: 'default', mac: null, name: 'ap-1', cpuPct: 12, numClients: 3, raw: {} }] });
+    expect(await rowsAfter(f)).toMatchObject({ num_clients: 3 });
+    expect(Number((await rowsAfter(f)).cpu_pct)).toBe(12);
+  });
+
+  it('[1,2] -> [1] fallback: a v1 request after v2 ownership keeps the owned values while the scope still runs v2', async () => {
+    const f = await fixture();
+    await f.adapt(await f.report([f.resource('device_list', [apRow('ap-1')]), f.resource('statistics', [statRow('ap-1', { cpuUtilizationPct: 9 })])], -60_000));
+    expect((await f.adaptV1(await f.reportV1(-30_000))).accepted).toBe(true);
+    await legacy(f);
+    expect(Number((await rowsAfter(f)).cpu_pct)).toBe(9);
+  });
+
+  it('a legacy-created row (no v2 ownership) takes the legacy body values', async () => {
     const f = await fixture();
     const device = { unifiDeviceId: 'ap-9', unifiSiteId: 'default', mac: null, name: 'ap-9', uptimeSeconds: 5, cpuPct: 1, memPct: 2, numClients: 3, raw: {} };
-    await sys(() => reconcileTelemetry(db as never, legacyPayload(f.collectorId, { topologyV2Present: true, devices: [device] }) as never));
-    expect((await f.rows()).get('ap-9')).toMatchObject({ uptime_seconds: null, cpu_pct: null, mem_pct: null, num_clients: null });
+    await legacy(f, { devices: [device] });
+    expect((await f.rows()).get('ap-9')).toMatchObject({ uptime_seconds: '5', num_clients: 3 });
   });
 });

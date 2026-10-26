@@ -27,13 +27,18 @@ type CollectorConfig struct {
 	TopologySourceIdentity        string `json:"topologySourceIdentity,omitempty"`
 }
 
-func (c CollectorConfig) acceptsTopologyV1() bool {
-	for _, v := range c.AcceptedUnifiTopologyVersions {
-		if v == 1 {
-			return true
+// topologyVersion is the highest topology version this agent implements that
+// the server advertises (spec §4.3): 2 for [1,2] (or [2]), 1 for [1], 0 for
+// nothing (or only versions this agent does not implement). The advertisement
+// is authoritative; v2 is never inferred from anything else.
+func (c CollectorConfig) topologyVersion() int {
+	v := 0
+	for _, a := range c.AcceptedUnifiTopologyVersions {
+		if (a == 1 || a == 2) && a > v {
+			v = a
 		}
 	}
-	return false
+	return v
 }
 
 type CollectorDeps struct {
@@ -152,6 +157,10 @@ type telemetryPayload struct {
 	Error       string         `json:"error,omitempty"`
 	// TopologyV1 is the additive typed companion; absent unless negotiated.
 	TopologyV1 *TopologyV1 `json:"topologyV1,omitempty"`
+	// TopologyV2 is the Wi-Fi companion (spec §4.2). At most ONE of TopologyV1 /
+	// TopologyV2 is ever set per poll; it carries no second channel for Wi-Fi
+	// metrics (the legacy body shape above is unchanged).
+	TopologyV2 *TopologyV2 `json:"topologyV2,omitempty"`
 }
 
 func toUploadDevices(in []Device) []uploadDevice {
@@ -187,8 +196,15 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	api := NewAPIClient(cfg.ControllerURL, cfg.APIKey, controllerHTTP)
 	topo := prepareTopology(deps, cfg)
 	opts := PollOptions{}
+	var statsPlan StatisticsPlan
 	if topo != nil {
 		opts = PollOptions{DetailBudget: MaxDetailsPerPoll, DetailCursor: topo.state.Snapshot().DetailCursor}
+		if topo.version == 2 {
+			// §6.3: the budget uses the scheduling interval BEFORE the envelope's
+			// 60 s clamp, and is bounded by the persisted token bucket.
+			statsPlan = topo.state.PlanStatistics(time.Now(), maxInt(cfg.PollIntervalSeconds, 15))
+			opts.Wifi, opts.StatisticsBudget, opts.StatisticsCursor = true, statsPlan.Budget, statsPlan.Cursor
+		}
 	}
 	capturedAt := time.Now()
 	snap, pollErr := api.PollWith(ctx, opts)
@@ -211,7 +227,18 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 		if err := topo.state.SetDetailCursor(snap.NextDetailCursor); err != nil {
 			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
 		}
-		payload.TopologyV1 = topo.build(deps, cfg, snap, capturedAt)
+		if topo.version == 2 {
+			if err := topo.state.CommitStatistics(statsPlan, snap.StatisticsAttempted, snap.NextStatisticsCursor); err != nil {
+				deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
+			}
+			if snap.DroppedCapabilityValues > 0 {
+				// Bounded reason code only: never the raw controller text (§5.1).
+				deps.logf("[unifi] collector %s: dropped %d undocumented capability values (reason=%s)", cfg.CollectorID, snap.DroppedCapabilityValues, reasonCapabilityValueDropped)
+			}
+			payload.TopologyV2 = topo.buildV2(deps, cfg, snap, capturedAt)
+		} else {
+			payload.TopologyV1 = topo.build(deps, cfg, snap, capturedAt)
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -234,11 +261,25 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	if resp.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("telemetry upload: status %d", resp.StatusCode)
 	}
-	if payload.TopologyV1 != nil {
-		digests, reason := acceptedTopologyDigests(resp.Body, payload.TopologyV1)
+	var sentSeq string
+	sent := map[string]string{}
+	switch {
+	case payload.TopologyV1 != nil:
+		sentSeq = payload.TopologyV1.Sequence
+		for _, r := range payload.TopologyV1.Resources {
+			sent[ResourceKey(r)] = r.ContentDigest
+		}
+	case payload.TopologyV2 != nil:
+		sentSeq = payload.TopologyV2.Sequence
+		for _, r := range payload.TopologyV2.Resources {
+			sent[ResourceKeyV2(r)] = r.ContentDigest
+		}
+	}
+	if sentSeq != "" {
+		digests, reason := acceptedTopologyDigests(resp.Body, sentSeq, sent)
 		if len(digests) == 0 {
-			deps.logf("[unifi] collector %s: topology v1 sequence %s not acknowledged: %s", cfg.CollectorID, payload.TopologyV1.Sequence, reason)
-		} else if err := topo.state.Acknowledge(payload.TopologyV1.Sequence, digests); err != nil {
+			deps.logf("[unifi] collector %s: topology sequence %s not acknowledged: %s", cfg.CollectorID, sentSeq, reason)
+		} else if err := topo.state.Acknowledge(sentSeq, digests); err != nil {
 			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
 		}
 	}
@@ -269,7 +310,7 @@ type telemetryResponse struct {
 // accepted for exactly this report: same sequence, accepted, and the receipt
 // digest equal to the digest that was sent. HTTP 202 alone acknowledges nothing
 // (an older server that returns no receipts leaves the collector legacy-only).
-func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]string, string) {
+func acceptedTopologyDigests(body io.Reader, sentSequence string, sentDigests map[string]string) (map[string]string, string) {
 	var out telemetryResponse
 	if err := json.NewDecoder(io.LimitReader(body, maxTelemetryResponseBytes)).Decode(&out); err != nil {
 		return nil, "no receipts in response"
@@ -277,12 +318,8 @@ func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]strin
 	if out.Topology == nil {
 		return nil, "no receipts in response"
 	}
-	if out.Topology.ReportSequence != sent.Sequence {
+	if out.Topology.ReportSequence != sentSequence {
 		return nil, "receipts name another sequence"
-	}
-	sentDigests := make(map[string]string, len(sent.Resources))
-	for _, r := range sent.Resources {
-		sentDigests[ResourceKey(r)] = r.ContentDigest
 	}
 	digests := make(map[string]string)
 	for _, r := range out.Topology.Resources {
@@ -303,16 +340,17 @@ func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]strin
 type topologyRun struct {
 	state    *TopologyState
 	sequence uint64
+	version  int // negotiated: 1 or 2 (CollectorConfig.topologyVersion)
 }
 
 // prepareTopology opens state, installs the server epoch and allocates the
 // sequence BEFORE collection. Any failure degrades to the legacy-only upload.
 func prepareTopology(deps CollectorDeps, cfg CollectorConfig) *topologyRun {
-	if !cfg.acceptsTopologyV1() {
+	if cfg.topologyVersion() == 0 {
 		return nil
 	}
 	if deps.StateDir == "" || !validKey(cfg.TopologyProducerEpoch) || !validKey(cfg.TopologySourceIdentity) {
-		deps.logf("[unifi] collector %s: topology v1 advertised without epoch/source identity/state dir; sending legacy telemetry only", cfg.CollectorID)
+		deps.logf("[unifi] collector %s: topology advertised without epoch/source identity/state dir; sending legacy telemetry only", cfg.CollectorID)
 		return nil
 	}
 	st, err := OpenTopologyState(topologyStatePath(deps.StateDir, cfg.CollectorID))
@@ -329,7 +367,7 @@ func prepareTopology(deps CollectorDeps, cfg CollectorConfig) *topologyRun {
 		deps.logf("[unifi] collector %s: topology sequence: %v", cfg.CollectorID, err)
 		return nil
 	}
-	return &topologyRun{state: st, sequence: seq}
+	return &topologyRun{state: st, sequence: seq, version: cfg.topologyVersion()}
 }
 
 func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapshot, capturedAt time.Time) *TopologyV1 {
@@ -346,6 +384,25 @@ func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapsh
 	}
 	if err != nil {
 		deps.logf("[unifi] collector %s: topology v1 omitted: %v", cfg.CollectorID, err)
+		return nil
+	}
+	return report
+}
+
+func (t *topologyRun) buildV2(deps CollectorDeps, cfg CollectorConfig, snap Snapshot, capturedAt time.Time) *TopologyV2 {
+	if !snap.FirmwareOK {
+		return nil
+	}
+	report, err := BuildTopologyV2(snap, TopologyIdentity{SourceIdentity: cfg.TopologySourceIdentity, ProducerEpoch: cfg.TopologyProducerEpoch},
+		t.sequence, capturedAt, time.Now(), maxInt(cfg.PollIntervalSeconds, 15))
+	if err == nil {
+		var b []byte
+		if b, err = json.Marshal(report); err == nil && len(b) > UnifiTopologyV2MaxBytes {
+			err = fmt.Errorf("companion is %d bytes (limit %d)", len(b), UnifiTopologyV2MaxBytes)
+		}
+	}
+	if err != nil {
+		deps.logf("[unifi] collector %s: topology v2 omitted: %v", cfg.CollectorID, err)
 		return nil
 	}
 	return report

@@ -951,6 +951,7 @@ const REPOINT_TABLES: readonly string[] = [
   "contract_hour_periods",
   "contract_lines",
   "contract_renewal_notices",
+  "contract_skipped_billing_periods",
   "contract_template_versions",
   "contract_templates",
   "contracts",
