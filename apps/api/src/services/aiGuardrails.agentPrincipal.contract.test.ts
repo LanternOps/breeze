@@ -267,6 +267,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   // Tier-3 run_script consumes it, and the handler itself returns
   // feature_disabled while BREEZE_AI_SCRIPT_AUTHORING_ENABLED is off.
   'get_script_proposal',
+  'get_security_compliance', // Full-control W11 (#6781): tier-1 status/compliance read, device-scoped
   'get_security_posture',
   'get_service_monitoring_status',
   'get_site', // A-W06 Tier-1 read
