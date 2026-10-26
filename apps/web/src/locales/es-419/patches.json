@@ -551,7 +551,7 @@
     },
     "featureUpdates": {
       "title": "Actualizaciones de funciones de Windows",
-      "description": "Si los dispositivos de este anillo reciben versiones de funciones de Windows (por ejemplo, 25H2). La aprobación sigue las reglas de abajo; agregue una anulación de Actualizaciones de funciones para instalarlas automáticamente.",
+      "description": "Si los dispositivos de este anillo reciben versiones de funciones de Windows (por ejemplo, 25H2). Breeze las instala solo mediante las reglas de aprobación de abajo; agregue una anulación de Actualizaciones de funciones para aprobarlas automáticamente.",
       "modeBlock": "Bloquear",
       "modeAllow": "Permitir la versión más reciente",
       "modePin": "Fijar a una versión",
@@ -560,7 +560,7 @@
       "productWindows10": "Windows 10",
       "releaseLabel": "Versión",
       "releasePlaceholder": "25H2",
-      "pinNote": "A los dispositivos de este anillo solo se les ofrece esta versión, y Windows Update en cada dispositivo se configura para mantenerse en ella (política de versión objetivo).",
+      "pinNote": "Windows Update en cada dispositivo se configura para apuntar a esta versión (política de versión objetivo de Windows Update for Business). A menos que la configuración de la política \"Breeze es la única fuente de Windows Update\" esté activada, Windows puede descargar e instalar la versión según su propio calendario, fuera de la aprobación de Breeze.",
       "validation": {
         "release": "Ingrese una versión como 25H2."
       }

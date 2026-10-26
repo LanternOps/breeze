@@ -44,14 +44,16 @@ export type RingFeatureUpdates = z.infer<typeof ringFeatureUpdatesSchema>;
 export const DEFAULT_RING_FEATURE_UPDATES: RingFeatureUpdates = { mode: 'block' };
 
 /**
- * How Windows Update titles a feature release: the product, a comma, then
+ * How Windows Update titles a feature release: the title STARTS with the
+ * product (optionally after "Feature update to" / "Upgrade to"), then
  * "version <release>" — "Windows 11, version 24H2", "Feature update to
- * Windows 10, version 22H2 via Enablement Package (KB5015684)". Cumulative
- * updates say "for Windows 11 Version 24H2 for x64-based Systems" (no comma)
- * and never match. The agent's windowsFeatureUpdateTitlePattern is the same
- * expression; keep them identical.
+ * Windows 10, version 22H2 via Enablement Package (KB5015684)". Anchoring at
+ * the start keeps everything that merely names a release out: "2026-10
+ * Cumulative Update for Windows 11 Version 24H2 …", ".NET Framework 4.8.1 for
+ * Windows 11, version 24H2 …". The agent's windowsFeatureUpdateTitlePattern is
+ * the same expression; keep them identical.
  */
-const WINDOWS_FEATURE_UPDATE_TITLE = /\bWindows (10|11)\b[^,]*,\s*version (\d{2}H[12])\b/i;
+const WINDOWS_FEATURE_UPDATE_TITLE = /^\s*(?:feature update to |upgrade to )?windows (10|11)\b[^\d]*?\bversion (\d{2}H[12])\b/i;
 
 export function parseWindowsFeatureUpdateTitle(
   title: string,

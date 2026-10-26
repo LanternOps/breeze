@@ -7,8 +7,8 @@
  */
 import { DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
 import { loadPolicyLocalPatchConfig } from '../../services/configPolicyPatching';
-import type { DevicePolicySetOpts } from '../../services/devicePolicySet';
-import { resolvePatchConfigPolicyForDevice } from '../../services/featureConfigResolver';
+import { policySetFor, type DevicePolicySetOpts } from '../../services/devicePolicySet';
+import { patchFeatureUpdatesFromPolicySet, resolvePatchConfigPolicyForDevice } from '../../services/featureConfigResolver';
 
 /**
  * Wire shape (contract D6: snake_case inside the block). The agent's
@@ -34,11 +34,18 @@ export function toFeatureUpdateSettingsWire(policy: RingFeatureUpdates): Feature
  * then filters feature releases out and reverts any pin Breeze wrote. The
  * caller omits the block on a resolver error so a transient failure never
  * flips a fleet's pin.
+ *
+ * With the heartbeat's loaded policy set (the normal path) this reads the
+ * ring off the set's joined row and issues no statement of its own — the
+ * agent hot-path query budget pins steady beats to their current count. The
+ * resolver path below is the no-set fallback, like every other builder.
  */
 export async function buildFeatureUpdateConfigUpdate(
   deviceId: string,
   opts?: DevicePolicySetOpts,
 ): Promise<RingFeatureUpdates> {
+  const set = policySetFor(deviceId, opts);
+  if (set) return patchFeatureUpdatesFromPolicySet(set);
   const resolved = await resolvePatchConfigPolicyForDevice(deviceId, opts);
   if (!resolved) return DEFAULT_RING_FEATURE_UPDATES;
   const policyLocal = await loadPolicyLocalPatchConfig(resolved.configPolicyId);

@@ -551,7 +551,7 @@
     },
     "featureUpdates": {
       "title": "Atualizações de recursos do Windows",
-      "description": "Se os dispositivos deste anel recebem versões de recursos do Windows (por exemplo, 25H2). A aprovação continua seguindo as regras abaixo; adicione uma substituição de Atualizações de recursos para instalá-las automaticamente.",
+      "description": "Se os dispositivos deste anel recebem versões de recursos do Windows (por exemplo, 25H2). O Breeze as instala apenas pelas regras de aprovação abaixo; adicione uma substituição de Atualizações de recursos para aprová-las automaticamente.",
       "modeBlock": "Bloquear",
       "modeAllow": "Permitir a versão mais recente",
       "modePin": "Fixar em uma versão",
@@ -560,7 +560,7 @@
       "productWindows10": "Windows 10",
       "releaseLabel": "Versão",
       "releasePlaceholder": "25H2",
-      "pinNote": "Os dispositivos deste anel recebem apenas esta versão, e o Windows Update em cada dispositivo é configurado para permanecer nela (política de versão de destino).",
+      "pinNote": "O Windows Update em cada dispositivo é configurado para apontar para esta versão (política de versão de destino do Windows Update for Business). A menos que a configuração \"O Breeze é a única fonte do Windows Update\" da política esteja ativada, o Windows pode baixar e instalar a versão em seu próprio cronograma, fora da aprovação do Breeze.",
       "validation": {
         "release": "Informe uma versão como 25H2."
       }

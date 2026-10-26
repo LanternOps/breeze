@@ -113,13 +113,15 @@ func ParseFeatureUpdatePolicy(raw any) (FeatureUpdatePolicy, error) {
 }
 
 // windowsFeatureUpdateTitlePattern matches how Windows Update titles a feature
-// release: the product, then a comma, then "version <release>" — e.g.
-// "Windows 11, version 24H2" or "Feature update to Windows 10, version 22H2
-// via Enablement Package (KB5015684)". Cumulative updates say "for Windows 11
-// Version 24H2 for x64-based Systems" with no comma, so they never match. The
-// server-side parser (@breeze/shared parseWindowsFeatureUpdateTitle) uses the
-// same expression; keep them identical.
-var windowsFeatureUpdateTitlePattern = regexp.MustCompile(`(?i)\bWindows (10|11)\b[^,]*,\s*version (\d{2}H[12])\b`)
+// release: the title STARTS with the product (optionally after "Feature update
+// to" / "Upgrade to"), then "version <release>" — "Windows 11, version 24H2",
+// "Feature update to Windows 10, version 22H2 via Enablement Package
+// (KB5015684)". Anchoring at the start is what keeps everything that merely
+// names a release out: "2026-10 Cumulative Update for Windows 11 Version 24H2
+// …", ".NET Framework 4.8.1 for Windows 11, version 24H2 …". The server-side
+// parser (@breeze/shared parseWindowsFeatureUpdateTitle) uses the same
+// expression; keep them identical.
+var windowsFeatureUpdateTitlePattern = regexp.MustCompile(`(?i)^\s*(?:feature update to |upgrade to )?windows (10|11)\b[^\d]*?\bversion (\d{2}H[12])\b`)
 
 // ParseWindowsFeatureUpdateTitle extracts the product ("windows-11" /
 // "windows-10") and the upper-cased release ("24H2") from a feature-update
@@ -134,12 +136,46 @@ func ParseWindowsFeatureUpdateTitle(title string) (product, version string, ok b
 
 // isWindowsUpgradeClassification reports whether any WUA category name is the
 // Upgrades classification, which is where Windows Update files feature
-// releases (BrowseOnly is not reliable once the release is being pushed).
+// releases (BrowseOnly is not reliable once the release is being pushed). An
+// exact match: product categories such as "Windows 10 and later upgrade &
+// servicing drivers" contain the word and are drivers, not upgrades.
 func isWindowsUpgradeClassification(names []string) bool {
 	for _, n := range names {
-		if strings.Contains(strings.ToLower(n), "upgrade") {
+		if strings.EqualFold(strings.TrimSpace(n), "upgrades") {
 			return true
 		}
 	}
 	return false
+}
+
+// Update types reported in AvailablePatch.UpdateType.
+const (
+	UpdateTypeSoftware = "software"
+	UpdateTypeDriver   = "driver"
+	// UpdateTypeFeature is a Windows feature release, governed by the ring's
+	// FeatureUpdatePolicy.
+	UpdateTypeFeature = "feature"
+	// UpdateTypeOptional is any other BrowseOnly ("optional") update — optional
+	// drivers, cumulative-update previews, .NET previews. Never reported, as
+	// before this typing existed (they used to be typed "feature" and excluded
+	// by the then-default patch_exclude_feature_updates).
+	UpdateTypeOptional = "optional"
+)
+
+// windowsUpdateType classifies one WUA update. wuaType is IUpdate.Type (2 =
+// driver), browseOnly is IUpdate.BrowseOnly, names are the category names.
+func windowsUpdateType(wuaType int, browseOnly bool, names []string, title string) string {
+	if isWindowsUpgradeClassification(names) {
+		return UpdateTypeFeature
+	}
+	if browseOnly {
+		if _, _, ok := ParseWindowsFeatureUpdateTitle(title); ok {
+			return UpdateTypeFeature
+		}
+		return UpdateTypeOptional
+	}
+	if wuaType == 2 {
+		return UpdateTypeDriver
+	}
+	return UpdateTypeSoftware
 }

@@ -551,7 +551,7 @@
     },
     "featureUpdates": {
       "title": "Windows özellik güncellemeleri",
-      "description": "Bu halkadaki cihazların Windows özellik sürümlerini (örneğin 25H2) alıp almayacağı. Onay yine aşağıdaki kuralları izler; otomatik yüklemek için bir Özellik Güncellemeleri geçersiz kılması ekleyin.",
+      "description": "Bu halkadaki cihazların Windows özellik sürümlerini (örneğin 25H2) alıp almayacağı. Breeze bunları yalnızca aşağıdaki onay kurallarıyla yükler; otomatik onaylamak için bir Özellik Güncellemeleri geçersiz kılması ekleyin.",
       "modeBlock": "Engelle",
       "modeAllow": "En yeni sürüme izin ver",
       "modePin": "Bir sürüme sabitle",
@@ -560,7 +560,7 @@
       "productWindows10": "Windows 10",
       "releaseLabel": "Sürüm",
       "releasePlaceholder": "25H2",
-      "pinNote": "Bu halkadaki cihazlara yalnızca bu sürüm sunulur ve her cihazdaki Windows Update bu sürümde kalacak şekilde ayarlanır (hedef sürüm ilkesi).",
+      "pinNote": "Her cihazdaki Windows Update bu sürümü hedefleyecek şekilde ayarlanır (Windows Update for Business hedef sürüm ilkesi). İlkenin \"Breeze tek Windows Update kaynağıdır\" ayarı açık değilse Windows, sürümü Breeze onayı dışında kendi zamanlamasına göre indirip yükleyebilir.",
       "validation": {
         "release": "25H2 gibi bir sürüm girin."
       }

@@ -31,8 +31,10 @@ func classifyWindowsUpdateCategory(names []string) string {
 		{"definitions", func(n string) bool { return strings.Contains(n, "definition") }},
 		// "Feature Packs" and "Upgrades" — the latter is where WUA files Windows
 		// feature releases ("Windows 11, version 25H2"); rings govern those
-		// through the feature category and the feature-update policy.
-		{"feature", func(n string) bool { return strings.Contains(n, "feature") || strings.Contains(n, "upgrade") }},
+		// through the feature category and the feature-update policy. Exact on
+		// "upgrades": the product category "Windows 10 and later upgrade &
+		// servicing drivers" is drivers.
+		{"feature", func(n string) bool { return strings.Contains(n, "feature") || strings.TrimSpace(n) == "upgrades" }},
 		{"system", func(n string) bool {
 			return strings.Contains(n, "service pack") || strings.Contains(n, "update rollup")
 		}},

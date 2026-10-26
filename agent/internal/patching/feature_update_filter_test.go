@@ -23,6 +23,7 @@ func TestExcludeFeatureUpdate(t *testing.T) {
 		{"pin includes the pinned release", false, pin25, AvailablePatch{Title: "Windows 11, version 25H2", UpdateType: "feature"}, false},
 		{"non-feature patches are never touched", false, block, driver, false},
 		{"kill switch leaves non-feature patches alone", true, block, driver, false},
+		{"optional updates are not this filter's business", false, allow, AvailablePatch{Title: "Preview", UpdateType: UpdateTypeOptional}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

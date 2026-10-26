@@ -551,7 +551,7 @@
     },
     "featureUpdates": {
       "title": "Aggiornamenti delle funzionalità di Windows",
-      "description": "Se i dispositivi di questo anello ricevono le versioni delle funzionalità di Windows (ad esempio 25H2). L'approvazione segue comunque le regole seguenti; aggiungi un override Aggiornamenti funzionalità per installarli automaticamente.",
+      "description": "Se i dispositivi di questo anello ricevono le versioni delle funzionalità di Windows (ad esempio 25H2). Breeze le installa solo tramite le regole di approvazione seguenti; aggiungi un override Aggiornamenti funzionalità per approvarle automaticamente.",
       "modeBlock": "Blocca",
       "modeAllow": "Consenti la versione più recente",
       "modePin": "Blocca su una versione",
@@ -560,7 +560,7 @@
       "productWindows10": "Windows 10",
       "releaseLabel": "Versione",
       "releasePlaceholder": "25H2",
-      "pinNote": "Ai dispositivi di questo anello viene offerta solo questa versione e Windows Update su ciascun dispositivo è impostato per mantenerla (criterio versione di destinazione).",
+      "pinNote": "Windows Update su ciascun dispositivo viene impostato per puntare a questa versione (criterio versione di destinazione di Windows Update for Business). A meno che l'impostazione del criterio \"Breeze è l'unica origine di Windows Update\" sia attiva, Windows può scaricare e installare la versione secondo la propria pianificazione, al di fuori dell'approvazione di Breeze.",
       "validation": {
         "release": "Inserisci una versione come 25H2."
       }

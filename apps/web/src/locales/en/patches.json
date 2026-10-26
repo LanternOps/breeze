@@ -551,7 +551,7 @@
     },
     "featureUpdates": {
       "title": "Windows feature updates",
-      "description": "Whether devices in this ring receive Windows feature releases (for example 25H2). Approval still follows the rules below; add a Feature Updates override to install them automatically.",
+      "description": "Whether devices in this ring receive Windows feature releases (for example 25H2). Breeze installs them only through the approval rules below; add a Feature Updates override to approve them automatically.",
       "modeBlock": "Block",
       "modeAllow": "Allow the newest release",
       "modePin": "Pin to a release",
@@ -560,7 +560,7 @@
       "productWindows10": "Windows 10",
       "releaseLabel": "Release",
       "releasePlaceholder": "25H2",
-      "pinNote": "Devices in this ring are offered only this release, and Windows Update on each device is set to hold at it (target release policy).",
+      "pinNote": "Windows Update on each device is set to target this release (Windows Update for Business target-release policy). Unless the policy's \"Breeze is the only Windows Update source\" setting is on, Windows may download and install the release on its own schedule, outside Breeze approval.",
       "validation": {
         "release": "Enter a release like 25H2."
       }

@@ -14,7 +14,7 @@ type FeatureUpdatePolicySetter interface {
 // what the ring says, so a self-hoster can keep a fleet off feature releases
 // without touching every ring. Non-feature patches are never affected.
 func excludeFeatureUpdate(killSwitch bool, policy FeatureUpdatePolicy, patch AvailablePatch) bool {
-	if patch.UpdateType != "feature" {
+	if patch.UpdateType != UpdateTypeFeature {
 		return false
 	}
 	if killSwitch {
