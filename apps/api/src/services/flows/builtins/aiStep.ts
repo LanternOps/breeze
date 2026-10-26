@@ -60,6 +60,7 @@ import { aiTools, executeTool, toolManagesDbContext } from '../../aiTools';
 import { redactSecretsFromOutput } from '../../secretRedaction';
 import { captureException } from '../../sentry';
 import { executeTenantToolDetailed } from '../../toolSources/execute';
+import { guardrailCheckForTenantTool } from '../../toolSources/guardrails';
 import { compileTenantInputSchema, loadTenantToolForExecution } from '../../toolSources/resolver';
 import { loadFlowCatalog } from '../catalog';
 import { resolveFlowLimits } from '../flowLimits';
@@ -100,7 +101,7 @@ type ToolUseBlock = Extract<Anthropic.ContentBlock, { type: 'tool_use' }>;
 type ToolResultBlock = { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
 type AllowedTool =
   | { source: 'core'; name: string; definition: Anthropic.Tool }
-  | { source: 'tenant'; name: string; descriptorId: string; definition: Anthropic.Tool };
+  | { source: 'tenant'; name: string; descriptorId: string; revision: string; definition: Anthropic.Tool };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -144,7 +145,7 @@ async function allowedTools(names: readonly string[], ctx: BuiltinContext): Prom
     } else if (entry?.source === 'tenant') {
       const d = entry.descriptor.definition as { name?: string; description?: string; input_schema?: Anthropic.Tool['input_schema'] };
       out.set(name, {
-        source: 'tenant', name, descriptorId: entry.descriptor.id,
+        source: 'tenant', name, descriptorId: entry.descriptor.id, revision: entry.descriptor.revision,
         definition: { name, description: d.description ?? '', input_schema: d.input_schema ?? { type: 'object' } },
       });
     }
@@ -220,8 +221,15 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
         const call = () => executeTool(tool.name, args, ctx.auth);
         text = await (toolManagesDbContext(aiTools.get(tool.name), args) ? runOutsideDbContext(call) : withAuthDbAccessContext(ctx.auth, call));
       } else {
+        // Re-checked at call time: an admin can raise a tenant tool's tier or
+        // change it mid-step; only the exact Tier-1 revision allowed at the
+        // start of the step may run.
         const loaded = await loadTenantToolForExecution(tool.descriptorId, ctx.auth, orgId);
-        if (!loaded || loaded.descriptor.id !== tool.descriptorId) return refuse(`Tool '${tool.name}' is no longer available.`);
+        if (!loaded || loaded.descriptor.id !== tool.descriptorId || loaded.descriptor.revision !== tool.revision) {
+          return refuse(`Tool '${tool.name}' changed or is no longer available.`);
+        }
+        const live = guardrailCheckForTenantTool(loaded.descriptor);
+        if (!live.allowed || live.tier !== 1) return refuse(`Tool '${tool.name}' is no longer a read-only tool.`);
         const result = await runOutsideDbContext(() => executeTenantToolDetailed(loaded.descriptor, args, ctx.auth, {
           orgId, actor: { kind: 'flow', id: runId }, surface: 'flow',
         }));

@@ -206,8 +206,20 @@ describe('executeAiStep', () => {
     expect(out).toMatchObject({ kind: 'completed', output: { toolCalls: [{ tool: 'file_operations', ok: false }] } });
   });
 
+  it('a tenant tool whose tier rose or whose revision changed since the step started is refused, not executed', async () => {
+    for (const changed of [{ id: 'id-halo__lookup', revision: 'r', tier: 2 }, { id: 'id-halo__lookup', revision: 'r2', tier: 1 }]) {
+      h.loadTenantToolForExecution.mockReset().mockResolvedValueOnce({ descriptor: changed });
+      h.create.mockReset()
+        .mockResolvedValueOnce(message([call('halo__lookup', { q: 'x' })]))
+        .mockResolvedValueOnce(message([submit({ verdict: 'ok' })]));
+      const out = await executeAiStep(input({ tools: ['halo__lookup'] }), ctx());
+      expect(h.executeTenantToolDetailed).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ kind: 'completed', output: { toolCalls: [{ tool: 'halo__lookup', ok: false }] } });
+    }
+  });
+
   it('a tenant Tier-1 tool runs through executeTenantToolDetailed attributed to the run', async () => {
-    const descriptor = { id: 'id-halo__lookup', revision: 'r' };
+    const descriptor = { id: 'id-halo__lookup', revision: 'r', tier: 1 };
     h.loadTenantToolForExecution.mockResolvedValueOnce({ descriptor });
     h.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: '{"found":true}' });
     h.create
