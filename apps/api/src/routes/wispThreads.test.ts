@@ -31,6 +31,7 @@ const h = vi.hoisted(() => {
     addThreadAttachment: vi.fn(),
     listThreadAttachments: vi.fn(),
     listActivity: vi.fn(),
+    listThreadTimeline: vi.fn(),
     currentActivity: vi.fn(),
     writeRouteAudit: vi.fn(),
     captureException: vi.fn(),
@@ -111,6 +112,10 @@ vi.mock('../services/wisp/activity', async (importOriginal) => ({
   listActivity: h.listActivity,
   currentActivity: h.currentActivity,
 }));
+vi.mock('../services/wisp/threadTimeline', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/threadTimeline')>()),
+  listThreadTimeline: h.listThreadTimeline,
+}));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
 
@@ -118,6 +123,7 @@ import { wispRoutes } from './wisp';
 import { CeilingViolationError, GrantInactiveError } from '../services/wisp/grantAuthority';
 import { ThreadAttachmentError, THREAD_ATTACHMENT_MAX_BYTES, THREAD_ATTACHMENT_MESSAGES } from '../services/wisp/threadAttachments';
 import { InvalidActivityCursorError } from '../services/wisp/activity';
+import { InvalidTimelineCursorError } from '../services/wisp/threadTimeline';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -738,5 +744,88 @@ describe('GET /wisp/thread/:id/activity (W06 Task 14, w00 A31)', () => {
     const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/activity`);
     expect(res.status).toBe(409);
     expect(h.listActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /wisp/thread/:id/timeline (W02a #10212)', () => {
+  const message = {
+    source: 'message', id: '13131313-1313-4313-8313-131313131313', sessionId: S1, role: 'assistant', content: 'hi',
+    contentBlocks: null, toolName: null, toolInput: null, toolOutput: null, toolUseId: null, createdAt: '2026-10-24T08:00:00.000Z',
+  };
+  const post = {
+    source: 'post', id: '14141414-1414-4414-8414-141414141414', kind: 'brief', title: 'Morning brief', body: null, link: null,
+    sections: null, concernId: null, orgId: null, read: null, createdAt: '2026-10-24T09:00:00.000Z',
+  };
+
+  it('returns the timeline page for the caller\'s own thread from the live ceiling (default limit 50)', async () => {
+    h.dbResults.push([ownRow()]);
+    h.listThreadTimeline.mockResolvedValue({ items: [post, message], nextCursor: 'next' });
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { items: [post, message], nextCursor: 'next' } });
+    expectOwnershipWhere(h.whereArgs[0]);
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV, { allowPaused: true });
+    expect(h.listThreadTimeline).toHaveBeenCalledWith(ceiling, THREAD_ID, { cursor: undefined, limit: 50, excludeSessionId: undefined });
+  });
+
+  it('passes cursor, limit and excludeSessionId through', async () => {
+    h.dbResults.push([ownRow()]);
+    h.listThreadTimeline.mockResolvedValue({ items: [], nextCursor: null });
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline?cursor=abc&limit=10&excludeSessionId=${S1}`);
+    expect(res.status).toBe(200);
+    expect(h.listThreadTimeline).toHaveBeenCalledWith(ceiling, THREAD_ID, { cursor: 'abc', limit: 10, excludeSessionId: S1 });
+  });
+
+  it('is 404 for an unknown or another user\'s thread (no ceiling resolved, nothing listed)', async () => {
+    h.dbResults.push([]);
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline`);
+    expect(res.status).toBe(404);
+    expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+    expect(h.listThreadTimeline).not.toHaveBeenCalled();
+    expect((await buildApp().request('/wisp/thread/not-a-uuid/timeline')).status).toBe(404);
+  });
+
+  it('a malformed cursor is 400 invalid_cursor; a bad limit or excludeSessionId is 400 before any read', async () => {
+    h.dbResults.push([ownRow()]);
+    h.listThreadTimeline.mockRejectedValue(new InvalidTimelineCursorError());
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline?cursor=garbage`);
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('invalid_cursor');
+    h.listThreadTimeline.mockClear();
+    expect((await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline?limit=101`)).status).toBe(400);
+    expect((await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline?excludeSessionId=nope`)).status).toBe(400);
+    expect(h.listThreadTimeline).not.toHaveBeenCalled();
+  });
+
+  it('Review Focus 3: a paused grant reads its history (200)', async () => {
+    h.dbResults.push([ownRow({ grantStatus: 'paused', grantPausedReason: 'user' })]);
+    h.resolveGrantCeiling.mockResolvedValue({ ...ceiling, status: 'paused' });
+    h.listThreadTimeline.mockResolvedValue({ items: [post], nextCursor: null });
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.items).toEqual([post]);
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV, { allowPaused: true });
+  });
+
+  it('Review Focus 3: a revoked or expired grant is 409 grant_inactive; a corrupt pin is 500', async () => {
+    for (const status of ['revoked', 'expired'] as const) {
+      h.dbResults.push([ownRow({ grantStatus: status })]);
+      h.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT_ID, status));
+      const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline`);
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('grant_inactive');
+    }
+    h.dbResults.push([ownRow()]);
+    h.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT_ID, 'active', 'bad pin', 'corrupt'));
+    expect((await buildApp().request(`/wisp/thread/${THREAD_ID}/timeline`)).status).toBe(500);
+    expect(h.listThreadTimeline).not.toHaveBeenCalled();
+  });
+
+  it('the other ceiling reads keep refusing a paused grant (no allowPaused)', async () => {
+    h.dbResults.push([ownRow()]);
+    h.listActivity.mockResolvedValue({ items: [], nextCursor: null });
+    h.currentActivity.mockResolvedValue(null);
+    await buildApp().request(`/wisp/thread/${THREAD_ID}/activity`);
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV);
   });
 });

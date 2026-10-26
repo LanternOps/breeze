@@ -1182,6 +1182,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // references wisp_threads, users and organizations ON DELETE CASCADE and
   // wisp_grants ON DELETE SET NULL (added_by_grant_id).
   'wisp_thread_links',
+  // Wisp companion W02a (#10212). Same partner-anchored / org-optional shape:
+  // this pass deletes its org posts only; a partner-level post (brief, digest,
+  // org-less concern) leaves with its thread / partner. It references
+  // wisp_threads and wisp_grants ON DELETE CASCADE, and wisp_concerns and
+  // user_notifications ON DELETE SET NULL; topologicalCascadeOrder() puts it
+  // before its parents.
+  'wisp_thread_posts',
   'wisp_thread_sessions',
   'wisp_watches',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,

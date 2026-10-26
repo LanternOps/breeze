@@ -29,6 +29,12 @@ export default function AllowanceCell(
     );
   }
 
+  // #9664: a manual line with no quantity is unresolved — generation refuses
+  // it, so the cell must not read as a billable "0".
+  if (estimate?.unresolved === 'manual_quantity_missing') {
+    return <span data-testid="allowance-manual-quantity-missing">{t('contracts.shared.values.manualQuantityMissing')}</span>;
+  }
+
   // #4547: a block's quantity cell is its entitlement, not a counted-vs-included figure
   // (the live balance lives in the estimate's hourBlock and the detail panel).
   if (line.lineType === 'hour_block') {

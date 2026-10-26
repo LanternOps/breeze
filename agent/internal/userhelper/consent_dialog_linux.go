@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -19,17 +18,7 @@ import (
 // denial or an expiry (classifyZenityExit).
 // zenity exit codes: 0=OK(Allow), 1=Cancel(Deny), 5=timeout.
 func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
-	title, body := buildConsentDialogText(req)
-	args := []string{
-		"--question",
-		"--title", title,
-		"--text", body,
-		"--ok-label", "Allow",
-		"--cancel-label", "Deny",
-	}
-	if req.TimeoutMs > 0 {
-		args = append(args, fmt.Sprintf("--timeout=%d", (req.TimeoutMs+999)/1000))
-	}
+	args := consentZenityArgs(req)
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "zenity", args...)
 	cmd.Stderr = &stderr

@@ -99,7 +99,7 @@ export function portalQuoteHostComponents(src: QuoteAssetSource): DocumentHostCo
 }
 
 /** Agreement host components: the signing page embeds an uploaded agreement from one token-scoped file route. */
-export function portalAgreementHostComponents(filePath: string): DocumentHostComponents {
+export function portalAgreementHostComponents(filePath: string, testIdPrefix = 'public-agreement'): DocumentHostComponents {
   return {
     Image: () => null,
     AgreementFile: ({ title, downloadLabel }) => (
@@ -109,7 +109,7 @@ export function portalAgreementHostComponents(filePath: string): DocumentHostCom
           href={filePath}
           target="_blank"
           rel="noreferrer"
-          data-testid="public-agreement-download"
+          data-testid={`${testIdPrefix}-download`}
           className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
         >
           {downloadLabel}

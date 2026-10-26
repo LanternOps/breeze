@@ -12,7 +12,9 @@ export type HomeLoad =
   /** The caller has no usable grant: the page shows the start card. */
   | { kind: 'noGrant' }
   /** The partner has no `wisp` entitlement (the hub's 403): FeatureLock. */
-  | { kind: 'locked' };
+  | { kind: 'locked' }
+  /** Any other 403: the caller's role may not use Wisp (e.g. a Partner Viewer). Not a load error (#10145). */
+  | { kind: 'forbidden' };
 
 /**
  * `GET /wisp/home` — the caller's usable grant (active before paused). The
@@ -25,6 +27,8 @@ export async function fetchWispHome(): Promise<HomeLoad> {
   const body = (await res.json().catch(() => null)) as { code?: unknown; data?: WispHomePayload } | null;
   if (res.status === 404 && body?.code === 'no_grant') return { kind: 'noGrant' };
   if (res.status === 403 && body?.code === 'entitlement_required') return { kind: 'locked' };
+  // A JSON permission refusal only: a non-JSON 403 (proxy/WAF) or MFA_REQUIRED stays a load error with retry.
+  if (res.status === 403 && body && body.code !== 'MFA_REQUIRED') return { kind: 'forbidden' };
   if (!res.ok) throw new Error(`wisp home read failed: ${res.status}`);
   // The home payload is a superset of GET /wisp/thread/:id, so the panel's
   // parser applies as-is.

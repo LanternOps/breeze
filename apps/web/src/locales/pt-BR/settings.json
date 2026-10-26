@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Retida pela janela de adiamento",
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
+          "blocked_by_feature_update_policy": "Excluído pela política de atualizações de recursos do Windows do anel",
           "awaiting_manual_approval": "Aguardando aprovação manual",
           "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",

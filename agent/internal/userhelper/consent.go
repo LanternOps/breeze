@@ -280,6 +280,10 @@ func classifyOsascriptResult(output string, failed bool) dialogOutcome {
 		return dialogExpired
 	case strings.Contains(output, "button returned:Allow"):
 		return dialogAllowed
+	case strings.Contains(output, "button returned:Deny"):
+		// Deny is the cancel button, so a click on it exits -128 above; a Deny
+		// reported as a returned button is still the user's denial.
+		return dialogDenied
 	default:
 		return dialogUnavailable
 	}

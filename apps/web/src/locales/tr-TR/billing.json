@@ -55,7 +55,8 @@
         "auto": "otomatik",
         "groupDeleted": "grup silindi",
         "siteDeleted": "konum silindi",
-        "siteDeletedNamed": "konum silindi: {{name}}"
+        "siteDeletedNamed": "konum silindi: {{name}}",
+        "manualQuantityMissing": "miktar eksik"
       },
       "lineScope": {
         "site": "Konum: {{name}}"

@@ -1502,6 +1502,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]); // #3778: parent contract locked FOR UPDATE — B2 guard reads its currency
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
@@ -1536,6 +1537,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('JPY 100.50 not representable', 409, 'PRICE_NOT_REPRESENTABLE'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'JPY' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]); // #3778: parent contract locked FOR UPDATE
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '100.00', lineTotal: '200.00', taxable: true, customerVisible: true });
 
@@ -1554,6 +1556,7 @@ describe('addContractLine', () => {
     resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]); // #3778: parent contract locked FOR UPDATE — B2 guard: the snapshot is in the invoice currency
+    queueResult([{ name: 'Managed endpoint' }]); // #9664: catalog item name → line title
     queueInsertAndRecompute({ id: 'l3', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '2', unitPrice: '80.00', lineTotal: '160.00', taxable: true, customerVisible: true });
 
@@ -1625,6 +1628,124 @@ describe('addContractLine', () => {
     await expect(
       svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.00', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  // #9664: a contract line used to land with name NULL, so the invoice editor's
+  // Name box was empty. The title is the catalog item's name or the contract
+  // line text's first line; `description` keeps only what the title does not
+  // already say, because every renderer prints name + description as title +
+  // blurb and a copied title would print twice on the customer's invoice.
+  describe('line name (#9664)', () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    const lineRow = { id: 'l9', sourceType: 'contract', lineTotal: '500.00', taxable: false, customerVisible: true };
+    const inserted = () => (db as unknown as { values: Mock }).values.mock.calls[0]![0] as { name: unknown; description: unknown };
+    function queueNonCatalog() {
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueInsertAndRecompute(lineRow);
+    }
+    const nonCatalog = (description: string) => svc.addContractLine('i1', {
+      description, quantity: '1', unitPrice: '500.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+    }, actor);
+
+    it('non-catalog, one-line text: the text is the name and no blurb repeats it', async () => {
+      queueNonCatalog();
+      await nonCatalog('  Managed services (flat)  ');
+      expect(inserted()).toMatchObject({ name: 'Managed services (flat)', description: null });
+    });
+
+    it('non-catalog, multi-line text: the first line is the name, the rest is the blurb', async () => {
+      queueNonCatalog();
+      await nonCatalog('Managed services\n  Includes patching\nand AV  \n');
+      expect(inserted()).toMatchObject({ name: 'Managed services', description: 'Includes patching\nand AV' });
+    });
+
+    it('non-catalog, leading blank lines are skipped for the name', async () => {
+      queueNonCatalog();
+      await nonCatalog('\n\n  Backup  \nNightly');
+      expect(inserted()).toMatchObject({ name: 'Backup', description: 'Nightly' });
+    });
+
+    it('non-catalog, Windows line endings split the same way', async () => {
+      queueNonCatalog();
+      await nonCatalog('Backup\r\nNightly\r\nOffsite');
+      expect(inserted()).toMatchObject({ name: 'Backup', description: 'Nightly\nOffsite' });
+    });
+
+    // #9664 review: a derived line (hour-block overage) appends its marker to
+    // the TITLE, so a multi-line base text never pushes it into the blurb.
+    it('titleSuffix lands on the title line, not after the blurb', async () => {
+      queueNonCatalog();
+      await svc.addContractLine('i1', {
+        description: 'Support hours\nPriority queue', titleSuffix: ' — hours over block, 2026-07-01 – 2026-08-01',
+        quantity: '2', unitPrice: '150.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({
+        name: 'Support hours — hours over block, 2026-07-01 – 2026-08-01', description: 'Priority queue',
+      });
+    });
+
+    it('titleSuffix survives the 255 cap', async () => {
+      queueNonCatalog();
+      const suffix = ' — hours over block, 2026-07-01 – 2026-08-01';
+      await svc.addContractLine('i1', {
+        description: 'B'.repeat(300), titleSuffix: suffix,
+        quantity: '2', unitPrice: '150.00', taxable: false, catalogItemId: null, sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      const row = inserted();
+      expect((row.name as string).length).toBe(255);
+      expect((row.name as string).endsWith(`…${suffix}`)).toBe(true);
+      expect(row.description).toBe('B'.repeat(300));
+    });
+
+    it('non-catalog, a first line longer than the name column is capped and the full text stays as the blurb', async () => {
+      queueNonCatalog();
+      const long = 'A'.repeat(300);
+      await nonCatalog(long);
+      const row = inserted();
+      expect((row.name as string).length).toBe(255);
+      expect(row.name).toBe('A'.repeat(254) + '…');
+      expect(row.description).toBe(long);
+    });
+
+    it('catalog path: the catalog item name is the title and the contract text stays as the blurb', async () => {
+      resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueResult([{ name: 'Endpoint Protection' }]); // catalog item name
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: 'Managed endpoint — Dallas office', quantity: '3', unitPrice: '99.00', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: 'Managed endpoint — Dallas office' });
+    });
+
+    it('catalog path: contract text identical to the catalog name is not repeated as a blurb', async () => {
+      resolvePriceMock.mockResolvedValue(resolvedUsd({ unitPrice: '99.00', costBasis: '45.00' }));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'USD' }]);
+      queueResult([{ name: 'Endpoint Protection' }]);
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: ' Endpoint Protection ', quantity: '3', unitPrice: '99.00', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: null });
+    });
+
+    it('catalog path on a price-book gap still names the line from the catalog item', async () => {
+      resolvePriceMock.mockRejectedValue(new CatalogServiceError('No EUR price', 409, 'NO_PRICE_FOR_CURRENCY'));
+      queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
+      queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'EUR' }]);
+      queueResult([{ name: 'Endpoint Protection' }]);
+      queueInsertAndRecompute(lineRow);
+      await svc.addContractLine('i1', {
+        description: 'Managed endpoint', quantity: '2', unitPrice: '80', taxable: true,
+        catalogItemId: 'cat-1', sourceId: 'cl-1', contractId: 'ct1',
+      }, actor);
+      expect(inserted()).toMatchObject({ name: 'Endpoint Protection', description: 'Managed endpoint' });
+    });
   });
 });
 
@@ -1812,6 +1933,18 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP', expect.any(Date), 'UTC');
   });
 
+  it('(c\'\'\') org: AI usage lines are worded in the partner document locale (#9669)', async () => {
+    queueResult([{ timezone: 'UTC', settings: { language: 'de-DE' } }]); // partner timezone (#8603) + document locale (#9669)
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [], heldForHourBlock: { count: 0, hours: 0 } });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue(empty());
+    await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-11-01', to: '2026-11-30' }, actor);
+    expect((gatherOrgAiUsageCharges as Mock).mock.calls[0]![3]).toBe('de-DE');
+  });
+
   it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
     queueResult([{ timezone: 'UTC' }]);        // partner timezone (#8603)
     queueResult([{ currencyCode: 'USD' }]);
@@ -1827,9 +1960,10 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     // No lower bound: a closed month's charge exists only from the 1st of the
     // next month, so any unbilled charge billed on or before `to` is gathered.
     const aiCall = (gatherOrgAiUsageCharges as Mock).mock.calls[0]!;
-    expect(aiCall).toHaveLength(3);
-    const [, through, header] = aiCall;
-    expect([(through as Date).toISOString(), header]).toEqual(['2026-11-30T23:59:59.000Z', 'USD']);
+    expect(aiCall).toHaveLength(4);
+    const [, through, header, locale] = aiCall;
+    // #9669: no partner language set → the document locale falls back to 'en'.
+    expect([(through as Date).toISOString(), header, locale]).toEqual(['2026-11-30T23:59:59.000Z', 'USD', 'en']);
     const [, from, to] = (gatherOrgTimeEntries as Mock).mock.calls[0]!;
     expect([(from as Date).toISOString(), to]).toEqual(['2026-11-01T00:00:00.000Z', through]);
     const valuesMock = (db as unknown as { values: Mock }).values;

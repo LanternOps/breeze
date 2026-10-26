@@ -88,7 +88,8 @@ export interface ContractEstimateLine {
   overage: number;
   overageMode: OverageMode | null;
   overageValue: string;
-  unresolved?: 'group_deleted' | 'site_deleted';
+  /** #9664: 'manual_quantity_missing' = a manual line with no quantity (never billed as 0). */
+  unresolved?: 'group_deleted' | 'site_deleted' | 'manual_quantity_missing';
 }
 export interface ContractEstimate {
   currencyCode: string;

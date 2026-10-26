@@ -650,6 +650,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/network.ts': { exempt: 'portal' },
   'portal/profile.ts': { exempt: 'portal' },
   'portal/quotes.ts': { exempt: 'portal' },
+  'portal/agreements.ts': { exempt: 'portal', note: 'Customer signs or declines an agreement sent for signature (#9075 W3a). Human-only by design: a client\'s legal assent is never delegated to an agent.' },
+  'portal/signedAgreements.ts': { exempt: 'portal', note: 'Customer download of their own signed agreements (#9075 W3a).' },
   'portal/approvals.ts': { exempt: 'portal', note: 'Customer work approval (#4617 spec §6.2): the customer\'s own approve/deny in the portal session. Human-only by design (spec §6.5): no AI tool may decide a request.' },
   'portal/reports.ts': { exempt: 'portal' },
   'portal/security.ts': { exempt: 'portal' },

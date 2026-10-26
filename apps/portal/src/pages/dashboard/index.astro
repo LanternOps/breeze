@@ -1,6 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { DashboardTiles, DashboardUnavailable } from '../../components/portal/DashboardTiles';
+import { AgreementsAwaitingSignature } from '../../components/portal/AgreementsAwaitingSignature';
 import { TrustPageLink } from '../../components/portal/TrustPageLink';
 import { portalApi } from '../../lib/api';
 import { fetchTrustPageLink } from '../../lib/trustPageLinkApi';
@@ -10,6 +11,18 @@ import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../l
 
 // Started alongside the dashboard read (never rejects; any failure is null) so the link adds no round trip.
 const trustPathPromise = fetchTrustPageLink(buildServerApiConfig(Astro.request));
+// Agreements awaiting this user's signature: never rejects; any error, 401 or non-200 reads as none.
+// Hidden, never a page error — but traced, so a broken read is not invisible.
+const agreementsPromise = portalApi.getAgreements(buildServerApiConfig(Astro.request))
+  .then((res) => {
+    if (res.statusCode === 200) return res.data?.data ?? [];
+    if (res.statusCode !== 401) console.warn('[portal] dashboard agreements read failed', { status: res.statusCode, error: res.error });
+    return [];
+  })
+  .catch((err: unknown) => {
+    console.warn('[portal] dashboard agreements read threw', err);
+    return [];
+  });
 const response = await portalApi.getDashboard(
   buildServerApiConfig(Astro.request),
 );
@@ -34,12 +47,14 @@ const supportEmail = response.data
   ? null
   : (await loadPortalBranding(Astro.request)).supportEmail;
 const trustPath = response.data ? await trustPathPromise : null;
+const agreements = response.data ? await agreementsPromise : [];
 ---
 
 <PortalLayout title="Dashboard">
   {
     response.data
       ? <>
+          <AgreementsAwaitingSignature agreements={agreements} />
           <DashboardTiles dashboard={response.data} />
           <TrustPageLink publicPath={trustPath} />
         </>

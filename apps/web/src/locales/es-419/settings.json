@@ -2987,6 +2987,7 @@
           "held_by_deferral": "Retenida por la ventana de aplazamiento",
           "blocked_by_category": "Excluida por las reglas de categoría del anillo",
           "blocked_by_app_rule": "Bloqueada por una regla de aplicación",
+          "blocked_by_feature_update_policy": "Excluido por la política de actualizaciones de funciones de Windows del anillo",
           "awaiting_manual_approval": "En espera de aprobación manual",
           "explicitly_declined": "Rechazado explícitamente",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",

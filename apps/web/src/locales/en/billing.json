@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "group deleted",
         "siteDeleted": "site deleted",
-        "siteDeletedNamed": "site deleted: {{name}}"
+        "siteDeletedNamed": "site deleted: {{name}}",
+        "manualQuantityMissing": "quantity missing"
       },
       "lineScope": {
         "site": "Site: {{name}}"

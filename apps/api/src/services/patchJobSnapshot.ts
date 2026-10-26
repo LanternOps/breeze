@@ -39,6 +39,8 @@ export interface PatchesSnapshot {
    * snapshots so in-flight jobs keep their rules.
    */
   ringAppRules: PatchRingResolution['appRules'];
+  /** The ring's Windows feature-release policy, frozen with the job. */
+  ringFeatureUpdates: PatchRingResolution['featureUpdates'];
   ringValidation: {
     classification: PatchRingResolution['classification'];
     valid: boolean;
@@ -55,6 +57,7 @@ export function buildPatchesSnapshot(policyLocal: PatchesSnapshotInput): Patches
     autoApprove: policyLocal.ring.autoApprove,
     sources: policyLocal.settings.sources,
     ringAppRules: policyLocal.ring.appRules,
+    ringFeatureUpdates: policyLocal.ring.featureUpdates,
     ringValidation: {
       classification: policyLocal.ring.classification,
       valid: policyLocal.ring.valid,

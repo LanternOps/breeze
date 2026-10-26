@@ -38,7 +38,10 @@ export async function mintWispGrantStepUp(input: {
   reauth: StepUpReauth;
 }): Promise<string> {
   const query = input.orgId ? `?orgId=${encodeURIComponent(input.orgId)}` : '';
-  const res = await fetchWithAuth(`/wisp/grants/preview${query}`);
+  // The URL owns the scope: a partner-wide preview (no orgId) must not pick up
+  // the switcher's ambient `?orgId=`, or the step-up is minted against an
+  // org-scoped ceiling hash that the partner-wide POST /wisp/grants refuses.
+  const res = await fetchWithAuth(`/wisp/grants/preview${query}`, { skipOrgIdInjection: true });
   const body = (await res.json().catch(() => null)) as { ceilingHash?: unknown; code?: unknown } | null;
   if (!res.ok) {
     throw new WispPreviewError(
@@ -124,7 +127,9 @@ export function isNoActiveGrant(err: unknown): boolean {
 
 /** Read the caller's active grant + thread for a scope (null orgId = partner-wide). */
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
-  const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread');
+  // Exact-scope lookup on the server: the ambient `?orgId=` must not turn a
+  // partner-wide read into an org-scoped miss (404 `no_active_grant`).
+  const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread', { skipOrgIdInjection: true });
   const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
   if (!res.ok) {
     throw new WispThreadReadError(

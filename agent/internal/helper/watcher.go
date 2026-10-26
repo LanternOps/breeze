@@ -13,6 +13,12 @@ var (
 
 const watcherMaxRetries = 5
 
+// watcherGiveUpRetry is how long a session whose watcher gave up stays given
+// up before ensureRunningSession tries Assist again (#10183). A new Assist
+// version retries at once. Matches helperAbandonRetryAfter: a few attempts per
+// six hours bounds a permanent crash without needing an agent restart.
+const watcherGiveUpRetry = 6 * time.Hour
+
 type watcher struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -54,6 +60,7 @@ func (w *watcher) run() {
 			(w.state.pid > 0 && w.mgr.isOurProcessFunc(w.state.pid, w.mgr.binaryPath))
 		if running {
 			w.mgr.reapDuplicateHelpersLocked(w.state)
+			w.mgr.trackAssistExitsLocked(w.state)
 			w.mgr.mu.Unlock()
 			failures = 0
 			interval = watcherBaseInterval
@@ -65,24 +72,36 @@ func (w *watcher) run() {
 		// spawn itself fails OR the previous spawn succeeded but the
 		// helper crashed before the next check.
 		failures++
+		exit, exitKnown := w.mgr.takeAssistExitLocked(w.state)
+		if exitKnown {
+			w.state.lastExit, w.state.lastExitKnown = exit, true
+		}
 
 		if failures > watcherMaxRetries {
 			w.state.watcherGaveUp = true
+			w.state.gaveUpAt = w.mgr.nowTime()
+			w.state.gaveUpVersion = w.mgr.installedVersionLocked()
+			lastExit, lastKnown := w.state.lastExit, w.state.lastExitKnown
 			w.mgr.mu.Unlock()
 			log.Error("breeze assist keeps crashing, giving up",
 				"session", w.state.key,
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
+				"lastExitCode", exitCodeField(lastExit, lastKnown),
+				"retryAfter", watcherGiveUpRetry.String(),
 			)
 			return
 		}
 
 		err := w.mgr.ensureRunningSession(w.state)
-		if errors.Is(err, ErrNotInstalled) {
+		if errors.Is(err, ErrNotInstalled) || errors.Is(err, errWebView2Outdated) || errors.Is(err, errCrashLoop) {
 			// #6872: not a crash. The failure counted above dies with this
 			// goroutine, watcherGaveUp is left alone, and Apply starts a
-			// fresh watcher once the server-offered install lands.
+			// fresh watcher once the server-offered install lands (or, for a
+			// WebView2 refusal the gate already logged, once the runtime is
+			// updated; for a crash loop given up earlier, at its retry).
 			w.mgr.mu.Unlock()
-			log.Debug("breeze assist not installed; watcher exiting", "session", w.state.key)
+			log.Debug("breeze assist cannot be started; watcher exiting", "session", w.state.key, "reason", err.Error())
 			return
 		}
 		w.mgr.mu.Unlock()
@@ -92,6 +111,7 @@ func (w *watcher) run() {
 				"session", w.state.key,
 				"error", err.Error(),
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
 			)
 		} else {
 			// WARN, not INFO: the helper exited unexpectedly (there is no Exit
@@ -100,6 +120,7 @@ func (w *watcher) run() {
 			log.Warn("breeze assist restarted by watcher",
 				"session", w.state.key,
 				"failures", failures,
+				"exitCode", exitCodeField(exit, exitKnown),
 			)
 		}
 
