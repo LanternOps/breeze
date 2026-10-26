@@ -117,6 +117,7 @@ describe('getRouteScope', () => {
   it('classifies /flows (Tool Catalog W3) as org-or-all', () => {
     expect(getRouteScope('/flows')).toBe('org-or-all');
     expect(getRouteScope('/flows/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
+    expect(getRouteScope('/flows/runs/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
   });
 
   it('classifies the Wisp thread page (W06 #9918) as partner-settings — its subject is the grant, not the switcher', () => {
