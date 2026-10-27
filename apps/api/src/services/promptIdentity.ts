@@ -44,17 +44,29 @@ import {
 
 export const PROMPT_IDENTITY_CACHE_TTL_SECONDS = 120;
 
-export interface PromptIdentity {
+interface PromptIdentityBase {
   /** Server-side only; never on the wire. */
   partnerId: string;
   orgId: string;
   scopeId: string;
-  partnerName?: string;
   /** `#RRGGBB`. */
   primaryColor?: string;
   /** A `data:` or `https://` URL; validated only when loaded (promptIdentityLogo.ts). */
   logoSource?: string;
 }
+
+/**
+ * `partnerNameStatus` tells "the partner exists but its name sanitized to
+ * nothing" (a real partner row; `partnerName` absent) apart from a usable
+ * name. "No partner at all" is the resolver returning null. Device prompts
+ * omit the name either way (the renderer shows its localized generic name);
+ * endpoint-message senders use the generic identity for `sanitized_empty`
+ * and fail closed on null (#10190 W04, decision 2).
+ */
+export type PromptIdentity = PromptIdentityBase & (
+  | { partnerNameStatus: 'usable'; partnerName: string }
+  | { partnerNameStatus: 'sanitized_empty'; partnerName?: never }
+);
 
 export function promptIdentityScopeId(partnerId: string, orgId: string): string {
   return createHash('sha256').update(`${partnerId}:${orgId}`).digest('hex').slice(0, 32);
@@ -78,7 +90,9 @@ function usableLogo(value: string | null | undefined): string | null {
 
 /**
  * The MSP identity for `orgId`, or null when the org is not visible or its
- * partner row cannot be read. Uncached; runs in the caller's DB context.
+ * partner row cannot be read. A partner whose name sanitizes to nothing is
+ * NOT null: it resolves with `partnerNameStatus: 'sanitized_empty'`.
+ * Uncached; runs in the caller's DB context.
  */
 export async function resolvePromptIdentity(orgId: string): Promise<PromptIdentity | null> {
   const [org] = await db
@@ -114,7 +128,9 @@ export async function resolvePromptIdentity(orgId: string): Promise<PromptIdenti
     partnerId,
     orgId,
     scopeId: promptIdentityScopeId(partnerId, orgId),
-    ...(partnerName ? { partnerName } : {}),
+    ...(partnerName
+      ? { partnerNameStatus: 'usable' as const, partnerName }
+      : { partnerNameStatus: 'sanitized_empty' as const }),
     ...(primaryColor ? { primaryColor } : {}),
     ...(logoSource ? { logoSource } : {}),
   };
