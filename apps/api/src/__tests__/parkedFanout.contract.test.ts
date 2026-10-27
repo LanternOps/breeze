@@ -128,6 +128,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/hardwareInventoryReadModel.ts': 'read model: portal hardware inventory',
   'services/portal/performanceReadModel.ts': 'read model: portal performance metrics',
   'services/portal/softwareInventoryReadModel.ts': 'read model: portal software inventory',
+  'services/softwareInventoryReads.ts': 'read model: technician software inventory list / name search / per-title devices (lifted from routes/softwareInventory.ts); excludes ephemeral and parked devices',
   'services/portal/patchDetailReadModel.ts': 'read model: portal patch detail',
   'services/portal/vulnerabilityDetailReadModel.ts': 'read model: portal vulnerability detail',
   'services/portal/securityReadModel.ts': 'read model: portal security',
@@ -197,6 +198,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
   'services/localVaultUpdate.ts': 'site-locked vault update (W03-D12, #6757; lifted from routes/backup/vault.ts): row-locks the ONE device that owns a vault the caller already resolved, inside the caller\'s sites, then updates that vault; selects no targets, and the follow-up vault_configure to a parked device is refused by command delivery',
   'services/securityScanStart.ts': 'single-device Scan now (#6263 W05-11, lifted from routes/security/scans.ts): reads the ONE device id the caller named under its own RLS; selects no targets. queueCommand refuses a parked device',
   'jobs/securityScanClaim.ts': 'IOC scan claim (#6263 W05-3): re-reads ONE already-queued scan and its device under the partner lock; selects no targets. The command goes through dispatchDeviceCommand, which refuses a parked device (device_pending_assignment); sweep targets come from services/securityScanSweepTargets.ts and the pump, both FANOUT_MODULES entries',
@@ -413,6 +415,9 @@ const EXEMPT: Record<string, string> = {
   'services/scriptSecretDelivery.ts': 'derived: Operates only on already-claimed commands for the calling agent\'s own device',
   'services/sentinelOne/actions.ts': 'request path: orgId/deviceIds from request/AI-chat callers; devices filtered by eq(devices.orgId, params.orgId)',
   'services/softwareDeployment.ts': 'org-pinned: Fan-out always filters eq(devices.orgId, deployment.orgId), an org-owned row from request-created deployments',
+  'services/softwareDeploymentOps.ts': 'request path (lifted from routes/software.ts POST /deployments for the REST route and AI tools): targets come from deploymentTargetResolver pinned to the caller\'s resolved org; the devices reads only re-check those ids\' site and OS inside the same org; selects no other work, and command delivery refuses a parked device',
+  'services/softwareDeploymentLifecycle.ts': 'request path (lifted from routes/software.ts cancel/retry): devices read only to apply the caller\'s site restriction inside the deployment\'s own org; retry re-dispatches only result rows of an existing org-owned deployment',
+  'services/softwareDeploymentQueries.ts': 'request path: read-only deployment list/summary/detail/results queries (lifted from routes/software.ts); devices is joined only for hostnames and the caller\'s site restriction, no device is selected as a target',
   'services/softwareInventoryObservations.ts': 'agent self-service: Agent\'s own inventory-ingest route; acts only on the calling device\'s own row',
   'services/softwarePolicyExecutableRulesAuthorization.ts': 'Pure permission/authorization helper; never reads the devices table',
   'services/softwarePolicyRemediationPreview.ts': 'request path: Preview scoped by the caller\'s own orgCondition/site allowlist from the request path',

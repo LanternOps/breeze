@@ -166,7 +166,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
   // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
@@ -190,7 +189,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
-  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
+  'services/softwareInventoryPolicy.ts': 'software_policies/configurationPolicies writes here (lifted from routes/softwareInventory.ts) are always org-scoped — resolveOrgId always resolves a concrete org id, so these writes can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance in the route (an AI caller must apply the same gate)',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
