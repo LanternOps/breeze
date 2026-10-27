@@ -471,7 +471,7 @@ async function runBuiltin(
     ? await countRunBuiltinCalls(i.run.id)
     : { notify: 0, http: 0 };
   const ctx: BuiltinContext = {
-    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId,
+    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId, itemIndex: i.itemIndex,
     deadline: i.deadline, counters, leaseToken: i.leaseToken ?? null,
   };
   const frame = { runId: i.run.id, chainDepth: i.run.chainDepth };

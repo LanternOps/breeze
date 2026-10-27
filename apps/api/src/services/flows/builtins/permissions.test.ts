@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERMISSIONS, type UserPermissions } from '../../permissions';
+import { TOOL_PERMISSIONS } from '../../aiGuardrails';
 import { builtinPermissionMisses, corePermissionMisses, FLOW_BUILTIN_PERMISSIONS } from './permissions';
 
 function perms(grants: Array<[string, string]>): UserPermissions {
@@ -24,6 +25,16 @@ describe('FLOW_BUILTIN_PERMISSIONS', () => {
     expect(FLOW_BUILTIN_PERMISSIONS.notify).toEqual([pick(PERMISSIONS.ALERTS_WRITE)]);
     expect(FLOW_BUILTIN_PERMISSIONS.http_request).toEqual([pick(PERMISSIONS.EXTERNAL_TOOLS_WRITE)]);
     expect(FLOW_BUILTIN_PERMISSIONS.ai).toEqual([pick(PERMISSIONS.AI_SESSIONS_USE)]);
+  });
+
+  // W6 (#5221, plan A3): resolve_targets reads devices; create_alert writes an
+  // alert; run_script_on_targets needs exactly what core run_script needs.
+  it('resolve_targets devices.read; create_alert alerts.write; run_script_on_targets = TOOL_PERMISSIONS.run_script', () => {
+    const pick = (p: { resource: string; action: string }) => ({ resource: p.resource, action: p.action });
+    expect(FLOW_BUILTIN_PERMISSIONS.resolve_targets).toEqual([pick(PERMISSIONS.DEVICES_READ)]);
+    expect(FLOW_BUILTIN_PERMISSIONS.create_alert).toEqual([pick(PERMISSIONS.ALERTS_WRITE)]);
+    const core = TOOL_PERMISSIONS.run_script as { resource: string; action: string };
+    expect(FLOW_BUILTIN_PERMISSIONS.run_script_on_targets).toEqual([{ resource: core.resource, action: core.action }]);
   });
 });
 

@@ -45,7 +45,7 @@ import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
-import { builtinStepTier, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
+import { builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
   escapePointerSegment,
@@ -274,7 +274,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';
-      issues.push(...await validateBuiltinStep(step, i, { owner, catalog }));
+      issues.push(...await validateBuiltinStep(step, i, { owner, catalog, earlierSteps: document.steps.slice(0, i) }));
       tier = builtinStepTier(step, catalog);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
@@ -534,14 +534,23 @@ export async function revalidateRenderedStep(
     return { ok: false, code: 'drift', message: 'This step\'s approval requirement changed since the flow was enabled.' };
   }
 
-  if (entry.source === 'core') {
+  if (entry.source === 'core' || entry.source === 'builtin') {
     const scriptIds: string[] = [];
     const groupIds: string[] = [];
     const deviceIds: string[] = [];
-    for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
-      (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+    if (entry.source === 'core') {
+      for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
+        (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+      }
+      for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
+    } else {
+      // W6 (#5221): the fleet built-ins list their own references; groups and
+      // devices belong to the RUN org, the script to the owner.
+      for (const r of fleetBuiltinReferences(pin.tool, rendered)) {
+        if (typeof r.value !== 'string') continue;
+        (r.kind === 'script' ? scriptIds : r.kind === 'group' ? groupIds : deviceIds).push(r.value);
+      }
     }
-    for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
 
     const anyNotOwned = async (ids: string[], find: (ids: string[]) => Promise<Set<string>>): Promise<boolean> => {
       if (ids.length === 0) return false;

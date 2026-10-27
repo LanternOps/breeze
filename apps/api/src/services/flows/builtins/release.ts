@@ -57,7 +57,7 @@ export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: Aut
   if (!loaded || loaded.step.tool !== name || loaded.run.orgId !== intent.orgId) {
     throw new FlowBuiltinNotRunError(`Intent ${intent.id}: the parked built-in step no longer exists on its run`);
   }
-  const { run, version, step, stepRowId } = loaded;
+  const { run, version, step, stepRowId, itemIndex } = loaded;
   const owner: ToolOwnerRef = version.orgId
     ? { orgId: version.orgId, partnerId: auth.partnerId }
     : { orgId: null, partnerId: auth.partnerId };
@@ -69,6 +69,7 @@ export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: Aut
     owner,
     auth,
     stepRowId,
+    itemIndex,
     deadline: Date.now() + step.timeoutSec * 1000,
     counters: await countRunBuiltinCalls(run.id),
     leaseToken: null,
