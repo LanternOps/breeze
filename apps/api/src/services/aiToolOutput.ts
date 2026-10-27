@@ -1057,6 +1057,20 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
     'name', 'description', 'matchSigner', 'matchPathGlob', 'matchParentImage', 'matchCommandLine', 'matchUser',
     'matchAdGroup', 'matchToolName', 'subjectCn', 'signers',
   ]),
+  // Full-control W12 (#6782, W12-D8): package, vendor and version strings are device- or vendor-reported; catalog,
+  // deployment, finding and custom-field names, notes and values are staff-authored or device-written. Data for the
+  // model, never instructions.
+  manage_software_catalog: new Set([
+    'name', 'vendor', 'category', 'description', 'version', 'releaseNotes', 'packageId', 'downloadHost',
+    'silentInstallArgs', 'silentUninstallArgs', 'architecture', 'originalFileName',
+  ]),
+  search_packages: new Set(['id', 'name', 'publisher', 'description', 'version', 'packageId', 'title', 'homepage']),
+  manage_software_deployments: new Set(['name', 'hostname', 'errorMessage', 'output', 'softwareName', 'version', 'error']),
+  get_device_software: new Set(['name', 'version', 'vendor', 'hostname']),
+  manage_device_software: new Set(['name', 'version']),
+  manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
+  manage_fleet_findings: new Set(['title']),
+  manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

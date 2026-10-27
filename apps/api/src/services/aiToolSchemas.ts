@@ -60,6 +60,7 @@ import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import { aiReadToolSchemas } from './aiToolSchemasAiReads';
 import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
+import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -596,6 +597,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...aiReadToolSchemas,
   // Full-control W11 (#6781): security policy tools.
   ...securityPolicyToolSchemas,
+  // Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+  ...softwareToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

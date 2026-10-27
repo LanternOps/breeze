@@ -128,4 +128,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g97', prompt: 'How has our security score trended over the last 90 days?', expect: [{ tool: 'get_security_compliance' }, { tool: 'get_security_posture' }] },
   { id: 'g98', prompt: 'Dismiss the "enable firewall" security recommendation for Contoso, we use a third-party firewall.', expect: [{ tool: 'manage_security_recommendations', action: 'dismiss' }, { tool: 'manage_security_recommendations', action: 'list' }, { tool: 'list_organizations' }] },
   { id: 'g99', prompt: 'Rotate the BitLocker recovery key on FIN-LAPTOP-07.', expect: [{ tool: 'manage_recovery_keys', action: 'rotate' }, { tool: 'manage_recovery_keys', action: 'list' }, { tool: 'resolve_device_context' }] },
+  // Full-control W12 (#6782): software tools reach chat.
+  { id: 'g100', prompt: 'What software is installed on FIN-LAPTOP-07?', expect: [{ tool: 'get_device_software' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  { id: 'g101', prompt: 'Deploy 7-Zip from our software catalog to the three reception PCs.', expect: [{ tool: 'manage_software_deployments', action: 'create' }, { tool: 'manage_software_catalog', action: 'list' }, { tool: 'query_devices' }] },
+  { id: 'g102', prompt: 'Approve Zoom in the software inventory for Contoso so it stops showing as unreviewed.', expect: [{ tool: 'manage_software_inventory', action: 'approve' }, { tool: 'manage_software_inventory', action: 'list' }, { tool: 'list_organizations' }] },
 ];

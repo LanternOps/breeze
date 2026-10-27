@@ -240,6 +240,16 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_security_policies: { limit: 20, windowSeconds: 300 },
   manage_recovery_keys: { limit: 10, windowSeconds: 300 },
   manage_pam_rules: { limit: 30, windowSeconds: 300 },
+  // Full-control W12 (#6782, W12-D6): device-reaching tools 10/300 s, like manage_recovery_keys.
+  manage_software_catalog: { limit: 30, windowSeconds: 300 },
+  search_packages: { limit: 30, windowSeconds: 300 },
+  manage_software_deployments: { limit: 10, windowSeconds: 300 },
+  get_device_software: { limit: 40, windowSeconds: 300 },
+  manage_device_software: { limit: 10, windowSeconds: 300 },
+  manage_software_inventory: { limit: 30, windowSeconds: 300 },
+  bootstrap_homebrew: { limit: 10, windowSeconds: 300 },
+  manage_fleet_findings: { limit: 30, windowSeconds: 300 },
+  manage_custom_fields: { limit: 20, windowSeconds: 300 },
 };
 
 /**

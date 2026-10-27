@@ -352,6 +352,52 @@ const BINDINGS: readonly Binding[] = [
     toolOnly: { extra: [], reason: 'A membership change is refused in an org with an auto-approve rule (W11-D3).' },
   },
   { tool: 'manage_pam_rules', action: 'delete_signer_group', routeFile: 'pam.ts', method: 'delete', path: '/signer-groups/:id' },
+  // Full-control W12 (#6782): the software, fleet-finding and custom-field tools bind to the route a technician uses.
+  { tool: 'manage_software_catalog', action: 'list', routeFile: 'software.ts', method: 'get', path: '/catalog' },
+  {
+    tool: 'manage_software_catalog', action: 'get', routeFile: 'software.ts', method: 'get', path: '/catalog/:id',
+    toolOnly: { extra: [], reason: 'Returns versions and install methods with download URLs reduced to their host; no S3 key or script (quorum QW5).' },
+  },
+  {
+    tool: 'manage_software_catalog', action: 'create', routeFile: 'software.ts', method: 'post', path: '/catalog',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide catalog; REST has no ceiling check).' },
+  },
+  { tool: 'manage_software_catalog', action: 'update', routeFile: 'software.ts', method: 'patch', path: '/catalog/:id', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'archive', routeFile: 'software.ts', method: 'delete', path: '/catalog/:id', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'add_version', routeFile: 'software.ts', method: 'post', path: '/catalog/:id/versions', toolOnly: { extra: [], reason: 'No pre/post-install scripts; built-in and integration items refused; Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'update_version', routeFile: 'software.ts', method: 'patch', path: '/catalog/:id/versions/:versionId', toolOnly: { extra: [], reason: 'A version carrying a pre/post-install script is refused (REST requires devices:execute there); Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'promote_version', routeFile: 'software.ts', method: 'post', path: '/catalog/:id/versions/:versionId/promote', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'add_install_method', routeFile: 'softwareInstallMethods.ts', method: 'post', path: '/catalog/:id/install-methods', toolOnly: { extra: [], reason: 'Partner-wide parents need canManagePartnerWidePolicies and are refused anyway (W12-D10); REST does not gate them (quorum QW2).' } },
+  { tool: 'manage_software_catalog', action: 'update_install_method', routeFile: 'softwareInstallMethods.ts', method: 'patch', path: '/catalog/:id/install-methods/:methodId', toolOnly: { extra: [], reason: 'Built-in and integration items refused (REST checks only on POST); Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'delete_install_method', routeFile: 'softwareInstallMethods.ts', method: 'delete', path: '/catalog/:id/install-methods/:methodId', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'import_package', routeFile: 'softwareInstallMethods.ts', method: 'post', path: '/catalog/import-package', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions.' } },
+  { tool: 'search_packages', routeFile: 'packageSearch.ts', method: 'get', path: '/package-search' },
+  { tool: 'manage_software_deployments', action: 'list', routeFile: 'software.ts', method: 'get', path: '/deployments', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (an org-wide list).' } },
+  { tool: 'manage_software_deployments', action: 'summary', routeFile: 'software.ts', method: 'get', path: '/deployments/summary', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (an org-wide aggregate).' } },
+  { tool: 'manage_software_deployments', action: 'get', routeFile: 'software.ts', method: 'get', path: '/deployments/:id', toolOnly: { extra: [], reason: 'A device-bound session sees a deployment only when every device in it is in its allowlist (quorum QW7).' } },
+  { tool: 'manage_software_deployments', action: 'results', routeFile: 'software.ts', method: 'get', path: '/deployments/:id/results', toolOnly: { extra: [], reason: 'A device-bound session sees a deployment only when every device in it is in its allowlist (quorum QW7).' } },
+  {
+    tool: 'manage_software_deployments', action: 'create', routeFile: 'software.ts', method: 'post', path: '/deployments',
+    toolOnly: { extra: [], reason: 'Named devices only (at most 100; groups, all and filter absent), each checked on the site and exact-device axes; the dependency fingerprint is pinned by an effect digest (quorum QW3).' },
+  },
+  { tool: 'manage_software_deployments', action: 'cancel', routeFile: 'software.ts', method: 'post', path: '/deployments/:id/cancel', toolOnly: { extra: [], reason: 'A device-bound session acts only on a deployment whose every device is in its allowlist (quorum QW7).' } },
+  { tool: 'manage_software_deployments', action: 'retry', routeFile: 'software.ts', method: 'post', path: '/deployments/:id/retry', toolOnly: { extra: [], reason: 'A device-bound session acts only on a deployment whose every device is in its allowlist (quorum QW7).' } },
+  { tool: 'get_device_software', routeFile: 'devices/software.ts', method: 'get', path: '/:id/software' },
+  { tool: 'manage_device_software', action: 'update', routeFile: 'devices/softwareActions.ts', method: 'post', path: '/:id/software/update' },
+  { tool: 'manage_device_software', action: 'uninstall', routeFile: 'devices/softwareActions.ts', method: 'post', path: '/:id/software/uninstall' },
+  { tool: 'bootstrap_homebrew', routeFile: 'devices/homebrewBootstrap.ts', method: 'post', path: '/:id/homebrew-bootstrap' },
+  { tool: 'manage_software_inventory', action: 'list', routeFile: 'softwareInventory.ts', method: 'get', path: '/' },
+  { tool: 'manage_software_inventory', action: 'names', routeFile: 'softwareInventory.ts', method: 'get', path: '/names' },
+  { tool: 'manage_software_inventory', action: 'devices', routeFile: 'softwareInventory.ts', method: 'get', path: '/:name/devices' },
+  { tool: 'manage_software_inventory', action: 'approve', routeFile: 'softwareInventory.ts', method: 'post', path: '/approve', toolOnly: { extra: [], reason: 'Refuses to adopt a same-named default configuration policy that carries other settings (quorum QW7).' } },
+  { tool: 'manage_software_inventory', action: 'deny', routeFile: 'softwareInventory.ts', method: 'post', path: '/deny', toolOnly: { extra: [], reason: 'Refuses to adopt a same-named default configuration policy that carries other settings (quorum QW7).' } },
+  { tool: 'manage_software_inventory', action: 'clear', routeFile: 'softwareInventory.ts', method: 'post', path: '/clear' },
+  { tool: 'manage_fleet_findings', action: 'acknowledge', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_fleet_findings', action: 'dismiss', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_fleet_findings', action: 'reopen', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_custom_fields', action: 'create_definition', routeFile: 'customFields.ts', method: 'post', path: '/' },
+  { tool: 'manage_custom_fields', action: 'update_definition', routeFile: 'customFields.ts', method: 'patch', path: '/:id', toolOnly: { extra: [], reason: 'An existing partner-wide definition is refused (W12-D10).' } },
+  { tool: 'manage_custom_fields', action: 'delete_definition', routeFile: 'customFields.ts', method: 'delete', path: '/:id', toolOnly: { extra: [], reason: 'An existing partner-wide definition is refused (W12-D10).' } },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -776,6 +822,12 @@ const BINDINGS: readonly Binding[] = [
  * an entry here is a tool whose route evidence is still only a comment.
  */
 const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> = [
+  // Full-control W12 (#6782): PATCH /devices/:id/custom-fields is gated by dualAuth('devices:write', DEVICES_WRITE,
+  // { mfa: true }) (routes/devices/customFieldValues.ts), a helper the binder cannot parse; the tool floor is devices:write.
+  {
+    tool: 'manage_custom_fields', action: 'set_values',
+    reason: 'PATCH /devices/:id/custom-fields is gated by dualAuth (devices:write through a helper), which the binder cannot parse',
+  },
   // Full-control W11 (#6781): these reads are gated by requireSecurityReadAccess (routes/security/readAuthorization.ts),
   // a helper middleware rather than a requirePermission call, so the binder cannot read it. It requires devices:read
   // (and a platform admin for system scope); the tool floors are devices:read.

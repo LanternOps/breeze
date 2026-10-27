@@ -160,7 +160,7 @@ describe('tier-3 approval scope classification', () => {
       'edr_endpoint_action', 'manage_ai_agents',
       // W03 (#6757): whole-tool supervised backstop; all six power actions classified.
       // W04 (#6758): whole-tool supervised backstops; every action classified.
-      'manage_browser_policy', 'manage_hyperv_vm', 'manage_peripheral_policy',
+      'manage_browser_policy', 'manage_device_software', 'manage_hyperv_vm', 'manage_peripheral_policy',
       'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',

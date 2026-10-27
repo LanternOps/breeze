@@ -436,7 +436,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'contracts/reports.ts': { gap: '#6784' },
   'contracts/templates.ts': { gap: '#6784' },
   'customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
-  'customFields.ts': { tools: ['query_custom_fields'] },
+  'customFields.ts': { tools: ['query_custom_fields', 'manage_custom_fields'] }, // W12 (#6782): definition writes (#6141 gap)
   'deliverableTemplates.ts': { tools: ['list_deliverable_templates'] },
   'deployments.ts': { tools: ['manage_deployments'] },
   'desktopWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
@@ -455,7 +455,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/commands.ts': { tools: ['registry_operations', 'execute_command', 'trigger_agent_restart', 'trigger_agent_upgrade'] },
   'devices/core.ts': { tools: ['query_devices', 'get_device_details', 'get_device_context', 'set_device_context', 'resolve_device_context', 'manage_tags'] },
   'devices/customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
-  'devices/customFieldValues.ts': { tools: ['query_custom_fields'] },
+  'devices/customFieldValues.ts': { tools: ['query_custom_fields', 'manage_custom_fields'] }, // W12 (#6782): set_values
   'devices/diagnose.ts': { tools: ['take_screenshot', 'get_device_context'] },
   'devices/diagnosticLogs.ts': { tools: ['search_agent_logs'] },
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
@@ -473,7 +473,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/timeStatus.ts': { tools: ['get_device_time_status'] },
   'devices/health.ts': { gap: '#6783' },
   'devices/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
-  'devices/homebrewBootstrap.ts': { gap: '#6782' },
+  'devices/homebrewBootstrap.ts': { tools: ['bootstrap_homebrew'] }, // W12 (#6782)
   'devices/links.ts': { gap: '#6783' },
   'devices/manual.ts': { gap: '#6783' },
   'devices/metrics.ts': { tools: ['analyze_metrics', 'analyze_fleet_metrics'] },
@@ -494,8 +494,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/siteAssignmentConfirmation.ts': { exempt: 'internal_plumbing', note: 'Wrong-site suggestion dismissal ("Keep at <site>", site location W3, #7887). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP out of presence, and a suggestion is accepted or dismissed only by a technician in the topology UI.' },
   'devices/scripts.ts': { tools: ['run_script', 'get_script_execution_history'] },
   'devices/sessions.ts': { tools: ['get_active_users', 'get_user_experience_metrics'] },
-  'devices/software.ts': { gap: '#6782' },
-  'devices/softwareActions.ts': { gap: '#6782' },
+  'devices/software.ts': { tools: ['get_device_software'] }, // W12 (#6782)
+  'devices/softwareActions.ts': { tools: ['manage_device_software'] }, // W12 (#6782): update / uninstall
   'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
   'devices/attentionCounts.ts': { exempt: 'internal_plumbing', note: 'Per-page alert/ticket count batch for the devices list UI (#9038); the same counts reach the model through manage_alerts and the ticket tools.' },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
@@ -525,7 +525,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'filters.ts': { tools: ['manage_saved_filters'] },
   'fixMemory.ts': { tools: ['find_proven_fixes'] },
   'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design'] }, // W10 (#6780): list + detail reads; run / apply / rollback / document are W16 (#6786)
-  'fleetFindings.ts': { tools: ['get_fleet_findings'] },
+  'fleetFindings.ts': { tools: ['get_fleet_findings', 'manage_fleet_findings'] }, // W12 (#6782): acknowledge / dismiss / reopen; remediate stays UI-only
   'google.ts': { exempt: 'vendor_console_admin' },
   'groups.ts': { tools: ['manage_groups'] },
   'helper/index.ts': { exempt: 'device_helper' },
@@ -591,7 +591,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
-  'packageSearch.ts': { gap: '#6782' },
+  'packageSearch.ts': { tools: ['search_packages'] }, // W12 (#6782)
   'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history', 'manage_pam_rules'] }, // W11 (#6781): rules, org config, signer groups (#6141 gap)
   'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
@@ -711,10 +711,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // W09 (#6779): templates CRUD, OID browse / validate and the dashboard. The device, per-device metric and threshold routes are
   // 410 deprecation stubs (no tool mirrors a closed door); on-demand poll / test do not exist in the API.
   'snmp.ts': { tools: ['manage_snmp_templates', 'get_snmp_metrics'] },
-  'software.ts': { gap: '#6782' },
+  // W12 (#6782): catalog, versions, deployments. Not mirrored: version upload (browser file transfer), the download-url
+  // read (a presigned bearer URL), the deprecated POST /deploy, and the download-policy egress allowlist (human-only).
+  'software.ts': { tools: ['manage_software_catalog', 'manage_software_deployments', 'get_device_software'] },
   'softwareBuiltinPackages.ts': { exempt: 'human_only_provisioning', note: 'Provisions Breeze-pinned DNS client packages (scripts run as SYSTEM/root); MFA + devices.execute + partner-wide-manage (#6958 D2).' },
-  'softwareInstallMethods.ts': { gap: '#6782' },
-  'softwareInventory.ts': { gap: '#6782' },
+  'softwareInstallMethods.ts': { tools: ['manage_software_catalog'] }, // W12 (#6782): install methods + import-package
+  'softwareInventory.ts': { tools: ['manage_software_inventory'] }, // W12 (#6782)
   'softwarePolicies.ts': { tools: ['get_software_compliance', 'manage_software_policy', 'manage_software_policies', 'remediate_software_violation'] },
   'softwareUploads.ts': { exempt: 'ui_file_transfer', note: 'Chunked binary upload -- a browser file flow.' },
   'sso.ts': { exempt: 'identity' },

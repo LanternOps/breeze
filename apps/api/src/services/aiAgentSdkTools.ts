@@ -691,6 +691,17 @@ export const TOOL_TIERS = {
   manage_security_policies: 1,
   manage_recovery_keys: 1,
   manage_pam_rules: 1,
+  // Spec 2026-09-23 W12 (#6782): software + fleet findings + custom fields. Per-action classes live in aiGuardrails
+  // (W12 class review); bootstrap_homebrew and manage_device_software are tier 3 as whole tools.
+  manage_software_catalog: 1,
+  search_packages: 1,
+  manage_software_deployments: 1,
+  get_device_software: 1,
+  manage_device_software: 3,
+  manage_software_inventory: 1,
+  bootstrap_homebrew: 3,
+  manage_fleet_findings: 2,
+  manage_custom_fields: 2,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3799,6 +3810,71 @@ export function buildBreezeSdkTools(
       registryDescription('manage_pam_rules'),
       inputShape('manage_pam_rules'),
       makeHandler('manage_pam_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Reads are tier 1; writes are classed
+    // in aiGuardrails; bootstrap_homebrew is agent-human-only.
+    tool(
+      'manage_software_catalog',
+      registryDescription('manage_software_catalog'),
+      inputShape('manage_software_catalog'),
+      makeHandler('manage_software_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_packages',
+      registryDescription('search_packages'),
+      inputShape('search_packages'),
+      makeHandler('search_packages', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_deployments',
+      registryDescription('manage_software_deployments'),
+      inputShape('manage_software_deployments'),
+      makeHandler('manage_software_deployments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_software',
+      registryDescription('get_device_software'),
+      inputShape('get_device_software'),
+      makeHandler('get_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_software',
+      registryDescription('manage_device_software'),
+      inputShape('manage_device_software'),
+      makeHandler('manage_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_inventory',
+      registryDescription('manage_software_inventory'),
+      inputShape('manage_software_inventory'),
+      makeHandler('manage_software_inventory', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'bootstrap_homebrew',
+      registryDescription('bootstrap_homebrew'),
+      inputShape('bootstrap_homebrew'),
+      makeHandler('bootstrap_homebrew', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_fleet_findings',
+      registryDescription('manage_fleet_findings'),
+      inputShape('manage_fleet_findings'),
+      makeHandler('manage_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_custom_fields',
+      registryDescription('manage_custom_fields'),
+      inputShape('manage_custom_fields'),
+      makeHandler('manage_custom_fields', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

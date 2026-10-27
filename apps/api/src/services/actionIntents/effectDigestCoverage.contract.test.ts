@@ -90,6 +90,10 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   'manage_ticket_checklist_templates:create':
     'NEW-OBJECT, input-aware four_eyes arm (full-control W06, #6776): inserts a new `ticket_checklist_templates` row (and its items). `orgId` addresses the OWNER, not the thing being created, so there is no pre-existing row whose content the approver signed off on; the name, scope and full item list travel in the intent input the approver reviews.',
   ...sharedReason(
+    ['manage_software_catalog:create', 'manage_custom_fields:create_definition'],
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W12, #6782, quorum QW1): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new partner-wide `software_catalog` / `custom_field_definitions` row; there is no pre-existing row to pin, and every field of the new row travels in the intent input the approver reviews.',
+  ),
+  ...sharedReason(
     ['manage_compliance_policies', 'manage_compliance_policies:deactivate'],
     'Input-aware four_eyes arm (full-control W11, #6781, W11-D4): deactivating a partner-wide compliance policy (`ownerScope` not \'organization\'). The only effect is `automation_policies.enabled = false`, whatever the policy says, so no drift in its content changes what the approvers signed off on; and the row has no edit path in the product while its `updated_at` is stamped by every evaluation run (policyEvaluationService), so a pin would fail closed on routine activity. The policy id and asserted owner travel in the intent input, and the handler refuses an owner assertion that does not match the row.',
   ),

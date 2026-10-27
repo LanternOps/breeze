@@ -264,6 +264,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_security_policies (list)', description: 'List antivirus/EDR security policy templates', category: 'Security & Compliance' },
       { name: 'manage_recovery_keys (list)', description: 'BitLocker/FileVault key escrow metadata for a device (never the key itself)', category: 'Security & Compliance' },
       { name: 'manage_pam_rules (list_rules/get_config/list_signer_groups)', description: 'View PAM elevation rules, the default verdict and signer groups (chat/MCP only)', category: 'Security & Compliance' },
+      // Full-control W12 (#6782): software reads. Package, vendor and version strings are untrusted data.
+      { name: 'manage_software_catalog (list/get)', description: 'View the software catalog: packages, versions and winget/Homebrew install methods (download links show the host only)', category: 'Fleet Operations' },
+      { name: 'search_packages', description: 'Search winget or Homebrew for a package id', category: 'Fleet Operations' },
+      { name: 'manage_software_deployments (list/get/summary/results)', description: 'View software deployments and per-device results', category: 'Fleet Operations' },
+      { name: 'get_device_software', description: 'Installed software on one device', category: 'Fleet Operations' },
+      { name: 'manage_software_inventory (list/names/devices)', description: 'Software seen across the fleet, with allow/block status and the devices that have it', category: 'Fleet Operations' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -387,6 +393,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_security_recommendations (complete/dismiss)', description: 'Mark a security recommendation completed or dismissed for one organization (reopen in the web app)', category: 'Security & Compliance' },
       { name: 'manage_access_reviews (decide_item)', description: 'Record keep/revoke on an access review item; nothing changes until a person completes the review (needs your MFA session)', category: 'Security & Compliance' },
       { name: 'manage_audit_baselines (request_apply)', description: 'Request that an audit baseline be applied to devices; a different person approves it in the web app', category: 'Security & Compliance' },
+      // Full-control W12 (#6782): reversible, tenant-internal (writes need your MFA session).
+      { name: 'manage_software_catalog (create/update/import_package)', description: 'Add a software package to the catalog or edit its name and description (a partner-wide package needs approval)', category: 'Fleet Operations' },
+      { name: 'manage_software_deployments (cancel)', description: 'Cancel the pending installs of a software deployment', category: 'Fleet Operations' },
+      { name: 'manage_fleet_findings (acknowledge/dismiss/reopen)', description: 'Acknowledge, dismiss or reopen a fleet finding', category: 'Devices & Hardware' },
+      { name: 'manage_custom_fields (create_definition/update_definition)', description: 'Create or edit a custom field definition (a partner-wide one needs approval; not offered to AI agents)', category: 'Other' },
       // Billing (full-control W02, #6756): quote drafting and new catalog
       // items. 'Billing' because these are the business capability, not tickets.
       { name: 'manage_quotes (create_draft/update/delete_draft/add_block/update_block/delete_block/reorder_blocks/add_manual_line/add_catalog_line/update_line/remove_line/move_line/reorder_lines)', description: 'Draft quotes: blocks and lines on a quote that has not been sent', category: 'Billing' },
@@ -526,6 +537,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_compliance_policies (deactivate)', description: 'Permanently turn off a compliance policy and close its alerts (partner-wide needs a second approver; needs your MFA session)', category: 'Security & Compliance' },
       { name: 'manage_recovery_keys (rotate/collect)', description: 'Rotate a Windows BitLocker recovery key, or re-collect keys from a device', category: 'Security & Compliance' },
       { name: 'manage_pam_rules (create_rule/update_rule/delete_rule/set_config/create_signer_group/update_signer_group/delete_signer_group)', description: 'Change PAM elevation rules, the default verdict or signer groups (never auto-approve; needs your MFA session)', category: 'Security & Compliance' },
+      // Full-control W12 (#6782): anything that changes what is installed on a customer machine, now or by an armed
+      // auto-install policy. Uninstall and Homebrew install are never offered to AI agents.
+      { name: 'manage_software_catalog (archive/add_version/update_version/promote_version/add_install_method/update_install_method/delete_install_method)', description: 'Change which installer a package uses (auto-install policies and automations pick it up), or archive a package', category: 'Fleet Operations' },
+      { name: 'manage_software_deployments (create/retry)', description: 'Install a catalog package on up to 100 named devices, or retry failed installs', category: 'Fleet Operations' },
+      { name: 'manage_device_software (update/uninstall)', description: 'Update or uninstall an application on one device (uninstall is not offered to AI agents)', category: 'Fleet Operations' },
+      { name: 'bootstrap_homebrew', description: 'Install Homebrew on one Mac (not offered to AI agents)', category: 'Fleet Operations' },
+      { name: 'manage_software_inventory (approve/deny/clear)', description: 'Add software to, or remove it from, the organization\'s default allowlist or blocklist', category: 'Fleet Operations' },
+      { name: 'manage_custom_fields (delete_definition/set_values)', description: 'Delete a custom field (removes every device\'s value) or set values on a device', category: 'Other' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -750,6 +769,16 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_security_policies', tier: 1, permission: 'devices.read / devices.write', category: 'Security & Compliance' },
   { toolName: 'manage_recovery_keys', tier: 1, permission: 'devices.read / devices.execute', category: 'Security & Compliance' },
   { toolName: 'manage_pam_rules', tier: 1, permission: 'devices.read / pam.manage_policy', category: 'Security & Compliance' },
+  // Full-control W12 (#6782): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_software_catalog', tier: 1, permission: 'devices.read / devices.write', category: 'Fleet Operations' },
+  { toolName: 'search_packages', tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
+  { toolName: 'manage_software_deployments', tier: 1, permission: 'devices.read / devices.execute', category: 'Fleet Operations' },
+  { toolName: 'get_device_software', tier: 1, permission: 'devices.read', category: 'Fleet Operations' },
+  { toolName: 'manage_device_software', tier: 3, permission: 'devices.execute', category: 'Fleet Operations' },
+  { toolName: 'manage_software_inventory', tier: 1, permission: 'devices.read / devices.write', category: 'Fleet Operations' },
+  { toolName: 'bootstrap_homebrew', tier: 3, permission: 'devices.execute', category: 'Fleet Operations' },
+  { toolName: 'manage_fleet_findings', tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
+  { toolName: 'manage_custom_fields', tier: 2, permission: 'devices.write', category: 'Other' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -830,6 +859,27 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     create_rule: 'pam.manage_policy', update_rule: 'pam.manage_policy', delete_rule: 'pam.manage_policy', set_config: 'pam.manage_policy',
     create_signer_group: 'pam.manage_policy', update_signer_group: 'pam.manage_policy', delete_signer_group: 'pam.manage_policy',
   },
+  // Full-control W12 (#6782): every write also needs your MFA session.
+  manage_software_catalog: {
+    list: 'devices.read', get: 'devices.read', create: 'devices.write', update: 'devices.write', archive: 'devices.write',
+    add_version: 'devices.write', update_version: 'devices.write', promote_version: 'devices.write',
+    add_install_method: 'devices.write', update_install_method: 'devices.write', delete_install_method: 'devices.write',
+    import_package: 'devices.write',
+  },
+  search_packages: 'devices.read',
+  manage_software_deployments: {
+    list: 'devices.read', get: 'devices.read', summary: 'devices.read', results: 'devices.read',
+    create: 'devices.execute', cancel: 'devices.execute', retry: 'devices.execute',
+  },
+  get_device_software: 'devices.read',
+  manage_device_software: 'devices.execute',
+  bootstrap_homebrew: 'devices.execute',
+  manage_software_inventory: {
+    list: 'devices.read', names: 'devices.read', devices: 'devices.read',
+    approve: 'devices.write', deny: 'devices.write', clear: 'devices.write',
+  },
+  manage_fleet_findings: 'devices.write',
+  manage_custom_fields: 'devices.write',
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },

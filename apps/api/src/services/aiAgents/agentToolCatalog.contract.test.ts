@@ -436,3 +436,31 @@ describe('W11 security policy tools in the agent catalog (#6781)', () => {
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
   });
 });
+
+/** Spec 2026-09-23 W12 (#6782): software tools are offered (writes become proposals); bootstrap_homebrew and
+ * manage_custom_fields are AGENT_HUMAN_ONLY_TOOLS (explicit D4 exceptions, W12 plan quorum QW6). */
+describe('W12 software tools in the agent catalog (#6782)', () => {
+  it.each([
+    ['manage_software_catalog', 'patching_software'], ['search_packages', 'patching_software'],
+    ['manage_software_deployments', 'patching_software'], ['get_device_software', 'patching_software'],
+    ['manage_device_software', 'patching_software'], ['manage_software_inventory', 'patching_software'],
+    ['bootstrap_homebrew', 'patching_software'], ['manage_fleet_findings', 'alerts_monitoring'],
+    ['manage_custom_fields', 'automations_reports'],
+  ])('%s is mapped to %s', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+  });
+
+  it.each([
+    'manage_software_catalog', 'search_packages', 'manage_software_deployments', 'get_device_software',
+    'manage_device_software', 'manage_software_inventory', 'manage_fleet_findings',
+  ])('%s is offered to an agent', (name) => {
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+
+  it.each(['bootstrap_homebrew', 'manage_custom_fields'])('%s is never offered to an agent', (name) => {
+    expect(listAgentReachableTools()).not.toContain(name);
+    expect(listUnreachableRegisteredTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});

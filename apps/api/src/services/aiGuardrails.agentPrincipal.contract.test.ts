@@ -210,6 +210,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_device_context',
   'get_device_details',
   'get_device_hardware_health',
+  'get_device_software', // Full-control W12 (#6782): tier-1 installed-software read, device-scoped
   'get_device_time_status',
   'get_device_vulnerabilities',
   'get_diagnostic_run', // M4 Task 1 (#6000) one topology diagnostic run, Tier 1 read
@@ -385,6 +386,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_catalog',
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
+  'search_packages', // Full-control W12 (#6782): tier-1 winget/Homebrew package search, no tenant data
   // W01 (#6755)
   'search_script_library',
   'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)
@@ -1000,10 +1002,12 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope) and the two W11 audit-baseline writes, each with a real reason', () => {
+  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes and the W12 uninstall, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
       // W11-D8 (#6781, quorum QW5/QW9): users-FK writes a user-owned release would run without the run's ceiling.
       'manage_audit_baselines:create', 'manage_audit_baselines:request_apply',
+      // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
+      'manage_device_software:uninstall',
       // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
       'manage_groups:add_devices', 'manage_groups:remove_devices',
       'manage_tags:add', 'manage_tags:remove',
@@ -1087,6 +1091,27 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     const read = tool === 'manage_pam_rules' ? 'list_rules' : 'list';
     const check = checkAgentGuardrails(tool, { action: read }, policyWith({ mode: 'act', toolAllowlist: [tool, `${tool}:${read}`] }));
     expect(check.disposition).toBe('deny');
+  });
+
+  // W12 (#6782): uninstall is a human-only action; update becomes a proposal; homebrew and custom fields never reach an agent.
+  it('denies an allowlisted manage_device_software:uninstall; update is not auto-allowed', () => {
+    const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_device_software', 'manage_device_software:update', 'manage_device_software:uninstall'] });
+    const uninstall = checkAgentGuardrails('manage_device_software', { action: 'uninstall', deviceId: 'dev-1', name: 'App' }, policy);
+    expect(uninstall.disposition).toBe('deny');
+    expect(uninstall.reason).toMatch(/never available to agents/);
+    expect(checkAgentGuardrails('manage_device_software', { action: 'update', deviceId: 'dev-1', name: 'App' }, policy).disposition).not.toBe('allow');
+  });
+
+  it.each([
+    ['bootstrap_homebrew', { deviceId: 'dev-1' }],
+    ['manage_custom_fields', { action: 'create_definition', name: 'x', fieldKey: 'x', type: 'text' }],
+  ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
+    const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
+    expect(check.disposition).toBe('deny');
+  });
+
+  it('control: get_device_software reaches an agent without an allowlist entry', () => {
+    expect(checkAgentGuardrails('get_device_software', { deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
   });
 
   it('control: the W11 recovery-key list reaches an agent; rotate becomes a proposal', () => {
