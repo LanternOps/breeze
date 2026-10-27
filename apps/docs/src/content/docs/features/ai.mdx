@@ -612,7 +612,7 @@ These tools manage the software catalog, search winget and Homebrew, deploy cata
 |------|------|-------------|
 | `manage_software_catalog` (list/get) | 1 | View catalog packages with their versions and winget/Homebrew install methods. Download links show the host only |
 | `manage_software_catalog` (create/update/import_package) | 2 | Add a package (or import one with its install methods) or edit its name, vendor and description. A partner-wide package (`ownerScope: partner`) needs approval |
-| `manage_software_catalog` (add_version/update_version/promote_version, add/update/delete_install_method, archive) | 3 | Change which installer a package uses, or archive it. Armed auto-install policies and automations pick up the new installer without another approval, so each change is approved. Versions with install scripts, and partner-wide packages, are changed in the web app |
+| `manage_software_catalog` (add_version/update_version/promote_version/add_install_method/update_install_method/delete_install_method/archive) | 3 | Change which installer a package uses, or archive it. Armed auto-install policies and automations pick up the new installer without another approval, so each change is approved. Versions with install scripts, and partner-wide packages, are changed in the web app |
 | `search_packages` | 1 | Search winget (Windows) or Homebrew (macOS) for a package id to add as an install method |
 | `manage_software_deployments` (list/get/summary/results) | 1 | View software deployments and each device's result |
 | `manage_software_deployments` (cancel) | 2 | Cancel a deployment's pending installs |
