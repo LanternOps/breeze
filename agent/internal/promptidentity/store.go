@@ -190,12 +190,16 @@ type Store struct {
 	opts Options
 	log  *slog.Logger
 
-	mu      sync.Mutex
-	cur     *persistedIdentity
-	prev    string
-	logo    []byte // bytes of cur.StoredLogo, verified
-	onDisk  bool   // identity.json exists (Clear writes only when it does)
-	fetchMu sync.Mutex
+	mu     sync.Mutex
+	cur    *persistedIdentity
+	prev   string
+	logo   []byte // bytes of cur.StoredLogo, verified
+	onDisk bool   // identity.json exists (Clear writes only when it does)
+	// dirty: the last write failed; the in-memory state is retried on the
+	// next Apply (dirtyLogo: logo.bin still has to be removed).
+	dirty     bool
+	dirtyLogo bool
+	fetchMu   sync.Mutex
 }
 
 // Open loads the cache from <dataDir>/branding. A missing, unreadable or
@@ -226,12 +230,23 @@ func (s *Store) load() {
 	s.onDisk = true
 	var p persisted
 	if err := json.Unmarshal(raw, &p); err != nil {
-		s.log.Warn("prompt identity cache corrupt; starting without one", "error", err.Error())
+		// Keep the scope the file held, if one is still legible, so the next
+		// identity under another scope still purges its prompt entries.
+		s.prev = salvageScope(raw)
+		s.log.Warn("prompt identity cache corrupt; starting without one", "error", err.Error(), "recoveredScopeId", s.prev)
 		return
 	}
-	s.prev = p.PreviousScopeID
+	if scopeIDRE.MatchString(p.PreviousScopeID) {
+		s.prev = p.PreviousScopeID
+	} else if p.PreviousScopeID != "" {
+		s.log.Warn("prompt identity cache has an invalid previousScopeId; ignoring it")
+	}
 	id := p.Identity
-	if id == nil || !scopeIDRE.MatchString(id.ScopeID) {
+	if id == nil {
+		return
+	}
+	if !scopeIDRE.MatchString(id.ScopeID) {
+		s.log.Warn("prompt identity cache has an invalid scopeId; starting without an identity")
 		return
 	}
 	// Re-sanitize on load too: the file is user-readable, not user-writable,
@@ -243,12 +258,27 @@ func (s *Store) load() {
 	s.cur = id
 	if sl := id.StoredLogo; sl != nil {
 		data, err := os.ReadFile(filepath.Join(s.dir, LogoFile))
-		if err == nil && verifyLogo(data, sl.Sha256, sl.Mime) == nil {
+		if err == nil {
+			err = verifyLogo(data, sl.Sha256, sl.Mime)
+		}
+		if err == nil {
 			s.logo = data
 		} else {
+			s.log.Warn("stored MSP logo did not load; showing no logo until it is fetched again", "error", err.Error())
 			id.StoredLogo = nil
 		}
 	}
+}
+
+// salvageRE finds a scope id in a damaged identity.json (identity.scopeId or
+// previousScopeId).
+var salvageRE = regexp.MustCompile(`"(?:scopeId|previousScopeId)"\s*:\s*"([0-9a-f]{32})"`)
+
+func salvageScope(raw []byte) string {
+	if m := salvageRE.FindSubmatch(raw); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 // Current returns the cached identity, or false when there is none.
@@ -301,7 +331,9 @@ func (s *Store) NeedsLogo() (string, bool) {
 // the change, which is in force in memory.
 func (s *Store) Apply(b *HeartbeatBlock) (changed, scopeChanged bool, err error) {
 	if b == nil {
-		return false, false, nil
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return false, false, s.retryLocked()
 	}
 	if err := b.validate(); err != nil {
 		return false, false, err
@@ -311,7 +343,7 @@ func (s *Store) Apply(b *HeartbeatBlock) (changed, scopeChanged bool, err error)
 
 	if b.State == StateCleared {
 		if s.cur == nil {
-			return false, false, nil
+			return false, false, s.retryLocked()
 		}
 		s.prev = s.cur.ScopeID
 		s.cur = nil
@@ -345,7 +377,7 @@ func (s *Store) Apply(b *HeartbeatBlock) (changed, scopeChanged bool, err error)
 	}
 	changed = s.cur == nil || !sameIdentity(s.cur, next)
 	if !changed {
-		return false, false, nil
+		return false, false, s.retryLocked()
 	}
 	s.cur = next
 	s.prev = ""
@@ -464,8 +496,30 @@ func (s *Store) prepDirLocked() error {
 	return nil
 }
 
-// saveLocked writes identity.json (and removes logo.bin when removeLogo).
+// retryLocked re-writes the in-memory state when an earlier write failed
+// (an identical heartbeat block reports no change, so it would otherwise
+// never be persisted).
+func (s *Store) retryLocked() error {
+	if !s.dirty {
+		return nil
+	}
+	return s.saveLocked(false)
+}
+
+// saveLocked writes identity.json (and removes logo.bin when removeLogo, or
+// when an earlier failed save still owes the removal). A failure marks the
+// store dirty for retryLocked.
 func (s *Store) saveLocked(removeLogo bool) error {
+	removeLogo = removeLogo || s.dirtyLogo
+	if err := s.writeLocked(removeLogo); err != nil {
+		s.dirty, s.dirtyLogo = true, removeLogo
+		return err
+	}
+	s.dirty, s.dirtyLogo = false, false
+	return nil
+}
+
+func (s *Store) writeLocked(removeLogo bool) error {
 	if err := s.prepDirLocked(); err != nil {
 		return err
 	}

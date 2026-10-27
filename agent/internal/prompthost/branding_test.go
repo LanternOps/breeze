@@ -171,7 +171,8 @@ func TestNegotiatedLocalePerSession(t *testing.T) {
 	assist := RendererSession{Key: "a1", Role: ipc.HelperRoleAssist, Owner: testOwner, UILocale: "de-AT"}
 	unknown := RendererSession{Key: "a2", Role: ipc.HelperRoleAssist, Owner: Owner{WinSessionID: 5, UserSID: "S-1-5-21-5"}}
 	garbage := RendererSession{Key: "a3", Role: ipc.HelperRoleAssist, Owner: Owner{WinSessionID: 6, UserSID: "S-1-5-21-6"}, UILocale: "zh-CN"}
-	dir := &fakeDir{renderers: []RendererSession{user2, sys2, sys3, sys4, assist, unknown, garbage}}
+	posix := RendererSession{Key: "a4", Role: ipc.HelperRoleUser, Owner: Owner{UID: 1000}, UILocale: "de_AT.UTF-8"}
+	dir := &fakeDir{renderers: []RendererSession{user2, sys2, sys3, sys4, assist, unknown, garbage, posix}}
 
 	withOS := newBrandingHost(dir, nil, func() string { return "es_MX" })
 	noOS := newBrandingHost(dir, nil, nil)
@@ -188,7 +189,8 @@ func TestNegotiatedLocalePerSession(t *testing.T) {
 		{withOS, unknown, "es-419"}, // no report: the machine's language
 		{noOS, unknown, "en"},
 		{noOS, sys4, "en"},
-		{withOS, garbage, "en"}, // a reported language outside the eight is en, not the OS
+		{withOS, garbage, "en"},  // a reported language outside the eight is en, not the OS
+		{withOS, posix, "de-DE"}, // POSIX form from a Linux helper
 	}
 	for _, tc := range cases {
 		if got := tc.h.SessionLocale(tc.r); got != tc.want {
