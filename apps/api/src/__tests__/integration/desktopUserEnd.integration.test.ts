@@ -7,7 +7,7 @@
  * active or went disconnected in the last ten minutes, and only once.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import './setup';
 import { getTestDb } from './setup';
@@ -98,6 +98,34 @@ describe.runIf(hasDb)('recordDesktopSessionEndedByUser (live DB)', () => {
       await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).resolves.toBe('not_recorded');
       expect((await rowOf(id))?.endReason).toBeNull();
       expect(await auditRowsFor(id)).toHaveLength(0);
+    }
+  });
+
+  it('commits the end reason and the audit row together: a failed audit insert leaves no end reason', async () => {
+    const id = await seedSession({ status: 'active' });
+    const db = getTestDb();
+    // A real (test-only) trigger function: pg_temp is session-local and the
+    // service writes through the app pool's own sessions. Dropped in finally.
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION public.w10220_fail_user_end_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.action = 'remote.session.ended_by_user' AND NEW.resource_id = '${id}' THEN
+          RAISE EXCEPTION 'injected audit failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER w10220_fail_user_end_audit BEFORE INSERT ON audit_logs
+        FOR EACH ROW EXECUTE FUNCTION public.w10220_fail_user_end_audit();
+    `));
+    try {
+      await expect(recordDesktopSessionEndedByUser({ sessionId: id, deviceId })).rejects.toThrow(); // drizzle wraps it as 'Failed query: insert into audit_logs'
+      expect((await rowOf(id))?.endReason).toBeNull();
+      expect(await auditRowsFor(id)).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS w10220_fail_user_end_audit ON audit_logs;
+        DROP FUNCTION IF EXISTS public.w10220_fail_user_end_audit();
+      `));
     }
   });
 

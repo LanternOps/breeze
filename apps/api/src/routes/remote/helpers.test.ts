@@ -251,7 +251,8 @@ describe('consentMarkerAuditDetails', () => {
   it('carries the consent renderer into the audit details when it is a known one (#10190 W06)', () => {
     expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'assist' })).toMatchObject({ consentRenderer: 'assist' });
     expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'native' })).toMatchObject({ consentRenderer: 'native' });
-    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'other' })).not.toHaveProperty('consentRenderer');
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'other' })).toMatchObject({ consentRenderer: 'unknown' });
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 3 })).not.toHaveProperty('consentRenderer');
     expect(consentMarkerAuditDetails({ consentProtocol: 2 })).not.toHaveProperty('consentRenderer');
   });
 

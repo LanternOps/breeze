@@ -111,8 +111,12 @@ describe('desktopCommandResultSchema accepts the consent renderer', () => {
   it.each(['assist', 'native', 'headless'])('accepts %s', (renderer) => {
     expect(parse(renderer)).toBe(true);
   });
-  it('rejects anything else', () => {
-    expect(parse('browser')).toBe(false);
+  it('accepts an unknown but well-formed renderer token instead of dropping the whole result', () => {
+    expect(parse('future_renderer')).toBe(true);
+  });
+  it('rejects a malformed renderer value', () => {
+    expect(parse('Not A Token!')).toBe(false);
+    expect(parse('x'.repeat(33))).toBe(false);
     expect(parse(1)).toBe(false);
   });
 });

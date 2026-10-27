@@ -621,6 +621,7 @@ describe('remote sessions — site-scope enforcement', () => {
 
     // #10190 W06: why the session ended, null when not known.
     it('serializes endReason on every list row', async () => {
+      vi.mocked(db.select).mockClear();
       rigListSessionsUnrestricted([
         { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
         { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2' },
@@ -633,6 +634,9 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
     });
   });
 
@@ -778,6 +782,7 @@ describe('remote sessions — site-scope enforcement', () => {
 
     // #10190 W06: SessionHistory.tsx shows "Ended by the user" from this.
     it('serializes endReason on every history row', async () => {
+      vi.mocked(db.select).mockClear();
       rigSessionHistoryUnrestricted([
         { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
         { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2', status: 'disconnected' },
@@ -790,6 +795,9 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
     });
   });
 

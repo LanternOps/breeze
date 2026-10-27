@@ -2654,6 +2654,7 @@ describe('agent websocket command results', () => {
     const ws = wsMock();
     await connectAgentSocket(handlers, ws);
     recordDesktopSessionEndedByUserMock.mockClear();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await handlers.onMessage({
       data: JSON.stringify({
@@ -2665,6 +2666,8 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(recordDesktopSessionEndedByUserMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring desk-userend report'));
+    warnSpy.mockRestore();
   });
 
   it('reports a failed user-end record to error tracking', async () => {

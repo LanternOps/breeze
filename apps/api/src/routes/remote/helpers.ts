@@ -432,9 +432,13 @@ export type UnsolicitedConsentReason = typeof UNSOLICITED_CONSENT_REASONS[number
  * "the prompt could not be shown") from a version 2 one. Only values the
  * result schema already validated reach here; anything else is omitted.
  */
-/** #10190 W06: which renderer asked for consent (spec §4 "Audit"). */
+/**
+ * #10190 W06: which renderer asked for consent (spec §4 "Audit"). The wire
+ * accepts any bounded token so a future renderer never drops the result; an
+ * unknown one is recorded as 'unknown'.
+ */
 export const CONSENT_RENDERERS = ['assist', 'native', 'headless'] as const;
-export type ConsentRenderer = (typeof CONSENT_RENDERERS)[number];
+export type ConsentRenderer = (typeof CONSENT_RENDERERS)[number] | 'unknown';
 
 export function consentMarkerAuditDetails(result: Record<string, unknown>): {
   consentProtocol: number;
@@ -453,8 +457,10 @@ export function consentMarkerAuditDetails(result: Record<string, unknown>): {
   if (typeof result.consentOutcome === 'string') details.consentOutcome = result.consentOutcome;
   if (typeof result.consentOccupancy === 'string') details.consentOccupancy = result.consentOccupancy;
   if (typeof result.consentDetail === 'string') details.consentDetail = result.consentDetail;
-  if ((CONSENT_RENDERERS as readonly unknown[]).includes(result.consentRenderer)) {
-    details.consentRenderer = result.consentRenderer as ConsentRenderer;
+  if (typeof result.consentRenderer === 'string') {
+    details.consentRenderer = (CONSENT_RENDERERS as readonly string[]).includes(result.consentRenderer)
+      ? result.consentRenderer as ConsentRenderer
+      : 'unknown';
   }
   return details;
 }

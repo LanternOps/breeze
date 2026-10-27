@@ -86,7 +86,6 @@ import {
   consentMarkerAuditDetails,
   consentMarkerIsCoherent,
   UNSOLICITED_CONSENT_REASONS,
-  CONSENT_RENDERERS,
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
@@ -3945,18 +3944,22 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               fastResult?.event === 'ended_by_user') {
             const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-userend-');
             if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
+              const userEndDeviceId = authenticatedAgent.deviceId;
               await recordDesktopSessionEndedByUser({
                 sessionId: expectedSessionId,
-                deviceId: authenticatedAgent.deviceId,
+                deviceId: userEndDeviceId,
               }).then((outcome) => {
                 if (outcome === 'not_recorded') {
-                  console.warn(`[AgentWs] Ended-by-user report for session ${expectedSessionId} matches no live or just-ended desktop session on this device; not recorded`);
+                  // Unknown, foreign, failed, long-ended, or already recorded.
+                  console.warn(`[AgentWs] Ended-by-user report for session ${expectedSessionId} from device ${userEndDeviceId} matches no live or just-ended desktop session of that device without an end reason; not recorded`);
                 }
               }).catch((err) => {
-                // The reason and its audit row are lost: report it.
-                console.error('[AgentWs] Failed to record a session ended by the user:', err);
-                captureException(err);
+                // The reason and its audit row are lost (they commit together).
+                console.error(`[AgentWs] Failed to record session ${expectedSessionId} (device ${userEndDeviceId}) as ended by the user:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
               });
+            } else {
+              console.warn(`[AgentWs] Ignoring desk-userend report from agent ${agentId}: the command id and result.sessionId do not name the same session`);
             }
           }
 
@@ -4991,8 +4994,10 @@ export const desktopCommandResultSchema = z.object({
     // #10190 W06: which renderer asked (Breeze Assist, the native helper, or
     // the Linux daemon-drawn fallback), carried into the consent audit row.
     // Accepted ahead of any agent that sends it: `result` is `.strict()`, so
-    // an agent may send it only once every API it talks to declares it.
-    consentRenderer: z.enum(CONSENT_RENDERERS).optional(),
+    // an agent may send it only once every API it talks to declares it. A
+    // bounded token, NOT an enum: an unknown (future) renderer must never drop
+    // the whole consent result; consentMarkerAuditDetails maps it to 'unknown'.
+    consentRenderer: z.string().max(32).regex(/^[a-z0-9_]+$/).optional(),
     // Desk-stop confirmations from fielded agents send {"stopped": true}
     // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
     // server-side, but must be accepted so the result isn't dropped as
