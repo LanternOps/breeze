@@ -24,6 +24,7 @@ import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 import { runBodiesRestricted } from '../services/flows/runBodyAccess';
 import { registerFlowLimitsRoutes } from './flowLimits';
+import { flowConversionRoutes } from './flowConversions';
 
 export const flowsRoutes = new Hono();
 
@@ -40,6 +41,10 @@ flowsRoutes.use('*', requirePermission('automations', 'read'));
 // W05 (#5220): GET/PUT /limits. Registered before `/:id` so the literal path
 // never reaches the uuid param schema.
 registerFlowLimitsRoutes(flowsRoutes);
+
+// W06 (#5221): legacy Job → flow conversions. Mounted before `/:id` for the
+// same reason; inherits the auth, kill switch and automations.read above.
+flowsRoutes.route('/conversions', flowConversionRoutes);
 
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),

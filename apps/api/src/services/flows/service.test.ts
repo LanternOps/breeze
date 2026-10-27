@@ -52,6 +52,7 @@ vi.mock('./owner', () => ({ resolveFlowOwnerForCaller: vi.fn() }));
 vi.mock('./repository', () => ({ takenFlowSlugs: vi.fn(), ownerForFlowRow: vi.fn() }));
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('./budgets', () => ({ readFlowUsage: vi.fn() }));
+vi.mock('./conversion/ledger', () => ({ resetShadowIfChanged: vi.fn(async () => false) }));
 vi.mock('./flowLimits', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./flowLimits')>()),
   resolveFlowLimits: vi.fn(),
@@ -67,6 +68,7 @@ import { assertFlowSlugAvailable, getFlow, listFlows, saveDraftFlow } from './se
 import { readFlowUsage } from './budgets';
 import { computeFlowLimits, resolveFlowLimits } from './flowLimits';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
+import { resetShadowIfChanged } from './conversion/ledger';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -286,6 +288,26 @@ describe('saveDraftFlow — update', () => {
     expect(set).toHaveProperty('definitionVersion');
     expect(set).not.toHaveProperty('slug');
     expect(set).not.toHaveProperty('orgId');
+  });
+});
+
+describe('saveDraftFlow — conversion shadow (#5221 W06 B1)', () => {
+  it('editing the draft resets shadow counters', async () => {
+    queues.select.push([row({ definitionVersion: 4 })]);
+    queues.update.push([row({ definitionVersion: 5 })]);
+    vi.mocked(resetShadowIfChanged).mockClear();
+    const r = await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 4 });
+    expect(r.saved).toBe(true);
+    // In the same context as the draft UPDATE, keyed by the flow (the ledger compares the stored document digest).
+    expect(resetShadowIfChanged).toHaveBeenCalledTimes(1);
+    expect(resetShadowIfChanged).toHaveBeenCalledWith(expect.anything(), { flowId: FLOW_ID });
+  });
+
+  it('a refused draft save never touches the shadow', async () => {
+    queues.select.push([row({ definitionVersion: 3 })]);
+    vi.mocked(resetShadowIfChanged).mockClear();
+    await saveDraftFlow(auth(), { document: DOC, flowId: FLOW_ID, expectedVersion: 2 });
+    expect(resetShadowIfChanged).not.toHaveBeenCalled();
   });
 });
 

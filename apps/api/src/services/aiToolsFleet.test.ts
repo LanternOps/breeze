@@ -13,6 +13,10 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   return { ...actual, isNotNull: isNotNullMock };
 });
 
+// Tool Catalog W06 (#5221) B1: list/get/history carry each automation's conversion.
+const { conversionSummariesForMock } = vi.hoisted(() => ({ conversionSummariesForMock: vi.fn(async () => new Map()) }));
+vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: conversionSummariesForMock }));
+
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
@@ -571,6 +575,65 @@ describe('manage_automations managed-row protection', () => {
       agentId: 'agent-1',
     });
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_automations conversion summary (#5221 W06 B1)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const job = {
+    id: 'automation-1', name: 'Nightly', orgId: 'org-1', partnerId: null,
+    trigger: { type: 'manual' }, conditions: null, managedByAgentId: null, managedByMonitorId: null,
+  };
+  const conversion = { id: 'conv-1', state: 'shadow', flowId: 'flow-1' };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    conversionSummariesForMock.mockResolvedValue(new Map([['automation-1', conversion]]));
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([job]),
+          orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([job]) }),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+  });
+
+  it('manage_automations get reports the conversion', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'get', automationId: job.id }, auth));
+    expect(result.automation).toMatchObject({ id: job.id, conversion });
+    expect(conversionSummariesForMock).toHaveBeenCalledWith([job.id]);
+  });
+
+  it('get of an unconverted automation reports conversion null', async () => {
+    conversionSummariesForMock.mockResolvedValue(new Map());
+    const result = JSON.parse(await tool.handler({ action: 'get', automationId: job.id }, auth));
+    expect(result.automation).toHaveProperty('conversion', null);
+  });
+
+  it('list and history carry the conversion too', async () => {
+    const list = JSON.parse(await tool.handler({ action: 'list' }, auth));
+    expect(list.automations[0]).toMatchObject({ id: job.id, conversion });
+    const history = JSON.parse(await tool.handler({ action: 'history', automationId: job.id }, auth));
+    expect(history).toMatchObject({ automationId: job.id, conversion });
   });
 });
 

@@ -65,6 +65,7 @@ import { captureException } from '../services/sentry';
 import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
+import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -900,10 +901,15 @@ automationRoutes.get(
         .offset(offset);
     }
 
+    // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+    const conversions = await conversionSummariesFor(rows.map((automation) => automation.id));
     return c.json({
-      data: rows.map((automation) => permissions?.allowedSiteIds === undefined
-        ? shapeAutomationForResponse(automation)
-        : shapeRestrictedAutomationForResponse(automation)),
+      data: rows.map((automation) => ({
+        ...(permissions?.allowedSiteIds === undefined
+          ? shapeAutomationForResponse(automation)
+          : shapeRestrictedAutomationForResponse(automation)),
+        conversion: conversions.get(automation.id) ?? null,
+      })),
       pagination: { page, limit, total },
     });
   },
@@ -1140,6 +1146,9 @@ automationRoutes.get(
       if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
     }
 
+    // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+    const conversion = (await conversionSummariesFor([automationId])).get(automationId) ?? null;
+
     if (permissions?.allowedSiteIds !== undefined) {
       const scan = await scanProjectedAutomationRuns({
         automationId,
@@ -1154,6 +1163,7 @@ automationRoutes.get(
       };
       return c.json({
         ...shapeAutomationForResponse(automation),
+        conversion,
         runCount: scan.total,
         lastRunAt: scan.rows[0]?.startedAt ?? null,
         recentRuns: scan.rows.map((run) => ({
@@ -1184,6 +1194,7 @@ automationRoutes.get(
 
     return c.json({
       ...shapeAutomationForResponse(automation),
+      conversion,
       recentRuns: recentRuns.map((run) => ({
         ...run,
         status: toRunStatus(run.status),
@@ -1594,6 +1605,8 @@ async function handleUpdateAutomation(c: Context) {
         .returning();
       if (!row) return null;
       await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
+      // W06 (#5221, Decision 3): a source edit restarts a shadow conversion's counters.
+      await resetShadowIfChanged(tx, { automationId, previous: automation });
       return row;
     });
 

@@ -41,6 +41,7 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { resolveFlowOwnerForCaller } from './owner';
 import { assessPreApprovals } from './preApproval';
+import { resetShadowIfChanged } from './conversion/ledger';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 
 const FLOW_SLUG_MAX = 48;
@@ -325,6 +326,8 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
     .where(and(eq(flows.id, flowId), eq(flows.definitionVersion, existing.definitionVersion), eq(flows.status, existing.status)))
     .returning();
   if (!row) return { saved: false, error: 'version_conflict' };
+  // W06 (#5221, Decision 3): a converted Job's shadow restarts when its draft changes.
+  await resetShadowIfChanged(db, { flowId });
   auditDraftSave(auth, row, document.steps.length);
   return { saved: true, flow: toDetailDto(row), validation: stripDocument(validation) };
 }

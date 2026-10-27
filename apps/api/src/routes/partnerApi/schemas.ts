@@ -426,6 +426,12 @@ export const partnerAutomationExportRecordSchema = strictPartnerExportRecordSche
     resource: z.literal('scripts'),
     id: z.string().uuid(),
   }).strict()).max(500),
+  /** W06 (#5221): the Job's newest flow conversion generation, or null. Additive. */
+  conversion: z.object({
+    id: z.string().uuid(),
+    state: z.enum(['shadow', 'switched', 'reverted']),
+    flowId: z.string().uuid(),
+  }).strict().nullable(),
 });
 export const automationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerAutomationExportRecordSchema,

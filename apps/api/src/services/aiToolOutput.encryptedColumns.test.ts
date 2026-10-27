@@ -37,6 +37,8 @@ vi.mock('../db', async (importOriginal) => {
   const db: Record<string, unknown> = {
     select,
     selectDistinct: select,
+    // The W06 conversion summary on manage_automations reads (#5221).
+    selectDistinctOn: (_on: unknown, fields?: Record<string, unknown>) => select(fields),
     insert: () => chain(null),
     update: () => chain(null),
     delete: () => chain(null),

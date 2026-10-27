@@ -25,6 +25,17 @@ const {
   scanProjectedAutomationRunsMock: vi.fn(),
 }));
 
+// Tool Catalog W06 (#5221) B1: the conversion summary on reads and the shadow
+// reset on edits come from the ledger leaf module.
+const { conversionSummariesForMock, resetShadowIfChangedMock } = vi.hoisted(() => ({
+  conversionSummariesForMock: vi.fn(async () => new Map()),
+  resetShadowIfChangedMock: vi.fn(async () => false),
+}));
+vi.mock('../services/flows/conversion/ledger', () => ({
+  conversionSummariesFor: conversionSummariesForMock,
+  resetShadowIfChanged: resetShadowIfChangedMock,
+}));
+
 vi.mock('../services/automationReadProjection', () => ({
   projectAutomationRunsToSites: projectAutomationRunsToSitesMock,
   scanProjectedAutomationRuns: scanProjectedAutomationRunsMock,
@@ -313,6 +324,8 @@ describe('automations routes', () => {
 	    });
 	    replaceAutomationResourceBindingsMock.mockReset().mockResolvedValue(undefined);
 	    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+	    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+	    resetShadowIfChangedMock.mockReset().mockResolvedValue(false);
 	    app = new Hono();
 	    app.route('/automations/webhooks', automationWebhookRoutes);
 	    app.route('/automations', automationRoutes);
@@ -505,6 +518,63 @@ describe('automations routes', () => {
     expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.recentRuns).toHaveLength(1);
     expect(body.statistics.totalRuns).toBe(3);
+  });
+
+  it('GET /automations/:id has conversion null', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123', trigger: { type: 'manual' },
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ totalRuns: 0, completedRuns: 0, failedRuns: 0, partialRuns: 0 }]),
+        }),
+      } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('conversion', null);
+    expect(conversionSummariesForMock).toHaveBeenCalledWith(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('GET /automations carries each row\'s conversion (#5221)', async () => {
+    const conversion = { id: '22222222-2222-4222-8222-222222222222', state: 'shadow', flowId: '33333333-3333-4333-8333-333333333333' };
+    conversionSummariesForMock.mockResolvedValue(new Map([['a-1', conversion]]));
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 2 }]) }) } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([
+                  { id: 'a-1', name: 'One', orgId: 'org-123', trigger: { type: 'manual' } },
+                  { id: 'a-2', name: 'Two', orgId: 'org-123', trigger: { type: 'manual' } },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+    const res = await app.request('/automations', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((r: any) => r.conversion)).toEqual([conversion, null]);
   });
 
   it('returns opaque not-found for an automation definition whose targets escape site scope', async () => {
@@ -909,6 +979,34 @@ describe('automations routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.enabled).toBe(false);
+  });
+
+  it('editing the automation resets shadow counters', async () => {
+    const before = {
+      id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123', partnerId: null, enabled: true,
+      trigger: { type: 'manual' }, conditions: null, actions: [], onFailure: 'stop', notificationTargets: null,
+    };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([before]) }) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...before, onFailure: 'continue' }]) }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ onFailure: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+    // Inside the update transaction, with the pre-edit row: the ledger compares its source digest with the stored row's.
+    expect(resetShadowIfChangedMock).toHaveBeenCalledTimes(1);
+    expect(resetShadowIfChangedMock).toHaveBeenCalledWith(db, {
+      automationId: '11111111-1111-4111-8111-111111111111',
+      previous: expect.objectContaining({ trigger: { type: 'manual' }, onFailure: 'stop' }),
+    });
   });
 
   it.each(['PATCH', 'PUT'])('%s rejects even an enabled toggle on a managed automation', async (method) => {
@@ -3002,6 +3100,8 @@ describe('automations routes — target validation on write (#8598)', () => {
     mockState.auth = undefined;
     validateAutomationTargetConditionsMock.mockImplementation(async () => ({ ok: true }));
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+    resetShadowIfChangedMock.mockReset().mockResolvedValue(false);
     app = new Hono();
     app.route('/automations', automationRoutes);
   });

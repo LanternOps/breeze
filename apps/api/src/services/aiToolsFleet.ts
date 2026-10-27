@@ -136,6 +136,7 @@ import {
   managedAutomationOwnerIsLive,
 } from './aiAgents/managedAutomation';
 import { MANAGED_BY_MONITOR_ERROR } from './monitors/managedRowGuard';
+import { conversionSummariesFor } from './flows/conversion/ledger';
 import type {
   FleetFindingKind,
   FleetFindingSeverity,
@@ -2391,6 +2392,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .limit(limit);
         }
 
+        // W06 (#5221, Decision 9): each row carries its conversion ({ id, state, flowId } | null).
+        const conversions = await conversionSummariesFor(visible.map((a: { id: string }) => a.id));
+        visible = visible.map((a: { id: string }) => ({ ...a, conversion: conversions.get(a.id) ?? null }));
         return JSON.stringify({ automations: visible, showing: visible.length });
       }
 
@@ -2406,11 +2410,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
         if (isScopeNarrowedCaller(auth)) {
           const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
-          return JSON.stringify({ automation: restricted });
+          return JSON.stringify({ automation: { ...restricted, conversion } });
         }
-        return JSON.stringify({ automation: auto });
+        return JSON.stringify({ automation: { ...auto, conversion } });
       }
 
       if (action === 'history') {
@@ -2438,7 +2443,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             limit,
           })).rows;
 
-        return JSON.stringify({ automationId: auto.id, runs: page, showing: page.length });
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
+        return JSON.stringify({ automationId: auto.id, conversion, runs: page, showing: page.length });
       }
 
       if (action === 'create') {
