@@ -13,6 +13,11 @@ export interface PromptCardApi {
   /** Esc / hide: Rust maps it to the safe action on a pending decision. */
   hide(promptId: string, via: ActionVia): Promise<void>;
   /**
+   * The remote-session pill (W06) grew or shrank: Rust resizes this window
+   * (`prompt_pill_expand`, label-checked, pills only). Never a wire action.
+   */
+  setExpanded?(promptId: string, expanded: boolean): Promise<void>;
+  /**
    * `prompt-updated`: a version notice only (W04). Every window's listener
    * hears it, so it carries no view; the card pulls its own (`getView`).
    */
@@ -23,6 +28,7 @@ const tauriApi: PromptCardApi = {
   getView: (promptId) => invoke<PromptView>('get_prompt_view', { promptId }),
   action: (promptId, actionId, via) => invoke<void>('prompt_card_action', { promptId, actionId, via }),
   hide: (promptId, via) => invoke<void>('prompt_card_hide', { promptId, via }),
+  setExpanded: (promptId, expanded) => invoke<void>('prompt_pill_expand', { promptId, expanded }),
   subscribe: (onNotice) => listen<VersionNotice>('prompt-updated', (e) => onNotice(e.payload)),
 };
 
@@ -153,6 +159,16 @@ export function PromptCardWindow({
   const onHide = useCallback(() => {
     api.hide(promptId, 'keyboard').catch((err) => setError(errorText(err)));
   }, [api, promptId]);
+  // The session pill's window follows its expanded state (local only). A
+  // failed resize is logged; the pill still works in its current size.
+  const onExpandedChange = useCallback(
+    (expanded: boolean) => {
+      api.setExpanded?.(promptId, expanded).catch((err) =>
+        console.warn(`[prompt] could not resize card ${promptId}`, err),
+      );
+    },
+    [api, promptId],
+  );
 
   if (!view) return null;
   const KindCard = cardForKind(view.kind);
@@ -165,6 +181,7 @@ export function PromptCardWindow({
       error={error ?? liveError ?? refreshError}
       identity={identity}
       logoUrl={logoUrl}
+      onExpandedChange={onExpandedChange}
     />
   );
 }

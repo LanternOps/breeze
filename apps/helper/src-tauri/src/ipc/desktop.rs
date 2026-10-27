@@ -371,12 +371,48 @@ fn emit_version_notice(app: &AppHandle, label: &str, event: &'static str, notice
 }
 
 const PROMPT_CARD: Size = Size { width: 400.0, height: 300.0 };
+/// A `modal` prompt (W06: remote consent): a little larger, centred.
+const PROMPT_MODAL: Size = Size { width: 420.0, height: 340.0 };
+/// The `indicator` (W06: the remote-session pill), collapsed and expanded.
+/// Same width, so growing downward keeps it centred at the top of the screen.
+pub const PROMPT_PILL: Size = Size { width: 360.0, height: 56.0 };
+pub const PROMPT_PILL_EXPANDED: Size = Size { width: 360.0, height: 340.0 };
+
+/// The window size a prompt's presentation starts at.
+pub fn prompt_window_size(presentation: super::prompt::Presentation) -> Size {
+    use super::prompt::Presentation;
+    match presentation {
+        Presentation::Modal => PROMPT_MODAL,
+        Presentation::Indicator => PROMPT_PILL,
+        Presentation::Card | Presentation::ListOnly => PROMPT_CARD,
+    }
+}
+
+/// Where a prompt window goes inside `work_area`: a `card` bottom-right in its
+/// stack slot, a `modal` centred, the `indicator` centred 12 px below the top
+/// edge (where the legacy session banner sat). Always inside the work area.
+pub fn place_prompt(work_area: Rect, presentation: super::prompt::Presentation, slot: usize) -> Position {
+    use super::prompt::Presentation;
+    let size = prompt_window_size(presentation);
+    let clamp = |x: f64, y: f64| {
+        let max_x = (work_area.x + work_area.width - size.width).max(work_area.x);
+        let max_y = (work_area.y + work_area.height - size.height).max(work_area.y);
+        Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
+    };
+    let center_x = work_area.x + (work_area.width - size.width) / 2.0;
+    match presentation {
+        Presentation::Modal => clamp(center_x, work_area.y + (work_area.height - size.height) / 2.0),
+        Presentation::Indicator => clamp(center_x, work_area.y + 12.0),
+        Presentation::Card | Presentation::ListOnly => place_card(work_area, size, slot),
+    }
+}
 
 /// Create the card window for a prompt: its own small `prompt-<hash>` webview,
 /// NEVER the main Assist window (#8138). Always on top, out of the taskbar and
 /// non-activating; `plan.focused` (rate limited, eligible kinds only) is the
-/// only way it takes keyboard focus. Placed bottom-right of the work area of
-/// the monitor holding the cursor, stacked by `plan.slot`.
+/// only way it takes keyboard focus. A `card` is placed bottom-right of the
+/// work area of the monitor holding the cursor, stacked by `plan.slot`; a
+/// `modal` is centred and the `indicator` pill sits at the top (W06).
 ///
 /// The close box / Alt+F4 is the same as Esc: the safe action on a pending
 /// decision (the card stays up), "hide" otherwise.
@@ -387,9 +423,10 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
         // The tracker never plans a second window for one label.
         return Err("a prompt card with this label is already open".into());
     }
+    let size = prompt_window_size(plan.presentation);
     let builder = WebviewWindowBuilder::new(app, plan.label.clone(), WebviewUrl::App(plan.url.clone().into()))
         .title("Notification from your IT provider")
-        .inner_size(PROMPT_CARD.width, PROMPT_CARD.height)
+        .inner_size(size.width, size.height)
         .decorations(false)
         .always_on_top(true)
         .focused(plan.focused)
@@ -397,7 +434,7 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
         .resizable(false);
     let builder = match cursor_work_area(app) {
         Some(area) => {
-            let p = place_card(area, PROMPT_CARD, plan.slot);
+            let p = place_prompt(area, plan.presentation, plan.slot);
             builder.position(p.x, p.y)
         }
         None => builder.center(),
@@ -432,6 +469,16 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
         _ => {}
     });
     Ok(())
+}
+
+/// Grow or shrink the remote-session pill's own window (W06, P7: expanding is
+/// renderer-local, never a wire action). The width stays, so the pill stays
+/// centred at the top. Never shows, focuses or moves any other window.
+pub fn size_prompt_pill(window: &tauri::WebviewWindow, expanded: bool) -> Result<(), String> {
+    let size = if expanded { PROMPT_PILL_EXPANDED } else { PROMPT_PILL };
+    window
+        .set_size(tauri::LogicalSize::new(size.width, size.height))
+        .map_err(|e| format!("resize the session pill: {e}"))
 }
 
 /// Take a prompt's card down (close, refusal, hide, session end). `destroy`
@@ -735,5 +782,27 @@ mod tests {
         let tiny = Rect { x: 10.0, y: 20.0, width: 300.0, height: 200.0 };
         assert_eq!(place_card(tiny, CARD, 0), Position { x: 10.0, y: 20.0 });
         assert_eq!(place_card(tiny, CARD, 2), Position { x: 10.0, y: 20.0 });
+    }
+
+    // #10190 W06: the consent modal is centred and the session pill sits at
+    // the top centre; a card keeps its stack place. All inside the work area.
+    #[test]
+    fn place_prompt_by_presentation() {
+        use crate::ipc::prompt::Presentation;
+        let wa = Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 };
+        let modal = place_prompt(wa, Presentation::Modal, 2);
+        assert_eq!(modal, Position { x: -1280.0 + (1280.0 - PROMPT_MODAL.width) / 2.0, y: 40.0 + (984.0 - PROMPT_MODAL.height) / 2.0 });
+        let pill = place_prompt(wa, Presentation::Indicator, 1);
+        assert_eq!(pill, Position { x: -1280.0 + (1280.0 - PROMPT_PILL.width) / 2.0, y: 52.0 });
+        assert_eq!(place_prompt(wa, Presentation::Card, 1), place_card(wa, PROMPT_CARD, 1));
+        for p in [Presentation::Modal, Presentation::Indicator, Presentation::Card] {
+            assert!(inside(wa, prompt_window_size(p), place_prompt(wa, p, 0)), "{p:?}");
+            let tiny = Rect { x: 10.0, y: 20.0, width: 200.0, height: 40.0 };
+            assert_eq!(place_prompt(tiny, p, 0), Position { x: 10.0, y: 20.0 }, "{p:?}");
+        }
+        // The expanded pill fits below its collapsed top edge on a 768 px screen.
+        let small = Rect { x: 0.0, y: 0.0, width: 1024.0, height: 728.0 };
+        let top = place_prompt(small, Presentation::Indicator, 0);
+        assert!(inside(small, PROMPT_PILL_EXPANDED, top));
     }
 }

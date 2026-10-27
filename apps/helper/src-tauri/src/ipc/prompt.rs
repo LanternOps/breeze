@@ -8,8 +8,8 @@
 //!     `prompt_action_result`, `prompt_branding_sync`
 //!   * Assist -> agent: `prompt_presented`, `prompt_action`, `prompt_closed`
 //!
-//! A kind is drawn only when [`ADVERTISED_PROMPT_KINDS`] lists it (W04:
-//! `notice.info@1` only). The agent sends a kind only to a session that
+//! A kind is drawn only when [`ADVERTISED_PROMPT_KINDS`] lists it (W06:
+//! `notice.info@1`, `remote.consent@1`, `remote.session@1`). The agent sends a kind only to a session that
 //! advertised it and only when the server enables it; one that arrives anyway
 //! is answered `prompt_closed{render_failed, unadvertised_kind}`.
 //!
@@ -42,8 +42,9 @@ pub const PROMPT_PROTOCOL_VERSION: u32 = 1;
 
 /// The `"<kind>@<n>"` entries this build advertises in `AuthRequest.promptKinds`.
 /// A kind is added here only by the wave that ships it (plan P2). W04: notice
-/// cards (`src/prompt/kinds/notice.tsx`).
-pub const ADVERTISED_PROMPT_KINDS: &[&str] = &["notice.info@1"];
+/// cards (`src/prompt/kinds/notice.tsx`). W06: the remote consent card
+/// (`kinds/consent.tsx`) and the remote session pill (`kinds/session.tsx`).
+pub const ADVERTISED_PROMPT_KINDS: &[&str] = &["notice.info@1", "remote.consent@1", "remote.session@1"];
 
 // The agent -> helper types are matched by literal in `client.rs` (its source
 // scans look for the arms); these exist for the contract test against kinds.ts.
@@ -415,6 +416,17 @@ pub fn prompt_kind_class(kind: &str) -> CopyClass {
     }
 }
 
+/// `remote.session` "Report a problem" (W06, P7: a wire action the agent
+/// answers `accepted`, after which Assist opens Request Support).
+pub const REPORT_PROBLEM_ACTION: &str = "report_problem";
+/// `remote.session` prompt ids are `session:<sessionId>` (contract section 3).
+pub const SESSION_PROMPT_PREFIX: &str = "session:";
+
+/// Whether a presentation shares the bottom-right card stack (and its cap).
+fn stacks(p: Presentation) -> bool {
+    p == Presentation::Card
+}
+
 /// Whether `kind` is in the closed registry.
 pub fn is_registry_kind(kind: &str) -> bool {
     matches!(
@@ -472,8 +484,11 @@ pub struct WindowPlan {
     pub prompt_id: String,
     pub label: String,
     pub url: String,
-    /// Stack position, 0 = bottom.
+    /// Stack position, 0 = bottom. Only `card` windows stack; a `modal` is
+    /// centred and an `indicator` sits at the top of the screen.
     pub slot: usize,
+    /// Where and how big the window is (desktop.rs `show_prompt_window`).
+    pub presentation: Presentation,
     /// Take keyboard focus when built (rate limited; eligible kinds only).
     pub focused: bool,
 }
@@ -666,6 +681,10 @@ pub struct PromptTracker {
     seq: u64,
     /// Bumped by every `&mut self` method; stamped on every view.
     version: u64,
+    /// The session id of a `remote.session` "Report a problem" the agent has
+    /// just `accepted` (OD-6 (b)): taken once by the IPC loop, which then opens
+    /// the main window's Request Support flow. Nothing else sets it.
+    request_support: Option<String>,
 }
 
 impl Default for PromptTracker {
@@ -685,6 +704,7 @@ impl PromptTracker {
             sync_locale: None,
             seq: 0,
             version: 0,
+            request_support: None,
         }
     }
 
@@ -770,10 +790,17 @@ impl PromptTracker {
                 if id != &show.prompt_id && window_label(id) == label {
                     return None;
                 }
-                used.push(slot);
+                if stacks(t.show.presentation) {
+                    used.push(slot);
+                }
             }
         }
-        let slot = (0..MAX_VISIBLE_CARDS).find(|s| !used.contains(s))?;
+        // Only `card` windows share the bottom-right stack (and its cap). A
+        // modal (remote consent, centred) and the session indicator (top of
+        // the screen) are drawn outside it, so a full stack never collapses
+        // them into the list (W06: consent is never deferred, and the person
+        // must always see that a remote session is running).
+        let slot = if stacks(show.presentation) { (0..MAX_VISIBLE_CARDS).find(|s| !used.contains(s))? } else { 0 };
         // `steal` only for a modal answering the user, remote.consent and
         // restart.final, and at most once per focus interval (message.rs rule).
         // A notice is informational and never activates (spec 3.2), whatever
@@ -788,6 +815,7 @@ impl PromptTracker {
             label,
             url: window_url(&show.prompt_id),
             slot,
+            presentation: show.presentation,
             focused,
         })
     }
@@ -916,7 +944,33 @@ impl PromptTracker {
             ActionResultKind::RejectedStale => "rejected_stale",
             ActionResultKind::RejectedInvalid => "rejected_invalid",
         });
+        // W06: the person's "Report a problem" on the session pill, accepted
+        // by the agent, opens Request Support for that session. A rejected or
+        // unanswered click opens nothing.
+        if result.result == ActionResultKind::Accepted
+            && result.action_id == REPORT_PROBLEM_ACTION
+            && t.show.kind == "remote.session"
+        {
+            if let Some(session_id) = result.prompt_id.strip_prefix(SESSION_PROMPT_PREFIX).filter(|s| !s.is_empty()) {
+                self.request_support = Some(session_id.to_string());
+            }
+        }
         true
+    }
+
+    /// The session id whose Request Support the IPC loop should open now, once
+    /// (see `request_support`). The caller opens it with no tracker lock held.
+    pub fn take_request_support(&mut self) -> Option<String> {
+        self.version += 1;
+        self.request_support.take()
+    }
+
+    /// Whether `prompt_id` is an open session indicator with its pill window
+    /// up: the only prompt whose window may be resized (`prompt_pill_expand`).
+    pub fn indicator_open(&self, prompt_id: &str) -> bool {
+        self.prompts.get(prompt_id).is_some_and(|t| {
+            !t.closed && t.show.presentation == Presentation::Indicator && matches!(t.surface, Surface::Card { .. })
+        })
     }
 
     /// Esc or the window close box: the safe action on a pending decision,
@@ -998,6 +1052,7 @@ impl PromptTracker {
         self.prompts.clear();
         self.closed_revs.clear();
         self.identity = None;
+        self.request_support = None;
         cards
     }
 
@@ -1808,12 +1863,16 @@ mod tests {
         assert!(!is_registry_kind("future.kind"));
     }
 
-    /// W04 advertises exactly `notice.info@1` (plan P2: a kind is advertised
-    /// only by the wave that ships it). Every entry must be a registry kind
-    /// shaped `<kind>@<1-999>`.
+    /// W06 advertises exactly `notice.info@1` (W04) and the two remote kinds
+    /// (plan P2: a kind is advertised only by the wave that ships it). Every
+    /// entry must be a registry kind shaped `<kind>@<1-999>`.
     #[test]
-    fn advertised_kinds_are_w04_notices_only_and_well_formed() {
-        assert_eq!(ADVERTISED_PROMPT_KINDS, &["notice.info@1"], "W04 advertises notice.info@1 only");
+    fn advertised_kinds_are_shipped_waves_only_and_well_formed() {
+        assert_eq!(
+            ADVERTISED_PROMPT_KINDS,
+            &["notice.info@1", "remote.consent@1", "remote.session@1"],
+            "W06 advertises notice.info@1 and the remote kinds only"
+        );
         for ad in ADVERTISED_PROMPT_KINDS.iter().chain(ALL_KINDS) {
             let (kind, ver) = ad.rsplit_once('@').expect(ad);
             assert!(is_registry_kind(kind), "{ad}");
@@ -2113,6 +2172,246 @@ mod tests {
         assert_eq!(frame.payload["actionId"], "open_settings");
         assert_eq!(frame.payload["promptId"], "notice:tcc:0a1b2c3d");
         assert_eq!(frame.payload["via"], "click");
+    }
+
+    // ----- remote.consent / remote.session (W06) -----
+
+    const SESSION_ID: &str = "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+
+    fn spec(id: &str, label: &str, role: ActionRole) -> PromptActionSpec {
+        PromptActionSpec { id: id.into(), label: label.into(), role }
+    }
+
+    /// The agent's `remote.consent@1` (contract section 3): a modal that
+    /// steals focus; Allow (proceed) and Deny (safe, the default).
+    fn consent() -> PromptShow {
+        let mut s = with_id(notice(), "consent:9f2c4e1a");
+        s.kind = "remote.consent".into();
+        s.presentation = Presentation::Modal;
+        s.focus = FocusMode::Steal;
+        s.copy = PromptCopy { title: "Remote support request".into(), ..PromptCopy::default() };
+        s.facts = Some(vec![PromptFact { label: "Technician".into(), value: "Alex Rivera".into() }]);
+        s.actions = vec![spec("allow", "Allow", ActionRole::Proceed), spec("deny", "Deny", ActionRole::Safe)];
+        s.default_action_id = Some("deny".into());
+        s.timing = PromptTiming {
+            present_within_ms: 10_000,
+            deadline_unix_ms: None,
+            response_ms: Some(30_000),
+            expiry: Some(PromptExpiry {
+                action_id: None,
+                text: "If no one answers, the session is declined in {remaining}.".into(),
+            }),
+        };
+        s.list_entry = PromptListEntry { persistent: false, expires_at_unix_ms: None };
+        s
+    }
+
+    /// The agent's `remote.session@1`: an indicator that never activates,
+    /// with End session (policy allowed) and Report a problem.
+    fn session() -> PromptShow {
+        let mut s = with_id(notice(), &format!("session:{SESSION_ID}"));
+        s.kind = "remote.session".into();
+        s.presentation = Presentation::Indicator;
+        s.focus = FocusMode::NoActivate;
+        s.copy = PromptCopy { title: "Remote session in progress".into(), ..PromptCopy::default() };
+        s.actions = vec![
+            spec("end_session", "End session", ActionRole::Neutral),
+            spec("report_problem", "Report a problem", ActionRole::Neutral),
+        ];
+        s.default_action_id = None;
+        s.list_entry = PromptListEntry { persistent: false, expires_at_unix_ms: None };
+        s
+    }
+
+    fn result(prompt_id: &str, action_id: &str, kind: ActionResultKind) -> PromptActionResult {
+        PromptActionResult { prompt_id: prompt_id.into(), action_id: action_id.into(), rev: 1, result: kind }
+    }
+
+    #[test]
+    fn production_tracker_renders_both_remote_kinds() {
+        let mut t = PromptTracker::default();
+        assert!(rendered(&t.on_show(NOW, &consent())));
+        assert!(rendered(&t.on_show(NOW, &session())));
+        // Other later-wave kinds stay unadvertised.
+        assert_eq!(t.on_show(NOW, &restart()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+        assert_eq!(t.on_show(NOW, &elevation()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+    }
+
+    #[test]
+    fn consent_is_a_focused_modal_decision_with_deny_as_its_safe_default() {
+        let mut t = PromptTracker::default();
+        let s = consent();
+        match t.on_show(NOW, &s) {
+            ShowOutcome::Render { window: Some(w) } => {
+                assert!(w.focused, "consent steals focus (spec 3.2)");
+                assert_eq!(w.presentation, Presentation::Modal);
+            }
+            other => panic!("{other:?}"),
+        }
+        let v = t.view(&s.prompt_id, NOW).unwrap();
+        assert!(v.decision);
+        assert_eq!(v.safe_action_id.as_deref(), Some("deny"));
+        assert_eq!(v.countdown_deadline_unix_ms, Some(NOW + 30_000), "responseMs counts from presentation");
+        // Esc and the close box choose Deny, never Allow.
+        let Dismiss::Action(frame) = t.dismiss(NOW, &s.prompt_id, ActionVia::Keyboard) else { panic!("Esc = deny") };
+        assert_eq!(frame.payload["actionId"], "deny");
+        // A consent that names Allow as its default is refused, not drawn.
+        let mut bad = consent();
+        bad.default_action_id = Some("allow".into());
+        assert_eq!(PromptTracker::default().on_show(NOW, &bad), ShowOutcome::RenderFailed(DETAIL_NO_SAFE_DEFAULT));
+        // Asked not to activate, it does not.
+        let mut quiet = with_id(consent(), "consent:0b1c2d3e");
+        quiet.focus = FocusMode::NoActivate;
+        match PromptTracker::default().on_show(NOW, &quiet) {
+            ShowOutcome::Render { window: Some(w) } => assert!(!w.focused),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn modal_and_indicator_take_no_card_slot() {
+        let mut t = PromptTracker::default();
+        for i in 0..MAX_VISIBLE_CARDS {
+            match t.on_show(NOW, &with_id(notice(), &format!("notice:a:{i}"))) {
+                ShowOutcome::Render { window: Some(w) } => assert_eq!(w.presentation, Presentation::Card),
+                other => panic!("{other:?}"),
+            }
+        }
+        // The stack is full: the next notice is list only...
+        assert_eq!(t.on_show(NOW, &with_id(notice(), "notice:a:9")), ShowOutcome::Render { window: None });
+        // ...but consent (centred) and the session pill (top of the screen) are
+        // drawn outside the stack and are never collapsed into the list.
+        for s in [consent(), session()] {
+            match t.on_show(NOW, &s) {
+                ShowOutcome::Render { window: Some(w) } => assert_eq!(w.presentation, s.presentation),
+                other => panic!("{}: {other:?}", s.kind),
+            }
+        }
+        // And they leave the stack's slots alone: with a pill and a consent
+        // up, three cards still stack from the bottom.
+        let mut t = PromptTracker::default();
+        assert!(rendered(&t.on_show(NOW, &session())));
+        assert!(rendered(&t.on_show(NOW, &consent())));
+        for i in 0..MAX_VISIBLE_CARDS {
+            match t.on_show(NOW, &with_id(notice(), &format!("notice:b:{i}"))) {
+                ShowOutcome::Render { window: Some(w) } => assert_eq!(w.slot, i),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn session_pill_never_takes_focus_and_is_not_a_decision() {
+        let mut t = PromptTracker::default();
+        let mut s = session();
+        // Even if asked to steal focus.
+        s.focus = FocusMode::Steal;
+        match t.on_show(NOW, &s) {
+            ShowOutcome::Render { window: Some(w) } => {
+                assert!(!w.focused);
+                assert_eq!(w.presentation, Presentation::Indicator);
+            }
+            other => panic!("{other:?}"),
+        }
+        let v = t.view(&s.prompt_id, NOW).unwrap();
+        assert!(!v.decision);
+        assert_eq!(v.safe_action_id, None);
+        assert!(t.indicator_open(&s.prompt_id));
+    }
+
+    /// The confirm step is the agent's: an action-set swap inside `pending`
+    /// (states are closed), with Keep session as the safe default. The close
+    /// box on the pill only hides it; it never ends the session.
+    #[test]
+    fn end_session_confirm_is_an_action_swap_inside_pending() {
+        let mut t = PromptTracker::default();
+        let s = session();
+        assert!(rendered(&t.on_show(NOW, &s)));
+        let f = t.action(NOW, &s.prompt_id, "end_session", ActionVia::Click).unwrap();
+        assert_eq!(f.payload["actionId"], "end_session");
+        assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "end_session", ActionResultKind::Accepted)));
+        let mut u = update(&s.prompt_id, 2);
+        u.copy = Some(PromptCopy {
+            title: "Remote session in progress".into(),
+            state_detail: Some("End this remote session? The technician will be disconnected.".into()),
+            ..PromptCopy::default()
+        });
+        u.actions = Some(vec![
+            spec("end_confirm", "End session", ActionRole::Proceed),
+            spec("keep_session", "Keep session", ActionRole::Safe),
+        ]);
+        u.default_action_id = Some("keep_session".into());
+        assert_eq!(t.on_update(NOW, &u), UpdateOutcome::Applied { card_open: true });
+        let v = t.view(&s.prompt_id, NOW).unwrap();
+        assert_eq!(v.state, PromptState::Pending);
+        assert_eq!(v.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["end_confirm", "keep_session"]);
+        assert_eq!(v.default_action_id.as_deref(), Some("keep_session"));
+        assert!(t.indicator_open(&s.prompt_id));
+        // The close box / Alt+F4 hides the pill; it never sends end_confirm.
+        match t.dismiss(NOW, &s.prompt_id, ActionVia::Click) {
+            Dismiss::Hidden(frame) => assert_eq!(frame.payload["reason"], "hidden"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!t.indicator_open(&s.prompt_id), "a hidden pill is not open");
+    }
+
+    #[test]
+    fn report_a_problem_opens_request_support_with_the_session_id_after_accepted() {
+        let mut t = PromptTracker::default();
+        let s = session();
+        assert!(rendered(&t.on_show(NOW, &s)));
+        assert_eq!(t.take_request_support(), None);
+        let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
+        assert_eq!(t.take_request_support(), None, "nothing opens before the agent answers");
+        assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support().as_deref(), Some(SESSION_ID), "the session id from session:<id>");
+        assert_eq!(t.take_request_support(), None, "once per accepted click");
+
+        // Rejected (stale or invalid): nothing opens.
+        for kind in [ActionResultKind::RejectedStale, ActionResultKind::RejectedInvalid] {
+            let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
+            assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", kind)));
+            assert_eq!(t.take_request_support(), None, "{kind:?}");
+        }
+        // An accepted result on another envelope (an earlier click) releases nothing.
+        t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
+        assert!(!t.on_action_result("prompt-other", &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None);
+        // No answer in time: nothing opens.
+        t.expire_due(NOW + ACTION_RESULT_TIMEOUT_MS);
+        assert_eq!(t.take_request_support(), None);
+        // Another action accepted: nothing opens.
+        let f = t.action(NOW, &s.prompt_id, "end_session", ActionVia::Click).unwrap();
+        assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "end_session", ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None);
+        // The same action id on another kind: nothing opens.
+        let mut n = with_id(notice(), "notice:x:1");
+        n.actions.push(spec("report_problem", "Report a problem", ActionRole::Neutral));
+        assert!(rendered(&t.on_show(NOW, &n)));
+        let f = t.action(NOW, &n.prompt_id, "report_problem", ActionVia::Click).unwrap();
+        assert!(t.on_action_result(&f.id, &result(&n.prompt_id, "report_problem", ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None);
+        // From the Notifications tab (via list) it opens too; a disconnect
+        // before it is taken drops it.
+        let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::List).unwrap();
+        assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
+        t.on_disconnect();
+        assert_eq!(t.take_request_support(), None);
+    }
+
+    #[test]
+    fn indicator_open_only_for_an_open_pill_with_a_card() {
+        let mut t = PromptTracker::default();
+        assert!(!t.indicator_open("session:none"));
+        assert!(rendered(&t.on_show(NOW, &notice())));
+        assert!(!t.indicator_open(&notice().prompt_id), "a notice card is not a pill");
+        assert!(rendered(&t.on_show(NOW, &consent())));
+        assert!(!t.indicator_open(&consent().prompt_id), "a modal is not a pill");
+        let s = session();
+        assert!(rendered(&t.on_show(NOW, &s)));
+        assert!(t.indicator_open(&s.prompt_id));
+        t.on_close(NOW, &close(&s.prompt_id, 2, CloseReason::Resolved));
+        assert!(!t.indicator_open(&s.prompt_id));
     }
 
     // ----- change notices (W04 event exposure fix) -----

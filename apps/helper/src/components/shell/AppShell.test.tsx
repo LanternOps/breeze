@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 // jsdom doesn't implement scrollIntoView; ChatView's messages-end effect calls
 // it unconditionally on every render, which would otherwise throw the moment
@@ -398,4 +398,51 @@ it('shows the Notifications tab for a message card alone', () => {
 
   expect(screen.getByTestId('notifications-tab')).toHaveTextContent('1 notifications');
   promptList.messages = [];
+});
+
+// #10190 W06 (OD-6 (b)): "Report a problem" on the remote-session pill. After
+// the agent answers `accepted`, Rust (lib.rs `open_request_support`) sets the
+// main window's hash to `#request-support/<sessionId>` and shows the window;
+// the shell opens the Request Support flow (the chat) with the session id
+// pre-filled, then clears the hash so a reload does not repeat it.
+describe('Request Support from the session pill', () => {
+  const SESSION = '8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c';
+  afterEach(() => {
+    window.history.replaceState(null, '', window.location.pathname);
+  });
+
+  it('report a problem opens request support with the session id after accepted', () => {
+    setWorkspaceState({ available: true });
+    window.history.replaceState(null, '', `#request-support/${SESSION}`);
+
+    render(<AppShell />);
+
+    expect(screen.getByTestId('chat-view')).toBeInTheDocument();
+    const box = screen.getByPlaceholderText('Ask me anything...') as HTMLTextAreaElement;
+    expect(box.value).toContain(SESSION);
+    expect(window.location.hash).toBe('');
+  });
+
+  it('opens it when the hash arrives while the window is already up', () => {
+    setWorkspaceState({ available: true });
+    render(<AppShell />);
+    expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+
+    act(() => {
+      window.history.replaceState(null, '', `#request-support/${SESSION}`);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    expect(screen.getByTestId('chat-view')).toBeInTheDocument();
+    expect((screen.getByPlaceholderText('Ask me anything...') as HTMLTextAreaElement).value).toContain(SESSION);
+    expect(window.location.hash).toBe('');
+  });
+
+  it('ignores any other hash and a malformed session id', () => {
+    setWorkspaceState({ available: true });
+    window.history.replaceState(null, '', '#request-support/bad<id>');
+    render(<AppShell />);
+    expect(screen.getByTestId('workspace-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('chat-view')).not.toBeInTheDocument();
+  });
 });

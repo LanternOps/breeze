@@ -1048,6 +1048,61 @@ fn prompt_card_hide(
     effect.map(|_| ())
 }
 
+/// The remote-session pill (#10190 W06) asks its own window to grow (expanded)
+/// or shrink (collapsed). Renderer-local (P7): nothing is sent to the agent.
+/// Only the pill's own window, and only while the tracker holds it open.
+#[tauri::command]
+fn prompt_pill_expand(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+    expanded: bool,
+) -> Result<(), String> {
+    if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
+        return Err("wrong window".into());
+    }
+    if !bridge.tracker().indicator_open(&prompt_id) {
+        return Err("not a session indicator".into());
+    }
+    crate::ipc::desktop::size_prompt_pill(&window, expanded)
+}
+
+/// The script that points the main window at Request Support for
+/// `session_id` (#10190 W06, OD-6 (b)): it sets the hash AppShell reads
+/// (`#request-support/<id>`) and nothing else. None unless the id is of the
+/// promptId charset (`[A-Za-z0-9._:-]`, at most 200), so nothing else can
+/// reach the script; it is also a JSON string literal, never spliced code.
+fn request_support_script(session_id: &str) -> Option<String> {
+    let ok = !session_id.is_empty()
+        && session_id.len() <= 200
+        && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+    if !ok {
+        return None;
+    }
+    let hash = serde_json::to_string(&format!("#request-support/{session_id}")).ok()?;
+    Some(format!("window.location.hash = {hash};"))
+}
+
+/// Open the main window's Request Support flow pre-filled with the remote
+/// session id (#10190 W06, OD-6 (b)). The ONE prompt path to the main window
+/// besides the tray (#8138): called only from the IPC loop's
+/// `prompt_action_result` handler, with the session id the tracker hands out
+/// once after the agent `accepted` the person's own "Report a problem" click
+/// (`PromptTracker::take_request_support`). Pinned by
+/// `prompt_rs_never_shows_main_window`.
+pub(crate) fn open_request_support(app: &tauri::AppHandle, session_id: &str) {
+    let Some(script) = request_support_script(session_id) else {
+        eprintln!("[helper] Request Support not opened: unexpected session id");
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else { return };
+    if let Err(e) = window.eval(script) {
+        eprintln!("[helper] Request Support could not be opened: {e}");
+        return;
+    }
+    show_window(app);
+}
+
 /// The MSP identity for the prompt header (#10190 W03): the main window
 /// (Notifications tab locale) and prompt cards only.
 #[tauri::command]
@@ -1851,6 +1906,7 @@ pub fn run() {
             get_prompt_view,
             prompt_card_action,
             prompt_card_hide,
+            prompt_pill_expand,
             get_prompt_identity,
             get_notification_list,
             prompt_list_action,
@@ -2400,7 +2456,8 @@ mod tests {
     // reach the main window; the card is built from exactly one call site (the
     // `prompt_show` handler); the prompt arms, their handlers, the window
     // helpers and the card/list commands never show, focus or name `main`.
-    // The only main-window path is the user's own tray click.
+    // The only main-window paths are the user's own tray click and (W06) the
+    // agent's `accepted` answer to the user's "Report a problem" click.
     #[test]
     fn prompt_rs_never_shows_main_window() {
         let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
@@ -2450,6 +2507,7 @@ mod tests {
             "pub fn publish_notification_list(",
             "pub fn publish_prompt_identity(",
             "fn emit_version_notice(",
+            "pub fn size_prompt_pill(",
         ] {
             let body = body_of(desktop, sig);
             for forbidden in NO_SURFACING {
@@ -2468,6 +2526,7 @@ mod tests {
             "fn get_prompt_view(",
             "fn prompt_card_action(",
             "fn prompt_card_hide(",
+            "fn prompt_pill_expand(",
             "fn get_notification_list(",
             "fn prompt_list_action(",
             "fn get_caller_verify_logo(",
@@ -2479,9 +2538,31 @@ mod tests {
                 assert!(!body.contains(forbidden), "{sig} contains {forbidden}");
             }
         }
-        // The tray's Notifications item is the user's own click, and the only
-        // prompt path that opens the main window.
+        // The tray's Notifications item is the user's own click...
         assert_eq!(lib.matches("\"notifications\" =>").count(), 1);
+        // ...and the one other prompt path (#10190 W06, OD-6 (b)) is the
+        // person's own "Report a problem" click on the session pill, opened
+        // only on the agent's `accepted` answer to it: the tracker hands the
+        // session id out once (`take_request_support`, prompt.rs tests), and
+        // the action-result handler is the only caller of the lib.rs opener.
+        assert_eq!(client.matches("crate::open_request_support(").count(), 1);
+        let result = body_of(client, "fn handle_prompt_action_result(");
+        let take = result.find(".take_request_support()").expect("gated on the tracker's one-shot");
+        let open = result.find("crate::open_request_support(").expect("opened from the result handler");
+        assert!(take < open, "the one-shot is taken before the opener runs");
+        assert_eq!(lib.matches("open_request_support(").count(), 1, "lib.rs defines the opener and never calls it");
+        for (name, src) in [
+            ("prompt.rs", prompt),
+            ("desktop.rs", desktop),
+            ("app_shell.rs", include_str!("app_shell.rs")),
+            ("message.rs", prod_of(include_str!("ipc/message.rs"))),
+            ("chat.rs", prod_of(include_str!("ipc/chat.rs"))),
+        ] {
+            assert!(!src.contains("open_request_support"), "{name} opens Request Support");
+        }
+        let opener = body_of(lib, "pub(crate) fn open_request_support(");
+        assert!(opener.contains("request_support_script(session_id)"), "the hash is built by the tested helper");
+        assert!(opener.contains("show_window(app)"));
         // Main window still built hidden, and lib.rs builds no card.
         assert!(lib.contains(".visible(false);"));
         assert!(!lib.contains("show_prompt_window"));
@@ -2505,6 +2586,43 @@ mod tests {
         let card = &desktop[start..end];
         assert!(card.contains("ActionVia::Click") && !card.contains("ActionVia::Keyboard"));
         assert!(card.contains("eprintln!"), "a refused close box is logged");
+    }
+
+    // #10190 W06 (OD-6 (b)): Request Support is opened by setting the main
+    // window's hash (AppShell reads `#request-support/<sessionId>`). Only a
+    // session id of the prompt-id charset gets a script, and the script only
+    // sets the hash: the id is a JSON string literal, never spliced code.
+    #[test]
+    fn request_support_script_sets_only_a_validated_hash() {
+        let id = "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        assert_eq!(
+            request_support_script(id).as_deref(),
+            Some("window.location.hash = \"#request-support/8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c\";")
+        );
+        for bad in ["", "a\"b", "a'b", "a;alert(1)", "a b", "a/b", "a<b", "a\\b", &"x".repeat(201)] {
+            assert_eq!(request_support_script(bad), None, "{bad:?}");
+        }
+        // The same charset the agent's promptId suffix may carry.
+        assert!(request_support_script("abc.DEF_1:2-3").is_some());
+    }
+
+    // #10190 W06: the session pill grows and shrinks in place (same width, so
+    // it stays centred at the top of the screen) and only for its own window
+    // while the tracker holds it as an open pill.
+    #[test]
+    fn prompt_pill_expand_is_label_checked_and_pill_only() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let start = lib.find("fn prompt_pill_expand(").expect("prompt_pill_expand");
+        let body = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        let label = body.find("label_matches(window.label(), &prompt_id)").unwrap();
+        let open = body.find(".indicator_open(&prompt_id)").expect("pill only");
+        let size = body.find("size_prompt_pill(").expect("resizes through desktop.rs");
+        assert!(label < open && open < size);
+        assert!(!body.contains(".act(") && !body.contains("dismiss("), "expanding is never a wire action");
+        use crate::ipc::desktop::{PROMPT_PILL, PROMPT_PILL_EXPANDED};
+        assert_eq!(PROMPT_PILL.width, PROMPT_PILL_EXPANDED.width);
+        assert!(PROMPT_PILL.height < PROMPT_PILL_EXPANDED.height);
     }
 
     // #10190: the card capability grants only listening for its own
@@ -2700,6 +2818,7 @@ mod tests {
         let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
         for (cmd, check) in [
             ("fn get_prompt_view(", "crate::ipc::prompt::label_matches(window.label(), &prompt_id)"),
+            ("fn prompt_pill_expand(", "crate::ipc::prompt::label_matches(window.label(), &prompt_id)"),
             ("fn get_notification_list(", "crate::ipc::desktop::list_window_allowed(window.label())"),
             ("fn prompt_list_action(", "crate::ipc::desktop::list_window_allowed(window.label())"),
             ("fn get_prompt_identity(", "crate::ipc::desktop::identity_window_allowed(window.label())"),
@@ -2909,6 +3028,9 @@ mod tests {
             ("get_prompt_view", "crate::ipc::prompt::label_matches(window.label()"),
             ("prompt_card_action", "crate::ipc::prompt::label_matches(window.label()"),
             ("prompt_card_hide", "crate::ipc::prompt::label_matches(window.label()"),
+            //  - prompt_pill_expand: the remote-session pill (#10190 W06) asks
+            //    its own window to grow or shrink; nothing goes to the agent.
+            ("prompt_pill_expand", "crate::ipc::prompt::label_matches(window.label()"),
             //  - get_prompt_identity: the identity header (#10190 W03), read by
             //    the main window and prompt cards only.
             ("get_prompt_identity", "crate::ipc::desktop::identity_window_allowed(window.label())"),

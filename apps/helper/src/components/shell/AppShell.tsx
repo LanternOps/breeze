@@ -400,6 +400,16 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * The remote session id in `#request-support/<sessionId>` (#10190 W06), or
+ * null. The id must be of the prompt-id charset Rust checked before setting
+ * the hash (`request_support_script`); anything else is ignored.
+ */
+export function requestSupportSessionId(hash: string): string | null {
+  const m = /^#request-support\/([A-Za-z0-9._:-]{1,200})$/.exec(hash);
+  return m ? m[1]! : null;
+}
+
 // The persistent files-first shell: ONE header (drag region + traffic-light
 // spacer + status dot + title + a Files/Chat/History SegmentedControl + the
 // chat-scoped Flag/New actions) over a single main region that swaps on
@@ -506,6 +516,27 @@ export default function AppShell() {
       enter('notifications');
     }).then((fn: () => void) => { unlisten = fn; });
     return () => { unlisten?.(); };
+  }, []);
+
+  // "Report a problem" on the remote-session pill (#10190 W06, OD-6 (b)):
+  // after the agent accepted it, Rust (lib.rs `open_request_support`) sets
+  // `#request-support/<sessionId>` and shows this window. Open Request Support
+  // (the chat) with the session id pre-filled, then clear the hash so a reload
+  // does not repeat it. Read on mount too: the hash may be set before the
+  // shell is up (connecting, username prompt).
+  useEffect(() => {
+    const take = () => {
+      const sessionId = requestSupportSessionId(window.location.hash);
+      if (!sessionId) return;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setChatPanelOpen(false);
+      enter('chat');
+      const prefill = `Problem with remote session ${sessionId}: `;
+      setDraft((cur) => (cur.trim() ? `${prefill}${cur}` : prefill));
+    };
+    take();
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
   }, []);
 
   // The tab exists only while there is something in the list (or the user is

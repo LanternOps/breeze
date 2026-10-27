@@ -713,7 +713,9 @@ where
             }
             // Prompt host (#10190). Rule 4: a prompt_* this helper cannot draw
             // is answered prompt_closed{render_failed}, never dropped. None of
-            // these arms (or their handlers) can reach the main window (#8138).
+            // these arms (or their handlers) can reach the main window (#8138),
+            // except the agent's `accepted` answer to the person's own "Report a
+            // problem" click (W06, `open_request_support`, lib.rs guard test).
             "prompt_show" => {
                 let frames = handle_prompt_show(desktop_ctx, &prompts, &env.id, &env.payload);
                 for frame in frames {
@@ -1054,8 +1056,14 @@ fn handle_prompt_action_result(
         Some(Ok(result)) => {
             let changed = prompts.tracker().on_action_result(env_id, &result);
             if changed {
+                // W06 (OD-6 (b)): the agent accepted the person's own "Report a
+                // problem" on the session pill. Taken with the lock released.
+                let support = prompts.tracker().take_request_support();
                 if let Some(ctx) = ctx {
                     desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
+                    if let Some(session_id) = support {
+                        crate::open_request_support(&ctx.app, &session_id);
+                    }
                 }
             } else {
                 eprintln!(
@@ -1831,8 +1839,8 @@ mod tests {
     const CLOSED_FAILED: &str =
         include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
 
-    /// Rule 4: a kind this build does not advertise (W04: anything but
-    /// notice.info@1), arriving anyway, is answered
+    /// Rule 4: a kind this build does not advertise (W06: anything but
+    /// notice.info@1 and the remote kinds), arriving anyway, is answered
     /// `prompt_closed{render_failed, unadvertised_kind}` on the same envelope
     /// id -- never dropped silently.
     #[tokio::test]
@@ -2024,7 +2032,7 @@ mod tests {
     }
 
     /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
-    /// (W04) and nothing else, names its version.
+    /// (W04) and the two remote kinds (W06) and nothing else, names its version.
     #[tokio::test]
     async fn test_auth_request_carries_the_prompt_advertisement() {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
@@ -2035,7 +2043,11 @@ mod tests {
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
         let v: serde_json::Value = serde_json::from_str(env.payload.as_ref().unwrap().get()).unwrap();
         assert_eq!(v["promptProtocolVersion"], 1);
-        assert_eq!(v["promptKinds"], serde_json::json!(["notice.info@1"]), "W04 advertises notice.info@1 only");
+        assert_eq!(
+            v["promptKinds"],
+            serde_json::json!(["notice.info@1", "remote.consent@1", "remote.session@1"]),
+            "W06 advertises notice.info@1 and the two remote kinds"
+        );
         assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
         drop(broker_half);
         let _ = session.await;
@@ -2186,16 +2198,22 @@ mod prompt_auth_tests {
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
     }
 
-    // #10190 W04 (Task 4.2): this build draws notice cards, so the live
-    // authentication advertises exactly `notice.info@1` and nothing else.
+    // #10190 W04 (Task 4.2) + W06 (Task 6.4): this build draws notice cards,
+    // the remote consent card and the remote session pill, so the live
+    // authentication advertises exactly those three kinds at version 1.
     #[test]
-    fn advertises_notice_info_v1() {
+    fn advertises_remote_kinds_v1() {
         let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
         let req = build_auth_request(&id);
-        assert_eq!(req.prompt_kinds, vec!["notice.info@1".to_string()]);
+        let want = ["notice.info@1", "remote.consent@1", "remote.session@1"];
+        assert_eq!(req.prompt_kinds, want.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["promptKinds"], serde_json::json!(["notice.info@1"]));
+        assert_eq!(json["promptKinds"], serde_json::json!(want));
         assert_eq!(json["promptProtocolVersion"], 1);
+        // Nothing from a later wave: restart (W05) and elevation (W07) stay legacy.
+        for later in ["restart.prompt", "restart.final", "elevation.request"] {
+            assert!(!req.prompt_kinds.iter().any(|k| k.starts_with(later)), "{later} is not advertised yet");
+        }
     }
 
     #[test]
