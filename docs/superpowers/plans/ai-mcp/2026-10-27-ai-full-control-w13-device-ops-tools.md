@@ -104,7 +104,7 @@ Q1 reversible within a minute? Q2 leaves the tenant / reaches a person / touches
 - **W13-D4 event-feed projection is narrower than REST.** The tool returns id, time, action, message, category, result, actor type + display name, resource, `initiatedBy` and `errorMessage`; **not** actor email, IP address or `details` (personal data and free-form JSON the model does not need to read a timeline). The actor name is the user's name or the actor-type label, **never** the email fallback REST uses (QW7).
 - **W13-D5 users-FK writes record a verified user or NULL** (W12-D3 `verifiedUserIdOrNull`): `device_link_groups.created_by`, `manual_assets.created_by` / `updated_by`, the function assessment's writer. No W13 action joins `USER_OWNED_RELEASE_ACTIONS`.
 - **W13-D6 MFA parity.** Every PR A write's REST twin carries `requireMfa()` → `MFA_GATED_TOOL_ACTIONS` + `mfaGatedToolError` in the handler.
-- **W13-D12 exact-device axis (quorum QW5).** A device-bound session (`allowedDeviceIds`): link-group writes are refused unless every affected member — existing members, added / removed ones and any collateral dissolution — is in the allowlist (checked inside the mutation transaction); manual assets have no device axis, so list and writes refuse device-bound sessions; posture, warranty `expiring` and link-group lists put the exact-device predicate in the SQL scope **before aggregation**, so counts cannot leak out-of-axis devices.
+- **W13-D12 exact-device axis (quorum QW5).** A device-bound session (`allowedDeviceIds`): link-group writes are refused outright (stricter than checking every affected member: a change touches existing members, added / removed ones and any collateral dissolution, and an outright refusal has no lock-ordering window); manual assets have no device axis, so list and writes refuse device-bound sessions; posture, warranty `expiring` and link-group lists put the exact-device predicate in the SQL scope **before aggregation**, so counts cannot leak out-of-axis devices.
 - **W13-D7 (PR B) the tool never touches a secret value.** `create` refuses `isSecret: true`; `update` refuses a row that is secret; `isSecret` is not in the update schema. A secret typed into chat would persist in the transcript, the action-intent input and the model context. Reads never return a value for a secret row (`toApiTenantVariable`), and a test greps the serialized tool output for the plaintext.
 - **W13-D8 (PR B) support-session scope and the join code (QW3, QW6, QW7).** list / get / create / end are refused to site- or device-restricted sessions (reads are RLS-only and end runs in a system context) and to non-partner scope (REST). The code and the `landingUrl` that embeds it must never enter model context, transcripts, SSE or a plaintext intent result: create is built only on the credential-carrier path (`actionIntents/secretBearingTools.ts`, human-only reveal), or deferred. Views are an explicit projection (no `codeHash`, no `claimedFromIp`; attribution text fenced).
 - **W13-D13 (PR B) tenant-variable scope (QW6).** Org writes need `canMutateOrgWideGovernance`; the tool explicitly refuses updating or deleting an existing partner-wide row (the shared service would permit a qualified caller); secret status is rechecked at release.
@@ -128,7 +128,14 @@ Q1 reversible within a minute? Q2 leaves the tenant / reaches a person / touches
 
 ## Budget (W19 bounds; `AI_TOOL_INDEX=lazy`)
 
-Measured at T5; see the PR body. Every PR A tool joins `devices` (the domain of `get_device_details`, `query_custom_fields` and `manage_processes`).
+| Measure | main `f5742d2eb7` | PR A branch |
+|---|---|---|
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| devices block (B2 < 2,048) | 1,328 | 1,620 |
+| largest block | security 1,644 | security 1,644 |
+| Worst page turn (B3 < 7,040) | alert 4,872 | alert 5,164 (device 4,210 → 4,502) |
+
+Per tool on the devices line: events 19, health 19, process samples 21, posture 24, function 34, links 66, manual assets 62, warranty 47 B. Every PR A tool joins `devices` (the domain of `get_device_details`, `query_custom_fields` and `manage_processes`). No ceiling, `DOMAIN_NOTES` or vocabulary change; none is `alwaysLoad`. Registry 327 → 335, so `MCP_TOOL_COUNT_APPROX` 320 → 330 (own commit). PR B has 428 B of devices-block headroom. D5 turn-1 token capture not run (AI keys blanked in worktree stacks).
 
 ## Quorum (codex `exec`, read-only, xhigh): AGREE WITH CHANGES
 
