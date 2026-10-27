@@ -31,6 +31,12 @@ type Deps struct {
 	Inbox  PromptInbox // optional
 	Clock  Clock       // optional; the system clock by default
 	Log    *slog.Logger
+	// Identity is the cached MSP identity sent in prompt_branding_sync
+	// (optional; nil = always {cleared:true}).
+	Identity IdentitySource
+	// OSLocale is the machine's UI language, the fallback for a renderer
+	// that reported none (optional; nil = en).
+	OSLocale func() string
 }
 
 // Host is the agent's prompt host. All methods are safe for concurrent use.
@@ -50,6 +56,9 @@ type Host struct {
 	inbox PromptInbox
 	clock Clock
 	log   *slog.Logger
+
+	identity IdentitySource
+	osLocale func() string
 
 	actionMu sync.Mutex
 	flushMu  sync.Mutex
@@ -119,6 +128,8 @@ func New(deps Deps) *Host {
 		inbox:     deps.Inbox,
 		clock:     deps.Clock,
 		log:       deps.Log,
+		identity:  deps.Identity,
+		osLocale:  deps.OSLocale,
 		prompts:   map[string]*record{},
 		tombs:     newTombstones(deps.Inbox),
 		limiter:   newCardLimiter(),

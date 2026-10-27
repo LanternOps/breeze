@@ -2982,6 +2982,7 @@ func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.
 	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
 	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
 	applyPromptGrant(session, promptGrantFromAuth(role, authReq))
+	session.uiLocale = uiLocaleFromAuth(authReq)
 }
 
 // targetedPamDismissFromAuth reports whether the agent may send this helper a

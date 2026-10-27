@@ -148,6 +148,12 @@ export default function HelperTab({
           </div>
           <button
             type="button"
+            role="switch"
+            aria-checked={settings.enabled}
+            aria-label={i18n.t(
+              "policies:configurationPolicies.featureTabs.helperTab.deployBreezeAssistToDevices",
+            )}
+            data-testid="helper-deploy"
             onClick={() => update("enabled", !settings.enabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
