@@ -51,6 +51,23 @@ describe('IdentityHeader', () => {
     expect(header).toHaveAttribute('data-accent', 'default');
   });
 
+  it('uses the brand colour only when it is readable in the active theme (W04)', () => {
+    // #1F5FAD passes on the light canvas and fails on the dark one.
+    const { rerender } = render(<IdentityHeader identity={identity} logoUrl={null} locale="en" theme="light" />);
+    const header = () => screen.getByTestId('prompt-identity');
+    expect(header()).toHaveAttribute('data-accent', 'brand');
+    for (const theme of ['dark', 'forced', 'more'] as const) {
+      rerender(<IdentityHeader identity={identity} logoUrl={null} locale="en" theme={theme} />);
+      expect(header(), theme).toHaveAttribute('data-accent', 'default');
+      expect(header().style.getPropertyValue('--prompt-brand-accent'), theme).toBe('');
+    }
+    // A light colour is the reverse.
+    rerender(<IdentityHeader identity={{ ...identity, primaryColor: '#FFD166' }} logoUrl={null} locale="en" theme="dark" />);
+    expect(header()).toHaveAttribute('data-accent', 'brand');
+    rerender(<IdentityHeader identity={{ ...identity, primaryColor: '#FFD166' }} logoUrl={null} locale="en" theme="light" />);
+    expect(header()).toHaveAttribute('data-accent', 'default');
+  });
+
   it('ignores a colour that is not strict #RRGGBB', () => {
     render(<IdentityHeader identity={{ ...identity, primaryColor: 'red; background:url(x)' }} logoUrl={null} locale="en" />);
     expect(screen.getByTestId('prompt-identity')).toHaveAttribute('data-accent', 'default');

@@ -6,7 +6,7 @@ import type { SessionSummary, PendingApproval, PendingApprovalScriptProposal, De
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import WorkspacePanel from '../workspace/WorkspacePanel';
 import { SegmentedControl } from '../ui/SegmentedControl';
-import { NotificationsTab, usePromptList } from '../../prompt/NotificationsTab';
+import { NotificationsTab, useNotificationList } from '../../prompt/NotificationsTab';
 import { chromeString } from '../../prompt/chrome';
 import { usePromptIdentity } from '../../prompt/identity';
 import ChatView from './ChatView';
@@ -416,8 +416,9 @@ export default function AppShell() {
     flagSession,
   } = useChatStore();
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
-  // Prompt notification list (#10190), kept by Rust; empty outside Tauri.
-  const prompts = usePromptList();
+  // The one notification list (#10190: prompts and, since W04, message
+  // cards), kept by Rust; empty outside Tauri.
+  const prompts = useNotificationList();
   // Only the locale is used here (#10190 W03): the list chrome follows the
   // last branding sync, like the tray entry.
   const promptLocale = usePromptIdentity(undefined, undefined, undefined, { decodeLogo: false }).locale;
@@ -509,7 +510,8 @@ export default function AppShell() {
 
   // The tab exists only while there is something in the list (or the user is
   // on it), so a build that advertises no prompt kind looks unchanged (W02).
-  const showNotifications = prompts.entries.length > 0 || mainView === 'notifications';
+  const showNotifications =
+    prompts.entries.length > 0 || prompts.messages.length > 0 || mainView === 'notifications';
   const navOptions = [
     ...(workspaceAvailable === true ? [{ key: 'files', label: 'Files' }] : []),
     { key: 'chat', label: 'Chat' },
@@ -634,7 +636,13 @@ export default function AppShell() {
         ) : mainView === 'device-info' ? (
           <DeviceInfoView onClose={goBack} />
         ) : mainView === 'notifications' ? (
-          <NotificationsTab entries={prompts.entries} onAction={prompts.act} error={prompts.error} locale={promptLocale} />
+          <NotificationsTab
+            entries={prompts.entries}
+            messages={prompts.messages}
+            onAction={prompts.act}
+            error={prompts.error}
+            locale={promptLocale}
+          />
         ) : mainView === 'files' && workspaceAvailable === true ? (
           <WorkspacePanel embedded onClose={goBack} />
         ) : (

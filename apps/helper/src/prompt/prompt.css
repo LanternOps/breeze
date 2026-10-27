@@ -19,6 +19,12 @@
   /* High contrast wins: system colours, never the brand accent. */
   .prompt-identity { --prompt-brand-accent: CanvasText; color: CanvasText; border-bottom-color: CanvasText; }
 }
+@media (prefers-contrast: more) {
+  /* "More contrast" wins too: the default accent, never the brand colour
+     (theme.ts refuses it as well; this covers a stale theme read). Direct
+     properties, because an inline --prompt-brand-accent outranks a rule. */
+  .prompt-identity { color: var(--accent); border-bottom-color: var(--accent); }
+}
 .prompt-title { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .prompt-body { flex: 1; min-height: 0; overflow-y: auto; font-size: 13px; line-height: 1.45;
   color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }

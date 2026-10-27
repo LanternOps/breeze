@@ -200,8 +200,8 @@ export function usePromptIdentity(
     return () => {
       if (url) urls.revoke(url);
     };
-    // Re-created only when the logo itself changes, not on every sync.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Re-created only when the logo itself changes (logoKey), not on every
+    // sync that hands back an equal logo object.
   }, [logoKey, urls]);
 
   return { identity, logoUrl: identity ? logoUrl : null, locale: wire?.locale ?? null };

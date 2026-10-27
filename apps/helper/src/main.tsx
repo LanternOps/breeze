@@ -8,6 +8,7 @@ import App from './App';
 import { ConsentWindow } from './windows/ConsentWindow';
 import { CallerVerifyWindow, type Branding, type CallerRequest } from './windows/CallerVerifyWindow';
 import { loadCallerBranding } from './windows/callerVerifyBranding';
+import { useCallerLogo } from './windows/callerVerifyLogo';
 import { SessionBanner } from './windows/SessionBanner';
 import { MessageCardWindow } from './components/MessageCard';
 import { EndpointChatWindow } from './components/EndpointChat';
@@ -53,6 +54,9 @@ function CallerVerifyHost({ verificationId }: { verificationId: string }) {
     loadCallerBranding().then((b) => { if (live) setBranding(b); }).catch(() => {});
     return () => { live = false; };
   }, [verificationId]);
+  // #10190 W04: the synced logo bytes when /helper/config names the same
+  // logo, else the https logoUrl, else none (callerVerifyLogo.ts).
+  const logo = useCallerLogo(branding, verificationId);
 
   if (!view) return null;
   return (
@@ -60,6 +64,7 @@ function CallerVerifyHost({ verificationId }: { verificationId: string }) {
       req={view.request}
       deadlineMs={view.deadlineMs}
       branding={branding}
+      logo={logo}
       locale={navigator.language}
       onDecision={(choice) => invoke<void>('submit_caller_verify', { verificationId, choice })}
     />

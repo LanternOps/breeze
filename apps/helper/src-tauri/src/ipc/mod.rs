@@ -10,6 +10,7 @@ pub mod consent;
 pub mod desktop;
 pub mod envelope;
 pub mod message;
+pub mod notifications;
 pub mod prompt;
 pub mod token;
 pub mod transport;
