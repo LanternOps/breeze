@@ -191,6 +191,8 @@ export interface FlowSummaryDto {
   triggerType: string;
   definitionVersion: number;
   updatedAt: string;
+  /** W5: the last admission refusal (a monthly cap or the active queue), for the list badge and the detail banner. */
+  lastAdmissionRefusal: { at: string; code: FlowAdmissionRefusal } | null;
 }
 
 export interface FlowDetailDto extends FlowSummaryDto {
@@ -209,6 +211,4 @@ export interface FlowDetailDto extends FlowSummaryDto {
   webhook: FlowWebhookInfoDto | null;
   /** W5: this month's run counts against the effective caps; null when not computed. */
   usage: FlowUsageDto | null;
-  /** W5: the last admission refusal (a monthly cap or the active queue), for the banner. */
-  lastAdmissionRefusal: { at: string; code: FlowAdmissionRefusal } | null;
 }

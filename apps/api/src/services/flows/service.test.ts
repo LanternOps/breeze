@@ -63,7 +63,7 @@ import { assessPreApprovals } from './preApproval';
 import { resolveFlowOwnerForCaller } from './owner';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 import { writeAuditEvent } from '../auditEvents';
-import { assertFlowSlugAvailable, getFlow, saveDraftFlow } from './service';
+import { assertFlowSlugAvailable, getFlow, listFlows, saveDraftFlow } from './service';
 import { readFlowUsage } from './budgets';
 import { computeFlowLimits, resolveFlowLimits } from './flowLimits';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
@@ -334,6 +334,13 @@ describe('getFlow — W5 webhook block and usage (#5220 A5)', () => {
     vi.mocked(ownerForFlowRow).mockResolvedValueOnce({ orgId: null, partnerId: PARTNER });
     expect((await getFlow(partnerAuth('all'), FLOW_ID))?.flow.usage).toMatchObject({ flowRuns: 4, ownerRuns: 9 });
     expect(readFlowUsage).toHaveBeenCalledWith(FLOW_ID, { orgId: null, partnerId: PARTNER }, expect.any(Date));
+  });
+
+  it('the flow list carries the last admission refusal too, for the list badge (W05 PR D)', async () => {
+    queues.select.push([{ n: 1 }]);
+    queues.select.push([{ ...row({ lastAdmissionRefusalAt: new Date('2027-03-03T00:00:00Z'), lastAdmissionRefusalCode: 'owner_monthly_cap_reached' }), triggerType: 'event' }]);
+    const { flows } = await listFlows(auth(), {});
+    expect(flows[0]!.lastAdmissionRefusal).toEqual({ at: '2027-03-03T00:00:00.000Z', code: 'owner_monthly_cap_reached' });
   });
 
   it('the last admission refusal is reported for the banner', async () => {

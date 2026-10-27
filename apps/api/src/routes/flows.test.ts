@@ -424,7 +424,7 @@ describe('flows routes', () => {
       const res = await list('?limit=20&before=2027-03-01T00:00:00.000Z');
       expect(res.status).toBe(200);
       expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:read');
-      expect(await res.json()).toEqual({ deliveries: [] });
+      expect(await res.json()).toEqual({ deliveries: [], identifiersHidden: false });
       expect(listWebhookDeliveries).toHaveBeenCalledWith(expect.anything(), FLOW_ID, { limit: 20, before: '2027-03-01T00:00:00.000Z' });
     });
 
@@ -484,7 +484,7 @@ describe('flows routes', () => {
       dbh.results.push([{ id: FLOW_ID }], [ROW]);
       const res = await list();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ deliveries: [FULL] });
+      expect(await res.json()).toEqual({ deliveries: [FULL], identifiersHidden: false });
     });
 
     it('a site-restricted session gets the redacted shape (no delivery id, no resolver value)', async () => {
@@ -493,7 +493,7 @@ describe('flows routes', () => {
       const res = await list();
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(JSON.parse(text)).toEqual({ deliveries: [REDACTED] });
+      expect(JSON.parse(text)).toEqual({ deliveries: [REDACTED], identifiersHidden: true });
       expect(text).not.toContain('evt_secret_42');
       expect(text).not.toContain('acme-tenant-7');
     });
@@ -503,7 +503,7 @@ describe('flows routes', () => {
       dbh.results.push([{ id: FLOW_ID }], [ROW]);
       const res = await list();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ deliveries: [REDACTED] });
+      expect(await res.json()).toEqual({ deliveries: [REDACTED], identifiersHidden: true });
     });
 
     it('a flow hidden from the caller (an empty visibility read, as RLS gives another org) gets 404 and the delivery log is never read', async () => {
