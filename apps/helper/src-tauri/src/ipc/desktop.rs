@@ -465,6 +465,35 @@ pub fn publish_prompt_state(app: &AppHandle, prompt_id: Option<&str>) {
     crate::refresh_tray_menu(app);
 }
 
+/// Windows that may read the MSP identity (#10190 W03): the main window
+/// (Notifications tab locale) and prompt cards. Message, chat, consent and
+/// other windows may not. Lives here, not in prompt.rs, which never names the
+/// main window (#8138 guard).
+pub fn identity_window_allowed(label: &str) -> bool {
+    label == "main" || label.starts_with(super::prompt::WINDOW_LABEL_PREFIX)
+}
+
+/// The event the identity header listens for (main window and prompt cards).
+pub const PROMPT_IDENTITY_EVENT: &str = "prompt-identity-updated";
+
+/// After a branding sync (or the session that carried it ending): push the
+/// identity to the windows allowed to read it, and relabel the tray in the
+/// synced language. An event only: never shows or focuses a window.
+pub fn publish_prompt_identity(app: &AppHandle) {
+    let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
+    let view = bridge.tracker().identity_view();
+    let sent = app.emit_filter(PROMPT_IDENTITY_EVENT, &view, |target| match target {
+        tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::Window { label } => identity_window_allowed(label),
+        _ => false,
+    });
+    if let Err(e) = sent {
+        eprintln!("[helper] failed to emit {}: {}", PROMPT_IDENTITY_EVENT, e);
+    }
+    crate::refresh_tray_menu(app);
+}
+
 /// The logical work area of the monitor holding the cursor (else the primary).
 fn cursor_work_area(app: &AppHandle) -> Option<Rect> {
     let monitor = app

@@ -577,6 +577,21 @@ pub struct PromptView {
     pub version: u64,
 }
 
+/// The MSP identity for the webview's header, with the tracker's change
+/// counter (a window keeps the highest). `state` is `set` or `none` (never
+/// synced on this session, or `cleared`). The logo is the agent's bytes
+/// (base64), drawn from a local Blob URL; no remote URL is ever involved.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptIdentityView {
+    pub version: u64,
+    pub state: &'static str,
+    pub partner_name: Option<String>,
+    pub primary_color: Option<String>,
+    pub logo: Option<PromptLogo>,
+    pub locale: Option<String>,
+}
+
 /// The notification list with the same change counter as [`PromptView`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -623,7 +638,11 @@ pub struct PromptTracker {
     prompts: HashMap<String, Tracked>,
     closed_revs: HashMap<String, u64>,
     focus: FocusLimiter,
+    /// The MSP identity from the last `prompt_branding_sync`; never a cleared one.
     identity: Option<PromptBrandingSync>,
+    /// The negotiated locale of the last valid branding sync (set or cleared).
+    /// Kept across a disconnect so the tray does not flip language.
+    sync_locale: Option<String>,
     seq: u64,
     /// Bumped by every `&mut self` method; stamped on every view.
     version: u64,
@@ -643,6 +662,7 @@ impl PromptTracker {
             closed_revs: HashMap::new(),
             focus: FocusLimiter::default(),
             identity: None,
+            sync_locale: None,
             seq: 0,
             version: 0,
         }
@@ -1022,21 +1042,42 @@ impl PromptTracker {
         self.prompts.values().filter(|t| in_list(t, now_ms)).count()
     }
 
-    /// `prompt_branding_sync`: kept in memory for W03 to render. A sync that is
-    /// neither `cleared` nor a complete identity is ignored.
+    /// `prompt_branding_sync`: kept in memory and rendered as the card's
+    /// identity header (W03). `cleared: true` drops the identity (the cards
+    /// then show the localized generic name); its locale still applies. A sync
+    /// that is neither `cleared` nor a complete identity is ignored.
     pub fn on_branding_sync(&mut self, b: PromptBrandingSync) -> bool {
         self.version += 1;
         if !valid_branding(&b) {
             return false;
         }
-        self.identity = Some(b);
+        self.sync_locale = Some(b.locale.clone());
+        self.identity = if b.cleared { None } else { Some(b) };
         true
     }
 
-    /// The identity last synced on this session (W03 renders the header from it).
-    #[allow(dead_code)]
+    /// The identity last synced on this session, if it is set.
     pub fn identity(&self) -> Option<&PromptBrandingSync> {
         self.identity.as_ref()
+    }
+
+    /// The locale for Assist's own chrome (tray, list heading), if a branding
+    /// sync has set one.
+    pub fn chrome_locale(&self) -> Option<&str> {
+        self.sync_locale.as_deref()
+    }
+
+    /// What the webview's identity header renders (`get_prompt_identity`).
+    pub fn identity_view(&self) -> PromptIdentityView {
+        let id = self.identity.as_ref();
+        PromptIdentityView {
+            version: self.version,
+            state: if id.is_some() { "set" } else { "none" },
+            partner_name: id.and_then(|b| b.partner_name.clone()),
+            primary_color: id.and_then(|b| b.primary_color.clone()),
+            logo: id.and_then(|b| b.logo.clone()),
+            locale: self.sync_locale.clone(),
+        }
     }
 
     /// A unique envelope id for an unsolicited frame.
@@ -2186,16 +2227,43 @@ mod tests {
         let set: PromptBrandingSync = serde_json::from_str(BRANDING_SET).unwrap();
         assert!(t.on_branding_sync(set.clone()));
         assert_eq!(t.identity(), Some(&set));
-        let cleared: PromptBrandingSync = serde_json::from_str(BRANDING_CLEARED).unwrap();
-        assert!(t.on_branding_sync(cleared.clone()));
-        assert_eq!(t.identity(), Some(&cleared));
         // An identity without a scope or name is ignored (the previous one stays).
         let mut bad = set.clone();
         bad.scope_id = None;
         assert!(!t.on_branding_sync(bad));
-        assert_eq!(t.identity(), Some(&cleared));
+        assert_eq!(t.identity(), Some(&set));
         t.on_disconnect();
         assert!(t.identity().is_none());
+        assert_eq!(t.identity_view().state, "none");
+        // The tray keeps the last synced language across a reconnect.
+        assert_eq!(t.chrome_locale(), Some("de-DE"));
+    }
+
+    #[test]
+    fn branding_sync_cleared_drops_identity() {
+        let mut t = tracker();
+        assert_eq!(t.chrome_locale(), None);
+        let set: PromptBrandingSync = serde_json::from_str(BRANDING_SET).unwrap();
+        assert!(t.on_branding_sync(set));
+        let view = t.identity_view();
+        assert_eq!(view.state, "set");
+        assert_eq!(view.partner_name.as_deref(), Some("Example IT Services"));
+        assert_eq!(view.primary_color.as_deref(), Some("#1F5FAD"));
+        assert_eq!(view.logo.as_ref().map(|l| l.mime.as_str()), Some("image/png"));
+        assert_eq!(view.locale.as_deref(), Some("de-DE"));
+
+        let cleared: PromptBrandingSync = serde_json::from_str(BRANDING_CLEARED).unwrap();
+        assert!(t.on_branding_sync(cleared));
+        assert!(t.identity().is_none(), "cleared drops the identity");
+        let view = t.identity_view();
+        assert_eq!(view.state, "none");
+        assert!(view.partner_name.is_none() && view.primary_color.is_none() && view.logo.is_none());
+        // ...but its locale still drives the chrome.
+        assert_eq!(view.locale.as_deref(), Some("en"));
+        assert_eq!(t.chrome_locale(), Some("en"));
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["state"], "none");
+        assert!(json["version"].as_u64().unwrap() > 0);
     }
 
     // ----- decoding -----

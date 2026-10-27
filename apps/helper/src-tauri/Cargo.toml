@@ -30,6 +30,10 @@ chrono = "0.4"
 hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
+# OS UI language for AuthRequest.uiLocale and the tray's catalog strings
+# (#10190 W03). Pinned exactly after supply-chain review (G6): zero
+# dependencies on Windows/macOS/Linux, MIT OR Apache-2.0, 1Password.
+sys-locale = "=0.3.2"
 
 [dev-dependencies]
 # `test-util` enables paused/virtual-clock tests (start_paused, time::advance)

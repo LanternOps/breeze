@@ -7,6 +7,8 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import WorkspacePanel from '../workspace/WorkspacePanel';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { NotificationsTab, usePromptList } from '../../prompt/NotificationsTab';
+import { chromeString } from '../../prompt/chrome';
+import { usePromptIdentity } from '../../prompt/identity';
 import ChatView from './ChatView';
 
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -416,6 +418,9 @@ export default function AppShell() {
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
   // Prompt notification list (#10190), kept by Rust; empty outside Tauri.
   const prompts = usePromptList();
+  // Only the locale is used here (#10190 W03): the list chrome follows the
+  // last branding sync, like the tray entry.
+  const promptLocale = usePromptIdentity().locale;
 
   // Files when the capability is known-available at first render, else chat.
   // The probe may still be pending (null) here, so an effect below promotes to
@@ -509,7 +514,7 @@ export default function AppShell() {
     ...(workspaceAvailable === true ? [{ key: 'files', label: 'Files' }] : []),
     { key: 'chat', label: 'Chat' },
     { key: 'history', label: 'History' },
-    ...(showNotifications ? [{ key: 'notifications', label: 'Notifications' }] : []),
+    ...(showNotifications ? [{ key: 'notifications', label: chromeString('chrome.notifications', promptLocale) }] : []),
   ];
 
   // The chat toggle only makes sense from Files (the one primary view that can
@@ -629,7 +634,7 @@ export default function AppShell() {
         ) : mainView === 'device-info' ? (
           <DeviceInfoView onClose={goBack} />
         ) : mainView === 'notifications' ? (
-          <NotificationsTab entries={prompts.entries} onAction={prompts.act} error={prompts.error} />
+          <NotificationsTab entries={prompts.entries} onAction={prompts.act} error={prompts.error} locale={promptLocale} />
         ) : mainView === 'files' && workspaceAvailable === true ? (
           <WorkspacePanel embedded onClose={goBack} />
         ) : (

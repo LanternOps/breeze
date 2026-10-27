@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 import { PromptCard } from './PromptCard';
+import { usePromptIdentity, type PromptIdentityApi } from './identity';
 import type { ActionVia, PromptView } from './types';
 
 /** The Tauri commands and event the `#prompt/<id>` window uses (all label-checked in Rust). */
@@ -51,12 +52,18 @@ export function PromptCardWindow({
   api = tauriApi,
   clock = Date.now,
   retryDelayMs = 250,
+  identityApi,
+  identityEnabled,
 }: {
   promptId: string;
   api?: PromptCardApi;
   clock?: () => number;
   retryDelayMs?: number;
+  /** Tests inject these; in Tauri the defaults read `get_prompt_identity`. */
+  identityApi?: PromptIdentityApi;
+  identityEnabled?: boolean;
 }) {
+  const { identity, logoUrl } = usePromptIdentity(identityApi, identityEnabled);
   const [view, setView] = useState<PromptView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -128,5 +135,15 @@ export function PromptCardWindow({
   }, [api, promptId]);
 
   if (!view) return null;
-  return <PromptCard view={view} nowMs={nowMs} onAction={onAction} onHide={onHide} error={error ?? liveError} />;
+  return (
+    <PromptCard
+      view={view}
+      nowMs={nowMs}
+      onAction={onAction}
+      onHide={onHide}
+      error={error ?? liveError}
+      identity={identity}
+      logoUrl={logoUrl}
+    />
+  );
 }

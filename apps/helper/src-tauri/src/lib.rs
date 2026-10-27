@@ -1,4 +1,5 @@
 mod app_shell;
+mod chrome;
 mod ipc;
 mod requirements;
 mod single_instance;
@@ -1023,6 +1024,20 @@ fn prompt_card_hide(
     effect.map(|_| ())
 }
 
+/// The MSP identity for the prompt header (#10190 W03): the main window
+/// (Notifications tab locale) and prompt cards only.
+#[tauri::command]
+fn get_prompt_identity(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+) -> Result<crate::ipc::prompt::PromptIdentityView, String> {
+    if !crate::ipc::desktop::identity_window_allowed(window.label()) {
+        return Err("wrong window".into());
+    }
+    let view = bridge.tracker().identity_view();
+    Ok(view)
+}
+
 /// The notification list for the main window's Notifications tab (#10190).
 #[tauri::command]
 fn get_prompt_list(
@@ -1662,8 +1677,22 @@ pub(crate) fn refresh_chat_tray(app: &AppHandle) {
 /// The tray's Notifications entry (#10190): hidden while the list is empty;
 /// "(N)" is the number of entries. Windows 11 hides most tray icons in the
 /// overflow, so the on-screen card, not this entry, is what people rely on.
-fn notifications_menu_label(count: usize) -> Option<String> {
-    (count > 0).then(|| format!("Notifications ({count})"))
+/// The label is the shared catalog's `chrome.notificationsCount` (W03).
+fn notifications_menu_label(count: usize, locale: &str) -> Option<String> {
+    (count > 0).then(|| chrome::chrome_string("chrome.notificationsCount", locale, &[("count", &count.to_string())]))
+}
+
+/// The tray's language: the last branding sync's locale, else the OS UI
+/// language negotiated onto the eight prompt locales, else en.
+fn tray_locale_from(synced: Option<&str>, os_tag: &str) -> &'static str {
+    chrome::negotiate(synced.unwrap_or(os_tag))
+}
+
+fn tray_locale(app: &AppHandle) -> &'static str {
+    let synced = app
+        .try_state::<std::sync::Arc<crate::ipc::prompt::PromptBridge>>()
+        .and_then(|b| b.tracker().chrome_locale().map(str::to_string));
+    tray_locale_from(synced.as_deref(), chrome::os_ui_locale())
 }
 
 fn prompt_list_len(app: &AppHandle) -> usize {
@@ -1709,7 +1738,7 @@ fn build_tray_menu(
         let item = MenuItemBuilder::with_id("open_chat", label).build(app)?;
         builder = builder.item(&item);
     }
-    if let Some(label) = notifications_menu_label(prompt_list_len(app)) {
+    if let Some(label) = notifications_menu_label(prompt_list_len(app), tray_locale(app)) {
         let item = MenuItemBuilder::with_id("notifications", label).build(app)?;
         builder = builder.item(&item);
     }
@@ -1782,6 +1811,7 @@ pub fn run() {
             get_prompt_view,
             prompt_card_action,
             prompt_card_hide,
+            get_prompt_identity,
             get_prompt_list,
             prompt_list_action,
             workspace_open::open_workspace_path,
@@ -2373,6 +2403,7 @@ mod tests {
             "pub fn emit_prompt_view(",
             "pub fn publish_prompt_state(",
             "pub fn emit_prompt_list(",
+            "pub fn publish_prompt_identity(",
         ] {
             let body = body_of(desktop, sig);
             for forbidden in NO_SURFACING {
@@ -2455,15 +2486,50 @@ mod tests {
 
     #[test]
     fn tray_notifications_entry_hidden_while_the_list_is_empty() {
-        assert_eq!(notifications_menu_label(0), None);
-        assert_eq!(notifications_menu_label(1).as_deref(), Some("Notifications (1)"));
-        assert_eq!(notifications_menu_label(12).as_deref(), Some("Notifications (12)"));
+        assert_eq!(notifications_menu_label(0, "en"), None);
+        assert_eq!(notifications_menu_label(1, "en").as_deref(), Some("Notifications (1)"));
+        assert_eq!(notifications_menu_label(12, "en").as_deref(), Some("Notifications (12)"));
         // The static ids are untouched: the entry is added dynamically.
         assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"notifications"));
         let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
         let start = lib.find("fn build_tray_menu(").unwrap();
         let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
-        assert!(lib[start..end].contains("notifications_menu_label(prompt_list_len(app))"));
+        assert!(lib[start..end].contains("notifications_menu_label(prompt_list_len(app), tray_locale(app))"));
+    }
+
+    // #10190 W03: the tray label comes from the shared catalog, in the locale
+    // of the last branding sync, else the OS UI language, else en.
+    #[test]
+    fn tray_notifications_label_is_localized() {
+        assert_eq!(notifications_menu_label(3, "de-DE").as_deref(), Some("Benachrichtigungen (3)"));
+        assert_eq!(notifications_menu_label(2, "pt-BR").as_deref(), Some("Notificações (2)"));
+        assert_eq!(notifications_menu_label(1, "xx").as_deref(), Some("Notifications (1)"));
+        assert_eq!(notifications_menu_label(0, "de-DE"), None);
+        // A synced locale wins; without one the OS language is negotiated.
+        assert_eq!(tray_locale_from(Some("tr-TR"), "de-AT"), "tr-TR");
+        assert_eq!(tray_locale_from(None, "de-AT"), "de-DE");
+        assert_eq!(tray_locale_from(None, ""), "en");
+    }
+
+    // #10190 W03: the identity is readable by the main window and prompt
+    // cards only, and high contrast always beats the brand accent.
+    #[test]
+    fn prompt_identity_windows_and_high_contrast() {
+        use crate::ipc::desktop::identity_window_allowed;
+        assert!(identity_window_allowed("main"));
+        assert!(identity_window_allowed(&crate::ipc::prompt::window_label("restart:42")));
+        for other in ["message-1", "chat-1", "consent", "banner", "caller-verify-1", "mainx", ""] {
+            assert!(!identity_window_allowed(other), "{other}");
+        }
+        let css = include_str!("../../src/prompt/prompt.css");
+        let forced = &css[css.find("@media (forced-colors: active)").expect("forced-colors block")..];
+        assert!(forced.contains(".prompt-identity") && forced.contains("--prompt-brand-accent: CanvasText"));
+        // The header and the CSP agree: logos are local blob: URLs only.
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        let img = csp.split(';').map(str::trim).find(|d| d.starts_with("img-src")).unwrap();
+        assert!(img.split_whitespace().any(|t| t == "blob:"), "{img}");
+        assert!(img.contains("'self'") && img.contains("https:"), "existing sources kept: {img}");
     }
 
     // #8741: build.rs declares no app-command ACL, so Tauri does not gate app
@@ -2501,6 +2567,9 @@ mod tests {
             ("get_prompt_view", "crate::ipc::prompt::label_matches(window.label()"),
             ("prompt_card_action", "crate::ipc::prompt::label_matches(window.label()"),
             ("prompt_card_hide", "crate::ipc::prompt::label_matches(window.label()"),
+            //  - get_prompt_identity: the identity header (#10190 W03), read by
+            //    the main window and prompt cards only.
+            ("get_prompt_identity", "crate::ipc::desktop::identity_window_allowed(window.label())"),
             (
                 "get_caller_verify_request",
                 "crate::ipc::caller_verify::label_matches(window.label()",

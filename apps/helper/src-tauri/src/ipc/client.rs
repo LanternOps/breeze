@@ -130,6 +130,11 @@ struct AuthRequest {
     /// This helper's version, reported in the live renderer observation.
     #[serde(rename = "rendererVersion")]
     renderer_version: String,
+    /// The OS UI language (raw BCP 47 / POSIX tag; the agent negotiates it
+    /// onto the eight prompt locales). Additive (#10190 W03, plan P6); omitted
+    /// when the probe found nothing.
+    #[serde(rename = "uiLocale", skip_serializing_if = "String::is_empty")]
+    ui_locale: String,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -188,6 +193,7 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         prompt_protocol_version: PROMPT_PROTOCOL_VERSION,
         prompt_kinds: ADVERTISED_PROMPT_KINDS.iter().map(|k| k.to_string()).collect(),
         renderer_version: env!("CARGO_PKG_VERSION").to_string(),
+        ui_locale: crate::chrome::os_ui_locale().to_string(),
     }
 }
 
@@ -715,7 +721,7 @@ where
                 }
             }
             "prompt_action_result" => handle_prompt_action_result(desktop_ctx, &prompts, &env.id, &env.payload),
-            "prompt_branding_sync" => handle_prompt_branding_sync(&prompts, &env.id, &env.payload),
+            "prompt_branding_sync" => handle_prompt_branding_sync(desktop_ctx, &prompts, &env.id, &env.payload),
             other if other.starts_with("prompt_") => {
                 let frames = handle_prompt_unknown(desktop_ctx, &prompts, other, &env.id, &env.payload);
                 for frame in frames {
@@ -1053,13 +1059,22 @@ fn handle_prompt_action_result(
     }
 }
 
-/// `prompt_branding_sync`: the MSP identity, kept in memory (W03 renders it).
-fn handle_prompt_branding_sync(prompts: &PromptBridge, env_id: &str, payload: &Option<Box<RawValue>>) {
+/// `prompt_branding_sync`: the MSP identity, kept in memory and forwarded to
+/// the main window and the prompt cards (identity header), plus the tray's
+/// language. `cleared: true` drops the identity.
+fn handle_prompt_branding_sync(
+    ctx: Option<&DesktopCtx>,
+    prompts: &PromptBridge,
+    env_id: &str,
+    payload: &Option<Box<RawValue>>,
+) {
     match payload_str(payload).map(serde_json::from_str::<prompt::PromptBrandingSync>) {
         Some(Ok(sync)) => {
             let stored = prompts.tracker().on_branding_sync(sync);
             if !stored {
                 eprintln!("[helper] prompt_branding_sync ignored: incomplete identity (env={})", log_id(env_id));
+            } else if let Some(ctx) = ctx {
+                desktop::publish_prompt_identity(&ctx.app);
             }
         }
         _ => eprintln!("[helper] bad prompt_branding_sync payload; ignored (env={})", log_id(env_id)),
@@ -1133,8 +1148,13 @@ impl Drop for BridgeClearGuard {
         if let Some(prompts) = &self.prompts {
             prompts.clear_sender();
             let had_list = prompts.tracker().list_len(now_unix_ms()) > 0;
+            let had_identity = prompts.tracker().identity().is_some();
             let cards = prompts.tracker().on_disconnect();
             if let Some(app) = &self.app {
+                // The identity dies with the session; the agent re-syncs it.
+                if had_identity {
+                    desktop::publish_prompt_identity(app);
+                }
                 // Nothing tracked (always, in W02): leave the tray and the
                 // main window untouched.
                 if had_list || !cards.is_empty() {
@@ -2120,6 +2140,7 @@ mod prompt_auth_tests {
             prompt_protocol_version: super::super::prompt::PROMPT_PROTOCOL_VERSION,
             prompt_kinds: kinds,
             renderer_version: renderer_version.into(),
+            ui_locale: String::new(),
         }
     }
 
@@ -2152,5 +2173,21 @@ mod prompt_auth_tests {
         let want: Vec<String> = super::super::prompt::ADVERTISED_PROMPT_KINDS.iter().map(|s| s.to_string()).collect();
         assert_eq!(req.prompt_kinds, want);
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn auth_request_carries_ui_locale() {
+        // The built request reports the OS UI language Assist probed.
+        let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
+        assert_eq!(build_auth_request(&id).ui_locale, crate::chrome::os_ui_locale());
+
+        // On the wire: `uiLocale`, additive, omitted when the probe found nothing.
+        let mut req = request(Vec::new(), "0.2.0");
+        req.ui_locale = "de-DE".into();
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["uiLocale"], "de-DE");
+        req.ui_locale = String::new();
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.as_object().unwrap().get("uiLocale").is_none());
     }
 }

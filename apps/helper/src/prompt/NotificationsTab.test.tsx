@@ -74,6 +74,21 @@ describe('NotificationsTab', () => {
     expect(screen.getByText('No notifications')).toBeInTheDocument();
   });
 
+  it('renders its chrome in the synced locale and each entry in its own', () => {
+    const { rerender } = render(<NotificationsTab entries={[]} onAction={vi.fn()} clock={() => NOW} locale="de-DE" />);
+    expect(screen.getByText('Benachrichtigungen')).toBeInTheDocument();
+    expect(screen.getByText('Keine Benachrichtigungen')).toBeInTheDocument();
+    rerender(
+      <NotificationsTab
+        entries={[{ ...base, locale: 'de-DE', pendingActionId: 'postpone' }]}
+        onAction={vi.fn()}
+        clock={() => NOW}
+      />,
+    );
+    expect(screen.getByText('Notifications')).toBeInTheDocument();
+    expect(screen.getByText('Wird bearbeitet…')).toBeInTheDocument();
+  });
+
   it('shows the error Rust recorded for an entry', () => {
     render(<NotificationsTab entries={[{ ...base, lastError: 'That choice is not available.' }]} onAction={vi.fn()} clock={() => NOW} />);
     expect(screen.getByRole('listitem')).toHaveTextContent('That choice is not available.');

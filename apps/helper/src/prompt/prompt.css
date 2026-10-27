@@ -6,7 +6,19 @@
 .prompt-card { height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
   padding: 14px 16px; background: var(--bg-secondary); color: var(--text-primary);
   border: 1px solid var(--accent); border-top-width: 3px; border-radius: var(--radius-md); }
-.prompt-identity { font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: .02em; }
+/* MSP identity header (W03): the brand accent only when IdentityHeader passed
+   its contrast check (it sets --prompt-brand-accent); sizes in rem/em so the
+   OS text size scales the name and the logo together. */
+.prompt-identity { display: flex; align-items: center; gap: 8px; min-width: 0; padding-bottom: 6px;
+  font-size: max(12px, 0.8rem); font-weight: 600; letter-spacing: .02em;
+  color: var(--prompt-brand-accent, var(--accent));
+  border-bottom: 2px solid var(--prompt-brand-accent, var(--accent)); }
+.prompt-identity-logo { height: 1.75em; width: auto; max-width: 8em; object-fit: contain; flex: none; }
+.prompt-identity-name { overflow-wrap: anywhere; min-width: 0; }
+@media (forced-colors: active) {
+  /* High contrast wins: system colours, never the brand accent. */
+  .prompt-identity { --prompt-brand-accent: CanvasText; color: CanvasText; border-bottom-color: CanvasText; }
+}
 .prompt-title { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .prompt-body { flex: 1; min-height: 0; overflow-y: auto; font-size: 13px; line-height: 1.45;
   color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+import { chromeString } from './chrome';
 import { orderActions, outcomeMessage } from './PromptCard';
 import { applyPlaceholders } from './placeholders';
 import type { PromptListView, PromptState, PromptView } from './types';
@@ -11,7 +12,8 @@ import './prompt.css';
  * The Notifications tab (#10190, spec section 3.2): the in-memory list of this
  * session's prompts that Rust keeps (persistent entries until they expire,
  * plus open prompts without a card). Assist stores nothing; the agent replays
- * the list after every reconnect. English chrome for W02 (catalog in W03).
+ * the list after every reconnect. Chrome strings come from the shared catalog:
+ * the heading in the last branding sync's locale, each entry in its own.
  */
 
 /** The main-window commands and event behind the tab. */
@@ -131,11 +133,14 @@ export function NotificationsTab({
   onAction,
   error,
   clock = Date.now,
+  locale = null,
 }: {
   entries: PromptView[];
   onAction: (promptId: string, actionId: string) => void | Promise<void>;
   error?: string | null;
   clock?: () => number;
+  /** The negotiated locale of the last `prompt_branding_sync` (heading, empty list). */
+  locale?: string | null;
 }) {
   const [nowMs, setNowMs] = useState(clock);
   useEffect(() => {
@@ -146,7 +151,7 @@ export function NotificationsTab({
   return (
     <div className="helper-history prompt-list" data-testid="notifications-tab">
       <div className="helper-history-header">
-        <span className="helper-history-title">Notifications</span>
+        <span className="helper-history-title">{chromeString('chrome.notifications', locale)}</span>
         <div className="helper-header-drag-spacer" />
       </div>
       {error && (
@@ -155,7 +160,7 @@ export function NotificationsTab({
         </div>
       )}
       {entries.length === 0 ? (
-        <div className="helper-history-empty">No notifications</div>
+        <div className="helper-history-empty">{chromeString('chrome.emptyList', locale)}</div>
       ) : (
         <ul className="prompt-list-items">
           {entries.map((v) => {
@@ -170,7 +175,7 @@ export function NotificationsTab({
                 {v.copy.body && <div className="prompt-list-body">{fill(v.copy.body)}</div>}
                 {detail && <div className="prompt-list-body">{fill(detail)}</div>}
                 {notice && <div className="prompt-notice">{notice}</div>}
-                {pending && <div className="prompt-working">Working…</div>}
+                {pending && <div className="prompt-working">{chromeString('chrome.working', v.locale)}</div>}
                 {!v.closed && v.actions.length > 0 && (
                   <div className="prompt-actions">
                     {orderActions(v.actions).map((a) => (

@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { shouldAnnounce } from './a11y';
-import { formatRemaining, remainingSeconds } from './countdown';
+import { remainingSeconds } from './countdown';
+import { chromeString } from './chrome';
+import { IdentityHeader } from './IdentityHeader';
+import type { PromptIdentity } from './identity';
 import { applyPlaceholders } from './placeholders';
 import type { ActionOutcome, ActionRole, ActionVia, PromptActionSpec, PromptView } from './types';
 import './prompt.css';
@@ -9,7 +12,8 @@ import './prompt.css';
 /*
  * One prompt card (#10190). The copy is agent-rendered and shown as text only
  * (never markup); Assist fills `{remaining}` / `{time:}` and owns the chrome.
- * English chrome strings for W02; the shared catalog localizes them in W03.
+ * Chrome strings come from the shared catalog (`chrome.ts`) in the prompt's
+ * locale; the header is the synced MSP identity (`IdentityHeader`).
  *
  * Keyboard: the safe action comes first in the tab order and holds focus on
  * mount (focus inside a non-activating window does not take OS focus). Esc
@@ -42,6 +46,8 @@ export function PromptCard({
   onAction,
   onHide,
   error,
+  identity = null,
+  logoUrl = null,
 }: {
   view: PromptView;
   nowMs: number;
@@ -49,6 +55,9 @@ export function PromptCard({
   onHide: () => void;
   /** Why the last action could not be sent (no agent session, ...). */
   error?: string | null;
+  /** The MSP identity from `prompt_branding_sync`; null shows the generic name. */
+  identity?: PromptIdentity | null;
+  logoUrl?: string | null;
 }) {
   const deadline = view.countdownDeadlineUnixMs;
   const fill = (text: string) => applyPlaceholders(text, nowMs, view.locale, deadline);
@@ -86,10 +95,10 @@ export function PromptCard({
   const [announcement, setAnnouncement] = useState('');
   useEffect(() => {
     if (seconds !== null && deadline != null && shouldAnnounce(prevSeconds.current, seconds)) {
-      setAnnouncement(`${formatRemaining(deadline, nowMs)} remaining`);
+      setAnnouncement(chromeString('chrome.remainingAnnounce', view.locale, { seconds }));
     }
     prevSeconds.current = seconds;
-  }, [seconds, deadline, nowMs]);
+  }, [seconds, deadline, nowMs, view.locale]);
 
   const notice = error || view.lastError || outcomeMessage(view.lastOutcome);
   const titleId = `prompt-title-${view.promptId}`;
@@ -103,10 +112,7 @@ export function PromptCard({
       lang={view.locale}
       data-testid="prompt-card"
     >
-      {/* W03 replaces this with the MSP identity header (prompt_branding_sync). */}
-      <div className="prompt-identity" data-testid="prompt-identity">
-        From your IT provider
-      </div>
+      <IdentityHeader identity={identity} logoUrl={logoUrl} locale={view.locale} />
       <h1 className="prompt-title" id={titleId}>
         {fill(view.copy.title)}
       </h1>
@@ -137,7 +143,7 @@ export function PromptCard({
           {notice}
         </div>
       )}
-      {pending && <div className="prompt-working">Working…</div>}
+      {pending && <div className="prompt-working">{chromeString('chrome.working', view.locale)}</div>}
       {actions.length > 0 && (
         <div className="prompt-actions">
           {actions.map((a, i) => (
