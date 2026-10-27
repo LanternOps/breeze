@@ -15,7 +15,8 @@ import (
 //   - new agent + new helper, notice.info live: the agent sets
 //     AuthResponse.AgentHandlesTCCNotice, the helper stays quiet, and the
 //     agent builds the notice from that helper's reports;
-//   - new agent + old helper (no prompt protocol): no flag, the helper
+//   - new agent + old helper (no prompt protocol, or the W02/W03 helper
+//     that speaks protocol 1 with zero kinds): no flag, the helper
 //     reminds as today, and the agent builds nothing for it;
 //   - old agent + new helper: an old agent never sends the flag, so the
 //     helper reminds as today;
@@ -32,7 +33,8 @@ type TCCNoticeHelper struct {
 	GOOS           string
 	Scopes         []string // granted scopes
 	DesktopContext string
-	PromptProtocol int // clamped prompt protocol (0 = predates the contract)
+	PromptProtocol int      // clamped prompt protocol (0 = predates the contract)
+	Kinds          []string // granted "<kind>@<n>" from the live advertisement
 }
 
 // AgentHandlesTCCNotice reports whether the agent shows the macOS permission
@@ -46,8 +48,24 @@ func AgentHandlesTCCNotice(h TCCNoticeHelper, gateOpen bool) bool {
 	if h.DesktopContext == ipc.DesktopContextLoginWindow {
 		return false
 	}
+	// The W02/W03 native helper advertises protocol 1 with zero kinds and
+	// never reads the flag, so protocol >= 1 alone would silence nobody and
+	// double the reminder. Only a helper whose live advertisement includes
+	// notice.info@1 (this build onward) reads it.
+	if !advertisesNoticeInfoV1(h.Kinds) {
+		return false
+	}
 	for _, s := range h.Scopes {
 		if s == "desktop" {
+			return true
+		}
+	}
+	return false
+}
+
+func advertisesNoticeInfoV1(kinds []string) bool {
+	for _, ad := range kinds {
+		if name, v, ok := ipc.ParsePromptKindAd(ad); ok && name == "notice.info" && v == 1 {
 			return true
 		}
 	}
@@ -72,6 +90,19 @@ func (b *Broker) SetTCCStatusHandler(fn func(s *Session, status ipc.TCCStatus)) 
 	b.mu.Unlock()
 }
 
+// AgentHandlesTCCNoticeForAuth applies the rule to an authenticating helper's
+// request and granted scopes, exactly as the broker does at authentication.
+func AgentHandlesTCCNoticeForAuth(goos string, role ipc.HelperRole, authReq ipc.AuthRequest, scopes []string, gateOpen bool) bool {
+	g := promptGrantFromAuth(role, authReq)
+	return AgentHandlesTCCNotice(TCCNoticeHelper{
+		GOOS:           goos,
+		Scopes:         scopes,
+		DesktopContext: authReq.DesktopContext,
+		PromptProtocol: g.protocol,
+		Kinds:          g.kinds,
+	}, gateOpen)
+}
+
 // agentHandlesTCCNoticeFor applies the rule to an authenticating helper.
 func (b *Broker) agentHandlesTCCNoticeFor(role ipc.HelperRole, authReq ipc.AuthRequest, scopes []string) bool {
 	b.mu.RLock()
@@ -80,14 +111,8 @@ func (b *Broker) agentHandlesTCCNoticeFor(role ipc.HelperRole, authReq ipc.AuthR
 	if gate == nil {
 		return false
 	}
-	h := TCCNoticeHelper{
-		GOOS:           goos,
-		Scopes:         scopes,
-		DesktopContext: authReq.DesktopContext,
-		PromptProtocol: promptGrantFromAuth(role, authReq).protocol,
-	}
 	// Cheap checks first: the gate reads the prompt host.
-	if !AgentHandlesTCCNotice(h, true) {
+	if !AgentHandlesTCCNoticeForAuth(goos, role, authReq, scopes, true) {
 		return false
 	}
 	return gate()

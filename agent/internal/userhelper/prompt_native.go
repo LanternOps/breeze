@@ -61,6 +61,12 @@ func advertisedNativePromptKinds(role ipc.HelperRole) []string {
 	return []string{}
 }
 
+// NativePromptAdvertisement is what a native helper of this build advertises
+// at auth for a role: AuthRequest.PromptProtocolVersion and PromptKinds.
+func NativePromptAdvertisement(role ipc.HelperRole) (protocol int, kinds []string) {
+	return nativePromptProtocolFor(role), advertisedNativePromptKinds(role)
+}
+
 // nativePromptProtocolFor is the prompt protocol a helper role advertises.
 // The SYSTEM helper's renderer (elevation) ships in W07 (plan P14).
 func nativePromptProtocolFor(role ipc.HelperRole) int {

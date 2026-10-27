@@ -338,6 +338,7 @@ func (c *Client) authenticate() error {
 	displayEnv := detectDisplayEnv()
 	// Opaque, host-identity-free session id (#3109) — see newSessionID.
 	sessionID := newSessionID()
+	promptProtocol, promptKinds := NativePromptAdvertisement(c.role)
 
 	supportsConsent := consentUISupported()
 	authReq := ipc.AuthRequest{
@@ -361,8 +362,8 @@ func (c *Client) authenticate() error {
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
 		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
 		// broker grants no prompt scope and every prompt stays legacy.
-		PromptProtocolVersion: nativePromptProtocolFor(c.role),
-		PromptKinds:           advertisedNativePromptKinds(c.role),
+		PromptProtocolVersion: promptProtocol,
+		PromptKinds:           promptKinds,
 		RendererVersion:       helperRendererVersion(),
 		// The session's UI language (#10190 W03); the agent negotiates it.
 		UILocale: helperUILocale(),

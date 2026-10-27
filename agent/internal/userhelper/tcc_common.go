@@ -59,8 +59,8 @@ func tccLoopPolicyFor(binaryKind string, agentHandlesNotice bool) tccLoopPolicy 
 // permission reminder on a connection whose authentication returned resp
 // (#10190 W04 skew rule). An older agent omits the flag, so a new helper
 // keeps reminding; an older helper never reads it and always reminds, and
-// the agent never sets it for a helper that did not advertise the prompt
-// protocol.
+// the agent never sets it for a helper whose live advertisement lacks
+// notice.info@1.
 func ShowsOwnTCCReminder(resp ipc.AuthResponse) bool {
 	return !resp.AgentHandlesTCCNotice
 }

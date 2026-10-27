@@ -333,8 +333,8 @@ type AuthResponse struct {
 	// permission notice itself, from this helper's tcc_status reports, so the
 	// helper must not show its own reminder (#10190 W04 skew rule). Additive:
 	// an older agent omits it (false) and the helper keeps reminding, and an
-	// older helper ignores it while the agent never sets it for a helper that
-	// did not advertise the prompt protocol.
+	// older helper ignores it while the agent never sets it for a helper whose
+	// live advertisement lacks notice.info@1.
 	AgentHandlesTCCNotice bool `json:"agentHandlesTCCNotice,omitempty"`
 }
 

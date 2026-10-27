@@ -232,13 +232,13 @@ func tccSession(t *testing.T, flagged bool) *helperProbe {
 func TestTCCNoticeOnlyForPromptCapableHelper(t *testing.T) {
 	missingFDA := ipc.TCCStatus{ScreenRecording: true, Accessibility: true, FullDiskAccess: false}
 
-	// The broker's rule: only a helper that advertised the prompt protocol
-	// (and only while notice.info is live) gets the flag.
-	base := sessionbroker.TCCNoticeHelper{GOOS: "darwin", Scopes: []string{"desktop", "notify"}, DesktopContext: ipc.DesktopContextUserSession}
-	old, cur := base, base
-	cur.PromptProtocol = 1
-	if sessionbroker.AgentHandlesTCCNotice(old, true) || !sessionbroker.AgentHandlesTCCNotice(cur, true) {
-		t.Fatal("the flag must follow the helper's prompt protocol")
+	// The broker's rule: only a helper whose live advertisement includes
+	// notice.info@1 (and only while notice.info is live) gets the flag.
+	for _, gen := range helperGenerations {
+		got := sessionbroker.AgentHandlesTCCNoticeForAuth("darwin", ipc.HelperRoleUser, gen.auth(), []string{"desktop", "notify", ipc.ScopePrompt}, true)
+		if got != gen.readsFlag {
+			t.Fatalf("%s: flag = %v, want %v (only a helper that reads it may be told)", gen.name, got, gen.readsFlag)
+		}
 	}
 
 	// The agent builds the notice only for a flagged session.
@@ -258,60 +258,73 @@ func TestTCCNoticeOnlyForPromptCapableHelper(t *testing.T) {
 	}
 }
 
+// helperGeneration is a macOS desktop helper build, described by what it
+// advertises at auth (from production code where it exists) and whether it
+// reads AuthResponse.AgentHandlesTCCNotice at all.
+type helperGeneration struct {
+	name      string
+	auth      func() ipc.AuthRequest
+	readsFlag bool
+}
+
+func desktopHelperAuth(protocol int, kinds []string) ipc.AuthRequest {
+	return ipc.AuthRequest{BinaryKind: ipc.HelperBinaryDesktopHelper, DesktopContext: ipc.DesktopContextUserSession, PromptProtocolVersion: protocol, PromptKinds: kinds}
+}
+
+var helperGenerations = []helperGeneration{
+	// Before W02: no prompt protocol at all.
+	{"pre-W02 helper", func() ipc.AuthRequest { return desktopHelperAuth(0, nil) }, false},
+	// W02/W03 (on main before this wave): protocol 1, zero kinds, and no
+	// code that reads the flag. A process of this build can survive an
+	// agent update (compatibility order step 7).
+	{"W02/W03 helper (protocol 1, no kinds, ignores the flag)", func() ipc.AuthRequest { return desktopHelperAuth(1, []string{}) }, false},
+	// This build: what the user-role helper really advertises.
+	{"W04 helper", func() ipc.AuthRequest {
+		protocol, kinds := userhelper.NativePromptAdvertisement(ipc.HelperRoleUser)
+		return desktopHelperAuth(protocol, kinds)
+	}, true},
+}
+
 func TestNoDoubleTCCNoticeWithOldHelper(t *testing.T) {
 	missingFDA := ipc.TCCStatus{ScreenRecording: true, Accessibility: true, FullDiskAccess: false}
-	cases := []struct {
-		name                string
-		newAgent, newHelper bool
-		noticeLive          bool
-		wantHelperReminds   bool
-		wantAgentNotices    bool
-	}{
-		{"old agent + old helper", false, false, true, true, false},
-		{"old agent + new helper", false, true, true, true, false},
-		{"new agent + old helper", true, false, true, true, false},
-		{"new agent + new helper, notice.info live", true, true, true, false, true},
-		{"new agent + new helper, notice.info off", true, true, false, true, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			protocol := 0
-			if tc.newHelper {
-				protocol = 1
-			}
-			// What the agent puts in the auth response. An old agent has
-			// no TCC rule at all, so it never sets the flag.
-			flag := tc.newAgent && sessionbroker.AgentHandlesTCCNotice(sessionbroker.TCCNoticeHelper{
-				GOOS: "darwin", Scopes: []string{"desktop", "notify"}, DesktopContext: ipc.DesktopContextUserSession, PromptProtocol: protocol,
-			}, tc.noticeLive)
-			raw, _ := json.Marshal(ipc.AuthResponse{Accepted: true, AgentHandlesTCCNotice: flag})
-			var resp ipc.AuthResponse
-			_ = json.Unmarshal(raw, &resp)
+	for _, gen := range helperGenerations {
+		for _, newAgent := range []bool{false, true} {
+			for _, live := range []bool{false, true} {
+				name := fmt.Sprintf("%s / newAgent=%v / notice.info live=%v", gen.name, newAgent, live)
+				t.Run(name, func(t *testing.T) {
+					auth := gen.auth()
+					// What the agent puts in the auth response: the broker's
+					// own rule. An old agent has no rule and never sets it.
+					flag := newAgent && sessionbroker.AgentHandlesTCCNoticeForAuth("darwin", ipc.HelperRoleUser, auth, []string{"desktop", "notify", ipc.ScopePrompt}, live)
+					raw, _ := json.Marshal(ipc.AuthResponse{Accepted: true, AgentHandlesTCCNotice: flag})
+					var resp ipc.AuthResponse
+					_ = json.Unmarshal(raw, &resp)
 
-			// What the helper does with it. An old helper never reads it.
-			helperReminds := !tc.newHelper || userhelper.ShowsOwnTCCReminder(resp)
+					// What the helper does with it.
+					helperReminds := !gen.readsFlag || userhelper.ShowsOwnTCCReminder(resp)
 
-			// What the agent does with the helper's status.
-			agentNotices := false
-			if tc.newAgent {
-				probe := tccSession(t, flag)
-				enabled := []string{}
-				if tc.noticeLive {
-					enabled = []string{"notice.info"}
-				}
-				h := noticeHeartbeat(t, enabled, probe)
-				h.handleTCCNotice(probe.session, missingFDA)
-				time.Sleep(100 * time.Millisecond)
-				agentNotices = len(envelopesOf(probe, ipc.TypePromptShow))+len(envelopesOf(probe, ipc.TypeNotify)) > 0
+					// What the agent does with the helper's status.
+					agentNotices := false
+					if newAgent {
+						probe := tccSession(t, flag)
+						enabled := []string{}
+						if live {
+							enabled = []string{"notice.info"}
+						}
+						h := noticeHeartbeat(t, enabled, probe)
+						h.handleTCCNotice(probe.session, missingFDA)
+						time.Sleep(100 * time.Millisecond)
+						agentNotices = len(envelopesOf(probe, ipc.TypePromptShow))+len(envelopesOf(probe, ipc.TypeNotify)) > 0
+					}
+					if helperReminds == agentNotices {
+						t.Fatalf("exactly one side must remind: helper=%v agent=%v (flag=%v)", helperReminds, agentNotices, flag)
+					}
+					if wantAgent := newAgent && live && gen.readsFlag; agentNotices != wantAgent {
+						t.Fatalf("agent notices = %v, want %v", agentNotices, wantAgent)
+					}
+				})
 			}
-
-			if helperReminds != tc.wantHelperReminds || agentNotices != tc.wantAgentNotices {
-				t.Fatalf("helper reminds=%v agent notices=%v, want %v/%v", helperReminds, agentNotices, tc.wantHelperReminds, tc.wantAgentNotices)
-			}
-			if helperReminds == agentNotices {
-				t.Fatalf("exactly one side must remind (helper=%v agent=%v)", helperReminds, agentNotices)
-			}
-		})
+		}
 	}
 }
 

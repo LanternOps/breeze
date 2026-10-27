@@ -15,15 +15,20 @@ import (
 // showing its own reminder, and the agent builds nothing for it.
 
 func TestTCCNoticeOnlyForPromptCapableHelper(t *testing.T) {
-	desktopHelper := TCCNoticeHelper{GOOS: "darwin", Scopes: []string{"desktop", "notify", ipc.ScopePrompt}, DesktopContext: ipc.DesktopContextUserSession, PromptProtocol: 1}
+	desktopHelper := TCCNoticeHelper{GOOS: "darwin", Scopes: []string{"desktop", "notify", ipc.ScopePrompt}, DesktopContext: ipc.DesktopContextUserSession, PromptProtocol: 1, Kinds: []string{"notice.info@1"}}
 	cases := []struct {
 		name   string
 		helper func(TCCNoticeHelper) TCCNoticeHelper
 		gate   bool
 		want   bool
 	}{
-		{"prompt-capable desktop helper, notice.info live", func(h TCCNoticeHelper) TCCNoticeHelper { return h }, true, true},
-		{"helper predates the prompt protocol", func(h TCCNoticeHelper) TCCNoticeHelper { h.PromptProtocol = 0; return h }, true, false},
+		{"W04 desktop helper advertising notice.info@1, notice.info live", func(h TCCNoticeHelper) TCCNoticeHelper { return h }, true, true},
+		{"helper predates the prompt protocol", func(h TCCNoticeHelper) TCCNoticeHelper { h.PromptProtocol, h.Kinds = 0, nil; return h }, true, false},
+		// The W02/W03 native helper speaks protocol 1 with zero kinds and
+		// never reads the flag: it must keep its own reminder.
+		{"W02/W03 helper: protocol 1, no kinds", func(h TCCNoticeHelper) TCCNoticeHelper { h.Kinds = []string{}; return h }, true, false},
+		{"protocol 1, another kind only", func(h TCCNoticeHelper) TCCNoticeHelper { h.Kinds = []string{"restart.prompt@1"}; return h }, true, false},
+		{"protocol 1, a later notice.info version only", func(h TCCNoticeHelper) TCCNoticeHelper { h.Kinds = []string{"notice.info@2"}; return h }, true, false},
 		{"notice.info not live (kill switch or old build)", func(h TCCNoticeHelper) TCCNoticeHelper { return h }, false, false},
 		{"no desktop scope: the agent never reads its status", func(h TCCNoticeHelper) TCCNoticeHelper { h.Scopes = []string{"notify"}; return h }, true, false},
 		{"login-window helper", func(h TCCNoticeHelper) TCCNoticeHelper { h.DesktopContext = ipc.DesktopContextLoginWindow; return h }, true, false},
@@ -51,6 +56,11 @@ func TestTCCNoticeFlagUsesTheClampedAdvertisement(t *testing.T) {
 	if b.agentHandlesTCCNoticeFor(ipc.HelperRoleUser, auth, []string{"desktop", "notify"}) {
 		t.Fatal("an old helper (no prompt protocol) keeps its own reminder")
 	}
+	auth.PromptProtocolVersion, auth.PromptKinds = 1, []string{}
+	if b.agentHandlesTCCNoticeFor(ipc.HelperRoleUser, auth, []string{"desktop", "notify"}) {
+		t.Fatal("a W02/W03 helper (protocol 1, zero kinds) keeps its own reminder")
+	}
+	auth.PromptKinds = []string{"notice.info@1"}
 	b.SetTCCNoticeGate(nil)
 	auth.PromptProtocolVersion = 1
 	if b.agentHandlesTCCNoticeFor(ipc.HelperRoleUser, auth, []string{"desktop", "notify", ipc.ScopePrompt}) {
