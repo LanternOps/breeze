@@ -273,6 +273,7 @@ export async function createLinkGroup(
           : [{ ids: uniqueIds, role: null }];
       for (const batch of batches) {
         const claimed = await tx
+          // own-device-row-allowlisted: link-group-membership
           .update(devices)
           .set({ linkGroupId: groupId, linkGroupRole: batch.role, updatedAt: new Date() })
           .where(and(inArray(devices.id, batch.ids), isNull(devices.linkGroupId)))
@@ -431,6 +432,7 @@ export async function updateLinkGroup(
         // Only unlink devices actually in THIS group. Role is cleared with
         // the membership — it is meaningless outside a group (#2308).
         await tx
+          // own-device-row-allowlisted: link-group-membership
           .update(devices)
           .set({ linkGroupId: null, linkGroupRole: null, updatedAt: new Date() })
           .where(and(inArray(devices.id, toRemove), eq(devices.linkGroupId, groupId)));
@@ -447,6 +449,7 @@ export async function updateLinkGroup(
         // group; batch 2 only still-unlinked rows — disjoint by WHERE, so
         // the combined row count is the same guard as the single update.
         const reAdded = await tx
+          // own-device-row-allowlisted: link-group-membership
           .update(devices)
           .set({ linkGroupId: groupId, updatedAt: new Date() })
           .where(and(inArray(devices.id, toAdd), eq(devices.linkGroupId, groupId)))
@@ -454,6 +457,7 @@ export async function updateLinkGroup(
         // vm_host (#2308): a group's host is fixed at create time, so every
         // newly linked member is a guest. Multiboot members are peers (NULL).
         const claimed = await tx
+          // own-device-row-allowlisted: link-group-membership
           .update(devices)
           .set({
             linkGroupId: groupId,
