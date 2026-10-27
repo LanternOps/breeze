@@ -23,17 +23,23 @@
  *     The cost is that a decision reported only while Redis is down is not
  *     audited if the agent stops re-sending it before Redis is back.
  *
- * Attribution: `actorType: 'agent'`, the same as the other agent-originated
- * rows the heartbeat writes. The person at the keyboard is not an
- * authenticated principal; what the server knows is that the device's agent
- * reported the decision. Rows land on the device (resourceId), so the device
- * Activities tab and the Audit Log show them.
+ * Attribution: `actorType: 'agent'` with the agent's id, like the heartbeat's
+ * own `agent.heartbeat.state_change` rows. The person at the keyboard is not
+ * an authenticated principal; what the server knows is that the device's
+ * agent reported the decision. Rows land on the device (resourceId), so the
+ * device Activities tab and the Audit Log show them.
+ *
+ * Durability is the audit writer's: once the key is claimed the row is handed
+ * to `writeAuditEvent`, whose failed inserts go to its in-process retry queue.
+ * A row that queue later drops is not retried here (the key stays claimed),
+ * the same as every other audit row.
  *
  * Never throws: it runs off the heartbeat's response path and a failure here
  * must not turn a valid beat into an error.
  */
 import { writeAuditEvent, type RequestLike } from './auditEvents';
 import { getRedis } from './redis';
+import { captureException } from './sentry';
 
 export const REBOOT_USER_ACTION_DEDUPE_TTL_SECONDS = 604_800;
 export const REBOOT_USER_ACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -55,6 +61,8 @@ export interface RebootUserAction {
 export interface RebootUserActionContext {
   /** The agent heartbeat request: the source of the IP / user-agent attribution. */
   c: RequestLike;
+  /** The authenticated agent's id: the row's actorId. */
+  agentId?: string;
   /** From the same `rebootStatus` snapshot: the schedule after the decision. */
   scheduledAt?: string;
   deferralsUsed?: number;
@@ -62,6 +70,7 @@ export interface RebootUserActionContext {
   now?: Date;
 }
 
+/** 'written' = handed to the audit writer (see Durability above). */
 export type RebootUserActionOutcome =
   | 'written'
   | 'duplicate'
@@ -103,11 +112,38 @@ function logThrottle(log: (message: string) => void) {
 // fault from hiding the other.
 const redisFaults = logThrottle((message) => console.warn(message));
 const auditFaults = logThrottle((message) => console.error(message));
+const futureDecisions = logThrottle((message) => console.warn(message));
+const droppedReports = logThrottle((message) => console.warn(message));
 
 /** Test-only: re-arm the log throttles. */
 export function __resetRebootUserActionLogThrottleForTests(): void {
   redisFaults.reset();
   auditFaults.reset();
+  futureDecisions.reset();
+  droppedReports.reset();
+}
+
+/**
+ * The beat carried `rebootStatus.lastUserAction` but validation dropped it
+ * (`parsed` is undefined): an agent build that sends a shape this API does not
+ * accept would otherwise lose every decision without a trace. Logged
+ * (throttled, with the device id), same idea as notePromptHostReportDropped.
+ * Returns whether it was dropped.
+ */
+export function noteRebootUserActionDropped(
+  deviceId: string,
+  rawBody: unknown,
+  parsed: RebootUserAction | undefined,
+): boolean {
+  if (parsed !== undefined || !rawBody || typeof rawBody !== 'object') return false;
+  const rebootStatus = (rawBody as { rebootStatus?: unknown }).rebootStatus;
+  if (!rebootStatus || typeof rebootStatus !== 'object') return false;
+  if ((rebootStatus as { lastUserAction?: unknown }).lastUserAction === undefined) return false;
+  droppedReports.emit(
+    `[rebootUserAction] heartbeat rebootStatus.lastUserAction from device ${deviceId} failed validation and was `
+      + 'dropped; that restart decision is not audited (check the agent build)',
+  );
+  return true;
 }
 
 function describeFault(error: unknown): string {
@@ -133,8 +169,17 @@ export async function recordRebootUserAction(
   context: RebootUserActionContext,
 ): Promise<RebootUserActionOutcome> {
   const nowMs = (context.now ?? new Date()).getTime();
+  // Stale is the expected end of a re-sent decision: silent.
   if (nowMs - userAction.atUnixMs > REBOOT_USER_ACTION_MAX_AGE_MS) return 'stale';
-  if (userAction.atUnixMs - nowMs > REBOOT_USER_ACTION_MAX_FUTURE_SKEW_MS) return 'future';
+  const aheadMs = userAction.atUnixMs - nowMs;
+  if (aheadMs > REBOOT_USER_ACTION_MAX_FUTURE_SKEW_MS) {
+    // Never expected: a device clock running fast loses every decision.
+    futureDecisions.emit(
+      `[rebootUserAction] restart decision from device ${deviceId} is dated ${aheadMs} ms ahead of the server clock `
+        + 'and was not audited; check the device time sync',
+    );
+    return 'future';
+  }
 
   let claimed: unknown;
   try {
@@ -169,6 +214,7 @@ export async function recordRebootUserAction(
       resourceType: 'device',
       resourceId: deviceId,
       actorType: 'agent',
+      actorId: context.agentId ?? null,
       result: 'success',
       details: {
         renderer: userAction.renderer,
@@ -184,6 +230,7 @@ export async function recordRebootUserAction(
     // The key is already claimed, so this decision is not retried: a writer
     // that throws synchronously is a code fault, not a transient one (a failed
     // DB insert is queued for retry inside the writer and never lands here).
+    captureException(error, undefined, { area: 'reboot_user_action_audit' });
     auditFaults.emit(
       `[rebootUserAction] restart decision audit write failed for device ${deviceId}: ${describeFault(error)}`,
     );

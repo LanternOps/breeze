@@ -13,9 +13,13 @@ import { resolvedFormattingLocale } from "@/lib/i18n/format";
  *   - operator title / body / button fill the card; a field the agent would
  *     drop (fails the shared plain-text schema) falls back to the built-in
  *     text, exactly as SanitizeRebootPromptText does on the device;
- *   - the built-in English copy is the agent catalog's (`restart.prompt`);
- *   - `{{countdown}}` is shown as a sample `M:SS` countdown, the format Assist
- *     uses for `{remaining}`; the text is rendered as text, never markup;
+ *   - the built-in English copy is the W05 restart card's (`restart.prompt`,
+ *     catalog `restart.json` added by the agent PR 5A); it is NOT the older
+ *     native wording in reboot_plan.go, which the card replaces;
+ *   - `{{countdown}}` is shown as a sample `M:SS` countdown: on the W05 card
+ *     the agent turns it into `{remaining}`, which Assist renders as a live
+ *     `M:SS`. (The legacy native prompt fills it with words, "15 minutes".)
+ *     The text is rendered as text, never markup;
  *   - the default (safe) action is Postpone when the policy allows a
  *     deferral, otherwise OK (dismiss only); the restart button is never the
  *     default. Postpone's time follows ComputeDeferral (reboot_deferral.go):

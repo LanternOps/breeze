@@ -12,11 +12,15 @@ vi.mock('./redis', () => ({
 const writeAuditEvent = vi.hoisted(() => vi.fn());
 vi.mock('./auditEvents', () => ({ writeAuditEvent }));
 
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException }));
+
 import {
   REBOOT_USER_ACTION_DEDUPE_TTL_SECONDS,
   REBOOT_USER_ACTION_MAX_AGE_MS,
   REBOOT_USER_ACTION_MAX_FUTURE_SKEW_MS,
   __resetRebootUserActionLogThrottleForTests,
+  noteRebootUserActionDropped,
   rebootUserActionKey,
   recordRebootUserAction,
   type RebootUserActionContext,
@@ -28,10 +32,12 @@ const NOW = new Date('2026-10-27T12:00:00.000Z');
 const AT = NOW.getTime() - 90_000;
 const SCHEDULED_AT = '2026-10-27T13:00:00.000Z';
 const requestLike = { req: { header: () => undefined } };
+const AGENT_ID = 'agent-7f3a';
 
 function context(overrides: Partial<RebootUserActionContext> = {}): RebootUserActionContext {
   return {
     c: requestLike,
+    agentId: AGENT_ID,
     scheduledAt: SCHEDULED_AT,
     deferralsUsed: 1,
     maxDeferrals: 3,
@@ -92,6 +98,7 @@ describe('recordRebootUserAction', () => {
       resourceType: 'device',
       resourceId: DEVICE,
       actorType: 'agent',
+      actorId: AGENT_ID,
       result: 'success',
       details: {
         renderer: 'assist',
@@ -194,6 +201,10 @@ describe('recordRebootUserAction', () => {
     ).toBe('future');
     expect(redis.set).not.toHaveBeenCalled();
     expect(writeAuditEvent).not.toHaveBeenCalled();
+    // A device clock that runs fast loses every decision, so say so.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain(DEVICE);
+    expect(String(warn.mock.calls[0]![0])).toContain('ahead of the server clock');
 
     const skewed = NOW.getTime() + REBOOT_USER_ACTION_MAX_FUTURE_SKEW_MS;
     expect(
@@ -262,5 +273,32 @@ describe('recordRebootUserAction', () => {
       recordRebootUserAction(DEVICE, ORG, { action: 'restart_now', atUnixMs: AT, renderer: 'assist' }, context()),
     ).resolves.toBe('audit_error');
     expect(error).toHaveBeenCalledTimes(1);
+    // A synchronous writer throw is a code fault: it must reach Sentry.
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('noteRebootUserActionDropped', () => {
+  const raw = (lastUserAction: unknown) => ({ rebootStatus: { scheduledAt: SCHEDULED_AT, lastUserAction } });
+
+  it('warns when the raw beat carried lastUserAction but validation dropped it', () => {
+    expect(noteRebootUserActionDropped(DEVICE, raw({ action: 'dismissed', atUnixMs: AT, renderer: 'assist' }), undefined)).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain(DEVICE);
+  });
+
+  it('stays quiet when nothing was dropped', () => {
+    expect(noteRebootUserActionDropped(DEVICE, raw(undefined), undefined)).toBe(false);
+    expect(noteRebootUserActionDropped(DEVICE, { rebootStatus: null }, undefined)).toBe(false);
+    expect(noteRebootUserActionDropped(DEVICE, {}, undefined)).toBe(false);
+    expect(noteRebootUserActionDropped(DEVICE, 'not-an-object', undefined)).toBe(false);
+    expect(
+      noteRebootUserActionDropped(
+        DEVICE,
+        raw({ action: 'postponed', atUnixMs: AT, renderer: 'assist' }),
+        { action: 'postponed', atUnixMs: AT, renderer: 'assist' },
+      ),
+    ).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
