@@ -259,6 +259,10 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_device_links: { limit: 20, windowSeconds: 300 },
   manage_manual_assets: { limit: 20, windowSeconds: 300 },
   manage_device_warranty: { limit: 10, windowSeconds: 300 },
+  // W13 PR B (#6783, W13-D9): the live event-log read uses the manage_processes limit.
+  browse_device_event_log: { limit: 15, windowSeconds: 300 },
+  manage_tenant_variables: { limit: 20, windowSeconds: 300 },
+  manage_support_sessions: { limit: 10, windowSeconds: 300 },
 };
 
 /**

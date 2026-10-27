@@ -712,6 +712,10 @@ export const TOOL_TIERS = {
   manage_device_links: 1,
   manage_manual_assets: 1,
   manage_device_warranty: 1,
+  // W13 PR B (#6783): live event-log browse, tenant variables, Quick Support sessions (classed per action).
+  browse_device_event_log: 1,
+  manage_tenant_variables: 1,
+  manage_support_sessions: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3962,6 +3966,29 @@ export function buildBreezeSdkTools(
       registryDescription('manage_device_warranty'),
       inputShape('manage_device_warranty'),
       makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR B): event-log query / get_event, tenant-variable writes and support-session end
+    // are supervised; tenant-variable writes are agent-human-only.
+    tool(
+      'browse_device_event_log',
+      registryDescription('browse_device_event_log'),
+      inputShape('browse_device_event_log'),
+      makeHandler('browse_device_event_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tenant_variables',
+      registryDescription('manage_tenant_variables'),
+      inputShape('manage_tenant_variables'),
+      makeHandler('manage_tenant_variables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_support_sessions',
+      registryDescription('manage_support_sessions'),
+      inputShape('manage_support_sessions'),
+      makeHandler('manage_support_sessions', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

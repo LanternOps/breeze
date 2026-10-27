@@ -1082,6 +1082,11 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_device_links: new Set(['name', 'hostname', 'displayName']),
   manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
   manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
+  // W13 PR B (#6783): agent-read event text, staff-authored variable keys / values / descriptions, and the
+  // support-session attribution label. Data for the model, never instructions.
+  browse_device_event_log: new Set(['name', 'displayName', 'message', 'source', 'category', 'user', 'computer', 'logName', 'hostname']),
+  manage_tenant_variables: new Set(['key', 'value', 'description', 'orgName']),
+  manage_support_sessions: new Set(['attributionLabel', 'endedReason']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

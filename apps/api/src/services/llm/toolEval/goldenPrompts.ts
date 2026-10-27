@@ -136,4 +136,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g103', prompt: 'What has happened on FIN-LAPTOP-07 in the last day, and is its Breeze agent healthy?', expect: [{ tool: 'get_device_events' }, { tool: 'get_device_health' }, { tool: 'resolve_device_context' }] },
   { id: 'g104', prompt: 'Which of our devices have warranties expiring in the next 60 days?', expect: [{ tool: 'manage_device_warranty', action: 'expiring' }, { tool: 'query_devices' }] },
   { id: 'g105', prompt: 'Mark DC-01 as a domain controller.', expect: [{ tool: 'manage_device_function', action: 'set' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W13 (#6783, PR B).
+  { id: 'g106', prompt: 'Look in the Application event log on FIN-LAPTOP-07 for errors from Outlook.', expect: [{ tool: 'browse_device_event_log', action: 'query' }, { tool: 'browse_device_event_log', action: 'list_logs' }, { tool: 'search_logs' }] },
+  { id: 'g107', prompt: 'Which tenant variables do our scripts get for Contoso?', expect: [{ tool: 'manage_tenant_variables', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g108', prompt: 'End the Quick Support session that is still open from this morning.', expect: [{ tool: 'manage_support_sessions', action: 'end' }, { tool: 'manage_support_sessions', action: 'list' }] },
 ];

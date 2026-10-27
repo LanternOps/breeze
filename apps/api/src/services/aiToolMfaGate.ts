@@ -46,6 +46,11 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   manage_device_links: Object.freeze(['create', 'update', 'dissolve']),
   manage_manual_assets: Object.freeze(['create', 'update', 'delete', 'link', 'unlink']),
   manage_device_warranty: Object.freeze(['refresh']),
+  // Full-control W13 PR B (#6783): the system-tools router carries requireMfa() on every event-log route; tenant-variable
+  // writes and support-session end carry it too (reads stay ungated, as every wave's reads).
+  browse_device_event_log: '*',
+  manage_tenant_variables: Object.freeze(['create', 'update', 'delete']),
+  manage_support_sessions: Object.freeze(['end']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

@@ -878,6 +878,10 @@ const W13_EXPECTED: Record<string, Record<string, W02Class>> = {
   manage_device_links: { list: 't1', get: 't1', for_device: 't1', create: 't2', update: 't2', dissolve: 't2' },
   manage_manual_assets: { list: 't1', create: 't2', update: 't2', link: 't2', unlink: 't2', delete: 'supervised' },
   manage_device_warranty: { get: 't1', expiring: 't1', refresh: 'supervised' },
+  // W13 PR B (#6783).
+  browse_device_event_log: { list_logs: 't2', query: 'supervised', get_event: 'supervised' },
+  manage_tenant_variables: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_support_sessions: { list: 't1', get: 't1', end: 'supervised' },
 };
 const W13_WHOLE_TOOL: Record<string, W02Class> = {
   get_device_events: 't1',
