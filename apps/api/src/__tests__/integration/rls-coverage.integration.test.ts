@@ -683,6 +683,13 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // verbatim plus the flow_versions_partner_wide_select branch. Functional
   // cross-partner forge proof: flowRunsPartnerRls.integration.test.ts.
   'flow_versions',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger and the
+  // automation-wide occurrence claims copy the automations/flows shape — org_id
+  // XOR partner_id, the flows_isolation predicate verbatim plus the
+  // *_partner_wide_select branch; owner pair kept equal to the automation's by
+  // deferred owner-guard constraint triggers.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
   // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
   // partner_id config table plus three children that DENORMALISE the owner
   // pair from their parent (owner-guard constraint triggers, like
@@ -1078,6 +1085,11 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-wide SELECT branch (flow_versions_partner_wide_select) ships in the
   // same file. Forge proof: flowRunsPartnerRls.integration.test.ts.
   'flow_versions',
+  // flow_automation_conversions_one_owner_chk / automation_occurrence_claims_one_owner_chk,
+  // 2027-01-09-100000-flow-automation-conversions.sql (#5221); both partner-wide
+  // SELECT branches ship in the same file.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
   // business_calendars_one_owner_chk and the three children's *_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
   // All four partner-wide SELECT branches ship in the same file.

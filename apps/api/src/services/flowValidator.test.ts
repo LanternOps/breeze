@@ -535,4 +535,18 @@ describe('revalidateRenderedStep', () => {
     vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([tenantTool('halo__lookup', 1, { type: 'object' })]);
     expect(await revalidateRenderedStep(pin, input, ctx)).toEqual({ ok: true, tier: 1, approvalScope: null });
   });
+
+  // W6 (#5221): the generic rendered-reference checks cover core tools only, so
+  // each fleet built-in carries its own explicit owned-reference check.
+  it('a rendered fleet built-in reference outside the owner or the run org is reference_not_owned', async () => {
+    const run: FlowStepPin = { stepId: 'a0', tool: 'run_script_on_targets', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+    const alert: FlowStepPin = { stepId: 'a1', tool: 'create_alert', source: 'builtin', tier: 2, approvalScope: null };
+    const resolve: FlowStepPin = { stepId: 't', tool: 'resolve_targets', source: 'builtin', tier: 1, approvalScope: null };
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx)).toMatchObject({ ok: true });
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [OTHER_DEVICE] }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(run, { scriptId: OTHER_DEVICE, target: { type: 'all' } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(alert, { deviceId: OTHER_DEVICE, severity: 'low', message: 'm' }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { target: { type: 'groups', groupIds: [OTHER_DEVICE] } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { conditions: [{ type: 'group', value: GROUP }] }, ctx)).toMatchObject({ ok: true });
+  });
 });

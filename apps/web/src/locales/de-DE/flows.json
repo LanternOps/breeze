@@ -121,7 +121,11 @@
       "variable_dependent": "Dieser Schritt hängt von Werten ab, die erst zur Laufzeit bekannt sind.",
       "script_not_found": "Das Skript dieses Schritts wurde nicht gefunden.",
       "four_eyes": "Für diese Aktion ist immer die Freigabe einer zweiten Person nötig.",
-      "tenant_tool": "Eigene Werkzeugquellen können nicht vorab freigegeben werden."
+      "tenant_tool": "Eigene Werkzeugquellen können nicht vorab freigegeben werden.",
+      "for_each": "Schritte, die sich für jedes Element wiederholen, können nicht vorab genehmigt werden.",
+      "run_as_elevated": "Dieses Skript läuft mit erhöhten Rechten und kann daher nicht vorab genehmigt werden.",
+      "selector_not_literal": "Die Geräte werden erst zur Laufzeit gewählt, daher kann dieser Schritt nicht vorab genehmigt werden.",
+      "max_targets_invalid": "Legen Sie fest, auf wie vielen Geräten dieser Schritt laufen darf (1–500), um ihn vorab zu genehmigen."
     },
     "eventScope": "Ereignisabläufe reagieren auf Plattformereignisse, ganz gleich, was sie ausgelöst hat, auch Aktionen von Personen, anderen Abläufen oder Automatisierungen. Prüfen Sie den Auslöserfilter, bevor Sie aktivieren.",
     "missingPermissions": "Ihnen fehlen Berechtigungen, die die Schritte dieses Ablaufs brauchen:",
@@ -238,7 +242,11 @@
       "notify_failed": "Die Benachrichtigung konnte nicht gesendet werden.",
       "ai_budget_exhausted": "Das KI-Budget der Organisation ist aufgebraucht.",
       "ai_output_invalid": "Das KI-Ergebnis entsprach nicht dem erwarteten Format.",
-      "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht."
+      "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht.",
+      "targets_over_cap": "Der Schritt zielte auf mehr Geräte, als ein Flow-Schritt ausführen darf (500).",
+      "targets_unresolvable": "Das Geräteziel des Schritts konnte nicht aufgelöst werden.",
+      "alert_create_failed": "Die Warnung konnte nicht erstellt werden.",
+      "script_dispatch_failed": "Das Skript konnte an ein oder mehrere Geräte nicht gesendet werden."
     },
     "step": {
       "status": {

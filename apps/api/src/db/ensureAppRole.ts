@@ -413,6 +413,16 @@ export async function ensureAppRole(): Promise<boolean> {
           REVOKE UPDATE ON TABLE ai_usage_charge_claims FROM breeze_app;
           GRANT UPDATE (org_id) ON TABLE ai_usage_charge_claims TO breeze_app;
         END IF;
+        -- automation_occurrence_claims (Tool Catalog W06, #5221,
+        -- 2027-01-09-100000): append-only cross-engine occurrence claims. The
+        -- blanket GRANT in step 4 re-permits table UPDATE; keep it
+        -- column-scoped to org_id (the org-merge repoint). DELETE stays
+        -- granted: org erasure and the automation cascade delete claims as
+        -- breeze_app. The append-only trigger backs this up for every role.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_occurrence_claims') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE automation_occurrence_claims FROM breeze_app;
+          GRANT UPDATE (org_id) ON TABLE automation_occurrence_claims TO breeze_app;
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
           REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;
           REVOKE TRUNCATE ON TABLE automation_action_results FROM PUBLIC;

@@ -17,6 +17,7 @@
  * material). `pauseFlow` and `assertDelegatorAuthority` are system paths for
  * the runner, reconciler and dispatch claim.
  */
+import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type {
   FlowDocumentV1,
@@ -316,7 +317,12 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
       },
     };
   }
-  const assessment = await assessPreApprovals(document, pins, owner, requested);
+  // W6 (#5221): fleet bindings bind THIS publication (its id is chosen here) and the user's maxTargets.
+  const publicationId = randomUUID();
+  const assessment = await assessPreApprovals(document, pins, owner, requested, {
+    publicationId,
+    fleetMaxTargets: req.fleetMaxTargets ?? {},
+  });
   const bindings: FlowPreApprovalBinding[] = [];
   for (const stepId of requested) {
     const e = assessment.eligibility[stepId];
@@ -384,6 +390,7 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   const [publication] = await db
     .insert(flowVersions)
     .values({
+      id: publicationId,
       flowId,
       orgId: row.orgId,
       partnerId: row.orgId ? null : row.partnerId,
