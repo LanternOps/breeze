@@ -94,6 +94,18 @@ async function views(sessions: SessionRow[]) {
   }));
 }
 
+/** What the model should say about the client after an end (quickSupportEnd.ts: credentials are revoked either way). */
+function endNote(session: SessionRow, result: { commandDelivered: boolean; disconnect: unknown }): { note?: string } {
+  if (!session.deviceId) return { note: 'No client had joined this session; it is closed.' };
+  if (result.disconnect === 'close-failed') {
+    return { note: 'Access is revoked, but the client\'s connection did not close cleanly; it removes itself once it fails to re-authenticate.' };
+  }
+  if (!result.commandDelivered) {
+    return { note: 'The client is not connected right now. Its access is already revoked; it removes itself within about 10 minutes of reconnecting.' };
+  }
+  return {};
+}
+
 export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_support_sessions', {
     tier: 1,
@@ -134,6 +146,8 @@ export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void 
           return jsonError('Support session already ended', 'CONFLICT');
         }
         const result = await endSupportSession(session.id, 'tech');
+        // Ended (or expired) by someone else between the read above and the teardown: nothing was done here.
+        if (!result.ended) return jsonError('Support session already ended', 'CONFLICT');
         auditToolWrite(auth, {
           orgId: session.orgId,
           action: 'support_session_ended',
@@ -145,8 +159,8 @@ export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void 
           },
         });
         return json({
-          ended: result.ended, sessionId: session.id, commandDelivered: result.commandDelivered,
-          ...(result.commandDelivered ? {} : { note: 'The client was offline; it removes itself when its session timer runs out.' }),
+          ended: true, sessionId: session.id, removalCommandSent: result.commandDelivered, disconnect: result.disconnect,
+          ...endNote(session, result),
         });
       } catch (error) {
         return thrown('manage_support_sessions', error);

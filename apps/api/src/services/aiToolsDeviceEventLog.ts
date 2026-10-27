@@ -40,7 +40,17 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 function num(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  // The route's asOptionalNumber also accepts a numeric string.
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
+}
+
+/** Same mapping as the route's normalizeEventLevel (unknown and localized names become information). */
+const KNOWN_LEVELS = new Set(['critical', 'error', 'warning', 'verbose']);
+export function normalizeLevel(value: unknown): string {
+  const v = (typeof value === 'string' ? value : '').toLowerCase();
+  return KNOWN_LEVELS.has(v) ? v : 'information';
 }
 
 /** Same field picks as the route's mapEventLogFromAgent. */
@@ -65,7 +75,7 @@ export function projectEvent(entry: unknown, maxMessage = EVENT_MESSAGE_MAX_CHAR
   return {
     recordId,
     timeCreated: text(r.timeCreated) ?? '',
-    level: (text(r.level) ?? 'information').toLowerCase(),
+    level: normalizeLevel(r.level),
     source: text(r.source) ?? '',
     eventId: num(r.eventId) ?? 0,
     message: clip(message, maxMessage),
@@ -74,6 +84,12 @@ export function projectEvent(entry: unknown, maxMessage = EVENT_MESSAGE_MAX_CHAR
     user: text(r.userId) ?? text(r.user) ?? null,
     computer: text(r.computer) ?? text(r.machineName) ?? '',
   };
+}
+
+/** A completed command whose payload is not the expected shape is an error, never an empty success. */
+function agentShapeError(payload: Record<string, unknown> | null, what: string): string {
+  const reported = payload && typeof payload.error === 'string' ? payload.error : null;
+  return jsonError(reported ? `The agent reported: ${reported}` : `The agent returned an unreadable ${what}`, 'INVALID_AGENT_RESPONSE');
 }
 
 function parseStdout(stdout: string | undefined): Record<string, unknown> | null {
@@ -127,14 +143,17 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
           return access.error.includes('not online') ? jsonError(access.error, 'DEVICE_OFFLINE') : notFound('Device');
         }
         const device = access.device;
+        if (device.osType !== 'windows') {
+          return jsonError(`Event logs are a Windows feature; this device runs ${device.osType}. Use search_logs for its ingested logs.`, 'NOT_SUPPORTED');
+        }
         const options = { userId: auth.user.id, timeoutMs: 30000 };
 
         if (action === 'list_logs') {
           const result = await aiExecuteCommand(auth, 'browse_device_event_log', device.id, CommandTypes.EVENT_LOGS_LIST, {}, options);
           if (result.status !== 'completed') return jsonError(result.error ?? 'Failed to list event logs', 'COMMAND_FAILED');
           const payload = parseStdout(result.stdout);
-          if (!payload) return jsonError('The agent returned an unreadable event-log list', 'INVALID_AGENT_RESPONSE');
-          const logs = (Array.isArray(payload.logs) ? payload.logs : []).map(projectEventLog).filter(Boolean);
+          if (!payload || !Array.isArray(payload.logs)) return agentShapeError(payload, 'event-log list');
+          const logs = payload.logs.map(projectEventLog).filter(Boolean);
           return bounded({ device: { id: device.id, hostname: device.hostname }, logs });
         }
 
@@ -151,8 +170,9 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
           }, options);
           if (result.status !== 'completed') return jsonError(result.error ?? 'Failed to query event logs', 'COMMAND_FAILED');
           const payload = parseStdout(result.stdout);
-          if (!payload) return jsonError('The agent returned an unreadable event query result', 'INVALID_AGENT_RESPONSE');
-          const events = (Array.isArray(payload.events) ? payload.events : []).map((e) => projectEvent(e)).filter(Boolean);
+          if (!payload || !Array.isArray(payload.events)) return agentShapeError(payload, 'event query result');
+          const events = payload.events.map((e) => projectEvent(e)).filter(Boolean);
+          const dropped = payload.events.length - events.length;
           return bounded({
             device: { id: device.id, hostname: device.hostname },
             logName: String(input.logName),
@@ -160,6 +180,7 @@ export function registerDeviceEventLogTools(aiTools: Map<string, AiTool>): void 
             total: num(payload.total) ?? events.length,
             page: num(payload.page) ?? page,
             totalPages: num(payload.totalPages) ?? 1,
+            ...(dropped > 0 ? { droppedMalformed: dropped } : {}),
           });
         }
 

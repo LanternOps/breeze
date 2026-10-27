@@ -191,6 +191,18 @@ describe('manage_tenant_variables', () => {
     expect(JSON.stringify(audits)).not.toContain(SECRET);
   });
 
+  runDb('the service never overwrites a secret row for the tool (requirePlain: pre-check, and is_secret = false pinned in the UPDATE)', async () => {
+    const { updateTenantVariable, TenantVariableError } = await import('../../services/tenantVariables');
+    const auth = f.auth.orgAdmin;
+    // The row the tool checked as plain has since been turned secret by someone in the web app.
+    await getTestDb().update(tenantVariables).set({ isSecret: true }).where(eq(tenantVariables.id, f.plainVar));
+    const err = await withDbAccessContext(ctxFor(auth), () =>
+      updateTenantVariable(auth, f.plainVar, { value: 'chat-supplied' }, { requirePlain: true })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TenantVariableError);
+    expect([403, 409]).toContain((err as InstanceType<typeof TenantVariableError>).status);
+    expect(decryptTenantVariableValue((await varRow(f.plainVar))!)).toBe('https://example.test');
+  });
+
   runDb('a site-restricted caller cannot write (CONTROL: the org admin creates a plain variable for itself)', async () => {
     const refused = await run('manage_tenant_variables', { action: 'create', key: 'w13b_refused', value: 'v' }, f.auth.restricted);
     expect(refused.body.code, refused.raw).toBe('ACCESS_DENIED');

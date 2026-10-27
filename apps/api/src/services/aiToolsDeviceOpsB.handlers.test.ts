@@ -233,3 +233,82 @@ describe('manage_support_sessions (W13-D8)', () => {
     expect(h.endSession).not.toHaveBeenCalled();
   });
 });
+
+describe('review fixes (#10352)', () => {
+  it('event-log browse refuses a non-Windows device before dispatch', async () => {
+    h.verify.mockResolvedValue({ device: { ...device, osType: 'macos' } });
+    expect((await run('browse_device_event_log', { action: 'list_logs', deviceId: DEV })).code).toBe('NOT_SUPPORTED');
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
+  it('a completed command with the wrong payload shape is INVALID_AGENT_RESPONSE, never an empty success', async () => {
+    h.exec.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ error: 'wevtapi unavailable' }) });
+    const out = await run('browse_device_event_log', { action: 'query', deviceId: DEV, logName: 'System' });
+    expect(out.code).toBe('INVALID_AGENT_RESPONSE');
+    expect(String(out.error)).toMatch(/wevtapi unavailable/);
+    h.exec.mockResolvedValue({ status: 'completed', stdout: '' });
+    expect((await run('browse_device_event_log', { action: 'list_logs', deviceId: DEV })).code).toBe('INVALID_AGENT_RESPONSE');
+  });
+
+  it('get_event returns the projected event (route-identical level, numeric-string id, no XML) or INVALID_AGENT_RESPONSE', async () => {
+    h.exec.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ recordId: '42', level: 'Fehler', message: 'boom', rawXml: '<Event/>', userId: 'S-1-5-18' }) });
+    const out = await run('browse_device_event_log', { action: 'get_event', deviceId: DEV, logName: 'System', recordId: 42 });
+    expect(out.event).toMatchObject({ recordId: 42, level: 'information', message: 'boom', user: 'S-1-5-18' });
+    expect(JSON.stringify(out)).not.toContain('<Event');
+    h.exec.mockResolvedValue({ status: 'completed', stdout: 'not json' });
+    expect((await run('browse_device_event_log', { action: 'get_event', deviceId: DEV, logName: 'System', recordId: 42 })).code).toBe('INVALID_AGENT_RESPONSE');
+  });
+
+  it('a malformed event in a query result is counted, not silently lost', async () => {
+    h.exec.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ events: [{ recordId: 1, message: 'ok' }, { message: 'no id' }], total: 2 }) });
+    const out = await run('browse_device_event_log', { action: 'query', deviceId: DEV, logName: 'System' });
+    expect(out.events).toHaveLength(1);
+    expect(out.droppedMalformed).toBe(1);
+  });
+
+  it('tenant-variable update asks the service to write only a still-plain row, and drops isSecret', async () => {
+    h.select.mockImplementation(() => chain([varRow()]));
+    h.updateVar.mockResolvedValue(varRow({ version: 2 }));
+    await run('manage_tenant_variables', { action: 'update', variableId: VAR, value: 'x', isSecret: true });
+    expect(h.updateVar).toHaveBeenCalledWith(expect.anything(), VAR, { value: 'x' }, { requirePlain: true });
+  });
+
+  it('a description-only update on a secret row is refused too', async () => {
+    h.select.mockImplementation(() => chain([varRow({ isSecret: true })]));
+    expect((await run('manage_tenant_variables', { action: 'update', variableId: VAR, description: 'new' })).code).toBe('ACCESS_DENIED');
+    expect(h.updateVar).not.toHaveBeenCalled();
+  });
+
+  it('a service 500 is not reported as a validation error', async () => {
+    const { TenantVariableError } = await import('./tenantVariables');
+    h.createVar.mockRejectedValue(new TenantVariableError('Failed to create variable', 500));
+    const out = await run('manage_tenant_variables', { action: 'create', key: 'k', value: 'v' });
+    expect(out.code).not.toBe('VALIDATION_ERROR');
+    h.createVar.mockRejectedValue(new TenantVariableError('A variable named "k" already exists in this scope', 409));
+    expect((await run('manage_tenant_variables', { action: 'create', key: 'k', value: 'v' })).code).toBe('CONFLICT');
+  });
+
+  it('support-session end: an expired session and a lost race are CONFLICT with no audit', async () => {
+    const base = { id: SESSION, orgId: ORG, status: 'expired', deviceId: null, codeHash: 'h', createdAt: new Date() };
+    h.select.mockImplementation(() => chain([{ session: base }]));
+    expect((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).code).toBe('CONFLICT');
+    expect(h.endSession).not.toHaveBeenCalled();
+
+    h.select.mockImplementation(() => chain([{ session: { ...base, status: 'pending' } }]));
+    h.endSession.mockResolvedValue({ ended: false, disconnect: null, commandDelivered: false });
+    expect((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).code).toBe('CONFLICT');
+    expect(h.auditAsync).not.toHaveBeenCalled();
+  });
+
+  it('support-session end notes match what happened to the client', async () => {
+    h.select.mockImplementation(() => chain([{ session: { id: SESSION, orgId: ORG, status: 'claimed', deviceId: DEV, createdAt: new Date() } }]));
+    h.endSession.mockResolvedValue({ ended: true, disconnect: 'not-connected', commandDelivered: false });
+    expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/not connected right now/);
+    h.endSession.mockResolvedValue({ ended: true, disconnect: 'close-failed', commandDelivered: true });
+    expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/did not close cleanly/);
+    h.select.mockImplementation(() => chain([{ session: { id: SESSION, orgId: ORG, status: 'pending', deviceId: null, createdAt: new Date() } }]));
+    h.endSession.mockResolvedValue({ ended: true, disconnect: null, commandDelivered: false });
+    expect(String((await run('manage_support_sessions', { action: 'end', sessionId: SESSION }, partner())).note)).toMatch(/No client had joined/);
+  });
+});
+

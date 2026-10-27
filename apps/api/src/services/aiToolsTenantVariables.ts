@@ -59,10 +59,15 @@ function auditDetails(row: TenantVariableRow): Record<string, unknown> {
   };
 }
 
+const SERVICE_STATUS_CODES: Readonly<Record<number, string>> = {
+  400: 'VALIDATION_ERROR', 403: 'ACCESS_DENIED', 404: 'NOT_FOUND', 409: 'CONFLICT',
+};
+
+/** A caller-correctable service refusal, mapped to its code; anything else (a 500) goes to `thrown`. */
 function serviceError(err: unknown): string | null {
   if (!(err instanceof TenantVariableError)) return null;
-  const code = err.status === 404 ? 'NOT_FOUND' : err.status === 403 ? 'ACCESS_DENIED' : err.status === 409 ? 'CONFLICT' : 'VALIDATION_ERROR';
-  return jsonError(err.message, err.code ?? code);
+  const code = SERVICE_STATUS_CODES[err.status];
+  return code ? jsonError(err.message, err.code ?? code) : null;
 }
 
 async function readableRow(id: string, auth: AuthContext): Promise<TenantVariableRow | null> {
@@ -80,7 +85,7 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
     searchHint: 'tenant variables substituted into scripts as {{var.key}}: list, add, change or delete (never secrets)',
     definition: {
       name: 'manage_tenant_variables',
-      description: 'Actions: list, create, update, delete the {{var.<key>}} values scripts receive. Secret values are never shown or set here. Writes need approval; partner-wide rows are changed in the web app.',
+      description: 'Actions: list, create, update, delete the {{var.<key>}} values scripts receive. Secret values are never shown or set here. Writes need approval; existing partner-wide rows are changed in the web app.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -116,6 +121,7 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
               description: v.description, ownerScope: v.ownerScope, orgId: v.orgId, orgName: v.orgName, version: v.version,
             })),
             total: rows.length,
+            ...(rows.length > MAX_TENANT_VARIABLES_LISTED ? { truncated: true } : {}),
           });
         }
 
@@ -159,7 +165,8 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
           });
           if (!parsed.success) return jsonError(parsed.error.issues[0]?.message ?? 'Invalid input', 'VALIDATION_ERROR');
           if (Object.keys(parsed.data).length === 0) return jsonError('Nothing to update (value or description)', 'VALIDATION_ERROR');
-          const row = await updateTenantVariable(auth, existing.id, parsed.data);
+          // requirePlain: a row turned secret after the check above is never overwritten (409), W13-D7.
+          const row = await updateTenantVariable(auth, existing.id, parsed.data, { requirePlain: true });
           auditToolWrite(auth, {
             orgId: row.orgId, action: 'tenant_variable.update', resourceType: 'tenant_variable',
             resourceId: row.id, resourceName: row.key,
