@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { TIER1_READ_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS } from './aiGuardrails';
 import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
-import { MANUAL_ASSET_TYPES, deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { MANUAL_ASSET_TYPES, POSTURE_CATEGORIES, deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { MANAGEMENT_POSTURE_CATEGORIES } from '../routes/agents/schemas';
 import { discoveredAssetTypeEnum } from '../db/schema';
 
 /**
@@ -51,5 +52,9 @@ describe('W13 MFA gate covers every write and no read (#6783)', () => {
 describe('W13 schema constants', () => {
   it('MANUAL_ASSET_TYPES equals the discovered_asset_type pg enum', () => {
     expect([...MANUAL_ASSET_TYPES]).toEqual([...discoveredAssetTypeEnum.enumValues]);
+  });
+
+  it('POSTURE_CATEGORIES equals the agent schema MANAGEMENT_POSTURE_CATEGORIES', () => {
+    expect([...POSTURE_CATEGORIES]).toEqual([...MANAGEMENT_POSTURE_CATEGORIES]);
   });
 });

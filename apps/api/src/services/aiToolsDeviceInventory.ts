@@ -51,14 +51,19 @@ import {
   DEVICE_EVENT_INITIATORS,
   DEVICE_FUNCTION_ACTIONS,
   DEVICE_WARRANTY_ACTIONS,
+  POSTURE_CATEGORIES,
 } from './aiToolSchemasDeviceOps';
-import { MANAGEMENT_POSTURE_CATEGORIES } from './managementPostureReport';
 import { AUDIT_RESULTS } from '@breeze/shared';
 import {
   auditToolWrite, bounded, clampLimit, json, jsonError, notFound, thrown, verifiedUserIdOrNull,
 } from './aiToolsSoftwareShared';
 
 type DeviceRow = typeof devices.$inferSelect;
+
+const DEVICE_FUNCTION_ERROR_MESSAGES: Readonly<Record<Exclude<DeviceFunctionError['code'], 'device_not_found'>, string>> = {
+  invalid_function_key: 'Unknown function key: use a listed function or custom:<slug>.',
+  label_required: 'A custom:<slug> function needs a label.',
+};
 
 async function deviceOr404(input: Record<string, unknown>, auth: AuthContext): Promise<DeviceRow | string> {
   if (typeof input.deviceId !== 'string') return jsonError('deviceId is required', 'VALIDATION_ERROR');
@@ -90,6 +95,16 @@ function isoOrUndefined(value: unknown): Date | undefined {
   if (typeof value !== 'string') return undefined;
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/** The first of `keys` present in `input` but not a parseable time, if any (it is refused, never ignored). */
+function badTime(input: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    if (input[key] !== undefined && isoOrUndefined(input[key]) === undefined) {
+      return jsonError(`${key} must be an ISO-8601 datetime`, 'VALIDATION_ERROR');
+    }
+  }
+  return null;
 }
 
 /** Org + site + exact-device + not-parked scope over `devices`, applied inside the aggregate (W13-D12). */
@@ -135,6 +150,8 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
       },
     },
     handler: async (input, auth) => {
+      const timeError = badTime(input, ['from', 'to']);
+      if (timeError) return timeError;
       try {
         const device = await deviceOr404(input, auth);
         if (typeof device === 'string') return device;
@@ -151,6 +168,8 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
             limit: clampLimit(input.limit, 25, 100),
             includeAutomated: false,
             withTotal: false,
+            // W13-D4 (review): never match on fields the tool hides.
+            searchDetails: false,
           },
         );
         return bounded({
@@ -246,6 +265,8 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
       },
     },
     handler: async (input, auth) => {
+      const timeError = badTime(input, ['at']);
+      if (timeError) return timeError;
       try {
         const device = await deviceOr404(input, auth);
         if (typeof device === 'string') return device;
@@ -295,7 +316,7 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
         type: 'object' as const,
         properties: {
           orgId: { type: 'string', description: 'Limit to one organization' },
-          category: { type: 'string', enum: [...MANAGEMENT_POSTURE_CATEGORIES], description: 'Product category (default rmm)' },
+          category: { type: 'string', enum: [...POSTURE_CATEGORIES], description: 'Product category (default rmm)' },
           stalenessDays: { type: 'number', description: 'Scans older than this count as stale (default 7)' },
           product: { type: 'string', description: 'Product name from the summary: list its devices' },
           status: { type: 'string', enum: ['active', 'installed', 'unknown'], description: 'With product: detection status' },
@@ -311,7 +332,7 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
         const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
         const scope = postureScope(auth, orgId);
         if (scope === 'forbidden') return notFound('Organization');
-        const category = (typeof input.category === 'string' ? input.category : 'rmm') as (typeof MANAGEMENT_POSTURE_CATEGORIES)[number];
+        const category = (typeof input.category === 'string' ? input.category : 'rmm') as (typeof POSTURE_CATEGORIES)[number];
         const stalenessDays = clampLimit(input.stalenessDays, 7, 365);
         if (typeof input.product === 'string' && input.product !== '') {
           const pageNo = clampLimit(input.page, 1, 10000);
@@ -385,7 +406,8 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
           }
         } catch (err) {
           if (err instanceof DeviceFunctionError) {
-            return err.code === 'device_not_found' ? notFound('Device') : jsonError(err.code, 'VALIDATION_ERROR');
+            if (err.code === 'device_not_found') return notFound('Device');
+            return jsonError(DEVICE_FUNCTION_ERROR_MESSAGES[err.code], 'VALIDATION_ERROR');
           }
           throw err;
         }
@@ -397,7 +419,13 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
           resourceName: device.hostname ?? device.displayName ?? undefined,
           details: { functionKey: body.functionKey, outcome },
         });
-        return bounded({ outcome, function: await getDeviceFunction(device.id, device.orgId) });
+        // The write is committed: a failed read-back must not read as a failed write.
+        try {
+          return bounded({ outcome, function: await getDeviceFunction(device.id, device.orgId) });
+        } catch (readError) {
+          console.error('[ai:manage_device_function] read-back after set failed', readError);
+          return json({ outcome, function: null, note: 'The change was applied; reading it back failed.' });
+        }
       } catch (error) {
         return thrown('manage_device_function', error);
       }

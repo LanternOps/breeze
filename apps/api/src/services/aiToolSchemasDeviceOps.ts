@@ -17,7 +17,6 @@
  */
 import { z } from 'zod';
 import { AUDIT_RESULTS } from '@breeze/shared';
-import { MANAGEMENT_POSTURE_CATEGORIES } from '../routes/agents/schemas';
 
 export const DEVICE_FUNCTION_ACTIONS = ['get', 'set'] as const;
 export const DEVICE_LINK_ACTIONS = ['list', 'get', 'for_device', 'create', 'update', 'dissolve'] as const;
@@ -34,6 +33,16 @@ export const DEVICE_EVENT_INITIATORS = ['manual', 'ai', 'automation', 'policy', 
  * The `discovered_asset_type` pg enum (db/schema/discovery.ts), listed here so this module never reads the schema at
  * load time (many suites mock `../db/schema`). aiToolsDeviceOps.classes.contract.test.ts pins the two equal.
  */
+/**
+ * The management-posture categories (routes/agents/schemas.ts MANAGEMENT_POSTURE_CATEGORIES), listed here so tool code
+ * never loads a route schema module at import time (agent route suites mock `./schemas` with hand-listed factories).
+ * aiToolsDeviceOps.classes.contract.test.ts pins the two equal.
+ */
+export const POSTURE_CATEGORIES = [
+  'mdm', 'rmm', 'remoteAccess', 'endpointSecurity', 'policyEngine', 'backup', 'identityMfa', 'siem',
+  'dnsFiltering', 'zeroTrustVpn', 'patchManagement',
+] as const;
+
 export const MANUAL_ASSET_TYPES = [
   'workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas',
   'unknown', 'website', 'service',
@@ -66,7 +75,7 @@ export const deviceOpsToolSchemas: Record<string, z.ZodType> = {
 
   get_management_posture: z.object({
     orgId: uuid.optional(),
-    category: z.enum(MANAGEMENT_POSTURE_CATEGORIES).optional(),
+    category: z.enum(POSTURE_CATEGORIES).optional(),
     stalenessDays: z.number().int().min(1).max(365).optional(),
     product: z.string().min(1).max(255).optional(),
     status: z.enum(['active', 'installed', 'unknown']).optional(),
