@@ -145,6 +145,7 @@
   },
   "runs": {
     "empty": "Aucune exécution pour le moment.",
+    "emptyFiltered": "Aucune exécution ne correspond à ce filtre.",
     "status": {
       "queued": "En file d'attente",
       "running": "En cours",
