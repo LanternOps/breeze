@@ -73,6 +73,12 @@ export const automations = pgTable('automations', {
   retiredAt: timestamp('retired_at', { withTimezone: true }),
   retiredReason: text('retired_reason'),
   convertedToMonitorId: uuid('converted_to_monitor_id'),
+  /**
+   * Tool Catalog W06 (#5221): the flow a switched conversion handed this Job to.
+   * Set only with retired_reason = 'converted_to_flow' (automations_converted_flow_chk);
+   * FK → flows ON DELETE SET NULL in SQL (no .references(): keeps schema imports acyclic).
+   */
+  convertedToFlowId: uuid('converted_to_flow_id'),
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   enabled: boolean('enabled').notNull().default(true),
@@ -88,6 +94,9 @@ export const automations = pgTable('automations', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   partnerIdIdx: index('automations_partner_id_idx').on(table.partnerId),
+  convertedToFlowIdx: index('automations_converted_to_flow_idx')
+    .on(table.convertedToFlowId)
+    .where(sql`${table.convertedToFlowId} IS NOT NULL`),
 }));
 
 // Durable ownership snapshot for every resource referenced by a standalone

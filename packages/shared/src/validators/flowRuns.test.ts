@@ -91,3 +91,15 @@ describe('W5 run contracts (#5220)', () => {
     expect(FLOW_RUN_LIMITS.httpMaxResponseBytes).toBe(1_048_576);
   });
 });
+
+describe('W6 run contracts (#5221)', () => {
+  it('W6 error codes are step and run codes', () => {
+    const fresh = ['targets_over_cap', 'targets_unresolvable', 'alert_create_failed', 'script_dispatch_failed'];
+    for (const c of fresh) {
+      expect(FLOW_STEP_ERROR_CODES as readonly string[]).toContain(c);
+      expect(FLOW_RUN_ERROR_CODES as readonly string[]).toContain(c);
+    }
+    // Appended after the W5 codes, so earlier codes keep their positions.
+    expect(FLOW_STEP_ERROR_CODES.slice(-4)).toEqual(fresh);
+  });
+});

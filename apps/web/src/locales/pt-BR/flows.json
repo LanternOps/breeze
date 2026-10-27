@@ -121,7 +121,11 @@
       "variable_dependent": "Esta etapa depende de valores que só são conhecidos na hora da execução.",
       "script_not_found": "O script usado por esta etapa não foi encontrado.",
       "four_eyes": "Esta ação sempre precisa da aprovação de uma segunda pessoa.",
-      "tenant_tool": "Fontes de ferramentas personalizadas não podem ser pré-aprovadas."
+      "tenant_tool": "Fontes de ferramentas personalizadas não podem ser pré-aprovadas.",
+      "for_each": "Etapas que se repetem para cada item não podem ser pré-aprovadas.",
+      "run_as_elevated": "Este script é executado com privilégios elevados, portanto não pode ser pré-aprovado.",
+      "selector_not_literal": "Os dispositivos são escolhidos na execução, portanto esta etapa não pode ser pré-aprovada.",
+      "max_targets_invalid": "Defina em quantos dispositivos esta etapa pode ser executada (1–500) para pré-aprová-la."
     },
     "eventScope": "Fluxos por evento reagem aos eventos da plataforma, seja qual for a causa, inclusive ações de pessoas, de outros fluxos ou de automações. Confira o filtro do gatilho antes de ativar.",
     "missingPermissions": "Faltam a você permissões de que as etapas deste fluxo precisam:",
@@ -238,7 +242,11 @@
       "notify_failed": "Não foi possível enviar o aviso.",
       "ai_budget_exhausted": "O orçamento de IA da organização acabou.",
       "ai_output_invalid": "O resultado da IA não correspondeu ao formato esperado.",
-      "ai_token_cap_reached": "A execução atingiu o limite de tokens de IA."
+      "ai_token_cap_reached": "A execução atingiu o limite de tokens de IA.",
+      "targets_over_cap": "A etapa visou mais dispositivos do que uma etapa de fluxo pode executar (500).",
+      "targets_unresolvable": "Não foi possível resolver o destino de dispositivos da etapa.",
+      "alert_create_failed": "Não foi possível criar o alerta.",
+      "script_dispatch_failed": "Não foi possível enviar o script para um ou mais dispositivos."
     },
     "step": {
       "status": {

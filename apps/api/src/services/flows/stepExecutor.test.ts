@@ -60,7 +60,7 @@ import type { FlowStepPin } from '../flowValidator';
 import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { buildFlowAuthContext } from './flowAuthContext';
 import { currentFlowExecutionFrame } from './flowExecutionContext';
-import { preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
+import { preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding } from './preApproval';
 import { executeFlowBuiltin } from './builtins/index';
 import { countRunBuiltinCalls } from './builtins/runCounters';
 import { classifyToolResult, executeFlowStep, isErrorResult, isTransientFlowToolError, type StepExecutionInput } from './stepExecutor';
@@ -121,7 +121,7 @@ function built(snap: RunScriptSnapshot) {
   };
 }
 /** The binding enable would have stored for the step's literal input and the ORIGINAL content. */
-function binding(stepId = 'fix', input: Record<string, unknown> = RUN_SCRIPT_INPUT): FlowPreApprovalBinding {
+function binding(stepId = 'fix', input: Record<string, unknown> = RUN_SCRIPT_INPUT): ActAssetPreApprovalBinding {
   return {
     stepId, lane: 'act_asset', assetKind: 'script', scriptId: SCRIPT,
     contentDigest: preApprovalMaterialFromSnapshot(snapshot(), input).contentDigest,

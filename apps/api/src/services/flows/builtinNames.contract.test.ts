@@ -20,8 +20,11 @@ describe('flow built-in step names', () => {
   });
 
   // W5 PR B (#5220): the five built-ins, every one executable (no announced-but-gated names left).
-  it('are exactly the five W5 built-ins, all shipped', () => {
-    expect(Object.keys(FLOW_BUILTIN_STEPS).sort()).toEqual(['ai', 'http_request', 'notify', 'set', 'wait']);
+  // W6 (#5221) adds the three legacy-conversion built-ins.
+  it('are exactly the W5 and W6 built-ins, all shipped', () => {
+    expect(Object.keys(FLOW_BUILTIN_STEPS).sort()).toEqual([
+      'ai', 'create_alert', 'http_request', 'notify', 'resolve_targets', 'run_script_on_targets', 'set', 'wait',
+    ]);
     expect(FLOW_LATER_BUILTINS).toEqual([]);
   });
 

@@ -341,11 +341,16 @@ export function resolveParkedIntent(
       // policy failure whatever onFailure says — as the runner would have.
       const builtinError = ctx.toolSource === 'builtin' ? builtinStepErrorOf(intent.result) : null;
       if (builtinError) {
+        // W6 (#5221): a fleet step's device sets ride on its failure result.
+        const failedOutput = intent.result && Object.hasOwn(intent.result, 'output')
+          ? (intent.result.output ?? null) as FlowValue | null
+          : null;
         const step: StepRowValues = {
           status: 'failed', errorCode: builtinError.code, error: builtinError.message, approvedByUserId: intent.decidedByUserId, finishedAt,
+          ...(failedOutput !== null ? { output: failedOutput } : {}),
         };
         return ctx.onFailure === 'continue' && !builtinError.policy
-          ? { kind: 'continue', status: 'failed', output: null, step }
+          ? { kind: 'continue', status: 'failed', output: failedOutput, step }
           : { kind: 'end', step, run: { status: 'failed', errorCode: builtinError.code, error: `Step ${ctx.stepId}: ${builtinError.message}` }, unknownOutcome: false };
       }
       const step: StepRowValues = {

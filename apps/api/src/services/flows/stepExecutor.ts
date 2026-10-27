@@ -66,7 +66,9 @@ import { countRunBuiltinCalls } from './builtins/runCounters';
 import type { BuiltinContext } from './builtins/types';
 import { withFlowExecutionContext } from './flowExecutionContext';
 import { FLOW_OUTPUT_PREVIEW_BYTES, toStoredFlowOutput } from './storedOutput';
-import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type FlowPreApprovalBinding } from './preApproval';
+import { FLOW_IGNORED_RUN_SCRIPT_KEYS, preApprovalMaterialFromSnapshot, type ActAssetPreApprovalBinding, type FlowPreApprovalBinding } from './preApproval';
+import { executeFleetStep } from './fleetStep';
+import type { RunScriptOnTargetsInput } from './builtins/runScriptOnTargets';
 import { classifyToolResult } from './runLedger';
 
 // The result classifier lives with the ledger (pure, no I/O) so the approval
@@ -86,8 +88,12 @@ interface StepOutcomeMeta {
 export type StepOutcome =
   | ({ kind: 'completed'; output: FlowValue; truncated: boolean } & StepOutcomeMeta)
   | { kind: 'skipped' }
-  /** policy=true ⇒ fail the run regardless of onFailure. */
-  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean } & StepOutcomeMeta)
+  /**
+   * policy=true ⇒ fail the run regardless of onFailure. `output` (W6): a fleet
+   * step that failed on some devices still records its device sets, so a
+   * later step under onFailure 'continue' chains on them.
+   */
+  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean; output?: FlowValue } & StepOutcomeMeta)
   /** The step may have executed; the run fails unknown_outcome regardless of onFailure. */
   | ({ kind: 'unknown_outcome'; message: string } & StepOutcomeMeta)
   | ({ kind: 'park_approval'; intentId: string } & StepOutcomeMeta)
@@ -350,7 +356,7 @@ const failedPolicy = (code: FlowStepErrorCode, message: string, meta: StepOutcom
 async function executePreApproved(
   i: StepExecutionInput,
   rendered: Record<string, FlowValue>,
-  binding: FlowPreApprovalBinding,
+  binding: ActAssetPreApprovalBinding,
   approvalScope: 'supervised' | 'four_eyes' | null,
   sleep: (ms: number) => Promise<void>,
 ): Promise<StepOutcome> {
@@ -470,12 +476,31 @@ async function runBuiltin(
   const counters = name === 'notify' || name === 'http_request'
     ? await countRunBuiltinCalls(i.run.id)
     : { notify: 0, http: 0 };
-  const ctx: BuiltinContext = {
-    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId,
+  const ctx = builtinContextOf(i, owner, counters);
+  return runInFrame(i, () => executeFlowBuiltin(name, input, ctx), tier, meta, name);
+}
+
+function builtinContextOf(i: StepExecutionInput, owner: ToolOwnerRef, counters: BuiltinContext['counters']): BuiltinContext {
+  return {
+    run: i.run, version: i.version, step: i.step, owner, auth: i.auth, stepRowId: i.stepRowId, itemIndex: i.itemIndex,
     deadline: i.deadline, counters, leaseToken: i.leaseToken ?? null,
   };
+}
+
+/**
+ * A built-in's execution inside the run's flow execution frame, raced against
+ * the step deadline. A throw or a timeout from Tier >= 2 may have taken
+ * effect (`unknown_outcome`); from Tier 1 it is a plain failure.
+ */
+async function runInFrame(
+  i: StepExecutionInput,
+  fn: () => Promise<StepOutcome>,
+  tier: 1 | 2 | 3,
+  meta: StepOutcomeMeta,
+  name: string = i.pin.tool,
+): Promise<StepOutcome> {
   const frame = { runId: i.run.id, chainDepth: i.run.chainDepth };
-  const settled = await raceDeadline(() => withFlowExecutionContext(frame, () => executeFlowBuiltin(name, input, ctx)), i.deadline);
+  const settled = await raceDeadline(() => withFlowExecutionContext(frame, fn), i.deadline);
   if (settled.kind === 'timeout') {
     return tier === 1
       ? { kind: 'failed', code: 'step_timeout', message: 'The step did not finish before its timeout.', policy: false, ...meta }
@@ -546,6 +571,16 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
     const name = i.pin.tool;
     const input = FLOW_BUILTIN_STEPS[name].inputSchema.parse(rendered) as Record<string, FlowValue>;
     if (check.tier === 3) {
+      // W6 (#5221): the fleet built-in resolves its devices once, then runs
+      // under a revalidated fleet pre-approval or parks with the list frozen.
+      if (name === 'run_script_on_targets') {
+        const lookup = bindingFor(i.version, i.step.id);
+        return executeFleetStep(i, input as unknown as RunScriptOnTargetsInput, builtinContextOf(i, owner, { notify: 0, http: 0 }), {
+          binding: lookup.kind === 'invalid' ? 'invalid' : lookup.kind === 'bound' ? lookup.binding : null,
+          park: (frozen) => parkForApproval(i, frozen, { builtin: true }),
+          run: (fn, meta) => runInFrame(i, fn, 3, meta),
+        });
+      }
       // Never ask an approver to approve a request certain to be refused at release.
       if (name === 'http_request') {
         const refused = await httpRequestRefusedBeforeSend(i, input);
@@ -571,6 +606,10 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
       return failedPolicy('drift', 'This step\'s stored pre-approval is unreadable.', { renderedInput: rendered });
     }
     if (i.run.preApprovalsHonored && lookup.kind === 'bound') {
+      // W6: a core run_script step can only carry an act-asset binding.
+      if (lookup.binding.lane !== 'act_asset') {
+        return failedPolicy('binding_drift', 'This step no longer matches its pre-approval.', { renderedInput: rendered });
+      }
       return executePreApproved(i, rendered, lookup.binding, check.approvalScope, sleep);
     }
     return parkForApproval(i, rendered);

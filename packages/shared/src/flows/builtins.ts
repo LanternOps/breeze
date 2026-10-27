@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { FLOW_INPUT_NAME_RE } from '../validators/flows';
+import { ALERT_SEVERITIES } from '../constants';
+import { deploymentTargetConfigSchema } from '../validators/filters';
+import { scriptParametersSchema } from '../validators/scriptParameters';
+import { FLOW_INPUT_NAME_RE, FLOW_LIMITS } from '../validators/flows';
 import { FLOW_RUN_LIMITS } from '../validators/flowRuns';
 
 /**
@@ -30,6 +33,57 @@ const boundedRecord = <T extends z.ZodType>(value: T, max: number, label: string
     message: `${label} may have at most ${max} keys`,
   });
 
+/**
+ * W6 (#5221): one entry of a legacy automation's condition array
+ * (`[{type: site|os|group|tag, operator, value}]`), as the legacy resolver
+ * evaluates it. An unknown `type` (legacy treats it as `true`) is refused here
+ * and is a conversion blocker (`condition_unknown_type`).
+ */
+export const LEGACY_CONDITION_TYPES = ['site', 'os', 'group', 'tag'] as const;
+export const LEGACY_CONDITION_OPERATORS = ['is', 'is_not', 'contains', 'not_contains'] as const;
+export const legacyConditionSchema = z.object({
+  type: z.enum(LEGACY_CONDITION_TYPES),
+  operator: z.enum(LEGACY_CONDITION_OPERATORS).default('is'),
+  value: z.string().min(1).max(200),
+}).strict();
+export type LegacyCondition = z.infer<typeof legacyConditionSchema>;
+
+const legacyConditionsSchema = z.array(legacyConditionSchema).max(50);
+
+/** At most this many devices one fleet step resolves or dispatches (= FLOW_LIMITS.maxForEachItems). */
+const FLEET_STEP_MAX_DEVICES = FLOW_LIMITS.maxForEachItems;
+
+const FLEET_STEP_ID_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
+function exactlyOne(keys: readonly string[]) {
+  return (value: Record<string, unknown>, ctx: z.RefinementCtx) => {
+    const present = keys.filter((k) => value[k] !== undefined);
+    if (present.length !== 1) {
+      ctx.addIssue({ code: 'custom', message: `Exactly one of ${keys.join(', ')} is required.`, path: [] });
+    }
+  };
+}
+
+/**
+ * The device set every fleet built-in output carries (`resolve_targets`,
+ * `run_script_on_targets`), so later steps chain on it. Detail lives in the
+ * per-device step rows; the output stays small at 500 devices.
+ */
+export interface FlowFleetStepOutput {
+  dispatchedDeviceIds: string[];
+  succeededDeviceIds: string[];
+  failedDeviceIds: string[];
+  skippedOfflineDeviceIds: string[];
+  /**
+   * `resolve_targets` only: each device with its hostname and display name (`name` =
+   * display name, else hostname — the legacy `{{device}}` value). `run_script_on_targets`
+   * carries the id sets and counts only, so its output stays small at 500 devices.
+   */
+  devices?: { id: string; hostname: string; name: string }[];
+  count: number;
+  warnings: string[];
+}
+
 export const FLOW_BUILTIN_STEPS = {
   wait: {
     maxTier: 1,
@@ -53,7 +107,7 @@ export const FLOW_BUILTIN_STEPS = {
   notify: {
     maxTier: 2,
     tierFor: (_input: unknown) => 2,
-    description: 'Send a short notice to a notification channel (email, Slack, Teams, SMS or Pushover).',
+    description: 'Send a short notice to a notification channel (email, Slack, Teams, SMS, Pushover, webhook or PagerDuty).',
     inputSchema: z.object({
       channelId: z.string().uuid(),
       title: z.string().min(1).max(200),
@@ -92,6 +146,53 @@ export const FLOW_BUILTIN_STEPS = {
       maxTurns: z.number().int().min(1).max(FLOW_RUN_LIMITS.aiMaxTurns).default(4),
       maxOutputTokens: z.number().int().min(256).max(4096).default(1024),
     }).strict(),
+  },
+  // ── W6 (#5221): legacy automation conversion built-ins ───────────────────
+  resolve_targets: {
+    maxTier: 1,
+    tierFor: (_input: unknown) => 1,
+    description: 'Resolve a device target (all, devices, groups or filter), legacy conditions, or an earlier fleet step\'s device set to the run organization\'s devices.',
+    inputSchema: z.object({
+      target: deploymentTargetConfigSchema.optional(),
+      conditions: legacyConditionsSchema.optional(),
+      // The devices of an earlier fleet step's set, with hostnames (per-device notices and alerts).
+      fromStep: z.object({
+        stepId: z.string().regex(FLEET_STEP_ID_RE),
+        set: z.enum(['succeeded', 'dispatched', 'failed']),
+      }).strict().optional(),
+    }).strict().superRefine(exactlyOne(['target', 'conditions', 'fromStep'])),
+  },
+  create_alert: {
+    maxTier: 2,
+    tierFor: (_input: unknown) => 2,
+    description: 'Raise an alert on one device of the run organization.',
+    inputSchema: z.object({
+      deviceId: z.string().min(1).max(256),
+      severity: z.enum(ALERT_SEVERITIES),
+      title: z.string().min(1).max(200).optional(),
+      message: z.string().min(1).max(4000),
+    }).strict(),
+  },
+  run_script_on_targets: {
+    maxTier: 3,
+    // Always Tier 3: it dispatches a script to devices. Unattended only through the fleet pre-approval lane.
+    tierFor: (_input: unknown) => 3,
+    description: 'Run one script on a resolved device set, queueing for offline devices; outputs the dispatched, succeeded and failed device sets.',
+    inputSchema: z.object({
+      scriptId: z.string().min(1).max(256),
+      // The legacy action's validation: primitive values under env-var-safe keys.
+      parameters: scriptParametersSchema.optional(),
+      // `elevated` is refused: a converted step never runs elevated unattended (plan Decision 5).
+      runAs: z.enum(['system', 'user']).optional(),
+      whenOffline: z.enum(['queue', 'skip']).default('queue'),
+      target: deploymentTargetConfigSchema.optional(),
+      conditions: legacyConditionsSchema.optional(),
+      deviceIds: z.array(z.string().min(1).max(256)).min(1).max(FLEET_STEP_MAX_DEVICES).optional(),
+      fromStep: z.object({
+        stepId: z.string().regex(FLEET_STEP_ID_RE),
+        set: z.enum(['succeeded', 'dispatched']),
+      }).strict().optional(),
+    }).strict().superRefine(exactlyOne(['target', 'conditions', 'deviceIds', 'fromStep'])),
   },
 } satisfies Record<string, FlowBuiltinEntry>;
 

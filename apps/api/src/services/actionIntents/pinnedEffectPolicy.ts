@@ -15,6 +15,9 @@ const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([
   // #6268: both Tier-3 actions (sweep, import_iocs) have resolvers; its Tier-1
   // and Tier-2 actions never create an intent.
   'ioc_hunt',
+  // Tool Catalog W06 (#5221, Decision 5): a fleet script approval's whole authority is the
+  // pinned script + frozen device list (fleetEffectDigest.ts).
+  'run_script_on_targets',
 ]);
 
 export function requiresPinnedEffectDigest(toolName: string): boolean {

@@ -121,7 +121,11 @@
       "variable_dependent": "Questo passaggio dipende da valori noti solo durante l'esecuzione.",
       "script_not_found": "Lo script usato da questo passaggio non è stato trovato.",
       "four_eyes": "Questa azione richiede sempre l'approvazione di una seconda persona.",
-      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate."
+      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate.",
+      "for_each": "I passaggi che si ripetono per ogni elemento non possono essere pre-approvati.",
+      "run_as_elevated": "Questo script viene eseguito con privilegi elevati, quindi non può essere pre-approvato.",
+      "selector_not_literal": "I dispositivi vengono scelti al momento dell'esecuzione, quindi questo passaggio non può essere pre-approvato.",
+      "max_targets_invalid": "Imposta su quanti dispositivi può essere eseguito questo passaggio (1–500) per pre-approvarlo."
     },
     "eventScope": "I flussi a evento reagiscono agli eventi della piattaforma qualunque ne sia la causa, comprese le azioni di persone, di altri flussi o di automazioni. Controlla il filtro del trigger prima di abilitare.",
     "missingPermissions": "Ti mancano permessi necessari ai passaggi di questo flusso:",
@@ -238,7 +242,11 @@
       "notify_failed": "Non è stato possibile inviare l'avviso.",
       "ai_budget_exhausted": "Il budget IA dell'organizzazione è esaurito.",
       "ai_output_invalid": "Il risultato dell'IA non corrispondeva al formato previsto.",
-      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA."
+      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA.",
+      "targets_over_cap": "Il passaggio puntava a più dispositivi di quanti un passaggio di flusso ne possa gestire (500).",
+      "targets_unresolvable": "Non è stato possibile risolvere il target di dispositivi del passaggio.",
+      "alert_create_failed": "Non è stato possibile creare l'avviso.",
+      "script_dispatch_failed": "Non è stato possibile inviare lo script a uno o più dispositivi."
     },
     "step": {
       "status": {

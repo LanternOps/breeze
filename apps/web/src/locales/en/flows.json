@@ -121,7 +121,11 @@
       "variable_dependent": "This step depends on values that are only known at run time.",
       "script_not_found": "The script this step uses could not be found.",
       "four_eyes": "This action always needs a second person to approve it.",
-      "tenant_tool": "Custom tool sources cannot be pre-approved."
+      "tenant_tool": "Custom tool sources cannot be pre-approved.",
+      "for_each": "Steps that repeat for each item cannot be pre-approved.",
+      "run_as_elevated": "This script runs elevated, so it cannot be pre-approved.",
+      "selector_not_literal": "The devices are chosen at run time, so this step cannot be pre-approved.",
+      "max_targets_invalid": "Set how many devices this step may run on (1–500) to pre-approve it."
     },
     "eventScope": "Event flows react to platform events whatever caused them, including actions taken by people, other flows, or automations. Check the trigger filter before you enable it.",
     "missingPermissions": "You are missing permissions that this flow's steps need:",
@@ -238,7 +242,11 @@
       "notify_failed": "The notice could not be sent.",
       "ai_budget_exhausted": "The organization's AI budget is used up.",
       "ai_output_invalid": "The AI result did not match the expected shape.",
-      "ai_token_cap_reached": "The run reached its AI token limit."
+      "ai_token_cap_reached": "The run reached its AI token limit.",
+      "targets_over_cap": "The step targeted more devices than a flow step may run on (500).",
+      "targets_unresolvable": "The step's device target could not be resolved.",
+      "alert_create_failed": "The alert could not be created.",
+      "script_dispatch_failed": "The script could not be sent to one or more devices."
     },
     "step": {
       "status": {

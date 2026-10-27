@@ -19,4 +19,9 @@ export const FLOW_BUILTIN_PERMISSIONS: Readonly<Record<FlowBuiltinName, Readonly
   notify: [{ resource: 'alerts', action: 'write' }],
   http_request: [{ resource: 'external_tools', action: 'write' }],
   ai: [{ resource: 'ai_sessions', action: 'use' }],
+  // W6 (#5221, plan A3): reading the device set; raising an alert; exactly
+  // what core `run_script` needs (TOOL_PERMISSIONS.run_script, pinned by test).
+  resolve_targets: [{ resource: 'devices', action: 'read' }],
+  create_alert: [{ resource: 'alerts', action: 'write' }],
+  run_script_on_targets: [{ resource: 'scripts', action: 'execute' }],
 };

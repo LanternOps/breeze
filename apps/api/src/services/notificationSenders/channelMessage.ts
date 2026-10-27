@@ -12,6 +12,7 @@
  * an ambient context; the SEND runs outside any DB context. Never throws for a
  * send failure — the caller gets `{ ok: false, code: 'send_failed' }`.
  */
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partners } from '../../db/schema';
@@ -24,8 +25,9 @@ import type { ToolOwnerRef } from '../toolSources/resolver';
 import { isChannelMessageType } from './channelMessageTypes';
 import { getEmailRecipients, sendEmailNotification } from './emailSender';
 import { sendPushoverNotification, type PushoverConfig } from './pushoverSender';
+import { sendPagerDutyNotification, type PagerDutyConfig } from './pagerDutySender';
 import { sendSmsNotification } from './smsSender';
-import { sendWebhookNotification } from './webhookSender';
+import { sendWebhookNotification, type WebhookConfig } from './webhookSender';
 
 export { CHANNEL_MESSAGE_TYPES } from './channelMessageTypes';
 
@@ -35,6 +37,12 @@ export interface ChannelMessage {
   severity: 'info' | 'warning' | 'critical';
   /** App-relative path (`/flows/<id>`); prefixed with DASHBOARD_URL when set. */
   link?: string;
+  /**
+   * W6 (#5221): the PagerDuty dedup key, `flow:<runId>:<stepId>:<itemIndex>` for a
+   * `notify` step — a retried or re-released send updates the same incident. Absent
+   * (a document-level notice) ⇒ a fresh key per send, never the channel's static one.
+   */
+  dedupKey?: string;
 }
 
 export type ChannelMessageResult =
@@ -87,7 +95,7 @@ export async function sendChannelMessage(channelId: string, msg: ChannelMessage,
     return {
       ok: false,
       code: 'channel_type_not_supported',
-      message: `A ${visible.type} channel cannot receive flow notices (use email, slack, teams, sms or pushover).`,
+      message: `A ${visible.type} channel cannot receive flow notices (use email, slack, teams, sms, pushover, webhook or pagerduty).`,
     };
   }
   const type = visible.type;
@@ -167,6 +175,24 @@ export async function sendChannelMessage(channelId: string, msg: ChannelMessage,
         );
         break;
       }
+      case 'webhook':
+        // The channel's own config (URL, method, auth, headers, payload
+        // template) — exactly the alert dispatcher's webhook path.
+        result = await sendWebhookNotification(config as unknown as WebhookConfig, {
+          alertId: '', alertName: msg.title, severity, summary: msg.body,
+          orgId: owner.orgId ?? '', triggeredAt: new Date().toISOString(),
+          context: dashboardUrl ? { link: dashboardUrl } : undefined,
+        });
+        break;
+      case 'pagerduty':
+        result = await sendPagerDutyNotification(
+          { ...(config as PagerDutyConfig), dedupKey: msg.dedupKey ?? `flow-notice:${randomUUID()}` },
+          {
+            alertId: '', alertName: msg.title, severity, summary: msg.body,
+            orgId: owner.orgId ?? '', triggeredAt: new Date().toISOString(), dashboardUrl,
+          },
+        );
+        break;
     }
     if (!result.success) return failed(result.error ?? 'Delivery failed');
     return { ok: true, channelId, channelType: type };
