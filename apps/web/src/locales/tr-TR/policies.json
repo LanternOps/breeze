@@ -904,10 +904,10 @@
         "rebootPreviewDescription": "Şimdi bir yeniden başlatma planlanırsa bilgisayarın başındaki kişinin göreceği ekran. Saatler örnektir.",
         "rebootPreviewDefaultMarker": "Varsayılan",
         "rebootPreviewDefaultTitle": "Güncellemelerin yüklenmesini tamamlamak için yeniden başlatın",
-        "rebootPreviewDefaultBody": "BT destek ekibinizin, güncellemelerin yüklenmesini tamamlamak için bu bilgisayarı yeniden başlatması gerekiyor.",
+        "rebootPreviewDefaultBody": "BT destek ekibiniz, güncellemelerin yüklenmesini tamamlamak için bu bilgisayarı yeniden başlatmalı.",
         "rebootPreviewConsequence": "Hiçbir şey yapmazsanız bu bilgisayar {{time}} saatinde yeniden başlatılır. Çalışmanızı bundan önce kaydedin.",
         "rebootPreviewRestartNow": "Şimdi yeniden başlat",
-        "rebootPreviewPostponeUntil": "{{time}} saatine kadar ertele",
+        "rebootPreviewPostponeUntil": "{{time}} saatine ertele",
         "rebootPreviewDeadline": "Erteleme, yeniden başlatmayı hiçbir zaman {{time}} saatinden sonraya taşımaz.",
         "rebootPreviewOk": "Tamam"
       },

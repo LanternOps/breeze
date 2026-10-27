@@ -903,7 +903,7 @@
         "rebootPreviewHeading": "Vorschau",
         "rebootPreviewDescription": "Das sieht die Person am Computer, wenn jetzt ein Neustart geplant wird. Die Uhrzeiten sind Beispiele.",
         "rebootPreviewDefaultMarker": "Standard",
-        "rebootPreviewDefaultTitle": "Neu starten, um die Installation der Updates abzuschließen",
+        "rebootPreviewDefaultTitle": "Neustart zum Abschließen der Updateinstallation",
         "rebootPreviewDefaultBody": "Ihr IT-Support-Team muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
         "rebootPreviewConsequence": "Wenn Sie nichts tun, wird dieser Computer um {{time}} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
         "rebootPreviewRestartNow": "Jetzt neu starten",

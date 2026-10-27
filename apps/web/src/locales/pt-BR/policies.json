@@ -907,7 +907,7 @@
         "rebootPreviewDefaultBody": "Sua equipe de suporte de TI precisa reiniciar este computador para concluir a instalação das atualizações.",
         "rebootPreviewConsequence": "Se você não fizer nada, este computador será reiniciado às {{time}}. Salve seu trabalho antes disso.",
         "rebootPreviewRestartNow": "Reiniciar agora",
-        "rebootPreviewPostponeUntil": "Adiar até {{time}}",
+        "rebootPreviewPostponeUntil": "Adiar até as {{time}}",
         "rebootPreviewDeadline": "Adiar nunca leva a reinicialização para depois das {{time}}.",
         "rebootPreviewOk": "OK"
       },

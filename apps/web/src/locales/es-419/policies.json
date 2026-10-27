@@ -907,7 +907,7 @@
         "rebootPreviewDefaultBody": "Su equipo de soporte de TI necesita reiniciar esta computadora para terminar de instalar las actualizaciones.",
         "rebootPreviewConsequence": "Si no hace nada, esta computadora se reiniciará a las {{time}}. Guarde su trabajo antes de esa hora.",
         "rebootPreviewRestartNow": "Reiniciar ahora",
-        "rebootPreviewPostponeUntil": "Posponer hasta las {{time}}",
+        "rebootPreviewPostponeUntil": "Aplazar hasta las {{time}}",
         "rebootPreviewDeadline": "Posponer nunca retrasa el reinicio más allá de las {{time}}.",
         "rebootPreviewOk": "Aceptar"
       },
