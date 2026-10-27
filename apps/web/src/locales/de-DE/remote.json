@@ -681,6 +681,7 @@
       "disconnected": "Nicht verbunden",
       "failed": "Fehlgeschlagen",
       "pending": "Ausstehend",
+      "endedByUser": "Vom Benutzer beendet",
       "teardownPending": "Wird beendet (Gerät bestätigt noch)"
     },
     "subtitle": "Überwachungsprotokoll für den Fernzugriff",
@@ -717,6 +718,7 @@
       "timeline": "Zeitleiste"
     },
     "subtitle": "Fernzugriffssitzungen anzeigen und überwachen",
+    "endedByUser": "Vom Benutzer beendet",
     "teardownPending": "Bestätigung des Geräts ausstehend",
     "title": "Sitzungsverlauf",
     "viewDevice": "Gerät anzeigen",

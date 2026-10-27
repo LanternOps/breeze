@@ -859,6 +859,7 @@
       "session_offer_submitted": "Sitzungsangebot übermittelt",
       "session_consent_granted": "Zustimmung zur Remotesitzung erteilt",
       "session_consent_denied": "Remotesitzung vom Benutzer abgelehnt",
+      "remote.session.ended_by_user": "Remotesitzung vom Benutzer beendet",
       "session_consent_blocked_unanswered": "Remotesitzung blockiert: Zustimmungsabfrage nicht beantwortet",
       "session_consent_blocked_unavailable": "Remotesitzung blockiert: Zustimmungsabfrage nicht verfügbar",
       "session_consent_bypassed": "Remotesitzung ohne Antwort auf die Zustimmungsabfrage gestartet",

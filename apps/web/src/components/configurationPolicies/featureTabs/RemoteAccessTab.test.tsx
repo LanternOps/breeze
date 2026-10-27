@@ -180,3 +180,41 @@ describe('RemoteAccessTab — consent-mode help', () => {
     expect(screen.getByTestId('remote-access-consent-vnc-note').textContent).toMatch(/VNC/);
   });
 });
+
+describe('RemoteAccessTab saves allowUserEndSession (#10190)', () => {
+  beforeEach(() => {
+    saveMock.mockClear();
+  });
+
+  function clickSave() {
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+  }
+
+  it('defaults to true and is saved with the rest of the settings', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({ allowUserEndSession: true });
+  });
+
+  it('saves false after the toggle is switched off', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const label = screen.getByText('Let the user end the session');
+    const toggle = label.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    fireEvent.click(toggle);
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({ allowUserEndSession: false });
+  });
+
+  it('disables the toggle with a hint when the active-session indicator is off', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const indicator = screen.getByText('Active-session indicator');
+    fireEvent.click(indicator.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement);
+    const label = screen.getByText('Let the user end the session');
+    const toggle = label.closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(screen.getByText('Turn on the active-session indicator to let users end a session.')).toBeTruthy();
+  });
+});
