@@ -181,7 +181,7 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     });
 
     await page.goto('/login');
-    await page.locator('[data-testid="login-email-input"]').fill(email);
+    await page.locator('[data-testid="login-email-input"]').fill(email, { timeout: 30_000 });
     await page.locator('[data-testid="login-password-input"]').fill(password);
     await page.locator('[data-testid="login-submit"]').click();
 

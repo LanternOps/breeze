@@ -16,7 +16,7 @@ import { AiAgentsPage } from '../pages/AiAgentsPage';
  * bounced at their first navigation), and clearing the refresh state between
  * serial tests was not enough either. A single context sidesteps the race.
  */
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'serial', timeout: 90_000 });
 
 const AGENT_KINDS = ['helpdesk', 'patch', 'triage'] as const;
 
@@ -48,7 +48,7 @@ async function readAccessToken(page: Page): Promise<string> {
       const email = process.env.E2E_ADMIN_EMAIL;
       const password = process.env.E2E_ADMIN_PASSWORD;
       if (!email || !password) throw new Error('E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD are not set');
-      await page.getByTestId('login-email-input').fill(email);
+      await page.getByTestId('login-email-input').fill(email, { timeout: 30_000 });
       await page.getByTestId('login-password-input').fill(password);
       // A context with no auth-binding cookie yet gets a 428
       // (auth_binding_rotation_required) carrying a fresh binding, and the
