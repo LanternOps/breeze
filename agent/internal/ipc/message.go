@@ -793,6 +793,11 @@ type DesktopPrompt struct {
 	NotifyOnEnd bool `json:"notifyOnEnd"`
 	// ShowIndicator controls whether the on-screen session banner is displayed.
 	ShowIndicator bool `json:"showIndicator"`
+	// AllowUserEndSession lets the person at the keyboard end the session
+	// from the session indicator (remote access policy
+	// allow_user_end_session, #10190 W06 OD-5). Absent, as from an older
+	// server, means false: no End session action is offered anywhere.
+	AllowUserEndSession bool `json:"allowUserEndSession,omitempty"`
 }
 
 // ConsentRequest is sent from the service (via the helper) to the desktop

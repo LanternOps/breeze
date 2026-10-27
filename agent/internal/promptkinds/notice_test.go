@@ -349,12 +349,17 @@ func TestSessionEndedNoticeCopyAndID(t *testing.T) {
 	}
 }
 
+// The registry is append-only: W04 notice.info@1, then W06's remote kinds.
 func TestRegisterSpeaksNoticeInfoV1(t *testing.T) {
 	specs := Specs()
-	if len(specs) != 1 || specs[0].Name != "notice.info" || specs[0].Version != 1 {
-		t.Fatalf("specs = %+v", specs)
+	var got []string
+	for _, s := range specs {
+		got = append(got, fmt.Sprintf("%s@%d", s.Name, s.Version))
+		if class, ok := ipc.PromptKindClass(s.Name); !ok || class != ipc.PromptCopyBreeze {
+			t.Fatalf("%s must be a breeze-class kind in the closed registry", s.Name)
+		}
 	}
-	if _, ok := ipc.PromptKindClass(NoticeInfo.Name); !ok {
-		t.Fatal("notice.info must be in the closed kind registry")
+	if want := []string{"notice.info@1", "remote.consent@1", "remote.session@1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("specs = %v, want %v", got, want)
 	}
 }

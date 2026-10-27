@@ -51,6 +51,9 @@ func (h *Host) Tick() {
 		}
 		for _, pl := range rec.placements {
 			h.tickPlacement(rec, pl, now, ob)
+			if h.prompts[rec.show.PromptID] != rec {
+				break // lost and withdrawn (NeverReask)
+			}
 		}
 	}
 	h.unlockAndFlush(ob)

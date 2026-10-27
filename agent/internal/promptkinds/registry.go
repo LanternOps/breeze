@@ -28,7 +28,7 @@ var NoticeInfo = prompthost.KindSpec{
 
 // Specs lists every kind this build constructs.
 func Specs() []prompthost.KindSpec {
-	return []prompthost.KindSpec{NoticeInfo}
+	return []prompthost.KindSpec{NoticeInfo, RemoteConsentKind, RemoteSessionKind}
 }
 
 // Register tells the prompt host which kinds this build speaks (the first

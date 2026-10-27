@@ -173,6 +173,10 @@ func (h *Heartbeat) runConsentGate(sessionID string, prompt *ipc.DesktopPrompt, 
 		"outcome", v.outcome,
 		"occupancy", v.occupancy,
 		"detail", v.detail,
+		// What drew the prompt (assist | native). Reported here, not in
+		// the start result: the API's strict desk-* result object has no
+		// renderer field yet, and an unknown key would drop the result.
+		"renderer", att.renderer,
 	)
 	return v
 }
@@ -250,6 +254,11 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 	}
 	answerWait := time.Duration(prompt.ConsentTimeoutMs+consentTimeoutGraceMs) * time.Millisecond
 
+	// remote.consent through the prompt host when all three switches are on
+	// for this user's session (W06); otherwise exactly today's request.
+	if att, ok := h.solicitConsentPrompt(ctx, session, req, prompt); ok {
+		return att
+	}
 	var att consentAttempt
 	if session.ConsentProtocolVersion >= ipc.ConsentProtocolVersion {
 		att = solicitConsentV2(ctx, session, "consent-"+sessionID, req, answerWait)
@@ -257,6 +266,7 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		att = solicitConsentLegacy(ctx, session, "consent-"+sessionID, req, answerWait)
 	}
 	att.helper = session
+	att.renderer = consentRendererLabel(session.HelperRole)
 	return att
 }
 
@@ -621,7 +631,9 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 		h.sendSessionNotify(connectedNotifyBody(prompt), targetWinSession)
 	}
 	if prompt.ShowIndicator {
-		h.sendBannerShow(sessionID, prompt, targetWinSession)
+		// remote.session where the session's renderer draws it and the
+		// server enables it (#10190 W06); otherwise exactly today's banner.
+		h.showSessionIndicator(sessionID, prompt, targetWinSession)
 	}
 }
 
@@ -701,6 +713,7 @@ func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 		return
 	}
 	if prompt.ShowIndicator {
+		h.closeSessionIndicator(sessionID)
 		h.sendBannerHide(sessionID, targetWinSession)
 	}
 	if prompt.NotifyOnEnd {
