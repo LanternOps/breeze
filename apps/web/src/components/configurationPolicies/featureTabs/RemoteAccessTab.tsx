@@ -104,6 +104,7 @@ function ToggleRow({
         type="button"
         onClick={() => onChange(!checked)}
         disabled={disabled}
+        aria-pressed={checked}
         className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${disabled ? "opacity-50 cursor-not-allowed " : ""}${checked ? "bg-emerald-500/80" : "bg-muted"}`}
       >
         <span
@@ -562,7 +563,7 @@ export default function RemoteAccessTab({
                 ? i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.allowUserEndHelp")
                 : i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.allowUserEndNeedsIndicator")
             }
-            checked={settings.allowUserEndSession}
+            checked={settings.allowUserEndSession && settings.showActiveIndicator}
             disabled={!settings.showActiveIndicator}
             onChange={(v) => update("allowUserEndSession", v)}
           />

@@ -208,6 +208,27 @@ describe('RemoteAccessTab saves allowUserEndSession (#10190)', () => {
     expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({ allowUserEndSession: false });
   });
 
+  it('shows the disabled toggle as off while the indicator is off, without changing the saved value', () => {
+    render(<RemoteAccessTab {...baseProps} />);
+    const toggleFor = (text: string) =>
+      screen.getByText(text).closest('div')?.parentElement?.querySelector('button') as HTMLButtonElement;
+    const indicator = toggleFor('Active-session indicator');
+    expect(toggleFor('Let the user end the session').getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(indicator);
+    const endToggle = toggleFor('Let the user end the session');
+    expect(endToggle.disabled).toBe(true);
+    expect(endToggle.getAttribute('aria-pressed')).toBe('false');
+    clickSave();
+    expect(inlineSettingsFromCall(saveMock.mock.calls[0])).toMatchObject({
+      showActiveIndicator: false,
+      allowUserEndSession: true,
+    });
+
+    fireEvent.click(indicator);
+    expect(toggleFor('Let the user end the session').getAttribute('aria-pressed')).toBe('true');
+  });
+
   it('disables the toggle with a hint when the active-session indicator is off', () => {
     render(<RemoteAccessTab {...baseProps} />);
     const indicator = screen.getByText('Active-session indicator');
