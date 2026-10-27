@@ -40,7 +40,7 @@ import { verifyDeviceAccess } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { deviceScopeCondition, siteScopeCondition } from './aiToolsSiteScope';
 import { DeviceFunctionError, clearDeviceFunction, getDeviceFunction, upsertDeviceFunction } from './deviceFunction';
-import { queryDeviceEventFeed, type DeviceEventRow } from './deviceEventFeed';
+import { queryDeviceEventFeed, type DeviceEventFeedFilters, type DeviceEventRow } from './deviceEventFeed';
 import { getManagementPostureSummary, getPostureDevices } from './managementPostureReport';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { isAgentCollectedWarrantyDevice } from './warrantyDataSources';
@@ -143,8 +143,8 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
           {
             search: typeof input.search === 'string' ? input.search : undefined,
             category: typeof input.category === 'string' ? input.category : undefined,
-            result: typeof input.result === 'string' ? input.result : undefined,
-            initiatedBy: typeof input.initiatedBy === 'string' ? input.initiatedBy : undefined,
+            result: typeof input.result === 'string' ? input.result as DeviceEventFeedFilters['result'] : undefined,
+            initiatedBy: typeof input.initiatedBy === 'string' ? input.initiatedBy as DeviceEventFeedFilters['initiatedBy'] : undefined,
             from: isoOrUndefined(input.from),
             to: isoOrUndefined(input.to),
             page: clampLimit(input.page, 1, 10000),

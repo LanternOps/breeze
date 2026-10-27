@@ -110,7 +110,7 @@ export function isAssignedContactFkViolation(err: unknown): boolean {
 export async function loadAccessibleManualAsset(
   auth: Pick<AuthContext, 'canAccessOrg'>,
   id: string,
-) {
+): Promise<{ error: string; status: 404 } | { row: typeof manualAssets.$inferSelect }> {
   const [existing] = await db.select().from(manualAssets).where(eq(manualAssets.id, id)).limit(1);
   if (!existing) return { error: 'Manual asset not found', status: 404 as const };
   if (!auth.canAccessOrg(existing.orgId)) {

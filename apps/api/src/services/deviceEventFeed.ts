@@ -108,8 +108,8 @@ export function mergeFeedPage<T extends { sortKey: string; id: string }>(
 export interface DeviceEventFeedFilters {
   search?: string;
   category?: string;
-  result?: string;
-  initiatedBy?: string;
+  result?: (typeof auditLogs.result.enumValues)[number];
+  initiatedBy?: (typeof auditLogs.initiatedBy.enumValues)[number];
   from?: Date;
   to?: Date;
   page: number;
