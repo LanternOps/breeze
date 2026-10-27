@@ -176,7 +176,7 @@ describe('dispatchScriptToDevices (flow lane)', () => {
   });
 
   it('a concurrent attempt that collides on the claim replays the winner instead of reporting a failure', async () => {
-    const unique = Object.assign(new Error('duplicate key value violates unique constraint "flow_run_steps_attempt_uq"'), { code: '23505' });
+    const unique = Object.assign(new Error('duplicate key value violates unique constraint "flow_run_steps_attempt_uq"'), { code: '23505', constraint: 'flow_run_steps_attempt_uq' });
     m.insertRow.mockRejectedValueOnce(unique);
     // The first lookup (inside the losing transaction) saw nothing; the re-read after the rollback sees the winner's row.
     m.findRow.mockResolvedValueOnce(null).mockResolvedValueOnce({
@@ -185,6 +185,13 @@ describe('dispatchScriptToDevices (flow lane)', () => {
     const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
     expect(out.perDevice[0]).toEqual({ deviceId: D1, outcome: 'queued', executionId: 'exe-w', commandId: 'cmd-w', error: null });
     expect(m.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('a unique violation on any other constraint is an unexpected failure, never a claim replay', async () => {
+    m.dispatch.mockRejectedValueOnce(Object.assign(new Error('duplicate key "script_executions_pkey"'), { code: '23505', constraint: 'script_executions_pkey' }));
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(out.perDevice[0]).toMatchObject({ deviceId: D1, outcome: 'failed' });
+    expect(out.perDevice[0]!.error).toMatch(/unexpectedly/);
   });
 
   it('bookkeeping failures after commit never abort the fleet', async () => {

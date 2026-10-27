@@ -40,7 +40,7 @@ import type { TenantVariableScope } from './tenantVariableResolution';
 import type { AuthContext } from '../middleware/auth';
 import type { scripts } from '../db/schema';
 import { captureException } from './sentry';
-import { isPgUniqueViolation } from '../utils/pgErrors';
+import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import {
   findDeviceStepRow,
   finishDeviceStepRow,
@@ -54,6 +54,9 @@ import {
   type FleetRun,
   type RunFence,
 } from './scriptFleetDispatchStore';
+
+/** The ledger's unique key: only a collision on IT is another attempt's claim. */
+const CLAIM_UNIQUE_KEY = 'flow_run_steps_attempt_uq';
 
 export type FleetDeviceOutcome = 'dispatched' | 'queued' | 'skipped_offline' | 'skipped' | 'failed';
 
@@ -257,7 +260,7 @@ async function dispatchOne(args: FleetDispatchArgs, index: number): Promise<Flee
     staged = await stage(args, index);
   } catch (err) {
     // A concurrent attempt committed this device's claim first: replay it.
-    if (isPgUniqueViolation(err)) return replayAfterCollision(args, deviceId);
+    if (isPgUniqueViolation(err) && pgErrorConstraint(err) === CLAIM_UNIQUE_KEY) return replayAfterCollision(args, deviceId);
     // The transaction rolled back: no claim, no dispatch rows. The device is
     // reported failed (a fixed message — driver text can carry parameters);
     // a later attempt (a redelivered release) may claim it.
