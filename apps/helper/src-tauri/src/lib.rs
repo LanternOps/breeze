@@ -1098,7 +1098,10 @@ pub(crate) fn open_request_support(app: &tauri::AppHandle, req: &crate::ipc::pro
         eprintln!("[helper] Request Support not opened: unexpected session id or locale");
         return;
     };
-    let Some(window) = app.get_webview_window("main") else { return };
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("[helper] Request Support not opened: the main window does not exist");
+        return;
+    };
     if let Err(e) = window.eval(script) {
         eprintln!("[helper] Request Support could not be opened: {e}");
         return;
@@ -2550,9 +2553,17 @@ mod tests {
         // the action-result handler is the only caller of the lib.rs opener.
         assert_eq!(client.matches("crate::open_request_support(").count(), 1);
         let result = body_of(client, "fn handle_prompt_action_result(");
-        let take = result.find(".take_request_support()").expect("gated on the tracker's one-shot");
+        let apply = result.find("apply_prompt_action_result(").expect("gated on the tested helper");
         let open = result.find("crate::open_request_support(").expect("opened from the result handler");
-        assert!(take < open, "the one-shot is taken before the opener runs");
+        assert!(apply < open, "the result is applied before the opener runs");
+        assert!(!result.contains("take_request_support"), "only the tested helper takes the one-shot");
+        // The helper (behaviour-tested in client.rs) takes it only after the
+        // result released the person's own action.
+        let helper = body_of(client, "fn apply_prompt_action_result(");
+        let applied = helper.find(".on_action_result(").unwrap();
+        let take = helper.find(".take_request_support()").unwrap();
+        assert!(applied < take);
+        assert_eq!(client.matches(".take_request_support()").count(), 1);
         assert_eq!(lib.matches("open_request_support(").count(), 1, "lib.rs defines the opener and never calls it");
         for (name, src) in [
             ("prompt.rs", prompt),
@@ -2592,6 +2603,11 @@ mod tests {
         let card = &desktop[start..end];
         assert!(card.contains("ActionVia::Click") && !card.contains("ActionVia::Keyboard"));
         assert!(card.contains("eprintln!"), "a refused close box is logged");
+        // W06 review: the session indicator's close box keeps its window.
+        assert!(card.contains("Ok(DismissEffect::Kept) => api.prevent_close()"), "the pill survives its close box");
+        let start = lib.find("fn prompt_card_hide(").unwrap();
+        let hide = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        assert!(!hide.contains("DismissEffect::Kept"), "a kept pill is never destroyed by the hide command");
     }
 
     // #10190 W06 (OD-6 (b)): Request Support is opened by setting the main

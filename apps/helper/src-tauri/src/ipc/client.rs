@@ -1054,16 +1054,22 @@ fn handle_prompt_action_result(
 ) {
     match payload_str(payload).map(serde_json::from_str::<prompt::PromptActionResult>) {
         Some(Ok(result)) => {
-            let changed = prompts.tracker().on_action_result(env_id, &result);
+            let (changed, support) = apply_prompt_action_result(prompts, env_id, &result);
             if changed {
-                // W06 (OD-6 (b)): the agent accepted the person's own "Report a
-                // problem" on the session pill. Taken with the lock released.
-                let support = prompts.tracker().take_request_support();
-                if let Some(ctx) = ctx {
-                    desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
-                    if let Some(req) = support {
-                        crate::open_request_support(&ctx.app, &req);
+                match ctx {
+                    Some(ctx) => {
+                        desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
+                        // W06 (OD-6 (b)): the agent accepted the person's own
+                        // "Report a problem" on the session pill.
+                        if let Some(req) = support {
+                            crate::open_request_support(&ctx.app, &req);
+                        }
                     }
+                    None if support.is_some() => eprintln!(
+                        "[helper] Request Support not opened: no desktop on this session (promptId={})",
+                        log_id(&result.prompt_id)
+                    ),
+                    None => {}
                 }
             } else {
                 eprintln!(
@@ -1077,6 +1083,22 @@ fn handle_prompt_action_result(
         }
         _ => eprintln!("[helper] bad prompt_action_result payload; ignored (env={})", log_id(env_id)),
     }
+}
+
+/// Apply a `prompt_action_result` and say what it changed: whether it released
+/// an action in flight, and the Request Support to open (W06, OD-6 (b)). The
+/// one-shot is taken only after this result released the person's own
+/// action on its own envelope, so only an `accepted` answer to a "Report a
+/// problem" click can yield it (behaviour-tested below; each tracker call
+/// takes and releases the lock).
+fn apply_prompt_action_result(
+    prompts: &PromptBridge,
+    env_id: &str,
+    result: &prompt::PromptActionResult,
+) -> (bool, Option<prompt::RequestSupport>) {
+    let changed = prompts.tracker().on_action_result(env_id, result);
+    let support = if changed { prompts.tracker().take_request_support() } else { None };
+    (changed, support)
 }
 
 /// `prompt_branding_sync`: the MSP identity, kept in memory; the bridge tells
@@ -2029,6 +2051,52 @@ mod tests {
 
         write_frame(&mut broker, &key, &mut send, "bye", "disconnect", None).await.unwrap();
         assert!(matches!(b.await.expect("join"), Ok(())));
+    }
+
+    /// W06 review: the result handler opens Request Support only for what
+    /// `apply_prompt_action_result` hands back, and that is only the agent's
+    /// `accepted` answer on the envelope of the person's own Report-a-problem
+    /// click. Pinned by behaviour, frame by frame (the lib.rs source scan only
+    /// pins that the handler goes through this function).
+    #[test]
+    fn apply_prompt_action_result_opens_support_only_after_accepted() {
+        let prompts = PromptBridge::with_tracker(prompt::PromptTracker::default());
+        let id = "session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        let mut show: prompt::PromptShow = serde_json::from_str(SHOW_NOTICE).unwrap();
+        show.prompt_id = id.into();
+        show.kind = "remote.session".into();
+        show.presentation = prompt::Presentation::Indicator;
+        show.locale = "fr-CA".into();
+        show.actions = vec![prompt::PromptActionSpec {
+            id: "report_problem".into(),
+            label: "Report a problem".into(),
+            role: prompt::ActionRole::Neutral,
+        }];
+        show.default_action_id = None;
+        assert!(matches!(prompts.tracker().on_show(now_unix_ms(), &show), prompt::ShowOutcome::Render { .. }));
+        let result = |kind: &str| -> prompt::PromptActionResult {
+            serde_json::from_value(serde_json::json!({ "promptId": id, "actionId": "report_problem", "result": kind, "rev": 1 }))
+                .unwrap()
+        };
+        let click = || prompts.tracker().action(now_unix_ms(), id, "report_problem", prompt::ActionVia::Click).unwrap().id;
+
+        // Rejected (stale or invalid): released, nothing to open.
+        for kind in ["rejected_stale", "rejected_invalid"] {
+            let env = click();
+            assert_eq!(apply_prompt_action_result(&prompts, &env, &result(kind)), (true, None), "{kind}");
+        }
+        // A result on another envelope (a late answer to an earlier click).
+        let env = click();
+        assert_eq!(apply_prompt_action_result(&prompts, "prompt-earlier", &result("accepted")), (false, None));
+        // Its own accepted answer: open, with the prompt's locale.
+        let (changed, support) = apply_prompt_action_result(&prompts, &env, &result("accepted"));
+        assert!(changed);
+        assert_eq!(
+            support,
+            Some(prompt::RequestSupport { session_id: "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c".into(), locale: "fr-CA".into() })
+        );
+        // The same answer delivered twice opens nothing the second time.
+        assert_eq!(apply_prompt_action_result(&prompts, &env, &result("accepted")), (false, None));
     }
 
     /// A `remote.session` prompt as a list-only prompt, so no window is needed

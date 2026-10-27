@@ -27,8 +27,12 @@ import { orderActions, outcomeMessage, type PromptCardProps } from '../PromptCar
  *   - Report a problem: a wire action. After the agent's `accepted`, Rust
  *     opens the main window's Request Support flow for this session
  *     (lib.rs `open_request_support`); this card cannot surface it.
- *   - Esc otherwise collapses the pill. It never hides it: the person must
- *     always be able to see that a remote session is running.
+ *   - Esc otherwise collapses the pill. Nothing hides it, the close box and
+ *     Alt+F4 included (Rust keeps the window: prompt.rs `Dismiss::Kept`): the
+ *     person must always be able to see that a remote session is running.
+ *   - A failed action (rejected, timed out, not sent) opens the pill to show
+ *     the notice. If the window cannot grow, the pill collapses back, so its
+ *     actions are never clipped out of reach.
  *
  * Drawn by the shared `Card`, like every prompt and message card.
  */
@@ -54,8 +58,17 @@ export function SessionCard({
     if (confirming) setExpanded(true);
   }, [confirming]);
 
+  // A failed or rejected action (or one that could not be sent) is never
+  // hidden in the collapsed pill: open it to show the notice.
+  const notice = error || view.lastError || outcomeMessage(view.lastOutcome);
+  useEffect(() => {
+    if (notice) setExpanded(true);
+  }, [notice]);
+
   // The window follows the pill. It is built collapsed, so a collapsed first
-  // paint needs no resize.
+  // paint needs no resize. If the window cannot grow, the pill collapses
+  // back, so its actions are never clipped out of reach (Esc still keeps the
+  // session on the confirm step).
   const resize = useRef(onExpandedChange);
   resize.current = onExpandedChange;
   const painted = useRef(false);
@@ -63,8 +76,11 @@ export function SessionCard({
     const first = !painted.current;
     painted.current = true;
     if (first && !expanded) return;
-    resize.current?.(expanded);
-  }, [expanded]);
+    Promise.resolve(resize.current?.(expanded)).catch((err: unknown) => {
+      console.warn(`[prompt] could not ${expanded ? 'expand' : 'collapse'} the session pill ${view.promptId}`, err);
+      if (expanded) setExpanded(false);
+    });
+  }, [expanded, view.promptId]);
 
   // Keep session holds focus while the confirm is up.
   const safeButton = useRef<HTMLButtonElement | null>(null);
@@ -90,7 +106,6 @@ export function SessionCard({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const notice = error || view.lastError || outcomeMessage(view.lastOutcome);
   const titleId = `prompt-title-${view.promptId}`;
   const detailsId = `prompt-details-${view.promptId}`;
 

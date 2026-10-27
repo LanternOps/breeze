@@ -159,14 +159,10 @@ export function PromptCardWindow({
   const onHide = useCallback(() => {
     api.hide(promptId, 'keyboard').catch((err) => setError(errorText(err)));
   }, [api, promptId]);
-  // The session pill's window follows its expanded state (local only). A
-  // failed resize is logged; the pill still works in its current size.
+  // The session pill's window follows its expanded state (local only). The
+  // pill handles a rejection (it collapses back, kinds/session.tsx).
   const onExpandedChange = useCallback(
-    (expanded: boolean) => {
-      api.setExpanded?.(promptId, expanded).catch((err) =>
-        console.warn(`[prompt] could not resize card ${promptId}`, err),
-      );
-    },
+    (expanded: boolean) => (api.setExpanded ? api.setExpanded(promptId, expanded) : Promise.resolve()),
     [api, promptId],
   );
 

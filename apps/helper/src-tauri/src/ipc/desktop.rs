@@ -449,6 +449,9 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
             match bridge.dismiss(super::client::now_unix_ms(), &id, ActionVia::Click) {
                 // A decision keeps its card while its safe action is on its way.
                 Ok(DismissEffect::ActionSent) => api.prevent_close(),
+                // The remote-session pill stays while the session runs (W06):
+                // its close box / Alt+F4 does nothing.
+                Ok(DismissEffect::Kept) => api.prevent_close(),
                 // ...or when it could not be sent: the bridge recorded why on the
                 // prompt (`last_error`, shown on the card) and the person retries.
                 Err(e) => {

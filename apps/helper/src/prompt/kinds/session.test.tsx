@@ -156,6 +156,23 @@ describe('remote.session pill', () => {
     expect(onExpandedChange).toHaveBeenLastCalledWith(true);
   });
 
+  it('opens itself to show a failed action: timed_out gives an alert and the actions are enabled again', () => {
+    const { onExpandedChange } = renderPill({ ...session, lastOutcome: 'timed_out' });
+    expect(pillButton()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent("No answer from your IT provider's agent. Try again.");
+    expect(screen.getByRole('button', { name: 'End session' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Report a problem' })).toBeEnabled();
+    expect(onExpandedChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('opens itself for a rejected result or an error that arrives while collapsed', () => {
+    const { rerenderWith } = renderPill();
+    expect(pillButton()).toHaveAttribute('aria-expanded', 'false');
+    rerenderWith({ ...session, lastOutcome: 'rejected_invalid', version: 2 });
+    expect(pillButton()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('That choice could not be applied.');
+  });
+
   it('shows Working… and disables the actions while one is in flight', () => {
     renderPill({ ...session, pendingActionId: 'report_problem' });
     fireEvent.click(pillButton(), { detail: 1 });
@@ -210,6 +227,54 @@ describe('remote.session pill in its window', () => {
     expect(document.activeElement).toBe(keep);
     fireEvent.click(screen.getByRole('button', { name: 'End session' }), { detail: 1 });
     expect(api.action).toHaveBeenLastCalledWith(session.promptId, 'end_confirm', 'click');
+  });
+
+  it('a failed resize reverts the expand (actions never clipped), and Esc on the confirm step still keeps the session', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api, state, notify } = fakeApi(session);
+    vi.mocked(api.setExpanded!).mockRejectedValue('not a session indicator');
+    render(<PromptCardWindow promptId={session.promptId} api={api} clock={() => NOW} retryDelayMs={0} identityEnabled={false} />);
+    const pill = await screen.findByRole('button', { name: /Remote session in progress/ });
+    fireEvent.click(pill, { detail: 1 });
+    await waitFor(() => expect(pill).toHaveAttribute('aria-expanded', 'false'));
+    expect(screen.queryByRole('button', { name: 'End session' })).not.toBeInTheDocument();
+    expect(warn).toHaveBeenCalled();
+    // The agent's confirm step tries to open the pill; the resize fails again.
+    state.current = confirming;
+    await act(async () => {
+      notify(2);
+    });
+    const expands = () => vi.mocked(api.setExpanded!).mock.calls.filter(([, expanded]) => expanded).length;
+    await waitFor(() => expect(expands()).toBe(2));
+    await waitFor(() => expect(pill).toHaveAttribute('aria-expanded', 'false'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(api.action).toHaveBeenCalledWith(session.promptId, 'keep_session', 'keyboard');
+    expect(api.action).not.toHaveBeenCalledWith(session.promptId, 'end_confirm', expect.anything());
+  });
+
+  it('an action that cannot be sent opens the collapsed pill with the error', async () => {
+    const { api } = fakeApi(session);
+    let fail: (reason: unknown) => void = () => {};
+    vi.mocked(api.action).mockImplementation(
+      () =>
+        new Promise<void>((_, reject) => {
+          fail = reject;
+        }),
+    );
+    render(<PromptCardWindow promptId={session.promptId} api={api} clock={() => NOW} retryDelayMs={0} identityEnabled={false} />);
+    const pill = await screen.findByRole('button', { name: /Remote session in progress/ });
+    fireEvent.click(pill, { detail: 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }), { detail: 1 });
+    // The person collapses the pill while End session is on its way...
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }), { detail: 1 });
+    expect(pill).toHaveAttribute('aria-expanded', 'false');
+    // ...and it fails: the pill opens to say so.
+    await act(async () => {
+      fail("Not connected to your IT provider's agent. Try again in a moment.");
+    });
+    expect(pill).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent("Not connected to your IT provider's agent.");
+    expect(screen.getByRole('button', { name: 'End session' })).toBeEnabled();
   });
 
   it('report a problem sends report_problem and opens nothing itself', async () => {

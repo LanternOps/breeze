@@ -548,6 +548,9 @@ pub enum Dismiss {
     Refused(ActionRefusal),
     /// Nothing on screen to hide.
     Nothing,
+    /// An open session indicator (W06): it is never hidden while the session
+    /// runs, like the legacy banner. Nothing is sent; the window stays.
+    Kept,
 }
 
 /// What changed on the 250 ms tick.
@@ -984,9 +987,13 @@ impl PromptTracker {
     }
 
     /// Esc or the window close box: the safe action on a pending decision,
-    /// "hide" everywhere else.
+    /// "hide" everywhere else, except an open session indicator, which stays
+    /// on screen (W06: a remote-session indicator is a transparency control).
     pub fn dismiss(&mut self, now_ms: i64, prompt_id: &str, via: ActionVia) -> Dismiss {
         self.version += 1;
+        if self.indicator_open(prompt_id) {
+            return Dismiss::Kept;
+        }
         let Some(t) = self.prompts.get(prompt_id) else { return Dismiss::Nothing };
         if !t.closed && is_decision(t.show.state, t.show.presentation) {
             let Some(safe) = t.show.default_action_id.clone() else {
@@ -1514,6 +1521,8 @@ pub enum DismissEffect {
     Hidden,
     /// Nothing tracked on screen; the caller closes any stray window.
     Nothing,
+    /// An open session indicator: the caller keeps its window (W06).
+    Kept,
 }
 
 impl PromptBridge {
@@ -1632,6 +1641,7 @@ impl PromptBridge {
             }
             Dismiss::Refused(e) => Err(e.message().to_string()),
             Dismiss::Nothing => Ok(DismissEffect::Nothing),
+            Dismiss::Kept => Ok(DismissEffect::Kept),
         }
     }
 
@@ -2357,12 +2367,42 @@ mod tests {
         assert_eq!(v.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["end_confirm", "keep_session"]);
         assert_eq!(v.default_action_id.as_deref(), Some("keep_session"));
         assert!(t.indicator_open(&s.prompt_id));
-        // The close box / Alt+F4 hides the pill; it never sends end_confirm.
-        match t.dismiss(NOW, &s.prompt_id, ActionVia::Click) {
-            Dismiss::Hidden(frame) => assert_eq!(frame.payload["reason"], "hidden"),
-            other => panic!("{other:?}"),
+        // The close box / Alt+F4 neither ends the session nor hides the pill:
+        // a remote-session indicator stays on screen while the session runs.
+        assert_eq!(t.dismiss(NOW, &s.prompt_id, ActionVia::Click), Dismiss::Kept);
+        assert!(t.indicator_open(&s.prompt_id), "the pill stays");
+        assert_eq!(t.view(&s.prompt_id, NOW).unwrap().pending_action_id, None, "nothing was sent");
+    }
+
+    /// W06 review: the session indicator is a transparency control, like the
+    /// legacy banner that cannot be closed. Its close box and Alt+F4 (and a
+    /// stray hide) send nothing, in either action set, and the window stays.
+    #[test]
+    fn indicator_close_box_never_hides_the_pill() {
+        let bridge = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        bridge.set_sender(tx);
+        let s = session();
+        assert!(rendered(&bridge.tracker().on_show(NOW, &s)));
+        for via in [ActionVia::Click, ActionVia::Keyboard] {
+            assert_eq!(bridge.dismiss(NOW, &s.prompt_id, via), Ok(DismissEffect::Kept), "{via:?}");
         }
-        assert!(!t.indicator_open(&s.prompt_id), "a hidden pill is not open");
+        // The confirm step (a safe default on the indicator) is no different.
+        let mut u = update(&s.prompt_id, 2);
+        u.actions = Some(vec![
+            spec("end_confirm", "End session", ActionRole::Proceed),
+            spec("keep_session", "Keep session", ActionRole::Safe),
+        ]);
+        u.default_action_id = Some("keep_session".into());
+        assert_eq!(bridge.tracker().on_update(NOW, &u), UpdateOutcome::Applied { card_open: true });
+        assert_eq!(bridge.dismiss(NOW, &s.prompt_id, ActionVia::Click), Ok(DismissEffect::Kept));
+        assert!(rx.try_recv().is_err(), "no prompt_closed{{hidden}} and no action was sent");
+        assert!(bridge.tracker().indicator_open(&s.prompt_id), "the pill is still up");
+        assert!(bridge.tracker().list(NOW).is_empty(), "and not collapsed into the list");
+        // A card is still hidden by its close box (unchanged).
+        let mut t = PromptTracker::new(ALL_KINDS);
+        assert!(rendered(&t.on_show(NOW, &elevation())));
+        assert!(matches!(t.dismiss(NOW, &elevation().prompt_id, ActionVia::Click), Dismiss::Hidden(_)));
     }
 
     #[test]
