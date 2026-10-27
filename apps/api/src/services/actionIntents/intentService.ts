@@ -70,6 +70,7 @@ import {
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
+import { fleetApprovalScope } from '../flows/builtins/fleetApprovalScope';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -1339,8 +1340,10 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
 function builtinGuardrailCheck(toolName: string, input: Record<string, unknown>): GuardrailCheck {
   const tier = flowBuiltinTierFor(toolName as Parameters<typeof flowBuiltinTierFor>[0], input);
   const description = `${toolName} — flow built-in step`;
+  // W6 (#5221): a fleet script step's scope follows the script (core run_script's classification).
+  const approvalScope = toolName === 'run_script_on_targets' ? fleetApprovalScope(input) : 'supervised';
   return tier === 3
-    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description }
+    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope, description }
     : { tier, allowed: true, requiresApproval: false, readOnly: false, description };
 }
 

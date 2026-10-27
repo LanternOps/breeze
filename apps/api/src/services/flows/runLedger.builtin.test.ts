@@ -46,6 +46,14 @@ describe('resolveParkedIntent — released built-ins', () => {
       .toMatchObject({ kind: 'continue', step: { errorCode: 'step_failed' } });
   });
 
+  // W6 (#5221): a released fleet step that failed on some devices still
+  // carries its device sets, so a later step chains on them under continue.
+  it('a released built-in failure with output continues with that output and records it on the row', () => {
+    const output = { dispatchedDeviceIds: ['d1', 'd2'], succeededDeviceIds: ['d1'], failedDeviceIds: ['d2'], skippedOfflineDeviceIds: [], count: 2, warnings: [] };
+    const r = resolveParkedIntent(failed({ error: 'failed on 1 of 2', flowStepError: { code: 'script_dispatch_failed', policy: false }, output }), ctx({ tool: 'run_script_on_targets' }));
+    expect(r).toMatchObject({ kind: 'continue', status: 'failed', output, step: { status: 'failed', errorCode: 'script_dispatch_failed', output } });
+  });
+
   it('a released built-in that may have run (execution_error after executedAt) is still unknown_outcome', () => {
     expect(resolveParkedIntent(failed(null, { errorCode: 'execution_error' }), ctx()))
       .toMatchObject({ kind: 'end', unknownOutcome: true, run: { errorCode: 'unknown_outcome' } });

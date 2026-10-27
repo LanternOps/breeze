@@ -3,10 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   FLOW_PAUSED_REASONS,
-  FLOW_RUN_ERROR_CODES,
   FLOW_RUN_STATUSES,
   FLOW_RUN_STEP_STATUSES,
-  FLOW_STEP_ERROR_CODES,
   FLOW_TRIGGER_KINDS,
   FLOW_TRIGGERED_VIA,
 } from '@breeze/shared';
@@ -70,10 +68,10 @@ const PINS: Array<[constraint: string, expected: readonly string[]]> = [
 ];
 
 // W05 (#5220): swapped (widened) W04 CHECKs and the new W5 CHECKs, read from the W5 file.
+// W06 (#5221) swaps the two error-code CHECKs again; they are pinned against the W6 file
+// in flowConversions.schema.test.ts.
 const W5_PINS: Array<[constraint: string, expected: readonly string[]]> = [
   ['flow_runs_triggered_via_chk', FLOW_TRIGGERED_VIA],
-  ['flow_runs_error_code_chk', FLOW_RUN_ERROR_CODES],
-  ['flow_run_steps_error_code_chk', FLOW_STEP_ERROR_CODES],
   ['flow_webhook_deliveries_status_chk', FLOW_WEBHOOK_DELIVERY_STATUSES],
   ['flow_webhook_deliveries_auth_mode_chk', FLOW_WEBHOOK_AUTH_MODES],
   ['flows_webhook_auth_failure_chk', FLOW_WEBHOOK_AUTH_FAILURES],
