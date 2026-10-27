@@ -29,6 +29,8 @@ const BLOCKER_CODES = [
   'condition_unknown_type', 'targets_over_cap', 'partner_wide_group_target', 'run_as_elevated',
   'restart_service_monitor_only', 'command_mixed_os', 'notify_per_run_cap', 'channel_type_not_supported',
   'deploy_software_unmapped', 'monthly_cap_exceeded', 'reference_not_owned',
+  // A partner-wide webhook Job has no org resolver; legacy text with a '{{' a flow would read as a template.
+  'partner_wide_webhook', 'text_template_unsupported',
 ] as const;
 const REVIEW_CODES = [
   'event_filter_string_coercion', 'approval_each_run', 'command_becomes_script', 'partner_wide_org_set_differs',
