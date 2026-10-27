@@ -152,4 +152,10 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
     kind: 'non_agent_path',
     reason: 'The discovery worker propagates an asset classification onto a matched device: a job, not the device\'s credential.',
   },
+  {
+    file: 'src/jobs/discoveryWorker.ts',
+    marker: 'discovery-role-unlink-reset',
+    kind: 'non_agent_path',
+    reason: 'The discovery worker undoes the role it propagated when it drops an auto-link the MAC no longer supports: a job, not the device\'s credential.',
+  },
 ];
