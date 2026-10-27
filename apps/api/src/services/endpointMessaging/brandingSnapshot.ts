@@ -1,8 +1,4 @@
-import { eq } from 'drizzle-orm';
-import { db } from '../../db';
-import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { organizations, partners } from '../../db/schema';
-import { partnerDocumentBrand } from '../partnerDocumentBrand';
+import { resolvePromptIdentity } from '../promptIdentity';
 
 /**
  * The sender identity stamped on an endpoint message at SEND time (#8741).
@@ -18,6 +14,11 @@ import { partnerDocumentBrand } from '../partnerDocumentBrand';
  * message appears to come from (#9396). The helper renders the name in a fixed
  * sender slot that message text can never replace.
  *
+ * Since #10190 (OD-2 (a)) this is a view of resolvePromptIdentity, the one
+ * MSP-identity resolver: the name is the sanitized partner name (never an org
+ * value), the accent the partner's Branding colour with the org's
+ * portal_branding colour winning where one is set.
+ *
  * Returns null when no partner or no usable name resolves: the caller fails
  * closed rather than showing a card with an unattributed or spoofable sender.
  */
@@ -27,35 +28,17 @@ export interface MessageBranding {
   accent: string | null;
 }
 
-const NAME_MAX = 120;
-
 export async function resolveMessageBranding(
   orgId: string,
 ): Promise<{ partnerId: string; branding: MessageBranding } | null> {
-  const [org] = await db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  const partnerId = org?.partnerId;
-  if (!partnerId) return null;
-
-  const [partner] = await readWithPartnerAxisVisibility(() =>
-    db
-      .select({ name: partners.name, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, partnerId))
-      .limit(1),
-  );
-  const name = partner?.name?.trim().slice(0, NAME_MAX);
-  if (!name) return null;
-
+  const identity = await resolvePromptIdentity(orgId);
+  if (!identity?.partnerName) return null;
   return {
-    partnerId,
+    partnerId: identity.partnerId,
     branding: {
-      companyName: name,
-      displayName: name,
-      accent: partnerDocumentBrand(partner?.settings).primaryColor,
+      companyName: identity.partnerName,
+      displayName: identity.partnerName,
+      accent: identity.primaryColor ?? null,
     },
   };
 }

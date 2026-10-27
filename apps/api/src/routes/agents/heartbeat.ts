@@ -38,6 +38,7 @@ import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
 import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
 import { enabledPromptKinds } from '../../services/promptHostConfig';
+import { buildHeartbeatPromptIdentity } from '../../services/promptIdentity';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -440,6 +441,16 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2
  * never persisted — each beat is answered from its own report.
  */
 export function normalizeRetainStateProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Normalize the prompt identity protocol (#10190 W03): whether THIS beat's
+ * agent caches the response's `promptIdentity` block. Exactly 1 only
+ * (PROMPT_IDENTITY_PROTOCOL_VERSION); absent, malformed or a future version is
+ * 0 and gets no block. Parse-only, never persisted.
+ */
+export function normalizePromptIdentityProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
@@ -2951,6 +2962,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
 
+  // #10190 W03 — the MSP identity drawn on every device prompt. Only for an
+  // agent that speaks the block, and only when this beat's own hierarchy
+  // loaded (the device's org and partner were just checked against the
+  // authenticated ones). Otherwise, and on any resolution failure, the block
+  // is OMITTED, never `cleared`: an absent block keeps the agent's last-known
+  // identity, so a transient DB or Redis error never strips the MSP name from
+  // a prompt. `cleared` is sent only when the device's org resolves no partner
+  // row (services/promptIdentity.ts). Resolved here, after the policy context
+  // is released: it runs its own short system read and may fetch the logo
+  // (#1105). A sibling of helperSettings, not inside it: native prompts need
+  // the identity on a device with no helper policy.
+  let promptIdentity: Awaited<ReturnType<typeof buildHeartbeatPromptIdentity>>;
+  if (
+    normalizePromptIdentityProtocolVersion(data.securityCapabilities?.promptIdentityProtocolVersion) === 1
+    && hierarchyOutcome === 'loaded'
+  ) {
+    try {
+      promptIdentity = await buildHeartbeatPromptIdentity({
+        deviceId: scoped.deviceId,
+        orgId: scoped.deviceOrgId,
+        partnerId: agent.partnerId,
+      });
+    } catch (err) {
+      console.error(`[agents] failed to resolve the prompt identity for ${agentId}; block omitted:`, err);
+      captureException(err);
+    }
+  }
+
   const {
     eventLogSettings,
     monitoringSettings,
@@ -3041,6 +3080,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // switch. Server config only; the agent still needs the renderer's live
     // advertisement and its own build to speak a kind before using it.
     promptHost: { enabledKinds: enabledPromptKinds() },
+    ...(promptIdentity ? { promptIdentity } : {}),
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
     ...(rebind ? { rebind } : {}),

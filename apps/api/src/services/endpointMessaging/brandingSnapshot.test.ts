@@ -1,41 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TableRows } from '../../__tests__/helpers/tableKeyedDb';
 
+// Table-keyed DB (real schema) so the pins below survive the resolver refactor
+// (#10190 OD-2 (a)): the snapshot now comes from resolvePromptIdentity.
 const h = vi.hoisted(() => ({
-  orgRows: [] as Array<{ partnerId: string | null }>,
-  partnerRows: [] as Array<{ name: string | null; settings: unknown }>,
+  rows: {} as Record<string, unknown>,
   partnerAxisRead: vi.fn(),
+  resolverCalls: [] as string[],
 }));
 
-vi.mock('../../db', () => ({
-  db: {
-    select: vi.fn(() => {
-      const node: Record<string, unknown> = {};
-      for (const m of ['from', 'where']) node[m] = vi.fn(() => node);
-      // First select = organizations lookup, second = partners lookup.
-      node.limit = vi.fn(async () => (h.partnerAxisRead.mock.calls.length === 0 ? h.orgRows : h.partnerRows));
-      return node;
-    }),
-  },
-}));
+vi.mock('../../db', async () => {
+  const { createTableKeyedDb } = await import('../../__tests__/helpers/tableKeyedDb');
+  return { db: createTableKeyedDb(() => h.rows as Record<string, TableRows>).db };
+});
 vi.mock('../../db/partnerAxisRead', () => ({
   readWithPartnerAxisVisibility: async (fn: () => Promise<unknown>) => {
     h.partnerAxisRead();
     return fn();
   },
 }));
-vi.mock('../../db/schema', () => ({
-  organizations: { id: 'o.id', partnerId: 'o.partnerId' },
-  partners: { id: 'p.id', name: 'p.name', settings: 'p.settings' },
-}));
-vi.mock('drizzle-orm', () => ({ eq: vi.fn(() => ({})) }));
+vi.mock('../promptIdentity', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../promptIdentity')>();
+  return {
+    ...real,
+    resolvePromptIdentity: async (orgId: string) => {
+      h.resolverCalls.push(orgId);
+      return real.resolvePromptIdentity(orgId);
+    },
+  };
+});
 
 import { resolveMessageBranding } from './brandingSnapshot';
+
+function setRows(over: { org?: unknown[]; partner?: unknown[]; portal?: unknown[] } = {}) {
+  h.rows = {
+    organizations: over.org ?? [{ partnerId: 'partner-1' }],
+    partners: over.partner ?? [{ name: '  Acme IT  ', settings: { branding: { primaryColor: '#12ab34' } } }],
+    portal_branding: over.portal ?? [],
+  };
+}
 
 describe('resolveMessageBranding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.orgRows = [{ partnerId: 'partner-1' }];
-    h.partnerRows = [{ name: '  Acme IT  ', settings: { branding: { primaryColor: '#12ab34' } } }];
+    h.resolverCalls = [];
+    setRows();
   });
 
   it('uses the partner name as company and display name and the partner primary colour as accent', async () => {
@@ -45,29 +54,47 @@ describe('resolveMessageBranding', () => {
     });
   });
 
+  it('comes from the shared prompt identity resolver', async () => {
+    await resolveMessageBranding('org-1');
+    expect(h.resolverCalls).toEqual(['org-1']);
+  });
+
+  it('snapshot unchanged for a partner with no portal override (the pre-#10190 shape, byte for byte)', async () => {
+    setRows({ partner: [{ name: 'Example IT Services', settings: { branding: { primaryColor: '#1F5FAD', logoUrl: 'https://logos.example.com/p.png' } } }] });
+    const snapshot = await resolveMessageBranding('org-1');
+    expect(JSON.stringify(snapshot)).toBe(JSON.stringify({
+      partnerId: 'partner-1',
+      branding: { companyName: 'Example IT Services', displayName: 'Example IT Services', accent: '#1F5FAD' },
+    }));
+  });
+
   it('reads the partner under partner-axis visibility, with only the partner id the org resolved to', async () => {
     await resolveMessageBranding('org-1');
     expect(h.partnerAxisRead).toHaveBeenCalledTimes(1);
   });
 
   it('accent is null when the partner has no valid primary colour', async () => {
-    h.partnerRows = [{ name: 'Acme IT', settings: { branding: { primaryColor: 'url(javascript:1)' } } }];
+    setRows({ partner: [{ name: 'Acme IT', settings: { branding: { primaryColor: 'url(javascript:1)' } } }] });
     const r = await resolveMessageBranding('org-1');
     expect(r?.branding.accent).toBeNull();
   });
 
+  it("an org portal colour override now sets the accent; the name stays the partner's", async () => {
+    setRows({ portal: [{ logoUrl: null, primaryColor: '#aa0000', companyName: 'Spoofed Corp' }] });
+    const r = await resolveMessageBranding('org-1');
+    expect(r?.branding).toEqual({ companyName: 'Acme IT', displayName: 'Acme IT', accent: '#aa0000' });
+  });
+
   it('caps the name at 120 characters', async () => {
-    h.partnerRows = [{ name: 'x'.repeat(300), settings: {} }];
+    setRows({ partner: [{ name: 'x'.repeat(300), settings: {} }] });
     const r = await resolveMessageBranding('org-1');
     expect(r?.branding.companyName).toHaveLength(120);
   });
 
   it('returns null (fail closed) when the org has no partner or the partner has no name', async () => {
-    h.orgRows = [{ partnerId: null }];
+    setRows({ org: [{ partnerId: null }] });
     await expect(resolveMessageBranding('org-1')).resolves.toBeNull();
-    h.orgRows = [{ partnerId: 'partner-1' }];
-    h.partnerRows = [{ name: '   ', settings: {} }];
-    h.partnerAxisRead.mockClear();
+    setRows({ partner: [{ name: '   ', settings: {} }] });
     await expect(resolveMessageBranding('org-1')).resolves.toBeNull();
   });
 });

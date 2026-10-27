@@ -6,11 +6,13 @@
  * request's own RLS context; only the partner id that org resolves to enters
  * the partner-axis read. No client-supplied partner id is ever accepted. The
  * logo is passed only as a credential-free https URL.
+ *
+ * Since #10190 (OD-2 (a)) both values come from resolvePromptIdentity: the
+ * sanitized partner name, and the Settings → Partner → Branding logo (the org's
+ * portal_branding logo where one is set). It used to be the partner's
+ * login-page logo (partner_login_branding).
  */
-import { eq } from 'drizzle-orm';
-import { db } from '../../db';
-import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { organizations, partners, partnerLoginBranding } from '../../db/schema';
+import { resolvePromptIdentity } from '../promptIdentity';
 
 export type CallerHelperBranding = { partnerName: string; logoUrl: string | null };
 
@@ -25,14 +27,7 @@ export function safeLogo(value: string | null | undefined): string | null {
 }
 
 export async function callerHelperBranding(orgId: string): Promise<CallerHelperBranding | null> {
-  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
-  const partnerId = org?.partnerId;
-  if (!partnerId) return null;
-  const [brand] = await readWithPartnerAxisVisibility(() => db.select({ name: partners.name, logo: partnerLoginBranding.logoUrl })
-    .from(partners)
-    .leftJoin(partnerLoginBranding, eq(partnerLoginBranding.partnerId, partners.id))
-    .where(eq(partners.id, partnerId))
-    .limit(1));
-  const partnerName = brand?.name?.trim().slice(0, 120);
-  return partnerName ? { partnerName, logoUrl: safeLogo(brand?.logo) } : null;
+  const identity = await resolvePromptIdentity(orgId);
+  if (!identity?.partnerName) return null;
+  return { partnerName: identity.partnerName, logoUrl: safeLogo(identity.logoSource) };
 }

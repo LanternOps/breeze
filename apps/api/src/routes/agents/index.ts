@@ -35,6 +35,7 @@ import { topologyAdjacencyRoutes } from './topologyAdjacency';
 import { wingetBootstrapRoutes } from './wingetBootstrap';
 import { agentStorageSessionRoutes } from './storageSessions';
 import { rebindRoutes } from './rebind';
+import { promptIdentityLogoRoutes } from './promptIdentityLogo';
 
 export const agentRoutes = new Hono();
 
@@ -117,3 +118,5 @@ agentRoutes.route('/', unifiTelemetryRoutes);
 agentRoutes.route('/', topologyAdjacencyRoutes);
 agentRoutes.route('/', wingetBootstrapRoutes);
 agentRoutes.route('/', agentStorageSessionRoutes);
+// #10190 W03: the MSP logo for device prompts (read-only, self-managed context).
+agentRoutes.route('/', promptIdentityLogoRoutes);

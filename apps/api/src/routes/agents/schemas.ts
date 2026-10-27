@@ -446,6 +446,11 @@ export const heartbeatSchema = z.object({
     // (never persisted): the beat being answered is the only source of truth.
     // Same tolerant contract; anything but exactly 1 gets the legacy payload.
     retainStateProtocolVersion: z.number().int().optional().catch(undefined),
+    // #10190 W03 — the agent caches the response's `promptIdentity` block (the
+    // MSP name, colour and logo metadata drawn on every device prompt) and
+    // fetches the logo from GET /:id/prompt-identity/logo. Parse-only, never
+    // persisted; anything but exactly 1 gets no block.
+    promptIdentityProtocolVersion: z.number().int().optional().catch(undefined),
     // #8318 wave 1b — the bounded rebind (reinstall reattach, §6.2). Recorded
     // non-sticky on every main and parked beat; 1 makes the device eligible to
     // be the source of a reattach and to receive the signed `rebind`
