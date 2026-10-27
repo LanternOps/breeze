@@ -158,7 +158,10 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if r.Campaign == c.cancelled {
-		return false // cancelled under this rung: today's path, as before
+		// The operator cancelled while this rung was on its way: handled,
+		// with nothing to show. Declining would make the manager send a
+		// warning (or a Restart now dialog) for a restart that is off.
+		return true
 	}
 	if c.campaign != r.Campaign {
 		// A new operator schedule replaces the old campaign's cards (and an

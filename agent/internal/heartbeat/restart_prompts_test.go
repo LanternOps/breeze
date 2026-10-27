@@ -518,8 +518,13 @@ func TestRungOfACancelledCampaignDrawsNoCard(t *testing.T) {
 	r := f.rung()
 	// The cancel lands before this campaign's first rung reaches the card.
 	f.card.Cancelled(r.Campaign)
-	if f.card.ShowRung(r) {
-		t.Fatal("a rung of a cancelled campaign must not draw a card")
+	// Taken (true), so the manager sends no warning for a restart that is
+	// off — and nothing is drawn.
+	if !f.card.ShowRung(r) {
+		t.Fatal("a rung of a cancelled campaign must be swallowed, not sent today's way")
+	}
+	if len(f.toasts) != 0 {
+		t.Fatalf("toasts for a cancelled restart: %v", f.toasts)
 	}
 	if n := len(f.dir.take()); n != 0 {
 		t.Fatalf("sent %d prompt messages", n)
