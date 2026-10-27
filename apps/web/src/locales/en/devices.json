@@ -4666,5 +4666,47 @@
       "authorityDevice": "This asset is now linked to a managed device. Edit the placement on the device.",
       "mfaRequired": "Multi-factor authentication is required to change the physical placement."
     }
+  },
+  "assetCircuitCard": {
+    "title": "WAN and circuit",
+    "loadFailed": "Couldn't load WAN and circuit information.",
+    "empty": "No circuit is recorded or visible to you for this asset.",
+    "provider": "Provider",
+    "cid": "Circuit ID",
+    "bandwidth": "Bandwidth",
+    "serviceType": "Service type",
+    "administrativeStatus": "Administrative status",
+    "sitesServed": "Sites served by this circuit",
+    "terminationSite": "Termination site: {{site}} (from {{asset}} / {{iface}})",
+    "terminationSiteBare": "Termination site: {{site}}",
+    "terminationUnassigned": "Termination not assigned",
+    "terminationNeedsReassociation": "Termination needs reassociation",
+    "interfaces": "Interfaces",
+    "noInterfaces": "No interfaces recorded.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Retired",
+    "markWan": "Mark as WAN",
+    "unmarkWan": "Clear WAN",
+    "truncated": "Only some interfaces are shown.",
+    "unmarkConfirm": {
+      "title": "Clear WAN role?",
+      "message": "{{name}} will no longer be treated as a WAN interface."
+    },
+    "status": {
+      "active": "Active",
+      "planned": "Planned",
+      "suspended": "Suspended",
+      "disconnected": "Disconnected"
+    },
+    "toasts": {
+      "marked": "Interface marked as WAN",
+      "unmarked": "WAN role cleared",
+      "failed": "Couldn't update the WAN role",
+      "mfaRequired": "Multi-factor authentication is required to change the WAN role.",
+      "hasTermination": "This interface has an active circuit termination. Move or remove the termination first.",
+      "retired": "This interface is retired and can no longer be changed.",
+      "notFound": "Interface not found. The list was reloaded.",
+      "permissionDenied": "You don't have permission to change topology."
+    }
   }
 }

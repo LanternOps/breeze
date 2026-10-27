@@ -79,6 +79,7 @@ import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import PhysicalPlacementCard from "./PhysicalPlacementCard";
+import AssetCircuitCard from "./AssetCircuitCard";
 import { EntityLink } from "@/components/shared/EntityLink";
 import WispLinkButton from "@/components/wisp/WispLinkButton";
 import DeviceBillingCard from "./DeviceBillingCard";
@@ -1146,6 +1147,7 @@ export default function DeviceDetails({
             <DeviceWarrantyCard deviceId={device.id} compact />
 
             <PhysicalPlacementCard subject="device" id={device.id} />
+            <AssetCircuitCard subject="device" id={device.id} />
 
             <DeviceBillingCard deviceId={device.id} />
 

@@ -4666,5 +4666,47 @@
       "authorityDevice": "Cet actif est désormais lié à un appareil géré. Modifiez l'emplacement sur l'appareil.",
       "mfaRequired": "L'authentification multifacteur est requise pour modifier l'emplacement physique."
     }
+  },
+  "assetCircuitCard": {
+    "title": "WAN et circuit",
+    "loadFailed": "Impossible de charger les informations WAN et circuit.",
+    "empty": "Aucun circuit n'est enregistré ou visible pour vous sur cet actif.",
+    "provider": "Fournisseur",
+    "cid": "ID du circuit",
+    "bandwidth": "Bande passante",
+    "serviceType": "Type de service",
+    "administrativeStatus": "Statut administratif",
+    "sitesServed": "Sites desservis par ce circuit",
+    "terminationSite": "Site de terminaison : {{site}} (depuis {{asset}} / {{iface}})",
+    "terminationSiteBare": "Site de terminaison : {{site}}",
+    "terminationUnassigned": "Terminaison non attribuée",
+    "terminationNeedsReassociation": "La terminaison doit être réassociée",
+    "interfaces": "Interfaces",
+    "noInterfaces": "Aucune interface enregistrée.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Retirée",
+    "markWan": "Marquer comme WAN",
+    "unmarkWan": "Retirer le WAN",
+    "truncated": "Seules certaines interfaces sont affichées.",
+    "unmarkConfirm": {
+      "title": "Retirer le rôle WAN ?",
+      "message": "{{name}} ne sera plus traitée comme une interface WAN."
+    },
+    "status": {
+      "active": "Actif",
+      "planned": "Planifié",
+      "suspended": "Suspendu",
+      "disconnected": "Déconnecté"
+    },
+    "toasts": {
+      "marked": "Interface marquée comme WAN",
+      "unmarked": "Rôle WAN retiré",
+      "failed": "Impossible de mettre à jour le rôle WAN",
+      "mfaRequired": "L'authentification multifacteur est requise pour modifier le rôle WAN.",
+      "hasTermination": "Cette interface a une terminaison de circuit active. Déplacez ou supprimez d'abord la terminaison.",
+      "retired": "Cette interface est retirée et ne peut plus être modifiée.",
+      "notFound": "Interface introuvable. La liste a été rechargée.",
+      "permissionDenied": "Vous n'avez pas l'autorisation de modifier la topologie."
+    }
   }
 }
