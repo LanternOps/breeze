@@ -45,7 +45,7 @@ import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
-import { builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
+import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
   escapePointerSegment,
@@ -57,7 +57,8 @@ import {
 } from './flows/validationIssues';
 import { guardrailCheckForTenantTool } from './toolSources/guardrails';
 import type { ToolOwnerRef } from './toolSources/resolver';
-import type { FlowPreApprovalBinding } from './flows/preApproval';
+import type { ActAssetPreApprovalBinding, FlowPreApprovalBinding } from './flows/preApproval';
+import { fleetBindingV1Schema } from './flows/fleetBindingSchema';
 
 // Re-exported: preApproval.ts and callers import it from here.
 export { containsTemplate };
@@ -397,13 +398,16 @@ export const flowStepPinSchema: z.ZodType<FlowStepPin> = z.union([
   }).strict(),
 ]);
 
-export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.object({
+const actAssetPreApprovalBindingSchema: z.ZodType<ActAssetPreApprovalBinding> = z.object({
   stepId: pinStepIdSchema,
   lane: z.literal('act_asset'),
   assetKind: z.literal('script'),
   scriptId: z.string().uuid(),
   contentDigest: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict();
+
+/** A stored binding: W04 act-asset, or the W06 fleet lane (`fleet_v1`, #5221). */
+export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.union([actAssetPreApprovalBindingSchema, fleetBindingV1Schema]);
 
 /** Thrown by `stepPinsFor` for a step that does not resolve — only reachable for a document that is not valid. */
 export class FlowStepPinError extends Error {
@@ -419,7 +423,7 @@ function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEn
     // W5 (#5220, Decision 12): a Tier-3 built-in (an http_request write) parks
     // for one supervised approval, like a Tier-3 tenant tool.
     const tier = builtinStepTier(step, catalog);
-    return { stepId: step.id, tool: step.tool, source: 'builtin', tier, approvalScope: tier === 3 ? 'supervised' : null };
+    return { stepId: step.id, tool: step.tool, source: 'builtin', tier, approvalScope: tier === 3 ? builtinApprovalScope(step.tool, step.input) : null };
   }
   if (entry.source === 'tenant') {
     const tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
@@ -503,7 +507,7 @@ export async function revalidateRenderedStep(
     const parsed = FLOW_BUILTIN_STEPS[entry.name].inputSchema.safeParse(rendered);
     if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
     tier = builtinStepTier({ tool: entry.name, input: parsed.data as Record<string, unknown> }, catalog);
-    approvalScope = tier === 3 ? 'supervised' : null;
+    approvalScope = tier === 3 ? builtinApprovalScope(entry.name, parsed.data as Record<string, unknown>) : null;
   } else if (entry.source === 'tenant') {
     if (pin.source !== 'tenant' || entry.descriptor.id !== pin.tenantToolId || entry.descriptor.revision !== pin.tenantRevision) {
       return { ok: false, code: 'drift', message: 'This step\'s external tool changed since the flow was enabled.' };

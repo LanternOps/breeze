@@ -38,6 +38,7 @@ import { loadOwnedScriptForRun, loadRunVariableScope, type FleetScriptRow } from
 import { overCapMessage } from './resolveTargets';
 import { loadFleetStepOutput } from './stepOutputs';
 import type { BuiltinContext } from './types';
+import type { TenantVariableScope } from '../../tenantVariableResolution';
 
 export interface RunScriptOnTargetsInput {
   scriptId: string;
@@ -50,11 +51,56 @@ export interface RunScriptOnTargetsInput {
   fromStep?: { stepId: string; set: 'succeeded' | 'dispatched' };
 }
 
-/** What the release worker re-verified under its dispatch claim (A6). */
+/**
+ * What was verified before dispatch (A6): on release, the script snapshot the
+ * worker's digest recompute read and the device list frozen when the approval
+ * intent was created; under a fleet pre-approval, the snapshot the binding was
+ * revalidated against and the checked set. Dispatch runs from exactly this.
+ */
 export interface FleetVerifiedContext {
   script: FleetScriptRow;
-  /** The device list frozen when the approval intent was created. */
   deviceIds: string[];
+  /** The tenant-variable scope resolved with the snapshot (reused, never re-read). */
+  scope?: TenantVariableScope;
+}
+
+export type FleetSelection =
+  | { kind: 'set'; requested: string[]; found: string[]; warnings: string[] }
+  | { kind: 'outcome'; outcome: StepOutcome };
+
+/**
+ * The device set, resolved ONCE in the run org: the verified (frozen) list, a
+ * literal/templated device list, an earlier fleet step's set, or a target /
+ * legacy condition list through the legacy resolver. `requested` is what the
+ * selector named; `found` the run org's devices among them (sorted).
+ */
+export async function resolveFleetSelection(
+  input: RunScriptOnTargetsInput,
+  ctx: BuiltinContext,
+  verified?: FleetVerifiedContext,
+): Promise<FleetSelection> {
+  const run = { orgId: ctx.run.orgId, partnerId: ctx.auth.partnerId! };
+  if (verified || input.deviceIds || input.fromStep) {
+    let ids: string[];
+    if (verified) {
+      ids = verified.deviceIds;
+    } else if (input.deviceIds) {
+      ids = input.deviceIds;
+    } else {
+      const sets = await loadFleetStepOutput(ctx.run.id, input.fromStep!.stepId);
+      if (!sets) return { kind: 'outcome', outcome: policy('targets_unresolvable', `Step '${input.fromStep!.stepId}' has no device set to read.`) };
+      ids = input.fromStep!.set === 'succeeded' ? sets.succeededDeviceIds : sets.dispatchedDeviceIds;
+    }
+    const requested = sorted(ids);
+    if (requested.length > FLEET_MAX_TARGETS) return { kind: 'outcome', outcome: policy('targets_over_cap', overCapMessage(requested.length)) };
+    const found = sorted((await resolveDeviceIdsInRunOrg(run, requested)).map((d) => d.id));
+    return { kind: 'set', requested, found, warnings: [] };
+  }
+  const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions ?? [] });
+  if (resolved.problems.length > 0) return { kind: 'outcome', outcome: policy('targets_unresolvable', resolved.problems.join('; ')) };
+  const requested = sorted(resolved.deviceIds);
+  if (requested.length > FLEET_MAX_TARGETS) return { kind: 'outcome', outcome: policy('targets_over_cap', overCapMessage(requested.length)) };
+  return { kind: 'set', requested, found: requested, warnings: resolved.warnings };
 }
 
 const sorted = (ids: Iterable<string>): string[] => [...new Set(ids)].sort();
@@ -87,31 +133,9 @@ export async function executeRunScriptOnTargets(
   }
 
   // 2. The device set, resolved once.
-  let requested: string[];
-  let found: string[];
-  let warnings: string[] = [];
-  if (verified || input.deviceIds || input.fromStep) {
-    let ids: string[];
-    if (verified) {
-      ids = verified.deviceIds;
-    } else if (input.deviceIds) {
-      ids = input.deviceIds;
-    } else {
-      const sets = await loadFleetStepOutput(ctx.run.id, input.fromStep!.stepId);
-      if (!sets) return policy('targets_unresolvable', `Step '${input.fromStep!.stepId}' has no device set to read.`);
-      ids = input.fromStep!.set === 'succeeded' ? sets.succeededDeviceIds : sets.dispatchedDeviceIds;
-    }
-    requested = sorted(ids);
-    if (requested.length > FLEET_MAX_TARGETS) return policy('targets_over_cap', overCapMessage(requested.length));
-    found = sorted((await resolveDeviceIdsInRunOrg(run, requested)).map((d) => d.id));
-  } else {
-    const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions ?? [] });
-    if (resolved.problems.length > 0) return policy('targets_unresolvable', resolved.problems.join('; '));
-    requested = sorted(resolved.deviceIds);
-    if (requested.length > FLEET_MAX_TARGETS) return policy('targets_over_cap', overCapMessage(requested.length));
-    found = requested;
-    warnings = resolved.warnings;
-  }
+  const selection = await resolveFleetSelection(input, ctx, verified);
+  if (selection.kind === 'outcome') return selection.outcome;
+  const { requested, found, warnings } = selection;
   const refused = requested.filter((id) => !found.includes(id));
 
   // 3. Dispatch exactly the checked set.
@@ -128,7 +152,7 @@ export async function executeRunScriptOnTargets(
       runAs: input.runAs ?? null,
       offlinePolicy: input.whenOffline,
       deviceIds: found,
-      variableScope: await loadRunVariableScope(script, run.orgId),
+      variableScope: verified?.scope ?? await loadRunVariableScope(script, run.orgId),
     });
 
   // 4. The sets.

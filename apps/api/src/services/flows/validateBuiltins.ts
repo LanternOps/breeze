@@ -42,6 +42,7 @@ import {
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
+import { fleetApprovalScope } from './builtins/fleetApprovalScope';
 import { containsTemplate, escapePointerSegment, issue, utf8Bytes, zodInputIssues } from './validationIssues';
 
 type FlowStep = FlowDocumentV1['steps'][number];
@@ -88,6 +89,15 @@ export function aiAllowlistedToolTier(name: string, catalog: FlowCatalog): 1 | 2
   const check = checkGuardrails(name, {});
   if (!check.allowed || check.tier >= 4) return null;
   return check.tier as 1 | 2 | 3;
+}
+
+/**
+ * The approval scope a Tier-3 built-in step pins: one supervised approver,
+ * except `run_script_on_targets`, whose scope follows its script (W6 #5221,
+ * Decision 5 — core run_script's classification of the same script).
+ */
+export function builtinApprovalScope(name: string, input: Record<string, unknown>): 'supervised' | 'four_eyes' {
+  return name === 'run_script_on_targets' ? fleetApprovalScope(input) : 'supervised';
 }
 
 /** The tier a built-in step pins (and is revalidated against at run time). */

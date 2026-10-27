@@ -5996,7 +5996,7 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
 
       await releaseApprovedIntent(intent.id);
 
-      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth);
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth, undefined);
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(frame).toEqual({ runId: RUN_ID, chainDepth: 2 });
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -6063,6 +6063,30 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'tier_escalated' }),
       );
+    });
+
+    // W6 (#5221, Decision 5): the worker's digest recompute read the script
+    // for the FROZEN device list; that verified observation is what the
+    // fleet built-in dispatches from (W05 dropped it at this call).
+    it('parked release dispatches the frozen list: the verified snapshot reaches the built-in', async () => {
+      const FROZEN = { scriptId: '33333333-3333-4333-8333-333333333333', whenOffline: 'queue', deviceIds: ['aaaaaaaa-0000-4000-8000-000000000001'] };
+      const intent = flowIntent({
+        actionName: 'run_script_on_targets',
+        arguments: FROZEN,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(FROZEN)),
+        riskTier: 3,
+        effectDigest: 'a'.repeat(64),
+      } as Partial<ActionIntent>);
+      primeFlow(intent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      const context = { verifiedRunScript: { scriptRow: { id: FROZEN.scriptId }, snapshot: { script: { id: FROZEN.scriptId } }, scope: {} } };
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'a'.repeat(64), context });
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockResolvedValueOnce(JSON.stringify({ count: 1 }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth, context);
     });
   });
 });

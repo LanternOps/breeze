@@ -104,6 +104,14 @@ describe('W6 fleet built-ins (#5221)', () => {
     expect(ok.success && ok.data.whenOffline).toBe('queue');
   });
 
+  it('run_script_on_targets parameters are script parameters (primitive values, env-var keys)', () => {
+    const parse = (parameters: unknown) => run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], parameters });
+    expect(parse({ mode: 'quick', n: 3, b: true }).success).toBe(true);
+    expect(parse({ nested: { bad: true } }).success).toBe(false);
+    expect(parse({ 'has space': 'v' }).success).toBe(false);
+    expect(parse({ list: ['a'] }).success).toBe(false);
+  });
+
   it('run_script_on_targets refuses runAs elevated', () => {
     expect(run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], runAs: 'elevated' }).success).toBe(false);
     expect(run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], runAs: 'user' }).success).toBe(true);

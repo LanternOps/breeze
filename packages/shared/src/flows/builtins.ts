@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ALERT_SEVERITIES } from '../constants';
 import { deploymentTargetConfigSchema } from '../validators/filters';
+import { scriptParametersSchema } from '../validators/scriptParameters';
 import { FLOW_INPUT_NAME_RE, FLOW_LIMITS } from '../validators/flows';
 import { FLOW_RUN_LIMITS } from '../validators/flowRuns';
 
@@ -179,7 +180,8 @@ export const FLOW_BUILTIN_STEPS = {
     description: 'Run one script on a resolved device set, queueing for offline devices; outputs the dispatched, succeeded and failed device sets.',
     inputSchema: z.object({
       scriptId: z.string().min(1).max(256),
-      parameters: boundedRecord(z.unknown(), 100, 'parameters').optional(),
+      // The legacy action's validation: primitive values under env-var-safe keys.
+      parameters: scriptParametersSchema.optional(),
       // `elevated` is refused: a converted step never runs elevated unattended (plan Decision 5).
       runAs: z.enum(['system', 'user']).optional(),
       whenOffline: z.enum(['queue', 'skip']).default('queue'),

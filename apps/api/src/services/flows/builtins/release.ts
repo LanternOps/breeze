@@ -26,6 +26,8 @@ import { executeFlowBuiltin } from './index';
 import { isFlowBuiltinIntent } from './intentKind';
 import { loadReleasedBuiltinStep } from './releaseStore';
 import { countRunBuiltinCalls } from './runCounters';
+import type { FleetVerifiedContext } from './runScriptOnTargets';
+import type { ToolExecutionContext } from '../../toolExecutionContext';
 
 export class FlowBuiltinMayHaveRunError extends Error {
   constructor(message: string) {
@@ -44,7 +46,15 @@ export class FlowBuiltinNotRunError extends Error {
 
 export { isFlowBuiltinIntent };
 
-export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: AuthContext): Promise<string> {
+/**
+ * `verifiedContext` (W6 #5221): what the release worker's effect-digest
+ * recompute resolved — for `run_script_on_targets` the script snapshot and
+ * scope built for the FROZEN device list in the intent arguments. That
+ * observation is what dispatches; a fleet release without it is refused
+ * before anything runs (the digest is mandatory, so it is always present on a
+ * well-formed release).
+ */
+export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: AuthContext, verifiedContext?: ToolExecutionContext): Promise<string> {
   const name = intent.actionName;
   if (!isFlowBuiltinIntent(intent) || !isFlowBuiltin(name)) {
     throw new FlowBuiltinNotRunError(`Intent ${intent.id} is not a flow built-in step`);
@@ -62,6 +72,16 @@ export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: Aut
     ? { orgId: version.orgId, partnerId: auth.partnerId }
     : { orgId: null, partnerId: auth.partnerId };
 
+  let fleetVerified: FleetVerifiedContext | undefined;
+  if (name === 'run_script_on_targets') {
+    const v = verifiedContext?.verifiedRunScript;
+    const args = intent.arguments as { scriptId?: unknown; deviceIds?: unknown };
+    if (!v || v.scriptRow.id !== args.scriptId || v.snapshot.script.id !== args.scriptId || !Array.isArray(args.deviceIds)) {
+      throw new FlowBuiltinNotRunError(`Intent ${intent.id}: the release did not carry the verified script snapshot for the frozen devices`);
+    }
+    fleetVerified = { script: v.scriptRow, deviceIds: args.deviceIds as string[], scope: v.scope };
+  }
+
   const outcome = await executeFlowBuiltin(name, intent.arguments as Record<string, unknown>, {
     run,
     version,
@@ -73,7 +93,7 @@ export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: Aut
     deadline: Date.now() + step.timeoutSec * 1000,
     counters: await countRunBuiltinCalls(run.id),
     leaseToken: null,
-  });
+  }, fleetVerified);
 
   switch (outcome.kind) {
     case 'completed':
