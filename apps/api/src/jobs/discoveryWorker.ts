@@ -21,7 +21,7 @@ import {
   deviceHardwareComponents
 } from '../db/schema';
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
-import { eq, and, or, sql, inArray, asc, type SQL } from 'drizzle-orm';
+import { eq, ne, and, or, sql, inArray, asc, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -1331,7 +1331,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         const [ownedNic] = await db
           .select({ deviceId: deviceNetwork.deviceId })
           .from(deviceNetwork)
-          .where(and(eq(deviceNetwork.deviceId, linkedDeviceId), nicMacMatches(assetData.macAddress)))
+          .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+          .where(and(
+            eq(deviceNetwork.deviceId, linkedDeviceId),
+            ne(devices.status, 'decommissioned'),
+            nicMacMatches(assetData.macAddress),
+          ))
           .limit(1);
         if (!ownedNic) {
           await db.transaction(async (tx) => {
@@ -1344,8 +1349,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
                 eq(discoveredAssets.linkedDeviceId, linkedDeviceId),
               ));
             // Undo the role this link propagated (see the propagation below):
-            // only a discovery-owned role that still equals this asset's type.
-            // Back to 'auto' so the agent's heartbeat re-applies its own role.
+            // only a discovery-owned role that still equals this asset's type
+            // and that no other asset linked to the device also carries. Back
+            // to 'auto' so the heartbeat re-applies the agent's role — except
+            // 'server', which the heartbeat never promotes to on its own
+            // (PRIVILEGED_AGENT_ROLE_TARGETS); that device stays 'unknown'
+            // until an admin sets it.
             // own-device-row-allowlisted: discovery-role-unlink-reset
             await tx
               .update(devices)
@@ -1354,6 +1363,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
                 eq(devices.id, linkedDeviceId),
                 eq(devices.deviceRoleSource, 'discovery'),
                 sql`${devices.deviceRole}::text = (select ${discoveredAssets.assetType}::text from ${discoveredAssets} where ${discoveredAssets.id} = ${existing.id})`,
+                sql`not exists (select 1 from ${discoveredAssets} where ${discoveredAssets.linkedDeviceId} = ${linkedDeviceId}
+                  and ${discoveredAssets.id} <> ${existing.id} and ${discoveredAssets.assetType}::text = ${devices.deviceRole}::text)`,
               ));
           });
           alreadyLinked = false;
@@ -1448,6 +1459,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               eq(devices.orgId, data.orgId),
               // Same-site relative to where the asset lives (see assetSiteId).
               eq(devices.siteId, assetSiteId),
+              // Re-enrolling a decommissioned machine mints a new device row
+              // and leaves the old one's NICs in place; it is not a second owner.
+              ne(devices.status, 'decommissioned'),
               nicMacMatches(assetData.macAddress),
             ));
           const candidateDeviceIds = [...new Set(nicMatches.map((row) => row.deviceId))];

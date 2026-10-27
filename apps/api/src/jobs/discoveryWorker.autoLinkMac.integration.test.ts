@@ -29,9 +29,9 @@ async function tenantWithWorkstation(role: { deviceRole?: string; deviceRoleSour
   return { ...t, workstation };
 }
 
-async function addDevice(t: Tenant, hostname: string, role: { deviceRole?: string; deviceRoleSource?: 'auto' | 'manual' | 'discovery' } = {}) {
+async function addDevice(t: Tenant, hostname: string, role: { deviceRole?: string; deviceRoleSource?: 'auto' | 'manual' | 'discovery' } = {}, status: 'online' | 'decommissioned' = 'online') {
   const [device] = await getTestDb().insert(devices).values({
-    orgId: t.orgId, siteId: t.siteId, agentId: randomUUID(), hostname,
+    orgId: t.orgId, siteId: t.siteId, agentId: randomUUID(), hostname, status,
     osType: 'windows', osVersion: '11', architecture: 'amd64', agentVersion: '1',
     deviceRole: role.deviceRole ?? 'workstation', deviceRoleSource: role.deviceRoleSource ?? 'auto',
   } as typeof devices.$inferInsert).returning();
@@ -53,8 +53,8 @@ async function scan(t: Tenant, host: { mac?: string; assetType?: string }) {
     hosts: [{ ip: SHARED_IP, mac: host.mac, assetType: host.assetType ?? 'printer', methods: ['arp'] }],
     hostsScanned: 1, hostsDiscovered: 1,
   }));
-  const [asset] = await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.orgId, t.orgId));
-  return asset!;
+  const assets = await getTestDb().select().from(discoveredAssets).where(eq(discoveredAssets.orgId, t.orgId));
+  return assets.find((a) => a.ipAddress === SHARED_IP)!;
 }
 
 async function deviceRow(id: string) {
@@ -109,6 +109,16 @@ describe('scan auto-link matches on MAC only', () => {
 
     expect(await scan(t, { mac: WORKSTATION_MAC, assetType: 'workstation' })).toMatchObject({ linkedDeviceId: null });
   });
+
+  it('ignores a decommissioned row that still holds the re-enrolled machine\'s NIC', async () => {
+    const t = await tenantWithWorkstation();
+    const retired = await addDevice(t, 'DRJJ-CHECKOUT-old', {}, 'decommissioned');
+    await addNic(t, retired.id, { mac: WORKSTATION_MAC, ip: null });
+    await addNic(t, t.workstation.id, { mac: WORKSTATION_MAC, ip: null });
+
+    expect(await scan(t, { mac: WORKSTATION_MAC, assetType: 'workstation' }))
+      .toMatchObject({ linkedDeviceId: t.workstation.id, linkSource: 'auto' });
+  });
 });
 
 describe('re-scan repairs auto-links the MAC does not support', () => {
@@ -139,6 +149,30 @@ describe('re-scan repairs auto-links the MAC does not support', () => {
 
     expect(await scan(t, { mac: PRINTER_MAC })).toMatchObject({ linkedDeviceId: null });
     expect(await deviceRow(t.workstation.id)).toMatchObject({ deviceRole: 'workstation', deviceRoleSource: 'manual' });
+  });
+
+  it('keeps a role that another asset linked to the device still supports', async () => {
+    const t = await tenantWithWorkstation({ deviceRole: 'printer', deviceRoleSource: 'discovery' });
+    await addNic(t, t.workstation.id, { mac: WORKSTATION_MAC, ip: SHARED_IP });
+    await seedLinkedPrinter(t, t.workstation.id, 'auto');
+    await getTestDb().insert(discoveredAssets).values({
+      orgId: t.orgId, siteId: t.siteId, ipAddress: '192.0.2.50', macAddress: WORKSTATION_MAC,
+      assetType: 'printer', approvalStatus: 'approved', linkedDeviceId: t.workstation.id, linkSource: 'auto',
+    });
+
+    await scan(t, { mac: PRINTER_MAC });
+    expect(await deviceRow(t.workstation.id)).toMatchObject({ deviceRole: 'printer', deviceRoleSource: 'discovery' });
+  });
+
+  it('moves an auto-link off a decommissioned device to the live one that owns the MAC', async () => {
+    const t = await tenantWithWorkstation();
+    const retired = await addDevice(t, 'DRJJ-CHECKOUT-old', {}, 'decommissioned');
+    await addNic(t, retired.id, { mac: WORKSTATION_MAC, ip: null });
+    await addNic(t, t.workstation.id, { mac: WORKSTATION_MAC, ip: null });
+    await seedLinkedPrinter(t, retired.id, 'auto', WORKSTATION_MAC);
+
+    expect(await scan(t, { mac: WORKSTATION_MAC, assetType: 'workstation' }))
+      .toMatchObject({ linkedDeviceId: t.workstation.id, linkSource: 'auto' });
   });
 
   it('keeps an auto-link whose MAC is on the linked device', async () => {
