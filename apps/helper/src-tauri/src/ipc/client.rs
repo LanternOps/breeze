@@ -2031,6 +2031,71 @@ mod tests {
         assert!(matches!(b.await.expect("join"), Ok(())));
     }
 
+    /// A `remote.session` prompt as a list-only prompt, so no window is needed
+    /// without a desktop. List-only is not an indicator, so it is a decision
+    /// and carries the confirm step's safe default (`keep_session`).
+    fn session_list_only(rev: u64, renderer_session: &str, epoch: u32) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(SHOW_NOTICE).unwrap();
+        v["promptId"] = serde_json::json!("session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c");
+        v["kind"] = serde_json::json!("remote.session");
+        v["presentation"] = serde_json::json!("list_only");
+        v["rev"] = serde_json::json!(rev);
+        v["lease"] = serde_json::json!({ "rendererSession": renderer_session, "epoch": epoch });
+        v["actions"] = serde_json::json!([
+            { "id": "end_confirm", "label": "End session", "role": "proceed" },
+            { "id": "keep_session", "label": "Keep session", "role": "safe" }
+        ]);
+        v["defaultActionId"] = serde_json::json!("keep_session");
+        v["listEntry"] = serde_json::json!({ "persistent": false });
+        v.to_string()
+    }
+
+    /// #10190 W06: the agent's rev floor is in memory, so after an AGENT
+    /// restart a prompt (a re-shown `session:<id>` included) can start at rev 1
+    /// again. Assist's per-promptId rev memory dies with the IPC session (the
+    /// session guard's `PromptBridge::disconnect`), so the restarted agent's
+    /// rev 1 on its new connection and lease is drawn, never dropped as stale.
+    /// The agent dying is modelled as the socket closing with no `disconnect`.
+    #[tokio::test]
+    async fn test_after_an_agent_restart_a_rev_1_show_is_drawn_on_the_new_session() {
+        let prompts = advertising_bridge();
+        let (a, mut broker, key, mut send, mut recv) = prompt_session_with(Some(prompts.clone())).await;
+        let id = "session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&session_list_only(5, "assist-user-4242", 1))))
+            .await
+            .unwrap();
+        assert_eq!(read_reply(&mut broker, &key, &mut recv).await.typ, "prompt_presented");
+        // The session stops: the pill is withdrawn at rev 6 (remembered as closed).
+        let close = format!(r#"{{"promptId":"{id}","rev":6,"lease":{{"rendererSession":"assist-user-4242","epoch":1}},"reason":"withdrawn"}}"#);
+        write_frame(&mut broker, &key, &mut send, "close-1", "prompt_close", Some(raw(&close))).await.unwrap();
+        // Within this session a re-show at or below the closed rev is stale.
+        write_frame(&mut broker, &key, &mut send, "show-2", "prompt_show", Some(raw(&session_list_only(1, "assist-user-4242", 1))))
+            .await
+            .unwrap();
+        write_frame(&mut broker, &key, &mut send, "p1", "ping", None).await.unwrap();
+        assert_eq!(read_reply(&mut broker, &key, &mut recv).await.typ, "pong", "a stale show is dropped, not answered");
+        assert!(prompts.tracker().view(id, now_unix_ms()).is_none());
+
+        // The agent dies: the socket closes without a `disconnect`.
+        drop(broker);
+        let _ = a.await.expect("join");
+
+        // The restarted agent authenticates the helper again and shows the
+        // same session pill from rev 1, on a new lease.
+        let (b, mut broker, key, mut send, mut recv) = prompt_session_with(Some(prompts.clone())).await;
+        write_frame(&mut broker, &key, &mut send, "show-3", "prompt_show", Some(raw(&session_list_only(1, "assist-user-5151", 1))))
+            .await
+            .unwrap();
+        let reply = read_reply(&mut broker, &key, &mut recv).await;
+        assert_eq!((reply.typ.as_str(), reply.id.as_str()), ("prompt_presented", "show-3"));
+        assert_eq!(payload_of(&reply)["rev"], 1);
+        assert_eq!(payload_of(&reply)["lease"]["rendererSession"], "assist-user-5151");
+        assert!(prompts.tracker().view(id, now_unix_ms()).is_some(), "drawn on the new session");
+
+        write_frame(&mut broker, &key, &mut send, "bye", "disconnect", None).await.unwrap();
+        assert!(matches!(b.await.expect("join"), Ok(())));
+    }
+
     /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
     /// (W04) and the two remote kinds (W06) and nothing else, names its version.
     #[tokio::test]

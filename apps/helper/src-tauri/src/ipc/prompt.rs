@@ -2468,6 +2468,39 @@ mod tests {
         assert!(!t.indicator_open(&again.prompt_id));
     }
 
+    /// After an agent restart (the IPC session ends; the agent's in-memory rev
+    /// floor is gone) the same promptId may start at rev 1 again. The tracker
+    /// forgets every applied and closed rev on disconnect, so that show is
+    /// drawn, whether the pill was open or already withdrawn.
+    #[test]
+    fn agent_restart_rev_1_show_is_drawn_after_disconnect() {
+        // Withdrawn before the restart (its rev remembered as closed).
+        let mut t = PromptTracker::default();
+        let mut s = session();
+        s.rev = 5;
+        assert!(rendered(&t.on_show(NOW, &s)));
+        t.on_close(NOW, &close(&s.prompt_id, 6, CloseReason::Withdrawn));
+        let mut restarted = session();
+        restarted.rev = 1;
+        restarted.lease = PromptLease { renderer_session: "assist-user-5151".into(), epoch: 1 };
+        assert_eq!(t.on_show(NOW, &restarted), ShowOutcome::DropStale, "same session: stale");
+        t.on_disconnect();
+        match t.on_show(NOW, &restarted) {
+            ShowOutcome::Render { window: Some(w) } => assert_eq!(w.presentation, Presentation::Indicator),
+            other => panic!("{other:?}"),
+        }
+        // Still open when the agent died.
+        let mut t = PromptTracker::default();
+        assert!(rendered(&t.on_show(NOW, &s)));
+        assert_eq!(t.on_show(NOW, &restarted), ShowOutcome::DropStale, "same session: stale");
+        assert_eq!(t.on_disconnect(), vec![s.prompt_id.clone()], "its card is closed");
+        assert!(matches!(t.on_show(NOW, &restarted), ShowOutcome::Render { window: Some(_) }));
+        assert_eq!(t.view(&s.prompt_id, NOW).unwrap().version, t.version());
+        let f = t.action(NOW, &s.prompt_id, "end_session", ActionVia::Click).unwrap();
+        assert_eq!(f.payload["rev"], 1);
+        assert_eq!(f.payload["lease"]["rendererSession"], "assist-user-5151");
+    }
+
     #[test]
     fn indicator_open_only_for_an_open_pill_with_a_card() {
         let mut t = PromptTracker::default();
