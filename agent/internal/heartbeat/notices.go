@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/prompthost"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -134,11 +135,7 @@ func truncateForLog(s string, n int) string {
 
 // stampIdentity pins the MSP identity in force on a prompt (identityRef):
 // its list entries carry the scope, and a later scope change closes it.
-func (h *Heartbeat) stampIdentity(p *prompthost.Prompt) {
-	if h.promptIdentity == nil {
-		return
-	}
-	id, ok := h.promptIdentity.Current()
+func stampIdentity(p *prompthost.Prompt, id promptidentity.Identity, ok bool) {
 	if !ok || id.ScopeID == "" {
 		return
 	}
@@ -170,8 +167,19 @@ func (h *Heartbeat) showNotice(p prompthost.Prompt, owners []prompthost.Owner, l
 		return
 	}
 	p.Owners = owners
-	h.stampIdentity(&p)
-	if err := host.Show(p); err != nil {
+	// Stamp and show with no scope change in progress: a notice shown while
+	// a change is taking down the old scope's prompts would otherwise be
+	// created under that scope after its purge.
+	var err error
+	if h.promptIdentity != nil {
+		h.promptIdentity.WithSettledIdentity(func(id promptidentity.Identity, ok bool) {
+			stampIdentity(&p, id, ok)
+			err = host.Show(p)
+		})
+	} else {
+		err = host.Show(p)
+	}
+	if err != nil {
 		if errors.Is(err, prompthost.ErrTombstoned) {
 			// Acknowledged (or, for a one-off notice, closed) within the
 			// last 24 h: the person has seen it, and it stays in the list.

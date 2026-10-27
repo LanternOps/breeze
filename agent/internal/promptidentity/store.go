@@ -300,6 +300,17 @@ func (s *Store) Current() (Identity, bool) {
 	return id, true
 }
 
+// WithSettledIdentity runs f with the current identity once no Apply or
+// Clear is in progress, and keeps them out until f returns. A caller that
+// creates a prompt stamped with the scope uses it, so the prompt cannot be
+// created under a scope whose prompts a running scope change has already
+// taken down. f must not call Apply or Clear.
+func (s *Store) WithSettledIdentity(f func(id Identity, ok bool)) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	f(s.Current())
+}
+
 // LastScopeID is the scope of the current identity, or the scope last
 // dropped by Clear / "cleared" ("" = none ever).
 func (s *Store) LastScopeID() string {

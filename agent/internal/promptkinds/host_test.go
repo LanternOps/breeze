@@ -92,6 +92,52 @@ func act(t *testing.T, h *prompthost.Host, key string, s ipc.PromptShow, action 
 	return reply.(ipc.PromptActionResult)
 }
 
+type settableClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *settableClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *settableClock) set(t time.Time) {
+	c.mu.Lock()
+	c.t = t
+	c.mu.Unlock()
+}
+
+// A session-ended notice whose session has only a legacy renderer (an old
+// Assist that advertised nothing) is gone from the host after its 24 h
+// lifetime: session ids are unique, so a kept record would grow forever.
+func TestLegacyOnlySessionEndedNoticeIsGoneAfterItsDeadline(t *testing.T) {
+	old := prompthost.RendererSession{Key: "assist-old", Role: ipc.HelperRoleAssist, Owner: testOwner}
+	dir := &oneRenderer{r: old}
+	clock := &settableClock{t: testNow}
+	h := prompthost.New(prompthost.Deps{Broker: dir, Inbox: &entries{m: map[string]prompthost.ListEntry{}}, Clock: clock})
+	Register(h)
+	h.SetEnabledKinds([]string{"notice.info"})
+	rec := &legacyRecorder{}
+	p := newNotices(rec).RemoteSessionEndedNotice("6f1c2d9e", 5*time.Minute, "")
+	p.Owners = []prompthost.Owner{testOwner}
+	if err := h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.notifies) != 1 || !h.IsOpen(p.ID) {
+		t.Fatalf("legacy toast %d, open %v", len(rec.notifies), h.IsOpen(p.ID))
+	}
+	clock.set(testNow.Add(24*time.Hour + time.Second))
+	h.Tick()
+	if h.IsOpen(p.ID) {
+		t.Fatal("the legacy-only session-ended notice is still in memory after its deadline")
+	}
+	if dir.count(ipc.TypePromptClose) != 0 || len(rec.notifies) != 1 {
+		t.Fatalf("the reap sent a close (%d) or re-toasted (%d)", dir.count(ipc.TypePromptClose), len(rec.notifies))
+	}
+}
+
 func TestNoticeActionsThroughTheHost(t *testing.T) {
 	r := prompthost.RendererSession{Key: "native-1", Role: ipc.HelperRoleUser, Owner: testOwner, Protocol: 1, KindAds: []string{"notice.info@1"}, UILocale: "de-DE"}
 	dir := &oneRenderer{r: r}

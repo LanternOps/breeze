@@ -7,6 +7,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/prompthost"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 )
 
 // brandingDir is a prompt-host directory whose branding sync to one renderer
@@ -41,6 +43,47 @@ func (d *brandingDir) Send(key, msgType, _ string, _ any) error {
 		<-release
 	}
 	return nil
+}
+
+// A notice shown while a scope change is taking down the old scope's
+// prompts is created under the new scope, never stamped with the old one
+// after its prompts and list entries were already purged.
+func TestNoticeShownDuringAScopeChangeGetsTheNewScope(t *testing.T) {
+	h, dir, _ := identityHeartbeat(t, fixtureLogoHandler(t))
+	inCallback, release := make(chan struct{}), make(chan struct{})
+	h.promptIdentity = promptidentity.Open(dir, promptidentity.Options{
+		Fetch: h.fetchPromptLogo,
+		OnScopeChange: func(old string) {
+			h.purgePromptScope(old)
+			close(inCallback)
+			<-release
+		},
+	})
+	probe := noticeProbe(t, "dana", 501, true)
+	broker := newTestBrokerWithSessions(t, probe.session)
+	h.sessionBroker = broker
+	h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(broker), Identity: h.promptIdentity})
+	promptkinds.Register(h.promptHost)
+	on := &PromptHostSettings{EnabledKinds: []string{"notice.info"}}
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeA), PromptHost: on})
+
+	applied := make(chan struct{})
+	go func() {
+		h.applyPromptIdentity(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeB)})
+		close(applied)
+	}()
+	<-inCallback // scope A's prompts are gone; B is not stored yet
+	shown := make(chan struct{})
+	go func() { h.notifySafeModeReboot(10); close(shown) }()
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+	<-applied
+	<-shown
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptShow)) == 1 }, "the notice")
+	s := decodeShow(t, envelopesOf(probe, ipc.TypePromptShow)[0])
+	if s.IdentityRef == nil || s.IdentityRef.ScopeID != hbScopeB {
+		t.Fatalf("the notice was created under %+v during the change; want the new scope", s.IdentityRef)
+	}
 }
 
 // #10190 W04 review: a scope change used to take down the old scope's

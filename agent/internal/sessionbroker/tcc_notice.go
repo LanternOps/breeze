@@ -168,6 +168,10 @@ type tccForwardQueue struct {
 	running bool
 }
 
+// PromptSinkForTest returns the installed prompt sink (the heartbeat's
+// wiring test).
+func (b *Broker) PromptSinkForTest() PromptSink { return b.loadPromptSink() }
+
 // TCCNoticeHooksForTest returns the installed gate and status handler (the
 // heartbeat's wiring test).
 func (b *Broker) TCCNoticeHooksForTest() (gate func() bool, handler func(*Session, ipc.TCCStatus)) {

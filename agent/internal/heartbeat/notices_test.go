@@ -560,6 +560,9 @@ func TestStartPromptHostWiresNoticesAndTheTCCRule(t *testing.T) {
 	if h.promptHost == nil || h.promptListStore == nil {
 		t.Fatal("no prompt host or list store")
 	}
+	if sink, ok := broker.PromptSinkForTest().(*prompthost.Host); !ok || sink != h.promptHost {
+		t.Fatal("the prompt host is not the broker's prompt sink: renderer messages (presented, action, closed) would never reach it")
+	}
 	gate, handler := broker.TCCNoticeHooksForTest()
 	if gate == nil || handler == nil {
 		t.Fatalf("TCC rule not wired: gate=%v handler=%v", gate != nil, handler != nil)

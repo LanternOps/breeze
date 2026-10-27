@@ -232,6 +232,59 @@ func TestStatePreservingActionRunsEveryTime(t *testing.T) {
 	}
 }
 
+// A prompt that only ever went the legacy path (no renderer advertised its
+// kind) and has no expiry consequence (no OnExpire: a notice) is reaped at
+// its deadline: no record stays in memory forever, its list entry settles
+// as expired, and nothing is sent to a renderer that never had it.
+func TestLegacyOnlyPromptWithoutOnExpireIsReapedAtItsDeadline(t *testing.T) {
+	hh := newHarness(t, nativeRenderer("native-old")) // advertised nothing
+	calls := &promptCalls{}
+	p := noticePrompt(t, "notice:session_ended:s1", calls)
+	p.OnExpire = nil
+	p.Show.Timing.DeadlineUnixMs = t0.Add(24 * time.Hour).UnixMilli()
+	if err := hh.h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, _, _ := calls.counts(); legacy != 1 {
+		t.Fatalf("legacy = %d", legacy)
+	}
+	hh.tick(23 * time.Hour)
+	if !hh.h.IsOpen(p.ID) {
+		t.Fatal("reaped before its deadline")
+	}
+	hh.tick(2 * time.Hour)
+	if hh.h.IsOpen(p.ID) || hh.h.openCount() != 0 {
+		t.Fatal("a legacy-only notice stayed in memory past its deadline")
+	}
+	if msgs := hh.dir.take(); len(msgs) != 0 {
+		t.Fatalf("sent %+v to renderers that never had the prompt", msgs)
+	}
+	entries := hh.inbox.PromptEntries(testOwner.PrincipalKey())
+	if len(entries) != 1 || entries[0].Show.State != ipc.PromptStateExpired || len(entries[0].Show.Actions) != 0 {
+		t.Fatalf("list entry after the reap = %+v", entries)
+	}
+	if legacy, _, _ := calls.counts(); legacy != 1 {
+		t.Fatalf("the reap re-ran the legacy call (%d)", legacy)
+	}
+}
+
+// W02 semantics kept: a legacy-only prompt whose domain acts at expiry
+// (OnExpire: restart, consent, elevation) is never expired by the host —
+// the legacy surface owns its own timeout.
+func TestLegacyOnlyPromptWithOnExpireKeepsW02Semantics(t *testing.T) {
+	hh := newHarness(t, nativeRenderer("native-old"))
+	calls := &promptCalls{}
+	p := noticePrompt(t, "notice:test:domain", calls)
+	p.Show.Timing.DeadlineUnixMs = t0.Add(time.Hour).UnixMilli()
+	if err := hh.h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	hh.tick(2 * time.Hour)
+	if _, _, expired := calls.counts(); expired != 0 || !hh.h.IsOpen(p.ID) {
+		t.Fatalf("the host expired a legacy-only domain prompt (OnExpire ran %d times, open=%v)", expired, hh.h.IsOpen(p.ID))
+	}
+}
+
 func TestIsOpenUntilClosedOrDecided(t *testing.T) {
 	hh := newHarness(t, nativeRenderer("native-1", "notice.info@1"))
 	calls := &promptCalls{}

@@ -328,6 +328,44 @@ func TestScopeChangeCallbackRunsWithoutTheStoreLock(t *testing.T) {
 	}
 }
 
+// A notice shown while a scope change is running must not be stamped with
+// the old scope after that scope's prompts were taken down:
+// WithSettledIdentity waits for an Apply in progress (its callback
+// included) and runs with the identity it left.
+func TestWithSettledIdentityWaitsForAScopeChange(t *testing.T) {
+	inCallback, release := make(chan struct{}), make(chan struct{})
+	s := openTest(t, t.TempDir(), nil, func(string) {
+		close(inCallback)
+		<-release
+	})
+	if _, _, err := s.Apply(setBlock(scopeA, "A")); err != nil {
+		t.Fatal(err)
+	}
+	applied := make(chan struct{})
+	go func() {
+		_, _, _ = s.Apply(setBlock(scopeB, "B"))
+		close(applied)
+	}()
+	<-inCallback
+	seen := make(chan string, 1)
+	go s.WithSettledIdentity(func(id Identity, ok bool) { seen <- id.ScopeID })
+	select {
+	case got := <-seen:
+		t.Fatalf("ran during the scope change, with scope %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	<-applied
+	select {
+	case got := <-seen:
+		if got != scopeB {
+			t.Fatalf("ran with scope %q, want the new %q", got, scopeB)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("never ran after the change")
+	}
+}
+
 func TestReenrolClearsIdentity(t *testing.T) {
 	dir := t.TempDir()
 	f := &fakeFetcher{data: map[string][]byte{}}
