@@ -1,0 +1,105 @@
+{
+  "namespace": "common",
+  "messages": {
+    "identity.generic": {
+      "en": "Your IT support team",
+      "de-DE": "Ihr IT-Support-Team",
+      "es-419": "Su equipo de soporte de TI",
+      "fr-FR": "Votre équipe d'assistance informatique",
+      "fr-CA": "Votre équipe de soutien informatique",
+      "it-IT": "Il tuo team di assistenza IT",
+      "pt-BR": "Sua equipe de suporte de TI",
+      "tr-TR": "BT destek ekibiniz"
+    },
+    "chrome.notifications": {
+      "en": "Notifications",
+      "de-DE": "Benachrichtigungen",
+      "es-419": "Notificaciones",
+      "fr-FR": "Notifications",
+      "fr-CA": "Notifications",
+      "it-IT": "Notifiche",
+      "pt-BR": "Notificações",
+      "tr-TR": "Bildirimler"
+    },
+    "chrome.notificationsCount": {
+      "en": "Notifications ({count})",
+      "de-DE": "Benachrichtigungen ({count})",
+      "es-419": "Notificaciones ({count})",
+      "fr-FR": "Notifications ({count})",
+      "fr-CA": "Notifications ({count})",
+      "it-IT": "Notifiche ({count})",
+      "pt-BR": "Notificações ({count})",
+      "tr-TR": "Bildirimler ({count})"
+    },
+    "chrome.showMore": {
+      "en": "Show more",
+      "de-DE": "Mehr anzeigen",
+      "es-419": "Mostrar más",
+      "fr-FR": "Afficher plus",
+      "fr-CA": "Afficher plus",
+      "it-IT": "Mostra altro",
+      "pt-BR": "Mostrar mais",
+      "tr-TR": "Daha fazla göster"
+    },
+    "chrome.showLess": {
+      "en": "Show less",
+      "de-DE": "Weniger anzeigen",
+      "es-419": "Mostrar menos",
+      "fr-FR": "Afficher moins",
+      "fr-CA": "Afficher moins",
+      "it-IT": "Mostra meno",
+      "pt-BR": "Mostrar menos",
+      "tr-TR": "Daha az göster"
+    },
+    "chrome.working": {
+      "en": "Working…",
+      "de-DE": "Wird bearbeitet…",
+      "es-419": "Procesando…",
+      "fr-FR": "Traitement en cours…",
+      "fr-CA": "Traitement en cours…",
+      "it-IT": "Elaborazione in corso…",
+      "pt-BR": "Processando…",
+      "tr-TR": "İşleniyor…"
+    },
+    "chrome.hide": {
+      "en": "Hide",
+      "de-DE": "Ausblenden",
+      "es-419": "Ocultar",
+      "fr-FR": "Masquer",
+      "fr-CA": "Masquer",
+      "it-IT": "Nascondi",
+      "pt-BR": "Ocultar",
+      "tr-TR": "Gizle"
+    },
+    "chrome.emptyList": {
+      "en": "No notifications",
+      "de-DE": "Keine Benachrichtigungen",
+      "es-419": "No hay notificaciones",
+      "fr-FR": "Aucune notification",
+      "fr-CA": "Aucune notification",
+      "it-IT": "Nessuna notifica",
+      "pt-BR": "Nenhuma notificação",
+      "tr-TR": "Bildirim yok"
+    },
+    "chrome.remainingAnnounce": {
+      "en": "{seconds} seconds remaining",
+      "de-DE": "Noch {seconds} Sekunden",
+      "es-419": "Quedan {seconds} segundos",
+      "fr-FR": "{seconds} secondes restantes",
+      "fr-CA": "{seconds} secondes restantes",
+      "it-IT": "{seconds} secondi rimanenti",
+      "pt-BR": "{seconds} segundos restantes",
+      "tr-TR": "{seconds} saniye kaldı"
+    },
+    "native.windowTitle": {
+      "en": "{partner} · Message",
+      "de-DE": "{partner} · Nachricht",
+      "es-419": "{partner} · Mensaje",
+      "fr-FR": "{partner} · Message",
+      "fr-CA": "{partner} · Message",
+      "it-IT": "{partner} · Messaggio",
+      "pt-BR": "{partner} · Mensagem",
+      "tr-TR": "{partner} · Mesaj"
+    }
+  }
+}
