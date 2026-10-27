@@ -2072,7 +2072,9 @@ mod tests {
         // The production tracker: what this build really advertises.
         let mut t = PromptTracker::default();
         let mut s = notice();
+        // Even asked to steal focus as a modal (the eligible shape for other kinds).
         s.focus = FocusMode::Steal;
+        s.presentation = Presentation::Modal;
         match t.on_show(NOW, &s) {
             ShowOutcome::Render { window: Some(w) } => {
                 assert!(!w.focused, "a notice card never takes focus");
