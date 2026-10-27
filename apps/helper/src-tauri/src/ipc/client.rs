@@ -403,6 +403,10 @@ where
                         MsgEvent::Ack(id) => ctx.messages.tracker().on_ack(&id),
                         MsgEvent::Closed(id) => ctx.messages.tracker().on_closed(&id),
                     };
+                    // The entry left the one notification list (#10190 W04).
+                    if frame.is_some() {
+                        desktop::publish_notification_list(&ctx.app);
+                    }
                     if let Some(frame) = frame {
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
@@ -456,6 +460,9 @@ where
                         publish_chat_view(ctx, &id);
                     }
                     let due = ctx.messages.tracker().expire_due(now_unix_ms());
+                    if !due.is_empty() {
+                        desktop::publish_notification_list(&ctx.app);
+                    }
                     for (id, frame) in due {
                         desktop::close_message_window(&ctx.app, &id);
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
@@ -577,7 +584,7 @@ where
                         desktop_ctx.map(|ctx| ctx.messages.tracker().on_show(now_unix_ms(), &req));
                     let frames: Vec<Outbound> = match (action, desktop_ctx) {
                         (Some(ShowAction::Show { plan, view }), Some(ctx)) => {
-                            match desktop::show_message_window(&ctx.app, &plan, &view) {
+                            let frames = match desktop::show_message_window(&ctx.app, &plan, &view) {
                                 Ok(()) => vec![MessageTracker::presented(&env.id, &req.message_id)],
                                 Err(e) => {
                                     eprintln!("[helper] message card could not be shown: {}", e);
@@ -588,7 +595,11 @@ where
                                         PRESENTED_FAILED,
                                     )]
                                 }
-                            }
+                            };
+                            // Message cards are in the one notification list
+                            // (#10190 W04): a notice to the tab, never a show.
+                            desktop::publish_notification_list(&ctx.app);
+                            frames
                         }
                         (Some(action), _) => {
                             if let ShowAction::Reject(why) = &action {
@@ -608,6 +619,7 @@ where
                 if let (Ok(r), Some(ctx)) = (parse_payload::<MessageRetract>(&env.payload), desktop_ctx) {
                     if ctx.messages.tracker().on_retract(&r.message_id) {
                         desktop::close_message_window(&ctx.app, &r.message_id);
+                        desktop::publish_notification_list(&ctx.app);
                     }
                 }
             }
@@ -1115,8 +1127,14 @@ impl Drop for BridgeClearGuard {
             messages.clear_sender();
             let ids = messages.tracker().clear();
             if let Some(app) = &self.app {
+                // Their list entries go too (#10190 W04): nothing outlives
+                // the session. Nothing was on screen: leave the tray alone.
+                let had_any = !ids.is_empty();
                 for id in ids {
                     desktop::close_message_window(app, &id);
+                }
+                if had_any {
+                    desktop::publish_notification_list(app);
                 }
             }
         }
@@ -1813,13 +1831,16 @@ mod tests {
     const CLOSED_FAILED: &str =
         include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
 
-    /// Rule 4: W02 advertises no kind, so a prompt_show that arrives anyway is
-    /// answered `prompt_closed{render_failed, unadvertised_kind}` on the same
-    /// envelope id -- never dropped silently.
+    /// Rule 4: a kind this build does not advertise (W04: anything but
+    /// notice.info@1), arriving anyway, is answered
+    /// `prompt_closed{render_failed, unadvertised_kind}` on the same envelope
+    /// id -- never dropped silently.
     #[tokio::test]
     async fn test_prompt_show_without_advertisement_is_answered_render_failed() {
         let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
-        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(SHOW_NOTICE)))
+        let mut restart = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
+        restart["kind"] = serde_json::json!("restart.prompt");
+        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&restart.to_string())))
             .await
             .expect("write prompt_show");
         let reply = read_reply(&mut broker, &key, &mut recv).await;
@@ -2002,7 +2023,8 @@ mod tests {
         assert!(matches!(b.await.expect("join"), Ok(())));
     }
 
-    /// W02 auth: speaks prompt protocol 1, advertises no kind, names its version.
+    /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
+    /// (W04) and nothing else, names its version.
     #[tokio::test]
     async fn test_auth_request_carries_the_prompt_advertisement() {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
@@ -2013,7 +2035,7 @@ mod tests {
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
         let v: serde_json::Value = serde_json::from_str(env.payload.as_ref().unwrap().get()).unwrap();
         assert_eq!(v["promptProtocolVersion"], 1);
-        assert!(v.get("promptKinds").is_none(), "W02 advertises no kind: the key is omitted");
+        assert_eq!(v["promptKinds"], serde_json::json!(["notice.info@1"]), "W04 advertises notice.info@1 only");
         assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
         drop(broker_half);
         let _ = session.await;
@@ -2162,6 +2184,18 @@ mod prompt_auth_tests {
         let want: Vec<String> = super::super::prompt::ADVERTISED_PROMPT_KINDS.iter().map(|s| s.to_string()).collect();
         assert_eq!(req.prompt_kinds, want);
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    // #10190 W04 (Task 4.2): this build draws notice cards, so the live
+    // authentication advertises exactly `notice.info@1` and nothing else.
+    #[test]
+    fn advertises_notice_info_v1() {
+        let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
+        let req = build_auth_request(&id);
+        assert_eq!(req.prompt_kinds, vec!["notice.info@1".to_string()]);
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["promptKinds"], serde_json::json!(["notice.info@1"]));
+        assert_eq!(json["promptProtocolVersion"], 1);
     }
 
     #[test]

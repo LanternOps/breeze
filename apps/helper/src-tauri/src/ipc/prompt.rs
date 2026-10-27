@@ -8,9 +8,10 @@
 //!     `prompt_action_result`, `prompt_branding_sync`
 //!   * Assist -> agent: `prompt_presented`, `prompt_action`, `prompt_closed`
 //!
-//! W02 ships DORMANT BY CONSTRUCTION: [`ADVERTISED_PROMPT_KINDS`] is empty, so
-//! the agent never sends a `prompt_show` to this build, and one that arrives
-//! anyway is answered `prompt_closed{render_failed, unadvertised_kind}`.
+//! A kind is drawn only when [`ADVERTISED_PROMPT_KINDS`] lists it (W04:
+//! `notice.info@1` only). The agent sends a kind only to a session that
+//! advertised it and only when the server enables it; one that arrives anyway
+//! is answered `prompt_closed{render_failed, unadvertised_kind}`.
 //!
 //! Rules this module enforces (spec section 3.1):
 //!   * `rev` is monotonic per promptId: a show or update whose rev is not
@@ -40,8 +41,9 @@ use super::message::FocusLimiter;
 pub const PROMPT_PROTOCOL_VERSION: u32 = 1;
 
 /// The `"<kind>@<n>"` entries this build advertises in `AuthRequest.promptKinds`.
-/// W02: none (plan P2). A kind is added here only by the wave that ships it.
-pub const ADVERTISED_PROMPT_KINDS: &[&str] = &[];
+/// A kind is added here only by the wave that ships it (plan P2). W04: notice
+/// cards (`src/prompt/kinds/notice.tsx`).
+pub const ADVERTISED_PROMPT_KINDS: &[&str] = &["notice.info@1"];
 
 // The agent -> helper types are matched by literal in `client.rs` (its source
 // scans look for the arms); these exist for the contract test against kinds.ts.
@@ -592,21 +594,30 @@ pub struct PromptIdentityView {
     pub locale: Option<String>,
 }
 
-/// The `prompt-identity-updated` event payload: a change notice only. A JS
-/// `listen()` with no target hears every emit of its event name in any window,
-/// so the identity itself is read through the label-checked command.
+/// The payload of every prompt event (`prompt-updated`, `prompt-list-updated`,
+/// `prompt-identity-updated`): a change notice and NOTHING else (#10310, W04).
+/// In Tauri 2.12 a JS `listen()` with no target registers `Any`, and every
+/// emit (`emit`, `emit_to`, `emit_filter` alike) reaches it in ANY window, so
+/// a payload could never be kept to one window. The window that hears a notice
+/// pulls what it may see through its label-checked command. Exactly one field:
+/// `lib.rs` `prompt_events_carry_only_version_notices` pins it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptIdentityNotice {
+pub struct VersionNotice {
     pub version: u64,
 }
 
-/// The notification list with the same change counter as [`PromptView`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// The `prompt-identity-updated` payload (W03 name): a [`VersionNotice`].
+pub type PromptIdentityNotice = VersionNotice;
+
+/// The synced MSP logo for the caller-verify window (W04): the bytes (base64)
+/// and their type, nothing else. Handed out only for the sha the window asks
+/// for, and only when it is the synced identity's logo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptListView {
-    pub version: u64,
-    pub entries: Vec<PromptView>,
+pub struct CallerVerifyLogo {
+    pub mime: String,
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -765,9 +776,12 @@ impl PromptTracker {
         let slot = (0..MAX_VISIBLE_CARDS).find(|s| !used.contains(s))?;
         // `steal` only for a modal answering the user, remote.consent and
         // restart.final, and at most once per focus interval (message.rs rule).
-        let eligible = show.presentation == Presentation::Modal
-            || show.kind == "remote.consent"
-            || show.kind == "restart.final";
+        // A notice is informational and never activates (spec 3.2), whatever
+        // the agent asks for.
+        let eligible = show.kind != "notice.info"
+            && (show.presentation == Presentation::Modal
+                || show.kind == "remote.consent"
+                || show.kind == "restart.final");
         let focused = show.focus == FocusMode::Steal && eligible && self.focus.try_take(now_ms);
         Some(WindowPlan {
             prompt_id: show.prompt_id.clone(),
@@ -1034,9 +1048,14 @@ impl PromptTracker {
         }
     }
 
-    /// The list plus the change counter it was taken at.
-    pub fn list_view(&self, now_ms: i64) -> PromptListView {
-        PromptListView { version: self.version, entries: self.list(now_ms) }
+    /// The change counter: bumped by every `&mut self` method, never by a read.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The `prompt-updated` payload for a card: the change counter only.
+    pub fn change_notice(&self) -> VersionNotice {
+        VersionNotice { version: self.version }
     }
 
     /// The notification list, newest first: persistent entries until they
@@ -1077,8 +1096,22 @@ impl PromptTracker {
     }
 
     /// The `prompt-identity-updated` payload: the change counter only.
-    pub fn identity_notice(&self) -> PromptIdentityNotice {
-        PromptIdentityNotice { version: self.version }
+    pub fn identity_notice(&self) -> VersionNotice {
+        VersionNotice { version: self.version }
+    }
+
+    /// The synced identity's logo, for the caller-verify window, only when
+    /// `sha256` (64 lowercase hex, from `/helper/config` `branding.logo`) is
+    /// that logo's sha. Anything else (no identity, cleared, another sha) is
+    /// None, so a stale or another partner's logo is never handed out.
+    pub fn identity_logo_for(&self, sha256: &str) -> Option<CallerVerifyLogo> {
+        if !is_hex(sha256, 64) {
+            return None;
+        }
+        // The stored logo already passed `valid_branding` (type, size, and
+        // its bytes hash to its sha256), so a sha match is a bytes match.
+        let logo = self.identity.as_ref()?.logo.as_ref()?;
+        (logo.sha256 == sha256).then(|| CallerVerifyLogo { mime: logo.mime.clone(), data: logo.data.clone() })
     }
 
     /// What the webview's identity header renders (`get_prompt_identity`).
@@ -1775,11 +1808,12 @@ mod tests {
         assert!(!is_registry_kind("future.kind"));
     }
 
-    /// W02 is dormant by construction: nothing is advertised. Every entry a
-    /// later wave adds must be a registry kind shaped `<kind>@<1-999>`.
+    /// W04 advertises exactly `notice.info@1` (plan P2: a kind is advertised
+    /// only by the wave that ships it). Every entry must be a registry kind
+    /// shaped `<kind>@<1-999>`.
     #[test]
-    fn advertised_kinds_are_dormant_in_w02_and_well_formed() {
-        assert!(ADVERTISED_PROMPT_KINDS.is_empty(), "W02 advertises no prompt kind (plan P2)");
+    fn advertised_kinds_are_w04_notices_only_and_well_formed() {
+        assert_eq!(ADVERTISED_PROMPT_KINDS, &["notice.info@1"], "W04 advertises notice.info@1 only");
         for ad in ADVERTISED_PROMPT_KINDS.iter().chain(ALL_KINDS) {
             let (kind, ver) = ad.rsplit_once('@').expect(ad);
             assert!(is_registry_kind(kind), "{ad}");
@@ -1791,9 +1825,11 @@ mod tests {
 
     #[test]
     fn unadvertised_kind_render_failed() {
-        // The production tracker advertises nothing in W02.
+        // The production tracker advertises notice.info@1 only (W04): a
+        // restart prompt is still refused, a notice now renders.
         let mut t = PromptTracker::default();
-        assert_eq!(t.on_show(NOW, &notice()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+        assert_eq!(t.on_show(NOW, &restart()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+        assert!(rendered(&PromptTracker::default().on_show(NOW, &notice())));
         // The refusal frame is exactly the golden fixture.
         let frame = closed_frame("env-1", &notice().reference(), ClosedReason::RenderFailed, Some(DETAIL_UNADVERTISED_KIND));
         assert_eq!(frame.id, "env-1");
@@ -2018,10 +2054,104 @@ mod tests {
         let mut t = tracker();
         assert!(!focused(&mut t, s3, NOW));
         // A modal answering the user is eligible.
-        let mut s = with_id(notice(), "notice:a:2");
+        let mut s = with_id(elevation(), "elevation:a:2");
         s.presentation = Presentation::Modal;
         s.focus = FocusMode::Steal;
         assert!(focused(&mut tracker(), s, NOW));
+        // A notice never is, not even as a modal (spec 3.2: non-activating).
+        let mut s = with_id(notice(), "notice:a:2");
+        s.presentation = Presentation::Modal;
+        s.focus = FocusMode::Steal;
+        assert!(!focused(&mut tracker(), s, NOW));
+    }
+
+    // ----- notice.info (W04) -----
+
+    #[test]
+    fn notice_card_is_non_activating_and_listed() {
+        // The production tracker: what this build really advertises.
+        let mut t = PromptTracker::default();
+        let mut s = notice();
+        s.focus = FocusMode::Steal;
+        match t.on_show(NOW, &s) {
+            ShowOutcome::Render { window: Some(w) } => {
+                assert!(!w.focused, "a notice card never takes focus");
+                assert_eq!(w.label, window_label(&s.prompt_id));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Persistent: listed while its card is up.
+        let ids = |t: &PromptTracker| t.list(NOW).into_iter().map(|v| v.prompt_id).collect::<Vec<_>>();
+        assert_eq!(ids(&t), vec![s.prompt_id.clone()]);
+        // Esc on the pending notice is its safe action, `ok`.
+        let Dismiss::Action(frame) = t.dismiss(NOW, &s.prompt_id, ActionVia::Keyboard) else { panic!("Esc = ok") };
+        assert_eq!(frame.payload["actionId"], "ok");
+        let result = PromptActionResult {
+            prompt_id: s.prompt_id.clone(),
+            action_id: "ok".into(),
+            rev: 1,
+            result: ActionResultKind::Accepted,
+        };
+        assert!(t.on_action_result(&frame.id, &result));
+        // Resolved: the entry stays in the list, without actions.
+        assert_eq!(t.on_close(NOW, &close(&s.prompt_id, 1, CloseReason::Resolved)), CloseOutcome::Closed { had_card: true });
+        let list = t.list(NOW);
+        assert_eq!(list.len(), 1);
+        assert!(list[0].closed && list[0].actions.is_empty());
+    }
+
+    #[test]
+    fn open_settings_action_sends_prompt_action() {
+        let mut t = PromptTracker::default();
+        let mut s = with_id(notice(), "notice:tcc:0a1b2c3d");
+        s.actions.push(PromptActionSpec { id: "open_settings".into(), label: "Open Settings".into(), role: ActionRole::Neutral });
+        assert!(rendered(&t.on_show(NOW, &s)));
+        let frame = t.action(NOW, &s.prompt_id, "open_settings", ActionVia::Click).unwrap();
+        assert_eq!(frame.typ, TYPE_PROMPT_ACTION);
+        assert_eq!(frame.payload["actionId"], "open_settings");
+        assert_eq!(frame.payload["promptId"], "notice:tcc:0a1b2c3d");
+        assert_eq!(frame.payload["via"], "click");
+    }
+
+    // ----- change notices (W04 event exposure fix) -----
+
+    #[test]
+    fn change_notices_carry_only_a_version() {
+        let mut t = tracker();
+        assert!(rendered(&t.on_show(NOW, &notice())));
+        let n: VersionNotice = t.change_notice();
+        assert_eq!(serde_json::to_value(n).unwrap(), serde_json::json!({ "version": t.version() }));
+        // The identity notice is the same version-only type.
+        let _: VersionNotice = t.identity_notice();
+    }
+
+    // ----- caller-verify logo bytes (W04, Todd's W03 decision 1) -----
+
+    #[test]
+    fn caller_verify_logo_only_for_the_synced_sha() {
+        let mut t = tracker();
+        let set: PromptBrandingSync = serde_json::from_str(BRANDING_SET).unwrap();
+        let sha = set.logo.as_ref().unwrap().sha256.clone();
+        // No identity synced: nothing.
+        assert_eq!(t.identity_logo_for(&sha), None);
+        assert!(t.on_branding_sync(set.clone()));
+        let logo = t.identity_logo_for(&sha).expect("the synced logo");
+        assert_eq!(logo.mime, set.logo.as_ref().unwrap().mime);
+        assert_eq!(logo.data, set.logo.as_ref().unwrap().data);
+        // The wire carries the bytes and type only.
+        let keys: Vec<String> = serde_json::to_value(&logo).unwrap().as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, vec!["data".to_string(), "mime".to_string()]);
+        // Another sha (a stale or another partner's logo) gets nothing.
+        assert_eq!(t.identity_logo_for(&"0".repeat(64)), None);
+        assert_eq!(t.identity_logo_for(&sha.to_uppercase()), None, "lowercase hex only");
+        assert_eq!(t.identity_logo_for(""), None);
+        assert_eq!(t.identity_logo_for(&sha[..63]), None);
+        // Cleared or disconnected: nothing.
+        assert!(t.on_branding_sync(serde_json::from_str(BRANDING_CLEARED).unwrap()));
+        assert_eq!(t.identity_logo_for(&sha), None);
+        assert!(t.on_branding_sync(set));
+        t.on_disconnect();
+        assert_eq!(t.identity_logo_for(&sha), None);
     }
 
     // ----- close and the list -----
@@ -2168,12 +2298,14 @@ mod tests {
         let v3 = t.view("restart:42", NOW).unwrap().version;
         assert!(v3 > v2);
         t.note_error("restart:42", "x");
-        let list = t.list_view(NOW);
-        assert!(list.version > v3);
-        assert_eq!(list.entries.len(), 1);
-        assert_eq!(list.entries[0].version, list.version);
+        let version = t.version();
+        assert!(version > v3);
+        let list = t.list(NOW);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].version, version);
         // Reading never bumps it.
-        assert_eq!(t.view("restart:42", NOW).unwrap().version, list.version);
+        assert_eq!(t.view("restart:42", NOW).unwrap().version, version);
+        assert_eq!(t.version(), version);
     }
 
     #[test]

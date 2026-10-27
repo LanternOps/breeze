@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PromptCardWindow, type PromptCardApi } from './PromptCardWindow';
-import type { PromptView } from './types';
+import type { PromptView, VersionNotice } from './types';
 
 const view: PromptView = {
   promptId: 'notice:safe_mode:7f3c2a10',
@@ -29,21 +29,23 @@ const view: PromptView = {
   version: 3,
 };
 
+/** A Rust stand-in: `getView` answers from `current`; `notify` fires a version notice. */
 function fakeApi(overrides: Partial<PromptCardApi> = {}) {
-  let push: ((v: PromptView) => void) | null = null;
+  let notify: ((n: VersionNotice) => void) | null = null;
+  const state = { current: view };
   const api: PromptCardApi = {
-    getView: vi.fn(async () => view),
+    getView: vi.fn(async () => state.current),
     action: vi.fn(async () => {}),
     hide: vi.fn(async () => {}),
-    subscribe: vi.fn(async (_id: string, onView: (v: PromptView) => void) => {
-      push = onView;
+    subscribe: vi.fn(async (onNotice: (n: VersionNotice) => void) => {
+      notify = onNotice;
       return () => {
-        push = null;
+        notify = null;
       };
     }),
     ...overrides,
   };
-  return { api, push: (v: PromptView) => push?.(v) };
+  return { api, state, notify: (version: number) => notify?.({ version }) };
 }
 
 afterEach(() => {
@@ -60,29 +62,37 @@ describe('PromptCardWindow', () => {
     expect(api.action).toHaveBeenCalledWith(view.promptId, 'ok', 'click');
   });
 
-  it('applies updates pushed for this prompt', async () => {
-    const { api, push } = fakeApi();
+  it('pulls its own view on every change notice (the notice carries only a version)', async () => {
+    const { api, state, notify } = fakeApi();
     render(<PromptCardWindow promptId={view.promptId} api={api} retryDelayMs={0} />);
     await screen.findByText('Your computer restarted in safe mode');
     await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
-    act(() => push({ ...view, version: 4, copy: { title: 'Repair finished' } }));
-    expect(screen.getByText('Repair finished')).toBeInTheDocument();
+    state.current = { ...view, version: 4, copy: { title: 'Repair finished' } };
+    await act(async () => notify(4));
+    expect(await screen.findByText('Repair finished')).toBeInTheDocument();
+    expect(api.getView).toHaveBeenLastCalledWith(view.promptId);
+    // A notice no newer than the view held needs no pull.
+    const pulls = vi.mocked(api.getView).mock.calls.length;
+    await act(async () => notify(4));
+    expect(api.getView).toHaveBeenCalledTimes(pulls);
   });
 
   it('subscribes before it fetches, and a fetched snapshot never overwrites a newer update', async () => {
-    let resolveView: (v: PromptView) => void = () => {};
-    const { api, push } = fakeApi({
-      getView: vi.fn(() => new Promise<PromptView>((r) => (resolveView = r))),
-    });
+    let resolveFirst: (v: PromptView) => void = () => {};
+    const getView = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<PromptView>((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce({ ...view, version: 5, pendingActionId: null, copy: { title: 'Newer' } });
+    const { api, notify } = fakeApi({ getView });
     render(<PromptCardWindow promptId={view.promptId} api={api} retryDelayMs={0} />);
     await waitFor(() => expect(api.getView).toHaveBeenCalled());
     const subscribeOrder = vi.mocked(api.subscribe).mock.invocationCallOrder[0]!;
     const fetchOrder = vi.mocked(api.getView).mock.invocationCallOrder[0]!;
     expect(subscribeOrder).toBeLessThan(fetchOrder);
-    // The action's result lands while the fetch is in flight...
-    act(() => push({ ...view, version: 5, pendingActionId: null, copy: { title: 'Newer' } }));
+    // The action's result is announced while the first fetch is in flight...
+    await act(async () => notify(5));
     // ...and the older snapshot (still "Working…") arrives afterwards.
-    await act(async () => resolveView({ ...view, version: 4, pendingActionId: 'ok' }));
+    await act(async () => resolveFirst({ ...view, version: 4, pendingActionId: 'ok' }));
     expect(screen.getByText('Newer')).toBeInTheDocument();
     expect(screen.queryByText('Working…')).toBeNull();
     expect(screen.getByRole('button', { name: 'OK' })).toBeEnabled();
