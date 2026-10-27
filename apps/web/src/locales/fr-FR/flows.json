@@ -121,7 +121,11 @@
       "variable_dependent": "Cette étape dépend de valeurs qui ne sont connues qu'à l'exécution.",
       "script_not_found": "Le script utilisé par cette étape est introuvable.",
       "four_eyes": "Cette action exige toujours l'approbation d'une seconde personne.",
-      "tenant_tool": "Les sources d'outils personnalisées ne peuvent pas être préapprouvées."
+      "tenant_tool": "Les sources d'outils personnalisées ne peuvent pas être préapprouvées.",
+      "for_each": "Les étapes qui se répètent pour chaque élément ne peuvent pas être pré-approuvées.",
+      "run_as_elevated": "Ce script s'exécute avec des privilèges élevés ; il ne peut donc pas être pré-approuvé.",
+      "selector_not_literal": "Les appareils sont choisis à l'exécution ; cette étape ne peut donc pas être pré-approuvée.",
+      "max_targets_invalid": "Indiquez sur combien d'appareils cette étape peut s'exécuter (1–500) pour la pré-approuver."
     },
     "eventScope": "Les flux par événement réagissent aux événements de la plateforme, quelle qu'en soit la cause : actions de personnes, d'autres flux ou d'automatisations. Vérifiez le filtre du déclencheur avant d'activer.",
     "missingPermissions": "Il vous manque des autorisations dont les étapes de ce flux ont besoin :",
@@ -238,7 +242,11 @@
       "notify_failed": "La notification n'a pas pu être envoyée.",
       "ai_budget_exhausted": "Le budget d'IA de l'organisation est épuisé.",
       "ai_output_invalid": "Le résultat de l'IA ne correspondait pas au format attendu.",
-      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA."
+      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA.",
+      "targets_over_cap": "L'étape visait plus d'appareils qu'une étape de flux ne peut en traiter (500).",
+      "targets_unresolvable": "La cible d'appareils de l'étape n'a pas pu être résolue.",
+      "alert_create_failed": "L'alerte n'a pas pu être créée.",
+      "script_dispatch_failed": "Le script n'a pas pu être envoyé à un ou plusieurs appareils."
     },
     "step": {
       "status": {
