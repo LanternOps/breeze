@@ -14,6 +14,7 @@ import {
   promptMessagePlaceholders,
   renderPromptMessage,
   sanitizePromptPartnerName,
+  substitutePromptParams,
   type PromptLocale,
 } from './index';
 
@@ -22,6 +23,23 @@ const CATALOG_DIR = join(__dirname, 'catalog');
 // go:embed cannot leave the agent module, so the catalog ships twice; the two
 // copies are compared byte-for-byte from BOTH sides (cleanupRules precedent).
 const AGENT_CATALOG_DIR = join(__dirname, '../../../../agent/internal/promptcatalog/catalog');
+
+/** Problems with one catalog row; empty means the row is valid. */
+function catalogRowProblems(byLocale: Record<string, string>): string[] {
+  const problems: string[] = [];
+  if (JSON.stringify(Object.keys(byLocale).sort()) !== JSON.stringify([...PROMPT_LOCALES].sort())) {
+    problems.push('locales');
+  }
+  const enPlaceholders = JSON.stringify(promptMessagePlaceholders(byLocale.en ?? ''));
+  for (const locale of PROMPT_LOCALES) {
+    const text = byLocale[locale];
+    if (text === undefined) continue;
+    if (text.trim() === '' || text !== text.trim()) problems.push(`${locale}: empty or untrimmed`);
+    if (/[<>]/.test(text)) problems.push(`${locale}: markup`);
+    if (JSON.stringify(promptMessagePlaceholders(text)) !== enPlaceholders) problems.push(`${locale}: placeholders`);
+  }
+  return problems;
+}
 
 const catalogFiles = readdirSync(CATALOG_DIR).filter((f) => f.endsWith('.json')).sort();
 
@@ -54,24 +72,17 @@ describe('prompt catalog files', () => {
     expect(rows.length).toBeGreaterThanOrEqual(10);
   });
 
-  it.each(rows)('$ns/$key has exactly the eight locales', ({ byLocale }) => {
-    expect(Object.keys(byLocale).sort()).toEqual([...PROMPT_LOCALES].sort());
+  it.each(rows)('$ns/$key passes the row check (8 locales, non-empty, no markup, en placeholders)', ({ byLocale }) => {
+    expect(catalogRowProblems(byLocale)).toEqual([]);
   });
 
-  it.each(rows)('$ns/$key: every locale non-empty, no markup, same placeholders as en', ({ byLocale }) => {
-    const enPlaceholders = promptMessagePlaceholders(byLocale.en!);
-    for (const locale of PROMPT_LOCALES) {
-      const text = byLocale[locale]!;
-      expect(text.trim(), locale).not.toBe('');
-      expect(text, locale).not.toMatch(/[<>]/);
-      expect(text, locale).toBe(text.trim());
-      expect(promptMessagePlaceholders(text), locale).toEqual(enPlaceholders);
-    }
-  });
-
-  it('the parity check fails on a missing locale', () => {
-    const broken = { en: 'Hide', 'de-DE': 'Ausblenden' };
-    expect(Object.keys(broken).sort()).not.toEqual([...PROMPT_LOCALES].sort());
+  it('the row check fails on a missing locale, an empty string, markup and a placeholder mismatch', () => {
+    expect(catalogRowProblems({ en: 'Hide', 'de-DE': 'Ausblenden' })).toContain('locales');
+    const full = Object.fromEntries(PROMPT_LOCALES.map((l) => [l, 'Hide {count}']));
+    expect(catalogRowProblems(full)).toEqual([]);
+    expect(catalogRowProblems({ ...full, 'tr-TR': ' ' })).toContain('tr-TR: empty or untrimmed');
+    expect(catalogRowProblems({ ...full, 'it-IT': '<b>{count}</b>' })).toContain('it-IT: markup');
+    expect(catalogRowProblems({ ...full, 'pt-BR': 'Ocultar {n}' })).toContain('pt-BR: placeholders');
   });
 });
 
@@ -151,6 +162,13 @@ describe('promptIdentityBlockSchema (heartbeat contract with the Go agent)', () 
     ['a logo over 256 KB', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 262_145 } }],
     ['extra keys on cleared', { state: 'cleared', scopeId: valid.scopeId }],
     ['an unknown state', { state: 'unset' }],
+    ['an extra key on set (producer typo)', { ...valid, partner_name: 'Northwind IT' }],
+    ['a 3-digit colour', { ...valid, primaryColor: '#abc' }],
+    ['an 8-digit colour', { ...valid, primaryColor: '#11223344' }],
+    ['a short logo sha256', { ...valid, logo: { sha256: 'a'.repeat(63), mime: 'image/png', bytes: 10 } }],
+    ['a zero-byte logo', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 0 } }],
+    ['logo bytes inline (the heartbeat carries metadata only)', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 1, data: 'AA==' } }],
+    ['a name that is not NFKC-folded', { ...valid, partnerName: '\uff2dicrosoft' }],
   ])('refuses %s', (_label, block) => {
     expect(promptIdentityBlockSchema.safeParse(block).success).toBe(false);
   });
@@ -179,13 +197,38 @@ describe('renderPromptMessage', () => {
     );
   });
 
-  it('errors on a missing parameter', () => {
-    expect(() => renderPromptMessage('common', 'native.windowTitle', 'en', {})).toThrow(PromptCatalogError);
+  function catalogError(fn: () => unknown): PromptCatalogError {
+    try {
+      fn();
+    } catch (err) {
+      expect(err).toBeInstanceOf(PromptCatalogError);
+      return err as PromptCatalogError;
+    }
+    throw new Error('expected a PromptCatalogError');
+  }
+
+  it('errors on a missing parameter with code missing_param', () => {
+    expect(catalogError(() => renderPromptMessage('common', 'native.windowTitle', 'en', {})).code).toBe('missing_param');
   });
 
-  it('errors on an unknown key or namespace', () => {
-    expect(() => renderPromptMessage('common', 'nope', 'en')).toThrow(PromptCatalogError);
-    expect(() => renderPromptMessage('nope' as never, 'chrome.hide', 'en')).toThrow(PromptCatalogError);
+  it('errors on an unknown key or namespace with code unknown_key', () => {
+    expect(catalogError(() => renderPromptMessage('common', 'nope', 'en')).code).toBe('unknown_key');
+    expect(catalogError(() => renderPromptMessage('nope' as never, 'chrome.hide', 'en')).code).toBe('unknown_key');
+    // Prototype keys are not namespaces or keys.
+    expect(catalogError(() => renderPromptMessage('toString' as never, 'chrome.hide', 'en')).code).toBe('unknown_key');
+    expect(catalogError(() => renderPromptMessage('common', 'constructor', 'en')).code).toBe('unknown_key');
+  });
+
+  it('renders fr-CA distinctly from fr-FR', () => {
+    expect(renderPromptMessage('common', 'identity.generic', 'fr-CA')).toBe('Votre équipe de soutien informatique');
+    expect(renderPromptMessage('common', 'identity.generic', 'fr-FR')).toBe("Votre équipe d'assistance informatique");
+  });
+
+  it('substitutePromptParams leaves {time:<ms>} and {remaining} for the renderer', () => {
+    expect(substitutePromptParams('At {time:1767225600000} in {remaining} for {partner}', { partner: 'N' })).toBe(
+      'At {time:1767225600000} in {remaining} for N',
+    );
+    expect(catalogError(() => substitutePromptParams('{time:1} {count}', {})).code).toBe('missing_param');
   });
 
   it('falls back to en for a locale outside the eight', () => {

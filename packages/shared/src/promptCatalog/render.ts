@@ -11,10 +11,16 @@ export const PROMPT_CATALOG = {
 
 export type PromptNamespace = keyof typeof PROMPT_CATALOG;
 
+/** Mirrors the Go sentinels ErrUnknownKey / ErrMissingParam. */
+export type PromptCatalogErrorCode = 'unknown_key' | 'missing_param';
+
 export class PromptCatalogError extends Error {
-  constructor(message: string) {
+  readonly code: PromptCatalogErrorCode;
+
+  constructor(code: PromptCatalogErrorCode, message: string) {
     super(message);
     this.name = 'PromptCatalogError';
+    this.code = code;
   }
 }
 
@@ -33,10 +39,25 @@ export function promptMessagePlaceholders(text: string): string[] {
 }
 
 /**
- * Render one catalog message. Parameters are substituted in a single pass, so a
- * value is never re-read as a placeholder. `{remaining}` and `{time:<unixMs>}`
- * pass through for the renderer. Throws on an unknown namespace or key, or a
- * missing parameter (mirrors promptcatalog.Render).
+ * Substitute `{name}` parameters in one pass, so a value is never re-read as a
+ * placeholder; `{remaining}` and `{time:<unixMs>}` pass through for the
+ * renderer. Throws PromptCatalogError('missing_param'). Mirrors Go `substitute`.
+ */
+export function substitutePromptParams(text: string, params: Readonly<Record<string, string>>, where = 'message'): string {
+  return text.replace(PLACEHOLDER, (match, name: string) => {
+    if (RENDERER_OWNED.has(name)) return match;
+    if (!Object.hasOwn(params, name)) {
+      throw new PromptCatalogError('missing_param', `${where} needs parameter "${name}"`);
+    }
+    return params[name]!;
+  });
+}
+
+/**
+ * Render one catalog message in `locale` (negotiated; anything outside the
+ * eight renders en). Throws PromptCatalogError: 'unknown_key' for an unknown
+ * namespace or key, 'missing_param' for a missing parameter (mirrors
+ * promptcatalog.Render).
  */
 export function renderPromptMessage(
   ns: PromptNamespace,
@@ -44,17 +65,14 @@ export function renderPromptMessage(
   locale: PromptLocale | string,
   params: Readonly<Record<string, string>> = {},
 ): string {
-  const file = (PROMPT_CATALOG as Record<string, { messages: Record<string, Record<string, string>> }>)[ns];
-  if (!file) throw new PromptCatalogError(`unknown prompt catalog namespace "${ns}"`);
-  const byLocale = Object.prototype.hasOwnProperty.call(file.messages, key) ? file.messages[key] : undefined;
-  if (!byLocale) throw new PromptCatalogError(`unknown prompt catalog key "${ns}/${key}"`);
-  const text = byLocale[negotiatePromptLocale(locale)] ?? byLocale.en;
-  if (text === undefined) throw new PromptCatalogError(`prompt catalog key "${ns}/${key}" has no en text`);
-  return text.replace(PLACEHOLDER, (match, name: string) => {
-    if (RENDERER_OWNED.has(name)) return match;
-    if (!Object.prototype.hasOwnProperty.call(params, name)) {
-      throw new PromptCatalogError(`prompt catalog key "${ns}/${key}" needs parameter "${name}"`);
-    }
-    return params[name]!;
-  });
+  if (!Object.hasOwn(PROMPT_CATALOG, ns)) {
+    throw new PromptCatalogError('unknown_key', `unknown prompt catalog namespace "${ns}"`);
+  }
+  const messages = (PROMPT_CATALOG[ns] as { messages: Record<string, Record<string, string>> }).messages;
+  if (!Object.hasOwn(messages, key)) {
+    throw new PromptCatalogError('unknown_key', `unknown prompt catalog key "${ns}/${key}"`);
+  }
+  const byLocale = messages[key]!;
+  const text = byLocale[negotiatePromptLocale(locale)] ?? byLocale.en!;
+  return substitutePromptParams(text, params, `prompt catalog key "${ns}/${key}"`);
 }
