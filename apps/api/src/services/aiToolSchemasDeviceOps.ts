@@ -17,8 +17,7 @@
  */
 import { z } from 'zod';
 import { AUDIT_RESULTS } from '@breeze/shared';
-import { discoveredAssetTypeEnum } from '../db/schema';
-import { MANAGEMENT_POSTURE_CATEGORIES } from './managementPostureReport';
+import { MANAGEMENT_POSTURE_CATEGORIES } from '../routes/agents/schemas';
 
 export const DEVICE_FUNCTION_ACTIONS = ['get', 'set'] as const;
 export const DEVICE_LINK_ACTIONS = ['list', 'get', 'for_device', 'create', 'update', 'dissolve'] as const;
@@ -31,7 +30,14 @@ export const DEVICE_EVENT_CATEGORIES = [
 ] as const;
 export const DEVICE_EVENT_INITIATORS = ['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration'] as const;
 
-const DISCOVERED_ASSET_TYPES = discoveredAssetTypeEnum.enumValues;
+/**
+ * The `discovered_asset_type` pg enum (db/schema/discovery.ts), listed here so this module never reads the schema at
+ * load time (many suites mock `../db/schema`). aiToolsDeviceOps.classes.contract.test.ts pins the two equal.
+ */
+export const MANUAL_ASSET_TYPES = [
+  'workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas',
+  'unknown', 'website', 'service',
+] as const;
 const uuid = z.string().uuid();
 const isoDateTime = z.string().datetime({ offset: true });
 const page = z.number().int().min(1).max(10000);
@@ -96,7 +102,7 @@ export const deviceOpsToolSchemas: Record<string, z.ZodType> = {
     page: page.optional(),
     limit: z.number().int().min(1).max(100).optional(),
     name: z.string().min(1).max(255).optional(),
-    assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+    assetType: z.enum(MANUAL_ASSET_TYPES).optional(),
     manufacturer: z.string().max(255).nullable().optional(),
     model: z.string().max(255).nullable().optional(),
     serialNumber: z.string().max(255).nullable().optional(),

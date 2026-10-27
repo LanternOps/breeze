@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { TIER1_READ_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS } from './aiGuardrails';
 import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
-import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { MANUAL_ASSET_TYPES, deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { discoveredAssetTypeEnum } from '../db/schema';
 
 /**
  * Full-control W13 (#6783, PR A): every W13 write is MFA-gated (W13-D6, REST
@@ -44,5 +45,11 @@ describe('W13 MFA gate covers every write and no read (#6783)', () => {
   it('manage_device_function:set is agent-human-only (W13 plan fact 1)', () => {
     expect(AGENT_HUMAN_ONLY_ACTIONS.has('manage_device_function:set')).toBe(true);
     expect(AGENT_HUMAN_ONLY_ACTIONS.has('manage_device_function:get')).toBe(false);
+  });
+});
+
+describe('W13 schema constants', () => {
+  it('MANUAL_ASSET_TYPES equals the discovered_asset_type pg enum', () => {
+    expect([...MANUAL_ASSET_TYPES]).toEqual([...discoveredAssetTypeEnum.enumValues]);
   });
 });
