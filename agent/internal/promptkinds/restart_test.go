@@ -178,7 +178,7 @@ func TestRestartPromptDefaultsNameThePartnerOrTheGenericTeam(t *testing.T) {
 	if p.Show.Copy.Body != "Your IT support team needs to restart this computer to finish installing updates." {
 		t.Fatalf("generic body = %q", p.Show.Copy.Body)
 	}
-	in.Partner = "Example IT‮"
+	in.Partner = "Example IT\u202e"
 	p = RestartPrompts{}.RestartPrompt(in)
 	if p.Show.Copy.Body != "Example IT needs to restart this computer to finish installing updates." {
 		t.Fatalf("partner body = %q (sanitised)", p.Show.Copy.Body)
