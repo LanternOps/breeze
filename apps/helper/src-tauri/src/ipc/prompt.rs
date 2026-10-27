@@ -767,6 +767,7 @@ impl PromptTracker {
             // slot taken it stays in the list. The earlier outcome belongs to
             // the earlier rung.
             t.last_outcome = None;
+            debug_assert!(never_activates(&show.kind), "a re-surfaced card must never take focus");
             let window = self.plan_window(now_ms, show);
             return match (window, self.prompts.get_mut(&show.prompt_id)) {
                 (Some(w), Some(t)) => {
@@ -976,7 +977,13 @@ impl PromptTracker {
             return None;
         }
         self.version += 1;
-        self.hide(&result.prompt_id)
+        let frame = self.hide(&result.prompt_id)?;
+        // Collapsed, not Hidden: the entry is listed even when the agent sent
+        // no persistent list entry, so Restart now stays reachable.
+        if let Some(t) = self.prompts.get_mut(&result.prompt_id) {
+            t.surface = Surface::Collapsed;
+        }
+        Some(frame)
     }
 
     /// Esc or the window close box: the safe action on a pending decision,
@@ -1516,7 +1523,7 @@ pub enum DismissEffect {
 pub enum ResultEffect {
     /// It answers no action in flight (another envelope, a session that is gone).
     Ignored,
-    /// The action was released; the card shows the outcome.
+    /// The action was released; the view (card or list entry) shows the outcome.
     Applied,
     /// Released, and the card collapsed to its list entry (an accepted
     /// Postpone or OK on a restart card): the caller closes its window.
@@ -2322,11 +2329,64 @@ mod tests {
         let list = b.tracker().list(NOW);
         assert_eq!(list.len(), 1, "still in the Notifications list");
         assert_eq!(list[0].actions, before.actions, "with OK and Restart now");
+        // The window client.rs then destroys is not reported as a lost decision
+        // (that would make the agent fall back and drop the entry).
+        b.window_gone("restart:42");
+        assert!(rx.try_recv().is_err(), "nothing sent for the collapsed card's window");
+        assert_eq!(b.tracker().list(NOW).len(), 1);
+        // OK again from the list: released, but there is no card to collapse.
+        assert_eq!(b.act(NOW, "restart:42", "ok", ActionVia::List), Ok(()));
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(
+            b.action_result(&sent.id, &result("restart:42", "ok", 1, ActionResultKind::Accepted)),
+            ResultEffect::Applied
+        );
+        assert!(rx.try_recv().is_err(), "no second prompt_closed{{hidden}}");
         // The next rung re-surfaces it, without focus.
         let mut rung = restart_no_postpone();
         rung.rev = 2;
         assert!(!window_of(b.tracker().on_show(NOW, &rung)).focused);
         assert!(b.tracker().view("restart:42", NOW).unwrap().card);
+    }
+
+    /// A rung that arrives while every card slot is taken leaves the restart
+    /// card in the list (no window), with the old outcome cleared; a re-shown
+    /// restart prompt never spends the focus allowance `restart.final` needs.
+    #[test]
+    fn resurface_with_every_slot_taken_stays_listed() {
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        assert!(rendered(&b.tracker().on_show(NOW, &restart())));
+        b.act(NOW, "restart:42", "postpone", ActionVia::Click).unwrap();
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(b.action_result(&sent.id, &result("restart:42", "postpone", 1, ActionResultKind::Accepted)), ResultEffect::Collapsed);
+        for i in 0..MAX_VISIBLE_CARDS {
+            assert!(window_of(b.tracker().on_show(NOW, &with_id(notice(), &format!("notice:fill:{i}")))).slot < MAX_VISIBLE_CARDS);
+        }
+        let mut rung = restart();
+        rung.rev = 2;
+        rung.focus = FocusMode::Steal;
+        assert_eq!(b.tracker().on_show(NOW, &rung), ShowOutcome::Replace { card_open: false });
+        let v = b.tracker().view("restart:42", NOW).unwrap();
+        assert!(!v.card);
+        assert_eq!(v.last_outcome, None);
+        assert!(b.tracker().list(NOW).iter().any(|e| e.prompt_id == "restart:42"));
+        // Collapsed, not merely hidden: listed even when the agent did not ask
+        // for a persistent entry, so Restart now stays reachable.
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        let mut s = restart_no_postpone();
+        s.list_entry.persistent = false;
+        assert!(rendered(&b.tracker().on_show(NOW, &s)));
+        b.act(NOW, "restart:42", "ok", ActionVia::Click).unwrap();
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(b.action_result(&sent.id, &result("restart:42", "ok", 1, ActionResultKind::Accepted)), ResultEffect::Collapsed);
+        assert!(b.tracker().list(NOW).iter().any(|e| e.prompt_id == "restart:42"), "a collapsed card is always listed");
+        // The closing card still gets its one focus steal.
+        b.tracker().on_close(NOW, &close("notice:fill:0", 2, CloseReason::Withdrawn));
+        assert!(window_of(b.tracker().on_show(NOW, &restart_final())).focused);
     }
 
     /// `restart.prompt` never takes focus, whatever the agent asks for.

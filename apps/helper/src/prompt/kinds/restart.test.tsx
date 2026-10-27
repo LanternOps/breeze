@@ -152,6 +152,12 @@ describe('restart cards (#10190 W05)', () => {
     expect(card.textContent?.match(new RegExp(`restarts at ${hhmm(DEADLINE)}`, 'g'))).toHaveLength(1);
   });
 
+  it('keeps the expiry line when there is no consequence to state it', () => {
+    const { copy } = pending;
+    renderCard(RestartPromptCard, { ...pending, copy: { title: copy.title, body: copy.body } });
+    expect(screen.getByTestId('prompt-card')).toHaveTextContent(`Your computer restarts at ${hhmm(DEADLINE)}.`);
+  });
+
   it('Postpone is focused and default', () => {
     const { onAction, onHide } = renderCard(RestartPromptCard, pending);
     const card = screen.getByTestId('prompt-card');
