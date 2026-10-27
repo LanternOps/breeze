@@ -67,8 +67,9 @@ export function registerPackageSearchTools(aiTools: Map<string, AiTool>): void {
           let results: PackageSearchResult[] = raw;
           try {
             results = await annotateBreezeTested(raw);
-          } catch {
+          } catch (err) {
             // Decoration only, as in the route: never fail the search because the catalog lookup did.
+            console.warn('[search_packages] breezeTested annotation failed', { error: err instanceof Error ? err.message : String(err) });
           }
           return bounded({ results });
         });

@@ -62,6 +62,23 @@ async function deploymentOutsideDeviceAxis(auth: AuthContext, deploymentId: stri
   return rows.length === 0 || rows.some((r) => !allowed.includes(r.deviceId));
 }
 
+/**
+ * W12 review: the services answer HTTP 200 even when nothing was dispatched (a deployment whose only group failed,
+ * or a retry whose re-dispatch errored). The model must not report those as done.
+ */
+function deploymentResult(result: { status: number; body: unknown }): string {
+  const body = result.body as { data?: { status?: unknown }; message?: unknown; retriedDeviceIds?: unknown } | null;
+  if (result.status >= 200 && result.status < 300) {
+    if (body?.data?.status === 'failed') {
+      return jsonError(typeof body.message === 'string' ? body.message : 'The deployment failed to dispatch', 'DISPATCH_FAILED');
+    }
+    if (Array.isArray(body?.retriedDeviceIds) && typeof body?.message === 'string') {
+      return jsonError(`Retry could not be dispatched: ${body.message}`, 'DISPATCH_FAILED');
+    }
+  }
+  return httpResult(result);
+}
+
 function auditFor(auth: AuthContext, orgId: string) {
   return (event: RouteAuditInput) => auditToolWrite(auth, {
     orgId: event.orgId ?? orgId,
@@ -89,7 +106,6 @@ export function registerSoftwareDeploymentTools(aiTools: Map<string, AiTool>): v
           action: { type: 'string', enum: [...SOFTWARE_DEPLOYMENT_ACTIONS], description: 'The action to perform' },
           orgId: { type: 'string', description: 'Organization UUID (partner scope)' },
           deploymentId: { type: 'string', description: 'Deployment UUID' },
-          status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled'], description: 'list filter' },
           resultStatus: { type: 'string', enum: ['pending', 'running', 'paused', 'downloading', 'installing', 'completed', 'failed', 'cancelled', 'rollback'], description: 'results filter' },
           name: { type: 'string', description: 'create: deployment name' },
           softwareVersionId: { type: 'string', description: 'create: a catalog version (uploaded or URL installer)' },
@@ -160,7 +176,7 @@ export function registerSoftwareDeploymentTools(aiTools: Map<string, AiTool>): v
               auth, permissions, orgId, payload: parsed.data, createdBy, deliveries, audit: auditFor(auth, orgId),
             });
           });
-          return httpResult(result);
+          return deploymentResult(result);
         }
 
         const missing = requireFields(input, ['deploymentId'], action);
@@ -176,7 +192,7 @@ export function registerSoftwareDeploymentTools(aiTools: Map<string, AiTool>): v
               auth, permissions, orgId, deploymentId, payload, createdBy, deliveries, audit: auditFor(auth, orgId),
             });
           });
-          return httpResult(result);
+          return deploymentResult(result);
         }
 
         return await inCallerContext(auth, async () => {

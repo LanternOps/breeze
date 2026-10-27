@@ -98,7 +98,7 @@ describe('softwareInventoryPolicy writes', () => {
     vi.mocked(db.insert).mockReturnValueOnce({
       values: () => ({ returning: () => Promise.resolve([{ id: 'p-new', name: 'Default Blocklist' }]) }),
     } as any);
-    // ensureDefaultConfigPolicyLink fails: logged, not fatal
+    // ensureDefaultConfigPolicyLink fails: logged; fatal to the answer only for the AI actor
     vi.mocked(db.select).mockImplementationOnce(() => { throw new Error('link boom'); });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -106,7 +106,8 @@ describe('softwareInventoryPolicy writes', () => {
       auth, orgId: ORG, softwareName: 'Bad', actorUserId: USER, actor: 'ai', audit: vi.fn(),
     });
 
-    expect(result.status).toBe(201);
+    // W12 review: the AI caller is told the org link failed (503), while the entry's audit rows are still written.
+    expect(result.status).toBe(503);
     expect(recordSoftwarePolicyAudit).toHaveBeenCalledWith(expect.objectContaining({
       actor: 'ai', actorId: USER, policyId: 'p-new', action: 'inventory_deny',
     }));

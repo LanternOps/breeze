@@ -43,7 +43,10 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
-  db: { select: h.select, insert: h.insert, update: h.update, delete: h.delete },
+  db: {
+    select: h.select, insert: h.insert, update: h.update, delete: h.delete,
+    transaction: (fn: (tx: unknown) => unknown) => fn({ select: h.select, insert: h.insert, update: h.update, delete: h.delete }),
+  },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   withDbAccessContext: (_c: unknown, fn: () => unknown) => fn(),
@@ -377,6 +380,40 @@ describe('manage_custom_fields', () => {
     h.validateMap.mockResolvedValue({ ok: false, rejected: [{ key: 'license_key', reason: 'unknown field' }] });
     const out = await run('manage_custom_fields', { action: 'set_values', deviceId: DEV, values: { license_key: 'x' } });
     expect(out.code).toBe('VALIDATION_ERROR');
+    expect(h.persist).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('get_device_software (W12 review)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('returns not found without reading inventory when the device is outside the caller\'s scope', async () => {
+    h.verify.mockResolvedValueOnce({ error: 'Device not found or access denied' });
+    const out = await run('get_device_software', { deviceId: DEV }, deviceBound());
+    expect(out.code).toBe('NOT_FOUND');
+    expect(h.select).not.toHaveBeenCalled();
+  });
+
+  it('control: an in-scope device returns its software rows and a total', async () => {
+    h.verify.mockResolvedValueOnce(device());
+    h.select
+      .mockReturnValueOnce(chain([{ n: 2 }]))
+      .mockReturnValueOnce(chain([{ name: 'App A', version: '1', vendor: 'V', installDate: null, isManaged: false, lastSeen: null }]));
+    const out = await run('get_device_software', { deviceId: DEV, limit: 500 });
+    expect(out.total).toBe(2);
+    expect((out.software as unknown[]).length).toBe(1);
+    expect(Object.keys((out.software as Record<string, unknown>[])[0]!)).not.toContain('uninstallString');
+  });
+});
+
+describe('manage_custom_fields set_values input shape (W12 review)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([['a string', 'x'], ['an array', ['a', 'b']]])('refuses values given as %s before touching the device', async (_label, values) => {
+    const out = await run('manage_custom_fields', { action: 'set_values', deviceId: DEV, values });
+    expect(out.code).toBe('VALIDATION_ERROR');
+    expect(h.verify).not.toHaveBeenCalled();
     expect(h.persist).not.toHaveBeenCalled();
   });
 });

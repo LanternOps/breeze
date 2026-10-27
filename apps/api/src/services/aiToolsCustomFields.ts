@@ -102,8 +102,11 @@ export function registerCustomFieldTools(aiTools: Map<string, AiTool>): void {
         if (action === 'set_values') {
           const missing = requireFields(input, ['deviceId', 'values'], action);
           if (missing) return missing;
+          if (typeof input.values !== 'object' || input.values === null || Array.isArray(input.values)) {
+            return jsonError('values must be an object of { fieldKey: value }', 'VALIDATION_ERROR');
+          }
           const updates = input.values as Record<string, unknown>;
-          const keys = Object.keys(updates ?? {});
+          const keys = Object.keys(updates);
           if (keys.length === 0) return jsonError('values must name at least one field', 'VALIDATION_ERROR');
           if (keys.length > MAX_VALUES_PER_CALL) return jsonError(`At most ${MAX_VALUES_PER_CALL} fields per call`, 'VALIDATION_ERROR');
           const access = await verifyDeviceAccess(String(input.deviceId), auth);
@@ -138,7 +141,8 @@ export function registerCustomFieldTools(aiTools: Map<string, AiTool>): void {
             result: 'success',
             initiatedBy: actor.initiatedBy,
           });
-          const current = readExistingCustomFields(updated?.customFields ?? null);
+          if (!updated) return notFound('Device');
+          const current = readExistingCustomFields(updated.customFields);
           return bounded({
             deviceId: device.id,
             values: Object.fromEntries(keys.map((k) => [k, current[k] ?? null])),
@@ -181,10 +185,11 @@ export function registerCustomFieldTools(aiTools: Map<string, AiTool>): void {
           }
           let field;
           try {
-            [field] = await db.insert(customFieldDefinitions).values({
+            // A savepoint, so an expected key conflict does not abort the per-call transaction.
+            [field] = await db.transaction((tx) => tx.insert(customFieldDefinitions).values({
               orgId, partnerId, name: payload.name, fieldKey: payload.fieldKey, type: payload.type, options: payload.options,
               required: payload.required, defaultValue: payload.defaultValue, deviceTypes: payload.deviceTypes, scriptWrite: payload.scriptWrite,
-            }).returning();
+            }).returning());
           } catch (err) {
             const conflict = customFieldWriteConflict(err, payload.fieldKey);
             if (conflict) return jsonError(conflict.error, 'CONFLICT');

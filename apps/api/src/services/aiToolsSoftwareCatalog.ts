@@ -285,7 +285,15 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
           if (!parsed.success) return jsonError(parsed.error.issues[0]?.message ?? 'Invalid package', 'VALIDATION_ERROR');
           const org = resolveScopedOrgId(auth, requestedOrgId);
           if ('error' in org) return jsonError(org.error, 'VALIDATION_ERROR');
-          const { catalogItem, methods } = await importCatalogPackage({ orgId: org.orgId, payload: parsed.data });
+          let imported: Awaited<ReturnType<typeof importCatalogPackage>>;
+          try {
+            // importCatalogPackage runs in its own (nested, savepoint) transaction.
+            imported = await importCatalogPackage({ orgId: org.orgId, payload: parsed.data });
+          } catch (err) {
+            if (pgErrorCode(err) === '23505') return jsonError('A package or install method like this already exists', 'CONFLICT');
+            throw err;
+          }
+          const { catalogItem, methods } = imported;
           auditToolWrite(auth, {
             orgId: org.orgId, action: 'software.catalog.import', resourceType: 'software_catalog', resourceId: catalogItem.id,
             resourceName: catalogItem.name, details: { methodCount: methods.length },
@@ -395,10 +403,11 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
           const parsed = installMethodBodySchema.safeParse(pick(input, ['platform', 'kind', 'packageId', 'enabled']));
           if (!parsed.success) return jsonError(parsed.error.issues[0]?.message ?? 'Invalid install method', 'VALIDATION_ERROR');
           try {
-            const [method] = await db.insert(softwareInstallMethods).values({
+            // A savepoint, so an expected unique violation does not abort the per-call transaction.
+            const [method] = await db.transaction((tx) => tx.insert(softwareInstallMethods).values({
               catalogId: item.id, platform: parsed.data.platform, kind: parsed.data.kind, packageId: parsed.data.packageId,
               enabled: parsed.data.enabled ?? true,
-            }).returning();
+            }).returning());
             auditToolWrite(auth, {
               orgId: item.orgId, action: 'software.install_method.create', resourceType: 'software_install_method',
               resourceId: method!.id, resourceName: `${item.name} (${parsed.data.kind}:${parsed.data.packageId})`,
@@ -423,22 +432,28 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
             const err = validatePackageIdForKind(method.kind, parsed.data.packageId);
             if (err) return jsonError(err, 'VALIDATION_ERROR');
           }
+          const set = { ...(parsed.data.packageId !== undefined ? { packageId: parsed.data.packageId } : {}), ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}) };
+          if (Object.keys(set).length === 0) return jsonError('Nothing to update (pass packageId or enabled)', 'VALIDATION_ERROR');
           const [updated] = await db.update(softwareInstallMethods)
-            .set({ ...(parsed.data.packageId !== undefined ? { packageId: parsed.data.packageId } : {}), ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}) })
+            .set(set)
             .where(and(eq(softwareInstallMethods.id, method.id), eq(softwareInstallMethods.catalogId, item.id)))
             .returning();
+          if (!updated) return notFound('Install method');
           auditToolWrite(auth, {
             orgId: item.orgId, action: 'software.install_method.update', resourceType: 'software_install_method', resourceId: method.id,
             resourceName: `${item.name} (${method.kind}:${parsed.data.packageId ?? method.packageId})`,
           });
-          const row = updated ?? method;
+          const row = updated;
           return json({ installMethod: { id: row.id, platform: row.platform, kind: row.kind, packageId: row.packageId, enabled: row.enabled } });
         }
 
         // delete_install_method
         try {
-          await db.delete(softwareInstallMethods)
-            .where(and(eq(softwareInstallMethods.id, method.id), eq(softwareInstallMethods.catalogId, item.id)));
+          // A savepoint, so an expected FK violation does not abort the per-call transaction.
+          const deleted = await db.transaction((tx) => tx.delete(softwareInstallMethods)
+            .where(and(eq(softwareInstallMethods.id, method.id), eq(softwareInstallMethods.catalogId, item.id)))
+            .returning({ id: softwareInstallMethods.id }));
+          if (deleted.length === 0) return notFound('Install method');
         } catch (err) {
           if (pgErrorCode(err) === '23503') {
             return jsonError('This install method is referenced by past deployments; disable it (update_install_method enabled false) instead', 'CONFLICT');

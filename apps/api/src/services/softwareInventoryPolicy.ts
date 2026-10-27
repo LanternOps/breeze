@@ -280,10 +280,12 @@ export async function approveInventorySoftware(params: InventoryListWriteParams)
 
   // Ensure config policy link exists (auto-link a new policy so devices can
   // receive it)
+  let linkFailed = false;
   try {
     await ensureDefaultConfigPolicyLink(orgId, policy.id, 'Default Allowlist Config', actorUserId);
   } catch (err) {
     console.warn('[softwareInventory] Failed to auto-link config policy for Default Allowlist:', err);
+    linkFailed = true;
   }
 
   const details = created
@@ -309,6 +311,12 @@ export async function approveInventorySoftware(params: InventoryListWriteParams)
     resourceName: policy.name,
     details,
   });
+
+  // W12 review: the AI path must not report success when devices will never receive the policy (the entry and its
+  // audit rows are written; the org link is what failed). REST keeps its historical success answer.
+  if (linkFailed && params.actor === 'ai') {
+    return { status: 503, body: { error: 'The allowlist entry was saved but could not be linked to the organization; retry the same request', policyId: policy.id } };
+  }
 
   return created
     ? { status: 201, body: { success: true, policyId: policy.id } }
@@ -394,10 +402,12 @@ export async function denyInventorySoftware(params: InventoryListWriteParams): P
 
   // Ensure config policy link exists (auto-link a new policy so devices can
   // receive it)
+  let linkFailed = false;
   try {
     await ensureDefaultConfigPolicyLink(orgId, policy.id, 'Default Blocklist Config', actorUserId);
   } catch (err) {
     console.warn('[softwareInventory] Failed to auto-link config policy for Default Blocklist:', err);
+    linkFailed = true;
   }
 
   const details = created
@@ -423,6 +433,12 @@ export async function denyInventorySoftware(params: InventoryListWriteParams): P
     resourceName: policy.name,
     details,
   });
+
+  // W12 review: the AI path must not report success when devices will never receive the policy (the entry and its
+  // audit rows are written; the org link is what failed). REST keeps its historical success answer.
+  if (linkFailed && params.actor === 'ai') {
+    return { status: 503, body: { error: 'The blocklist entry was saved but could not be linked to the organization; retry the same request', policyId: policy.id } };
+  }
 
   return created
     ? { status: 201, body: { success: true, policyId: policy.id } }

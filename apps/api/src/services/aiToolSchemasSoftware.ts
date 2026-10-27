@@ -42,7 +42,6 @@ const INSTALL_METHOD_KINDS = ['winget', 'homebrew_cask', 'homebrew_formula'] as 
 const CATALOG_CATEGORIES = [
   'browser', 'utility', 'compression', 'productivity', 'communication', 'developer', 'media', 'security',
 ] as const;
-const DEPLOYMENT_STATUSES = ['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled'] as const;
 const RESULT_STATUSES = [
   'pending', 'running', 'paused', 'downloading', 'installing', 'completed', 'failed', 'cancelled', 'rollback',
 ] as const;
@@ -104,7 +103,6 @@ export const softwareToolSchemas = {
     action: z.enum(SOFTWARE_DEPLOYMENT_ACTIONS),
     orgId: uuid.optional(),
     deploymentId: uuid.optional(),
-    status: z.enum(DEPLOYMENT_STATUSES).optional(),
     resultStatus: z.enum(RESULT_STATUSES).optional(),
     name: z.string().min(1).max(255).optional(),
     softwareVersionId: uuid.optional(),
