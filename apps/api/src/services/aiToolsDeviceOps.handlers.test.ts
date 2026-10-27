@@ -39,6 +39,10 @@ const h = vi.hoisted(() => ({
   updateLink: vi.fn(),
   dissolveLink: vi.fn(),
   getLink: vi.fn(),
+  getDeviceLink: vi.fn(),
+  updateManual: vi.fn(),
+  linkManual: vi.fn(),
+  capture: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -63,12 +67,13 @@ vi.mock('./managementPostureReport', async (importOriginal) => ({
 }));
 vi.mock('./manualAssetOps', () => ({
   listManualAssets: h.listManual, createManualAsset: h.createManual, deleteManualAsset: h.deleteManual,
-  updateManualAsset: vi.fn(), linkManualAsset: vi.fn(), unlinkManualAsset: vi.fn(),
+  updateManualAsset: h.updateManual, linkManualAsset: h.linkManual, unlinkManualAsset: vi.fn(),
 }));
 vi.mock('./deviceLinkGroupOps', () => ({
   listLinkGroups: h.listLinks, createLinkGroup: h.createLink, updateLinkGroup: h.updateLink,
-  dissolveLinkGroup: h.dissolveLink, getLinkGroup: h.getLink, getDeviceLinkGroup: vi.fn(),
+  dissolveLinkGroup: h.dissolveLink, getLinkGroup: h.getLink, getDeviceLinkGroup: h.getDeviceLink,
 }));
+vi.mock('./sentry', () => ({ captureException: h.capture }));
 vi.mock('../routes/devices/helpers', () => ({ ensureOrgAccess: async (orgId: string) => orgId === ORG }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -330,3 +335,92 @@ describe('manage_device_links (W13-D12)', () => {
     expect((await run('manage_device_links', { action: 'get', groupId: GROUP })).code).toBe('NOT_FOUND');
   });
 });
+
+describe('review fixes (#10343)', () => {
+  it('get_device_events never lets search match the hidden details JSON (no oracle over email / IP / details)', async () => {
+    h.feed.mockResolvedValue({ data: [], pagination: { page: 1, limit: 25, total: null } });
+    await run('get_device_events', { deviceId: DEV, search: '@example.test' });
+    expect(h.feed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ search: '@example.test', searchDetails: false }));
+  });
+
+  it('an unparseable time is refused, never silently dropped', async () => {
+    expect((await run('get_device_events', { deviceId: DEV, from: 'yesterday' })).code).toBe('VALIDATION_ERROR');
+    expect((await run('get_process_samples', { deviceId: DEV, at: 'yesterday' })).code).toBe('VALIDATION_ERROR');
+    expect(h.feed).not.toHaveBeenCalled();
+    expect(h.verify).not.toHaveBeenCalled();
+  });
+
+  it('a committed function set whose read-back fails still reports the outcome', async () => {
+    h.upsertFunction.mockResolvedValue({ outcome: 'written', assessmentId: 'a1' });
+    h.getFunction.mockRejectedValue(new Error('connection reset'));
+    const out = await run('manage_device_function', { action: 'set', deviceId: DEV, functionKey: 'file_server' });
+    expect(out).toMatchObject({ outcome: 'written', function: null });
+    expect(out.error).toBeUndefined();
+  });
+
+  it('a function-key service refusal gets an actionable message', async () => {
+    const { DeviceFunctionError } = await import('./deviceFunction');
+    h.upsertFunction.mockRejectedValue(new DeviceFunctionError('label_required'));
+    const out = await run('manage_device_function', { action: 'set', deviceId: DEV, functionKey: 'file_server' });
+    expect(out.code).toBe('VALIDATION_ERROR');
+    expect(String(out.error)).toMatch(/needs a label/);
+  });
+
+  it('manual-asset create passes the duplicate-serial warnings through', async () => {
+    h.createManual.mockResolvedValue({ status: 201, body: { id: ASSET, displayName: 'x', warnings: [{ code: 'DUPLICATE_SERIAL', message: 'dupe' }] } });
+    const out = await run('manage_manual_assets', { action: 'create', siteId: SITE, name: 'x', serialNumber: 'S1' });
+    expect(out.warnings).toEqual([{ code: 'DUPLICATE_SERIAL', message: 'dupe' }]);
+  });
+
+  it('an update that dissolves the group says so', async () => {
+    h.updateLink.mockResolvedValue({ status: 200, body: { id: GROUP, dissolved: true, members: [] } });
+    const out = await run('manage_device_links', { action: 'update', groupId: GROUP, removeDeviceIds: [DEV] });
+    expect(out).toEqual({ dissolved: true, groupId: GROUP });
+  });
+
+  it('a dangling link-group reference is a DATA_INTEGRITY error reported to Sentry, never "not linked"', async () => {
+    h.getDeviceLink.mockImplementation(async (deps: { reportDanglingReference: (e: Error) => void }) => {
+      deps.reportDanglingReference(new Error('dangling'));
+      return { status: 200, body: { group: null, members: [] } };
+    });
+    const out = await run('manage_device_links', { action: 'for_device', deviceId: DEV });
+    expect(out.code).toBe('DATA_INTEGRITY');
+    expect(h.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['manage_device_links', { action: 'create', deviceIds: [DEV, DEV2] }],
+    ['manage_device_links', { action: 'update', groupId: GROUP, name: 'x' }],
+    ['manage_manual_assets', { action: 'create', siteId: SITE, name: 'x' }],
+    ['manage_manual_assets', { action: 'update', assetId: ASSET, name: 'x' }],
+    ['manage_manual_assets', { action: 'link', assetId: ASSET, deviceId: DEV }],
+    ['manage_manual_assets', { action: 'unlink', assetId: ASSET }],
+    ['manage_device_function', { action: 'set', deviceId: DEV, functionKey: null }],
+  ] as const)('%s %j without an MFA claim is refused before any service call', async (tool, input) => {
+    expect((await run(tool, input, noMfa())).code).toBe('MFA_REQUIRED');
+    for (const fn of [h.createLink, h.updateLink, h.createManual, h.updateManual, h.linkManual, h.clearFunction, h.verify]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it('warranty get returns the row, or null when there is none', async () => {
+    h.select.mockImplementation(() => chain([{ manufacturer: 'Dell Inc.', status: 'active', lastSyncError: null }]));
+    expect((await run('manage_device_warranty', { action: 'get', deviceId: DEV })).warranty).toMatchObject({ manufacturer: 'Dell Inc.' });
+    h.select.mockImplementation(() => chain([]));
+    expect((await run('manage_device_warranty', { action: 'get', deviceId: DEV })).warranty).toBeNull();
+  });
+
+  it('agent health: a non-v1 or missing observation is "unknown"', async () => {
+    h.select.mockImplementation(() => chain([{ schemaVersion: 2, observedAt: new Date(), receivedAt: new Date() }]));
+    expect(await run('get_device_health', { deviceId: DEV })).toMatchObject({ status: 'unknown', observation: null });
+    h.select.mockImplementation(() => chain([]));
+    expect(await run('get_device_health', { deviceId: DEV })).toMatchObject({ status: 'unknown', observation: null });
+  });
+
+  it('process samples: an unreachable device is NOT_FOUND before any query', async () => {
+    h.verify.mockResolvedValue({ error: 'Device not found or access denied' });
+    expect((await run('get_process_samples', { deviceId: DEV })).code).toBe('NOT_FOUND');
+    expect(h.select).not.toHaveBeenCalled();
+  });
+});
+

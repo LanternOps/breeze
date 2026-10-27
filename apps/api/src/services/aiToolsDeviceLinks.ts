@@ -29,6 +29,7 @@ import {
 } from './deviceLinkGroupOps';
 import { createLinkGroupSchema, updateLinkGroupSchema } from '../routes/devices/schemas';
 import { ensureOrgAccess } from '../routes/devices/helpers';
+import { captureException } from './sentry';
 import { DEVICE_LINK_ACTIONS, LINK_GROUP_KIND_VALUES } from './aiToolSchemasDeviceOps';
 import { auditToolWrite, bounded, jsonError, thrown, verifiedUserIdOrNull } from './aiToolsSoftwareShared';
 
@@ -131,9 +132,15 @@ export function registerDeviceLinkTools(aiTools: Map<string, AiTool>): void {
         }
         if (action === 'for_device') {
           if (typeof input.deviceId !== 'string') return jsonError('deviceId is required', 'VALIDATION_ERROR');
+          let dangling = false;
           const result = await getDeviceLinkGroup({
-            auth, checkDevice, reportDanglingReference: (err) => console.error('[ai:manage_device_links]', err.message),
+            auth, checkDevice,
+            // The route's loud-failure path (Sentry); the model is told, never shown "not linked".
+            reportDanglingReference: (err) => { dangling = true; captureException(err); },
           }, input.deviceId);
+          if (dangling) {
+            return jsonError('This device points at a link group that cannot be read (a data-integrity problem); do not re-link it', 'DATA_INTEGRITY');
+          }
           return toolResult(result, (body) => ({
             group: body.group ? projectGroup({ ...(body.group as object), members: body.members }, auth) : null,
           }));
@@ -161,7 +168,10 @@ export function registerDeviceLinkTools(aiTools: Map<string, AiTool>): void {
           ...(input.removeDeviceIds !== undefined ? { removeDeviceIds: input.removeDeviceIds } : {}),
         });
         if (!parsed.success) return jsonError(parsed.error.issues[0]?.message ?? 'Invalid input', 'VALIDATION_ERROR');
-        return toolResult(await updateLinkGroup(deps, input.groupId, parsed.data), groupOf);
+        const groupId = input.groupId;
+        // Removing members below two (or a vm_host's host) dissolves the group: say so, never show an empty group.
+        return toolResult(await updateLinkGroup(deps, groupId, parsed.data), (body) =>
+          body.dissolved === true ? { dissolved: true, groupId } : groupOf(body));
       } catch (error) {
         return thrown('manage_device_links', error);
       }

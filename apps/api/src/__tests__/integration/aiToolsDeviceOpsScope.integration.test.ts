@@ -102,7 +102,7 @@ async function seedFixture(): Promise<Fixture> {
   ] as Array<typeof deviceWarranty.$inferInsert>);
 
   await db0.insert(auditLogs).values([
-    { orgId: orgA.id, actorType: 'user', actorId: user.id, actorEmail: 'op@example.com', action: 'script.execute', resourceType: 'device', resourceId: devA, resourceName: 'devA', result: 'success', ipAddress: '192.0.2.44' },
+    { orgId: orgA.id, actorType: 'user', actorId: user.id, actorEmail: 'op@example.com', action: 'script.execute', resourceType: 'device', resourceId: devA, resourceName: 'devA', result: 'success', ipAddress: '192.0.2.44', details: { note: 'w13-hidden-detail-marker' } },
     { orgId: orgA.id, actorType: 'user', actorId: user.id, actorEmail: 'op@example.com', action: 'script.execute', resourceType: 'device', resourceId: devB, resourceName: 'devB', result: 'success' },
   ] as Array<typeof auditLogs.$inferInsert>);
 
@@ -199,6 +199,27 @@ describe('manage_device_links', () => {
   });
 });
 
+describe('manage_device_links — update and dissolve across sites (review #10343)', () => {
+  runDb('a restricted caller cannot add an out-of-site device or dissolve a group holding one (CONTROL: in-site update lands)', async () => {
+    const admin = await run(f, 'orgAdmin', 'manage_device_links', { action: 'create', deviceIds: [f.devA, f.devA2] });
+    const groupId = admin.body.group.id as string;
+
+    const add = await run(f, 'restricted', 'manage_device_links', { action: 'update', groupId, addDeviceIds: [f.devB] });
+    expect(add.body.error, add.raw).toBeTruthy();
+    expect(await linkOf(f.devB)).toBeNull();
+
+    const rename = await run(f, 'restricted', 'manage_device_links', { action: 'update', groupId, name: 'Renamed' });
+    expect(rename.body.group?.name, rename.raw).toBe('Renamed');
+
+    // Now put an out-of-site member in the group (as the unrestricted admin) and try to dissolve it restricted.
+    const mixed = await run(f, 'orgAdmin', 'manage_device_links', { action: 'update', groupId, addDeviceIds: [f.devB] });
+    expect(mixed.body.group?.members, mixed.raw).toHaveLength(3);
+    const dissolve = await run(f, 'restricted', 'manage_device_links', { action: 'dissolve', groupId });
+    expect(dissolve.body.code, dissolve.raw).toBe('NOT_FOUND');
+    for (const id of [f.devA, f.devA2, f.devB]) expect(await linkOf(id)).toBe(groupId);
+  });
+});
+
 describe('manage_manual_assets', () => {
   const assetsNamed = (name: string) => getTestDb().select().from(manualAssets).where(eq(manualAssets.name, name));
 
@@ -221,6 +242,17 @@ describe('manage_manual_assets', () => {
     const own = await run(f, 'otherOrg', 'manage_manual_assets', { action: 'delete', assetId: f.assetOther });
     expect(own.body.deleted, own.raw).toBe(true);
     expect(await getTestDb().select().from(manualAssets).where(eq(manualAssets.id, f.assetOther))).toHaveLength(0);
+  });
+
+  runDb('a restricted caller cannot move an asset to an out-of-site site (CONTROL: an in-site edit lands)', async () => {
+    const created = await run(f, 'restricted', 'manage_manual_assets', { action: 'create', orgId: f.orgA, siteId: f.siteA, name: 'W13 movable' });
+    const assetId = created.body.asset.id as string;
+    const move = await run(f, 'restricted', 'manage_manual_assets', { action: 'update', assetId, siteId: f.siteB });
+    expect(move.body.error, move.raw).toBeTruthy();
+    const edit = await run(f, 'restricted', 'manage_manual_assets', { action: 'update', assetId, notes: 'desk 4' });
+    expect(edit.body.asset?.notes, edit.raw).toBe('desk 4');
+    const [row] = await getTestDb().select().from(manualAssets).where(eq(manualAssets.id, assetId));
+    expect(row).toMatchObject({ siteId: f.siteA, notes: 'desk 4' });
   });
 
   runDb('a device-bound session is refused list and create', async () => {
@@ -262,6 +294,11 @@ describe('reads never cross an axis', () => {
     expect(ok.body.events, ok.raw).toHaveLength(1);
     expect(ok.raw).not.toContain('op@example.com');
     expect(ok.raw).not.toContain('192.0.2.44');
+    // search never matches the hidden details JSON (review #10343: no oracle over hidden fields).
+    const hidden = await run(f, 'restricted', 'get_device_events', { deviceId: f.devA, search: 'w13-hidden-detail-marker' });
+    expect(hidden.body.events, hidden.raw).toHaveLength(0);
+    const visible = await run(f, 'restricted', 'get_device_events', { deviceId: f.devA, search: 'script.execute' });
+    expect(visible.body.events, visible.raw).toHaveLength(1);
   });
 
   runDb('management posture totals count only the devices the caller may reach', async () => {

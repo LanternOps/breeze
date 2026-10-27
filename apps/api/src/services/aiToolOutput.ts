@@ -1080,7 +1080,7 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_management_posture: new Set(['name', 'version', 'product', 'hostname', 'displayName', 'orgName']),
   manage_device_function: new Set(['label', 'evidence']),
   manage_device_links: new Set(['name', 'hostname', 'displayName']),
-  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warning']),
+  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
   manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling

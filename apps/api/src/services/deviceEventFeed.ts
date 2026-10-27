@@ -116,6 +116,11 @@ export interface DeviceEventFeedFilters {
   limit: number;
   actions?: string[];
   includeAutomated: boolean;
+  /**
+   * Whether `search` also matches the free-form `details` JSON (REST: yes). The W13 AI tool passes false: it never
+   * returns `details`, actor emails or IPs (W13-D4), so matching on them would turn `search` into an oracle.
+   */
+  searchDetails?: boolean;
   withTotal: boolean;
 }
 
@@ -211,7 +216,7 @@ export async function queryDeviceEventFeed(
       or(
         ilike(auditLogs.action, term),
         ilike(auditLogs.resourceName, term),
-        sql`${auditLogs.details}::text ILIKE ${term}`
+        ...(filters.searchDetails === false ? [] : [sql`${auditLogs.details}::text ILIKE ${term}`])
       )!
     );
   }

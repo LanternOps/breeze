@@ -157,7 +157,7 @@ export function registerManualAssetTools(aiTools: Map<string, AiTool>): void {
           });
           return toolResult(result, (body) => ({
             asset: one(body),
-            ...(body.warning !== undefined ? { warning: body.warning } : {}),
+            ...(body.warnings !== undefined ? { warnings: body.warnings } : {}),
           }));
         }
 
