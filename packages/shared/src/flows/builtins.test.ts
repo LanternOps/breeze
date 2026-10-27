@@ -127,12 +127,15 @@ describe('W6 fleet built-ins (#5221)', () => {
     for (const p of [null, {}, { scriptId: SCRIPT, conditions: [] }]) expect(run.tierFor(p)).toBe(3);
   });
 
-  it('resolve_targets takes exactly one of target or conditions', () => {
+  it('resolve_targets takes exactly one of target, conditions or fromStep', () => {
     const r = FLOW_BUILTIN_STEPS.resolve_targets.inputSchema;
     expect(r.safeParse({}).success).toBe(false);
     expect(r.safeParse({ target: { type: 'all' } }).success).toBe(true);
     expect(r.safeParse({ conditions: [{ type: 'os', value: 'windows' }] }).success).toBe(true);
     expect(r.safeParse({ target: { type: 'all' }, conditions: [] }).success).toBe(false);
+    expect(r.safeParse({ fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }).success).toBe(true);
+    expect(r.safeParse({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }).success).toBe(true);
+    expect(r.safeParse({ target: { type: 'all' }, fromStep: { stepId: 'a0', set: 'succeeded' } }).success).toBe(false);
     expect(r.safeParse({ conditions: Array.from({ length: 51 }, () => ({ type: 'os', value: 'linux' })) }).success).toBe(false);
   });
 

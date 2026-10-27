@@ -87,6 +87,7 @@ function ctx(over: Partial<BuiltinContext> = {}): BuiltinContext {
     run: { id: RUN, orgId: ORG_X, flowId: 'f1', chainDepth: 0 } as FlowRunRow,
     version: {} as FlowVersionRow,
     step: { id: 'think', tool: 'ai', input: {}, timeoutSec: 300 } as never,
+    itemIndex: null,
     owner: { orgId: ORG_X, partnerId: PARTNER },
     auth: { principal: { kind: 'flow', runId: RUN, flowId: 'f1' }, orgId: ORG_X, partnerId: PARTNER } as never,
     stepRowId: 'row-1',

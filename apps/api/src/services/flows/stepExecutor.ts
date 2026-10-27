@@ -86,8 +86,12 @@ interface StepOutcomeMeta {
 export type StepOutcome =
   | ({ kind: 'completed'; output: FlowValue; truncated: boolean } & StepOutcomeMeta)
   | { kind: 'skipped' }
-  /** policy=true ⇒ fail the run regardless of onFailure. */
-  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean } & StepOutcomeMeta)
+  /**
+   * policy=true ⇒ fail the run regardless of onFailure. `output` (W6): a fleet
+   * step that failed on some devices still records its device sets, so a
+   * later step under onFailure 'continue' chains on them.
+   */
+  | ({ kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean; output?: FlowValue } & StepOutcomeMeta)
   /** The step may have executed; the run fails unknown_outcome regardless of onFailure. */
   | ({ kind: 'unknown_outcome'; message: string } & StepOutcomeMeta)
   | ({ kind: 'park_approval'; intentId: string } & StepOutcomeMeta)

@@ -17,6 +17,9 @@ import { executeAiStep } from './aiStep';
 import { literalOriginOf } from './httpPolicy';
 import { executeHttpRequestStep } from './httpRequest';
 import { executeNotifyStep } from './notify';
+import { executeCreateAlert } from './createAlert';
+import { executeResolveTargets, type ResolveTargetsInput } from './resolveTargets';
+import { executeRunScriptOnTargets, type FleetVerifiedContext, type RunScriptOnTargetsInput } from './runScriptOnTargets';
 import type { BuiltinContext } from './types';
 
 export type { BuiltinContext } from './types';
@@ -25,10 +28,20 @@ function invalid(message: string, rendered: Record<string, unknown>): StepOutcom
   return { kind: 'failed', code: 'input_invalid', message, policy: true, renderedInput: rendered as Record<string, FlowValue> };
 }
 
+function withRendered(outcome: StepOutcome, renderedInput: Record<string, FlowValue>): StepOutcome {
+  return outcome.kind === 'skipped' || outcome.renderedInput ? outcome : { ...outcome, renderedInput };
+}
+
+/**
+ * `verified` (W6, release path only): what the release worker re-checked under
+ * the dispatch claim — the script snapshot and, for a parked fleet step, the
+ * device list frozen at intent creation. Only `run_script_on_targets` reads it.
+ */
 export async function executeFlowBuiltin(
   name: FlowBuiltinName,
   rendered: Record<string, unknown>,
   ctx: BuiltinContext,
+  verified?: FleetVerifiedContext,
 ): Promise<StepOutcome> {
   if (!isFlowBuiltin(name)) throw new Error(`Unknown built-in flow step '${String(name)}'`);
   const renderedInput = rendered as Record<string, FlowValue>;
@@ -63,6 +76,22 @@ export async function executeFlowBuiltin(
       const parsed = FLOW_BUILTIN_STEPS.ai.inputSchema.safeParse(rendered);
       if (!parsed.success) return invalid(parsed.error.issues[0]?.message ?? 'Invalid ai input.', rendered);
       return executeAiStep(parsed.data, ctx);
+    }
+    // ── W6 (#5221) legacy-conversion built-ins ──
+    case 'resolve_targets': {
+      const parsed = FLOW_BUILTIN_STEPS.resolve_targets.inputSchema.safeParse(rendered);
+      if (!parsed.success) return invalid(parsed.error.issues[0]?.message ?? 'Invalid resolve_targets input.', rendered);
+      return withRendered(await executeResolveTargets(parsed.data as ResolveTargetsInput, ctx), renderedInput);
+    }
+    case 'create_alert': {
+      const parsed = FLOW_BUILTIN_STEPS.create_alert.inputSchema.safeParse(rendered);
+      if (!parsed.success) return invalid(parsed.error.issues[0]?.message ?? 'Invalid create_alert input.', rendered);
+      return withRendered(await executeCreateAlert(parsed.data, ctx), renderedInput);
+    }
+    case 'run_script_on_targets': {
+      const parsed = FLOW_BUILTIN_STEPS.run_script_on_targets.inputSchema.safeParse(rendered);
+      if (!parsed.success) return invalid(parsed.error.issues[0]?.message ?? 'Invalid run_script_on_targets input.', rendered);
+      return withRendered(await executeRunScriptOnTargets(parsed.data as RunScriptOnTargetsInput, ctx, verified), renderedInput);
     }
     default: {
       const exhaustive: never = name;

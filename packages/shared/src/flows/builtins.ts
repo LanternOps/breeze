@@ -73,7 +73,12 @@ export interface FlowFleetStepOutput {
   succeededDeviceIds: string[];
   failedDeviceIds: string[];
   skippedOfflineDeviceIds: string[];
-  devices: { id: string; hostname: string }[];
+  /**
+   * `resolve_targets` only: each device with its hostname and display name (`name` =
+   * display name, else hostname — the legacy `{{device}}` value). `run_script_on_targets`
+   * carries the id sets and counts only, so its output stays small at 500 devices.
+   */
+  devices?: { id: string; hostname: string; name: string }[];
   count: number;
   warnings: string[];
 }
@@ -145,11 +150,16 @@ export const FLOW_BUILTIN_STEPS = {
   resolve_targets: {
     maxTier: 1,
     tierFor: (_input: unknown) => 1,
-    description: 'Resolve a device target (all, devices, groups or filter) or legacy conditions to the run organization\'s devices.',
+    description: 'Resolve a device target (all, devices, groups or filter), legacy conditions, or an earlier fleet step\'s device set to the run organization\'s devices.',
     inputSchema: z.object({
       target: deploymentTargetConfigSchema.optional(),
       conditions: legacyConditionsSchema.optional(),
-    }).strict().superRefine(exactlyOne(['target', 'conditions'])),
+      // The devices of an earlier fleet step's set, with hostnames (per-device notices and alerts).
+      fromStep: z.object({
+        stepId: z.string().regex(FLEET_STEP_ID_RE),
+        set: z.enum(['succeeded', 'dispatched', 'failed']),
+      }).strict().optional(),
+    }).strict().superRefine(exactlyOne(['target', 'conditions', 'fromStep'])),
   },
   create_alert: {
     maxTier: 2,

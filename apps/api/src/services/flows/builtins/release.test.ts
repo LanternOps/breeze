@@ -32,6 +32,7 @@ beforeEach(() => {
     version: { id: 'v1', orgId: ORG, partnerId: null } as never,
     step: STEP as never,
     stepRowId: 'row-1',
+    itemIndex: null,
   });
   vi.mocked(countRunBuiltinCalls).mockReset().mockResolvedValue({ notify: 0, http: 4 });
   vi.mocked(executeFlowBuiltin).mockReset();
@@ -55,6 +56,13 @@ describe('executeReleasedFlowBuiltin', () => {
       .toEqual({ error: 'Blocked.', flowStepError: { code: 'egress_blocked', policy: true } });
   });
 
+  it('a failed outcome with output (a fleet step) keeps the output for the wake', async () => {
+    const output = { dispatchedDeviceIds: ['d1'], succeededDeviceIds: [], failedDeviceIds: ['d1'], skippedOfflineDeviceIds: [], count: 1, warnings: [] };
+    vi.mocked(executeFlowBuiltin).mockResolvedValue({ kind: 'failed', code: 'script_dispatch_failed', message: 'failed on 1 of 1', policy: false, output });
+    expect(JSON.parse(await executeReleasedFlowBuiltin(intent(), auth)))
+      .toEqual({ error: 'failed on 1 of 1', flowStepError: { code: 'script_dispatch_failed', policy: false }, output });
+  });
+
   it('an unknown outcome throws FlowBuiltinMayHaveRunError (the worker records execution_error, executed)', async () => {
     vi.mocked(executeFlowBuiltin).mockResolvedValue({ kind: 'unknown_outcome', message: 'Timed out after sending.' });
     await expect(executeReleasedFlowBuiltin(intent(), auth)).rejects.toBeInstanceOf(FlowBuiltinMayHaveRunError);
@@ -72,7 +80,7 @@ describe('executeReleasedFlowBuiltin', () => {
   it('the step name on the run must be the intent\'s built-in', async () => {
     vi.mocked(loadReleasedBuiltinStep).mockResolvedValueOnce({
       run: { id: RUN, orgId: ORG, flowId: 'f1' } as never, version: { id: 'v1', orgId: ORG, partnerId: null } as never,
-      step: { ...STEP, tool: 'notify' } as never, stepRowId: 'row-1',
+      step: { ...STEP, tool: 'notify' } as never, stepRowId: 'row-1', itemIndex: null,
     });
     await expect(executeReleasedFlowBuiltin(intent(), auth)).rejects.toThrow(/no longer/);
     expect(executeFlowBuiltin).not.toHaveBeenCalled();

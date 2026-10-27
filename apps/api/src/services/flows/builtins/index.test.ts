@@ -12,6 +12,7 @@ import { executeNotifyStep } from './notify';
 
 const ctx = (over: Partial<BuiltinContext> = {}): BuiltinContext => ({
   run: { id: 'r1', orgId: 'o1' } as never,
+  itemIndex: null,
   version: {} as never,
   step: { id: 's1', tool: 'http_request', input: { method: 'GET', url: 'https://api.example.com/items/{{inputs.id}}' } } as never,
   owner: { orgId: 'o1', partnerId: 'p1' },

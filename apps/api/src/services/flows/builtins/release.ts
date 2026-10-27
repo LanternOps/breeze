@@ -79,7 +79,12 @@ export async function executeReleasedFlowBuiltin(intent: ActionIntent, auth: Aut
     case 'completed':
       return JSON.stringify(outcome.output);
     case 'failed':
-      return JSON.stringify({ error: outcome.message, flowStepError: { code: outcome.code, policy: outcome.policy } });
+      return JSON.stringify({
+        error: outcome.message,
+        flowStepError: { code: outcome.code, policy: outcome.policy },
+        // W6: a fleet step's device sets survive a partial failure (later steps chain on them).
+        ...(outcome.output !== undefined ? { output: outcome.output } : {}),
+      });
     case 'unknown_outcome':
       throw new FlowBuiltinMayHaveRunError(outcome.message);
     default:
