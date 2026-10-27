@@ -14,7 +14,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { automations, scripts } from '../../db/schema';
 import { loadConversionContext } from '../../services/flows/conversion/context';
 import { isComplianceRemediationTarget } from '../../services/policyEvaluationService';
-import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
+import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -106,5 +106,13 @@ describe('loadConversionContext (real Postgres, #5221)', () => {
       VALUES (${s3.orgId}, 'e', ${JSON.stringify([{ remediationAutomationId: row3.id }])}::jsonb, '{}'::jsonb)`);
     expect(await withSystemDbAccessContext(() => isComplianceRemediationTarget(db, row3, s3.partnerId))).toBe(true);
     expect((await loadConversionContext(row3)).isRemediationTarget).toBe(true);
+  });
+
+  runDb('site ceiling fails closed: a creator whose permissions no longer resolve counts as a widened scope', async () => {
+    const s = await seed();
+    const member = await createUser({ partnerId: s.partnerId, orgId: s.orgId, email: `m-${randomUUID()}@example.com`, withMembership: true });
+    const gone = await createUser({ partnerId: s.partnerId, orgId: s.orgId, email: `g-${randomUUID()}@example.com` });
+    expect((await loadConversionContext(await job({ orgId: s.orgId, createdBy: member.id }))).creatorHasSiteCeiling).toBe(false);
+    expect((await loadConversionContext(await job({ orgId: s.orgId, createdBy: gone.id }))).creatorHasSiteCeiling).toBe(true);
   });
 });

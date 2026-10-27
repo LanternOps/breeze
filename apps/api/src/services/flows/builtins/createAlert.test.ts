@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   ctx: [] as string[],
+  tx: [] as string[],
   device: vi.fn(),
   create: vi.fn(),
 }));
@@ -13,9 +14,17 @@ vi.mock('../../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withDbAccessContext: async (c: { orgId: string }, fn: () => Promise<unknown>) => {
     m.ctx.push(`org:${c.orgId}`);
-    try { return await fn(); } finally { m.ctx.pop(); }
+    try {
+      const out = await fn();
+      m.tx.push('commit');
+      return out;
+    } catch (err) {
+      m.tx.push('rollback');
+      throw err;
+    } finally { m.ctx.pop(); }
   },
 }));
+vi.mock('../../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../alertCreation', () => ({
   createAutomationStyleAlert: (input: unknown) => m.create(m.ctx[m.ctx.length - 1] ?? 'none', input),
 }));
@@ -31,6 +40,7 @@ const ctx = { run: { id: 'run-1', orgId: ORG, flowId: 'flow-1' }, auth: { partne
 
 beforeEach(() => {
   m.ctx.length = 0;
+  m.tx.length = 0;
   m.device.mockReset().mockResolvedValue([{ id: DEVICE }]);
   m.create.mockReset().mockResolvedValue({ alertId: 'alert-1' });
 });
@@ -71,5 +81,13 @@ describe('executeCreateAlert', () => {
     m.create.mockRejectedValue(new Error('db down'));
     expect(await executeCreateAlert({ deviceId: DEVICE, severity: 'low', message: 'x' }, ctx))
       .toMatchObject({ kind: 'failed', code: 'alert_create_failed', policy: false });
+  });
+
+  it('a throw in the writer rolls the alert back (no committed row behind a failed step) and hides the driver text', async () => {
+    m.create.mockRejectedValue(new Error('publish failed: redis at secret-host:6379'));
+    const out = await executeCreateAlert({ deviceId: DEVICE, severity: 'low', message: 'x' }, ctx);
+    expect(out).toMatchObject({ kind: 'failed', code: 'alert_create_failed', policy: false });
+    expect(m.tx).toEqual(['rollback']);
+    expect((out as { message: string }).message).not.toContain('secret-host');
   });
 });

@@ -40,6 +40,7 @@ import type { TenantVariableScope } from './tenantVariableResolution';
 import type { AuthContext } from '../middleware/auth';
 import type { scripts } from '../db/schema';
 import { captureException } from './sentry';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import {
   findDeviceStepRow,
   finishDeviceStepRow,
@@ -47,6 +48,7 @@ import {
   insertDeviceStepRow,
   lockRunOrgDevice,
   markExecutionQueued,
+  readCommandStatus,
   readRunFence,
   type DeviceStepRow,
   type FleetRun,
@@ -127,10 +129,12 @@ async function stage(args: FleetDispatchArgs, index: number): Promise<Staged> {
   return inRunOrgTransaction(args.run, async () => {
     const fence = await readRunFence(args.run.id, args.leaseToken);
     if (fence) return { kind: 'stop', fence };
-    const existing = await findDeviceStepRow(args.run.id, args.stepId, index);
+    // Lock FIRST, then look for the claim: a concurrent attempt on the same
+    // device waits here and then finds the winner's committed claim.
+    const device = await lockRunOrgDevice(args.run.orgId, deviceId);
+    const existing = await findDeviceStepRow(args.run.id, args.stepId, deviceId);
     if (existing) return { kind: 'done', result: replayed(existing, deviceId) };
 
-    const device = await lockRunOrgDevice(args.run.orgId, deviceId);
     const rowId = await insertDeviceStepRow({
       runId: args.run.id, orgId: args.run.orgId, stepId: args.stepId, itemIndex: index, deviceId, scriptId: args.script.id,
     });
@@ -174,7 +178,31 @@ async function stage(args: FleetDispatchArgs, index: number): Promise<Staged> {
   });
 }
 
-/** After commit: the agent send, then the legacy queued bookkeeping. */
+const UNDELIVERED_AFTER_CLAIM = 'The command was claimed for delivery but could not be sent; it will not run.';
+const UNEXPECTED = 'Dispatch failed unexpectedly; see the server log.';
+
+function report(err: unknown, args: FleetDispatchArgs, deviceId: string, site: string): void {
+  captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+    flow_run_id: args.run.id, flow_step_id: args.stepId, device_id: deviceId, flow_site: `scriptFleetDispatch.${site}`,
+  });
+}
+
+/** Rewrite a committed device row as failed. Best effort: the result reported to the step is what decides. */
+async function markRowFailed(args: FleetDispatchArgs, deviceId: string, rowId: string, base: Partial<FleetDeviceResult>, error: string): Promise<void> {
+  try {
+    await finishDeviceStepRow(rowId, {
+      status: 'failed', output: { deviceId, outcome: 'failed', ...base, error }, errorCode: 'script_dispatch_failed', error,
+    }, args.run);
+  } catch (err) {
+    report(err, args, deviceId, 'markRowFailed');
+  }
+}
+
+/**
+ * After commit: the agent send, then the legacy queued bookkeeping. Never
+ * throws — the device was dispatched (its rows committed), so a failure here
+ * must not abort the rest of the fleet or lose the device's result.
+ */
 async function deliver(args: FleetDispatchArgs, deviceId: string, rowId: string, dispatch: Extract<DispatchScriptResult, { ok: true }>): Promise<FleetDeviceResult> {
   const base = { executionId: dispatch.executionId, commandId: dispatch.commandId };
   if (!dispatch.deliver) return result(deviceId, dispatch.delivered ? 'dispatched' : 'queued', base);
@@ -182,19 +210,44 @@ async function deliver(args: FleetDispatchArgs, deviceId: string, rowId: string,
   try {
     delivered = await dispatch.deliver();
   } catch (err) {
-    // The command row committed; the agent picks it up on its next check-in.
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { flow_run_id: args.run.id, flow_site: 'scriptFleetDispatch.deliver' });
-    return result(deviceId, 'queued', base);
+    report(err, args, deviceId, 'deliver');
+    // A command still `pending` waits for the agent's next check-in (queued is
+    // success). One already claimed for delivery that threw will not run.
+    let status: string | null = 'pending';
+    try {
+      status = await readCommandStatus(args.run, dispatch.commandId);
+    } catch (readErr) {
+      report(readErr, args, deviceId, 'readCommandStatus');
+    }
+    if (status === 'pending') return result(deviceId, 'queued', base);
+    await markRowFailed(args, deviceId, rowId, base, UNDELIVERED_AFTER_CLAIM);
+    return result(deviceId, 'failed', { ...base, error: UNDELIVERED_AFTER_CLAIM });
   }
   if (!delivered.ok) {
-    await finishDeviceStepRow(rowId, {
-      status: 'failed', output: { deviceId, outcome: 'failed', ...base, error: delivered.error },
-      errorCode: 'script_dispatch_failed', error: delivered.error,
-    }, args.run);
+    await markRowFailed(args, deviceId, rowId, base, delivered.error);
     return result(deviceId, 'failed', { ...base, error: delivered.error });
   }
-  if (!delivered.delivered && delivered.executionId) await markExecutionQueued(args.run, delivered.executionId);
+  if (!delivered.delivered && delivered.executionId) {
+    try {
+      await markExecutionQueued(args.run, delivered.executionId);
+    } catch (err) {
+      report(err, args, deviceId, 'markExecutionQueued');
+    }
+  }
   return result(deviceId, delivered.delivered ? 'dispatched' : 'queued', base);
+}
+
+/** After a claim collision: the winner's committed row decides; never a second dispatch. */
+async function replayAfterCollision(args: FleetDispatchArgs, deviceId: string): Promise<FleetDeviceResult> {
+  try {
+    const row = await inRunOrgTransaction(args.run, () => findDeviceStepRow(args.run.id, args.stepId, deviceId));
+    if (row) return replayed(row, deviceId);
+  } catch (err) {
+    report(err, args, deviceId, 'replayAfterCollision');
+  }
+  // The position is held by another device's claim: an invariant violation (positions come from a frozen, sorted set).
+  report(new Error('fleet claim position collision'), args, deviceId, 'positionCollision');
+  return result(deviceId, 'failed', { error: ROW_MISMATCH });
 }
 
 async function dispatchOne(args: FleetDispatchArgs, index: number): Promise<FleetDeviceResult | { stop: RunFence }> {
@@ -203,11 +256,13 @@ async function dispatchOne(args: FleetDispatchArgs, index: number): Promise<Flee
   try {
     staged = await stage(args, index);
   } catch (err) {
+    // A concurrent attempt committed this device's claim first: replay it.
+    if (isPgUniqueViolation(err)) return replayAfterCollision(args, deviceId);
     // The transaction rolled back: no claim, no dispatch rows. The device is
-    // reported failed; a later attempt (a redelivered release) may claim it.
-    const error = err instanceof Error ? err.message : String(err);
-    captureException(err instanceof Error ? err : new Error(error), undefined, { flow_run_id: args.run.id, flow_site: 'scriptFleetDispatch.stage' });
-    return result(deviceId, 'failed', { error: error.slice(0, 300) });
+    // reported failed (a fixed message — driver text can carry parameters);
+    // a later attempt (a redelivered release) may claim it.
+    report(err, args, deviceId, 'stage');
+    return result(deviceId, 'failed', { error: UNEXPECTED });
   }
   if (staged.kind === 'stop') return { stop: staged.fence };
   if (staged.kind === 'done') return staged.result;

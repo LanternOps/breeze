@@ -107,7 +107,9 @@ export async function loadConversionContext(row: AutomationRow, now: Date = new 
         orgId: row.orgId ?? undefined,
         partnerId: owner.partnerId,
       });
-      creatorHasSiteCeiling = Array.isArray(perms?.allowedSiteIds);
+      // Fail closed: a creator whose permissions no longer resolve may have had a
+      // ceiling; the switch dialog then asks for explicit acceptance.
+      creatorHasSiteCeiling = perms === null || Array.isArray(perms.allowedSiteIds);
     }
 
     let partnerOrgs: ConversionContext['partnerOrgs'] = null;

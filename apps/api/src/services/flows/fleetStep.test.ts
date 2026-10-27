@@ -75,7 +75,7 @@ function deps(b: FleetStepDeps['binding']): FleetStepDeps & { park: ReturnType<t
   return {
     binding: b,
     park: vi.fn(async (frozen: unknown) => ({ kind: 'park_approval', intentId: 'intent-1', renderedInput: frozen })),
-    run: async (fn) => fn(),
+    run: async (fn: () => Promise<unknown>) => fn(),
   } as never;
 }
 
@@ -94,6 +94,15 @@ describe('executeFleetStep', () => {
     expect(out.kind).toBe('park_approval');
     // The selector is gone: the intent names exactly the resolved devices.
     expect(d.park).toHaveBeenCalledWith({ scriptId: SCRIPT, whenOffline: 'queue', deviceIds: [id(1), id(2)] });
+    expect(m.execute).not.toHaveBeenCalled();
+  });
+
+  it('a for-each item unit is refused before any resolve, park or dispatch', async () => {
+    const d = deps(null);
+    const out = await executeFleetStep({ ...input(), itemIndex: 0 } as StepExecutionInput, rendered, ctx, d);
+    expect(out).toMatchObject({ kind: 'failed', code: 'input_invalid', policy: true });
+    expect(m.select).not.toHaveBeenCalled();
+    expect(d.park).not.toHaveBeenCalled();
     expect(m.execute).not.toHaveBeenCalled();
   });
 

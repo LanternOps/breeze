@@ -434,6 +434,70 @@ END $$;
 CREATE INDEX IF NOT EXISTS automations_converted_to_flow_idx
   ON automations (converted_to_flow_id) WHERE converted_to_flow_id IS NOT NULL;
 
+-- A retired automation names only a flow of its own owner. The FK alone would
+-- let it point at another tenant's flow. Guarded from both sides (the
+-- automation moves, or the flow moves); DEFERRABLE so an org merge that
+-- restamps both in one transaction is checked at COMMIT.
+CREATE OR REPLACE FUNCTION public.automations_converted_flow_owner_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  f_org uuid;
+  f_partner uuid;
+BEGIN
+  IF NEW.converted_to_flow_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT f.org_id, f.partner_id INTO f_org, f_partner
+  FROM public.flows AS f
+  WHERE f.id = NEW.converted_to_flow_id;
+  IF FOUND AND NEW.org_id IS NOT DISTINCT FROM f_org AND NEW.partner_id IS NOT DISTINCT FROM f_partner THEN
+    RETURN NULL;
+  END IF;
+
+  RAISE EXCEPTION 'automation converted flow owner does not match the automation owner'
+    USING ERRCODE = '23514',
+          CONSTRAINT = 'automations_converted_flow_owner_chk';
+END $$;
+
+DROP TRIGGER IF EXISTS automations_converted_flow_owner_guard_trg ON automations;
+CREATE CONSTRAINT TRIGGER automations_converted_flow_owner_guard_trg
+  AFTER INSERT OR UPDATE OF org_id, partner_id, converted_to_flow_id ON automations
+  DEFERRABLE INITIALLY IMMEDIATE
+  FOR EACH ROW
+  WHEN (NEW.converted_to_flow_id IS NOT NULL)
+  EXECUTE FUNCTION public.automations_converted_flow_owner_guard();
+
+CREATE OR REPLACE FUNCTION public.flows_converted_automation_owner_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public.automations AS a
+    WHERE a.converted_to_flow_id = NEW.id
+      AND (a.org_id IS DISTINCT FROM NEW.org_id OR a.partner_id IS DISTINCT FROM NEW.partner_id)
+  ) THEN
+    RAISE EXCEPTION 'automation converted flow owner does not match the automation owner'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'automations_converted_flow_owner_chk';
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS flows_converted_automation_owner_guard_trg ON flows;
+CREATE CONSTRAINT TRIGGER flows_converted_automation_owner_guard_trg
+  AFTER UPDATE OF org_id, partner_id ON flows
+  DEFERRABLE INITIALLY IMMEDIATE
+  FOR EACH ROW
+  WHEN (OLD.org_id IS DISTINCT FROM NEW.org_id OR OLD.partner_id IS DISTINCT FROM NEW.partner_id)
+  EXECUTE FUNCTION public.flows_converted_automation_owner_guard();
+
 -- ============================================
 -- 4. CHECK swaps — the four W6 fleet built-in step error codes
 -- ============================================

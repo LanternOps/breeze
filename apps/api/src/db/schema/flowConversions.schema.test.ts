@@ -141,7 +141,10 @@ describe('flow conversion schema (#5221)', () => {
     });
 
     it('owner guards are SECURITY DEFINER with a pinned search_path', () => {
-      for (const fn of ['flow_automation_conversions_owner_guard', 'automation_occurrence_claims_owner_guard']) {
+      for (const fn of [
+        'flow_automation_conversions_owner_guard', 'automation_occurrence_claims_owner_guard',
+        'automations_converted_flow_owner_guard', 'flows_converted_automation_owner_guard',
+      ]) {
         expect(flat).toMatch(new RegExp(`FUNCTION public\\.${fn}\\(\\) RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public`));
       }
     });
@@ -149,6 +152,11 @@ describe('flow conversion schema (#5221)', () => {
     it('writes no rows (DDL only, so no system-scope election)', () => {
       expect(sql).not.toMatch(/^\s*(INSERT INTO|UPDATE \w+ SET|DELETE FROM)\b/im);
       expect(sql).not.toMatch(/\bBEGIN;|\bCOMMIT;/);
+    });
+
+    it('guards converted_to_flow_id ownership from both sides, deferrable for the org merge', () => {
+      expect(flat).toContain('CREATE CONSTRAINT TRIGGER automations_converted_flow_owner_guard_trg AFTER INSERT OR UPDATE OF org_id, partner_id, converted_to_flow_id ON automations DEFERRABLE INITIALLY IMMEDIATE');
+      expect(flat).toContain('CREATE CONSTRAINT TRIGGER flows_converted_automation_owner_guard_trg AFTER UPDATE OF org_id, partner_id ON flows DEFERRABLE INITIALLY IMMEDIATE');
     });
 
     it('ties converted_to_flow_id to a converted_to_flow retirement', () => {

@@ -12,10 +12,10 @@
  * row is never visible to the runner's stalled-row rule.
  */
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import type { FlowStepErrorCode, FlowValue } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../db';
-import { devices, flowRuns, flowRunSteps, scriptExecutions } from '../db/schema';
+import { deviceCommands, devices, flowRuns, flowRunSteps, scriptExecutions } from '../db/schema';
 import { flowDbAccessContext } from './flows/flowAuthContext';
 
 export interface FleetRun {
@@ -57,18 +57,33 @@ export async function readRunFence(runId: string, leaseToken: string | null): Pr
   return null;
 }
 
-export async function findDeviceStepRow(runId: string, stepId: string, itemIndex: number): Promise<DeviceStepRow | null> {
+/**
+ * The device's claim row on this step, found by DEVICE (not position), so a
+ * re-resolved set whose positions shifted can never dispatch a device twice.
+ */
+export async function findDeviceStepRow(runId: string, stepId: string, deviceId: string): Promise<DeviceStepRow | null> {
   const [row] = await db
     .select({ id: flowRunSteps.id, status: flowRunSteps.status, renderedInput: flowRunSteps.renderedInput, output: flowRunSteps.output })
     .from(flowRunSteps)
     .where(and(
       eq(flowRunSteps.runId, runId),
       eq(flowRunSteps.stepId, stepId),
-      eq(flowRunSteps.itemIndex, itemIndex),
+      isNotNull(flowRunSteps.itemIndex),
       eq(flowRunSteps.attempt, 1),
+      sql`${flowRunSteps.renderedInput}->>'deviceId' = ${deviceId}`,
     ))
     .limit(1);
   return row ?? null;
+}
+
+/** A dispatched command's delivery status (`pending` = still queued for the agent). Null when the row is gone. */
+export async function readCommandStatus(run: FleetRun, commandId: string): Promise<string | null> {
+  const [row] = await inRunOrgTransaction(run, () => db
+    .select({ status: deviceCommands.status })
+    .from(deviceCommands)
+    .where(eq(deviceCommands.id, commandId))
+    .limit(1));
+  return row ? String(row.status) : null;
 }
 
 /** The device, locked, when it is in the run org; null otherwise (moved, deleted or foreign). */

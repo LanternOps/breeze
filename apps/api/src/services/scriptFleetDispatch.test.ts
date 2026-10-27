@@ -13,6 +13,7 @@ const m = vi.hoisted(() => ({
   fence: vi.fn(),
   findRow: vi.fn(),
   lockDevice: vi.fn(),
+  commandStatus: vi.fn(),
   insertRow: vi.fn(),
   finishRow: vi.fn(),
   markQueued: vi.fn(),
@@ -27,8 +28,9 @@ vi.mock('./scriptFleetDispatchStore', () => ({
     try { return await fn(); } finally { m.order.push('tx:commit'); m.inTx = false; }
   },
   readRunFence: m.fence,
-  findDeviceStepRow: m.findRow,
-  lockRunOrgDevice: m.lockDevice,
+  findDeviceStepRow: (...a: unknown[]) => { m.order.push('row:find'); return m.findRow(...a); },
+  lockRunOrgDevice: (...a: unknown[]) => { m.order.push('device:lock'); return m.lockDevice(...a); },
+  readCommandStatus: m.commandStatus,
   insertDeviceStepRow: (...a: unknown[]) => { m.order.push('row:insert'); return m.insertRow(...a); },
   finishDeviceStepRow: (...a: unknown[]) => { m.order.push(`row:finish:${(a[1] as { status: string }).status}`); return m.finishRow(...a); },
   markExecutionQueued: m.markQueued,
@@ -72,7 +74,8 @@ const okDispatch = (delivered: boolean) => ({
 
 beforeEach(() => {
   m.order.length = 0;
-  for (const k of ['fence', 'findRow', 'lockDevice', 'insertRow', 'finishRow', 'markQueued', 'dispatch'] as const) m[k].mockReset();
+  for (const k of ['fence', 'findRow', 'lockDevice', 'insertRow', 'finishRow', 'markQueued', 'dispatch', 'commandStatus'] as const) m[k].mockReset();
+  m.commandStatus.mockResolvedValue('pending');
   m.fence.mockResolvedValue(null);
   m.findRow.mockResolvedValue(null);
   m.lockDevice.mockImplementation(async (_orgId: string, id: string) => device(id));
@@ -84,7 +87,8 @@ beforeEach(() => {
 describe('dispatchScriptToDevices (flow lane)', () => {
   it('flow lane writes the per-device row before dispatch, dispatches inside the transaction and delivers after commit', async () => {
     const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
-    expect(m.order).toEqual(['tx:begin', 'row:insert', 'dispatch:in-tx', 'row:finish:completed', 'tx:commit', 'deliver']);
+    // The device lock comes BEFORE the claim lookup, so a concurrent attempt waits and then sees the claim.
+    expect(m.order).toEqual(['tx:begin', 'device:lock', 'row:find', 'row:insert', 'dispatch:in-tx', 'row:finish:completed', 'tx:commit', 'deliver']);
     expect(out.perDevice).toEqual([{ deviceId: D1, outcome: 'dispatched', executionId: 'exe', commandId: 'cmd', error: null }]);
     expect(m.insertRow.mock.calls[0]![0]).toMatchObject({ runId: 'run-1', orgId: ORG, stepId: 'a0_run_script', itemIndex: 0, deviceId: D1 });
   });
@@ -137,13 +141,73 @@ describe('dispatchScriptToDevices (flow lane)', () => {
 
   it('crash after claim and before dispatch resumes without a second dispatch', async () => {
     // The device's row committed (with the dispatch it was claimed for) before the crash.
-    m.findRow.mockImplementation(async (_run: string, _step: string, i: number) => (i === 0
+    m.findRow.mockImplementation(async (_run: string, _step: string, deviceId: string) => (deviceId === D1
       ? { id: 'r0', status: 'completed', renderedInput: { deviceId: D1 }, output: { deviceId: D1, outcome: 'queued', executionId: 'exe-old', commandId: 'cmd-old' } }
       : null));
     const out = await dispatchScriptToDevices(args({ deviceIds: [D1, D2], concurrency: 1 }));
     expect(m.dispatch).toHaveBeenCalledTimes(1);
     expect((m.dispatch.mock.calls[0]![2] as { device: { id: string } }).device.id).toBe(D2);
     expect(out.perDevice[0]).toEqual({ deviceId: D1, outcome: 'queued', executionId: 'exe-old', commandId: 'cmd-old', error: null });
+  });
+
+  it('a recorded row in any non-terminal state is never dispatched again (fails closed)', async () => {
+    m.findRow.mockResolvedValue({ id: 'r0', status: 'running', renderedInput: { deviceId: D1 }, output: null });
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(m.dispatch).not.toHaveBeenCalled();
+    expect(out.perDevice[0]).toMatchObject({ deviceId: D1, outcome: 'failed' });
+  });
+
+  it('a throw inside the transaction (claim rolled back) reports the device failed and never delivers', async () => {
+    m.dispatch.mockRejectedValueOnce(new Error('queue down'));
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(out.perDevice[0]).toMatchObject({ deviceId: D1, outcome: 'failed' });
+    expect(m.order).not.toContain('deliver');
+  });
+
+  it('a throw in delivery after commit: a still-pending command is queued; a claimed-but-undelivered one is failed', async () => {
+    m.dispatch.mockImplementation(async () => ({ ...okDispatch(true), deliver: async () => { throw new Error('socket gone'); } }));
+    const queued = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(queued.perDevice[0]).toMatchObject({ deviceId: D1, outcome: 'queued', executionId: 'exe' });
+    m.commandStatus.mockResolvedValue('sent');
+    const failed = await dispatchScriptToDevices(args({ deviceIds: [D2] }));
+    expect(failed.perDevice[0]).toMatchObject({ deviceId: D2, outcome: 'failed' });
+    expect(m.finishRow).toHaveBeenLastCalledWith('row-id', expect.objectContaining({ status: 'failed' }), expect.anything());
+    expect(m.dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('a concurrent attempt that collides on the claim replays the winner instead of reporting a failure', async () => {
+    const unique = Object.assign(new Error('duplicate key value violates unique constraint "flow_run_steps_attempt_uq"'), { code: '23505' });
+    m.insertRow.mockRejectedValueOnce(unique);
+    // The first lookup (inside the losing transaction) saw nothing; the re-read after the rollback sees the winner's row.
+    m.findRow.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: 'r0', status: 'completed', renderedInput: { deviceId: D1 }, output: { deviceId: D1, outcome: 'queued', executionId: 'exe-w', commandId: 'cmd-w' },
+    });
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(out.perDevice[0]).toEqual({ deviceId: D1, outcome: 'queued', executionId: 'exe-w', commandId: 'cmd-w', error: null });
+    expect(m.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('bookkeeping failures after commit never abort the fleet', async () => {
+    m.dispatch.mockImplementation(async () => okDispatch(false));
+    m.markQueued.mockRejectedValue(new Error('db blip'));
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1, D2] }));
+    expect(out.perDevice.map((d) => d.outcome)).toEqual(['queued', 'queued']);
+  });
+
+  it('an unexpected error is reported with a fixed message, never the raw database text', async () => {
+    m.dispatch.mockRejectedValueOnce(new Error('insert into "script_executions" ($1, $2) values (secretParam)'));
+    const out = await dispatchScriptToDevices(args({ deviceIds: [D1] }));
+    expect(out.perDevice[0]!.error).not.toContain('secretParam');
+    expect(out.perDevice[0]!.error).toMatch(/unexpectedly/);
+  });
+
+  it('with concurrency, a fence stops later batches; devices already reached are reported', async () => {
+    m.fence.mockImplementation(async () => (m.dispatch.mock.calls.length >= 2 ? 'cancelled' : null));
+    const ids = [D1, D2, D3, 'aaaaaaaa-0000-4000-8000-000000000004'];
+    const out = await dispatchScriptToDevices(args({ deviceIds: ids, concurrency: 2 }));
+    expect(out.stopped).toBe('cancelled');
+    expect(m.dispatch).toHaveBeenCalledTimes(2);
+    expect(out.perDevice.map((d) => d.deviceId)).toEqual([D1, D2]);
   });
 
   it('a recorded row for a different device at the same position fails closed', async () => {

@@ -89,6 +89,12 @@ export async function executeFlowBuiltin(
       return withRendered(await executeCreateAlert(parsed.data, ctx), renderedInput);
     }
     case 'run_script_on_targets': {
+      // Only the release worker reaches here, always with what it re-verified.
+      // Without it there is nothing approved to dispatch: never fall back to the
+      // live script or a live selector.
+      if (!verified) {
+        return { kind: 'failed', code: 'binding_drift', message: 'This fleet step has no verified approval to dispatch.', policy: true, renderedInput };
+      }
       const parsed = FLOW_BUILTIN_STEPS.run_script_on_targets.inputSchema.safeParse(rendered);
       if (!parsed.success) return invalid(parsed.error.issues[0]?.message ?? 'Invalid run_script_on_targets input.', rendered);
       return withRendered(await executeRunScriptOnTargets(parsed.data as RunScriptOnTargetsInput, ctx, verified), renderedInput);

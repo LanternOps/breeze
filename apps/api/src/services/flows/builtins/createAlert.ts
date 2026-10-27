@@ -8,13 +8,16 @@
  * The device must be a device of the run org; anything else is refused before
  * any write (`reference_not_owned`). The write runs under the flow principal's
  * run-org DB context. A failed write is `alert_create_failed` (onFailure
- * applies); nothing was raised.
+ * applies); nothing was raised: a throw anywhere in the writer (the insert or
+ * the event publish) propagates out of the transaction and rolls the alert
+ * row back, so a retry never leaves a duplicate behind a failed step.
  */
 import { and, eq } from 'drizzle-orm';
 import type { FlowValue } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { devices } from '../../../db/schema';
 import { createAutomationStyleAlert } from '../../alertCreation';
+import { captureException } from '../../sentry';
 import { flowDbAccessContext } from '../flowAuthContext';
 import type { StepOutcome } from '../stepExecutor';
 import type { BuiltinContext } from './types';
@@ -34,14 +37,15 @@ export async function executeCreateAlert(input: CreateAlertInput, ctx: BuiltinCo
     return { kind: 'failed', code: 'input_invalid', message: 'deviceId must be a device id.', policy: true };
   }
   const orgId = ctx.run.orgId;
-  const outcome = await runOutsideDbContext(() => withDbAccessContext(flowDbAccessContext(orgId, ctx.auth.partnerId!), async () => {
-    const [device] = await db
-      .select({ id: devices.id })
-      .from(devices)
-      .where(and(eq(devices.id, input.deviceId), eq(devices.orgId, orgId)))
-      .limit(1);
-    if (!device) return 'not_owned' as const;
-    try {
+  let outcome: { alertId: string } | 'not_owned' | 'failed';
+  try {
+    outcome = await runOutsideDbContext(() => withDbAccessContext(flowDbAccessContext(orgId, ctx.auth.partnerId!), async () => {
+      const [device] = await db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(and(eq(devices.id, input.deviceId), eq(devices.orgId, orgId)))
+        .limit(1);
+      if (!device) return 'not_owned' as const;
       return await createAutomationStyleAlert({
         orgId,
         deviceId: device.id,
@@ -50,16 +54,19 @@ export async function executeCreateAlert(input: CreateAlertInput, ctx: BuiltinCo
         message: input.message,
         provenance: { kind: 'flow', flowRunId: ctx.run.id },
       }) ?? ('failed' as const);
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
-    }
-  }));
+    }));
+  } catch (err) {
+    // Caught OUTSIDE the transaction: it has rolled back. Driver text stays in the log, not the step message.
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      flow_run_id: ctx.run.id, flow_site: 'createAlert',
+    });
+    outcome = 'failed';
+  }
   if (outcome === 'not_owned') {
     return { kind: 'failed', code: 'reference_not_owned', message: 'This device is not in the run\'s organization.', policy: true };
   }
-  if (outcome === 'failed' || 'error' in outcome) {
-    const detail = outcome === 'failed' ? 'the alert row was not written' : outcome.error;
-    return { kind: 'failed', code: 'alert_create_failed', message: `The alert could not be created: ${detail.slice(0, 300)}`, policy: false };
+  if (outcome === 'failed') {
+    return { kind: 'failed', code: 'alert_create_failed', message: 'The alert could not be created; see the server log.', policy: false };
   }
   return { kind: 'completed', output: { alertId: outcome.alertId } as FlowValue, truncated: false };
 }

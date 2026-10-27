@@ -320,6 +320,11 @@ async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationC
       }
     }
   }
+  if (step.tool === 'run_script_on_targets' && step.forEach) {
+    // Its per-device claims are ledger rows keyed by device position; a for-each
+    // unit row uses the same key. Fan out with the step's own selector instead.
+    out.push(issue('input_invalid', 'run_script_on_targets cannot run inside a for-each; it already runs on every target device.', { stepId: step.id, pointer: base.replace(/\/input$/, '/forEach') }));
+  }
   const from = step.input.fromStep;
   if (isRecord(from) && typeof from.stepId === 'string') {
     const earlier = (ctx.earlierSteps ?? []).find((s) => s.id === from.stepId);

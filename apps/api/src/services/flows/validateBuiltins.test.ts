@@ -145,6 +145,12 @@ describe('validateBuiltinStep', () => {
       expect(await codesFor('create_alert', { deviceId: DEVICE, severity: 'low', message: 'm' })).toEqual(['device_not_owned']);
     });
 
+    it('run_script_on_targets inside a for-each is refused (its device claims share the item ledger key)', async () => {
+      const s = { ...step('run_script_on_targets', { scriptId: SCRIPT, conditions: [] }), forEach: { items: '{{inputs.xs}}', as: 'item' as const, maxItems: 10, concurrency: 1 } };
+      const codes = (await validateBuiltinStep(s, 0, { owner: ORG_OWNER, catalog: catalog() })).map((i) => i.code);
+      expect(codes).toEqual(['input_invalid']);
+    });
+
     it('fromStep must name an earlier step of the document', async () => {
       // The single-step helper has no earlier steps: any fromStep reference is invalid here.
       expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }))

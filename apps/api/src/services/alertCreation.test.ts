@@ -85,6 +85,24 @@ describe('createAutomationStyleAlert', () => {
     expect(m.inserts[1]!.values).toMatchObject({ orgId: ORG, name: 'Automation Action Alerts', targetType: 'org', targetId: ORG });
   });
 
+  // partner-wide-write-coverage allowlists this file on this property: the
+  // template and rule are ORG-axis rows of the one org passed in (every flow
+  // run has an org — flow_runs.org_id NOT NULL — and the legacy caller passes
+  // the device's org). A partner-axis row (partner_id set, org_id NULL) would
+  // be partner-wide config and need canManagePartnerWidePolicies.
+  it('only ever writes org-axis template and rule rows (never partner-wide config)', async () => {
+    m.selects.push([], []);
+    await createAutomationStyleAlert({
+      orgId: ORG, deviceId: DEVICE, severity: 'low', title: 't', message: 'm',
+      provenance: { kind: 'flow', flowRunId: 'frun-1' },
+    });
+    for (const i of m.inserts) {
+      expect(i.values.orgId, i.table).toBe(ORG);
+      expect(i.values, i.table).not.toHaveProperty('partnerId');
+    }
+    expect(m.inserts.find((i) => i.table === 'alert_rules')!.values).toMatchObject({ targetType: 'org', targetId: ORG });
+  });
+
   it('flow provenance carries flowRunId and never an automationId', async () => {
     m.selects.push([{ id: 'tpl-1' }], [{ id: 'rule-1' }]);
     const out = await createAutomationStyleAlert({

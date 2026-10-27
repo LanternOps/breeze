@@ -207,7 +207,7 @@ describe('assessPreApprovals', () => {
     expect(Object.keys(r.eligibility)).toEqual(['run']);
     expect(r.eligibility.run).toEqual({ eligible: true });
     expect(r.bindings.run).toMatchObject({ stepId: 'run', lane: 'act_asset', assetKind: 'script', scriptId: SCRIPT });
-    expect(r.bindings.run!.contentDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect((r.bindings.run as { contentDigest: string }).contentDigest).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a script the owner does not own is script_not_found (same as missing), and is never read', async () => {

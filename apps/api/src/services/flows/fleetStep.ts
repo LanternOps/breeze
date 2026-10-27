@@ -75,6 +75,11 @@ export async function executeFleetStep(
 ): Promise<StepOutcome> {
   const rendered = input as unknown as Record<string, FlowValue>;
   const meta: Meta = { renderedInput: rendered };
+  if (i.itemIndex !== null) {
+    // Refused at save too; this guards a document that predates the rule. The
+    // device claims would collide with the for-each unit rows (same ledger key).
+    return { kind: 'failed', code: 'input_invalid', message: 'run_script_on_targets cannot run inside a for-each.', policy: true, ...meta };
+  }
   if (deps.binding === 'invalid') return policy('drift', 'This step\'s stored pre-approval is unreadable.', meta);
 
   const selection = await resolveFleetSelection(input, ctx);

@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./notify', () => ({ executeNotifyStep: vi.fn() }));
 vi.mock('./httpRequest', () => ({ executeHttpRequestStep: vi.fn() }));
 vi.mock('./aiStep', () => ({ executeAiStep: vi.fn() }));
+vi.mock('./runScriptOnTargets', () => ({ executeRunScriptOnTargets: vi.fn() }));
 
 import type { BuiltinContext } from './types';
 import { executeAiStep } from './aiStep';
 import { executeHttpRequestStep } from './httpRequest';
 import { executeFlowBuiltin } from './index';
 import { executeNotifyStep } from './notify';
+import { executeRunScriptOnTargets } from './runScriptOnTargets';
 
 const ctx = (over: Partial<BuiltinContext> = {}): BuiltinContext => ({
   run: { id: 'r1', orgId: 'o1' } as never,
@@ -67,6 +69,14 @@ describe('executeFlowBuiltin', () => {
     expect(await executeFlowBuiltin('http_request', { method: 'GET', url: 'https://api.example.com/x' }, c))
       .toMatchObject({ kind: 'failed', code: 'egress_blocked', policy: true });
     expect(executeHttpRequestStep).not.toHaveBeenCalled();
+  });
+
+  it('run_script_on_targets without a verified release context is binding_drift and never dispatches (W06 #5221)', async () => {
+    const out = await executeFlowBuiltin('run_script_on_targets', {
+      scriptId: '11111111-1111-4111-8111-111111111111', deviceIds: ['22222222-2222-4222-8222-222222222222'], whenOffline: 'queue',
+    }, ctx());
+    expect(out).toMatchObject({ kind: 'failed', code: 'binding_drift', policy: true });
+    expect(vi.mocked(executeRunScriptOnTargets)).not.toHaveBeenCalled();
   });
 
   it('an unknown name throws', async () => {
