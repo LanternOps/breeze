@@ -133,6 +133,7 @@ describe('resolvePromptIdentity', () => {
       partnerId: PARTNER,
       orgId: ORG,
       scopeId: promptIdentityScopeId(PARTNER, ORG),
+      partnerNameStatus: 'usable',
       partnerName: 'Example IT Services',
       primaryColor: '#1F5FAD',
       logoSource: PARTNER_LOGO,
@@ -186,6 +187,14 @@ describe('resolvePromptIdentity', () => {
     const blank = await resolvePromptIdentity(ORG);
     expect(blank).not.toBeNull();
     expect(blank).not.toHaveProperty('partnerName');
+  });
+
+  it('says explicitly when the partner exists but its name sanitized away (#10190 W04 decision 2)', async () => {
+    setRows({ partner: [{ name: '   ', settings: { branding: { primaryColor: '#1F5FAD' } } }] });
+    const blank = await resolvePromptIdentity(ORG);
+    expect(blank).toMatchObject({ partnerId: PARTNER, orgId: ORG, partnerNameStatus: 'sanitized_empty', primaryColor: '#1F5FAD' });
+    expect(blank).not.toHaveProperty('partnerName');
+    expect((await (setRows(), resolvePromptIdentity(ORG)))?.partnerNameStatus).toBe('usable');
   });
 
   it('omits colour and logo keys when neither the partner nor the org has one', async () => {

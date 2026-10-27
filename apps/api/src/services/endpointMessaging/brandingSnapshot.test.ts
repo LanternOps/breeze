@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderPromptMessage } from '@breeze/shared/promptCatalog';
 import type { TableRows } from '../../__tests__/helpers/tableKeyedDb';
 
 // Table-keyed DB (real schema) so the pins below survive the resolver refactor
@@ -46,10 +47,12 @@ describe('resolveMessageBranding', () => {
     h.resolverCalls = [];
     setRows();
   });
+  afterEach(() => vi.restoreAllMocks());
 
   it('uses the partner name as company and display name and the partner primary colour as accent', async () => {
     await expect(resolveMessageBranding('org-1')).resolves.toEqual({
       partnerId: 'partner-1',
+      senderIdentity: 'partner',
       branding: { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#12ab34' },
     });
   });
@@ -62,7 +65,8 @@ describe('resolveMessageBranding', () => {
   it('snapshot unchanged for a partner with no portal override (the pre-#10190 shape, byte for byte)', async () => {
     setRows({ partner: [{ name: 'Example IT Services', settings: { branding: { primaryColor: '#1F5FAD', logoUrl: 'https://logos.example.com/p.png' } } }] });
     const snapshot = await resolveMessageBranding('org-1');
-    expect(JSON.stringify(snapshot)).toBe(JSON.stringify({
+    expect(snapshot?.senderIdentity).toBe('partner');
+    expect(JSON.stringify({ partnerId: snapshot?.partnerId, branding: snapshot?.branding })).toBe(JSON.stringify({
       partnerId: 'partner-1',
       branding: { companyName: 'Example IT Services', displayName: 'Example IT Services', accent: '#1F5FAD' },
     }));
@@ -91,10 +95,53 @@ describe('resolveMessageBranding', () => {
     expect(r?.branding.companyName).toHaveLength(120);
   });
 
-  it('returns null (fail closed) when the org has no partner or the partner has no name', async () => {
+  it('returns null (fail closed) when the org has no partner (or the partner row is not visible)', async () => {
     setRows({ org: [{ partnerId: null }] });
     await expect(resolveMessageBranding('org-1')).resolves.toBeNull();
-    setRows({ partner: [{ name: '   ', settings: {} }] });
+    setRows({ org: [] });
     await expect(resolveMessageBranding('org-1')).resolves.toBeNull();
+    setRows({ partner: [] });
+    await expect(resolveMessageBranding('org-1')).resolves.toBeNull();
+  });
+
+  describe('a partner whose name sanitizes to nothing (#10190 W04 decision 2)', () => {
+    // Bidi override + zero-width only: a real partner row whose name the
+    // prompt sanitizer refuses in full.
+    const UNUSABLE = ['   ', '\u202E\u200B'];
+
+    it.each(UNUSABLE)('sends under the generic identity from the shared catalog (en) instead of failing closed: %j', async (name) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      setRows({ partner: [{ name, settings: { branding: { primaryColor: '#12ab34' } } }] });
+      const generic = renderPromptMessage('common', 'identity.generic', 'en');
+      expect(generic).toBe('Your IT support team');
+      await expect(resolveMessageBranding('org-1')).resolves.toEqual({
+        partnerId: 'partner-1',
+        senderIdentity: 'generic',
+        branding: { companyName: generic, displayName: generic, accent: '#12ab34' },
+      });
+    });
+
+    it('logs the fallback with ids and a reason code only, never a partner name', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      setRows({ partner: [{ name: '\u202EEvil\u200B', settings: {} }] });
+      // This one sanitizes to something; the warn must not fire for it.
+      await resolveMessageBranding('org-1');
+      expect(warn).not.toHaveBeenCalled();
+
+      setRows({ partner: [{ name: '\u200B\u200B', settings: {} }] });
+      await resolveMessageBranding('org-1');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message, fields] = warn.mock.calls[0]!;
+      expect(typeof message).toBe('string');
+      expect(fields).toEqual({ reason: 'partner_name_sanitized_empty', partnerId: 'partner-1', orgId: 'org-1' });
+    });
+
+    it('a usable name never takes the generic path or logs', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const r = await resolveMessageBranding('org-1');
+      expect(r?.senderIdentity).toBe('partner');
+      expect(r?.branding.companyName).toBe('Acme IT');
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });

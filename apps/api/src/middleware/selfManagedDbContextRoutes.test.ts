@@ -772,3 +772,27 @@ it('#8973 W4 self-manages only the D12 apply-revision POST of the business-calen
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars/not-a-uuid/apply-revision')).toBe(false);
 });
+
+// #10190 W04 — GET /helper/config names the caller-verify logo by the sha the
+// heartbeat's promptIdentity block carries. That lookup is the heartbeat's own
+// resolver, which opens a short system read of its own (and may start a
+// background logo load); it must run with no request transaction held (#1105).
+// The handler reads permissions and branding in one short helper context.
+describe('#10190 helper config', () => {
+  it.each([
+    ['GET', '/api/v1/helper/config'],
+    ['GET', '/api/v1/helper/config/'],
+    ['get', '/api/v1/helper/config'],
+  ])('opts out: %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['POST', '/api/v1/helper/config', 'no such write route; a method must not borrow the opt-out'],
+    ['GET', '/api/v1/helper/config/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/helper/device-info', 'sibling read keeps the ambient tx'],
+    ['GET', '/api/v1/helper/configx', 'prefix must not match'],
+  ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
+});
