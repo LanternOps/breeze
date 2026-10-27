@@ -112,11 +112,13 @@ Q1 reversible within a minute? Q2 leaves the tenant / reaches a person / touches
 
 | Measure | main `214621318e` | branch |
 |---|---|---|
-| Always-on (B1 < 2,560) | 2,494 | (T5) |
-| patching block (B2 < 2,048) | 423 | (T5) |
-| devices block (B2 < 2,048) | 1,187 | (T5) |
-| largest block | security 1,644 | (T5) |
-| Worst page turn (B3 < 7,040) | alert 4,731 | (T5) |
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| patching block (B2 < 2,048) | 423 | 705 |
+| devices block (B2 < 2,048) | 1,187 | 1,328 |
+| largest block | security 1,644 | security 1,644 |
+| Worst page turn (B3 < 7,040) | alert 4,731 | alert 4,872 (device 4,069 → 4,210) |
+
+Measured +282 B on the patching line and +141 B on the devices line; no ceiling, `DOMAIN_NOTES` or vocabulary change; none of the nine is `alwaysLoad`. The chat surface grew 296 → 305 tools; the registry is 327, so `MCP_TOOL_COUNT_APPROX` moved 310 → 320 (own commit). D5 turn-1 token capture was not run (AI keys are blanked in worktree stacks).
 
 Domains: the seven software tools join `patching` (the domain of `get_software_compliance` and `manage_software_policy`); `manage_fleet_findings` and `manage_custom_fields` join `devices` (beside `get_fleet_findings` and `query_custom_fields`).
 
