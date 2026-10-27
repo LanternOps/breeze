@@ -78,9 +78,10 @@ import {
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { GraphSweepBudgetError, listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { enqueueInboundEmail } from '../services/inboundEmailQueue';
+import { captureException } from '../services/sentry';
 import {
   GRAPH_POLL_ATTEMPT_CLAIM_MS,
-  GRAPH_POLL_MIN_MAILBOX_START_MS,
+  GRAPH_POLL_FAIR_SHARE_MS,
   GRAPH_POLL_PASS_BUDGET_MS,
   runMailboxSweep,
   initializeTicketMailboxPollWorker,
@@ -289,12 +290,12 @@ describe('runMailboxSweep', () => {
     });
     afterEach(() => vi.useRealTimers());
 
-    it('is two thirds of the 90 s sweep interval, and a mailbox starts with at least a quarter of it', () => {
+    it('is two thirds of the 90 s sweep interval, and a mailbox starts with at least half of it', () => {
       expect(GRAPH_POLL_PASS_BUDGET_MS).toBe(60_000);
-      expect(GRAPH_POLL_MIN_MAILBOX_START_MS).toBe(15_000);
-      // Shorter than the 45 s minimum gap between back-to-back sweeps reaching a mailbox.
+      expect(GRAPH_POLL_FAIR_SHARE_MS).toBe(30_000);
+      // Shorter than the 60 s minimum gap between back-to-back sweeps reaching a mailbox.
       expect(GRAPH_POLL_ATTEMPT_CLAIM_MS).toBe(30_000);
-      expect(GRAPH_POLL_ATTEMPT_CLAIM_MS).toBeLessThan(90_000 - (GRAPH_POLL_PASS_BUDGET_MS - GRAPH_POLL_MIN_MAILBOX_START_MS));
+      expect(GRAPH_POLL_ATTEMPT_CLAIM_MS).toBeLessThan(90_000 - (GRAPH_POLL_PASS_BUDGET_MS - GRAPH_POLL_FAIR_SHARE_MS));
     });
 
     it('caps every mailbox at the pass deadline, not its own 120 s budget', async () => {
@@ -357,11 +358,11 @@ describe('runMailboxSweep', () => {
       );
     });
 
-    it('still starts a mailbox with exactly the minimum left', async () => {
+    it('still starts a mailbox with exactly half the pass left', async () => {
       vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ id: 'a' }), conn({ id: 'b' })] as any);
       vi.mocked(listInboxDelta)
         .mockImplementationOnce(async () => {
-          vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - GRAPH_POLL_MIN_MAILBOX_START_MS);
+          vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - GRAPH_POLL_FAIR_SHARE_MS);
           return { messages: [], deltaLink: 'd' } as any;
         })
         .mockResolvedValueOnce({ messages: [], deltaLink: 'd' } as any);
@@ -371,7 +372,7 @@ describe('runMailboxSweep', () => {
     });
 
     it('skips a mailbox whose stamp fails, so it cannot stay ahead and starve the rest, and polls the next', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ id: 'a' }), conn({ id: 'b' })] as any);
       vi.mocked(recordPollAttempt).mockRejectedValueOnce(new Error('db blip'));
       vi.mocked(listInboxDelta).mockResolvedValue({ messages: [], deltaLink: 'delta-new' } as any);
@@ -379,7 +380,9 @@ describe('runMailboxSweep', () => {
       await runMailboxSweep();
       expect(getMailboxToken).toHaveBeenCalledTimes(1);
       expect(vi.mocked(updateDeltaCursor).mock.calls.map((c) => c[0].id)).toEqual(['b']);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not record the poll attempt'), { id: 'a', err: 'db blip' });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('could not record the poll attempt'), { id: 'a', err: 'db blip' });
+      // Reported, since the skip leaves this mailbox's health unchanged.
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db blip' }));
     });
 
     it('skips a mailbox whose stamp lands on no row (stale generation) and spends no pass on it', async () => {
@@ -393,18 +396,18 @@ describe('runMailboxSweep', () => {
       expect(recordTransientPollFailure).not.toHaveBeenCalled();
     });
 
-    it('checks the minimum again after a slow stamp and starts no token or Graph work without it', async () => {
+    it('checks the fair share again after a slow stamp and starts no token or Graph work without it', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ id: 'a' }), conn({ id: 'b' })] as any);
       vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
-        // The first mailbox leaves 16 s: just over the minimum.
-        vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - 16_000);
+        // The first mailbox leaves 31 s: just over half the pass.
+        vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - 31_000);
         return { messages: [], deltaLink: 'd' } as any;
       });
       vi.mocked(recordPollAttempt)
         .mockImplementationOnce(async () => true)
         .mockImplementationOnce(async () => {
-          // The second stamp takes 2 s, leaving 14 s.
+          // The second stamp takes 2 s, leaving 29 s.
           vi.setSystemTime(Date.now() + 2_000);
           return true;
         });
@@ -419,22 +422,23 @@ describe('runMailboxSweep', () => {
       );
     });
 
-    it('defers a late-started mailbox the pass deadline cuts off, without counting a failure', async () => {
+    it('does not start a mailbox with less than half the pass left, so a slow one cannot sit uncounted in the late slot', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(listConnectedMailboxes).mockResolvedValue([conn({ id: 'a' }), conn({ id: 'b' })] as any);
-      vi.mocked(listInboxDelta)
-        .mockImplementationOnce(async () => {
-          // The first mailbox leaves 20 s: enough to start the next, less than a fair share.
-          vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - 20_000);
-          return { messages: [], deltaLink: 'd' } as any;
-        })
-        .mockImplementationOnce(async () => { throw new GraphSweepBudgetError('Graph sweep budget spent'); });
+      vi.mocked(listInboxDelta).mockImplementationOnce(async () => {
+        // The first mailbox leaves 20 s: more than a token request needs, less than half the pass.
+        vi.setSystemTime(T0 + GRAPH_POLL_PASS_BUDGET_MS - 20_000);
+        return { messages: [], deltaLink: 'd' } as any;
+      });
 
       await runMailboxSweep();
+      // 'b' is neither stamped nor polled, so it goes first next sweep with the whole pass.
+      expect(vi.mocked(recordPollAttempt).mock.calls.map((c) => c[0].id)).toEqual(['a']);
+      expect(listInboxDelta).toHaveBeenCalledTimes(1);
       expect(recordTransientPollFailure).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('deferred to the next sweep'),
-        { id: 'b', shareMs: 20_000, limit: 'pass_deadline' },
+        expect.stringContaining('pass deadline reached'),
+        { left: 1, total: 2, limit: 'pass_deadline' },
       );
     });
 
