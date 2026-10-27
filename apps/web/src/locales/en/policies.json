@@ -899,7 +899,17 @@
         "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
         "ringDetailsNoHold": "Rollout order {{order}} · no hold before approval",
         "ringDetailsWithHold_one": "Rollout order {{order}} · {{count}}-day hold before approval",
-        "ringDetailsWithHold_other": "Rollout order {{order}} · {{count}}-day hold before approval"
+        "ringDetailsWithHold_other": "Rollout order {{order}} · {{count}}-day hold before approval",
+        "rebootPreviewHeading": "Preview",
+        "rebootPreviewDescription": "What the person at the computer sees if a restart is scheduled now. The times are examples.",
+        "rebootPreviewDefaultMarker": "Default",
+        "rebootPreviewDefaultTitle": "Restart to finish installing updates",
+        "rebootPreviewDefaultBody": "Your IT support team needs to restart this computer to finish installing updates.",
+        "rebootPreviewConsequence": "If you do nothing, this computer restarts at {{time}}. Save your work before then.",
+        "rebootPreviewRestartNow": "Restart now",
+        "rebootPreviewPostponeUntil": "Postpone until {{time}}",
+        "rebootPreviewDeadline": "Postponing never moves the restart later than {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",

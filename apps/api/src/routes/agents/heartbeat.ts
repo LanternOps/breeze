@@ -39,6 +39,7 @@ import { recordWorkstationCapabilities } from '../../services/callerVerification
 import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
 import { enabledPromptKinds } from '../../services/promptHostConfig';
 import { buildHeartbeatPromptIdentity } from '../../services/promptIdentity';
+import { recordRebootUserAction } from '../../services/rebootUserActionAudit';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -2450,6 +2451,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
     await recordPromptHostObservation(scoped.deviceId, promptHostReport);
+  }
+
+  // #10190 W05 — the restart decision the person at the keyboard made
+  // (Postpone / Restart now). The agent re-sends it on every beat while the
+  // restart is scheduled; the service writes one audit row per decision
+  // (Redis NX on device + decision time). Keyed by the authenticated device
+  // and its org, after the org transaction released, and NOT awaited: the
+  // beat's answer never waits on Redis or the audit writer, and the service
+  // never throws (the catch is belt and braces for the floating promise).
+  const rebootStatus = data.rebootStatus;
+  const lastUserAction = rebootStatus?.lastUserAction;
+  if (agent.role !== 'watchdog' && rebootStatus && lastUserAction) {
+    void recordRebootUserAction(scoped.deviceId, scoped.deviceOrgId, lastUserAction, {
+      c,
+      scheduledAt: rebootStatus.scheduledAt,
+      deferralsUsed: rebootStatus.deferralsUsed,
+      maxDeferrals: rebootStatus.maxDeferrals,
+    }).catch((err) => {
+      console.error('[heartbeat] restart decision audit failed', { deviceId: scoped.deviceId, err });
+    });
   }
 
   // Self-health is independent from reachability and is persisted only after

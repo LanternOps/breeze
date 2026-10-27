@@ -899,7 +899,17 @@
         "ringInvalidBody": "Les correctifs de cette stratégie sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
         "ringDetailsNoHold": "Ordre de déploiement {{order}} · aucun délai avant l’approbation",
         "ringDetailsWithHold_one": "Ordre de déploiement {{order}} · délai de {{count}} jour avant l’approbation",
-        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation"
+        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation",
+        "rebootPreviewHeading": "Aperçu",
+        "rebootPreviewDescription": "Ce que voit la personne devant l’ordinateur si un redémarrage est planifié maintenant. Les heures sont des exemples.",
+        "rebootPreviewDefaultMarker": "Par défaut",
+        "rebootPreviewDefaultTitle": "Redémarrez pour terminer l’installation des mises à jour",
+        "rebootPreviewDefaultBody": "Votre équipe d’assistance informatique doit redémarrer cet ordinateur pour terminer l’installation des mises à jour.",
+        "rebootPreviewConsequence": "Si vous ne faites rien, cet ordinateur redémarrera à {{time}}. Enregistrez votre travail avant cette heure.",
+        "rebootPreviewRestartNow": "Redémarrer maintenant",
+        "rebootPreviewPostponeUntil": "Reporter jusqu’à {{time}}",
+        "rebootPreviewDeadline": "Reporter ne repousse jamais le redémarrage après {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",

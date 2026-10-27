@@ -166,6 +166,17 @@ describe('formatActionMessage (automated command labels)', () => {
   });
 });
 
+describe('formatActionMessage (restart decisions made at the device, #10190 W05)', () => {
+  // services/rebootUserActionAudit.ts writes these; the person at the device
+  // is not a console user, so the copy says where the decision was made.
+  it('labels both restart decisions instead of humanizing the key', () => {
+    expect(formatActionMessage('device.reboot.user_postponed', null, 'success'))
+      .toBe('Restart postponed at the device');
+    expect(formatActionMessage('device.reboot.user_restart_now', null, 'success'))
+      .toBe('Restart now chosen at the device');
+  });
+});
+
 describe('GET /devices/:id/events validation', () => {
   let app: Hono;
 
