@@ -20,6 +20,31 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
 }));
+// A fake SQL boundary for the one service the read-ceiling tests run for real
+// (services/flows/webhook/deliveries): each awaited query yields the next
+// queued result. Every other service is mocked, so nothing else reaches it.
+const dbh = vi.hoisted(() => ({ results: [] as unknown[][], queries: 0 }));
+vi.mock('../db', () => {
+  const chain = (): unknown => {
+    dbh.queries += 1;
+    const proxy: unknown = new Proxy(() => {}, {
+      get(_t, prop) {
+        if (prop === 'then') {
+          const value = dbh.results.shift() ?? [];
+          return (res: (v: unknown) => void) => Promise.resolve(value).then(res);
+        }
+        return () => proxy;
+      },
+    });
+    return proxy;
+  };
+  return {
+    db: { select: chain, insert: chain, update: chain, execute: async () => [] },
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: () => { throw new Error('the delivery log read must stay in the caller context'); },
+    getCurrentDbAccessContext: () => ({ scope: 'organization' }),
+  };
+});
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
 vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
@@ -401,6 +426,78 @@ describe('flows routes', () => {
       expect((await list('?limit=101')).status).toBe(400);
       expect((await list('?before=yesterday')).status).toBe(400);
       expect(listWebhookDeliveries).not.toHaveBeenCalled();
+    });
+
+    it('404s when the service reports the flow is not visible', async () => {
+      vi.mocked(listWebhookDeliveries).mockResolvedValue(null);
+      const res = await list();
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Flow not found' });
+    });
+  });
+
+  // The real listWebhookDeliveries over the fake SQL boundary above: the
+  // run-body read ceiling (runBodiesRestricted) is applied to the delivery
+  // log's sender-supplied identifiers (delivery id, resolver value). The RLS reach itself (which rows and flows a token
+  // can see) is proven on real Postgres in flowWebhooksRls.integration.test.ts;
+  // here an empty flows read stands in for "RLS hides this flow".
+  describe('W05 webhook deliveries read ceiling (#5220) through the real service', () => {
+    const SITE_ID = '66666666-6666-4666-8666-666666666666';
+    const DEVICE_ID = '77777777-7777-4777-8777-777777777777';
+    const ROW = {
+      id: '88888888-8888-4888-8888-888888888888', flowId: FLOW_ID, partnerId: '99999999-9999-4999-8999-999999999999',
+      receivedAt: new Date('2027-03-02T09:00:00Z'), lastAttemptAt: new Date('2027-03-02T09:00:00Z'), status: 'accepted',
+      refusalCode: null, orgId: ORG_ID, runId: '44444444-4444-4444-8444-444444444444', deliveryId: 'evt_secret_42', authMode: 'hmac',
+      bodyBytes: 321, attempts: 1, resolverValue: 'acme-tenant-7', signatureDigest: 'a'.repeat(64), bodySha256: 'b'.repeat(64),
+    };
+    const FULL = {
+      id: ROW.id, receivedAt: '2027-03-02T09:00:00.000Z', status: 'accepted', refusalCode: null, orgId: ORG_ID, runId: ROW.runId,
+      deliveryId: 'evt_secret_42', authMode: 'hmac', bodyBytes: 321, attempts: 1, resolverValue: 'acme-tenant-7',
+    };
+    const REDACTED = { ...FULL, deliveryId: null, resolverValue: null };
+    const list = () => flowsRoutes.request(`/${FLOW_ID}/webhook-deliveries`);
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('../services/flows/webhook/deliveries')>('../services/flows/webhook/deliveries');
+      vi.mocked(listWebhookDeliveries).mockReset().mockImplementation(actual.listWebhookDeliveries);
+      dbh.results.length = 0;
+      dbh.queries = 0;
+    });
+
+    it('an unrestricted org admin gets the full row', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, principal: { kind: 'user_session' } } as never);
+      dbh.results.push([{ id: FLOW_ID }], [ROW]);
+      const res = await list();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ deliveries: [FULL] });
+    });
+
+    it('a site-restricted session gets the redacted shape (no delivery id, no resolver value)', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, principal: { kind: 'user_session' }, allowedSiteIds: [SITE_ID] } as never);
+      dbh.results.push([{ id: FLOW_ID }], [ROW]);
+      const res = await list();
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(JSON.parse(text)).toEqual({ deliveries: [REDACTED] });
+      expect(text).not.toContain('evt_secret_42');
+      expect(text).not.toContain('acme-tenant-7');
+    });
+
+    it('a device-bound principal gets the redacted shape', async () => {
+      setAuth({ scope: 'organization', orgId: ORG_ID, allowedDeviceIds: [DEVICE_ID] } as never);
+      dbh.results.push([{ id: FLOW_ID }], [ROW]);
+      const res = await list();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ deliveries: [REDACTED] });
+    });
+
+    it('a flow hidden from the caller (an empty visibility read, as RLS gives another org) gets 404 and the delivery log is never read', async () => {
+      setAuth({ scope: 'organization', orgId: '12121212-1212-4121-8121-121212121212', principal: { kind: 'user_session' } } as never);
+      dbh.results.push([], [ROW]);
+      const res = await list();
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Flow not found' });
+      expect(dbh.queries).toBe(1);
     });
   });
 });

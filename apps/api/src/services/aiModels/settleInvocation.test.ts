@@ -468,6 +468,12 @@ describe('W11 prompt provenance', () => {
   });
   const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
 
+  // W5 PR B (#5220, Decision 13): a flow `ai` step attributes its cost to the run.
+  it('flowRunId is written', () => {
+    const FLOW_RUN = '99999999-9999-4999-8999-999999999999';
+    expect(rowsOf(input({ flowRunId: FLOW_RUN }))[0]).toMatchObject({ flowRunId: FLOW_RUN });
+    expect(rowsOf(input())[0]!.flowRunId ?? null).toBeNull();
+  });
   it('a one-shot surface records the binding profile and no variant', () => {
     expect(rowsOf(input())[0]).toMatchObject({ promptProfile: 'claude-standard', promptVariant: null });
   });

@@ -42,11 +42,12 @@ import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { flowStepPinSchema, type FlowStepPin } from '../flowValidator';
 import { canAccessOrg } from '../permissions';
 import { captureException } from '../sentry';
-import { hasExactDeviceCeiling, hasSiteCeiling } from '../siteCeilingAccess';
+import { hasSiteCeiling } from '../siteCeilingAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
 import { chargeFlowRun, lockFlowRunAdmission, recordAdmissionRefusal } from './budgets';
 import { assertFlowRunAdmission, type FlowRunAdmissionRefusal } from './runAdmission';
+import { runBodiesRestricted } from './runBodyAccess';
 import { TERMINAL_FLOW_RUN_STATUSES } from './runStore';
 import type { FlowTriggerScope } from './triggerScope';
 import { clampToCallerCredential, triggererPermissions, triggererPermsCleared } from './triggererAccess';
@@ -604,21 +605,15 @@ export async function cancelFlowRun(auth: AuthContext, runId: string): Promise<C
 
 // ── reads ──────────────────────────────────────────────────────────────────
 
-/**
- * Whether the caller may see run BODIES (trigger payload, inputs, rendered
- * step inputs and outputs). Runs carry no site column and W04 has no site
- * model, so a body cannot be checked against a site or device ceiling: a
- * site-limited caller (`hasSiteCeiling`, `[]` included) or a device-bound
- * agent (`allowedDeviceIds` set) sees the ledger's shape only — summaries,
- * statuses and errors — never a body. The shared DTO has no "restricted"
- * flag, so the redaction reuses the retention-pruning semantics: run
- * `triggerPayload` / `inputs` are null, each step reports `bodiesPruned:
- * true` and carries no `output`, and the step-body read is not found.
- * Site-limited users cannot START a run either (startManualRun).
- */
-function runBodiesRestricted(auth: AuthContext): boolean {
-  return hasSiteCeiling(auth) || hasExactDeviceCeiling(auth);
-}
+// ── run-body redaction (getFlowRun, getFlowRunStep) ──
+// Run BODIES (trigger payload, inputs, rendered step inputs and outputs) are
+// hidden from a site-limited or device-bound caller: `runBodiesRestricted`
+// (./runBodyAccess, shared with the webhook delivery log). The shared DTO has
+// no "restricted" flag, so the redaction reuses the retention-pruning
+// semantics: run `triggerPayload` / `inputs` are null, each step reports
+// `bodiesPruned: true` and carries no `output`, and the step-body read is not
+// found. Site-limited users cannot START a run either (startManualRun).
+// ──
 
 const iso = (d: Date | string | null | undefined): string | null => (d == null ? null : new Date(d).toISOString());
 

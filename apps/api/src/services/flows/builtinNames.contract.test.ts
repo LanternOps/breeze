@@ -18,4 +18,15 @@ describe('flow built-in step names', () => {
   it('never contain the tenant-tool separator', () => {
     expect(names.filter((n) => n.includes('__'))).toEqual([]);
   });
+
+  // W5 PR B (#5220): the five built-ins, every one executable (no announced-but-gated names left).
+  it('are exactly the five W5 built-ins, all shipped', () => {
+    expect(Object.keys(FLOW_BUILTIN_STEPS).sort()).toEqual(['ai', 'http_request', 'notify', 'set', 'wait']);
+    expect(FLOW_LATER_BUILTINS).toEqual([]);
+  });
+
+  it('are all in every owner\'s flow catalog (no FLOW_EXECUTABLE_BUILTINS gate)', async () => {
+    const catalog = await import('./catalog');
+    expect('FLOW_EXECUTABLE_BUILTINS' in catalog).toBe(false);
+  });
 });

@@ -23,13 +23,15 @@ import { flowUsagePeriodKey } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { flowRuns, flowUsageCounters, flowWebhookDeliveries, flows, organizationExternalLinks, organizations, partners } from '../../db/schema';
 import { encryptedColumnRegistry, reencryptRegisteredSecrets } from '../../services/encryptedColumnRegistry';
+import { listWebhookDeliveries } from '../../services/flows/webhook/deliveries';
 import { ingestFlowWebhook } from '../../services/flows/webhook/ingest';
 import { decryptFlowWebhookSecret, encryptFlowWebhookSecret } from '../../services/flows/webhook/secret';
 import { getEncryptedSecretKeyId, hmacFingerprint } from '../../services/secretCrypto';
 import { pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { seedEnabledFlow } from './helpers/flowSeed';
-import { expectSqlState, orgContext, partnerContext } from './helpers/flowRls';
+import type { AuthContext } from '../../middleware/auth';
+import { expectSqlState, interactiveOrgAuth, orgContext, partnerContext } from './helpers/flowRls';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -202,6 +204,40 @@ describe('flow_webhook_deliveries RLS + constraints (real Postgres)', () => {
     // Another partner's token sees none of them.
     const other = await tenant();
     expect(await visibleDeliveryIds(partnerContext(other.partnerId, [other.orgA]), all)).toEqual([]);
+  });
+
+  runDb('listWebhookDeliveries (#5220 read ceiling): another org\'s flow is null; a site-limited or device-bound reader gets its rows without the delivery id and resolver value', async () => {
+    const t = await tenant();
+    const flowA = await seedFlow(t, 'org', t.orgA);
+    const pw = await seedFlow(t, 'partner');
+    const refused = (flowId: string) => deliveryValues(flowId, t.partnerId, t.orgA, { deliveryId: 'evt_it_secret', resolverValue: 'cust-it-9' });
+    const ownId = await insertDelivery(refused(flowA.flowId));
+    const pwId = await insertDelivery(refused(pw.flowId));
+    const user = { id: t.delegatorId, email: 'delegator@flowwebhooks.test' };
+    const authA = interactiveOrgAuth(t.orgA, t.partnerId, user);
+    const authB = interactiveOrgAuth(t.orgB, t.partnerId, user);
+    const asOrg = <T>(orgId: string, fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId, t.partnerId, t.delegatorId), fn);
+
+    // Control: the unrestricted org admin of org A reads the full row.
+    expect(await asOrg(t.orgA, () => listWebhookDeliveries(authA, flowA.flowId))).toEqual([
+      expect.objectContaining({ id: ownId, status: 'refused', refusalCode: 'flow_queue_full', deliveryId: 'evt_it_secret', resolverValue: 'cust-it-9' }),
+    ]);
+    // Org B cannot see org A's org flow: null (the route's 404), not an empty page.
+    expect(await asOrg(t.orgB, () => listWebhookDeliveries(authB, flowA.flowId))).toBeNull();
+    // Org B CAN see the partner-wide flow (SELECT branch) but none of org A's rows on it.
+    expect(await asOrg(t.orgB, () => listWebhookDeliveries(authB, pw.flowId))).toEqual([]);
+
+    // Site-limited and device-bound readers of org A: the row, minus the delivery id and resolver value.
+    for (const restricted of [
+      { ...authA, allowedSiteIds: [randomUUID()] },
+      { ...authA, allowedSiteIds: [] },
+      { ...authA, allowedDeviceIds: [randomUUID()] },
+    ] as AuthContext[]) {
+      for (const [flowId, id] of [[flowA.flowId, ownId], [pw.flowId, pwId]] as const) {
+        const rows = await asOrg(t.orgA, () => listWebhookDeliveries(restricted, flowId));
+        expect(rows).toEqual([expect.objectContaining({ id, status: 'refused', refusalCode: 'flow_queue_full', orgId: t.orgA, deliveryId: null, resolverValue: null })]);
+      }
+    }
   });
 
   runDb('two ACCEPTED rows with one signature digest for one flow raise 23505; a refused and an accepted row with that digest coexist', async () => {
