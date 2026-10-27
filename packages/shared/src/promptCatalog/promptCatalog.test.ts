@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import localeFixture from '../fixtures/prompt-catalog/locale-negotiation.json';
 import sanitizeFixture from '../fixtures/prompt-catalog/identity-name-sanitize.json';
 import {
+  PROMPT_IDENTITY_PROTOCOL_VERSION,
+  promptIdentityBlockSchema,
   PROMPT_CATALOG,
   PROMPT_LOCALES,
   PromptCatalogError,
@@ -110,6 +112,55 @@ describe('sanitizePromptPartnerName (shared fixture with the Go agent and Assist
   // surrogate (Go turns it into U+FFFD, which the fixture covers).
   it('strips a lone surrogate', () => {
     expect(sanitizePromptPartnerName('North\ud800wind')).toBe('Northwind');
+  });
+});
+
+describe('promptIdentityBlockSchema (heartbeat contract with the Go agent)', () => {
+  const FIXTURE_DIR = join(__dirname, '../fixtures/prompt-catalog');
+  const blockFixtures = readdirSync(FIXTURE_DIR).filter((f) => f.startsWith('heartbeat-identity.')).sort();
+
+  it('ships the set, minimal and cleared fixtures the agent decodes', () => {
+    expect(blockFixtures).toEqual([
+      'heartbeat-identity.cleared.json',
+      'heartbeat-identity.minimal.json',
+      'heartbeat-identity.set.json',
+    ]);
+  });
+
+  it.each(blockFixtures)('%s parses', (file) => {
+    const raw = JSON.parse(readFileSync(join(FIXTURE_DIR, file), 'utf8'));
+    const result = promptIdentityBlockSchema.safeParse(raw);
+    expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
+    expect(result.data).toEqual(raw);
+  });
+
+  const valid = {
+    state: 'set',
+    scopeId: '0f1e2d3c4b5a69788796a5b4c3d2e1f0',
+    partnerName: 'Northwind IT',
+  } as const;
+
+  it.each([
+    ['an unsanitized partner name', { ...valid, partnerName: 'North‮wind' }],
+    ['a partner name over 120 code points', { ...valid, partnerName: 'A'.repeat(121) }],
+    ['an empty partner name', { ...valid, partnerName: '' }],
+    ['a short scopeId', { ...valid, scopeId: 'abc' }],
+    ['an upper-case scopeId', { ...valid, scopeId: '0F1E2D3C4B5A69788796A5B4C3D2E1F0' }],
+    ['a named colour', { ...valid, primaryColor: 'red' }],
+    ['an svg logo', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/svg+xml', bytes: 10 } }],
+    ['a logo over 256 KB', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 262_145 } }],
+    ['extra keys on cleared', { state: 'cleared', scopeId: valid.scopeId }],
+    ['an unknown state', { state: 'unset' }],
+  ])('refuses %s', (_label, block) => {
+    expect(promptIdentityBlockSchema.safeParse(block).success).toBe(false);
+  });
+
+  it('accepts a 120-code-point astral name', () => {
+    expect(promptIdentityBlockSchema.safeParse({ ...valid, partnerName: '\u{1F680}'.repeat(120) }).success).toBe(true);
+  });
+
+  it('pins the capability version the agent advertises', () => {
+    expect(PROMPT_IDENTITY_PROTOCOL_VERSION).toBe(1);
   });
 });
 
