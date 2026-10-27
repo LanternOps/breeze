@@ -235,12 +235,14 @@ describe('W05 (#5220): webhook, deliveries and limits client', () => {
   });
 
   it('getFlowLimits reads the partner level, or one org with ?orgId=', async () => {
+    // The level is explicit: the switcher's org is never injected (#5220 live
+    // check: a partner admin otherwise never reached the partner default).
     mocks.fetchWithAuth.mockResolvedValue(json(200, { level: 'partner', limits: {} }));
     await getFlowLimits();
-    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits');
+    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits', { orgIdOverride: null });
     mocks.fetchWithAuth.mockResolvedValue(json(200, { level: 'org', limits: {} }));
     await getFlowLimits('o1');
-    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits?orgId=o1');
+    expect(mocks.fetchWithAuth).toHaveBeenLastCalledWith('/flows/limits?orgId=o1', { orgIdOverride: null });
   });
 
   it('rotateWebhookSecret goes through runAction and returns the secret without ever toasting it', async () => {
@@ -265,6 +267,7 @@ describe('W05 (#5220): webhook, deliveries and limits client', () => {
     const [url, init] = mocks.fetchWithAuth.mock.calls[0]!;
     expect(url).toBe('/flows/limits');
     expect(init.method).toBe('PUT');
+    expect(init.orgIdOverride).toBeNull();
     expect(JSON.parse(init.body)).toEqual({ orgId: 'o1', limits: { monthlyRunsPerFlow: 5, aiTokensPerRun: null } });
     expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.saved'), type: 'success' });
   });

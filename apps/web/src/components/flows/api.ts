@@ -312,7 +312,9 @@ export async function listWebhookDeliveries(
 /** The partner default (no orgId), or one org's override and what resolves for it. */
 export async function getFlowLimits(orgId?: string): Promise<FlowLimitsViewDto> {
   const path = orgId ? `${BASE}/limits?orgId=${encodeURIComponent(orgId)}` : `${BASE}/limits`;
-  const body = await readJson<FlowLimitsViewDto | null>(await fetchWithAuth(path));
+  // The level is explicit in the URL: never let the switcher's org be injected,
+  // or a partner admin with an org selected could never read the partner default.
+  const body = await readJson<FlowLimitsViewDto | null>(await fetchWithAuth(path, { orgIdOverride: null }));
   if (!body || typeof body !== 'object' || !body.limits) {
     throw new ActionError('Unexpected response shape: missing limits', 200);
   }
@@ -358,6 +360,7 @@ export function saveFlowLimits(body: FlowLimitsUpdate): Promise<FlowLimitsViewDt
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      orgIdOverride: null, // the level is in the body, never the ambient switcher org
     }),
     errorFallback: i18n.t('flows:limits.saveFailed'),
     successMessage: i18n.t('flows:limits.saved'),
