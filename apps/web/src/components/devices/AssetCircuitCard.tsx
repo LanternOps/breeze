@@ -235,10 +235,15 @@ export default function AssetCircuitCard({ subject, id }: AssetCircuitCardProps)
     </dd>
   );
 
-  const statusLabel = (s: string) =>
-    ['active', 'planned', 'suspended', 'disconnected'].includes(s)
-      ? t(`assetCircuitCard.status.${s}`)
-      : s;
+  const statusLabel = (s: string): string => {
+    switch (s) {
+      case 'active': return t('assetCircuitCard.status.active');
+      case 'planned': return t('assetCircuitCard.status.planned');
+      case 'suspended': return t('assetCircuitCard.status.suspended');
+      case 'disconnected': return t('assetCircuitCard.status.disconnected');
+      default: return s;
+    }
+  };
 
   return (
     <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="asset-circuit-card">
