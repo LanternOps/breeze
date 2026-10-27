@@ -159,7 +159,8 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'routes/policyManagement/helpers.ts',
   'routes/scripts.ts',
   'routes/backup/profiles.ts',
-  'routes/softwareInventory.ts',
+  // W12 (#6782): moved verbatim from routes/softwareInventory.ts (shared with the manage_software_inventory AI tool).
+  'services/softwareInventoryPolicy.ts',
   // Partner API exports the AUTHORED form; consumers derive the effective set.
   'routes/partnerApi/configuration.ts',
 ]);
