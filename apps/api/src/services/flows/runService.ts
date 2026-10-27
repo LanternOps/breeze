@@ -40,7 +40,7 @@ import { enqueueFlowRunSlice } from '../../jobs/flowRunQueue';
 import { isAutomationPrincipal, isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { flowStepPinSchema, type FlowStepPin } from '../flowValidator';
-import { canAccessOrg } from '../permissions';
+import { canAccessOrg, type UserPermissions } from '../permissions';
 import { captureException } from '../sentry';
 import { hasSiteCeiling } from '../siteCeilingAccess';
 import type { ToolOwnerRef } from '../toolSources/resolver';
@@ -99,6 +99,26 @@ export type CreateFlowRunInput = CreateFlowRunBase & (
        * charge and anything the hook wrote, and is rethrown to the caller.
        */
       onCreated: (runId: string) => Promise<void>;
+    }
+  | {
+      /**
+       * W5 PR C (#5220, Decisions 8–10): a flow started as a TOOL — chat
+       * (`ai_tool`), Breeze's MCP server (`mcp`) or an AI agent (`ai_agent`).
+       * Never honours pre-approvals (`flow_runs_pre_approvals_chk`). The caller
+       * (`startToolRun`) authorized the triggerer against the publication it
+       * resolved; the insert pins that publication, so a re-enable in between
+       * is `not_enabled`, never a run on an unchecked publication.
+       * `parentAgentRunId` exactly when via `ai_agent`
+       * (`flow_runs_agent_parent_chk`); `triggeredByApiKeyId` only via `mcp`
+       * (`flow_runs_api_key_chk`).
+       */
+      triggerKind: 'tool';
+      triggeredVia: 'ai_tool' | 'mcp' | 'ai_agent';
+      triggeredByUserId: string | null;
+      triggeredByApiKeyId: string | null;
+      parentAgentRunId: string | null;
+      aiSessionId: string | null;
+      expectedPublicationSeq: number;
     });
 
 /** `preApprovalsHonored` (additive to the plan's shape) is the stored value of the run named. */
@@ -114,7 +134,7 @@ export type StartManualRunResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'not_enabled' | 'not_manual' | 'org_required' | 'org_forbidden' | 'interactive_user_required'
-        | 'delegation_scope_restricted' | FlowRunAdmissionRefusal;
+        | 'delegation_scope_restricted' | 'flow_tool_changed' | FlowRunAdmissionRefusal;
     };
 
 export type CancelFlowRunResult =
@@ -162,22 +182,32 @@ interface DerivedProvenance {
   causedByRunId: string | null;
   triggeredByUserId: string | null;
   aiSessionId: string | null;
+  parentAgentRunId: string | null;
+  triggeredByApiKeyId: string | null;
 }
+
+const NO_TOOL_PROVENANCE = { parentAgentRunId: null, triggeredByApiKeyId: null } as const;
 
 /** Decision 4, the one place it is decided. Reads only the discriminated fields. */
 function deriveProvenance(i: CreateFlowRunInput): DerivedProvenance {
   switch (i.triggerKind) {
     case 'schedule':
-      return { triggeredVia: 'scheduler', preApprovalsHonored: true, chainDepth: 0, causedByRunId: null, triggeredByUserId: null, aiSessionId: null };
+      return {
+        triggeredVia: 'scheduler', preApprovalsHonored: true, chainDepth: 0, causedByRunId: null, triggeredByUserId: null, aiSessionId: null,
+        ...NO_TOOL_PROVENANCE,
+      };
     case 'event':
       return {
         triggeredVia: 'event', preApprovalsHonored: true, chainDepth: i.chainDepth, causedByRunId: i.causedByRunId,
-        triggeredByUserId: null, aiSessionId: null,
+        triggeredByUserId: null, aiSessionId: null, ...NO_TOOL_PROVENANCE,
       };
     case 'webhook':
       // Decision 4: the sender controls the payload, so a webhook run never
       // honours a pre-approval (flow_runs_pre_approvals_chk repeats it).
-      return { triggeredVia: 'webhook', preApprovalsHonored: false, chainDepth: 0, causedByRunId: null, triggeredByUserId: null, aiSessionId: null };
+      return {
+        triggeredVia: 'webhook', preApprovalsHonored: false, chainDepth: 0, causedByRunId: null, triggeredByUserId: null, aiSessionId: null,
+        ...NO_TOOL_PROVENANCE,
+      };
     case 'manual': {
       const via = i.triggeredVia;
       if (via !== 'ui' && via !== 'api' && via !== 'ai_tool') throw new Error(`createFlowRun: invalid manual triggeredVia '${String(via)}'`);
@@ -188,6 +218,28 @@ function deriveProvenance(i: CreateFlowRunInput): DerivedProvenance {
         causedByRunId: null,
         triggeredByUserId: i.triggeredByUserId,
         aiSessionId: i.aiSessionId,
+        ...NO_TOOL_PROVENANCE,
+      };
+    }
+    case 'tool': {
+      // W5 PR C (Decisions 8–10): never honours pre-approvals; the CHECKs
+      // (flow_runs_via_matches_kind_chk, _agent_parent_chk, _api_key_chk) are
+      // repeated here so a malformed call is a thrown caller bug, never a 23514.
+      const via = i.triggeredVia;
+      if (via !== 'ai_tool' && via !== 'mcp' && via !== 'ai_agent') throw new Error(`createFlowRun: invalid tool triggeredVia '${String(via)}'`);
+      if ((via === 'ai_agent') !== (typeof i.parentAgentRunId === 'string' && i.parentAgentRunId.length > 0)) {
+        throw new Error('createFlowRun: a tool run has parentAgentRunId exactly when it is via ai_agent');
+      }
+      if (i.triggeredByApiKeyId && via !== 'mcp') throw new Error('createFlowRun: only an MCP tool run records an api key');
+      return {
+        triggeredVia: via,
+        preApprovalsHonored: false,
+        chainDepth: 0,
+        causedByRunId: null,
+        triggeredByUserId: i.triggeredByUserId ?? null,
+        aiSessionId: i.aiSessionId ?? null,
+        parentAgentRunId: i.parentAgentRunId ?? null,
+        triggeredByApiKeyId: i.triggeredByApiKeyId ?? null,
       };
     }
     default:
@@ -242,8 +294,9 @@ class FlowRunRefused extends Error {
 export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRunResult> {
   const p = deriveProvenance(i);
   assertChain(p);
-  const expectedSeq = i.triggerKind === 'manual' || i.triggerKind === 'webhook' ? i.expectedPublicationSeq : null;
-  if ((i.triggerKind === 'manual' || i.triggerKind === 'webhook') && !Number.isInteger(expectedSeq)) {
+  const pinsPublication = i.triggerKind === 'manual' || i.triggerKind === 'webhook' || i.triggerKind === 'tool';
+  const expectedSeq = pinsPublication ? i.expectedPublicationSeq : null;
+  if (pinsPublication && !Number.isInteger(expectedSeq)) {
     throw new Error(`createFlowRun: a ${i.triggerKind} run needs the publication seq it was checked against`);
   }
   if (i.triggerKind === 'webhook') {
@@ -316,11 +369,12 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
         INSERT INTO flow_runs (
           org_id, flow_id, flow_version_id, definition_version, trigger_kind, triggered_via,
           trigger_payload, inputs, status, pre_approvals_honored, dedupe_key, chain_depth,
-          caused_by_run_id, triggered_by_user_id, ai_session_id
+          caused_by_run_id, triggered_by_user_id, ai_session_id, parent_agent_run_id, triggered_by_api_key_id
         ) VALUES (
           ${i.orgId}, ${flow.id}, ${publication.id}, ${publication.definitionVersion}, ${i.triggerKind}, ${p.triggeredVia},
           ${JSON.stringify(triggerPayload)}::jsonb, ${JSON.stringify(i.inputs)}::jsonb, 'queued', ${p.preApprovalsHonored},
-          ${i.dedupeKey}, ${p.chainDepth}, ${p.causedByRunId}, ${p.triggeredByUserId}, ${p.aiSessionId}
+          ${i.dedupeKey}, ${p.chainDepth}, ${p.causedByRunId}, ${p.triggeredByUserId}, ${p.aiSessionId},
+          ${p.parentAgentRunId}, ${p.triggeredByApiKeyId}
         )
         ON CONFLICT ON CONSTRAINT flow_runs_dedupe_uq DO NOTHING
         RETURNING id`);
@@ -364,12 +418,12 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
     }
   });
 
-  if (i.triggerKind === 'manual') {
+  if (i.triggerKind === 'manual' || i.triggerKind === 'tool') {
     try {
       writeAuditEvent(requestLikeFromSnapshot({}), {
         orgId: i.orgId,
         actorId: i.triggeredByUserId,
-        initiatedBy: i.triggeredVia === 'ai_tool' ? 'ai' : 'manual',
+        initiatedBy: i.triggerKind === 'tool' || i.triggeredVia === 'ai_tool' ? 'ai' : 'manual',
         action: 'flow.run.create',
         resourceType: 'flow_run',
         resourceId: created.runId,
@@ -380,6 +434,13 @@ export async function createFlowRun(i: CreateFlowRunInput): Promise<CreateFlowRu
           triggeredVia: i.triggeredVia,
           preApprovalsHonored: created.preApprovalsHonored,
           ...(i.aiSessionId ? { aiSessionId: i.aiSessionId } : {}),
+          ...(i.triggerKind === 'tool'
+            ? {
+                triggerKind: 'tool',
+                ...(i.parentAgentRunId ? { parentAgentRunId: i.parentAgentRunId } : {}),
+                ...(i.triggeredByApiKeyId ? { apiKeyId: i.triggeredByApiKeyId } : {}),
+              }
+            : {}),
         },
       });
     } catch (err) {
@@ -401,7 +462,42 @@ async function findDedupedRun(flowId: string, orgId: string, dedupeKey: string):
 
 // ── startManualRun ──────────────────────────────────────────────────────────
 
-function parsePins(raw: unknown): FlowStepPin[] | null {
+export type AuthorizeRunTriggererResult =
+  | { ok: true; perms: UserPermissions; usable: UserPermissions }
+  | { ok: false; error: 'org_forbidden' | 'delegation_scope_restricted' }
+  | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> };
+
+/**
+ * Rule 7 for the PERSON behind a run start (W04 Task A9; W5 PR C reuses it for
+ * tool-started runs and for the approver of a Tier-3 flow-tool intent): the
+ * triggerer's own permissions in the run org must exist and reach it; a site
+ * ceiling on the membership or the token (`[]` included) is refused — the flow
+ * principal is org-wide and there is no site model (orchestrator decision, a
+ * deviation from W04 Decision 4; the per-publication site ceiling, W5
+ * Decision 17, can reopen it). An API key carries its creator's ceiling. The
+ * permissions are clamped to the credential (an API key's scopes; an
+ * unclampable credential holds nothing) and must cover every step of the
+ * publication (`missingPermissionsFor`). The caller has already checked that
+ * `auth` reaches `orgId` and that the run org sits under the flow's partner.
+ */
+export async function authorizeRunTriggerer(
+  auth: AuthContext,
+  orgId: string,
+  orgPartnerId: string,
+  doc: FlowDocumentV1,
+  pins: FlowStepPin[],
+): Promise<AuthorizeRunTriggererResult> {
+  if (!auth.user?.id) return { ok: false, error: 'org_forbidden' };
+  const perms = await triggererPermissions(auth.user.id, orgPartnerId, orgId);
+  if (!perms || !canAccessOrg(perms, orgId)) return { ok: false, error: 'org_forbidden' };
+  if (perms.allowedSiteIds !== undefined || hasSiteCeiling(auth)) return { ok: false, error: 'delegation_scope_restricted' };
+  const usable = (await clampToCallerCredential(auth, perms, orgId)) ?? { ...perms, permissions: [] };
+  const missing = missingPermissionsFor(doc, pins, usable);
+  if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  return { ok: true, perms, usable };
+}
+
+export function parsePins(raw: unknown): FlowStepPin[] | null {
   if (!Array.isArray(raw)) return null;
   const pins: FlowStepPin[] = [];
   for (const entry of raw) {
@@ -447,6 +543,12 @@ export async function startManualRun(
   req: FlowManualRunRequest,
   via: 'ui' | 'api' | 'ai_tool',
   aiSessionId: string | null = null,
+  /**
+   * W5 PR C (#5220): the publication a chat gate checked when it lowered
+   * `run_flow` below Tier 3; any other live publication is
+   * `flow_tool_changed` (the insert then pins the same seq).
+   */
+  opts: { expectedPublicationSeq?: number } = {},
 ): Promise<StartManualRunResult> {
   if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };
   // The `ui` lane and the `ai_tool` lane (run_flow, a chat session that passed
@@ -462,6 +564,7 @@ export async function startManualRun(
   if (!flow) return { ok: false, error: 'flow_not_found' };
   if (flow.status !== 'enabled' || flow.enabledPublicationSeq === null) return { ok: false, error: 'not_enabled' };
   const seq = flow.enabledPublicationSeq;
+  if (opts.expectedPublicationSeq !== undefined && seq !== opts.expectedPublicationSeq) return { ok: false, error: 'flow_tool_changed' };
 
   const [publication] = await inSystemTx(
     async () => db
@@ -493,17 +596,9 @@ export async function startManualRun(
   const orgPartnerId = org?.partnerId ?? null;
   if (!orgPartnerId || (!flow.orgId && orgPartnerId !== flow.partnerId)) return { ok: false, error: 'org_forbidden' };
 
-  const perms = await triggererPermissions(auth.user.id, orgPartnerId, orgId);
-  if (!perms || !canAccessOrg(perms, orgId)) return { ok: false, error: 'org_forbidden' };
-  // A site ceiling on the membership or the token (`[]` included) ⇒ refused:
-  // the flow principal is org-wide and W04 has no site model (orchestrator
-  // decision, a deviation from Decision 4; W05's per-publication site ceiling
-  // can reopen site-limited runs). An API key carries its creator's ceiling.
-  if (perms.allowedSiteIds !== undefined || hasSiteCeiling(auth)) return { ok: false, error: 'delegation_scope_restricted' };
-  // A key acts only within its scopes; an unclampable credential has none.
-  const usable = (await clampToCallerCredential(auth, perms, orgId)) ?? { ...perms, permissions: [] };
-  const missing = missingPermissionsFor(doc, pins, usable);
-  if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  const authorized = await authorizeRunTriggerer(auth, orgId, orgPartnerId, doc, pins);
+  if (!authorized.ok) return authorized;
+  const { perms } = authorized;
 
   const coerced = coerceFlowInputs(doc.inputs, req.inputs ?? {});
   if (!coerced.ok) return { ok: false, error: 'inputs_invalid', issues: coerced.issues };

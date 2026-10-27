@@ -51,7 +51,7 @@ import {
   CALLER_VERIFICATION_REQUIRED_CODE,
   type CallerRefusalPayload,
 } from '../services/callerVerification/refusal';
-import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { buildApproverAuthContextForIntent, buildFlowToolApproverAuthContext } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
@@ -61,6 +61,7 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { claimFlowLinkedIntentForDispatch } from '../services/flows/intentClaim';
+import { releaseFlowToolIntent } from '../services/flows/flowToolRelease';
 import { isFlowBuiltinIntent } from '../services/flows/builtins/intentKind';
 import { executeReleasedFlowBuiltin, FlowBuiltinNotRunError } from '../services/flows/builtins/release';
 import { withFlowExecutionContext, type FlowExecutionFrame } from '../services/flows/flowExecutionContext';
@@ -1084,6 +1085,53 @@ export class FlowRunLeasedError extends Error {
  * Processes one `intent_approved` job end to end. Exported for direct
  * testing without spinning up a real BullMQ Worker.
  */
+/** W5 PR C (#5220): the flow-tool release, after the claim and revalidation (see the call site). */
+async function releaseInvokedFlowIntent(intent: ActionIntent): Promise<void> {
+  if (!intent.decidedByUserId) {
+    await failIntent(intent, 'approver_required', {
+      details: { reason: 'a flow-tool intent runs as its approver; the intent has no decided_by_user_id', actionName: intent.actionName },
+    });
+    return;
+  }
+  let outcome: Awaited<ReturnType<typeof releaseFlowToolIntent>>;
+  try {
+    // The approver may be on the ORG axis (an internal-IT org admin): the
+    // partner-axis-only `buildApproverAuthContextForIntent` would refuse them.
+    const approverAuth = await buildFlowToolApproverAuthContext(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    outcome = await releaseFlowToolIntent(intent, approverAuth);
+  } catch (err) {
+    // The intent is already claimed (`executing`): a throw must terminalize
+    // it here, never leave it for the stale-executing reaper. createFlowRun is
+    // one transaction, so a throw means no run was created.
+    console.error(`[IntentReleaseWorker] flow-tool release threw for intent ${intent.id}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { intent_id: intent.id, area: 'flow_tool_release' });
+    await failIntent(intent, 'execution_error', { details: { error: err instanceof Error ? err.message : String(err) } });
+    return;
+  }
+  if (!outcome.ok) {
+    await failIntent(intent, outcome.code, { details: { ...outcome.details, actionName: intent.actionName } });
+    return;
+  }
+  const completed = await terminalizeIntent(intent, 'completed', { executedAt: new Date(), result: outcome.result });
+  if (!completed) {
+    // The run exists (and a redelivery returns it: the intent id is its
+    // idempotency key) but the intent did not record it — say where it is.
+    const message = `[IntentReleaseWorker] Lost the executing->completed CAS for flow-tool intent ${intent.id} (run ${outcome.result.runId})`;
+    console.error(message);
+    captureException(new Error(message), undefined, { intent_id: intent.id, flow_run_id: outcome.result.runId, area: 'flow_tool_release' });
+  }
+}
+
 export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Step 1: load the intent + its winning approval row. Both are fast local
   // reads with no external I/O, so they share one short system-scoped
@@ -1249,6 +1297,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
   let { auth } = revalidation;
+
+  // W5 PR C (#5220, Decision 8): an INVOKED-FLOW intent (a chat Tier-3
+  // `flow__<slug>` call) starts a flow run with the APPROVER as its
+  // triggerer. It never reaches executeTool (a flow tool is not a registered
+  // tool) and never takes the inline chat release (durableRelease.ts).
+  // `releaseFlowToolIntent` re-resolves the flow live for the approver, fails
+  // `flow_tool_changed` on any other publication, re-runs rule 7 + the
+  // ceiling for the approver, and pins the approved publication on the run
+  // insert. Nothing is executed before the run row exists, so every refusal
+  // is a non-attempted failure.
+  if (intent.invokedFlowId) {
+    await releaseInvokedFlowIntent(intent);
+    return;
+  }
 
   // #4177 (W04): a user-owned release action executes as the APPROVER, never
   // the agent (see USER_OWNED_RELEASE_ACTIONS). Fail loudly rather than

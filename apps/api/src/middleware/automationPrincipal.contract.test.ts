@@ -100,6 +100,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // Task A9: starting a run uses the flow's delegation; only a person (or an
   // API key acting as its creator) may, never an agent or another flow.
   "services/flows/runService.ts:if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };": 'automation',
+  // W5 PR C (#5220): a HUMAN-lane tool run (chat / MCP) needs a person behind
+  // the credential; the agent lane is the separate `agent_tier1` triggerer.
+  "services/flows/toolRuns.ts:if (isAutomationPrincipal(auth) || !auth.user?.id) return false;": 'automation',
 
   // --- agent_only: needs the agent identity / agent run state --------------
   // Ticket actor attribution (agentId) and the agent-run triage lane.
@@ -215,6 +218,9 @@ const AUTOMATION_KIND_SETS: Record<string, string> = {
 
 /** Lines that are not a principal branch at all. Explicit, reviewed. */
 const OUT_OF_SCOPE_SITES: Record<string, string> = {
+  "services/flows/toolRuns.ts:agent_tier1: 'ai_agent',": 'W5 PR C: triggerer kind → flow_runs.triggered_via value, not a principal branch',
+  "services/flows/agentFlowTools.ts:return startToolRun(gated, args, 'ai_agent', { kind: 'agent_tier1', agentRunId: run.id, orgId: run.orgId }, { parentAgentRunId: run.id });":
+    'W5 PR C: the flow_runs.triggered_via lane value of an agent-started run, not a principal branch',
   "middleware/principalKind.ts:export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',
   "middleware/principalKind.ts:return auth.principal?.kind === 'ai_agent';": 'the helper definition',
   "middleware/principalKind.ts:export function isAutomationPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',

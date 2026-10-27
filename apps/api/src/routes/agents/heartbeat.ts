@@ -36,6 +36,8 @@ import {
 } from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
+import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
+import { enabledPromptKinds } from '../../services/promptHostConfig';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -2419,6 +2421,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     await recordWorkstationCapabilities(scoped.deviceOrgId, scoped.deviceId, data.helperCapabilities);
   }
 
+  // #10190 W02 — the live prompt-renderer observation for the device page and
+  // the Assist-floor evidence (compatibility rule 8). Main-agent beats only,
+  // keyed by the authenticated device. Absent (old agent, no renderer, or a
+  // block the schema dropped) DELETES it, so what the page shows is always
+  // this beat's report. Redis only, after the org transaction released;
+  // bounded and never throws, so it cannot fail or stall the beat. A block the
+  // schema dropped would look like "no renderer", so that collapse is logged
+  // (throttled); Hono caches the parsed body, so the re-read is free (#1121).
+  if (agent.role !== 'watchdog') {
+    const promptHostReport = data.helperCapabilities?.promptHost;
+    if (promptHostReport === undefined) {
+      try {
+        notePromptHostReportDropped(scoped.deviceId, await c.req.json(), promptHostReport);
+      } catch {
+        // Raw body unavailable — nothing to report.
+      }
+    }
+    await recordPromptHostObservation(scoped.deviceId, promptHostReport);
+  }
+
   // Self-health is independent from reachability and is persisted only after
   // the request's org-scoped transaction has released. A failed observation
   // must never turn a valid heartbeat into an outage or roll back the device's
@@ -3013,6 +3035,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uacInterceptionEnabled: settingsDecision.uacInterceptionEnabled,
     helperEnabled: settingsDecision.helperEnabled,
     helperSettings: settingsDecision.helperSettings,
+    // #10190 — the prompt host kill switch (spec §3.1 rule 2). ALWAYS sent,
+    // with or without a helper policy: the agent reads an absent block as an
+    // empty list, so omitting it would be indistinguishable from the kill
+    // switch. Server config only; the agent still needs the renderer's live
+    // advertisement and its own build to speak a kind before using it.
+    promptHost: { enabledKinds: enabledPromptKinds() },
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
     ...(rebind ? { rebind } : {}),

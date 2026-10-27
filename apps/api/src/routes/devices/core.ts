@@ -104,6 +104,7 @@ import { notParkedDeviceCondition } from '../../services/unassignedPool/selector
 import { deriveLogShipping } from '../../services/logShippingHealth';
 import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotArriving';
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
+import { readPromptHostObservation } from '../../services/promptHostObservation';
 /**
  * Tables where linked_device_id (not device_id) references devices.id.
  * These get SET NULL rather than deleted during cascade.
@@ -1792,6 +1793,13 @@ coreRoutes.get(
       remoteAccessLaunchSkipReason = 'config_error';
     }
 
+    // #10190 W02 — the live prompt-renderer observation (what the console
+    // session's renderer advertised on the device's latest beat), or null
+    // when none is fresh. Telemetry from Redis, no column; read only after
+    // getDeviceWithOrgAndSiteCheck above has 403/404'd an id the caller may
+    // not see (the key is the device id alone). Never throws.
+    const promptHost = await readPromptHostObservation(deviceId);
+
     return c.json({
       ...projectPublicDevice(device),
       // #8608 — derived view only; the raw columns are not in PUBLIC_DEVICE_FIELDS.
@@ -1800,6 +1808,7 @@ coreRoutes.get(
       // #8620 — banner view only (terminal states, closed vocab); the raw
       // watchdog_install_* columns are not in PUBLIC_DEVICE_FIELDS.
       watchdogInstall: deriveWatchdogInstallBanner(device),
+      promptHost,
       hardware: hardware || null,
       networkInterfaces,
       recentMetrics,

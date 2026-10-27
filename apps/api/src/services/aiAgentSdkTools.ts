@@ -1952,6 +1952,20 @@ export function googleToolDefinitions(
  * any other failure (`sanitizeThrownToolError` → `isError` result →
  * postToolUse).
  */
+/**
+ * W5 PR C (#5220): the `ToolExecutionContext` the pre-tool-use gate returned
+ * for ONE extra-tool call, keyed by that call's SDK `extra` object (a fresh
+ * object per call; weakly held, so it dies with the call). Core tools get
+ * their context through `makeHandler`; an extra tool's handler signature is
+ * fixed by the SDK, so it reads it here. Absent ⇒ the call was not gated with
+ * a context, and a handler that needs one must refuse.
+ */
+const EXTRA_TOOL_CALL_CONTEXT = new WeakMap<object, ToolExecutionContext>();
+
+export function extraToolCallContext(extra: unknown): ToolExecutionContext | undefined {
+  return extra && typeof extra === 'object' ? EXTRA_TOOL_CALL_CONTEXT.get(extra) : undefined;
+}
+
 export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
   onPreToolUse?: PreToolUseCallback,
@@ -1983,6 +1997,9 @@ export function wrapExtraToolWithHooks(
           await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
+        // W5 PR C (#5220): the gate's context (a flow tool's resolved
+        // descriptor) rides the SDK's per-call `extra` object to the handler.
+        if (check.context && extra && typeof extra === 'object') EXTRA_TOOL_CALL_CONTEXT.set(extra, check.context);
       }
       try {
         const result = await withToolTimeout(handler(args, extra), toolTimeout, name);

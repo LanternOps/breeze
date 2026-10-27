@@ -9,7 +9,7 @@ import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey, POLICY_DECIDABLE_TIER3 } from '../actionIntents/policyDecidable';
 import {
   AGENT_CAPABILITIES, TOOL_CAPABILITY, AGENT_KIND_PRESETS,
-  listAgentReachableTools, listUnreachableRegisteredTools, buildAgentToolCatalog,
+  listAgentReachableTools, listUnreachableRegisteredTools, buildAgentToolCatalog, agentToolCapability,
 } from './agentToolCatalog';
 
 const capabilityIds = new Set(AGENT_CAPABILITIES.map((c) => c.id));
@@ -384,6 +384,26 @@ describe('W09 SNMP and network monitoring in the agent catalog (#6779)', () => {
     expect(listAgentReachableTools()).not.toContain(name);
     expect(listUnreachableRegisteredTools()).toContain(name);
     expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain(name);
+  });
+});
+
+// W5 PR C (#5220, Decision 9): flow tools (`flow__<slug>`) are per-org dynamic
+// names, never registry entries: no per-name TOOL_CAPABILITY entry, never in
+// the static catalog, and they map to automations_reports by prefix.
+describe('flow tools in the agent tool catalog (W5 PR C)', () => {
+  it('no flow__ name is statically listed; the prefix maps to automations_reports', () => {
+    expect(Object.keys(TOOL_CAPABILITY).some((n) => n.startsWith('flow__'))).toBe(false);
+    expect(listAgentReachableTools().some((n) => n.startsWith('flow__'))).toBe(false);
+    expect(buildAgentToolCatalog().tools.some((t) => t.name.startsWith('flow__'))).toBe(false);
+    expect(agentToolCapability('flow__weekly_report')).toBe('automations_reports');
+    expect(agentToolCapability('manage_automations')).toBe('automations_reports');
+    expect(agentToolCapability('flow__')).toBeUndefined();
+    expect(agentToolCapability('not_a_tool')).toBeUndefined();
+  });
+
+  it('run_flow stays agent human-only (an agent names each flow it may start)', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('run_flow')).toBe(true);
+    expect(isNeverAgentTool('run_flow')).toBe(true);
   });
 });
 

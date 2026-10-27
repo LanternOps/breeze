@@ -21,6 +21,7 @@ import { getRedis } from './redis';
 import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
+import { isFlowToolName } from './flows/toolNames';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../middleware/principalKind';
 import { envFlag } from '../config/env';
@@ -3421,11 +3422,23 @@ export function checkAgentGuardrails(
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
   context?: GuardrailContext,
+  /**
+   * W5 PR C (#5220, Decision 9): the LIVE invocation tier of a flow tool
+   * (`flow__<slug>`), which has no `TOOL_TIERS` entry. Agents may start
+   * Tier-1 flows only, so only `1` is accepted, and only for a flow tool name
+   * — any other name is classified by `checkGuardrails` as before (an unknown
+   * name stays tier 4 / denied). Every other gate below (env flag, kill
+   * switch, policy, enabled, mode) still applies; the agent path also
+   * requires the allowlist (services/flows/agentFlowTools.ts).
+   */
+  opts: { resolvedTier?: 1 } = {},
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
   const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
-  const base = checkGuardrails(toolName, input, agentContext);
+  const base: GuardrailCheck = opts.resolvedTier === 1 && isFlowToolName(toolName)
+    ? { tier: 1, allowed: true, requiresApproval: false, readOnly: true, description: `Run ${toolName}` }
+    : checkGuardrails(toolName, input, agentContext);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

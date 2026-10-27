@@ -1121,3 +1121,22 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   });
 });
 
+
+// W5 PR C (#5220): flow tools are never Tier-1 listed statically — no
+// TOOL_TIERS entry, so checkAgentGuardrails denies a flow__ name unless the
+// agent path passes its live resolved tier (services/flows/agentFlowTools.ts).
+describe('flow tools are never statically tiered (W5 PR C)', () => {
+  it('no flow__ name in TOOL_TIERS; an unresolved flow__ call is denied', () => {
+    expect(Object.keys(TOOL_TIERS).some((n) => n.startsWith('flow__'))).toBe(false);
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+    try {
+      const policy = {
+        enabled: true, mode: 'shadow', toolAllowlist: ['flow__weekly_report'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] }, deviceId: null, deviceSiteId: null,
+      } as AgentGuardrailPolicy;
+      expect(checkAgentGuardrails('flow__weekly_report', {}, policy).disposition).toBe('deny');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

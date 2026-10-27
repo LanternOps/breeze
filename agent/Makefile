@@ -66,7 +66,13 @@ build-windows: build-windows-user-helper
 # sessionbroker spawns it into the logged-in user's non-elevated session, where
 # a requireAdministrator manifest makes CreateProcessAsUser fail with
 # ERROR_ELEVATION_REQUIRED (#949 regression).
+#
+# The embedded manifest (rsrc_windows_amd64.syso from build-winres) also
+# activates comctl32 v6, which the native prompt renderer's TaskDialogIndirect
+# needs (#10190); without it every native prompt degrades to a message box.
+# Refuse to build a helper without it.
 build-windows-user-helper:
+	@test -f cmd/breeze-user-helper/rsrc_windows_amd64.syso || { echo "cmd/breeze-user-helper/rsrc_windows_amd64.syso is missing: run 'make build-winres' first (the manifest selects comctl32 v6 for TaskDialogIndirect and asInvoker for #949)"; exit 1; }
 	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-user-helper
 
 build-winres:

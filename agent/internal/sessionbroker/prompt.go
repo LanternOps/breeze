@@ -140,6 +140,15 @@ func capCodePoints(v string, n int) string {
 	return string([]rune(v)[:n])
 }
 
+// ApplyPromptAuthForTest records a prompt advertisement on a session built
+// outside the auth path, exactly as the auth path would (tests in other
+// packages).
+func (s *Session) ApplyPromptAuthForTest(role ipc.HelperRole, authReq ipc.AuthRequest) {
+	g := promptGrantFromAuth(role, authReq)
+	applyPromptGrant(s, g)
+	s.AllowedScopes = append(append([]string(nil), s.AllowedScopes...), g.scopes...)
+}
+
 func applyPromptGrant(s *Session, g promptGrant) {
 	s.promptProtocol = g.protocol
 	s.promptKinds = g.kinds

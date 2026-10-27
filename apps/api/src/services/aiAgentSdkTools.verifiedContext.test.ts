@@ -377,3 +377,24 @@ describe('Wisp per-call auth and thread capture scope (W04 Task 4)', () => {
     expect((sessionHandler.mock.calls[0] as unknown[])[1]).toBe(narrowedAuth);
   });
 });
+
+describe('extra tools: the gate context reaches the handler (W5 PR C, #5220)', () => {
+  it('the context returned by onPreToolUse is readable by the extra tool handler for that call only', async () => {
+    const { extraToolCallContext } = await import('./aiAgentSdkTools');
+    const seen: Array<ToolExecutionContext | undefined> = [];
+    const extra = { name: 'flow__disk', description: 'x', inputSchema: {}, handler: vi.fn(async (_args: unknown, ex: unknown) => {
+      seen.push(extraToolCallContext(ex));
+      return { content: [{ type: 'text' as const, text: 'ok' }] };
+    }) };
+    const ctx = { flowToolGate: { descriptor: { name: 'flow__disk' }, call: { inputs: {}, orgId: null, idempotencyKey: null } } } as unknown as ToolExecutionContext;
+    const wrapped = wrapExtraToolWithHooks(extra as never, vi.fn(async () => ({ allowed: true as const, context: ctx })));
+    await wrapped.handler({}, { requestId: 'r-1' });
+    expect(seen[0]).toBe(ctx);
+    // No gate context ⇒ nothing (a handler must refuse rather than guess).
+    const bare = wrapExtraToolWithHooks(extra as never, vi.fn(async () => ({ allowed: true as const })));
+    await bare.handler({}, { requestId: 'r-2' });
+    expect(seen[1]).toBeUndefined();
+    // A call without an `extra` object cannot carry one either.
+    expect(extraToolCallContext(undefined)).toBeUndefined();
+  });
+});

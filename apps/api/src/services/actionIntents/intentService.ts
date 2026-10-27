@@ -57,6 +57,7 @@ import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHan
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { loadFlowIntentRun, type FlowIntentRunFacts } from '../flows/intentRun';
+import { isFlowToolName } from '../flows/toolNames';
 import { flowIntentApproverRule } from './flowIntentApproverRule';
 import {
   isOrgWideGovernanceIntent,
@@ -358,6 +359,22 @@ export interface CreateActionIntentInput {
    */
   externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
+   * W5 PR C (#5220, Decision 8): the intent starts a FLOW — a chat Tier-3
+   * call of a `flow__<slug>` tool. REQUIRED iff `toolName` is a flow tool
+   * name (both directions: `invalid_invoked_flow`), mutually exclusive with
+   * `externalTool`, and only for source `chat` from an interactive user
+   * session (`invoked_flow_not_allowed`): Tier-3 flows are refused over MCP,
+   * agents never propose flows (Decision 9), and a flow is never a step of a
+   * flow (Decision 7). `input` is the COERCED call (`{ inputs, orgId,
+   * idempotencyKey }`) and `orgId` the run org. Writes `invoked_flow_id` and
+   * `tool_revision 'flowpub:<publicationId>'` — immutable content
+   * (`action_intents_block_content_update`). Like `externalTool`, the core
+   * classifier is skipped (a fixed Tier-3 / `supervised` verdict), the intent
+   * is never policy-decidable, and release revalidates the binding
+   * (`flowToolRelease.ts`) with the approver as the triggerer.
+   */
+  invokedFlow?: { flowId: string; publicationId: string; publicationSeq: number; flowName: string };
+  /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
    * header in @breeze/shared and `assertTaskContextTrusted` below).
@@ -498,6 +515,9 @@ const MAX_ARG_VALUE_LEN = 80;
 /** Canonical lowercase UUID — the only form the Postgres `uuid` binding
  * columns may receive (design §5.2; an uppercase GUID would 22P02 at INSERT). */
 const CANONICAL_UUID_LOWER = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** W5 PR C (#5220): approvers of a flow-tool intent also hold automations.write (a Tier ≥ 2 flow start). */
+const FLOW_TOOL_APPROVER_PERMISSION = { resource: 'automations', action: 'write' } as const;
 
 // ---------------------------------------------------------------------------
 // Summary / digest helpers
@@ -1522,6 +1542,33 @@ export async function createActionIntent(
     }
   }
 
+  // W5 PR C (#5220): the invoked-flow binding — see the field's doc. Checked
+  // BEFORE any DB access and before the classifier, so a flow tool name never
+  // reaches `checkGuardrails` (it would answer tier 4 "unknown tool").
+  const invokedFlow = input.invokedFlow ?? null;
+  if (invokedFlow || isFlowToolName(input.toolName)) {
+    if (!invokedFlow || !isFlowToolName(input.toolName) || externalTool) {
+      throw new ActionIntentError(
+        'A flow tool intent needs a flow__<slug> tool name and an invokedFlow binding, and no external tool binding',
+        'invalid_invoked_flow',
+      );
+    }
+    if (input.source !== 'chat' || auth.principal?.kind !== 'user_session') {
+      throw new ActionIntentError(
+        'Flow tool intents are created only from an interactive chat session',
+        'invoked_flow_not_allowed',
+      );
+    }
+    if (
+      !CANONICAL_UUID_LOWER.test(invokedFlow.flowId)
+      || !CANONICAL_UUID_LOWER.test(invokedFlow.publicationId)
+      || !Number.isInteger(invokedFlow.publicationSeq) || invokedFlow.publicationSeq < 1
+      || typeof invokedFlow.flowName !== 'string' || invokedFlow.flowName.length === 0
+    ) {
+      throw new ActionIntentError('invokedFlow ids must be canonical lowercase UUIDs and the seq a positive integer', 'invalid_invoked_flow');
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents.
   //
@@ -1633,6 +1680,18 @@ export async function createActionIntent(
           readOnly: false,
           approvalScope: 'supervised',
           description: `${input.toolName} — external tool from ${externalTool.sourceName}`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : invokedFlow
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `Run flow "${invokedFlow.flowName}"`,
         } satisfies GuardrailCheck,
         context: undefined,
       }
@@ -2117,8 +2176,15 @@ export async function createActionIntent(
   // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
   // definition: the approver reads which source the call goes to and which
   // argument keys it carries (values are on the card's argument JSON).
+  const flowInputKeys = (): string => {
+    const inputs = input.input.inputs;
+    const keys = inputs && typeof inputs === 'object' && !Array.isArray(inputs) ? Object.keys(inputs).sort() : [];
+    return keys.length > 0 ? keys.join(', ') : '(none)';
+  };
   const targetSummary = externalTool
     ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : invokedFlow
+    ? `Run flow "${invokedFlow.flowName}" (${input.toolName})`
     : runScriptGroupNote
       ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
       : buildTargetSummary(input.toolName, input.input);
@@ -2126,6 +2192,8 @@ export async function createActionIntent(
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
       }`
+    : invokedFlow
+    ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
     : buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
@@ -2293,7 +2361,11 @@ export async function createActionIntent(
     alsoRequire:
       input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
         ? PERMISSION_GRANTS.SCRIPTS_WRITE
-        : undefined,
+        // W5 PR C: starting a Tier ≥ 2 flow needs automations.write; release
+        // re-checks the approver's rule 7 for every step (flowToolRelease.ts).
+        : invokedFlow
+          ? FLOW_TOOL_APPROVER_PERMISSION
+          : undefined,
     requireOrgWideGovernance,
     onDiagnostics: (diagnostics) => {
       governanceDiagnostics = diagnostics;
@@ -2696,7 +2768,9 @@ export async function createActionIntent(
           // Tool catalog W01 PR B (#5216): both or neither —
           // `action_intents_external_tool_chk`. Immutable from here on.
           toolSourceToolId: externalTool?.toolSourceToolId ?? null,
-          toolRevision: externalTool?.revision ?? null,
+          // W5 PR C: the invoked-flow binding (same pairing CHECK, immutable).
+          invokedFlowId: invokedFlow?.flowId ?? null,
+          toolRevision: externalTool?.revision ?? (invokedFlow ? `flowpub:${invokedFlow.publicationId}` : null),
           idempotencyKey,
           correlationId: isMcpOrigin && input.correlationId ? input.correlationId : randomUUID(),
           approvalScope,
@@ -2843,7 +2917,8 @@ export async function createActionIntent(
           // going to refuse as `external_tool_disabled`/`_drift` — a confusing
           // spurious failure instead of an honest conflict here.
           (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
-          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null) ||
+          (existing.invokedFlowId ?? null) !== (invokedFlow?.flowId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? (invokedFlow ? `flowpub:${invokedFlow.publicationId}` : null)) ||
           // B-W04 (#6158, D-B27): same credential, same human.
           mcpOriginReplayMismatch(existing, replayIdentity)
         ) {

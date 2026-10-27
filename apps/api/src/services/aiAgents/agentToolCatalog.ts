@@ -22,6 +22,7 @@ import {
   checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
+import { isFlowToolName } from '../flows/toolNames';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 
@@ -620,6 +621,18 @@ function resolveOperation(toolName: string, action: string | null): AgentToolOpe
     // gate hasActEligibleSurface / remediationActResolver apply at runtime.
     actRequiresAuthorizedScripts: SCRIPT_GATED_ACT_TOOLS.has(toolName),
   };
+}
+
+/**
+ * A tool's agent capability. W5 PR C (#5220): a flow tool (`flow__<slug>`) is
+ * a per-org dynamic name — no per-name `TOOL_CAPABILITY` entry — and maps to
+ * `automations_reports` by prefix. The static catalog never lists flows; this
+ * is the server-side rule the web agent picker mirrors when it adds the
+ * org's enabled manual flows (W5 PR D, plan Task D4).
+ */
+export function agentToolCapability(name: string): AgentCapabilityId | undefined {
+  if (isFlowToolName(name)) return 'automations_reports';
+  return TOOL_CAPABILITY[name];
 }
 
 let memo: AgentToolCatalogDto | null = null;

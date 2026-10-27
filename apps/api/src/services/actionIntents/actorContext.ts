@@ -271,6 +271,23 @@ export async function buildApproverAuthContextForIntent(
 }
 
 /**
+ * W5 PR C (#5220): the APPROVER of a chat Tier-3 flow-tool intent, rebuilt at
+ * release to become the run's triggerer. Unlike `buildApproverAuthContextForIntent`
+ * this does NOT require the partner axis: starting a flow writes no
+ * partner-axis row, and the run start (`startToolRun` → `authorizeRunTriggerer`)
+ * resolves the approver's permissions in the run org on either axis — so an
+ * internal-IT org admin (org-axis membership) can approve their own org's
+ * flows. Same revalidation as every user-owned rebuild: account active,
+ * CURRENT permissions reach the intent org, live `allowedSiteIds`.
+ */
+export async function buildFlowToolApproverAuthContext(
+  intent: ActionIntent,
+  approverUserId: string,
+): Promise<AuthContext | null> {
+  return buildUserOwnedAuthContext(intent, approverUserId, { principal: { kind: 'user_session' } });
+}
+
+/**
  * Recipe Library E4 (#6169): a HUMAN AuthContext for a named user in a task's
  * org, used by the AI Operator coordinator to mint the two human-shaped
  * intents of plan approval (plan D-E4-2): the `operator_plan` intent under the

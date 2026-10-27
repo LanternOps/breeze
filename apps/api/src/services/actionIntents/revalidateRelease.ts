@@ -11,6 +11,7 @@ import { buildAuthContextForIntent } from './actorContext';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { checkFlowReleaseAuthority } from '../flows/releaseAuthority';
+import { isFlowToolName } from '../flows/toolNames';
 import { isFlowBuiltinIntent } from '../flows/builtins/intentKind';
 import { flowBuiltinTierFor } from '@breeze/shared';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
@@ -470,7 +471,17 @@ async function revalidateApprovedIntentCore(
   // is fixed at 3 by construction (createActionIntent only accepts Tier-3
   // external bindings).
   const isExternalTool = !!intent.toolSourceToolId;
-  if (isExternalTool) {
+  // W5 PR C (#5220): an INVOKED-FLOW intent has no registry entry either. Its
+  // binding (flow + publication) is revalidated against the live flow by the
+  // worker's flow-tool branch (`flows/flowToolRelease.ts`), atomically with
+  // the run insert; here only its shape is asserted, so a flow tool name never
+  // reaches `getToolTier` (which would fail it as `tier_escalated`).
+  const isInvokedFlow = !!intent.invokedFlowId || isFlowToolName(intent.actionName);
+  if (isInvokedFlow) {
+    if (!intent.invokedFlowId || !isFlowToolName(intent.actionName) || !intent.toolRevision?.startsWith('flowpub:')) {
+      return { ok: false, errorCode: 'flow_tool_changed', details: { reason: 'malformed invoked-flow binding' } };
+    }
+  } else if (isExternalTool) {
     const binding = await revalidateExternalToolBinding(intent);
     if (!binding.ok) return binding;
   } else if (isFlowBuiltinIntent(intent)) {
@@ -626,6 +637,16 @@ async function revalidateApprovedIntentCore(
   // The actor must STILL hold the specific RBAC permission the tool
   // requires, checked against the rebuilt `auth` from (c) — not the caller's
   // original, now possibly stale, permission check.
+  if (isInvokedFlow) {
+    // W5 PR C: starting a Tier ≥ 2 flow is `automations.write` (the chat gate
+    // applied it at creation). The APPROVER, who becomes the run's triggerer,
+    // is re-authorized per step by the worker's flow-tool branch.
+    const permissionDenial = await checkPermissionRequirements(auth, [{ resource: 'automations', action: 'write' }]);
+    if (permissionDenial) {
+      return { ok: false, errorCode: 'rbac_denied', details: { reason: permissionDenial } };
+    }
+    return { ok: true, auth };
+  }
   if (isExternalTool) {
     // Tool catalog W01 PR B (#5216): `checkToolPermission` keys on the core
     // registry and would deny a qualified name outright. External tools
