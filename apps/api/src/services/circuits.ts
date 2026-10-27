@@ -175,14 +175,19 @@ async function buildCircuitDtos(rows: CircuitRow[]): Promise<CircuitDto[]> {
     ? []
     : await db
         .select({
+          id: topologyNodeBindings.id,
           nodeId: topologyNodeBindings.nodeId,
           deviceId: topologyNodeBindings.deviceId,
           discoveredAssetId: topologyNodeBindings.discoveredAssetId,
         })
         .from(topologyNodeBindings)
         .where(inArray(topologyNodeBindings.nodeId, nodeIds));
+  // A node can carry both a managed-device and a discovered-asset binding. Pick the
+  // presented asset deterministically: the device first, then by binding id.
+  const orderedBindings = [...bindingRows].sort((a, b) =>
+    Number(!a.deviceId) - Number(!b.deviceId) || a.id.localeCompare(b.id));
   const bindingByNode = new Map<string, (typeof bindingRows)[number]>();
-  for (const b of bindingRows) if (!bindingByNode.has(b.nodeId)) bindingByNode.set(b.nodeId, b);
+  for (const b of orderedBindings) if (!bindingByNode.has(b.nodeId)) bindingByNode.set(b.nodeId, b);
 
   const assignedTerms = termRows.filter((t) => !t.retiredAt && bindingByNode.has(t.ownerNodeId));
   const siteIds = [...new Set(assignedTerms.map((t) => t.ifaceSiteId))];
@@ -307,6 +312,22 @@ export async function getCircuitDto(circuitId: string): Promise<CircuitDto | nul
   const [circuit] = await db.select().from(circuits).where(eq(circuits.id, circuitId)).limit(1);
   if (!circuit) return null;
   return (await buildCircuitDtos([circuit]))[0] ?? null;
+}
+
+/**
+ * Read DTOs for a set of circuit ids (RLS-visible ones only), in `ids` order.
+ * `orgId`, when given, is an explicit extra org filter (defence in depth).
+ */
+export async function getCircuitDtosByIds(ids: string[], orgId?: string): Promise<CircuitDto[]> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(circuits)
+    .where(and(inArray(circuits.id, unique), orgId ? eq(circuits.orgId, orgId) : undefined));
+  const order = new Map(unique.map((id, i) => [id, i]));
+  rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+  return buildCircuitDtos(rows);
 }
 
 /** Correlated EXISTS: the circuit has a current (non-retired, bound) termination, optionally at one of `siteIds`. */
