@@ -117,6 +117,57 @@ func TestEndedByUserStopFailureReshowsThePill(t *testing.T) {
 	}
 }
 
+// The stop failed after the session had already ended (the peer dropped and
+// the session-end path cleared it): no "still active" pill and no banner.
+func TestFailedEndReshowSkippedWhenTheSessionAlreadyEnded(t *testing.T) {
+	rec := &stopRecorder{}
+	rec.install(t, nil, tools.NewErrorResult(errors.New("IPC desktop_stop: timeout"), 10_000))
+	prev := desktopUserEndStop
+	desktopUserEndStop = func(h *Heartbeat, cmd Command) tools.CommandResult {
+		takeDesktopPrompt(remoteTestSession) // the session ended meanwhile
+		return prev(h, cmd)
+	}
+	t.Cleanup(func() { desktopUserEndStop = prev })
+	h, native := endedPill(t)
+	eventually(t, func() bool { _, stops := rec.counts(); return stops == 1 }, "the stop")
+	time.Sleep(300 * time.Millisecond)
+	if n := promptShows(native); n != 1 {
+		t.Fatalf("%d shows: an ended session got a re-shown pill", n)
+	}
+	assertNone(t, native, ipc.TypeBannerShow, "an ended session got a banner")
+	if h.promptHost.IsOpen(promptkinds.RemoteSessionPromptID(remoteTestSession)) {
+		t.Fatal("an orphan pill is open")
+	}
+}
+
+// A session end that lands while the re-show is under way still closes it:
+// the re-show and the session end are serialized per session.
+func TestSessionEndDuringTheReshowStillClosesIt(t *testing.T) {
+	native := remoteProbe(t, ipc.HelperRoleUser, 501, []string{"notify", ipc.ScopeConsentUIFallback}, []string{"remote.session@1"})
+	h := noticeHeartbeat(t, []string{"remote.session"}, native)
+	prompt := consentPrompt("block", 30_000)
+	prompt.Mode, prompt.ShowIndicator, prompt.AllowUserEndSession = "notify", true, true
+	rememberDesktopPrompt(remoteTestSession, prompt)
+	t.Cleanup(func() { takeDesktopPrompt(remoteTestSession) })
+	ended := make(chan struct{})
+	prevHook := indicatorReshowChecked
+	indicatorReshowChecked = func() {
+		// The session ends between the liveness check and the Show.
+		go func() { h.handleConsentSessionEnd(remoteTestSession); close(ended) }()
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Cleanup(func() { indicatorReshowChecked = prevHook })
+	h.reshowIndicatorAfterFailedEnd(remoteTestSession, prompt, "", time.Now())
+	<-ended
+	if h.promptHost.IsOpen(promptkinds.RemoteSessionPromptID(remoteTestSession)) {
+		t.Fatal("the session ended but its re-shown pill stayed up")
+	}
+	eventually(t, func() bool { return len(closeReasons(t, native)) >= 1 }, "the close to reach the renderer")
+	if got := closeReasons(t, native); len(got) != 1 || got[0] != ipc.PromptCloseWithdrawn {
+		t.Fatalf("closes = %v, want the re-shown pill withdrawn", got)
+	}
+}
+
 // The stop can fail before end_confirm's close lands: the re-show waits for
 // that close, so the close never takes down the re-shown pill.
 func TestFailedEndReshowWaitsForTheEndConfirmClose(t *testing.T) {

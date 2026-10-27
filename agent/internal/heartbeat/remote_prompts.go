@@ -258,8 +258,22 @@ func (h *Heartbeat) reshowIndicatorAfterFailedEnd(sessionID string, prompt *ipc.
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	// The stop often fails after it already ended the stream; the session's
+	// end then cleared it. Re-show only a session that is still live, and
+	// under the session-end lock, so an end landing now still closes it.
+	indicatorLifecycleMu.Lock()
+	defer indicatorLifecycleMu.Unlock()
+	if !desktopPromptActive(sessionID) {
+		log.Info("the session ended while its stop was failing; not re-showing its indicator", "sessionId", sessionID)
+		return
+	}
+	indicatorReshowChecked()
 	h.showIndicator(sessionID, prompt, targetWinSession, startedAt, true)
 }
+
+// indicatorReshowChecked runs between the re-show's liveness check and its
+// Show (a test seam for the session-end race).
+var indicatorReshowChecked = func() {}
 
 // closeSessionIndicator takes the indicator down when its session ends. It
 // closes withdrawn (nothing was decided), which leaves no tombstone: a

@@ -49,6 +49,21 @@ func rememberDesktopPrompt(sessionID string, prompt *ipc.DesktopPrompt) {
 	desktopPromptsMu.Unlock()
 }
 
+// desktopPromptActive reports, without taking it, whether sessionID still
+// has a remembered prompt: the session has not ended yet.
+func desktopPromptActive(sessionID string) bool {
+	desktopPromptsMu.Lock()
+	defer desktopPromptsMu.Unlock()
+	_, ok := desktopPrompts[sessionID]
+	return ok
+}
+
+// indicatorLifecycleMu serializes a session's end against a re-show of its
+// indicator after a failed user end: either the end runs first and the
+// re-show sees the session gone, or the re-show runs first and the end
+// closes what it showed. Never held by anything the prompt host calls.
+var indicatorLifecycleMu sync.Mutex
+
 func takeDesktopPrompt(sessionID string) *ipc.DesktopPrompt {
 	prompt, _ := takeDesktopPromptWithStart(sessionID)
 	return prompt
@@ -708,12 +723,16 @@ func (h *Heartbeat) sendBannerHide(sessionID, targetWinSession string) {
 func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 	targetWinSession := h.takeDesktopTarget(sessionID)
 
+	indicatorLifecycleMu.Lock()
 	prompt, startedAt := takeDesktopPromptWithStart(sessionID)
+	if prompt != nil && prompt.ShowIndicator {
+		h.closeSessionIndicator(sessionID)
+	}
+	indicatorLifecycleMu.Unlock()
 	if prompt == nil {
 		return
 	}
 	if prompt.ShowIndicator {
-		h.closeSessionIndicator(sessionID)
 		h.sendBannerHide(sessionID, targetWinSession)
 	}
 	if prompt.NotifyOnEnd {

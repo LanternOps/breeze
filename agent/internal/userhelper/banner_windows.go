@@ -403,13 +403,22 @@ func showPillOS(label string, startedAtUnixMs int64, clickable bool, onClick fun
 		if wasClickable != clickable {
 			// Toggle WS_EX_TRANSPARENT in place. SetWindowLongPtrW returns the
 			// previous style, so 0 is a failure only with a last error.
+			// The last error is per thread: SetLastError, the call and its
+			// GetLastError must run on one OS thread.
+			runtime.LockOSThread()
 			_, _, _ = procBannerSetLastError.Call(0)
 			prev, _, setErr := procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(pillExStyle(clickable)))
+			runtime.UnlockOSThread()
 			pos, _, _ := procBannerSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, bSwpNomove|bSwpNosize|bSwpNozorder|bSwpNoactivate|bSwpFramechanged)
-			if pillStyleChangeFailed(prev, setErr, pos) {
+			if failed, restorePrev := pillStyleOutcome(prev, setErr, pos); failed {
+				if restorePrev {
+					// The new style took but did not apply: put the old one
+					// back, so the window matches the flags restored below.
+					_, _, _ = procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), prev)
+				}
 				// The click-through state is unknown: refuse, so the caller
 				// falls back (the prompt host takes today's banner).
-				log.Warn("session pill style could not be changed; not showing it as asked", "clickable", clickable, "error", fmt.Sprint(setErr))
+				log.Warn("session pill style could not be changed; not showing it as asked", "clickable", clickable, "restored", restorePrev, "error", fmt.Sprint(setErr))
 				bannerMu.Lock()
 				bannerClickable, bannerOnClick = wasClickable, nil
 				bannerMu.Unlock()

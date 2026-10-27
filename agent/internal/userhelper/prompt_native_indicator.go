@@ -48,17 +48,28 @@ func pillExStyle(clickable bool) uint32 {
 // failed: SetWindowLongPtrW returned 0 with a last error (0 alone can be a
 // previous style of 0), or SetWindowPos returned 0.
 func pillStyleChangeFailed(setLongRet uintptr, setLongErr error, setPosRet uintptr) bool {
-	if setPosRet == 0 {
-		return true
+	failed, _ := pillStyleOutcome(setLongRet, setLongErr, setPosRet)
+	return failed
+}
+
+// pillStyleOutcome decides an in-place style change: failed, and whether the
+// previous extended style (SetWindowLongPtrW's return) must be put back —
+// only when SetWindowLongPtrW took the new style and SetWindowPos then
+// failed, so a pill left on screen keeps the click-through state its flags
+// say it has.
+func pillStyleOutcome(setLongRet uintptr, setLongErr error, setPosRet uintptr) (failed, restorePrev bool) {
+	longOK := setLongRet != 0 || setLongErr == nil
+	if !longOK {
+		var errno syscall.Errno
+		longOK = errors.As(setLongErr, &errno) && errno == 0
 	}
-	if setLongRet != 0 || setLongErr == nil {
-		return false
+	switch {
+	case !longOK:
+		return true, false
+	case setPosRet == 0:
+		return true, true
 	}
-	var errno syscall.Errno
-	if errors.As(setLongErr, &errno) {
-		return errno != 0
-	}
-	return true
+	return false, false
 }
 
 const (
