@@ -2716,6 +2716,17 @@ mod tests {
                 }
             }
         }
+        // The logo goes only to the window of a LIVE request: the request
+        // gate comes after the label check and before the identity is read.
+        let start = lib.find("fn get_caller_verify_logo(").unwrap();
+        let logo = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        let label = logo.find("caller_verify::label_matches(").unwrap();
+        let live = logo
+            .find("if caller.get(&verification_id).is_none() {\n        return Err(\"request unavailable\".into());")
+            .expect("get_caller_verify_logo refuses a window with no live request");
+        let read = logo.find("prompts.tracker().identity_logo_for(&sha256)").expect("reads the logo by sha");
+        assert!(label < live && live < read, "label, then live request, then the logo");
+
         use crate::ipc::desktop::list_window_allowed;
         assert!(list_window_allowed("main"));
         for other in ["mainx", "prompt-0123abcd", "message-1", "chat-1", "consent", "session-banner", "caller-verify-1", ""] {
@@ -2817,6 +2828,50 @@ mod tests {
         let img = csp.split(';').map(str::trim).find(|d| d.starts_with("img-src")).unwrap();
         assert!(img.split_whitespace().any(|t| t == "blob:"), "{img}");
         assert!(img.contains("'self'") && img.contains("https:"), "existing sources kept: {img}");
+    }
+
+    // #10190 W04 review: the brand accent is checked against the card surface
+    // the card really paints (`.prompt-card` = --bg-secondary = --ws-surface),
+    // not only the canvas. theme.ts holds those surfaces as hex; they must be
+    // the --ws-surface values of tokens.css in each theme.
+    #[test]
+    fn card_surface_constants_match_tokens_css() {
+        fn hsl_hex(h: f64, s: f64, l: f64) -> String {
+            let (s, l) = (s / 100.0, l / 100.0);
+            let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+            let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+            let m = l - c / 2.0;
+            let (r, g, b) = match h {
+                h if h < 60.0 => (c, x, 0.0),
+                h if h < 120.0 => (x, c, 0.0),
+                h if h < 180.0 => (0.0, c, x),
+                h if h < 240.0 => (0.0, x, c),
+                h if h < 300.0 => (x, 0.0, c),
+                _ => (c, 0.0, x),
+            };
+            let to = |v: f64| ((v + m) * 255.0).round() as u8;
+            format!("#{:02X}{:02X}{:02X}", to(r), to(g), to(b))
+        }
+        fn surface(block: &str) -> String {
+            let at = block.find("--ws-surface: hsl(").expect("--ws-surface") + "--ws-surface: hsl(".len();
+            let args = &block[at..at + block[at..].find(')').unwrap()];
+            let n: Vec<f64> = args.split_whitespace().map(|p| p.trim_end_matches('%').parse().unwrap()).collect();
+            hsl_hex(n[0], n[1], n[2])
+        }
+        let tokens = include_str!("../../src/styles/tokens.css");
+        let dark = tokens.find(":root[data-theme='dark']").unwrap();
+        let theme = include_str!("../../src/prompt/theme.ts");
+        let constant = |name: &str| -> String {
+            let at = theme.find(&format!("export const {name} = '")).unwrap_or_else(|| panic!("{name}")) + name.len() + 17;
+            theme[at..at + 7].to_string()
+        };
+        assert_eq!(constant("CARD_SURFACE_LIGHT"), surface(&tokens[..dark]));
+        assert_eq!(constant("CARD_SURFACE_DARK"), surface(&tokens[dark..]));
+        // ...and the card does paint that surface.
+        let css = include_str!("../../src/prompt/prompt.css");
+        let card = &css[css.find(".prompt-card {").unwrap()..];
+        assert!(card[..card.find('}').unwrap()].contains("background: var(--bg-secondary)"));
+        assert!(include_str!("../../src/styles.css").contains("--bg-secondary: var(--ws-surface);"));
     }
 
     // #8741: build.rs declares no app-command ACL, so Tauri does not gate app

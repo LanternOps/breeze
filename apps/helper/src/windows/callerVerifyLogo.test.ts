@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveCallerLogo, type CallerLogoApi } from './callerVerifyLogo';
+import { resolveCallerLogo, useCallerLogo, type CallerLogoApi } from './callerVerifyLogo';
 import type { Branding } from './CallerVerifyWindow';
 
 /*
@@ -96,5 +98,44 @@ describe('resolveCallerLogo', () => {
       expect(u.create).not.toHaveBeenCalled();
     }
     warn.mockRestore();
+  });
+});
+
+describe('useCallerLogo', () => {
+  it('revokes the blob URL when the window unmounts', async () => {
+    const u = urls();
+    const a = api(SHA);
+    const { result, unmount } = renderHook(() => useCallerLogo(withLogo, ID, a, u));
+    await waitFor(() => expect(result.current).toEqual({ src: 'blob:assist/1', kind: 'blob' }));
+    expect(u.revoke).not.toHaveBeenCalled();
+    unmount();
+    expect(u.revoke).toHaveBeenCalledWith('blob:assist/1');
+  });
+
+  it('revokes the old blob URL when the branding changes', async () => {
+    const u = urls();
+    const a = api(SHA);
+    const { result, rerender } = renderHook(({ b }: { b: Branding }) => useCallerLogo(b, ID, a, u), {
+      initialProps: { b: withLogo },
+    });
+    await waitFor(() => expect(result.current?.src).toBe('blob:assist/1'));
+    rerender({ b: { ...withLogo!, logoSha256: SHA } });
+    await waitFor(() => expect(result.current?.src).toBe('blob:assist/2'));
+    expect(u.revoke).toHaveBeenCalledWith('blob:assist/1');
+    expect(u.revoke).not.toHaveBeenCalledWith('blob:assist/2');
+  });
+
+  it('revokes a blob URL that resolves after the window is gone', async () => {
+    const u = urls();
+    let release: (v: { mime: string; data: string }) => void = () => {};
+    const slow: CallerLogoApi = {
+      fetch: vi.fn(() => new Promise<{ mime: string; data: string }>((r) => (release = r))),
+    };
+    const { result, unmount } = renderHook(() => useCallerLogo(withLogo, ID, slow, u));
+    expect(result.current).toBeNull();
+    unmount();
+    await act(async () => release({ mime: 'image/png', data: PNG }));
+    expect(u.create).toHaveBeenCalledTimes(1);
+    expect(u.revoke).toHaveBeenCalledWith('blob:assist/1');
   });
 });

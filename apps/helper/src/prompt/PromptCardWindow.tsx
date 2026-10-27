@@ -69,6 +69,8 @@ export function PromptCardWindow({
   const [view, setView] = useState<PromptView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  // A pull after a notice failed twice; cleared by the next good pull.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const nowMs = useNow(clock);
 
   useEffect(() => {
@@ -81,6 +83,7 @@ export function PromptCardWindow({
     const apply = (v: PromptView) => {
       if (!live) return;
       held = Math.max(held, v.version);
+      setRefreshError(null);
       setView((cur) => (cur && cur.version > v.version ? cur : v));
     };
     // Initial pull: retried once; a prompt still unavailable after that is
@@ -97,13 +100,19 @@ export function PromptCardWindow({
           else void api.hide(promptId, 'click').catch(() => {});
         });
     };
-    // A pull after a change notice, or when live updates are unavailable;
-    // never closes the card.
-    const repull = () => {
+    // A pull after a change notice, or when live updates are unavailable:
+    // retried once like the initial pull, then the card says it may be out
+    // of date (a stuck "Working…" must not look current). Never closes it.
+    const repull = (attempt = 0) => {
       api
         .getView(promptId)
         .then(apply)
-        .catch((err) => console.warn(`[prompt] could not refresh card ${promptId}`, err));
+        .catch((err) => {
+          if (!live) return;
+          console.warn(`[prompt] could not refresh card ${promptId} (attempt ${attempt + 1})`, err);
+          if (attempt === 0) later(() => repull(1));
+          else setRefreshError(STALE_NOTICE);
+        });
     };
     // A change notice (any prompt's: it carries no id) pulls this card's view.
     const onNotice = (n: VersionNotice) => {
@@ -124,7 +133,7 @@ export function PromptCardWindow({
         console.warn(`[prompt] could not subscribe to card ${promptId} updates`, err);
         setLiveError(STALE_NOTICE);
         fetchView(0);
-        later(repull);
+        later(() => repull());
       });
     return () => {
       live = false;
@@ -153,7 +162,7 @@ export function PromptCardWindow({
       nowMs={nowMs}
       onAction={onAction}
       onHide={onHide}
-      error={error ?? liveError}
+      error={error ?? liveError ?? refreshError}
       identity={identity}
       logoUrl={logoUrl}
     />

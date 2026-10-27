@@ -84,11 +84,20 @@ export function useNotificationList(
           else setLoadError(LOAD_FAILED);
         });
     };
-    const repull = () => {
+    // A pull after a notice (or when updates are unavailable): retried once
+    // like the initial pull, then the tab says it may be out of date, so a
+    // cleared session's entries never look current. The next good pull
+    // clears it (`apply`).
+    const repull = (attempt = 0) => {
       api
         .getList()
         .then(apply)
-        .catch((e) => console.warn('[prompt] could not refresh the notification list', e));
+        .catch((e) => {
+          if (!live) return;
+          console.warn(`[prompt] could not refresh the notification list (attempt ${attempt + 1})`, e);
+          if (attempt === 0) later(() => repull(1));
+          else setLoadError(STALE_NOTICE);
+        });
     };
     const onNotice = (n: VersionNotice) => {
       if (live && n.version > held) repull();
@@ -108,7 +117,7 @@ export function useNotificationList(
         console.warn('[prompt] could not subscribe to notification list updates', err);
         setLiveError(STALE_NOTICE);
         fetchList(0);
-        later(repull);
+        later(() => repull());
       });
     return () => {
       live = false;

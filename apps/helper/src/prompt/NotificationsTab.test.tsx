@@ -195,6 +195,39 @@ describe('useNotificationList', () => {
     expect(api.action).toHaveBeenCalledWith('restart:42', 'postpone');
   });
 
+  it('a pull after a notice that fails is retried once, then the tab says it may be out of date', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api, state, notify } = fakeApi();
+    const { result } = renderHook(() => useNotificationList(api, true, 0));
+    await waitFor(() => expect(result.current.entries).toHaveLength(1));
+    await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
+    // The session ends, but the pull that should empty the list fails twice.
+    vi.mocked(api.getList).mockRejectedValueOnce('busy').mockRejectedValueOnce('busy');
+    await act(async () => notify(9));
+    await waitFor(() => expect(result.current.error).toMatch(/may be out of date/));
+    expect(api.getList).toHaveBeenCalledTimes(3);
+    // A later notice that pulls fine replaces the list and clears the error.
+    state.current = listOf(10, []);
+    await act(async () => notify(10));
+    await waitFor(() => expect(result.current.entries).toHaveLength(0));
+    expect(result.current.error).toBeNull();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('a pull after a notice that fails once is retried and applied without an error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api, state, notify } = fakeApi();
+    const { result } = renderHook(() => useNotificationList(api, true, 0));
+    await waitFor(() => expect(result.current.entries).toHaveLength(1));
+    await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
+    state.current = listOf(9, []);
+    vi.mocked(api.getList).mockRejectedValueOnce('busy');
+    await act(async () => notify(9));
+    await waitFor(() => expect(result.current.entries).toHaveLength(0));
+    expect(result.current.error).toBeNull();
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('subscribes before it fetches, and keeps the newer list', async () => {
     let resolveFirst: (l: NotificationListView) => void = () => {};
     const getList = vi

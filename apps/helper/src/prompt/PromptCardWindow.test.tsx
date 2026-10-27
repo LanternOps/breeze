@@ -77,6 +77,37 @@ describe('PromptCardWindow', () => {
     expect(api.getView).toHaveBeenCalledTimes(pulls);
   });
 
+  it('a pull after a notice that fails is retried once, then the card says it may be out of date', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api, notify } = fakeApi();
+    render(<PromptCardWindow promptId={view.promptId} api={api} retryDelayMs={0} />);
+    await screen.findByText('Your computer restarted in safe mode');
+    await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
+    vi.mocked(api.getView).mockRejectedValueOnce('busy').mockRejectedValueOnce('busy');
+    await act(async () => notify(7));
+    expect(await screen.findByRole('alert')).toHaveTextContent('may be out of date');
+    expect(api.getView).toHaveBeenCalledTimes(3);
+    expect(api.hide).not.toHaveBeenCalled();
+    // The next notice that pulls fine clears it.
+    await act(async () => notify(8));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('a pull after a notice that fails once is retried and applied without an error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api, state, notify } = fakeApi();
+    render(<PromptCardWindow promptId={view.promptId} api={api} retryDelayMs={0} />);
+    await screen.findByText('Your computer restarted in safe mode');
+    await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
+    state.current = { ...view, version: 7, copy: { title: 'Repair finished' } };
+    vi.mocked(api.getView).mockRejectedValueOnce('busy');
+    await act(async () => notify(7));
+    expect(await screen.findByText('Repair finished')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('subscribes before it fetches, and a fetched snapshot never overwrites a newer update', async () => {
     let resolveFirst: (v: PromptView) => void = () => {};
     const getView = vi

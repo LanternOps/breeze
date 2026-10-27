@@ -2244,4 +2244,69 @@ mod prompt_auth_tests {
         assert_eq!(n.load(Ordering::SeqCst), 2, "session end publishes the dropped identity");
         assert!(prompts.tracker().identity().is_none());
     }
+
+    // #10190 W04 review: the session end empties the one notification list
+    // (message cards and prompts), so no entry outlives its session.
+    #[test]
+    fn session_end_empties_the_notification_list() {
+        const SHOW_NOTICE: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/show.notice.json");
+        let now = now_unix_ms();
+        let messages = std::sync::Arc::new(super::super::message::MessageBridge::default());
+        let prompts = std::sync::Arc::new(PromptBridge::default());
+        let exp = chrono::DateTime::from_timestamp_millis(now + 3_600_000).unwrap().to_rfc3339();
+        let show: MessageShow = serde_json::from_str(&format!(
+            r##"{{"messageId":"m-1","title":"t","body":"b","severity":"info","requiresAck":false,"expiresAt":"{exp}","branding":{{}}}}"##
+        ))
+        .unwrap();
+        assert!(matches!(messages.tracker().on_show(now, &show), ShowAction::Show { .. }));
+        let notice: PromptShow = serde_json::from_str(SHOW_NOTICE).unwrap();
+        prompts.tracker().on_show(now, &notice);
+        let before = super::super::notifications::list_view(&prompts, &messages, now);
+        assert_eq!(before.messages.len() + before.prompts.len(), 2);
+        let guard = BridgeClearGuard {
+            bridge: None,
+            caller: None,
+            app: None,
+            messages: Some(messages.clone()),
+            chat: None,
+            prompts: Some(prompts.clone()),
+        };
+        drop(guard);
+        let after = super::super::notifications::list_view(&prompts, &messages, now);
+        assert!(after.messages.is_empty() && after.prompts.is_empty(), "nothing outlives the session");
+        assert!(after.version > before.version);
+    }
+
+    // #10190 W04 review: every change to the message cards on screen tells
+    // the Notifications tab (a version notice; it pulls) -- show, ack/close,
+    // retract, expiry and the session end. Dropping one leaves the tab and
+    // the tray count stale, so each site is pinned here.
+    #[test]
+    fn message_card_changes_publish_the_notification_list() {
+        let prod = include_str!("client.rs").split("\nmod tests {").next().unwrap();
+        const PUBLISH: &str = "desktop::publish_notification_list(";
+        let region = |from: &str, to: &str| -> &str {
+            let s = prod.find(from).unwrap_or_else(|| panic!("{from}"));
+            let e = s + prod[s..].find(to).unwrap_or_else(|| panic!("{to} after {from}"));
+            &prod[s..e]
+        };
+        // Ack / closed from a card window.
+        let ev = region("Some(event) = msg_rx.recv() =>", "continue;");
+        assert!(ev.contains("on_ack(") && ev.contains("on_closed(") && ev.contains(PUBLISH), "{ev}");
+        // Expiry on the tick.
+        let exp = region("ctx.messages.tracker().expire_due(", "for (id, frame) in due");
+        assert!(exp.contains(PUBLISH), "{exp}");
+        // A shown card (built or failed).
+        let show = region("\"message_show\" =>", "(Some(action), _) =>");
+        assert!(show.contains("desktop::show_message_window(") && show.contains(PUBLISH), "{show}");
+        // A retracted card.
+        let retract = region("\"message_retract\" =>", "\"chat_open\" =>");
+        assert!(retract.contains("on_retract(") && retract.contains(PUBLISH), "{retract}");
+        // The session end: the list is emptied, then published.
+        let end = region("impl Drop for BridgeClearGuard", "if let Some(chat) = &self.chat");
+        let clear = end.find("messages.tracker().clear()").expect("the session end clears the messages");
+        let publish = end.find(PUBLISH).expect("the session end publishes the list");
+        assert!(clear < publish);
+        assert_eq!(prod.matches(PUBLISH).count(), 5, "a new message path must be pinned here too");
+    }
 }

@@ -18,13 +18,28 @@ export type CardTheme = 'light' | 'dark' | 'forced' | 'more';
 
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
 
-const CANVAS: Record<'light' | 'dark', string> = { light: HELPER_CANVAS_LIGHT, dark: HELPER_CANVAS_DARK };
+/**
+ * The card surface a prompt card paints (`.prompt-card` background is
+ * `--bg-secondary` = `--ws-surface`, styles/tokens.css): white in light,
+ * hsl(230 11% 14%) in dark. A test pins these against tokens.css.
+ */
+export const CARD_SURFACE_LIGHT = '#FFFFFF';
+export const CARD_SURFACE_DARK = '#202128';
+
+/**
+ * The backgrounds the accent must be readable on, per theme: the Assist
+ * canvas (the shared constants) AND the card surface it is actually drawn on.
+ */
+const BACKGROUNDS: Record<'light' | 'dark', readonly string[]> = {
+  light: [HELPER_CANVAS_LIGHT, CARD_SURFACE_LIGHT],
+  dark: [HELPER_CANVAS_DARK, CARD_SURFACE_DARK],
+};
 
 /** The brand colour to use in `theme`, or null for the neutral palette. */
 export function brandAccentFor(color: string | null | undefined, theme: CardTheme): string | null {
   if (!color || !HEX_COLOR.test(color)) return null;
   if (theme === 'forced' || theme === 'more') return null;
-  return contrastRatio(color, CANVAS[theme]) >= MIN_CONTRAST_RATIO ? color : null;
+  return BACKGROUNDS[theme].every((bg) => contrastRatio(color, bg) >= MIN_CONTRAST_RATIO) ? color : null;
 }
 
 const FORCED = '(forced-colors: active)';
