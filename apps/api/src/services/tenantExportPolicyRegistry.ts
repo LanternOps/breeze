@@ -798,7 +798,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // json/jsonb/bytea, none matches SUSPICIOUS_NAME_PARTS, and none is
   // credential material — ordinary `included` customer data, same treatment as
   // permissions_epoch_snapshot above.
-  "remote_sessions": tablePolicy("org_id", {"included":["id","device_id","org_id","user_id","type","status","webrtc_offer","webrtc_answer","started_at","ended_at","duration_seconds","bytes_transferred","recording_url","error_message","permissions_epoch_snapshot","desktop_start_generation","terminal_generation","termination_phase","created_at","desktop_consent_unavailable_behavior"],"reviewedIncluded":["desktop_start_command_id","desktop_prompt_mode"],"excludedSensitive":[],"excludedOpen":["ice_candidates"]}),
+  "remote_sessions": tablePolicy("org_id", {"included":["id","device_id","org_id","user_id","type","status","webrtc_offer","webrtc_answer","started_at","ended_at","duration_seconds","bytes_transferred","recording_url","error_message","permissions_epoch_snapshot","desktop_start_generation","terminal_generation","termination_phase","created_at","desktop_consent_unavailable_behavior","end_reason"],"reviewedIncluded":["desktop_start_command_id","desktop_prompt_mode"],"excludedSensitive":[],"excludedOpen":["ice_candidates"]}),
   // #4247: report_runs gained org_id XOR partner_id (the parent report's
   // owner); the exporter filters on org_id, so partner-owned runs are never
   // emitted, same as their partner-owned definitions. output_url is an

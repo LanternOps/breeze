@@ -83,6 +83,13 @@ vi.mock('../services/desktopClipboardAudit', () => ({
   recordDesktopClipboardSummary: recordDesktopClipboardSummaryMock,
 }));
 
+const { recordDesktopSessionEndedByUserMock } = vi.hoisted(() => ({
+  recordDesktopSessionEndedByUserMock: vi.fn(async () => 'recorded'),
+}));
+vi.mock('../services/desktopUserEnd', () => ({
+  recordDesktopSessionEndedByUser: recordDesktopSessionEndedByUserMock,
+}));
+
 vi.mock('../db/schema', () => ({
   snmpDevices: { id: 'snmpDevices.id', orgId: 'snmpDevices.orgId' },
   // #4673 W02 — validateAgentToken innerJoins organizations to resolve the
@@ -2615,6 +2622,71 @@ describe('agent websocket command results', () => {
     // A summary never touches the session row.
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('hands a desk-userend report to the user-end recorder, bound to the reporting device (#10190 W06)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    recordDesktopSessionEndedByUserMock.mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-userend-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'ended_by_user' },
+      }),
+    } as any, ws as any);
+
+    expect(recordDesktopSessionEndedByUserMock).toHaveBeenCalledTimes(1);
+    expect(recordDesktopSessionEndedByUserMock).toHaveBeenCalledWith({ sessionId: 'session-123', deviceId: 'device-123' });
+    // The report never ends the session itself: the agent's own stop sends
+    // the normal desk-disconnect result, which stays the one terminal writer.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('ignores a desk-userend report whose session id does not match its command id', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    recordDesktopSessionEndedByUserMock.mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-userend-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-other', event: 'ended_by_user' },
+      }),
+    } as any, ws as any);
+
+    expect(recordDesktopSessionEndedByUserMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed user-end record to error tracking', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    const failure = new Error('update failed');
+    recordDesktopSessionEndedByUserMock.mockClear();
+    recordDesktopSessionEndedByUserMock.mockRejectedValueOnce(failure);
+    vi.mocked(captureException).mockClear();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-userend-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'ended_by_user' },
+      }),
+    } as any, ws as any);
+
+    expect(captureException).toHaveBeenCalledWith(failure);
   });
 
   it('reports a clipboard audit write that failed instead of only logging it', async () => {

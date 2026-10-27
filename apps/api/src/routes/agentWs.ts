@@ -86,10 +86,12 @@ import {
   consentMarkerAuditDetails,
   consentMarkerIsCoherent,
   UNSOLICITED_CONSENT_REASONS,
+  CONSENT_RENDERERS,
   resolveConsentMarkerSessionId,
   parseDesktopStartCommandId,
 } from './remote/helpers';
 import { recordDesktopClipboardSummary, type DesktopClipboardSummary } from '../services/desktopClipboardAudit';
+import { recordDesktopSessionEndedByUser } from '../services/desktopUserEnd';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
 import {
@@ -211,7 +213,7 @@ async function updateTunnelSessionForAuthenticatedDevice(
   return row ?? null;
 }
 
-function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-' | 'desk-clipsum-'): string | null {
+function extractDesktopSessionId(commandId: string, prefix: 'desk-disconnect-' | 'desk-clipsum-' | 'desk-userend-'): string | null {
   if (!commandId.startsWith(prefix)) return null;
   const sessionId = commandId.slice(prefix.length);
   if (!sessionId || sessionId.length > MAX_DESKTOP_SESSION_ID_BYTES) {
@@ -3933,6 +3935,31 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             }
           }
 
+          // #10190 W06: the person at the keyboard ended this session from the
+          // on-screen indicator (policy allow_user_end_session). The agent
+          // sends this just before its own stop; that stop's desk-disconnect
+          // result stays the one terminal writer. This records why
+          // (remote_sessions.end_reason + audit remote.session.ended_by_user).
+          if (fastCommandId.startsWith('desk-userend-') &&
+              fastStatus === 'completed' &&
+              fastResult?.event === 'ended_by_user') {
+            const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-userend-');
+            if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
+              await recordDesktopSessionEndedByUser({
+                sessionId: expectedSessionId,
+                deviceId: authenticatedAgent.deviceId,
+              }).then((outcome) => {
+                if (outcome === 'not_recorded') {
+                  console.warn(`[AgentWs] Ended-by-user report for session ${expectedSessionId} matches no live or just-ended desktop session on this device; not recorded`);
+                }
+              }).catch((err) => {
+                // The reason and its audit row are lost: report it.
+                console.error('[AgentWs] Failed to record a session ended by the user:', err);
+                captureException(err);
+              });
+            }
+          }
+
           // The agent acknowledged a generation-bound stop. Move
           // the row's teardown phase pending → confirmed — but only when the
           // result's identity names the exact terminal generation the row is
@@ -4934,7 +4961,8 @@ export const desktopCommandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'cancelled']),
   error: z.string().max(8192).optional(),
   result: z.object({
-    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied', 'clipboard_summary']).optional(),
+    // `ended_by_user` (#10190 W06) rides only on `desk-userend-<id>`.
+    event: z.enum(['answer', 'ice_candidate', 'peer_disconnected', 'session_started', 'consent_denied', 'clipboard_summary', 'ended_by_user']).optional(),
     sessionId: z.string().min(SESSION_ID_MIN).max(SESSION_ID_MAX).optional(),
     answer: z.string().max(65536).optional(),
     error: z.string().max(8192).optional(),
@@ -4960,6 +4988,11 @@ export const desktopCommandResultSchema = z.object({
     consentOccupancy: z.enum(CONSENT_OCCUPANCIES).optional(),
     consentDetail: z.string().max(64).regex(/^[a-z0-9_]+$/).optional(),
     consentProtocol: z.number().int().min(1).max(2).optional(),
+    // #10190 W06: which renderer asked (Breeze Assist, the native helper, or
+    // the Linux daemon-drawn fallback), carried into the consent audit row.
+    // Accepted ahead of any agent that sends it: `result` is `.strict()`, so
+    // an agent may send it only once every API it talks to declares it.
+    consentRenderer: z.enum(CONSENT_RENDERERS).optional(),
     // Desk-stop confirmations from fielded agents send {"stopped": true}
     // (agent/internal/heartbeat/handlers_desktop.go). Not consumed
     // server-side, but must be accepted so the result isn't dropped as

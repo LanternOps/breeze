@@ -166,7 +166,37 @@ describe('buildRemoteSessionPromptPayload', () => {
       technicianName: 'Billy Tech',
       technicianEmail: 'billy@example.com',
       orgName: 'Olive Technology', // partner name — NOT the client org name
+      // #10190 W06: the payload carries the resolved policy; true by default.
+      allowUserEndSession: true,
     });
+  });
+
+  it('payload carries allowUserEndSession = false from the resolved policy', async () => {
+    resolveEffectiveConfig.mockResolvedValueOnce({
+      deviceId: 'dev-1',
+      features: { remote_access: { featureType: 'remote_access', sourcePolicyId: 'policy-1', inlineSettings: null } },
+    });
+    // link + settings row, then the two identity lookups
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              linkId: 'link-1', linkInlineSettings: {}, settingsId: 'settings-1',
+              sessionPromptMode: 'notify', consentUnavailableBehavior: 'proceed',
+              notifyOnSessionEnd: true, showActiveIndicator: true,
+              technicianIdentityLevel: 'name_email', allowUserEndSession: false,
+            }]),
+          }),
+        }),
+      }),
+    } as never);
+    rigTechSelect(Promise.resolve([{ name: 'Billy Tech', email: 'billy@example.com' }]));
+    rigPartnerSelect(Promise.resolve([{ name: 'Example MSP' }]));
+
+    const prompt = await buildRemoteSessionPromptPayload(DEVICE, 'user-1');
+
+    expect(prompt).toMatchObject({ mode: 'notify', allowUserEndSession: false });
   });
 
   it('still ships the prompt with a null identity when the lookups throw', async () => {
@@ -218,6 +248,13 @@ describe('isUnsolicitedConsentReason', () => {
 });
 
 describe('consentMarkerAuditDetails', () => {
+  it('carries the consent renderer into the audit details when it is a known one (#10190 W06)', () => {
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'assist' })).toMatchObject({ consentRenderer: 'assist' });
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'native' })).toMatchObject({ consentRenderer: 'native' });
+    expect(consentMarkerAuditDetails({ consentProtocol: 2, consentRenderer: 'other' })).not.toHaveProperty('consentRenderer');
+    expect(consentMarkerAuditDetails({ consentProtocol: 2 })).not.toHaveProperty('consentRenderer');
+  });
+
   it('records a version 1 marker as consentProtocol 1 with no outcome fields', () => {
     expect(consentMarkerAuditDetails({ reason: 'helper_absent' })).toEqual({ consentProtocol: 1 });
   });
@@ -332,6 +369,7 @@ describe('resolveRemoteSessionPromptConfig', () => {
       notifyOnSessionEnd: true,
       showActiveIndicator: true,
       technicianIdentityLevel: 'name',
+      allowUserEndSession: true,
       ...overrides,
     };
   }
@@ -351,6 +389,8 @@ describe('resolveRemoteSessionPromptConfig', () => {
       notifyOnEnd: true,
       showIndicator: true,
       identityLevel: 'name_email',
+      // #10190 W06 (OD-5 (c), Gate A): the user may end a session by default.
+      allowUserEndSession: true,
     });
     expect(select).not.toHaveBeenCalled();
   });
@@ -388,7 +428,46 @@ describe('resolveRemoteSessionPromptConfig', () => {
       notifyOnEnd: true,
       showIndicator: true,
       identityLevel: 'name',
+      allowUserEndSession: true,
     });
+  });
+
+  it('carries allowUserEndSession = false from the normalized row', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({ allowUserEndSession: false })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toMatchObject({ allowUserEndSession: false });
+  });
+
+  it('defaults allowUserEndSession to true for a missing settings row when the link carries no prompt settings', async () => {
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({
+      linkInlineSettings: { webrtcDesktop: true },
+      settingsId: null,
+      sessionPromptMode: null,
+      consentUnavailableBehavior: null,
+      notifyOnSessionEnd: null,
+      showActiveIndicator: null,
+      technicianIdentityLevel: null,
+      allowUserEndSession: null,
+    })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).resolves.toMatchObject({ allowUserEndSession: true });
+  });
+
+  it('refuses a missing settings row when the link carries only allowUserEndSession', async () => {
+    // The key is a prompt setting: a link that stores it without its row has
+    // lost the authoritative value, so the start is refused like the others.
+    resolveEffectiveConfig.mockResolvedValue({ deviceId: 'dev-1', features: { remote_access: REMOTE_ACCESS_FEATURE } });
+    rigLinkSelect([settingsRow({
+      linkInlineSettings: { allowUserEndSession: false },
+      settingsId: null,
+      sessionPromptMode: null,
+      consentUnavailableBehavior: null,
+      notifyOnSessionEnd: null,
+      showActiveIndicator: null,
+      technicianIdentityLevel: null,
+      allowUserEndSession: null,
+    })]);
+    await expect(resolveRemoteSessionPromptConfig('dev-1')).rejects.toThrow(/settings row missing/);
   });
 
   it('refuses (throws) instead of falling back to notify when policy resolution throws', async () => {

@@ -432,21 +432,30 @@ export type UnsolicitedConsentReason = typeof UNSOLICITED_CONSENT_REASONS[number
  * "the prompt could not be shown") from a version 2 one. Only values the
  * result schema already validated reach here; anything else is omitted.
  */
+/** #10190 W06: which renderer asked for consent (spec §4 "Audit"). */
+export const CONSENT_RENDERERS = ['assist', 'native', 'headless'] as const;
+export type ConsentRenderer = (typeof CONSENT_RENDERERS)[number];
+
 export function consentMarkerAuditDetails(result: Record<string, unknown>): {
   consentProtocol: number;
   consentOutcome?: string;
   consentOccupancy?: string;
   consentDetail?: string;
+  consentRenderer?: ConsentRenderer;
 } {
   const details: {
     consentProtocol: number;
     consentOutcome?: string;
     consentOccupancy?: string;
     consentDetail?: string;
+    consentRenderer?: ConsentRenderer;
   } = { consentProtocol: result.consentProtocol === 2 ? 2 : 1 };
   if (typeof result.consentOutcome === 'string') details.consentOutcome = result.consentOutcome;
   if (typeof result.consentOccupancy === 'string') details.consentOccupancy = result.consentOccupancy;
   if (typeof result.consentDetail === 'string') details.consentDetail = result.consentDetail;
+  if ((CONSENT_RENDERERS as readonly unknown[]).includes(result.consentRenderer)) {
+    details.consentRenderer = result.consentRenderer as ConsentRenderer;
+  }
   return details;
 }
 
@@ -515,6 +524,8 @@ export interface RemoteSessionPromptConfig {
   notifyOnEnd: boolean;
   showIndicator: boolean;
   identityLevel: TechnicianIdentityLevel;
+  /** #10190 W06 (OD-5 (c)): the user may end the session from the indicator. */
+  allowUserEndSession: boolean;
 }
 
 // Spec defaults applied when the device positively resolves with no
@@ -528,6 +539,7 @@ export const DEFAULT_REMOTE_SESSION_PROMPT_CONFIG: RemoteSessionPromptConfig = {
   notifyOnEnd: true,
   showIndicator: true,
   identityLevel: 'name_email',
+  allowUserEndSession: true,
 };
 
 // System-scope auth used to resolve the effective config without an org filter.
@@ -567,6 +579,7 @@ const PROMPT_SETTING_KEYS = [
   'notifyOnSessionEnd',
   'showActiveIndicator',
   'technicianIdentityLevel',
+  'allowUserEndSession',
 ] as const;
 
 function linkCarriesPromptSettings(inlineSettings: unknown): boolean {
@@ -603,6 +616,7 @@ async function resolvePromptConfigInCurrentContext(
       notifyOnSessionEnd: configPolicyRemoteAccessSettings.notifyOnSessionEnd,
       showActiveIndicator: configPolicyRemoteAccessSettings.showActiveIndicator,
       technicianIdentityLevel: configPolicyRemoteAccessSettings.technicianIdentityLevel,
+      allowUserEndSession: configPolicyRemoteAccessSettings.allowUserEndSession,
     })
     .from(configPolicyEffectiveFeatureLinks)
     .leftJoin(
@@ -653,6 +667,9 @@ async function resolvePromptConfigInCurrentContext(
     notifyOnEnd: row.notifyOnSessionEnd ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.notifyOnEnd,
     showIndicator: row.showActiveIndicator ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.showIndicator,
     identityLevel: coerceIdentityLevel(row.technicianIdentityLevel),
+    // NOT NULL in the schema; ?? covers only a row read through a projection
+    // that predates the column.
+    allowUserEndSession: row.allowUserEndSession ?? DEFAULT_REMOTE_SESSION_PROMPT_CONFIG.allowUserEndSession,
   };
 }
 
@@ -820,6 +837,9 @@ export async function buildRemoteSessionPromptPayload(
     consentTimeoutMs: DESKTOP_CONSENT_TIMEOUT_MS,
     notifyOnEnd: promptCfg.notifyOnEnd,
     showIndicator: promptCfg.showIndicator,
+    // #10190 W06: ipc.DesktopPrompt.AllowUserEndSession (omitempty on the
+    // agent: absent = false = no End session action, safe against an old server).
+    allowUserEndSession: promptCfg.allowUserEndSession,
   };
 }
 
