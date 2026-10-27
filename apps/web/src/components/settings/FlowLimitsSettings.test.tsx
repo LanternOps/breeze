@@ -2,7 +2,7 @@
  * Tool Catalog W05 (#5220) Task D3 — Flow limits settings. The one home of the
  * flow caps: partner default, org override that may only lower it.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FlowLimitsViewDto } from '@breeze/shared';
@@ -17,6 +17,9 @@ vi.mock('../../stores/orgStore', () => ({
     return sel ? sel(st) : st;
   },
 }));
+
+const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
+vi.mock('../shared/Toast', () => toast);
 
 import { ActionError } from '@/lib/runAction';
 import FlowLimitsSettings from './FlowLimitsSettings';
@@ -112,6 +115,34 @@ describe('FlowLimitsSettings', () => {
     await user.type(await screen.findByTestId('flow-limit-input-monthlyRunsPerOwner'), '10');
     await user.click(screen.getByTestId('flow-limits-save'));
     expect((await screen.findByTestId('flow-limit-error-monthlyRunsPerOwner')).textContent).toMatch(/7 or lower/);
+  });
+
+  it('a ceiling refusal without field/ceiling is not silent: it toasts the save failure', async () => {
+    const user = userEvent.setup();
+    api.saveFlowLimits.mockRejectedValue(new ActionError('x', 422, undefined, { error: 'limit_above_partner_ceiling' }));
+    render(<FlowLimitsSettings />);
+    await user.type(await screen.findByTestId('flow-limit-input-aiTokensPerRun'), '5000');
+    await user.click(screen.getByTestId('flow-limits-save'));
+    await waitFor(() => expect(toast.showToast).toHaveBeenCalledWith({ type: 'error', message: 'Could not save the flow limits.' }));
+  });
+
+  it('the level picker is disabled while a save is in flight, and a save result for a level that is no longer selected is ignored', async () => {
+    const user = userEvent.setup();
+    let resolveSave: (v: FlowLimitsViewDto) => void = () => {};
+    api.saveFlowLimits.mockImplementation(() => new Promise<FlowLimitsViewDto>((r) => { resolveSave = r; }));
+    render(<FlowLimitsSettings />);
+    await user.type(await screen.findByTestId('flow-limit-input-aiTokensPerRun'), '5000');
+    await user.click(screen.getByTestId('flow-limits-save'));
+    const picker = screen.getByTestId('flow-limits-level') as HTMLSelectElement;
+    await waitFor(() => expect(picker.disabled).toBe(true));
+    // Force a level change anyway (a disabled control can still be driven programmatically).
+    fireEvent.change(picker, { target: { value: 'org-1' } });
+    await waitFor(() => expect(api.getFlowLimits).toHaveBeenLastCalledWith('org-1'));
+    await screen.findByTestId('flow-limit-ceiling-monthlyRunsPerFlow');
+    resolveSave(partnerView({ stored: { monthlyRunsPerOwner: null, monthlyRunsPerFlow: 777, aiTokensPerRun: 5000 } }));
+    await waitFor(() => expect(picker.disabled).toBe(false));
+    expect((screen.getByTestId('flow-limit-input-monthlyRunsPerFlow') as HTMLInputElement).value).toBe('100');
+    expect(screen.getByTestId('flow-limit-ceiling-monthlyRunsPerFlow')).toBeTruthy();
   });
 
   it('read-only when the caller cannot manage the level; an org-scope caller gets no level picker', async () => {

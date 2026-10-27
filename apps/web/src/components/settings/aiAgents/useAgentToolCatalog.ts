@@ -92,7 +92,9 @@ async function loadFlowTools(): Promise<AgentToolCatalogToolDto[]> {
           ],
         };
       });
-  } catch {
+  } catch (err) {
+    // Flow tools are additive: the base catalog must survive, but say why they are missing.
+    console.error('[useAgentToolCatalog] could not load flow tools', err);
     return [];
   }
 }

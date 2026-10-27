@@ -184,7 +184,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
       {activeTab === 'runs' ? (
         <FlowRunsTab flowId={flowId} ownerScope={flow.ownerScope} />
       ) : activeTab === 'webhook' ? (
-        <FlowWebhookPanel flow={flow} canWrite={canWrite} onSecretChanged={reload} />
+        <FlowWebhookPanel flow={flow} canWrite={canWrite} onSecretChanged={() => { setSecretInvalidated(false); reload(); }} />
       ) : (
         <>
       {flow.usage && <FlowUsageMeter usage={flow.usage} />}

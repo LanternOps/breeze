@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { FLOW_LIMIT_KEYS, type FlowLimitKey, type FlowLimitsUpdate, type FlowLimitsViewDto } from '@breeze/shared';
@@ -39,8 +39,11 @@ export default function FlowLimitsSettings() {
   const [drafts, setDrafts] = useState<Drafts | null>(null);
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
+  // The level the operator is looking at right now; a save result for another level is stale.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
-  const fmt = (n: number) => n.toLocaleString(i18n.language || undefined);
+  const fmt = useCallback((n: number) => n.toLocaleString(i18n.language || undefined), [i18n.language]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -52,7 +55,7 @@ export default function FlowLimitsSettings() {
         if (cancelled) return;
         // The server decides the caller's level: a partner caller's first read
         // is the partner default; an org caller always gets its own org.
-        if (partnerLevel === null) setPartnerLevel(v.level === 'partner');
+        setPartnerLevel((prev) => (prev === null ? v.level === 'partner' : prev));
         setView(v);
         setDrafts(draftsFrom(v));
         setServerErrors({});
@@ -64,8 +67,6 @@ export default function FlowLimitsSettings() {
     return () => {
       cancelled = true;
     };
-    // partnerLevel is set once from the first answer; it must not refetch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, selected]);
 
   const clientErrors = useMemo<FieldErrors>(() => {
@@ -83,8 +84,7 @@ export default function FlowLimitsSettings() {
       else if (n > max) out[key] = t('limits.aboveCeilingError', { value: fmt(max) });
     }
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, drafts, t]);
+  }, [view, drafts, t, fmt]);
 
   if (!enabled) return null;
 
@@ -103,20 +103,26 @@ export default function FlowLimitsSettings() {
     if (!view || saving) return;
     const limits = changes();
     if (Object.keys(limits).length === 0) return;
+    const savedLevel = selected;
     setSaving(true);
     setServerErrors({});
     try {
       const body: FlowLimitsUpdate = view.level === 'org' && view.orgId ? { orgId: view.orgId, limits } : { limits };
       const next = await saveFlowLimits(body);
+      if (selectedRef.current !== savedLevel) return; // the operator moved on: do not overwrite the other level's form
       setView(next);
       setDrafts(draftsFrom(next));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (selectedRef.current !== savedLevel) return;
       if (err instanceof ActionError) {
         // limit_above_partner_ceiling is not toasted: show it on its field.
         const b = err.body as { error?: string; field?: FlowLimitKey; ceiling?: number } | undefined;
         if (b?.error === 'limit_above_partner_ceiling' && b.field && typeof b.ceiling === 'number') {
           setServerErrors({ [b.field]: t('limits.aboveCeilingError', { value: fmt(b.ceiling) }) });
+        } else if (b?.error === 'limit_above_partner_ceiling') {
+          // The API client suppressed the toast for this code, so a malformed body would otherwise fail silently.
+          showToast({ type: 'error', message: t('limits.saveFailed') });
         }
       } else {
         showToast({ type: 'error', message: t('limits.saveFailed') }); // ActionError already toasted
@@ -143,6 +149,7 @@ export default function FlowLimitsSettings() {
           <select
             className="rounded border bg-background px-2 py-1.5"
             value={selected}
+            disabled={saving}
             onChange={(e) => {
               // Drop the previous level's form at once, so nothing is typed into it.
               setView(null);

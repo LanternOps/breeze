@@ -296,6 +296,23 @@ describe('FlowDetailPage', () => {
       expect(window.location.hash).toBe('#webhook');
     });
 
+    it('the invalidation notice clears once the operator has created a new secret', async () => {
+      api.getFlow.mockResolvedValue(webhookDetail());
+      api.enableFlow.mockResolvedValue({ ok: true, flow: {}, publication: {}, webhookSecretInvalidated: true });
+      api.rotateWebhookSecret.mockResolvedValue({ secret: 'bwh_NEW', fingerprint: 'fp2', rotatedAt: '2026-10-26T00:00:00.000Z', warning: 'w' });
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      await user.click(screen.getByTestId('flow-enable'));
+      await user.click(screen.getByTestId('flow-enable-confirm'));
+      await screen.findByTestId('flow-webhook-secret-invalidated');
+      await user.click(screen.getByTestId('flow-tab-webhook'));
+      await user.click(await screen.findByTestId('flow-webhook-rotate'));
+      await user.click(await screen.findByTestId('flow-webhook-rotate-confirm'));
+      await user.click(await screen.findByTestId('flow-webhook-secret-done'));
+      await vi.waitFor(() => expect(screen.queryByTestId('flow-webhook-secret-invalidated')).toBeNull());
+    });
+
     it('an enable that kept the secret shows no invalidation notice', async () => {
       api.getFlow.mockResolvedValue(webhookDetail());
       api.enableFlow.mockResolvedValue({ ok: true, flow: {}, publication: {}, webhookSecretInvalidated: false });

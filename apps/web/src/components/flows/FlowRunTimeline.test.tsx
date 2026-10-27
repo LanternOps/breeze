@@ -98,6 +98,50 @@ describe('FlowRunTimeline', () => {
     expect(screen.getByTestId('flow-run-item-i2')).toBeTruthy();
   });
 
+  it('retry attempts of one item are not parallel items: the group counts distinct items and rows sort by (item, attempt)', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const att = (id: string, n: number, attempt: number, start: string, end: string) =>
+      row({ id, stepId: 'each', itemIndex: n, attempt, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[
+          att('i1a1', 1, 1, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:06.000Z'),
+          att('i0a2', 0, 2, '2026-10-20T02:00:03.000Z', '2026-10-20T02:00:05.000Z'),
+          att('i0a1', 0, 1, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:02.000Z'),
+        ]}
+      />,
+    );
+    const groups = screen.getAllByTestId('flow-run-parallel-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].textContent).toContain('2 items ran in parallel');
+    const ids = [...groups[0].querySelectorAll('[data-testid^="flow-run-item-"]')].map((n) => n.getAttribute('data-testid'));
+    expect(ids).toEqual(['flow-run-item-i0a1', 'flow-run-item-i0a2', 'flow-run-item-i1a1']);
+  });
+
+  it('two attempts of a single item render as plain rows, not a parallel group', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const att = (id: string, attempt: number, start: string, end: string) =>
+      row({ id, stepId: 'each', itemIndex: 0, attempt, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[att('a1', 1, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:02.000Z'), att('a2', 2, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:03.000Z')]}
+      />,
+    );
+    expect(screen.queryByTestId('flow-run-parallel-group')).toBeNull();
+    expect(screen.getByTestId('flow-run-item-a1')).toBeTruthy();
+    expect(screen.getByTestId('flow-run-item-a2')).toBeTruthy();
+  });
+
   it('a row with aiUsage shows tokens and dollars', () => {
     render(
       <FlowRunTimeline runId="r1" definition={definition}

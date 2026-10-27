@@ -346,7 +346,7 @@ const LIMITS_ERROR_KEYS: Record<string, string> = {
   partner_wide_forbidden: 'flows:limits.partnerWideForbidden',
   org_scope_read_only: 'flows:limits.orgScopeReadOnly',
   partner_scope_required: 'flows:limits.partnerWideForbidden',
-  org_not_found: 'flows:limits.loadFailed',
+  org_not_found: 'flows:limits.orgNotFound',
 };
 
 /**

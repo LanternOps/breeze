@@ -126,6 +126,34 @@ describe('FlowWebhookPanel', () => {
     expect(onSecretChanged).toHaveBeenCalled();
   });
 
+  it('a clipboard failure in the secret dialog says so, and the secret never reaches console.warn', async () => {
+    const user = userEvent.setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    api.rotateWebhookSecret.mockResolvedValue({ secret: 'bwh_SECRETVALUE', fingerprint: 'fp2', rotatedAt: '2026-10-26T00:00:00.000Z', warning: 'w' });
+    render(<FlowWebhookPanel flow={flow()} canWrite onSecretChanged={vi.fn()} />);
+    await user.click(screen.getByTestId('flow-webhook-rotate'));
+    await user.click(await screen.findByTestId('flow-webhook-rotate-confirm'));
+    await screen.findByTestId('flow-webhook-secret-value');
+    // user-event installs its own clipboard stub in setup(); replace it with one that rejects.
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+    expect(screen.queryByTestId('flow-webhook-secret-copy-failed')).toBeNull();
+    await user.click(screen.getByTestId('flow-webhook-secret-copy'));
+    expect((await screen.findByTestId('flow-webhook-secret-copy-failed')).textContent).toMatch(/could not copy automatically/i);
+    expect(warn).toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls.map((c) => c.map((x) => (x instanceof Error ? x.message : x))))).not.toContain('bwh_SECRETVALUE');
+    warn.mockRestore();
+  });
+
+  it('a clipboard failure copying the URL says so', async () => {
+    const user = userEvent.setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    render(<FlowWebhookPanel flow={flow()} canWrite onSecretChanged={vi.fn()} />);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+    await user.click(screen.getByTestId('flow-webhook-url-copy'));
+    expect((await screen.findByTestId('flow-webhook-url-copy-failed')).textContent).toMatch(/could not copy automatically/i);
+    warn.mockRestore();
+  });
+
   it('a failed rotate (already toasted) opens no dialog', async () => {
     const user = userEvent.setup();
     api.rotateWebhookSecret.mockRejectedValue(new ActionError('nope', 409));

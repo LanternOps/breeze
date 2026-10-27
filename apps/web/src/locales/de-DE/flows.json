@@ -303,6 +303,7 @@
     "url": "Webhook-URL",
     "copy": "Kopieren",
     "copied": "Kopiert",
+    "copyFailed": "Automatisches Kopieren nicht möglich. Markieren Sie den Wert und kopieren Sie ihn manuell.",
     "authMode": {
       "label": "Authentifizierung",
       "hmac": "Signierte Anfrage (HMAC-SHA256)",
@@ -429,6 +430,7 @@
     "saved": "Ablauflimits gespeichert",
     "saveFailed": "Die Ablauflimits konnten nicht gespeichert werden.",
     "loadFailed": "Die Ablauflimits konnten nicht geladen werden.",
+    "orgNotFound": "Diese Organisation wurde nicht gefunden, oder Sie haben keinen Zugriff mehr darauf.",
     "readOnly": "Sie können diese Limits ansehen, aber nicht ändern.",
     "partnerWideForbidden": "Zum Ändern des Partner-Standards ist Zugriff auf alle Organisationen erforderlich.",
     "orgScopeReadOnly": "Die Limits der Organisation legt Ihr Dienstleister fest."

@@ -31,6 +31,7 @@ export function FlowWebhookPanel({
   const [busy, setBusy] = useState(false);
   const [reveal, setReveal] = useState<FlowWebhookSecretRevealDto | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const info = flow.webhook;
   const trigger = flow.definition.trigger;
@@ -60,8 +61,11 @@ export function FlowWebhookPanel({
     try {
       await navigator.clipboard.writeText(info.url);
       setCopied(true);
-    } catch {
-      setCopied(false); // the URL stays selectable on screen
+      setCopyFailed(false);
+    } catch (err) {
+      console.warn('[FlowWebhookPanel] clipboard write failed', err);
+      setCopied(false);
+      setCopyFailed(true); // the URL stays selectable on screen
     }
   };
 
@@ -86,11 +90,14 @@ export function FlowWebhookPanel({
         <h2 className="text-sm font-semibold">{t('webhook.title')}</h2>
         <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[12rem_1fr]">
           <dt className="text-muted-foreground">{t('webhook.url')}</dt>
-          <dd className="flex min-w-0 items-center gap-2">
+          <dd className="flex min-w-0 flex-wrap items-center gap-2">
             <code className="min-w-0 select-all break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs" data-testid="flow-webhook-url">{info.url}</code>
             <button type="button" className="shrink-0 rounded border px-2 py-0.5 text-xs" onClick={copyUrl} data-testid="flow-webhook-url-copy">
               {copied ? t('webhook.copied') : t('webhook.copy')}
             </button>
+            {copyFailed && (
+              <span role="status" className="basis-full text-xs text-destructive" data-testid="flow-webhook-url-copy-failed">{t('webhook.copyFailed')}</span>
+            )}
           </dd>
 
           <dt className="text-muted-foreground">{t('webhook.authMode.label')}</dt>

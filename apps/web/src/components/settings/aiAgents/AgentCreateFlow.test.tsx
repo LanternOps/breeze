@@ -202,6 +202,46 @@ describe('AgentCreateFlow — flows as agent tools (#5220)', () => {
   });
 });
 
+describe('AgentCreateFlow — flow tools degrade safely (#5220 review)', () => {
+  /** mockEndpoints(), but /flows answers with `flowsReply` instead of the fixture. */
+  function withFlowsReply(flowsReply: Response): void {
+    mockEndpoints();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) =>
+      url.startsWith('/flows') ? Promise.resolve(flowsReply) : base(url, init));
+  }
+
+  async function openPermissionsStep(): Promise<void> {
+    renderFlow();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Flow bot' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+  }
+
+  it('asks /flows for enabled flows only', async () => {
+    mockEndpoints();
+    await openPermissionsStep();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/flows'))).toBe(true));
+    const url = String(fetchMock.mock.calls.find(([u]) => String(u).startsWith('/flows'))![0]);
+    expect(url).toContain('status=enabled');
+  });
+
+  it.each([
+    ['a 403', () => json({ error: 'forbidden' }, false, 403)],
+    ['a 200 body without flows', () => json({ total: 0 })],
+  ])('%s from /flows leaves the base catalog intact', async (_name, reply) => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    withFlowsReply(reply());
+    await openPermissionsStep();
+    fireEvent.click(await screen.findByTestId('capability-toggle-scripts_commands'));
+    expect(await screen.findByTestId('operation-row-run_script')).toBeInTheDocument();
+    await waitFor(() => expect(errSpy).toHaveBeenCalledWith('[useAgentToolCatalog] could not load flow tools', expect.anything()));
+    expect(document.querySelector('[data-testid^="operation-row-flow__"]')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-catalog-unavailable')).toBeNull();
+    errSpy.mockRestore();
+  });
+});
+
 describe('AgentCreateFlow — step navigation persists state', () => {
   it('keeps the name typed on Purpose after navigating to What it does and back', async () => {
     mockEndpoints();

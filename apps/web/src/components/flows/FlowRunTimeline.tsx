@@ -23,33 +23,55 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/** One display unit: 1 item (its attempt rows) or 2+ items that ran in parallel. */
+type ItemCluster = { items: number; rows: FlowRunStepSummaryDto[] };
+
 /**
- * Splits one step's for-each item rows into display units: a run of items whose
- * [startedAt, finishedAt] intervals overlap is one parallel group (2+ rows), anything
- * else a single. A still-running item has an open-ended interval; a row without a
- * start time never groups.
+ * Splits one step's for-each item rows into display units. Rows are first
+ * folded per ITEM (retry attempts of one item are not parallel items): an item's
+ * interval runs from its earliest attempt's startedAt to its latest attempt's
+ * finishedAt (open-ended if any attempt is unfinished). Items whose intervals
+ * overlap form one parallel group (2+ items), anything else a single item. An
+ * item with no started attempt never groups. Rows within a cluster are ordered
+ * by (itemIndex, attempt).
  */
-function clusterItems(rows: FlowRunStepSummaryDto[]): FlowRunStepSummaryDto[][] {
-  const timed = rows
-    .filter((r) => r.startedAt)
-    .sort((a, b) => new Date(a.startedAt!).getTime() - new Date(b.startedAt!).getTime());
-  const untimed = rows.filter((r) => !r.startedAt);
-  const clusters: FlowRunStepSummaryDto[][] = [];
+function clusterItems(rows: FlowRunStepSummaryDto[]): ItemCluster[] {
+  const byItem = new Map<number, FlowRunStepSummaryDto[]>();
+  for (const r of rows) {
+    const k = r.itemIndex ?? 0;
+    const list = byItem.get(k) ?? [];
+    list.push(r);
+    byItem.set(k, list);
+  }
+  const order = (a: FlowRunStepSummaryDto, b: FlowRunStepSummaryDto) =>
+    (a.itemIndex ?? 0) - (b.itemIndex ?? 0) || a.attempt - b.attempt;
+  type Unit = { index: number; rows: FlowRunStepSummaryDto[]; start: number | null; end: number };
+  const units: Unit[] = [...byItem.entries()].map(([index, list]) => {
+    const started = list.filter((r) => r.startedAt);
+    const start = started.length > 0 ? Math.min(...started.map((r) => new Date(r.startedAt!).getTime())) : null;
+    const end = list.some((r) => !r.finishedAt)
+      ? Infinity
+      : Math.max(...list.map((r) => new Date(r.finishedAt!).getTime()));
+    return { index, rows: list.slice().sort(order), start, end };
+  });
+  const timed = units.filter((u) => u.start !== null).sort((a, b) => a.start! - b.start!);
+  const untimed = units.filter((u) => u.start === null);
+  const clusters: Unit[][] = [];
   let end = -Infinity;
-  for (const r of timed) {
-    const start = new Date(r.startedAt!).getTime();
-    const finish = r.finishedAt ? new Date(r.finishedAt).getTime() : Infinity;
-    if (clusters.length > 0 && start < end) {
-      clusters[clusters.length - 1].push(r);
-      end = Math.max(end, finish);
+  for (const u of timed) {
+    if (clusters.length > 0 && u.start! < end) {
+      clusters[clusters.length - 1].push(u);
+      end = Math.max(end, u.end);
     } else {
-      clusters.push([r]);
-      end = finish;
+      clusters.push([u]);
+      end = u.end;
     }
   }
-  for (const r of untimed) clusters.push([r]);
-  const first = (c: FlowRunStepSummaryDto[]) => Math.min(...c.map((r) => r.itemIndex ?? 0));
-  return clusters.sort((a, b) => first(a) - first(b));
+  for (const u of untimed) clusters.push([u]);
+  const first = (c: Unit[]) => Math.min(...c.map((u) => u.index));
+  return clusters
+    .sort((a, b) => first(a) - first(b))
+    .map((c) => ({ items: c.length, rows: c.flatMap((u) => u.rows).sort(order) }));
 }
 
 /**
@@ -228,15 +250,15 @@ export function FlowRunTimeline({
                 {[
                   ...rows.filter((row) => row.itemIndex === null).map((row) => renderRow(row, false)),
                   ...clusterItems(rows.filter((row) => row.itemIndex !== null)).map((cluster) =>
-                    cluster.length > 1 ? (
-                      <li key={`group-${cluster[0].id}`} className="space-y-2 rounded border border-dashed p-2" data-testid="flow-run-parallel-group">
-                        <p className="text-xs text-muted-foreground">{t('runDetail.parallel', { count: cluster.length })}</p>
+                    cluster.items > 1 ? (
+                      <li key={`group-${cluster.rows[0].id}`} className="space-y-2 rounded border border-dashed p-2" data-testid="flow-run-parallel-group">
+                        <p className="text-xs text-muted-foreground">{t('runDetail.parallel', { count: cluster.items })}</p>
                         <ul className="space-y-2">
-                          {cluster.slice().sort((a, b) => (a.itemIndex ?? 0) - (b.itemIndex ?? 0)).map((row) => renderRow(row, true))}
+                          {cluster.rows.map((row) => renderRow(row, true))}
                         </ul>
                       </li>
                     ) : (
-                      renderRow(cluster[0], true)
+                      cluster.rows.map((row) => renderRow(row, true))
                     ),
                   ),
                 ]}

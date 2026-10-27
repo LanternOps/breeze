@@ -303,6 +303,7 @@
     "url": "Webhook URL'si",
     "copy": "Kopyala",
     "copied": "Kopyalandı",
+    "copyFailed": "Otomatik olarak kopyalanamadı. Değeri seçip elle kopyalayın.",
     "authMode": {
       "label": "Kimlik doğrulama",
       "hmac": "İmzalı istek (HMAC-SHA256)",
@@ -429,6 +430,7 @@
     "saved": "Akış sınırları kaydedildi",
     "saveFailed": "Akış sınırları kaydedilemedi.",
     "loadFailed": "Akış sınırları yüklenemedi.",
+    "orgNotFound": "Bu kuruluş bulunamadı veya artık erişiminiz yok.",
     "readOnly": "Bu sınırları görüntüleyebilir ancak değiştiremezsiniz.",
     "partnerWideForbidden": "İş ortağı varsayılanını değiştirmek için tüm kuruluşlara erişim gerekir.",
     "orgScopeReadOnly": "Kuruluş sınırlarını hizmet sağlayıcınız belirler."

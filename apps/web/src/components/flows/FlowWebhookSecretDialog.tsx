@@ -18,15 +18,20 @@ export function FlowWebhookSecretDialog({
 }) {
   const { t } = useTranslation('flows');
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(reveal.secret);
       setCopied(true);
-    } catch {
+      setCopyFailed(false);
+    } catch (err) {
       // Clipboard unavailable (permissions, insecure context): the value stays
-      // selectable on screen, so the operator can copy it by hand.
+      // selectable on screen, so the operator can copy it by hand. Log the
+      // error only, never the secret.
+      console.warn('[FlowWebhookSecretDialog] clipboard write failed', err);
       setCopied(false);
+      setCopyFailed(true);
     }
   };
 
@@ -44,6 +49,9 @@ export function FlowWebhookSecretDialog({
           {copied ? t('webhook.copied') : t('webhook.copy')}
         </button>
       </div>
+      {copyFailed && (
+        <p role="status" className="text-xs text-destructive" data-testid="flow-webhook-secret-copy-failed">{t('webhook.copyFailed')}</p>
+      )}
       <p className="text-xs text-muted-foreground">
         {t('webhook.secret.fingerprint')}: <span className="font-mono">{reveal.fingerprint}</span>
       </p>

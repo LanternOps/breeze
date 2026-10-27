@@ -303,6 +303,7 @@
     "url": "URL du webhook",
     "copy": "Copier",
     "copied": "Copié",
+    "copyFailed": "Impossible de copier automatiquement. Sélectionnez la valeur et copiez-la manuellement.",
     "authMode": {
       "label": "Authentification",
       "hmac": "Requête signée (HMAC-SHA256)",
@@ -429,6 +430,7 @@
     "saved": "Limites des flux enregistrées",
     "saveFailed": "Impossible d’enregistrer les limites des flux.",
     "loadFailed": "Impossible de charger les limites des flux.",
+    "orgNotFound": "Cette organisation est introuvable ou vous n’y avez plus accès.",
     "readOnly": "Vous pouvez consulter ces limites, mais pas les modifier.",
     "partnerWideForbidden": "Modifier la valeur par défaut du partenaire nécessite l’accès à toutes les organisations.",
     "orgScopeReadOnly": "Les limites de l’organisation sont définies par votre fournisseur de services."

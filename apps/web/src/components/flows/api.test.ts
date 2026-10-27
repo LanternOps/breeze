@@ -283,6 +283,12 @@ describe('W05 (#5220): webhook, deliveries and limits client', () => {
     expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.partnerWideForbidden'), type: 'error' });
   });
 
+  it('saveFlowLimits: org_not_found toasts the organization-not-found copy, not the load-failed copy', async () => {
+    mocks.fetchWithAuth.mockResolvedValue(json(404, { error: 'org_not_found' }));
+    await expect(saveFlowLimits({ orgId: 'o1', limits: { monthlyRunsPerFlow: 6 } })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledWith({ message: lookup('limits.orgNotFound'), type: 'error' });
+  });
+
   it.each([[422, 'webhook_secret_missing'], [422, 'ai_budget_unavailable']])(
     'enable %s %s is rendered inline by the dialog', async (status, code) => {
       mocks.fetchWithAuth.mockResolvedValue(json(status, { error: code }));

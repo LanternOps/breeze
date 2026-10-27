@@ -303,6 +303,7 @@
     "url": "Webhook URL",
     "copy": "Copy",
     "copied": "Copied",
+    "copyFailed": "Could not copy automatically. Select the value and copy it by hand.",
     "authMode": {
       "label": "Authentication",
       "hmac": "Signed request (HMAC-SHA256)",
@@ -429,6 +430,7 @@
     "saved": "Flow limits saved",
     "saveFailed": "Could not save the flow limits.",
     "loadFailed": "Could not load the flow limits.",
+    "orgNotFound": "This organization was not found or you no longer have access to it.",
     "readOnly": "You can view these limits but not change them.",
     "partnerWideForbidden": "Changing the partner default needs access to all organizations.",
     "orgScopeReadOnly": "Organization limits are set by your service provider."
