@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 var fixtureDir = filepath.Join("..", "..", "..", "packages", "shared", "src", "fixtures", "prompt-catalog")
@@ -284,6 +285,46 @@ func TestScopeChangeCallsPurgeBeforeStoring(t *testing.T) {
 	}
 	if _, scopeChanged, _ := s.Apply(setBlock(scopeA, "A")); scopeChanged {
 		t.Fatal("cleared then the same scope was reported as a scope change")
+	}
+}
+
+// #10190 W04 review: OnScopeChange takes down the old scope's open prompts
+// in the prompt host, whose branding flush reads Current() while holding the
+// host's flush lock. So the callback must run without the store's lock held
+// (it may read the store, and must see the OLD identity: the new one is not
+// published to anyone until the old scope's prompts are gone).
+func TestScopeChangeCallbackRunsWithoutTheStoreLock(t *testing.T) {
+	dir := t.TempDir()
+	var s *Store
+	var during Identity
+	var readable bool
+	s = openTest(t, dir, nil, func(old string) {
+		got := make(chan Identity, 1)
+		go func() {
+			id, _ := s.Current()
+			got <- id
+		}()
+		select {
+		case id := <-got:
+			readable, during = true, id
+		case <-time.After(2 * time.Second):
+			// The old code: Current() blocks on the lock Apply holds.
+		}
+	})
+	if _, _, err := s.Apply(setBlock(scopeA, "A")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(setBlock(scopeB, "B")); err != nil {
+		t.Fatal(err)
+	}
+	if !readable {
+		t.Fatal("OnScopeChange ran with the store lock held: a reader (the prompt host's branding flush) deadlocks against it")
+	}
+	if during.ScopeID != scopeA {
+		t.Fatalf("during the scope-change callback the store already published %q; the old identity must stay in force until it returns", during.ScopeID)
+	}
+	if cur, _ := s.Current(); cur.ScopeID != scopeB {
+		t.Fatalf("after Apply: %q", cur.ScopeID)
 	}
 }
 
