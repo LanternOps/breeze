@@ -563,7 +563,9 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
-	h.tombs.add(rec.show.PromptID, now, ob, h)
+	if !rec.p.Reshowable || reason == ipc.PromptCloseResolved {
+		h.tombs.add(rec.show.PromptID, now, ob, h)
+	}
 	if h.inbox == nil || !rec.show.ListEntry.Persistent {
 		return
 	}
@@ -829,6 +831,7 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		h.mu.Unlock()
 		return invalid(slog.LevelDebug, "the domain refused a prompt action")
 	}
+	changed := outcome.Close != nil
 	if cur != nil {
 		patch := outcome.Patch
 		if patch == nil && hasNext && next != cur.show.State {
@@ -837,6 +840,8 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		if patch != nil {
 			if perr := h.applyPatch(cur, *patch, now, ob); perr != nil {
 				h.log.Warn("prompt action patch refused", "promptId", m.PromptID, "error", perr.Error())
+			} else {
+				changed = true
 			}
 		}
 		res.Rev = cur.show.Rev
@@ -845,7 +850,13 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		}
 	}
 	res.Result = ipc.PromptActionAccepted
-	rec.results[key] = res
+	// Remember the answer only for an action that changed the prompt (a
+	// decision): a duplicate of that click must not apply it twice. An
+	// action that leaves the prompt as it was (Open Settings) keeps the
+	// same rev, and the person may take it again.
+	if changed {
+		rec.results[key] = res
+	}
 	h.unlockAndFlush(ob)
 	h.log.Info("prompt action accepted", "promptId", m.PromptID, "action", m.ActionID, "via", m.Via, "renderer", fromKey)
 	return res

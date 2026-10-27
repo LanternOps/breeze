@@ -44,7 +44,38 @@ func (r *legacyRecorder) openSettings(o prompthost.Owner, permission string) err
 }
 
 func newNotices(r *legacyRecorder) Notices {
-	return Notices{Notify: r.notify, OpenSettings: r.openSettings}
+	return Notices{Notify: r.notify, OpenSettings: r.openSettings, Now: func() time.Time { return testNow }}
+}
+
+func TestNoticeLifetimes(t *testing.T) {
+	n := newNotices(&legacyRecorder{})
+	at := testNow.Add(15 * time.Minute)
+	cases := []struct {
+		name       string
+		p          prompthost.Prompt
+		expires    time.Time
+		reshowable bool
+	}{
+		// Safe mode: the warning means nothing after the reboot.
+		{"safe mode ends at the reboot", n.SafeModeRebootNotice(15*time.Minute, at), at, false},
+		// An immediate reboot still gets a minute on screen.
+		{"immediate safe mode gets a minute", n.SafeModeRebootNotice(0, testNow), testNow.Add(time.Minute), false},
+		// Permissions: 24 h, then it closes expired and, if still
+		// missing, is shown again; only an acknowledgement suppresses it.
+		{"permission notice lives 24 h and may come back", n.MacPermissionNotice([]string{PermissionFullDiskAccess}), testNow.Add(24 * time.Hour), true},
+		{"session ended lives 24 h", n.RemoteSessionEndedNotice("s1", time.Minute, ""), testNow.Add(24 * time.Hour), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := wire(tc.p)
+			if s.Timing.DeadlineUnixMs != tc.expires.UnixMilli() || s.ListEntry.ExpiresAtUnixMs != tc.expires.UnixMilli() {
+				t.Fatalf("deadline %d / entry %d, want %d", s.Timing.DeadlineUnixMs, s.ListEntry.ExpiresAtUnixMs, tc.expires.UnixMilli())
+			}
+			if tc.p.Reshowable != tc.reshowable {
+				t.Fatalf("Reshowable = %v, want %v", tc.p.Reshowable, tc.reshowable)
+			}
+		})
+	}
 }
 
 // wire is p.Show as the host would send it (rev, lease filled in).
@@ -97,8 +128,17 @@ func assertNoticeShape(t *testing.T, p prompthost.Prompt) {
 	if !s.ListEntry.Persistent {
 		t.Fatal("a notice lives in the notification list")
 	}
-	if s.Timing.DeadlineUnixMs != 0 || s.Timing.ResponseMs != 0 || s.Timing.PresentWithinMs != 10_000 {
+	// Every notice has a real lifetime: an absolute deadline (never one that
+	// restarts at presentation), and the list entry ends with it, so a
+	// record never stays open forever and a held native notice stops then.
+	if s.Timing.DeadlineUnixMs <= 0 || s.Timing.ResponseMs != 0 || s.Timing.PresentWithinMs != 10_000 {
 		t.Fatalf("timing = %+v", s.Timing)
+	}
+	if s.ListEntry.ExpiresAtUnixMs != s.Timing.DeadlineUnixMs {
+		t.Fatalf("list entry expires %d, deadline %d: they must match", s.ListEntry.ExpiresAtUnixMs, s.Timing.DeadlineUnixMs)
+	}
+	if s.Timing.Expiry != nil {
+		t.Fatal("a notice states no expiry consequence (spec: —)")
 	}
 	if s.DefaultActionID != "ok" || s.Actions[0].ID != "ok" || s.Actions[0].Role != ipc.PromptRoleSafe {
 		t.Fatalf("actions = %+v default %q", s.Actions, s.DefaultActionID)

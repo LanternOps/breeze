@@ -173,7 +173,9 @@ func (h *Heartbeat) showNotice(p prompthost.Prompt, owners []prompthost.Owner, l
 	h.stampIdentity(&p)
 	if err := host.Show(p); err != nil {
 		if errors.Is(err, prompthost.ErrTombstoned) {
-			log.Debug("notice already shown and decided; not shown again", "promptId", p.ID)
+			// Acknowledged (or, for a one-off notice, closed) within the
+			// last 24 h: the person has seen it, and it stays in the list.
+			log.Info("notice not shown again: it was acknowledged or closed within the last 24 hours", "promptId", p.ID)
 			return
 		}
 		log.Warn("notice not shown through the prompt host; sending today's notice", "promptId", p.ID, "error", err.Error())

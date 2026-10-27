@@ -513,6 +513,10 @@ type nativePromptRenderer struct {
 	noticeState  func() (uint32, error)
 	toast        func(ipc.NotifyRequest) bool
 	noticeRepoll time.Duration
+	// noticeStateFailing / noticeStateWarnings (guarded by mu): the query
+	// is failing, and how many failure streaks were warned about.
+	noticeStateFailing  bool
+	noticeStateWarnings int
 }
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
@@ -702,6 +706,17 @@ func (r *nativePromptRenderer) takeDown(promptID string) {
 }
 
 func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
+	if p.Presentation == ipc.PromptPresentationListOnly || p.State.Terminal() {
+		// A list entry (a reconnect replay, a rate-limited card) or a
+		// finished outcome: a native helper has no list, so nothing is
+		// drawn and nothing is re-toasted. It is remembered so a later
+		// update or a restored card at a newer rev is handled.
+		r.takeDown(p.PromptID)
+		r.mu.Lock()
+		r.rememberEndedLocked(p)
+		r.mu.Unlock()
+		return
+	}
 	m, err := buildNativePromptModel(p, r.now(), nil)
 	if err != nil {
 		detail := "invalid_prompt"

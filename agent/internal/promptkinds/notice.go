@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/promptcatalog"
 	"github.com/breeze-rmm/agent/internal/prompthost"
 )
@@ -39,7 +40,20 @@ const (
 	maxTechnicianRunes = 120
 	// maxSessionIDBytes bounds the session id inside a prompt id.
 	maxSessionIDBytes = 128
+
+	// Notice lifetimes: the response deadline and the list entry's expiry.
+	// At the deadline the host closes the notice as expired, so no record
+	// stays open forever (a held native notice gives up then too).
+	permissionNoticeLifetime   = 24 * time.Hour
+	sessionEndedNoticeLifetime = 24 * time.Hour
 )
+
+func (n Notices) now() time.Time {
+	if n.Now != nil {
+		return n.Now()
+	}
+	return time.Now()
+}
 
 // macOS permission names, as the helper reports them (userhelper
 // missingPermissions) and as systemSettingsURLForPermission knows them.
@@ -67,7 +81,11 @@ type Notices struct {
 	// owner's GUI session (macOS). Required for MacPermissionNotice's
 	// open_settings action; a nil func refuses the action.
 	OpenSettings func(o prompthost.Owner, permission string) error
+	// Now is the clock the notices' lifetimes start from (nil = time.Now).
+	Now func() time.Time
 }
+
+var log = logging.L("promptkinds")
 
 var errNoticeAction = errors.New("promptkinds: action not offered by this notice")
 
@@ -95,7 +113,13 @@ func (n Notices) SafeModeRebootNotice(delay time.Duration, at time.Time) prompth
 		return n.okOnly(loc, ipc.PromptCopy{Title: title, Body: body}, nil)
 	}
 	legacy := LegacySafeModeReboot(delay)
-	return n.build(fmt.Sprintf("notice:safe_mode:%d", at.UnixMilli()), okActions(), localize,
+	// The warning means nothing after the reboot; an immediate one still
+	// gets a minute on screen.
+	expires := at
+	if delay < time.Minute {
+		expires = at.Add(time.Minute)
+	}
+	return n.build(fmt.Sprintf("notice:safe_mode:%d", at.UnixMilli()), expires, okActions(), localize,
 		func(o prompthost.Owner) error { return n.notify(o, legacy) },
 		acknowledgeOnly)
 }
@@ -165,9 +189,14 @@ func (n Notices) MacPermissionNotice(missing []string) prompthost.Prompt {
 		}
 		return prompthost.ActionOutcome{Accepted: true}, nil
 	}
-	return n.build("notice:tcc:"+permissionSetID(names), actions, localize,
+	p := n.build("notice:tcc:"+permissionSetID(names), n.now().Add(permissionNoticeLifetime), actions, localize,
 		func(o prompthost.Owner) error { return n.notify(o, legacy) },
 		onAction)
+	// The condition can come back (a grant revoked, an org move): only an
+	// acknowledgement suppresses it for 24 h; expired or withdrawn, it is
+	// shown again at the next report while the permission is missing.
+	p.Reshowable = true
+	return p
 }
 
 // RemoteSessionEndedNotice tells the person a technician's remote session
@@ -209,7 +238,7 @@ func (n Notices) RemoteSessionEndedNotice(sessionID string, d time.Duration, tec
 		return n.okOnly(loc, ipc.PromptCopy{Title: title, Body: body}, facts)
 	}
 	legacy := LegacyRemoteSessionEnded()
-	return n.build("notice:session_ended:"+promptIDPart(sessionID), okActions(), localize,
+	return n.build("notice:session_ended:"+promptIDPart(sessionID), n.now().Add(sessionEndedNoticeLifetime), okActions(), localize,
 		func(o prompthost.Owner) error { return n.notify(o, legacy) },
 		acknowledgeOnly)
 }
@@ -300,7 +329,7 @@ func acknowledgeOnly(actionID string, _ prompthost.Owner) (prompthost.ActionOutc
 }
 
 // build assembles a notice with its en content in Show.
-func (n Notices) build(id string, actions []ipc.PromptAction, localize func(promptcatalog.Locale) (prompthost.Localized, error), legacy func(prompthost.Owner) error, onAction func(string, prompthost.Owner) (prompthost.ActionOutcome, error)) prompthost.Prompt {
+func (n Notices) build(id string, expires time.Time, actions []ipc.PromptAction, localize func(promptcatalog.Locale) (prompthost.Localized, error), legacy func(prompthost.Owner) error, onAction func(string, prompthost.Owner) (prompthost.ActionOutcome, error)) prompthost.Prompt {
 	show := ipc.PromptShow{
 		PromptID:        id,
 		Kind:            NoticeInfo.Name,
@@ -309,9 +338,9 @@ func (n Notices) build(id string, actions []ipc.PromptAction, localize func(prom
 		Presentation:    ipc.PromptPresentationCard,
 		Actions:         actions,
 		DefaultActionID: actionOK,
-		Timing:          ipc.PromptTiming{PresentWithinMs: noticePresentWithinMs},
+		Timing:          ipc.PromptTiming{PresentWithinMs: noticePresentWithinMs, DeadlineUnixMs: expires.UnixMilli()},
 		Focus:           ipc.PromptFocusNoActivate,
-		ListEntry:       ipc.PromptListEntry{Persistent: true},
+		ListEntry:       ipc.PromptListEntry{Persistent: true, ExpiresAtUnixMs: expires.UnixMilli()},
 		Locale:          string(promptcatalog.LocaleEN),
 		Direction:       "ltr",
 	}
@@ -322,9 +351,12 @@ func (n Notices) build(id string, actions []ipc.PromptAction, localize func(prom
 				show.Actions[i].Label = label
 			}
 		}
+	} else {
+		// An en render failure leaves an empty title, which the host's
+		// validation refuses at Show: the caller then takes its legacy call.
+		// The catalog is embedded and tested, so this is a build defect.
+		log.Error("notice copy could not be rendered; the notice will take its legacy path", "promptId", id, "error", err.Error())
 	}
-	// An en render failure leaves an empty title, which the host's
-	// validation refuses at Show: the caller then takes its legacy call.
 	return prompthost.Prompt{
 		ID:       id,
 		Kind:     NoticeInfo,

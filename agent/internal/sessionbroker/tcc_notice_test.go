@@ -107,6 +107,52 @@ func TestTCCStatusReachesTheHandlerOnlyForAFlaggedSession(t *testing.T) {
 	}
 }
 
+// Reports from one helper reach the handler in order, never a stale one
+// after a newer one (a late "not granted" must not resurrect a notice the
+// grant withdrew). Intermediate reports may be coalesced: only the newest
+// state matters.
+func TestTCCStatusesReachTheHandlerInOrder(t *testing.T) {
+	var mu sync.Mutex
+	var seen []int64
+	b := New("", nil)
+	b.SetTCCStatusHandler(func(_ *Session, st ipc.TCCStatus) {
+		time.Sleep(2 * time.Millisecond) // a handler that takes a while
+		mu.Lock()
+		seen = append(seen, st.CheckedAt.UnixNano())
+		mu.Unlock()
+	})
+	s := &Session{UID: 501, SessionID: "ordered", AllowedScopes: []string{"desktop"}}
+	s.SetAgentHandlesTCCNoticeForTest(true)
+	base := time.Unix(1_800_000_000, 0)
+	const n = 30
+	for i := 1; i <= n; i++ {
+		payload, _ := json.Marshal(ipc.TCCStatus{FullDiskAccess: i%2 == 0, CheckedAt: base.Add(time.Duration(i) * time.Second)})
+		b.dispatchHelperMessage(s, &ipc.Envelope{Type: ipc.TypeTCCStatus, Payload: payload})
+	}
+	last := base.Add(n * time.Second).UnixNano()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		done := len(seen) > 0 && seen[len(seen)-1] == last
+		mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(30 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 || seen[len(seen)-1] != last {
+		t.Fatalf("the newest report was not the last one handled (%d handled)", len(seen))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i] <= seen[i-1] {
+			t.Fatalf("report %d handled after a newer one", i)
+		}
+	}
+}
+
 func TestAuthResponseTCCFlagIsAdditive(t *testing.T) {
 	raw, _ := json.Marshal(ipc.AuthResponse{Accepted: true})
 	var m map[string]any

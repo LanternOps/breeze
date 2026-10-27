@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,13 +47,37 @@ func noticeProbe(t *testing.T, username string, uid uint32, advertises bool) *he
 // probes, as heartbeat.go does in production.
 func noticeHeartbeat(t *testing.T, enabled []string, probes ...*helperProbe) *Heartbeat {
 	t.Helper()
+	return noticeHeartbeatAt(t, nil, enabled, probes...)
+}
+
+// shiftClock is the real clock moved forward by a test-controlled offset
+// (the notices take their deadlines from the real clock).
+type shiftClock struct {
+	mu     sync.Mutex
+	offset time.Duration
+}
+
+func (c *shiftClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Add(c.offset)
+}
+
+func (c *shiftClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.offset += d
+	c.mu.Unlock()
+}
+
+func noticeHeartbeatAt(t *testing.T, clock prompthost.Clock, enabled []string, probes ...*helperProbe) *Heartbeat {
+	t.Helper()
 	sessions := make([]*sessionbroker.Session, 0, len(probes))
 	for _, p := range probes {
 		sessions = append(sessions, p.session)
 	}
 	broker := newTestBrokerWithSessions(t, sessions...)
 	h := &Heartbeat{sessionBroker: broker}
-	h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(broker)})
+	h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(broker), Clock: clock})
 	promptkinds.Register(h.promptHost)
 	broker.SetPromptSink(h.promptHost)
 	h.promptHost.SetEnabledKinds(enabled)
@@ -401,6 +429,177 @@ func TestOpenMacSettingsUsesTheAllowlistAndTheOwnersUID(t *testing.T) {
 	}
 	if err := h.openMacSettings(prompthost.Owner{UID: 501}, "x-apple.systempreferences:evil"); err == nil || gotURL != "" {
 		t.Fatal("only the allowlisted panes open")
+	}
+}
+
+var missingFDAOnly = ipc.TCCStatus{ScreenRecording: true, Accessibility: true, FullDiskAccess: false}
+
+func promptShows(p *helperProbe) int { return len(envelopesOf(p, ipc.TypePromptShow)) }
+
+// #10190 W04 review: a notice must not stay open forever. A permission
+// notice nobody acknowledged closes as expired after 24 h and comes back at
+// the next report while Full Disk Access is still missing.
+func TestTCCNoticeExpiresAndRemindsAgain(t *testing.T) {
+	clock := &shiftClock{}
+	probe := tccSession(t, true)
+	h := noticeHeartbeatAt(t, clock, []string{"notice.info"}, probe)
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice")
+	// The renderer drew it (a probe does not answer by itself).
+	s := decodeShow(t, envelopesOf(probe, ipc.TypePromptShow)[0])
+	raw, _ := json.Marshal(ipc.PromptPresented{PromptID: s.PromptID, Rev: s.Rev, Lease: s.Lease, Visible: true})
+	h.promptHost.HandleRendererMessage(probe.session, ipc.TypePromptPresented, raw)
+
+	clock.advance(23 * time.Hour)
+	h.promptHost.Tick()
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	time.Sleep(100 * time.Millisecond)
+	if promptShows(probe) != 1 {
+		t.Fatal("re-sent before its 24 h lifetime ended")
+	}
+
+	clock.advance(2 * time.Hour)
+	h.promptHost.Tick()
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptClose)) == 1 }, "the expiry close")
+	var c ipc.PromptClose
+	_ = json.Unmarshal(envelopesOf(probe, ipc.TypePromptClose)[0].Payload, &c)
+	if c.Reason != ipc.PromptCloseExpired {
+		t.Fatalf("close = %+v, want expired", c)
+	}
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 2 }, "the reminder after expiry")
+}
+
+func TestTCCNoticeGrantThenRevokeRemindsAgain(t *testing.T) {
+	probe := tccSession(t, true)
+	h := noticeHeartbeat(t, []string{"notice.info"}, probe)
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice")
+	h.handleTCCNotice(probe.session, ipc.TCCStatus{ScreenRecording: true, Accessibility: true, FullDiskAccess: true})
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptClose)) == 1 }, "the withdrawal")
+	// Revoked again within the hour: the same notice id must come back.
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 2 }, "the reminder after a revoke")
+}
+
+func TestTCCNoticeAfterOKWaitsADay(t *testing.T) {
+	probe := tccSession(t, true)
+	h := noticeHeartbeat(t, []string{"notice.info"}, probe)
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice")
+	s := decodeShow(t, envelopesOf(probe, ipc.TypePromptShow)[0])
+	raw, _ := json.Marshal(ipc.PromptActionRequest{PromptID: s.PromptID, Rev: s.Rev, Lease: s.Lease, ActionID: "ok", Via: ipc.PromptViaClick})
+	if _, reply := h.promptHost.HandleRendererMessage(probe.session, ipc.TypePromptAction, raw); reply.(ipc.PromptActionResult).Result != ipc.PromptActionAccepted {
+		t.Fatalf("ok = %+v", reply)
+	}
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	time.Sleep(100 * time.Millisecond)
+	if promptShows(probe) != 1 || len(envelopesOf(probe, ipc.TypeNotify)) != 0 {
+		t.Fatal("an acknowledged notice came back (or fell back to a toast) within 24 h")
+	}
+}
+
+func TestTCCNoticeRemindsAgainAfterAScopeChange(t *testing.T) {
+	h, _, _ := identityHeartbeat(t, fixtureLogoHandler(t))
+	probe := tccSession(t, true)
+	broker := newTestBrokerWithSessions(t, probe.session)
+	h.sessionBroker = broker
+	h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(broker), Identity: h.promptIdentity})
+	promptkinds.Register(h.promptHost)
+	on := &PromptHostSettings{EnabledKinds: []string{"notice.info"}}
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeA), PromptHost: on})
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice under scope A")
+
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeB), PromptHost: on})
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptClose)) == 1 }, "the scope-change withdrawal")
+	h.handleTCCNotice(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 2 }, "the reminder under the new scope")
+	if s := decodeShow(t, envelopesOf(probe, ipc.TypePromptShow)[1]); s.IdentityRef == nil || s.IdentityRef.ScopeID != hbScopeB {
+		t.Fatalf("the new notice carries %+v", s.IdentityRef)
+	}
+}
+
+// A Show the host refuses (here: an invalid prompt) falls back to today's
+// call; a Show refused because the notice was decided in the last 24 h does
+// not.
+func TestShowNoticeFallsBackOnErrorButNotOnTombstone(t *testing.T) {
+	probe := noticeProbe(t, "dana", 501, true)
+	h := noticeHeartbeat(t, []string{"notice.info"}, probe)
+	owner := noticeOwner(probe.session)
+
+	legacy := 0
+	bad := h.notices().SafeModeRebootNotice(time.Hour, time.Now().Add(time.Hour))
+	bad.Show.Copy.Title = "" // fails the host's validation
+	h.showNotice(bad, []prompthost.Owner{owner}, func() { legacy++ })
+	if legacy != 1 {
+		t.Fatalf("a refused Show must take today's call (legacy=%d)", legacy)
+	}
+
+	good := h.notices().RemoteSessionEndedNotice("tomb-1", time.Minute, "")
+	h.showNotice(good, []prompthost.Owner{owner}, func() { legacy++ })
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice")
+	if err := h.promptHost.Close(good.ID, ipc.PromptCloseResolved); err != nil {
+		t.Fatal(err)
+	}
+	h.showNotice(good, []prompthost.Owner{owner}, func() { legacy++ })
+	time.Sleep(100 * time.Millisecond)
+	if legacy != 1 || promptShows(probe) != 1 {
+		t.Fatalf("a decided notice was re-sent (legacy=%d shows=%d)", legacy, promptShows(probe))
+	}
+}
+
+// The production wiring (startPromptHost, called from New): the host is
+// the broker's prompt sink, notice.info@1 is registered, and the TCC skew
+// rule's gate and status handler are installed on the broker.
+func TestStartPromptHostWiresNoticesAndTheTCCRule(t *testing.T) {
+	probe := tccSession(t, true)
+	broker := newTestBrokerWithSessions(t, probe.session)
+	h := &Heartbeat{sessionBroker: broker}
+	h.startPromptHost(t.TempDir())
+	if h.promptHost == nil || h.promptListStore == nil {
+		t.Fatal("no prompt host or list store")
+	}
+	gate, handler := broker.TCCNoticeHooksForTest()
+	if gate == nil || handler == nil {
+		t.Fatalf("TCC rule not wired: gate=%v handler=%v", gate != nil, handler != nil)
+	}
+	if gate() {
+		t.Fatal("notice.info is not enabled yet: the gate must be closed")
+	}
+	h.promptHost.SetEnabledKinds([]string{"notice.info@1"})
+	if !gate() {
+		t.Fatal("notice.info@1 enabled: the gate must open (the build registered the kind)")
+	}
+	handler(probe.session, missingFDAOnly)
+	eventually(t, func() bool { return promptShows(probe) == 1 }, "the notice through the wired handler")
+}
+
+// NewWithVersion cannot be stood up in a unit test (it opens the IPC broker
+// for real), so pin structurally that it calls startPromptHost.
+func TestNewWithVersionStartsThePromptHost(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "heartbeat.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "NewWithVersion" {
+			fn = f
+		}
+	}
+	if fn == nil {
+		t.Fatal("NewWithVersion not found in heartbeat.go; update this guard")
+	}
+	calls := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "startPromptHost" {
+			calls = true
+		}
+		return true
+	})
+	if !calls {
+		t.Fatal("NewWithVersion no longer calls startPromptHost: no notice kind, prompt sink or TCC rule in production")
 	}
 }
 

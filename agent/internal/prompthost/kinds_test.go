@@ -1,7 +1,10 @@
 package prompthost
 
 import (
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/promptcatalog"
@@ -133,6 +136,99 @@ func TestLocalizeLegacyOwnerEntryUsesTheMachineLocale(t *testing.T) {
 	entries := inbox.PromptEntries(testOwner.PrincipalKey())
 	if len(entries) != 1 || entries[0].Show.Locale != "it-IT" || entries[0].Show.Copy.Title != "title-it-IT" {
 		t.Fatalf("legacy owner's entry = %+v", entries)
+	}
+}
+
+// A Reshowable prompt (the permission notice: the condition it reports can
+// come back) is tombstoned only when it was resolved; closed undecided —
+// expired, withdrawn (a grant, a scope change), superseded — the domain may
+// show the same id again. Any other prompt keeps the 24 h tombstone.
+func TestReshowablePromptIsTombstonedOnlyWhenResolved(t *testing.T) {
+	for _, tc := range []struct {
+		reason     ipc.PromptCloseReason
+		reshowable bool
+		wantTomb   bool
+	}{
+		{ipc.PromptCloseWithdrawn, true, false},
+		{ipc.PromptCloseExpired, true, false},
+		{ipc.PromptCloseSuperseded, true, false},
+		{ipc.PromptCloseResolved, true, true},
+		{ipc.PromptCloseWithdrawn, false, true},
+		{ipc.PromptCloseExpired, false, true},
+	} {
+		t.Run(fmt.Sprintf("%s/reshowable=%v", tc.reason, tc.reshowable), func(t *testing.T) {
+			hh := newHarness(t, nativeRenderer("native-1", "notice.info@1"))
+			p := noticePrompt(t, "notice:test:again", &promptCalls{})
+			p.Reshowable = tc.reshowable
+			if err := hh.h.Show(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := hh.h.Close(p.ID, tc.reason); err != nil {
+				t.Fatal(err)
+			}
+			err := hh.h.Show(p)
+			if tc.wantTomb != errors.Is(err, ErrTombstoned) {
+				t.Fatalf("re-show after %s: err = %v, want tombstoned=%v", tc.reason, err, tc.wantTomb)
+			}
+			if got := hh.inbox.PromptTombstoned(p.ID); got != tc.wantTomb {
+				t.Fatalf("persisted tombstone = %v, want %v", got, tc.wantTomb)
+			}
+		})
+	}
+}
+
+func TestReshowablePromptExpiresAndComesBack(t *testing.T) {
+	hh := newHarness(t, nativeRenderer("native-1", "notice.info@1"))
+	p := noticePrompt(t, "notice:test:expire", &promptCalls{})
+	p.Reshowable = true
+	p.Show.Timing.DeadlineUnixMs = t0.Add(time.Hour).UnixMilli()
+	if err := hh.h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	hh.presented("native-1", showsTo(hh.dir.take(), "native-1")[0])
+	hh.tick(2 * time.Hour)
+	if hh.h.IsOpen(p.ID) {
+		t.Fatal("past its deadline the notice must close")
+	}
+	if c := closesTo(hh.dir.take(), "native-1"); len(c) != 1 || c[0].Reason != ipc.PromptCloseExpired {
+		t.Fatalf("closes = %+v", c)
+	}
+	p.Show.Timing.DeadlineUnixMs = t0.Add(26 * time.Hour).UnixMilli()
+	if err := hh.h.Show(p); err != nil {
+		t.Fatalf("an expired reshowable notice must be shown again: %v", err)
+	}
+}
+
+// An accepted action that leaves the prompt as it was (Open Settings on the
+// permission notice: pending -> pending, no new rev) can be taken again;
+// it is not answered from the duplicate-click cache without running.
+func TestStatePreservingActionRunsEveryTime(t *testing.T) {
+	hh := newHarness(t, nativeRenderer("native-1", "notice.info@1"))
+	calls := &promptCalls{outcome: ActionOutcome{Accepted: true}}
+	p := noticePrompt(t, "notice:test:settings", calls)
+	p.Kind.Transitions[ipc.PromptStatePending]["open_settings"] = ipc.PromptStatePending
+	p.Show.Actions = append(p.Show.Actions, ipc.PromptAction{ID: "open_settings", Label: "Open Settings", Role: ipc.PromptRoleNeutral})
+	if err := hh.h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	s := showsTo(hh.dir.take(), "native-1")[0]
+	for i := 1; i <= 2; i++ {
+		if res := hh.act("native-1", s.PromptID, s.Rev, s.Lease, "open_settings"); res.Result != ipc.PromptActionAccepted {
+			t.Fatalf("click %d = %+v", i, res)
+		}
+	}
+	if _, n, _ := calls.counts(); n != 2 {
+		t.Fatalf("Open Settings ran %d times for two clicks", n)
+	}
+	// A decision still applies once: ok moves the prompt on.
+	if res := hh.act("native-1", s.PromptID, s.Rev, s.Lease, "ok"); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("ok = %+v", res)
+	}
+	if res := hh.act("native-1", s.PromptID, s.Rev, s.Lease, "ok"); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("a duplicate ok is answered from the cache, still accepted: %+v", res)
+	}
+	if _, n, _ := calls.counts(); n != 3 {
+		t.Fatalf("the duplicate ok ran the domain again (%d calls)", n)
 	}
 }
 

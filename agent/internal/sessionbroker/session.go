@@ -79,6 +79,9 @@ type Session struct {
 	// helper (AuthResponse.AgentHandlesTCCNotice, #10190 W04): the agent
 	// shows the macOS permission notice from this helper's tcc_status.
 	agentHandlesTCCNotice atomic.Bool
+	// tccForward orders this session's tcc_status reports to the agent's
+	// handler (tcc_notice.go).
+	tccForward tccForwardQueue
 
 	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
 	helperLogOnce sync.Once

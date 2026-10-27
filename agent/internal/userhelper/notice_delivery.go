@@ -85,6 +85,24 @@ func noticeDeliveryFor(state uint32, err error) noticeDelivery {
 	return noticeDialog
 }
 
+// queryNoticeState asks the notification state, warning once per failure
+// streak (a held notice re-polls every 30 s).
+func (r *nativePromptRenderer) queryNoticeState() (uint32, error) {
+	state, err := r.noticeState()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		r.noticeStateFailing = false
+		return state, nil
+	}
+	if !r.noticeStateFailing {
+		r.noticeStateFailing = true
+		r.noticeStateWarnings++
+		log.Warn("cannot read the Windows notification state; notices are shown as dialogs until it can be read", "error", err.Error())
+	}
+	return state, err
+}
+
 // usesNotificationState reports whether a prompt is delivered by the
 // notification state (a notice, on a platform that has the query).
 func (r *nativePromptRenderer) usesNotificationState(p ipc.PromptShow) bool {
@@ -100,13 +118,18 @@ func (r *nativePromptRenderer) deliverNotice(ctx context.Context, p ipc.PromptSh
 	if repoll <= 0 {
 		repoll = defaultNoticeRepoll
 	}
+	// The hold ends at the notice's own end: its deadline (a safe-mode
+	// warning means nothing after the reboot) or its list expiry, whichever
+	// comes first. Both are absolute, so a replay never restarts them.
 	expires := r.now().Add(defaultNoticeHoldTTL)
-	if ms := p.ListEntry.ExpiresAtUnixMs; ms > 0 {
-		expires = time.UnixMilli(ms)
+	for _, ms := range []int64{p.ListEntry.ExpiresAtUnixMs, p.Timing.DeadlineUnixMs} {
+		if at := time.UnixMilli(ms); ms > 0 && at.Before(expires) {
+			expires = at
+		}
 	}
 	toldHeld := false
 	for {
-		d := noticeDeliveryFor(r.noticeState())
+		d := noticeDeliveryFor(r.queryNoticeState())
 		switch d {
 		case noticeToast:
 			if r.toast(ipc.NotifyRequest{Title: m.Title, Body: m.Body}) {

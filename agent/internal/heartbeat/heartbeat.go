@@ -55,7 +55,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
-	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -1373,26 +1372,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
-		// The prompt list and its 24 h tombstones persist next to the endpoint
-		// messages (P5: one inbox, two files).
-		promptStore, err := inbox.Open(filepath.Join(config.GetDataDir(), promptInboxFile), inbox.PromptOptions())
-		if err != nil {
-			log.Warn("prompt inbox unreadable; starting empty", "error", err.Error())
-		}
-		h.promptListStore = promptStore
-		h.promptHost = prompthost.New(prompthost.Deps{
-			Broker:   prompthost.NewBrokerDirectory(h.sessionBroker),
-			Inbox:    &inbox.PromptInbox{Store: promptStore},
-			Identity: h.promptIdentity,
-			OSLocale: osUILocale,
-		})
-		h.sessionBroker.SetPromptSink(h.promptHost)
-		// The kinds this build constructs (W04: notice.info@1), and the macOS
-		// permission notice's skew rule: a helper is told the agent shows the
-		// notice only while notice.info is live (sessionbroker/tcc_notice.go).
-		promptkinds.Register(h.promptHost)
-		h.sessionBroker.SetTCCNoticeGate(h.tccNoticeLive)
-		h.sessionBroker.SetTCCStatusHandler(h.handleTCCNotice)
+		h.startPromptHost(config.GetDataDir())
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
 		h.setHelperToken(h.config.HelperAuthToken)

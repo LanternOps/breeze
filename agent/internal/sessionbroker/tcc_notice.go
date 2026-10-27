@@ -1,6 +1,8 @@
 package sessionbroker
 
 import (
+	"sync"
+
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -127,9 +129,51 @@ func (b *Broker) forwardTCCStatus(s *Session, status ipc.TCCStatus) {
 	b.mu.RLock()
 	fn := b.tccStatusHandler
 	b.mu.RUnlock()
-	if fn != nil {
-		go fn(s, status)
+	if fn == nil {
+		return
 	}
+	// One worker per session, off the receive loop, handling the newest
+	// report: reports are applied in order, and a stale "not granted"
+	// never runs after the grant that followed it.
+	q := &s.tccForward
+	q.mu.Lock()
+	st := status
+	q.pending = &st
+	if q.running {
+		q.mu.Unlock()
+		return
+	}
+	q.running = true
+	q.mu.Unlock()
+	go func() {
+		for {
+			q.mu.Lock()
+			next := q.pending
+			q.pending = nil
+			if next == nil {
+				q.running = false
+				q.mu.Unlock()
+				return
+			}
+			q.mu.Unlock()
+			fn(s, *next)
+		}
+	}()
+}
+
+// tccForwardQueue holds a session's newest unhandled tcc_status.
+type tccForwardQueue struct {
+	mu      sync.Mutex
+	pending *ipc.TCCStatus
+	running bool
+}
+
+// TCCNoticeHooksForTest returns the installed gate and status handler (the
+// heartbeat's wiring test).
+func (b *Broker) TCCNoticeHooksForTest() (gate func() bool, handler func(*Session, ipc.TCCStatus)) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.tccNoticeGate, b.tccStatusHandler
 }
 
 // AgentHandlesTCCNotice reports whether this session's auth response told

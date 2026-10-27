@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/prompthost"
@@ -103,6 +104,7 @@ func TestNoticeActionsThroughTheHost(t *testing.T) {
 	}
 	rec := &legacyRecorder{}
 	n := newNotices(rec)
+	n.Now = time.Now // the host runs on the real clock
 
 	// open_settings: accepted, the notice stays pending and open.
 	tcc := n.MacPermissionNotice([]string{PermissionFullDiskAccess})
@@ -120,9 +122,14 @@ func TestNoticeActionsThroughTheHost(t *testing.T) {
 	if !h.IsOpen(tcc.ID) || len(rec.settings) != 1 || len(rec.notifies) != 0 {
 		t.Fatalf("open_settings: open=%v settings=%v notifies=%d", h.IsOpen(tcc.ID), rec.settings, len(rec.notifies))
 	}
+	// A second click (the person closed System Settings too early) opens
+	// it again.
+	if res := act(t, h, "native-1", s, "open_settings"); res.Result != ipc.PromptActionAccepted || len(rec.settings) != 2 {
+		t.Fatalf("second open_settings = %+v, opened %d times", res, len(rec.settings))
+	}
 
 	// ok: accepted, closed, and the list keeps an outcome without actions.
-	safe := n.SafeModeRebootNotice(0, testNow)
+	safe := n.SafeModeRebootNotice(time.Hour, time.Now().Add(time.Hour))
 	safe.Owners = []prompthost.Owner{testOwner}
 	if err := h.Show(safe); err != nil {
 		t.Fatal(err)

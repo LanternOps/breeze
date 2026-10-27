@@ -172,6 +172,100 @@ func TestNativeNoticeHoldGivesUpAtListExpiry(t *testing.T) {
 	}
 }
 
+// A safe-mode warning held through a presentation gives up at the reboot
+// (its deadline), not at a later list expiry.
+func TestNativeNoticeHoldEndsAtTheDeadline(t *testing.T) {
+	os := &fakeNoticeOS{state: qunsPresentationMode, toastOK: true}
+	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
+	r, sink := newNoticeRenderer(t, os, fake)
+	clock := nativeNow
+	var mu sync.Mutex
+	r.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	show := nativeFixture(t, "show.notice.json")
+	show.Timing.DeadlineUnixMs = nativeNow.Add(15 * time.Minute).UnixMilli()
+	show.ListEntry.ExpiresAtUnixMs = nativeNow.Add(7 * 24 * time.Hour).UnixMilli()
+	r.handle(envelopeFor(t, ipc.TypePromptShow, show))
+	sink.waitFor(t, ipc.TypePromptPresented)
+	mu.Lock()
+	clock = nativeNow.Add(16 * time.Minute)
+	mu.Unlock()
+	waitUntil(t, func() bool { return r.activeCount() == 0 }, "the hold to give up at the deadline")
+	os.set(qunsAcceptsNotifications)
+	time.Sleep(50 * time.Millisecond)
+	if _, toasts := os.snapshot(); len(toasts) != 0 || fake.shown() != 0 {
+		t.Fatal("a notice past its deadline was delivered after its hold")
+	}
+}
+
+// A failing SHQueryUserNotificationState is warned about once per failure
+// streak, not on every 30 s poll.
+func TestNoticeStateFailureWarnsOncePerStreak(t *testing.T) {
+	os := &fakeNoticeOS{err: errors.New("E_FAIL")}
+	r, _ := newNoticeRenderer(t, os, &fakeNativeShow{})
+	for i := 0; i < 3; i++ {
+		if _, err := r.queryNoticeState(); err == nil {
+			t.Fatal("the fake fails")
+		}
+	}
+	if r.noticeStateWarnings != 1 {
+		t.Fatalf("warned %d times for one streak", r.noticeStateWarnings)
+	}
+	os.mu.Lock()
+	os.err = nil
+	os.mu.Unlock()
+	_, _ = r.queryNoticeState()
+	os.mu.Lock()
+	os.err = errors.New("E_FAIL")
+	os.mu.Unlock()
+	_, _ = r.queryNoticeState()
+	if r.noticeStateWarnings != 2 {
+		t.Fatalf("a new streak after a success warns again (got %d)", r.noticeStateWarnings)
+	}
+}
+
+// On a helper reconnect the host replays open prompts list-only (all but
+// one decision) and finished entries as list-only terminal shows. A native
+// helper has no list: it must not re-toast or re-draw any of them.
+func TestNativeRendererDrawsNothingForListOnlyOrFinishedShows(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state ipc.PromptState
+	}{
+		{"open notice replayed list-only", ipc.PromptStatePending},
+		{"finished entry replayed", ipc.PromptStateApproved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			os := &fakeNoticeOS{state: qunsAcceptsNotifications, toastOK: true}
+			fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
+			r, sink := newNoticeRenderer(t, os, fake)
+			show := nativeFixture(t, "show.notice.json")
+			show.Presentation = ipc.PromptPresentationListOnly
+			show.State = tc.state
+			if tc.state.Terminal() {
+				show.Actions, show.DefaultActionID = []ipc.PromptAction{}, ""
+			}
+			r.handle(envelopeFor(t, ipc.TypePromptShow, show))
+			time.Sleep(80 * time.Millisecond)
+			if _, toasts := os.snapshot(); len(toasts) != 0 || fake.shown() != 0 {
+				t.Fatalf("a list-only replay was drawn: %d toasts, %d dialogs", len(toasts), fake.shown())
+			}
+			if n := sink.count(ipc.TypePromptClosed); n != 0 {
+				t.Fatalf("a list-only show is not a render failure (%d prompt_closed)", n)
+			}
+		})
+	}
+	// The one decision the host restores comes back as a card and is drawn.
+	os := &fakeNoticeOS{state: qunsAcceptsNotifications, toastOK: true}
+	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}
+	r, _ := newNoticeRenderer(t, os, fake)
+	show := nativeFixture(t, "show.notice.json")
+	show.Presentation = ipc.PromptPresentationListOnly
+	r.handle(envelopeFor(t, ipc.TypePromptShow, show))
+	show.Presentation, show.Rev = ipc.PromptPresentationCard, show.Rev+1
+	r.handle(envelopeFor(t, ipc.TypePromptShow, show))
+	waitUntil(t, func() bool { _, toasts := os.snapshot(); return len(toasts) == 1 }, "the restored card")
+}
+
 func TestNativeNoticeQuietTimeDrawsTheDialog(t *testing.T) {
 	os := &fakeNoticeOS{state: qunsQuietTime, toastOK: true}
 	fake := &fakeNativeShow{outcome: make(chan nativeOutcome, 1)}

@@ -140,6 +140,11 @@ type Prompt struct {
 	// renderer and every list entry, so it must be pure — catalog lookups
 	// only, no host calls. A copy replaced later by a Patch is sent as given.
 	Localize func(loc promptcatalog.Locale) (Localized, error)
+	// Reshowable says the condition the prompt reports can come back (the
+	// macOS permission notice): only a resolved close tombstones it. Closed
+	// undecided — expired, withdrawn, superseded — the domain may show the
+	// same id again at once. Default: every close tombstones for 24 h.
+	Reshowable bool
 }
 
 // Localized is the locale-dependent content of a prompt: the copy, the
