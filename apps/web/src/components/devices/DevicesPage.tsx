@@ -216,7 +216,7 @@ function AddAssetMenu({
         <div
           role="menu"
           data-testid={testIdPrefix}
-          className="absolute right-0 z-20 mt-1 w-56 rounded-md border bg-card shadow-lg"
+          className="absolute right-0 z-50 mt-1 w-56 rounded-md border bg-card shadow-lg"
         >
           {canInstallAgent && (
             <button
