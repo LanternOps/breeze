@@ -663,6 +663,10 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
   }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
+  }
 
   const clash = await db
     .select({ id: partners.id })
@@ -2105,6 +2109,10 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   let targetPartnerId: string | null = null;

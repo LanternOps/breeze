@@ -51,7 +51,7 @@ describe('flow budgets (#5220)', () => {
 
   it('lists the limits write errors', () => {
     expect([...FLOW_LIMITS_WRITE_ERRORS]).toEqual([
-      'org_not_found', 'partner_required', 'partner_scope_required', 'partner_wide_forbidden', 'org_scope_read_only', 'limit_above_partner_ceiling',
+      'org_not_found', 'partner_required', 'partner_not_found', 'partner_scope_required', 'partner_wide_forbidden', 'org_scope_read_only', 'limit_above_partner_ceiling',
     ]);
   });
 });

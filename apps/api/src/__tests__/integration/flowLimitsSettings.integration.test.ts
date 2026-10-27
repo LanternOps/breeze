@@ -117,5 +117,10 @@ describe('flow limits settings routes (real DB, RLS)', () => {
     // The response reflects the write (not a re-read in another context).
     expect(await ok.json()).toMatchObject({ level: 'partner', stored: { aiTokensPerRun: 2000 }, limits: { effective: { aiTokensPerRun: 2000 } } });
     expect(await settingsOf('partner', partner.id)).toEqual({ keep: 'partner-kept', flows: { monthlyRunsPerFlow: 500, aiTokensPerRun: 2000 } });
+
+    // null clears the key (inherit), it is not stored as null.
+    const cleared = await put(appFor(partner.id, [org.id]), { limits: { monthlyRunsPerFlow: null } });
+    expect(cleared.status).toBe(200);
+    expect(await settingsOf('partner', partner.id)).toEqual({ keep: 'partner-kept', flows: { aiTokensPerRun: 2000 } });
   });
 });

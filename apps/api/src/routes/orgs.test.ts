@@ -2091,6 +2091,27 @@ describe('org routes', () => {
       return app.request('/orgs/partners/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
 
+    // settings.flows has one home: PUT /flows/limits (W05 #5220). PATCH
+    // /partners/me (no automations.write, no partner-wide gate) must neither
+    // change nor erase it.
+    it('cannot write settings.flows, and keeps the stored block', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+    });
+
+    it('cannot create settings.flows when none is stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings).not.toHaveProperty('flows');
+    });
+
     it('persists settings.ml.anomalies (the schema must not strip it) and keeps sibling ml keys', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       mockCurrentPartnerSelect({ ml: { rca: { enabled: true } }, security: { requireMfa: true } });
@@ -3780,6 +3801,24 @@ describe('org routes', () => {
 
         expect(res.status).toBe(201);
       });
+    });
+
+    // settings.flows has one home: PUT /flows/limits (W05 #5220); creating an
+    // org (orgs:write) cannot seed it.
+    it('drops an incoming settings.flows on create', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      queueCreateSelects();
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      const res = await app.request('/orgs/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Org', slug: 'org-flows', settings: { flows: { monthlyRunsPerFlow: 1 }, timezone: 'UTC' } }),
+      });
+      expect(res.status).toBe(201);
+      const inserted = values.mock.calls.map((c) => c[0]).find((v) => v && typeof v === 'object' && 'settings' in v);
+      expect(inserted?.settings).toBeDefined();
+      expect(inserted.settings).not.toHaveProperty('flows');
     });
 
     it('should create an organization', async () => {

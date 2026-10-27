@@ -55,6 +55,7 @@ type Changes = FlowLimitsUpdate['limits'];
 const STATUS: Record<FlowLimitsWriteError, 400 | 403 | 404 | 422> = {
   org_not_found: 404,
   partner_required: 400,
+  partner_not_found: 404,
   partner_scope_required: 403,
   partner_wide_forbidden: 403,
   org_scope_read_only: 403,
@@ -135,12 +136,21 @@ async function resolveTarget(auth: AuthContext, orgId: string | undefined): Prom
   return { ok: true, level: 'org', partnerId: org.partnerId, orgId: targetOrg, orgSettings: org.settings ?? {} };
 }
 
-async function readPartnerSettings(partnerId: string): Promise<unknown> {
+/**
+ * The partner's settings, or `undefined` when the row is not visible. Callers
+ * refuse on `undefined`: reading it as "no settings" would make the platform
+ * defaults the org ceiling and let an org be saved above a lowered partner value.
+ */
+async function readPartnerSettings(partnerId: string): Promise<unknown | undefined> {
   // Partner-axis row, pinned to a partner id derived from the caller or an access-checked org.
   const [partner] = await readWithPartnerAxisVisibility(() =>
     db.select({ settings: partners.settings }).from(partners).where(eq(partners.id, partnerId)).limit(1),
   );
-  return partner?.settings ?? null;
+  if (!partner) {
+    console.warn(`[flows] flow limits: partner ${partnerId} is not visible; refusing instead of using defaults`);
+    return undefined;
+  }
+  return partner.settings ?? null;
 }
 
 function viewOf(
@@ -181,6 +191,7 @@ export function registerFlowLimitsRoutes(app: Hono): void {
       const target = await resolveTarget(auth, c.req.valid('query').orgId);
       if (!target.ok) return fail(c, target.error);
       const partnerSettings = await readPartnerSettings(target.partnerId);
+      if (partnerSettings === undefined) return fail(c, 'partner_not_found');
       const canManage = canWrite(auth, c.get('permissions')) && levelWritable(auth, target.level) === null;
       return c.json(viewOf(target, partnerSettings, canManage));
     },
@@ -203,6 +214,7 @@ export function registerFlowLimitsRoutes(app: Hono): void {
       if (refused) return fail(c, refused);
 
       const partnerSettings = await readPartnerSettings(target.partnerId);
+      if (partnerSettings === undefined) return fail(c, 'partner_not_found');
       // RETURNING settings: the response is built from what was written. A
       // re-read would go through readWithPartnerAxisVisibility's separate
       // system context, which cannot see this request's uncommitted UPDATE.

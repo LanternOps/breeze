@@ -429,7 +429,8 @@ function flowLimitBinding(entry: CatalogEntry, field: FlowLimitKey): FieldBindin
     if (bucket === 'shadowed') return baseBucketSql('clamped', partnerSettings);
     const inner = baseBucketSql(bucket, partnerSettings);
     if (bucket !== 'overrides' || inner === null) return inner;
-    return and(inner, sql`(${value})::numeric <= ${cap(partnerSettings)}`);
+    // Cast-guarded: the planner may evaluate this before the own-value predicate.
+    return and(inner, sql`(CASE WHEN jsonb_typeof(${value}) = 'number' THEN (${value})::numeric <= ${cap(partnerSettings)} ELSE false END)`);
   };
   binding.clampedIsShadowed = true;
   return binding;

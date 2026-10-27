@@ -295,7 +295,27 @@ describe('PUT /limits — org override (lower-only)', () => {
   });
 });
 
+describe('a partner row the read cannot see', () => {
+  // A missing partner row must never read as "platform defaults": that would
+  // let an org be saved above the real (lowered) partner ceiling.
+  it('GET and an org PUT refuse with 404 partner_not_found, nothing is written', async () => {
+    partnerRows = [];
+    expect((await get(`?orgId=${ORG}`)).status).toBe(404);
+    const res = await put({ orgId: ORG, limits: { monthlyRunsPerFlow: 9_000 } });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'partner_not_found' });
+    expect(updates).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
+  });
+});
+
 describe('flowLimitsSettingsUpdate', () => {
+  it('null removes the key and a number sets it', () => {
+    const q = new PgDialect().sqlToQuery(flowLimitsSettingsUpdate('settings_col' as never, { monthlyRunsPerOwner: 7, aiTokensPerRun: null }));
+    expect(q.sql).toMatch(/\) - \$\d+::text/);
+    expect(q.sql).toMatch(/jsonb_build_object\(\$\d+::text, \$\d+::int\)/);
+  });
+
   it('only whitelisted keys reach SQL, as bound parameters', () => {
     const q = new PgDialect().sqlToQuery(flowLimitsSettingsUpdate('settings_col' as never, { monthlyRunsPerOwner: 7, aiTokensPerRun: null }));
     expect(q.params).toEqual(expect.arrayContaining(['aiTokensPerRun', 'monthlyRunsPerOwner', 7]));

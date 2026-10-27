@@ -65,6 +65,7 @@ export type FlowLimitsUpdate = z.infer<typeof flowLimitsUpdateSchema>;
 export const FLOW_LIMITS_WRITE_ERRORS = [
   'org_not_found',
   'partner_required',
+  'partner_not_found',
   'partner_scope_required',
   'partner_wide_forbidden',
   'org_scope_read_only',

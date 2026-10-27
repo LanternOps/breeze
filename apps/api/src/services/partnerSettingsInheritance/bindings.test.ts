@@ -189,6 +189,11 @@ describe('partner settings inheritance bindings', () => {
     expect(binding.clamped!(partner, 500)).toBe(false);
     // No partner value: the ceiling is the platform default (10,000).
     expect(binding.clamped!({}, 10_001)).toBe(true);
+    // The overrides bucket's ceiling comparison is cast-guarded: the planner may
+    // evaluate it before the own-value predicate, and a stored string would raise.
+    const overrides = new PgDialect().sqlToQuery(binding.bucketSql('overrides', partner)!).sql;
+    expect(overrides.match(/jsonb_typeof/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(overrides).not.toMatch(/\)\)::numeric <= \$\d+\)$/);
   });
 
   it('an AI budget column counts as set only when non-null', () => {
