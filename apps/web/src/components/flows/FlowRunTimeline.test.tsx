@@ -72,4 +72,54 @@ describe('FlowRunTimeline', () => {
     rerender(<FlowRunTimeline runId="r1" definition={definition} steps={[row({ status: 'completed' })]} runActive={false} />);
     expect(screen.getByTestId('flow-run-step-final').textContent).toContain('Not reached');
   });
+
+  it('overlapping items render as one group', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const item = (n: number, start: string, end: string) =>
+      row({ id: `i${n}`, stepId: 'each', itemIndex: n, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[
+          item(0, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:05.000Z'),
+          item(1, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:06.000Z'),
+          item(2, '2026-10-20T02:00:10.000Z', '2026-10-20T02:00:11.000Z'),
+        ]}
+      />,
+    );
+    const groups = screen.getAllByTestId('flow-run-parallel-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].textContent).toContain('2 items ran in parallel');
+    expect(groups[0].querySelectorAll('[data-testid^="flow-run-item-"]')).toHaveLength(2);
+    expect(screen.getByTestId('flow-run-item-i2')).toBeTruthy();
+  });
+
+  it('a row with aiUsage shows tokens and dollars', () => {
+    render(
+      <FlowRunTimeline runId="r1" definition={definition}
+        steps={[row({ status: 'completed', aiUsage: { inputTokens: 120, outputTokens: 30, costCents: 3 } })]} />,
+    );
+    const el = screen.getByTestId('flow-run-step-aiusage-row-list');
+    expect(el.textContent).toContain('120');
+    expect(el.textContent).toContain('30');
+    expect(el.textContent).toContain('$0.03');
+  });
+
+  it('an expanded http_request row shows the HTTP status from its loaded output', async () => {
+    const http = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'call', tool: 'http_request', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const r = row({ id: 'row-call', stepId: 'call', tool: 'http_request', status: 'completed' });
+    api.getFlowRunStep.mockResolvedValue({ ...(r as object), renderedInput: {}, output: { status: 503, headers: {}, body: '' } });
+    render(<FlowRunTimeline runId="r1" definition={http} steps={[r]} />);
+    expect(screen.queryByTestId('flow-run-step-httpstatus-row-call')).toBeNull();
+    await userEvent.setup().click(screen.getByTestId('flow-run-step-toggle-row-call'));
+    const el = await screen.findByTestId('flow-run-step-httpstatus-row-call');
+    expect(el.textContent).toContain('HTTP 503');
+  });
 });

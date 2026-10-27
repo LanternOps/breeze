@@ -57,7 +57,24 @@
       "tenant": "Araç kaynağı",
       "builtin": "Yerleşik"
     },
-    "preApprovedBadge": "Önceden onaylı"
+    "preApprovedBadge": "Önceden onaylı",
+    "builtin": {
+      "notify": "Bildirim gönder",
+      "http_request": "Harici bir API çağır",
+      "ai": "Yapay zekaya sor"
+    },
+    "notify": {
+      "channel": "Kanal: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonim (kimlik bilgisi yok)"
+    },
+    "ai": {
+      "tools": "Araçlar: {{tools}}",
+      "noTools": "Araç yok",
+      "output": "Sonuç alanları: {{fields}}"
+    }
   },
   "issues": {
     "title": "Doğrulama",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Genel bakış",
-    "runs": "Çalıştırmalar"
+    "runs": "Çalıştırmalar",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Etkinleştir",
@@ -121,7 +139,10 @@
     "partnerWideForbidden": "Tüm kuruluşlar için akış etkinleştirme izniniz yok.",
     "interactiveRequired": "Akışlar yalnızca oturum açılmış bir tarayıcı oturumundan etkinleştirilebilir.",
     "slugUnavailable": "Bu kapsamdaki başka bir akış zaten bu tanımlayıcıyı kullanıyor.",
-    "generic": "Akış etkinleştirilemedi."
+    "generic": "Akış etkinleştirilemedi.",
+    "webhookSecretMissing": "Bu akışı etkinleştirmeden önce bir webhook gizli anahtarı oluşturun.",
+    "aiBudgetUnavailable": "Bu kuruluşun harcayabileceği bir yapay zeka bütçesi yok, bu nedenle yapay zeka adımı olan bir akış etkinleştirilemez.",
+    "webhookSecretInvalidated": "Bu sürümü etkinleştirmek, daha eski bir taslak için oluşturulduğundan webhook gizli anahtarını temizledi. Yeni bir gizli anahtar oluşturup göndericiye verene kadar tüm istekler reddedilir."
   },
   "run": {
     "title": "Akışı çalıştır",
@@ -246,7 +267,9 @@
       "loading": "Yükleniyor...",
       "loadFailed": "Adım ayrıntıları yüklenemedi.",
       "pruned": "Ayrıntılar saklama ilkesi nedeniyle kaldırıldı.",
-      "redacted": "Adım ayrıntıları erişiminizle görüntülenemiyor."
+      "redacted": "Adım ayrıntıları erişiminizle görüntülenemiyor.",
+      "aiUsage": "Yapay zeka: {{input}} giriş, {{output}} çıkış token'ı, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Çalıştırma bulunamadı.",
     "alreadyTerminal": "Bu çalıştırma zaten sona erdi.",
@@ -258,7 +281,11 @@
     "queuedNote": "Sırada. Boş bir çalıştırma yuvası bekleniyor.",
     "paused": "Canlı güncellemeler duraklatıldı.",
     "lastUpdated": "Son güncelleme {{time}}",
-    "timeline": "Adımlar"
+    "timeline": "Adımlar",
+    "agentRun": "Bir yapay zeka aracısı çalıştırması tarafından başlatıldı",
+    "openAgentRun": "Aracı çalıştırmasını aç",
+    "aiTokensUsed": "Kullanılan yapay zeka token'ı: {{count}}",
+    "parallel": "{{count}} öğe paralel çalıştırıldı"
   },
   "toast": {
     "enabled": "Akış etkinleştirildi",
@@ -269,5 +296,140 @@
   "disable": {
     "title": "Akışı devre dışı bırak",
     "message": "Devre dışı bırakmak yeni çalıştırmaları durdurur ve devam edenleri iptal eder. Akışı daha sonra yeniden etkinleştirebilirsiniz."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "Webhook URL'si",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
+    "authMode": {
+      "label": "Kimlik doğrulama",
+      "hmac": "İmzalı istek (HMAC-SHA256)",
+      "token": "Başlıkta gizli anahtar"
+    },
+    "authHelp": {
+      "hmac": "Gönderici her isteği gizli anahtarla imzalar. Breeze; imzasız, hatalı imzalı veya beş dakikadan eski istekleri reddeder ve yeniden oynatılan bir isteği yalnızca bir kez çalıştırır.",
+      "token": "Gönderici gizli anahtarın kendisini bir başlığa koyar. Bu, imzalamaktan daha zayıftır: bir isteği gören herkes yenilerini gönderebilir. Yalnızca imzalayamayan göndericiler için kullanın."
+    },
+    "signing": {
+      "title": "İstek nasıl gönderilir",
+      "hmac": "Gövde olarak bir JSON nesnesi gönderin. Gizli anahtarla <timestamp>.<raw body> üzerinden HMAC-SHA256 hesaplayın ve şu başlıkları gönderin:",
+      "token": "Gövde olarak bir JSON nesnesi gönderin ve gizli anahtarı şu başlıkta iletin:",
+      "deliveryId": "İsteğe bağlı: Aynı teslimatın yeniden denemesinin yalnızca bir kez çalışması için benzersiz bir {{header}} gönderin."
+    },
+    "secret": {
+      "label": "Gizli anahtar",
+      "create": "Gizli anahtar oluştur",
+      "rotate": "Gizli anahtarı yenile",
+      "none": "Henüz gizli anahtar yok. Bir tane oluşturana kadar tüm istekler reddedilir.",
+      "fingerprint": "Parmak izi",
+      "rotatedAt": "Oluşturulma",
+      "dialogTitle": "Webhook gizli anahtarı",
+      "warning": "Bu gizli anahtarı şimdi kopyalayın. Bir daha gösterilmeyecek.",
+      "done": "Bitti",
+      "rotateTitle": "Webhook gizli anahtarı yenilensin mi?",
+      "rotateMessage": "Geçerli gizli anahtar hemen çalışmayı bırakır. Gönderici, yeni gizli anahtarı kullanana kadar reddedilir.",
+      "failed": "Webhook gizli anahtarı oluşturulamadı.",
+      "draftUnresolvable": "Taslağın adımları artık çözümlenemiyor, bu nedenle taslak için gizli anahtar oluşturulamaz. Önce taslağı düzeltin.",
+      "notWebhook": "Bu akış bir webhook ile başlatılmıyor."
+    },
+    "lastFailure": {
+      "label": "Son reddedilen istek",
+      "none": "Yok",
+      "missing_signature": "İstek imzalı değildi.",
+      "bad_signature": "İmza eşleşmedi.",
+      "stale_timestamp": "Zaman damgası eksikti veya beş dakikadan fazla farklıydı.",
+      "missing_token": "Gizli anahtar başlığı eksikti.",
+      "bad_token": "Başlıktaki gizli anahtar yanlıştı.",
+      "bad_delivery_id": "Teslimat kimliği geçerli değildi."
+    },
+    "orgResolver": {
+      "label": "Kuruluş",
+      "externalId": "{{path}} ile {{system}} türündeki harici kimliklerle eşleştirilir",
+      "breezeOrgId": "{{path}} içinden Breeze kuruluş kimliği olarak okunur",
+      "orgFlow": "Bu akışın kuruluşunda çalışır"
+    }
+  },
+  "deliveries": {
+    "title": "Son teslimatlar",
+    "empty": "Henüz teslimat yok.",
+    "loadFailed": "Teslimatlar yüklenemedi.",
+    "loadMore": "Daha fazla yükle",
+    "hidden": "Teslimat kimlikleri ve kuruluş değerleri erişiminizle gizlenir.",
+    "columns": {
+      "received": "Alındı",
+      "status": "Durum",
+      "org": "Kuruluş",
+      "run": "Çalıştırma",
+      "attempts": "Deneme",
+      "detail": "Ayrıntı"
+    },
+    "status": {
+      "accepted": "Kabul edildi",
+      "org_unresolved": "Eşleşen kuruluş yok",
+      "refused": "Reddedildi",
+      "invalid_body": "Geçersiz gövde"
+    },
+    "resolverValue": "Değer: {{value}}",
+    "deliveryId": "Teslimat kimliği: {{id}}",
+    "openRun": "Çalıştırmayı aç"
+  },
+  "usage": {
+    "title": "Bu ayki çalıştırmalar",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Bu akış",
+    "ownerCap": "Bu sahibin tüm akışları",
+    "count": "{{used}} / {{cap}}",
+    "limitsLink": "Akış sınırları",
+    "refused": {
+      "flow_queue_full": "Çok fazla çalıştırma bekliyor.",
+      "flow_monthly_cap_reached": "Bu akış aylık çalıştırma sınırına ulaştı.",
+      "owner_monthly_cap_reached": "Sahip, tüm akışlar için aylık çalıştırma sınırına ulaştı."
+    },
+    "refusedBanner": "Çalıştırmalar reddediliyor. {{reason}} Son ret: {{time}}. Akış etkin kalır; ay sıfırlandığında veya sınır yükseltildiğinde yeniden çalışır.",
+    "refusedBadge": "Çalıştırmalar reddedildi"
+  },
+  "limits": {
+    "title": "Akış sınırları",
+    "subtitle": "Aylık çalıştırma sınırları ve her çalıştırma için yapay zeka token sınırı. İş ortağınız için bir varsayılan belirleyin ve gerektiğinde bir kuruluş için düşürün.",
+    "level": {
+      "label": "Düzey",
+      "partner": "İş ortağı varsayılanı",
+      "org": "Kuruluş"
+    },
+    "selectOrg": "Bir kuruluş seçin",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Aylık çalıştırma, tüm akışlar",
+        "help": "Bir sahibin tüm akışlarının bir takvim ayında (UTC) başlatabileceği en fazla çalıştırma sayısı."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Aylık çalıştırma, akış başına",
+        "help": "Bir akışın bir takvim ayında (UTC) başlatabileceği en fazla çalıştırma sayısı. Bir akış kendi için daha düşük bir sınır belirleyebilir."
+      },
+      "aiTokensPerRun": {
+        "label": "Çalıştırma başına yapay zeka token'ı",
+        "help": "Bir çalıştırmanın yapay zeka adımlarının kullanabileceği en fazla yapay zeka token sayısı."
+      }
+    },
+    "inherited": "Devralındı: {{value}} ({{source}})",
+    "source": {
+      "default": "platform varsayılanı",
+      "partner": "iş ortağı varsayılanı",
+      "org": "bu kuruluş"
+    },
+    "ceilingNote": "Kuruluşlar bunu yalnızca düşürebilir. İş ortağı değeri {{value}}.",
+    "aboveCeiling": "Kayıtlı {{value}} değeri iş ortağı değerinin üzerinde olduğundan uygulanmaz.",
+    "aboveCeilingError": "{{value}} veya daha düşük olmalıdır (iş ortağı değeri).",
+    "range": "1 ile {{max}} arasında bir tam sayı girin.",
+    "placeholder": "Devral",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor...",
+    "saved": "Akış sınırları kaydedildi",
+    "saveFailed": "Akış sınırları kaydedilemedi.",
+    "loadFailed": "Akış sınırları yüklenemedi.",
+    "readOnly": "Bu sınırları görüntüleyebilir ancak değiştiremezsiniz.",
+    "partnerWideForbidden": "İş ortağı varsayılanını değiştirmek için tüm kuruluşlara erişim gerekir.",
+    "orgScopeReadOnly": "Kuruluş sınırlarını hizmet sağlayıcınız belirler."
   }
 }

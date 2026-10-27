@@ -19,6 +19,39 @@ function json(value: unknown): string {
   }
 }
 
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+/**
+ * Splits one step's for-each item rows into display units: a run of items whose
+ * [startedAt, finishedAt] intervals overlap is one parallel group (2+ rows), anything
+ * else a single. A still-running item has an open-ended interval; a row without a
+ * start time never groups.
+ */
+function clusterItems(rows: FlowRunStepSummaryDto[]): FlowRunStepSummaryDto[][] {
+  const timed = rows
+    .filter((r) => r.startedAt)
+    .sort((a, b) => new Date(a.startedAt!).getTime() - new Date(b.startedAt!).getTime());
+  const untimed = rows.filter((r) => !r.startedAt);
+  const clusters: FlowRunStepSummaryDto[][] = [];
+  let end = -Infinity;
+  for (const r of timed) {
+    const start = new Date(r.startedAt!).getTime();
+    const finish = r.finishedAt ? new Date(r.finishedAt).getTime() : Infinity;
+    if (clusters.length > 0 && start < end) {
+      clusters[clusters.length - 1].push(r);
+      end = Math.max(end, finish);
+    } else {
+      clusters.push([r]);
+      end = finish;
+    }
+  }
+  for (const r of untimed) clusters.push([r]);
+  const first = (c: FlowRunStepSummaryDto[]) => Math.min(...c.map((r) => r.itemIndex ?? 0));
+  return clusters.sort((a, b) => first(a) - first(b));
+}
+
 /**
  * Steps in definition order merged with the run's step rows. Unreached steps
  * are greyed, for-each items nest under their step, and bodies load lazily
@@ -97,8 +130,15 @@ export function FlowRunTimeline({
       return <p className="text-xs text-destructive" data-testid={`flow-run-step-error-${row.id}`}>{t('runDetail.step.loadFailed')}</p>;
     }
     const { step } = state;
+    const out = step.output as { status?: unknown } | null;
+    const httpStatus = row.tool === 'http_request' && out && typeof out.status === 'number' ? out.status : null;
     return (
       <div className="space-y-2" data-testid={`flow-run-step-body-${row.id}`}>
+        {httpStatus !== null && (
+          <p className="text-xs font-medium" data-testid={`flow-run-step-httpstatus-${row.id}`}>
+            {t('runDetail.step.httpStatus', { status: httpStatus })}
+          </p>
+        )}
         <div>
           <div className="text-xs font-medium">{t('runDetail.step.input')}</div>
           <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-xs">{json(step.renderedInput)}</pre>
@@ -147,6 +187,15 @@ export function FlowRunTimeline({
             {expanded ? t('runDetail.step.hide') : t('runDetail.step.show')}
           </button>
         </div>
+        {row.aiUsage && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid={`flow-run-step-aiusage-${row.id}`}>
+            {t('runDetail.step.aiUsage', {
+              input: row.aiUsage.inputTokens,
+              output: row.aiUsage.outputTokens,
+              cost: formatCents(row.aiUsage.costCents),
+            })}
+          </p>
+        )}
         {row.errorCode && (
           <p className="mt-1 text-xs text-destructive" data-testid={`flow-run-step-errorcode-${row.id}`}>
             {t(/* i18n-dynamic */ `runDetail.error.${row.errorCode}`, { defaultValue: row.errorCode })}
@@ -176,7 +225,21 @@ export function FlowRunTimeline({
             </div>
             {reached && (
               <ul className="space-y-2">
-                {rows.map((row) => renderRow(row, row.itemIndex !== null))}
+                {[
+                  ...rows.filter((row) => row.itemIndex === null).map((row) => renderRow(row, false)),
+                  ...clusterItems(rows.filter((row) => row.itemIndex !== null)).map((cluster) =>
+                    cluster.length > 1 ? (
+                      <li key={`group-${cluster[0].id}`} className="space-y-2 rounded border border-dashed p-2" data-testid="flow-run-parallel-group">
+                        <p className="text-xs text-muted-foreground">{t('runDetail.parallel', { count: cluster.length })}</p>
+                        <ul className="space-y-2">
+                          {cluster.slice().sort((a, b) => (a.itemIndex ?? 0) - (b.itemIndex ?? 0)).map((row) => renderRow(row, true))}
+                        </ul>
+                      </li>
+                    ) : (
+                      renderRow(cluster[0], true)
+                    ),
+                  ),
+                ]}
               </ul>
             )}
           </li>
