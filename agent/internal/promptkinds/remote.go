@@ -23,7 +23,8 @@ import (
 // lost is never asked again (KindSpec.NeverReask).
 //
 // The session indicator is the pill shown while a session runs. It is never
-// a decision. It offers End session only when the remote access policy
+// a decision, and it is Reshowable: it closes withdrawn when the session
+// stops, so a reconnect on the same session id shows it again. It offers End session only when the remote access policy
 // allows it (DesktopPrompt.AllowUserEndSession), always behind a confirm
 // step, and Report a problem, which Breeze Assist turns into its Request
 // Support flow.
@@ -380,8 +381,10 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 			if hooks.EndConfirmed != nil {
 				hooks.EndConfirmed()
 			}
-			resolved := ipc.PromptCloseResolved
-			return prompthost.ActionOutcome{Accepted: true, Close: &resolved}, nil
+			// Withdrawn, not resolved: the session stopped, nothing was
+			// decided, and the id must stay showable (Reshowable).
+			withdrawn := ipc.PromptCloseWithdrawn
+			return prompthost.ActionOutcome{Accepted: true, Close: &withdrawn}, nil
 		case actionReportProblem:
 			if hooks.ReportProblem != nil {
 				hooks.ReportProblem(from)
@@ -397,6 +400,10 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 		Show:     show,
 		OnAction: onAction,
 		Localize: localize,
+		// A viewer reconnect re-offers on the same session id, and its new
+		// start must get the pill again: the indicator closes withdrawn
+		// (never tombstoned) on every stop path.
+		Reshowable: true,
 	}
 }
 

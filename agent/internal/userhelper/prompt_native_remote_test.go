@@ -125,6 +125,16 @@ func TestPillClickThroughWhenNotAllowed(t *testing.T) {
 	if off.Label != "Dana Reyes from Northwind IT is connected" || off.StartedAtUnixMs != 1793019600000 {
 		t.Fatalf("pill = %+v", off)
 	}
+	// The fact value is exactly {time:<unixMs>} (what Assist fills).
+	var started string
+	for _, f := range sessionShow(t, false).Facts {
+		if f.Label == "Started" {
+			started = f.Value
+		}
+	}
+	if started != "{time:1793019600000}" {
+		t.Fatalf("started-at fact = %q", started)
+	}
 	on, err := nativeIndicatorModelFor(sessionShow(t, true), nativeNow, time.UTC)
 	if err != nil {
 		t.Fatal(err)
@@ -248,6 +258,11 @@ func TestEndSessionRequiresConfirmOnTheNativePill(t *testing.T) {
 	fake.mu.Unlock()
 	if dlg.DefaultID != "keep_session" || dlg.CancelID != "keep_session" || !strings.Contains(dlg.Body, "The technician will be disconnected.") {
 		t.Fatalf("confirm dialog = %+v", dlg)
+	}
+	// The started-at fact travels as {time:<unixMs>}; the native dialog
+	// shows a clock time, never the raw token.
+	if strings.Contains(dlg.Body, "{time:") || !strings.Contains(dlg.Body, "Started: ") {
+		t.Fatalf("confirm body shows the raw time token: %q", dlg.Body)
 	}
 	if pm, _, _ := pill.last(); pm.Clickable {
 		t.Fatal("the pill is not clickable while its confirm dialog is up")

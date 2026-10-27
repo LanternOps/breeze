@@ -215,6 +215,15 @@ func TestSessionIndicatorShape(t *testing.T) {
 	if s.Timing.DeadlineUnixMs != 0 || s.Timing.ResponseMs != 0 {
 		t.Fatalf("an indicator lives until the session ends: %+v", s.Timing)
 	}
+	// A viewer reconnect re-offers on the same session id: the indicator
+	// must be showable again (contract amendment: Reshowable, closed
+	// withdrawn), while consent keeps its tombstone (it is a decision).
+	if !p.Reshowable {
+		t.Fatal("the session indicator must be Reshowable")
+	}
+	if c := RemoteConsent(consentReq("block", 30_000), consentCfg("block", 30_000), ConsentHooks{}); c.Reshowable {
+		t.Fatal("consent is a decision: never Reshowable")
+	}
 }
 
 func TestSessionEndOnlyWhenAllowed(t *testing.T) {
@@ -321,15 +330,21 @@ func TestEndSessionRequiresConfirm(t *testing.T) {
 		t.Fatalf("ended %d times, want once", ended)
 	}
 	if h.IsOpen(p.ID) || dir.count(ipc.TypePromptClose) != 1 {
-		t.Fatalf("the pill must close resolved (open %v, closes %d)", h.IsOpen(p.ID), dir.count(ipc.TypePromptClose))
+		t.Fatalf("the pill must close (open %v, closes %d)", h.IsOpen(p.ID), dir.count(ipc.TypePromptClose))
 	}
-	if c := dir.lastClose(t); c.Reason != ipc.PromptCloseResolved {
-		t.Fatalf("close = %+v", c)
+	if c := dir.lastClose(t); c.Reason != ipc.PromptCloseWithdrawn {
+		t.Fatalf("close = %+v, want withdrawn (the session stopped; nothing was decided)", c)
 	}
 	// A duplicate end_confirm does not end it twice.
 	act(t, h, "native-1", cur, "end_confirm")
 	if ended != 1 {
 		t.Fatalf("a duplicate end_confirm ended it again (%d)", ended)
+	}
+	// The same session id can show its pill again (a reconnect).
+	again := RemoteSession("s-confirm", cfg, time.Now(), SessionHooks{})
+	again.Owners = []prompthost.Owner{testOwner}
+	if err := h.Show(again); err != nil {
+		t.Fatalf("re-showing the indicator after end_confirm: %v", err)
 	}
 }
 

@@ -357,8 +357,35 @@ func TestSessionIndicatorThroughThePromptHost(t *testing.T) {
 	eventually(t, func() bool { return len(envelopesOf(native, ipc.TypePromptClose)) == 1 }, "the indicator close")
 	var c ipc.PromptClose
 	_ = json.Unmarshal(envelopesOf(native, ipc.TypePromptClose)[0].Payload, &c)
-	if c.Reason != ipc.PromptCloseResolved || c.PromptID != s.PromptID {
-		t.Fatalf("close = %+v", c)
+	if c.Reason != ipc.PromptCloseWithdrawn || c.PromptID != s.PromptID {
+		t.Fatalf("close = %+v, want withdrawn", c)
+	}
+}
+
+// A viewer reconnect re-offers on the same session id (POST
+// /remote/sessions/:id/offer): the second start must get the prompt-path
+// pill again, not today's banner (a resolved close would tombstone it 24 h).
+func TestSessionIndicatorReshownForAReconnectOnTheSameSessionID(t *testing.T) {
+	native := remoteProbe(t, ipc.HelperRoleUser, 501, []string{"notify", ipc.ScopeConsentUIFallback}, []string{"remote.session@1"})
+	h := noticeHeartbeat(t, []string{"remote.session"}, native)
+	prompt := consentPrompt("block", 30_000)
+	prompt.Mode, prompt.ShowIndicator, prompt.AllowUserEndSession = "notify", true, true
+	t.Cleanup(func() { takeDesktopPrompt(remoteTestSession) })
+	for i := 1; i <= 2; i++ {
+		h.afterDesktopStart(remoteTestSession, prompt, "")
+		eventually(t, func() bool { return promptShows(native) == i }, fmt.Sprintf("pill #%d", i))
+		s := decodeShow(t, envelopesOf(native, ipc.TypePromptShow)[i-1])
+		presentShow(t, h, native, s)
+		h.handleConsentSessionEnd(remoteTestSession) // the stop
+		eventually(t, func() bool { return len(envelopesOf(native, ipc.TypePromptClose)) == i }, fmt.Sprintf("close #%d", i))
+	}
+	assertNone(t, native, ipc.TypeBannerShow, "the reconnect fell back to banner_show")
+	// Assist drops a rev it already passed, also across a close: the
+	// re-shown pill continues past the closed one's last rev.
+	var firstClose ipc.PromptClose
+	_ = json.Unmarshal(envelopesOf(native, ipc.TypePromptClose)[0].Payload, &firstClose)
+	if second := decodeShow(t, envelopesOf(native, ipc.TypePromptShow)[1]); second.Rev <= firstClose.Rev {
+		t.Fatalf("re-shown at rev %d after a close at rev %d", second.Rev, firstClose.Rev)
 	}
 }
 

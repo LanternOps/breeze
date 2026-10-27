@@ -72,6 +72,16 @@ type Host struct {
 	limiter   *cardLimiter
 	locked    map[uint32]bool
 	connected map[string]RendererSession // renderers awaiting replay at the next tick
+	// revFloor is the last rev of each closed prompt, kept for the
+	// tombstone TTL: a renderer drops any rev not greater than the last it
+	// applied for an id, also across a close, so a Reshowable prompt shown
+	// again continues its revs instead of restarting at 1.
+	revFloor map[string]revMark
+}
+
+type revMark struct {
+	rev uint64
+	at  time.Time
 }
 
 type deferReason int
@@ -146,6 +156,7 @@ func New(deps Deps) *Host {
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
 		connected: map[string]RendererSession{},
+		revFloor:  map[string]revMark{},
 	}
 	if h.clock == nil {
 		h.clock = systemClock{}
@@ -252,6 +263,10 @@ func (h *Host) Show(p Prompt) error {
 	}
 	rec := &record{p: p, show: p.Show, createdAt: now, results: map[actionKey]ipc.PromptActionResult{}}
 	rec.show.Rev = 1
+	if f, ok := h.revFloor[p.ID]; ok {
+		rec.show.Rev = f.rev + 1 // continue past the closed copy's last rev
+		delete(h.revFloor, p.ID)
+	}
 	h.prompts[p.ID] = rec
 	h.addMissingOwners(rec, now, ob)
 	h.persist(rec, now, ob)
@@ -616,6 +631,7 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
+	h.revFloor[rec.show.PromptID] = revMark{rev: rec.show.Rev, at: now}
 	if !rec.p.Reshowable || reason == ipc.PromptCloseResolved {
 		h.tombs.add(rec.show.PromptID, now, ob, h)
 	}

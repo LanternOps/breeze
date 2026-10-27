@@ -218,6 +218,64 @@ func TestLocalizeRendersTheExpiryText(t *testing.T) {
 	}
 }
 
+// A renderer drops any message whose rev is not greater than the last one
+// it applied for that promptId, also across a close. A Reshowable prompt
+// closed withdrawn and shown again (a viewer reconnect on the same session
+// id) must continue its revs, never restart at 1.
+func TestReshownPromptContinuesItsRevs(t *testing.T) {
+	r := nativeRenderer("native-1", "remote.session@1")
+	hh := newHarness(t, r)
+	hh.h.SetEnabledKinds([]string{"remote.session"})
+	pill := func() Prompt {
+		return Prompt{
+			ID:     "session:s1",
+			Kind:   KindSpec{Name: "remote.session", Version: 1, Transitions: map[ipc.PromptState]map[string]ipc.PromptState{ipc.PromptStatePending: {"end_session": ipc.PromptStatePending}}},
+			Owners: []Owner{testOwner},
+			Show: ipc.PromptShow{State: ipc.PromptStatePending, Presentation: ipc.PromptPresentationIndicator,
+				Copy:    ipc.PromptCopy{Title: "t"},
+				Actions: []ipc.PromptAction{{ID: "end_session", Label: "End session", Role: ipc.PromptRoleNeutral}},
+				Timing:  ipc.PromptTiming{PresentWithinMs: 10_000}, Focus: ipc.PromptFocusNoActivate, Locale: "en", Direction: "ltr"},
+			Reshowable: true,
+		}
+	}
+	if err := hh.h.Show(pill()); err != nil {
+		t.Fatal(err)
+	}
+	// Two patches: the closed prompt's last rev is 3.
+	for i := 0; i < 2; i++ {
+		if err := hh.h.Update("session:s1", Patch{Copy: &ipc.PromptCopy{Title: "t"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hh.h.Close("session:s1", ipc.PromptCloseWithdrawn); err != nil {
+		t.Fatal(err)
+	}
+	var last uint64
+	for _, m := range hh.dir.take() {
+		if c, ok := m.Payload.(ipc.PromptClose); ok {
+			last = c.Rev
+		}
+	}
+	if last != 3 {
+		t.Fatalf("closed at rev %d, want 3", last)
+	}
+	if err := hh.h.Show(pill()); err != nil {
+		t.Fatalf("re-show: %v", err)
+	}
+	shows := showsTo(hh.dir.take(), "native-1")
+	if len(shows) != 1 || shows[0].Rev <= last {
+		t.Fatalf("re-shown at rev %+v, want > %d", shows, last)
+	}
+	// The floor is forgotten with the tombstones (24 h), not kept forever.
+	hh.tick(promptTombstoneTTL + time.Second)
+	hh.h.mu.Lock()
+	n := len(hh.h.revFloor)
+	hh.h.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d rev floors kept past their TTL", n)
+	}
+}
+
 // A Relocalize patch is rendered per renderer; a plain patch keeps its copy
 // as given (the W04 contract).
 func TestRelocalizedPatchIsRenderedPerRenderer(t *testing.T) {

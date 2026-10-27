@@ -180,7 +180,9 @@ func buildNativePromptModel(p ipc.PromptShow, now time.Time, loc *time.Location)
 	if len(p.Facts) > 0 {
 		lines := make([]string, 0, len(p.Facts))
 		for _, f := range p.Facts {
-			lines = append(lines, f.Label+": "+f.Value)
+			// A fact value may carry {time:<unixMs>} (the session's start):
+			// filled here like any copy, never shown raw.
+			lines = append(lines, f.Label+": "+render(f.Value))
 		}
 		parts = append(parts, strings.Join(lines, "\n"))
 	}

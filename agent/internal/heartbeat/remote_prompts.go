@@ -216,20 +216,21 @@ func (h *Heartbeat) showSessionIndicator(sessionID string, prompt *ipc.DesktopPr
 	// prompts of the old scope, and the person must keep seeing that a
 	// technician is connected for as long as the session runs.
 	if err := host.Show(p); err != nil {
-		// Including a tombstone (a session id reused within 24 h): the
-		// person must still see that someone is connected.
+		// The person must still see that someone is connected.
 		log.Info("session indicator not shown through the prompt host; sending today's banner", "promptId", p.ID, "error", err.Error())
 		legacy()
 	}
 }
 
-// closeSessionIndicator takes the indicator down when its session ends.
+// closeSessionIndicator takes the indicator down when its session ends. It
+// closes withdrawn (nothing was decided), which leaves no tombstone: a
+// viewer reconnect re-offers on the same session id and gets the pill again.
 func (h *Heartbeat) closeSessionIndicator(sessionID string) {
 	if h.promptHost == nil {
 		return
 	}
 	id := promptkinds.RemoteSessionPromptID(sessionID)
-	if err := h.promptHost.Close(id, ipc.PromptCloseResolved); err != nil && !errors.Is(err, prompthost.ErrUnknownPrompt) {
+	if err := h.promptHost.Close(id, ipc.PromptCloseWithdrawn); err != nil && !errors.Is(err, prompthost.ErrUnknownPrompt) {
 		log.Warn("session indicator not closed", "promptId", id, "error", err.Error())
 	}
 }
