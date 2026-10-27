@@ -63,8 +63,8 @@ vi.mock('../redis', () => ({
 }));
 vi.mock('../urlSafety', () => ({ safeFetch: (...args: unknown[]) => h.safeFetch(...args) }));
 
-import { callerHelperLogo } from './helperBranding';
-import { buildHeartbeatPromptIdentity } from '../promptIdentity';
+import { callerHelperBranding, callerHelperLogo } from './helperBranding';
+import { PromptIdentityPartnerMismatchError, buildHeartbeatPromptIdentity } from '../promptIdentity';
 import { __resetPromptLogoMemoForTests, __setPromptLogoDeadlineForTests } from '../promptIdentityLogo';
 
 const DEVICE_A = { deviceId: 'device-a', orgId: 'org-a', partnerId: 'partner-a' };
@@ -134,9 +134,15 @@ describe('callerHelperLogo (real services)', () => {
   });
 
   it("a device whose org resolves to another partner than the authenticated one gets null (refused, not served)", async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     // Device A's credential says partner-b; its org says partner-a.
     expect(await callerHelperLogo({ ...DEVICE_A, partnerId: 'partner-b' })).toBeNull();
+    // The refusal is logged with the ids an operator needs (#10340 review).
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('device-a'),
+      { orgId: 'org-a', partnerId: 'partner-b' },
+      expect.any(PromptIdentityPartnerMismatchError),
+    );
     // ...and a cached identity for the right partner is not served to the wrong one.
     await callerHelperLogo(DEVICE_A);
     expect(await callerHelperLogo({ ...DEVICE_A, partnerId: 'partner-b' })).toBeNull();
@@ -149,13 +155,16 @@ describe('callerHelperLogo (real services)', () => {
 
   it('a cold https logo is null this time and never waits on the fetch (mirrors the heartbeat)', async () => {
     setPartnerLogo('partner-a', 'https://logos.example.com/a.png');
-    // The logo host never answers (the loader's own deadline is shortened
-    // only so the background load does not outlive the test).
-    __setPromptLogoDeadlineForTests(200);
-    h.safeFetch.mockImplementation(() => new Promise(() => {}));
+    // The logo host does not answer until the test says so. The loader's
+    // deadline stays at its default (8 s): an implementation that waited on
+    // the fetch would blow far past the 250 ms bound (and the test timeout).
+    let failFetch: (err: Error) => void = () => {};
+    h.safeFetch.mockImplementation(() => new Promise((_resolve, reject) => { failFetch = reject; }));
     const started = Date.now();
     expect(await callerHelperLogo(DEVICE_A)).toBeNull();
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(h.safeFetch).toHaveBeenCalledTimes(1); // the background load did start
+    failFetch(new Error('test over')); // settle it so nothing outlives the test
   });
 
   it('a warm https logo carries its sha', async () => {
@@ -167,9 +176,44 @@ describe('callerHelperLogo (real services)', () => {
     });
   });
 
-  it('a failure resolving the identity is null, never thrown', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('a failure resolving the identity is null, never thrown, and logged with the device and its ids', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.rows.organizations = new Proxy({}, { get: () => { throw new Error('db down'); } });
     await expect(callerHelperLogo(DEVICE_A)).resolves.toBeNull();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('device-a'),
+      { orgId: 'org-a', partnerId: 'partner-a' },
+      expect.objectContaining({ message: 'db down' }),
+    );
+  });
+
+  it("cross-partner: the same deviceId under another org's context never reuses the cached entry", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await callerHelperLogo(DEVICE_A))?.sha256).toBe(sha(A_BYTES)); // device-a cached under org-a
+    // Same device id, org-b context, the old partner: org-b resolves to
+    // partner-b, so it is refused, not served A's (or B's) sha.
+    expect(await callerHelperLogo({ deviceId: 'device-a', orgId: 'org-b', partnerId: 'partner-a' })).toBeNull();
+    // Same device id after a genuine move to org-b / partner-b: re-resolved
+    // for the new org, never the cached org-a answer.
+    expect((await callerHelperLogo({ deviceId: 'device-a', orgId: 'org-b', partnerId: 'partner-b' }))?.sha256).toBe(sha(B_BYTES));
+  });
+
+  it('known skew, pinned: within the 120 s device cache, a fresh logoUrl can sit beside the cached sha (the one the agent was told)', async () => {
+    const OLD_URL = 'https://logos.example.com/old.png';
+    const NEW_URL = 'https://logos.example.com/new.png';
+    setPartnerLogo('partner-a', OLD_URL);
+    h.safeFetch.mockResolvedValue(new Response(Buffer.from(A_BYTES), { status: 200, headers: { 'content-type': 'image/png' } }));
+    await callerHelperLogo(DEVICE_A); // cold: starts the background load
+    await vi.waitFor(async () => {
+      expect((await callerHelperLogo(DEVICE_A))?.sha256).toBe(sha(A_BYTES));
+    });
+    // The partner switches logo. /helper/config composes the two reads:
+    setPartnerLogo('partner-a', NEW_URL);
+    const base = await callerHelperBranding('org-a'); // uncached, request context
+    const logo = await callerHelperLogo(DEVICE_A); // the heartbeat's per-device cache
+    expect(base?.logoUrl).toBe(NEW_URL);
+    expect(logo?.sha256).toBe(sha(A_BYTES));
+    // ...and that sha is still exactly the heartbeat's.
+    expect(await buildHeartbeatPromptIdentity(DEVICE_A)).toMatchObject({ logo: { sha256: sha(A_BYTES) } });
   });
 });

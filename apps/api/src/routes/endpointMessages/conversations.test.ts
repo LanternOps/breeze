@@ -100,7 +100,15 @@ describe('endpoint chat routes (#8743)', () => {
   it('open under the generic sender identity flags the audit row with a reason code, never a name (#10190 W04)', async () => {
     h.open.mockResolvedValue({ ok: true, status: 202, replay: false, conversation, messages: [], deviceOrgId: ORG, bodySha256: 'f'.repeat(64), senderIdentity: 'generic' });
     await post('', { conversationId: CONV, deviceId: DEV, body: 'hi' });
-    expect(h.audit.mock.calls[0]![1].details).toMatchObject({ senderIdentity: 'generic', senderIdentityReason: 'partner_name_sanitized_empty' });
+    expect(h.audit.mock.calls[0]![1].details).toEqual({
+      conversationId: CONV,
+      deviceId: DEV,
+      allowUserReply: true,
+      bodySha256: 'f'.repeat(64),
+      bodyLength: 2,
+      senderIdentity: 'generic',
+      senderIdentityReason: 'partner_name_sanitized_empty',
+    });
   });
 
   it('open under the partner name adds no sender-identity flag', async () => {

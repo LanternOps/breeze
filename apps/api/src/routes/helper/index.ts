@@ -695,7 +695,17 @@ helperRoutes.get('/config', async (c) => {
         try {
           base = await callerHelperBranding(device.orgId);
         } catch (err) {
-          console.warn('[helper] caller verification branding unavailable', { deviceId: device.id, error: err instanceof Error ? err.name : String(err) });
+          // Logged and reported, never swallowed: a DB failure here blanks the
+          // card's branding for the whole org until it clears.
+          // This catch sits INSIDE the transaction: if the failed statement
+          // aborted it, any statement after this point in the callback would
+          // fail too. Keep the catch last; add no statement after it.
+          console.warn('[helper] caller verification branding unavailable', {
+            deviceId: device.id,
+            orgId: device.orgId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
         }
       }
       return { permissionLevel: level, baseBranding: base };
@@ -713,7 +723,12 @@ helperRoutes.get('/config', async (c) => {
     try {
       logo = await callerHelperLogo({ deviceId: device.id, orgId: device.orgId, partnerId });
     } catch (err) {
-      console.warn('[helper] caller verification logo unavailable', { deviceId: device.id, error: err instanceof Error ? err.name : String(err) });
+      console.warn('[helper] caller verification logo unavailable', {
+        deviceId: device.id,
+        orgId: device.orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, c, { service: 'helperRoutes', orgId: device.orgId });
     }
     branding = { ...baseBranding, logo };
   }

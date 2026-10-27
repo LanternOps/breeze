@@ -283,7 +283,11 @@ export async function buildHeartbeatPromptIdentity(args: DevicePromptIdentityArg
     if (!identity) return undefined;
     return toPromptIdentityBlock(identity) ?? undefined;
   } catch (err) {
-    console.error(`[promptIdentity] failed to resolve the prompt identity for device ${args.deviceId}; block omitted:`, err);
+    console.error(
+      `[promptIdentity] failed to resolve the prompt identity for device ${args.deviceId}; block omitted:`,
+      { orgId: args.orgId, partnerId: args.partnerId ?? null },
+      err,
+    );
     return undefined;
   }
 }

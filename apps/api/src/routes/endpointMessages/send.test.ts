@@ -429,7 +429,25 @@ describe('POST /endpoint-messages (#8741)', () => {
     const rows = h.audit.mock.calls.map((c) => (c as unknown as [unknown, Record<string, any>])[1]);
     const rowA = rows.find((r) => r.orgId === ORG_A)!;
     const rowB = rows.find((r) => r.orgId === ORG_B)!;
-    expect(rowA.details).toMatchObject({ senderIdentity: 'generic', senderIdentityReason: 'partner_name_sanitized_empty' });
+    // Exact row: the flag and a reason code, nothing else new (no name can ride along).
+    const body = baseBody();
+    expect(rowA.details).toEqual({
+      batchId: json.batchId,
+      messageId: MSG,
+      targetMode: 'devices',
+      deviceCount: 1,
+      queued: 1,
+      failed: 0,
+      failedByCode: {},
+      severity: 'warning',
+      requiresAck: true,
+      expiresInMinutes: 60,
+      bodySha256: createHash('sha256').update(body.body as string).digest('hex'),
+      bodyLength: (body.body as string).length,
+      titleLength: (body.title as string).length,
+      senderIdentity: 'generic',
+      senderIdentityReason: 'partner_name_sanitized_empty',
+    });
     expect(rowB.details).not.toHaveProperty('senderIdentity');
     expect(rowB.details).not.toHaveProperty('senderIdentityReason');
   });

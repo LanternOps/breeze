@@ -531,6 +531,40 @@ describe('helper routes permission derivation', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).branding).toBeNull();
     });
+
+    it('a branding failure is logged with the org and the error message and sent to Sentry, not swallowed (#10340 review)', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHelperAuthDevice();
+      const err = new Error('connection terminated');
+      callerHelperBrandingMock.mockRejectedValueOnce(err);
+      const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(res.status).toBe(200);
+      expect(warn).toHaveBeenCalledWith('[helper] caller verification branding unavailable', {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        error: 'connection terminated',
+      });
+      expect(captureExceptionMock).toHaveBeenCalledWith(err, expect.anything(), { service: 'helperRoutes', orgId: 'org-1' });
+      warn.mockRestore();
+    });
+
+    it('a logo failure is logged the same way and sent to Sentry (#10340 review)', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockHelperAuthDevice();
+      callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+      const err = new Error('redis down');
+      callerHelperLogoMock.mockRejectedValueOnce(err);
+      await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(warn).toHaveBeenCalledWith('[helper] caller verification logo unavailable', {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        error: 'redis down',
+      });
+      expect(captureExceptionMock).toHaveBeenCalledWith(err, expect.anything(), { service: 'helperRoutes', orgId: 'org-1' });
+      warn.mockRestore();
+    });
   });
 
   it('refuses /helper/config with helper_disabled when the effective setting is off', async () => {
