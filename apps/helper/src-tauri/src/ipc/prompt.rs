@@ -684,7 +684,16 @@ pub struct PromptTracker {
     /// The session id of a `remote.session` "Report a problem" the agent has
     /// just `accepted` (OD-6 (b)): taken once by the IPC loop, which then opens
     /// the main window's Request Support flow. Nothing else sets it.
-    request_support: Option<String>,
+    request_support: Option<RequestSupport>,
+}
+
+/// Request Support to open for a remote session (W06, OD-6 (b)): the session
+/// id from `session:<id>` and the session prompt's locale (already validated
+/// with the show), so the pre-filled draft is in the person's language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestSupport {
+    pub session_id: String,
+    pub locale: String,
 }
 
 impl Default for PromptTracker {
@@ -952,15 +961,16 @@ impl PromptTracker {
             && t.show.kind == "remote.session"
         {
             if let Some(session_id) = result.prompt_id.strip_prefix(SESSION_PROMPT_PREFIX).filter(|s| !s.is_empty()) {
-                self.request_support = Some(session_id.to_string());
+                let locale = t.show.locale.clone();
+                self.request_support = Some(RequestSupport { session_id: session_id.to_string(), locale });
             }
         }
         true
     }
 
-    /// The session id whose Request Support the IPC loop should open now, once
-    /// (see `request_support`). The caller opens it with no tracker lock held.
-    pub fn take_request_support(&mut self) -> Option<String> {
+    /// The Request Support the IPC loop should open now, once (see
+    /// `request_support`). The caller opens it with no tracker lock held.
+    pub fn take_request_support(&mut self) -> Option<RequestSupport> {
         self.version += 1;
         self.request_support.take()
     }
@@ -1260,7 +1270,7 @@ fn valid_action_id(id: &str) -> bool {
 }
 
 /// `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`, at most 35.
-fn valid_locale(l: &str) -> bool {
+pub fn valid_locale(l: &str) -> bool {
     if l.len() > 35 {
         return false;
     }
@@ -2358,13 +2368,18 @@ mod tests {
     #[test]
     fn report_a_problem_opens_request_support_with_the_session_id_after_accepted() {
         let mut t = PromptTracker::default();
-        let s = session();
+        let mut s = session();
+        s.locale = "de-DE".into();
         assert!(rendered(&t.on_show(NOW, &s)));
         assert_eq!(t.take_request_support(), None);
         let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
         assert_eq!(t.take_request_support(), None, "nothing opens before the agent answers");
         assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
-        assert_eq!(t.take_request_support().as_deref(), Some(SESSION_ID), "the session id from session:<id>");
+        assert_eq!(
+            t.take_request_support(),
+            Some(RequestSupport { session_id: SESSION_ID.into(), locale: "de-DE".into() }),
+            "the session id from session:<id>, in the prompt's locale"
+        );
         assert_eq!(t.take_request_support(), None, "once per accepted click");
 
         // Rejected (stale or invalid): nothing opens.
@@ -2397,6 +2412,60 @@ mod tests {
         assert!(t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
         t.on_disconnect();
         assert_eq!(t.take_request_support(), None);
+    }
+
+    /// Contract amendment (W06): the agent closes the pill with
+    /// `prompt_close{withdrawn}` when the session stops, and may show the same
+    /// `session:<id>` again on a viewer reconnect (a newer rev, a new lease).
+    /// Withdrawn takes the pill down and leaves no list entry; the re-show is
+    /// a fresh pill with its own window. A late copy of the old show (rev not
+    /// above the closed one) stays dropped.
+    #[test]
+    fn withdrawn_pill_closes_and_the_same_session_can_show_again() {
+        let mut t = PromptTracker::default();
+        // Even a pill the agent marked persistent leaves no entry on withdrawn
+        // (a `resolved` close would keep one).
+        let mut s = session();
+        s.list_entry = PromptListEntry { persistent: true, expires_at_unix_ms: Some(NOW + 86_400_000) };
+        assert!(rendered(&t.on_show(NOW, &s)));
+        let f = t.action(NOW, &s.prompt_id, "report_problem", ActionVia::Click).unwrap();
+        assert_eq!(t.on_close(NOW, &close(&s.prompt_id, 3, CloseReason::Withdrawn)), CloseOutcome::Closed { had_card: true });
+        assert!(!t.indicator_open(&s.prompt_id));
+        assert!(t.view(&s.prompt_id, NOW).is_none(), "withdrawn: not tracked");
+        assert!(t.list(NOW).is_empty(), "withdrawn: no list entry");
+        assert_eq!(t.action(NOW, &s.prompt_id, "end_session", ActionVia::Click), Err(ActionRefusal::UnknownPrompt));
+        // The answer to a click on the withdrawn pill opens nothing.
+        assert!(!t.on_action_result(&f.id, &result(&s.prompt_id, "report_problem", ActionResultKind::Accepted)));
+        assert_eq!(t.take_request_support(), None);
+
+        // A late copy of the closed pill is dropped.
+        let mut late = session();
+        late.rev = 3;
+        assert_eq!(t.on_show(NOW, &late), ShowOutcome::DropStale);
+
+        // The viewer reconnects: same id, newer rev, new lease: a fresh pill.
+        let mut again = s.clone();
+        again.rev = 4;
+        again.lease = PromptLease { renderer_session: "assist-user-4242".into(), epoch: 2 };
+        match t.on_show(NOW + 60_000, &again) {
+            ShowOutcome::Render { window: Some(w) } => {
+                assert_eq!(w.presentation, Presentation::Indicator);
+                assert_eq!(w.label, window_label(&again.prompt_id));
+                assert!(!w.focused);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(t.indicator_open(&again.prompt_id));
+        let v = t.view(&again.prompt_id, NOW).unwrap();
+        assert_eq!(v.pending_action_id, None, "nothing carried over from the old pill");
+        assert_eq!(v.last_outcome, None);
+        // Its actions echo the new rev and lease.
+        let f = t.action(NOW, &again.prompt_id, "end_session", ActionVia::Click).unwrap();
+        assert_eq!(f.payload["rev"], 4);
+        assert_eq!(f.payload["lease"]["epoch"], 2);
+        // A second withdrawn closes it cleanly again.
+        assert_eq!(t.on_close(NOW, &close(&again.prompt_id, 5, CloseReason::Withdrawn)), CloseOutcome::Closed { had_card: true });
+        assert!(!t.indicator_open(&again.prompt_id));
     }
 
     #[test]

@@ -1061,8 +1061,8 @@ fn handle_prompt_action_result(
                 let support = prompts.tracker().take_request_support();
                 if let Some(ctx) = ctx {
                     desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
-                    if let Some(session_id) = support {
-                        crate::open_request_support(&ctx.app, &session_id);
+                    if let Some(req) = support {
+                        crate::open_request_support(&ctx.app, &req);
                     }
                 }
             } else {

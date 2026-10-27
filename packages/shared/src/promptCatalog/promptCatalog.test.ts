@@ -219,6 +219,23 @@ describe('renderPromptMessage', () => {
     expect(catalogError(() => renderPromptMessage('common', 'constructor', 'en')).code).toBe('unknown_key');
   });
 
+  // #10190 W06: Assist pre-fills Request Support with this, in the session
+  // prompt's locale, after "Report a problem" on the remote-session pill.
+  it('renders the Report-a-problem draft with the session id in every locale', () => {
+    expect(renderPromptMessage('common', 'chrome.remoteReportDraft', 'en', { sessionId: 's-1' })).toBe(
+      'Problem with remote session s-1:',
+    );
+    expect(renderPromptMessage('common', 'chrome.remoteReportDraft', 'de-DE', { sessionId: 's-1' })).toBe(
+      'Problem mit der Remotesitzung s-1:',
+    );
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-FR', 'fr-CA', 'it-IT', 'pt-BR', 'tr-TR'] as const) {
+      expect(renderPromptMessage('common', 'chrome.remoteReportDraft', locale, { sessionId: 's-1' })).toContain('s-1');
+    }
+    expect(catalogError(() => renderPromptMessage('common', 'chrome.remoteReportDraft', 'en', {})).code).toBe(
+      'missing_param',
+    );
+  });
+
   it('renders fr-CA distinctly from fr-FR', () => {
     expect(renderPromptMessage('common', 'identity.generic', 'fr-CA')).toBe('Votre équipe de soutien informatique');
     expect(renderPromptMessage('common', 'identity.generic', 'fr-FR')).toBe("Votre équipe d'assistance informatique");

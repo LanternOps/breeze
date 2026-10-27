@@ -1069,30 +1069,33 @@ fn prompt_pill_expand(
 
 /// The script that points the main window at Request Support for
 /// `session_id` (#10190 W06, OD-6 (b)): it sets the hash AppShell reads
-/// (`#request-support/<id>`) and nothing else. None unless the id is of the
-/// promptId charset (`[A-Za-z0-9._:-]`, at most 200), so nothing else can
-/// reach the script; it is also a JSON string literal, never spliced code.
-fn request_support_script(session_id: &str) -> Option<String> {
+/// (`#request-support/<locale>/<id>`, `locale` = the session prompt's, for the
+/// pre-filled draft) and nothing else. None unless the id is of the promptId
+/// charset (`[A-Za-z0-9._:-]`, at most 200) and the locale is a prompt locale
+/// tag, so nothing else can reach the script; it is also a JSON string
+/// literal, never spliced code.
+fn request_support_script(session_id: &str, locale: &str) -> Option<String> {
     let ok = !session_id.is_empty()
         && session_id.len() <= 200
-        && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+        && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+        && crate::ipc::prompt::valid_locale(locale);
     if !ok {
         return None;
     }
-    let hash = serde_json::to_string(&format!("#request-support/{session_id}")).ok()?;
+    let hash = serde_json::to_string(&format!("#request-support/{locale}/{session_id}")).ok()?;
     Some(format!("window.location.hash = {hash};"))
 }
 
-/// Open the main window's Request Support flow pre-filled with the remote
-/// session id (#10190 W06, OD-6 (b)). The ONE prompt path to the main window
+/// Open the main window's Request Support flow pre-filled for the remote
+/// session (#10190 W06, OD-6 (b)). The ONE prompt path to the main window
 /// besides the tray (#8138): called only from the IPC loop's
-/// `prompt_action_result` handler, with the session id the tracker hands out
-/// once after the agent `accepted` the person's own "Report a problem" click
+/// `prompt_action_result` handler, with what the tracker hands out once after
+/// the agent `accepted` the person's own "Report a problem" click
 /// (`PromptTracker::take_request_support`). Pinned by
 /// `prompt_rs_never_shows_main_window`.
-pub(crate) fn open_request_support(app: &tauri::AppHandle, session_id: &str) {
-    let Some(script) = request_support_script(session_id) else {
-        eprintln!("[helper] Request Support not opened: unexpected session id");
+pub(crate) fn open_request_support(app: &tauri::AppHandle, req: &crate::ipc::prompt::RequestSupport) {
+    let Some(script) = request_support_script(&req.session_id, &req.locale) else {
+        eprintln!("[helper] Request Support not opened: unexpected session id or locale");
         return;
     };
     let Some(window) = app.get_webview_window("main") else { return };
@@ -2561,7 +2564,10 @@ mod tests {
             assert!(!src.contains("open_request_support"), "{name} opens Request Support");
         }
         let opener = body_of(lib, "pub(crate) fn open_request_support(");
-        assert!(opener.contains("request_support_script(session_id)"), "the hash is built by the tested helper");
+        assert!(
+            opener.contains("request_support_script(&req.session_id, &req.locale)"),
+            "the hash is built by the tested helper"
+        );
         assert!(opener.contains("show_window(app)"));
         // Main window still built hidden, and lib.rs builds no card.
         assert!(lib.contains(".visible(false);"));
@@ -2595,15 +2601,19 @@ mod tests {
     #[test]
     fn request_support_script_sets_only_a_validated_hash() {
         let id = "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        // The prompt's locale rides along so the draft is in the user's language.
         assert_eq!(
-            request_support_script(id).as_deref(),
-            Some("window.location.hash = \"#request-support/8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c\";")
+            request_support_script(id, "de-DE").as_deref(),
+            Some("window.location.hash = \"#request-support/de-DE/8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c\";")
         );
         for bad in ["", "a\"b", "a'b", "a;alert(1)", "a b", "a/b", "a<b", "a\\b", &"x".repeat(201)] {
-            assert_eq!(request_support_script(bad), None, "{bad:?}");
+            assert_eq!(request_support_script(bad, "en"), None, "{bad:?}");
+        }
+        for bad_locale in ["", "EN", "e", "en/x", "en\"", "en-", "de-DE;x", &"a".repeat(36)] {
+            assert_eq!(request_support_script(id, bad_locale), None, "{bad_locale:?}");
         }
         // The same charset the agent's promptId suffix may carry.
-        assert!(request_support_script("abc.DEF_1:2-3").is_some());
+        assert!(request_support_script("abc.DEF_1:2-3", "pt-BR").is_some());
     }
 
     // #10190 W06: the session pill grows and shrinks in place (same width, so
