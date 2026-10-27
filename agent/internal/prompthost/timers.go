@@ -23,6 +23,9 @@ func (h *Host) Tick() {
 	for key, r := range h.connected {
 		delete(h.connected, key)
 		connected = append(connected, r)
+		// The identity header first, so a replayed prompt never draws
+		// without it.
+		h.queueBrandingSync(r, ob)
 		h.replay(r, now, ob)
 	}
 

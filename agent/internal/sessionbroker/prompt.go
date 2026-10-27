@@ -146,6 +146,7 @@ func capCodePoints(v string, n int) string {
 func (s *Session) ApplyPromptAuthForTest(role ipc.HelperRole, authReq ipc.AuthRequest) {
 	g := promptGrantFromAuth(role, authReq)
 	applyPromptGrant(s, g)
+	s.uiLocale = uiLocaleFromAuth(authReq)
 	s.AllowedScopes = append(append([]string(nil), s.AllowedScopes...), g.scopes...)
 }
 
@@ -153,6 +154,57 @@ func applyPromptGrant(s *Session, g promptGrant) {
 	s.promptProtocol = g.protocol
 	s.promptKinds = g.kinds
 	s.rendererVersion = g.rendererVersion
+}
+
+// maxUILocaleLen matches the shared localeSchema cap (35).
+const maxUILocaleLen = 35
+
+// uiLocaleFromAuth keeps a helper-reported UI language only when it looks
+// like a language tag (BCP 47 or POSIX: ASCII letters, digits, '-', '_',
+// '.', '@', at most 35 bytes). Anything else is dropped (= unknown). The
+// prompt host negotiates what is kept, so it never reaches a renderer
+// verbatim.
+func uiLocaleFromAuth(authReq ipc.AuthRequest) string {
+	v := strings.TrimSpace(authReq.UILocale)
+	if v == "" || len(v) > maxUILocaleLen {
+		return ""
+	}
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.', r == '@':
+		default:
+			return ""
+		}
+	}
+	return v
+}
+
+// UILocale is the UI language this helper reported at auth ("" = unknown).
+func (s *Session) UILocale() string { return s.uiLocale }
+
+// UILocaleInWinSession returns the UI language of a user-context session
+// (any role but SYSTEM) in the given Windows session, preferring the most
+// recently connected one, or "". The SYSTEM helper runs as SYSTEM, so its
+// own probe reports the machine language, not the signed-in user's.
+func (b *Broker) UILocaleInWinSession(winSessionID string) string {
+	if winSessionID == "" {
+		return ""
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	var best *Session
+	for _, s := range b.sessions {
+		if s.HelperRole == ipc.HelperRoleSystem || s.WinSessionID != winSessionID || s.uiLocale == "" {
+			continue
+		}
+		if best == nil || s.ConnectedAt.After(best.ConnectedAt) || (s.ConnectedAt.Equal(best.ConnectedAt) && s.SessionID > best.SessionID) {
+			best = s
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.uiLocale
 }
 
 // PromptProtocol is the clamped prompt protocol this renderer speaks (0 = none).

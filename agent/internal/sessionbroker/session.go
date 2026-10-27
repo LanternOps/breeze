@@ -22,23 +22,23 @@ type pendingResponse struct {
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID            uint32 // Numeric UID (0 on Windows; kept for logging/compat)
-	IdentityKey    string // Platform identity: UID string on Unix, SID on Windows
-	Username       string
-	DisplayEnv     string
-	SessionID      string
-	PID            int // OS process ID of the helper process
-	Capabilities   *ipc.Capabilities
-	TCCStatus      *ipc.TCCStatus
-	AllowedScopes  []string
-	WinSessionID   string         // Windows session ID string (e.g., "1", "2") for targeting
+	UID           uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey   string // Platform identity: UID string on Unix, SID on Windows
+	Username      string
+	DisplayEnv    string
+	SessionID     string
+	PID           int // OS process ID of the helper process
+	Capabilities  *ipc.Capabilities
+	TCCStatus     *ipc.TCCStatus
+	AllowedScopes []string
+	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
 	// WinSessionVerified is true when WinSessionID came from the kernel (the
 	// peer PID's session) rather than the helper's self-report. Caller
 	// verification (#6354) only targets verified sessions on Windows.
 	WinSessionVerified bool
-	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
-	BinaryKind     string
-	DesktopContext string
+	HelperRole         ipc.HelperRole // "system" or "user" — determines scopes and capabilities
+	BinaryKind         string
+	DesktopContext     string
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
@@ -48,7 +48,7 @@ type Session struct {
 	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
 	SupportsTargetedPamDismiss bool
 	ConnectedAt                time.Time
-	LastSeen               time.Time
+	LastSeen                   time.Time
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
@@ -72,6 +72,9 @@ type Session struct {
 	promptProtocol  int
 	promptKinds     []string
 	rendererVersion string
+	// uiLocale is the UI language the helper probed (AuthRequest.UILocale,
+	// sanitized by uiLocaleFromAuth); set once at auth, read through UILocale.
+	uiLocale string
 
 	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
 	helperLogOnce sync.Once

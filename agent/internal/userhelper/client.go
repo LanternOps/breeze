@@ -358,6 +358,8 @@ func (c *Client) authenticate() error {
 		PromptProtocolVersion: nativePromptProtocolFor(c.role),
 		PromptKinds:           advertisedNativePromptKinds(c.role),
 		RendererVersion:       helperRendererVersion(),
+		// The session's UI language (#10190 W03); the agent negotiates it.
+		UILocale: helperUILocale(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {

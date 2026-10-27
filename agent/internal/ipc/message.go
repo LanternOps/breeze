@@ -301,6 +301,12 @@ type AuthRequest struct {
 	// RendererVersion is the renderer build's version, recorded on the
 	// session for the technician-side observation (W02 promptHost telemetry).
 	RendererVersion string `json:"rendererVersion,omitempty"`
+
+	// UILocale is the signed-in user's UI language as the helper probed it
+	// (BCP 47 or POSIX, e.g. "de-DE", "fr_CA.UTF-8"; empty = unknown). The
+	// prompt host negotiates it to a catalog locale (promptcatalog.Negotiate)
+	// for the strings it renders for this session. Additive (#10190 W03).
+	UILocale string `json:"uiLocale,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.

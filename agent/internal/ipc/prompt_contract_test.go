@@ -282,10 +282,24 @@ func TestAuthRequestPromptFieldsAreAdditive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"promptProtocolVersion", "promptKinds", "rendererVersion"} {
+	for _, key := range []string{"promptProtocolVersion", "promptKinds", "rendererVersion", "uiLocale"} {
 		if bytes.Contains(raw, []byte(`"`+key+`"`)) {
 			t.Fatalf("zero AuthRequest marshals %q: %s", key, raw)
 		}
+	}
+}
+
+func TestAuthRequestUILocaleRoundTrips(t *testing.T) {
+	raw, err := json.Marshal(AuthRequest{ProtocolVersion: 1, UILocale: "fr_CA.UTF-8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"uiLocale":"fr_CA.UTF-8"`)) {
+		t.Fatalf("uiLocale not on the wire: %s", raw)
+	}
+	var back AuthRequest
+	if err := json.Unmarshal(raw, &back); err != nil || back.UILocale != "fr_CA.UTF-8" {
+		t.Fatalf("round trip = %+v %v", back, err)
 	}
 }
 

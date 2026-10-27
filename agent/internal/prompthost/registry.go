@@ -142,6 +142,8 @@ type RendererSession struct {
 	KindAds     []string // granted "<kind>@<n>"
 	Version     string
 	ConnectedAt time.Time
+	// UILocale is the UI language the renderer reported at auth ("" = unknown).
+	UILocale string
 }
 
 // RendererDirectory is the host's view of the broker.
