@@ -1423,6 +1423,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	// The restart card (#10190 W05): each rung is offered to the prompt host
+	// first; a rung no session can draw goes out as above, unchanged.
+	if card := h.newRestartCard(); card != nil {
+		h.rebootMgr.SetRestartSurface(card)
+	}
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -2220,6 +2225,10 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
+		// Windows session lock / unlock reach the prompt host, which holds a
+		// prompt for a locked session (list entry only) and draws it at
+		// unlock with the time it has left (#10190 W05, spec §3.3).
+		lifecycle.SetSessionLockObserver(h.promptSessionLockChanged)
 		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)

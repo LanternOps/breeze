@@ -113,14 +113,21 @@ func TestPostponeHiddenWhenBudgetUsedOrClampBelowMinGap(t *testing.T) {
 			in.DeferralAllowed, in.DeferralsLeft = tc.allowed, tc.left
 			p := RestartPrompts{}.RestartPrompt(in)
 			validShow(t, p.Show)
-			if p.Show.State != ipc.PromptStateWaiting {
-				t.Fatalf("state = %s, want waiting (no decision without a safe action)", p.Show.State)
+			if p.Show.State != ipc.PromptStatePending {
+				t.Fatalf("state = %s, want pending", p.Show.State)
 			}
-			if len(p.Show.Actions) != 1 || p.Show.Actions[0].ID != "restart_now" {
-				t.Fatalf("actions = %+v", p.Show.Actions)
+			if len(p.Show.Actions) != 2 || p.Show.Actions[0].ID != "ok" || p.Show.Actions[0].Role != ipc.PromptRoleSafe || p.Show.Actions[0].Label != "OK" {
+				t.Fatalf("actions = %+v, want ok (safe) first", p.Show.Actions)
 			}
-			if p.Show.DefaultActionID != "" {
-				t.Fatalf("Restart now must never be a default (got %q)", p.Show.DefaultActionID)
+			for _, a := range p.Show.Actions {
+				if a.ID == "postpone" {
+					t.Fatal("Postpone offered although the manager offered none")
+				}
+			}
+			// Never Restart now as the default, nor as the only button (a
+			// native dialog makes its first button the default).
+			if p.Show.DefaultActionID != "ok" {
+				t.Fatalf("default = %q, want ok", p.Show.DefaultActionID)
 			}
 			if p.Show.Copy.StateDetail != tc.wantDetail {
 				t.Fatalf("budget line = %q, want %q", p.Show.Copy.StateDetail, tc.wantDetail)
@@ -446,6 +453,26 @@ func TestRestartNowApprovesAndRecordsTheRenderer(t *testing.T) {
 	ups := updatesOf(dir.take("native-b"))
 	if len(ups) != 1 || ups[0].State == nil || *ups[0].State != ipc.PromptStateApproved || ups[0].Actions == nil || len(*ups[0].Actions) != 0 {
 		t.Fatalf("updates = %+v", ups)
+	}
+}
+
+func TestRestartOKAcknowledgesWithoutChangingTheSchedule(t *testing.T) {
+	h, dir, m, r := restartHost(t)
+	m.in.PostponeUntil = time.Time{}
+	p := r.RestartPrompt(m.in)
+	p.Owners = []prompthost.Owner{ownerA}
+	if err := h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	sa := lastShowOf(t, dir.take("assist-a"))
+	if res := actOn(t, h, "assist-a", sa, "ok"); res.Result != ipc.PromptActionAccepted || res.Rev != sa.Rev {
+		t.Fatalf("ok = %+v", res)
+	}
+	if len(m.postpones) != 0 || len(m.restarts) != 0 || !h.IsOpen(p.ID) {
+		t.Fatalf("ok changed the schedule or closed the card: postpones=%v restarts=%v open=%v", m.postpones, m.restarts, h.IsOpen(p.ID))
+	}
+	if n := len(dir.take("assist-a")); n != 0 {
+		t.Fatalf("ok sent %d messages", n)
 	}
 }
 

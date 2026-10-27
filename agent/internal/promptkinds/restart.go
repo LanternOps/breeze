@@ -23,8 +23,11 @@ import (
 //   - Postpone offered → pending decision: postpone (safe, the default,
 //     labelled with the resulting time) and restart_now (proceed).
 //   - Postpone not offered (policy off, budget spent, or too close to the
-//     deadline) → waiting: restart_now only, no default, Esc hides. Nothing
-//     is decided by Enter, and a non-answer is never an acceleration.
+//     deadline) → still a pending decision: ok (safe, the default: "got it",
+//     the card collapses and the restart stays where it is) and restart_now
+//     (proceed). A card is never left with Restart now as its only button:
+//     a native dialog makes its first button the default, so Enter would
+//     restart the machine.
 //   - The closing rung (the OS countdown) replaces it with restart.final
 //     (restart:<campaign>:final): focus steal, OK only.
 //
@@ -128,14 +131,13 @@ func RendererName(role ipc.HelperRole) string {
 func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 	id := RestartPromptID(in.Campaign)
 	offerPostpone := !in.PostponeUntil.IsZero()
-	actions := []ipc.PromptAction{{ID: actionRestartNow, Label: actionRestartNow, Role: ipc.PromptRoleProceed}}
-	state, def := ipc.PromptStateWaiting, ""
+	safe := actionOK
 	if offerPostpone {
-		actions = []ipc.PromptAction{
-			{ID: actionPostpone, Label: actionPostpone, Role: ipc.PromptRoleSafe},
-			{ID: actionRestartNow, Label: actionRestartNow, Role: ipc.PromptRoleProceed},
-		}
-		state, def = ipc.PromptStatePending, actionPostpone
+		safe = actionPostpone
+	}
+	actions := []ipc.PromptAction{
+		{ID: safe, Label: safe, Role: ipc.PromptRoleSafe},
+		{ID: actionRestartNow, Label: actionRestartNow, Role: ipc.PromptRoleProceed},
 	}
 	at := timeToken(in.ScheduledAt)
 	localize := func(loc promptcatalog.Locale) (prompthost.Localized, error) {
@@ -175,6 +177,8 @@ func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 			if labels[actionPostpone], err = promptcatalog.Render(loc, restartNamespace, "action.postponeUntil", map[string]string{"at": timeToken(in.PostponeUntil)}); err != nil {
 				return prompthost.Localized{}, err
 			}
+		} else if labels[actionOK], err = promptcatalog.Render(loc, restartNamespace, "action.ok", nil); err != nil {
+			return prompthost.Localized{}, err
 		}
 		return prompthost.Localized{
 			Copy:         ipc.PromptCopy{Title: title, Body: body, Consequence: consequence, StateDetail: detail},
@@ -185,10 +189,10 @@ func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 		PromptID:        id,
 		Kind:            RestartPromptKind.Name,
 		KindVersion:     RestartPromptKind.Version,
-		State:           state,
+		State:           ipc.PromptStatePending,
 		Presentation:    ipc.PromptPresentationCard,
 		Actions:         actions,
-		DefaultActionID: def,
+		DefaultActionID: safe,
 		Timing: ipc.PromptTiming{
 			PresentWithinMs: restartPresentWithinMs,
 			DeadlineUnixMs:  in.ScheduledAt.UnixMilli(),
@@ -221,6 +225,11 @@ func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 // once replaces it with restart.final.
 func (r RestartPrompts) decide(campaign uint64, actionID, renderer string) (prompthost.ActionOutcome, error) {
 	switch actionID {
+	case actionOK:
+		// "Got it": the person saw the card. Nothing changes — the restart
+		// stays where it is and the card stays in the list; the renderer
+		// collapses it.
+		return prompthost.ActionOutcome{Accepted: true}, nil
 	case actionPostpone:
 		if r.Postpone == nil {
 			return prompthost.ActionOutcome{}, errors.New("promptkinds: no reboot manager to postpone")

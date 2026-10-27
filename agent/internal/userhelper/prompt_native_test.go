@@ -224,12 +224,14 @@ func envelopeFor(t *testing.T, typ string, payload any) *ipc.Envelope {
 	return &ipc.Envelope{ID: "e-1", Type: typ, Payload: raw}
 }
 
-// W04 (#10190): the native user-helper advertises notice.info@1 and nothing
-// else (plan P2: a kind is advertised by the wave that ships it). The SYSTEM
-// helper still advertises nothing.
-func TestNativeRendererAdvertisesOnlyNoticeInfoInW04(t *testing.T) {
-	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); len(got) != 1 || got[0] != "notice.info@1" {
-		t.Fatalf("W04 native helper advertises %v; want exactly notice.info@1", got)
+// The native user-helper advertises the kinds whose wave has shipped (plan
+// P2): W04 notice.info@1, W05 restart.prompt@1 and restart.final@1. The
+// SYSTEM helper still advertises nothing.
+func TestNativeRendererAdvertisesTheShippedKinds(t *testing.T) {
+	// W04 notice.info, W05 restart.prompt + restart.final (append-only).
+	want := []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}
+	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("native helper advertises %v; want exactly %v", got, want)
 	}
 	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
 		if got := advertisedNativePromptKinds(role); len(got) != 0 {
@@ -244,7 +246,8 @@ func TestNativeRendererAdvertisesOnlyNoticeInfoInW04(t *testing.T) {
 	}
 	sink := &promptSink{}
 	r := newNativePromptRenderer(advertisedNativePromptKinds(ipc.HelperRoleUser), (&fakeNativeShow{}).show, sink.send, func() time.Time { return nativeNow })
-	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.restart.json")))
+	// elevation.request is not advertised before W07.
+	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.elevation.waiting.json")))
 	closed := sink.waitFor(t, ipc.TypePromptClosed).(ipc.PromptClosed)
 	if closed.Reason != ipc.PromptClosedRenderFailed || closed.Detail != "unadvertised_kind" {
 		t.Fatalf("closed = %+v; an unadvertised prompt_show is answered render_failed (rule 4)", closed)
