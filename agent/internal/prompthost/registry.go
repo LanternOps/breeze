@@ -6,9 +6,10 @@
 // agent's own clock, and replays open prompts into a reconnecting renderer
 // without activating anything.
 //
-// W02 ships the host dormant: no kind is registered in production, every
-// renderer advertises zero kinds, and the server enables none, so every
-// prompt still takes its legacy path.
+// W02 shipped the host dormant. W04 registers the first kind, notice.info@1
+// (agent/internal/promptkinds), and the native user-helper advertises it;
+// the server still enables none by default, so every prompt keeps its legacy
+// path until promptHost.enabledKinds lists the kind.
 package prompthost
 
 import (
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
 )
 
 // Contract timings (plan "Global Constraints"; fixed, not policy).
@@ -131,6 +133,22 @@ type Prompt struct {
 	// OnExpire runs once when the response budget runs out. If the prompt is
 	// still open (not terminal) afterwards, the host closes it as expired.
 	OnExpire func()
+	// Localize renders the prompt's locale-dependent content in one
+	// session's catalog locale (spec §3.1 "Who renders copy": the session's
+	// UI language, then the machine's, then en). Optional: nil means Show is
+	// sent as built. The host calls it under its state lock for every
+	// renderer and every list entry, so it must be pure — catalog lookups
+	// only, no host calls. A copy replaced later by a Patch is sent as given.
+	Localize func(loc promptcatalog.Locale) (Localized, error)
+}
+
+// Localized is the locale-dependent content of a prompt: the copy, the
+// facts, and the label of each action (by id; an action whose id is absent
+// keeps its label).
+type Localized struct {
+	Copy         ipc.PromptCopy
+	Facts        []ipc.PromptFact
+	ActionLabels map[string]string
 }
 
 // RendererSession is a live, authenticated renderer as the broker sees it.

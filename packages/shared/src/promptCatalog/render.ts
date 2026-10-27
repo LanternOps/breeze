@@ -1,4 +1,5 @@
 import common from './catalog/common.json';
+import notice from './catalog/notice.json';
 import { negotiatePromptLocale, type PromptLocale } from './negotiate';
 
 /**
@@ -7,6 +8,7 @@ import { negotiatePromptLocale, type PromptLocale } from './negotiate';
  */
 export const PROMPT_CATALOG = {
   common,
+  notice,
 } as const;
 
 export type PromptNamespace = keyof typeof PROMPT_CATALOG;

@@ -30,6 +30,10 @@ type tccLoopPolicy struct {
 	// non-capturing access check (desktop.CheckCaptureAccess, #8390). No
 	// permission check captures the screen any more.
 	reportRemoteDesktop bool
+	// remindPermissions lets the loop show its own Full Disk Access
+	// guidance (the first-run dialog, then reminder toasts). False only when
+	// the agent said it shows the permission notice itself (#10190 W04).
+	remindPermissions bool
 }
 
 // tccLoopPolicyFor gates the loop's prompts on the binary kind.
@@ -39,9 +43,24 @@ type tccLoopPolicy struct {
 // broker drops a TCC status from any session without the desktop scope, so
 // for every other kind a prompt would ask the user for something nothing
 // uses.
-func tccLoopPolicyFor(binaryKind string) tccLoopPolicy {
+//
+// agentHandlesNotice is this connection's AuthResponse.AgentHandlesTCCNotice
+// (see ShowsOwnTCCReminder): when set, the agent shows the permission notice
+// from this helper's tcc_status and the helper must not show its own too.
+func tccLoopPolicyFor(binaryKind string, agentHandlesNotice bool) tccLoopPolicy {
+	p := tccLoopPolicy{remindPermissions: !agentHandlesNotice}
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
-		return tccLoopPolicy{requestScreenRecording: true, promptAccessibility: true, reportRemoteDesktop: true}
+		p.requestScreenRecording, p.promptAccessibility, p.reportRemoteDesktop = true, true, true
 	}
-	return tccLoopPolicy{}
+	return p
+}
+
+// ShowsOwnTCCReminder reports whether a helper shows its own macOS
+// permission reminder on a connection whose authentication returned resp
+// (#10190 W04 skew rule). An older agent omits the flag, so a new helper
+// keeps reminding; an older helper never reads it and always reminds, and
+// the agent never sets it for a helper that did not advertise the prompt
+// protocol.
+func ShowsOwnTCCReminder(resp ipc.AuthResponse) bool {
+	return !resp.AgentHandlesTCCNotice
 }

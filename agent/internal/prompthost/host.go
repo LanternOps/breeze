@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -65,6 +66,7 @@ type Host struct {
 
 	mu        sync.Mutex
 	enabled   EnabledKinds
+	kinds     map[string]map[int]KindSpec // kinds this build constructs (RegisterKind)
 	prompts   map[string]*record
 	tombs     *tombstones
 	limiter   *cardLimiter
@@ -115,6 +117,9 @@ type placement struct {
 	sendFailed  bool // the last prompt_show never left; fall back at the next tick
 	legacyDone  bool
 	tried       map[string]bool
+	// locale is the catalog locale this placement's copy is rendered in
+	// (Prompt.Localize), fixed at each assignment ("" = not assigned yet).
+	locale promptcatalog.Locale
 }
 
 func (pl *placement) lease() ipc.PromptLease {
@@ -131,6 +136,7 @@ func New(deps Deps) *Host {
 		identity:  deps.Identity,
 		osLocale:  deps.OSLocale,
 		prompts:   map[string]*record{},
+		kinds:     map[string]map[int]KindSpec{},
 		tombs:     newTombstones(deps.Inbox),
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
@@ -384,6 +390,7 @@ func (h *Host) modalBusy(rec *record, o Owner) bool {
 // assign moves a placement onto the chosen path.
 func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *outbox, fromFallback bool) {
 	pl.path = c.Path
+	pl.locale = h.placementLocale(c)
 	pl.sendFailed = false
 	switch c.Path {
 	case PathPrompt:
@@ -457,7 +464,7 @@ func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 		s.Presentation = ipc.PromptPresentationListOnly
 		s.Focus = ipc.PromptFocusNoActivate
 	}
-	return s
+	return h.localize(rec, s, pl.locale)
 }
 
 // wireTiming never restarts a budget: once a response window has started
@@ -604,13 +611,19 @@ func (h *Host) persist(rec *record, now time.Time, ob *outbox) {
 	inbox := h.inbox
 	seen := map[string]bool{}
 	for _, pl := range rec.placements {
+		loc := pl.locale
+		if loc == "" {
+			// Held (locked session, busy modal) before any assignment: the
+			// entry still reads in the machine's language.
+			loc = h.SessionLocale(RendererSession{})
+		}
 		e := ListEntry{
 			ID:        listEntryID(rec.show.PromptID, pl.owner),
 			PromptID:  rec.show.PromptID,
 			OwnerKey:  pl.owner.PrincipalKey(),
 			ScopeID:   scope,
 			ExpiresAt: expires,
-			Show:      rec.show,
+			Show:      h.localize(rec, rec.show, loc),
 		}
 		if seen[e.ID] {
 			continue // one principal in two sessions: one entry

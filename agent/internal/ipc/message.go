@@ -328,6 +328,14 @@ type AuthResponse struct {
 	// — in on-demand mode this is the NORMAL answer for a logon-task helper
 	// and the helper should exit 0), "duplicate_key".
 	Code string `json:"code,omitempty"`
+
+	// AgentHandlesTCCNotice tells a macOS helper that the agent shows the
+	// permission notice itself, from this helper's tcc_status reports, so the
+	// helper must not show its own reminder (#10190 W04 skew rule). Additive:
+	// an older agent omits it (false) and the helper keeps reminding, and an
+	// older helper ignores it while the agent never sets it for a helper that
+	// did not advertise the prompt protocol.
+	AgentHandlesTCCNotice bool `json:"agentHandlesTCCNotice,omitempty"`
 }
 
 // Capabilities is sent by the user helper after successful auth.

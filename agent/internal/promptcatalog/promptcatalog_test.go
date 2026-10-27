@@ -88,6 +88,27 @@ func TestCatalogLoadsAndHasEveryLocale(t *testing.T) {
 	}
 }
 
+// The notice namespace (W04) ships embedded: the agent renders every
+// notice.info string from it (agent/internal/promptkinds).
+func TestEmbeddedCatalogCarriesTheNoticeNamespace(t *testing.T) {
+	cat, err := load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, ns := range []string{"common", "notice"} {
+		if len(cat[ns]) == 0 {
+			t.Fatalf("namespace %q is not embedded", ns)
+		}
+	}
+	got, err := Render(Locale("tr-TR"), "notice", "action.ok", nil)
+	if err != nil || got != "Tamam" {
+		t.Fatalf("notice/action.ok in tr-TR = %q, %v", got, err)
+	}
+	if _, err := Render(LocaleEN, "notice", "sessionEnded.body", nil); !errors.Is(err, ErrMissingParam) {
+		t.Fatalf("sessionEnded.body without technician: err = %v, want ErrMissingParam", err)
+	}
+}
+
 func TestValidateRejectsMissingLocale(t *testing.T) {
 	raw := []byte(`{"namespace":"x","messages":{"k":{"en":"Hide","de-DE":"Ausblenden"}}}`)
 	if _, _, err := parseFile(raw); err == nil {

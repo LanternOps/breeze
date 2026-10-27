@@ -55,6 +55,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -568,12 +569,15 @@ type Heartbeat struct {
 	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu sync.RWMutex
 	sessionBroker *sessionbroker.Broker
-	promptHost    *prompthost.Host // on-device prompts (#10190); dormant in W02 (no kind registered or enabled)
+	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
 	promptListStore *inbox.Store
 	promptLogoState promptLogoFetchState
+	// tccNotices tracks the macOS permission notice per user (#10190 W04);
+	// see notices.go.
+	tccNotices      tccNoticeState
 	helperLifecycle helperLifecycleController
 	lifecycleCancel context.CancelFunc
 	shutdownTimeout time.Duration
@@ -1383,6 +1387,12 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			OSLocale: osUILocale,
 		})
 		h.sessionBroker.SetPromptSink(h.promptHost)
+		// The kinds this build constructs (W04: notice.info@1), and the macOS
+		// permission notice's skew rule: a helper is told the agent shows the
+		// notice only while notice.info is live (sessionbroker/tcc_notice.go).
+		promptkinds.Register(h.promptHost)
+		h.sessionBroker.SetTCCNoticeGate(h.tccNoticeLive)
+		h.sessionBroker.SetTCCStatusHandler(h.handleTCCNotice)
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
 		h.setHelperToken(h.config.HelperAuthToken)
