@@ -41,6 +41,8 @@ export const FLOW_STEP_ERROR_CODES = [
   'no_eligible_approvers', 'worker_lost', 'cancelled',
   // W5 built-ins (#5220)
   'egress_blocked', 'http_status', 'notify_failed', 'ai_budget_exhausted', 'ai_output_invalid', 'ai_token_cap_reached',
+  // W6 fleet built-ins (#5221)
+  'targets_over_cap', 'targets_unresolvable', 'alert_create_failed', 'script_dispatch_failed',
 ] as const;
 export type FlowStepErrorCode = (typeof FLOW_STEP_ERROR_CODES)[number];
 
