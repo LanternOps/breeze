@@ -438,6 +438,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
+  // PROMPT_*
+  PROMPT_HOST_ENABLED_KINDS: 'on-device prompt kinds rollout flag / kill switch (#10190)',
   // PROVISION_*
   PROVISION_HANDLE_TTL_MINUTES: 'timing knob',
   // PUBLIC_*

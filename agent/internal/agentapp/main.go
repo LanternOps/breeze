@@ -2332,6 +2332,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// disconnects in production are caused by permanent identity/auth problems
 	// (binary path mismatch, SID lookup failure on headless Windows, etc.),
 	// not transient socket hiccups. See issue #387.
+	// The helper is the same build as the agent: its prompt renderer
+	// version is the agent version (#10190 AuthRequest.rendererVersion).
+	userhelper.SetRendererVersion(version)
 	sup := &userhelper.Supervisor{
 		Name: name,
 		Policy: userhelper.ReconnectPolicy{

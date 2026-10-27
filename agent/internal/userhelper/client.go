@@ -66,6 +66,7 @@ type Client struct {
 	scopes              []string
 	stopChan            chan struct{}
 	desktopMgr          *helperDesktopManager
+	prompts             *nativePromptRenderer // prompt host renderer (#10190; dormant in W02)
 	// desktopFence is the helper half of the start fence: seeded from
 	// the service on connect, maintained from the starts and stops this helper
 	// sees. Zero value ready to use.
@@ -110,7 +111,7 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 	if binaryKind == "" {
 		binaryKind = ipc.HelperBinaryUserHelper
 	}
-	return &Client{
+	c := &Client{
 		socketPath: socketPath,
 		role:       role,
 		binaryKind: binaryKind,
@@ -120,6 +121,25 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
+	c.prompts = newNativePromptRenderer(advertisedNativePromptKinds(role), showNativePromptOS, c.sendPromptMessage, time.Now)
+	return c
+}
+
+// closePrompts takes every native prompt dialog down when the connection
+// ends; a new client re-receives what is still open after reconnect.
+func (c *Client) closePrompts() {
+	if c.prompts != nil {
+		c.prompts.closeAll()
+	}
+}
+
+// sendPromptMessage sends a renderer -> agent prompt message (#10190).
+func (c *Client) sendPromptMessage(msgType string, payload any) error {
+	conn := c.currentConn()
+	if conn == nil {
+		return errors.New("prompt: not connected")
+	}
+	return conn.SendTyped(fmt.Sprintf("%s-%d", msgType, promptMessageSeq.Add(1)), msgType, payload)
 }
 
 // Run connects to the root daemon, authenticates, and enters the command loop.
@@ -145,6 +165,7 @@ func (c *Client) Run() error {
 	}
 	defer c.conn.Close()
 	defer c.desktopMgr.stopAll() // Release DXGI/COM handles on any exit path
+	defer c.closePrompts()       // No native prompt dialog outlives its connection (#10190)
 
 	if err := c.authenticate(); err != nil {
 		return fmt.Errorf("authenticate: %w", err)
@@ -332,6 +353,11 @@ func (c *Client) authenticate() error {
 		// consentProtocolFromAuth applies the same condition).
 		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
+		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
+		// broker grants no prompt scope and every prompt stays legacy.
+		PromptProtocolVersion: nativePromptProtocolFor(c.role),
+		PromptKinds:           advertisedNativePromptKinds(c.role),
+		RendererVersion:       helperRendererVersion(),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -537,6 +563,11 @@ func (c *Client) commandLoop() error {
 		case ipc.TypeSASResponse:
 			if !c.resolvePendingResponse(env) {
 				log.Warn("unsolicited sas_response from daemon", "id", env.ID)
+			}
+
+		case ipc.TypePromptShow, ipc.TypePromptUpdate, ipc.TypePromptClose, ipc.TypePromptActionResult, ipc.TypePromptBrandingSync:
+			if c.prompts != nil {
+				c.prompts.handle(env)
 			}
 
 		case ipc.TypeDisconnect:

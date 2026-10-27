@@ -166,6 +166,7 @@
   },
   "runs": {
     "empty": "Ancora nessuna esecuzione.",
+    "emptyFiltered": "Nessuna esecuzione corrisponde a questo filtro.",
     "status": {
       "queued": "In coda",
       "running": "In esecuzione",

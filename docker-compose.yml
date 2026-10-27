@@ -155,6 +155,10 @@ x-api-env: &api-env
   # every agent with the legacy heartbeat payload, as an older API would.
   HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
   AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
+  # #10190 prompt host kill switch. `-default` (no colon) on purpose: unset
+  # passes "default" (the code default), while an explicit empty value passes
+  # '' (the kill switch: nothing enabled). `:-` would turn unset into ''.
+  PROMPT_HOST_ENABLED_KINDS: ${PROMPT_HOST_ENABLED_KINDS-default}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
   # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
   # boot refuses to start without it (see that var's comment). Must be set
