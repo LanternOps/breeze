@@ -630,6 +630,31 @@ Not available to the assistant or over MCP: uploading an installer, the installe
 
 AI agents can read the software tools. Their catalog, deployment, inventory, fleet-finding and update writes become proposals that a person approves. They are never offered uninstall, `bootstrap_homebrew` or `manage_custom_fields` (custom-field values decide dynamic-group membership, which can widen what an agent may act on). A session limited to some sites or devices cannot change the catalog or the inventory allow/blocklists.
 
+### Device inventory and ops tools
+
+These tools read a device's activity timeline, agent health and recorded process snapshots, report which other management products are on the fleet, and manage per-device records: a device's function, linked device profiles, hand-entered (manual) assets and warranties. They are available in AI chat and over MCP. Event messages, process names, product names, asset notes and warranty text are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_device_events` | 1 | Activity timeline for one device: what ran, changed or failed, and who or what did it. Actor emails, IP addresses and raw event details are not returned |
+| `get_device_health` | 1 | The Breeze agent's latest health report for one device: overall state and each component's state and reason |
+| `get_process_samples` | 1 | The recorded top-process snapshot for one device at or before a time (default now). History, not a live process list |
+| `get_management_posture` | 1 | Other management products (RMM, endpoint security, backup, MDM, ...) detected across the fleet, per organization; pass `product` for the devices running one |
+| `search_agent_logs` | 1 | `source: watchdog` returns only the Breeze watchdog's health journal; `source: agent` leaves it out. Without `source` both are returned, as before |
+| `manage_device_function` (get) | 1 | One device's function (domain controller, file server, ...) |
+| `manage_device_function` (set) | 3 | Set or clear a device's function. Dynamic groups can target devices by function, so the change is approved |
+| `manage_device_links` (list/get/for_device) | 1 | Linked device profiles: multi-boot records of one machine, or a VM host and its guests |
+| `manage_device_links` (create/update/dissolve) | 2 | Link 2-10 device records, add or remove members, rename, or unlink them all. Each device keeps its own data |
+| `manage_manual_assets` (list) | 1 | Hand-entered inventory without an agent (spare laptops, phones, printers) |
+| `manage_manual_assets` (create/update/link/unlink) | 2 | Add or edit a hand-entered asset, retire it (`retiredAt`), or link it to an agent device or discovered asset |
+| `manage_manual_assets` (delete) | 3 | Permanently delete a hand-entered asset. Retire it instead to keep the record |
+| `manage_device_warranty` (get/expiring) | 1 | One device's warranty, or devices whose warranty ends within a number of days |
+| `manage_device_warranty` (refresh) | 3 | Re-check one device's warranty with its manufacturer now. The device's serial number is sent to the manufacturer, so the refresh is approved. Devices whose warranty the agent collects (HP) are refused |
+
+Every write needs a session that has completed MFA.
+
+AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
+
 ---
 
 ## Context-Aware Help Panel
