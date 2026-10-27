@@ -211,6 +211,16 @@
       "pt-BR": "Há uma sessão de suporte remoto em andamento neste computador.",
       "tr-TR": "Bu bilgisayarda bir uzaktan destek oturumu sürüyor."
     },
+    "session.endFailed": {
+      "en": "Couldn't end the session. It is still active.",
+      "de-DE": "Die Sitzung konnte nicht beendet werden. Sie ist weiterhin aktiv.",
+      "es-419": "No se pudo finalizar la sesión. Sigue activa.",
+      "fr-FR": "Impossible de mettre fin à la session. Elle est toujours active.",
+      "fr-CA": "Impossible de mettre fin à la session. Elle est toujours active.",
+      "it-IT": "Impossibile terminare la sessione. È ancora attiva.",
+      "pt-BR": "Não foi possível encerrar a sessão. Ela continua ativa.",
+      "tr-TR": "Oturum sonlandırılamadı. Oturum hâlâ etkin."
+    },
     "session.confirmEnd": {
       "en": "End this remote session? The technician will be disconnected.",
       "de-DE": "Diese Remotesitzung beenden? Die Verbindung des Technikers wird getrennt.",

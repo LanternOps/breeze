@@ -88,6 +88,10 @@ var RemoteSessionKind = prompthost.KindSpec{
 
 var errRemoteAction = errors.New("promptkinds: action not offered by this prompt")
 
+// remoteRender renders remote catalog copy (a var so tests can make a key
+// fail; the embedded catalog itself cannot).
+var remoteRender = promptcatalog.Render
+
 // ConsentHooks are the consent domain's callbacks. Each may be nil.
 type ConsentHooks struct {
 	// Decided runs when the person answered (allow or deny), once the host
@@ -125,13 +129,13 @@ func promptText(raw string, max int) string {
 func (id identity) render(loc promptcatalog.Locale, named, from, orgOnly, generic string) (string, error) {
 	switch {
 	case id.name != "" && id.org != "":
-		return promptcatalog.Render(loc, remoteNamespace, from, map[string]string{"technician": id.name, "organization": id.org})
+		return remoteRender(loc, remoteNamespace, from, map[string]string{"technician": id.name, "organization": id.org})
 	case id.name != "":
-		return promptcatalog.Render(loc, remoteNamespace, named, map[string]string{"technician": id.name})
+		return remoteRender(loc, remoteNamespace, named, map[string]string{"technician": id.name})
 	case id.org != "":
-		return promptcatalog.Render(loc, remoteNamespace, orgOnly, map[string]string{"organization": id.org})
+		return remoteRender(loc, remoteNamespace, orgOnly, map[string]string{"organization": id.org})
 	}
-	return promptcatalog.Render(loc, remoteNamespace, generic, nil)
+	return remoteRender(loc, remoteNamespace, generic, nil)
 }
 
 // facts lists the identity parts the server sent, each as one fact.
@@ -145,7 +149,7 @@ func (id identity) facts(loc promptcatalog.Locale) ([]ipc.PromptFact, error) {
 		if f.value == "" {
 			continue
 		}
-		label, err := promptcatalog.Render(loc, remoteNamespace, f.key, nil)
+		label, err := remoteRender(loc, remoteNamespace, f.key, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +181,7 @@ func RemoteConsent(req ipc.ConsentRequest, cfg ipc.DesktopPrompt, hooks ConsentH
 		expiryKey = "consent.expiryProceed"
 	}
 	localize := func(loc promptcatalog.Locale) (prompthost.Localized, error) {
-		title, err := promptcatalog.Render(loc, remoteNamespace, "consent.title", nil)
+		title, err := remoteRender(loc, remoteNamespace, "consent.title", nil)
 		if err != nil {
 			return prompthost.Localized{}, err
 		}
@@ -195,7 +199,7 @@ func RemoteConsent(req ipc.ConsentRequest, cfg ipc.DesktopPrompt, hooks ConsentH
 		}
 		l := prompthost.Localized{Copy: ipc.PromptCopy{Title: title, Body: body}, Facts: facts, ActionLabels: labels}
 		if timeoutMs > 0 {
-			if l.ExpiryText, err = promptcatalog.Render(loc, remoteNamespace, expiryKey, nil); err != nil {
+			if l.ExpiryText, err = remoteRender(loc, remoteNamespace, expiryKey, nil); err != nil {
 				return prompthost.Localized{}, err
 			}
 		}
@@ -296,13 +300,13 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 		if err != nil {
 			return prompthost.Localized{}, err
 		}
-		body, err := promptcatalog.Render(loc, remoteNamespace, "session.body", nil)
+		body, err := remoteRender(loc, remoteNamespace, "session.body", nil)
 		if err != nil {
 			return prompthost.Localized{}, err
 		}
 		c := ipc.PromptCopy{Title: title, Body: body}
 		if confirming.Load() {
-			if c.StateDetail, err = promptcatalog.Render(loc, remoteNamespace, "session.confirmEnd", nil); err != nil {
+			if c.StateDetail, err = remoteRender(loc, remoteNamespace, "session.confirmEnd", nil); err != nil {
 				return prompthost.Localized{}, err
 			}
 		}
@@ -311,7 +315,7 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 			return prompthost.Localized{}, err
 		}
 		if startedToken != "" {
-			label, err := promptcatalog.Render(loc, remoteNamespace, "fact.started", nil)
+			label, err := remoteRender(loc, remoteNamespace, "fact.started", nil)
 			if err != nil {
 				return prompthost.Localized{}, err
 			}
@@ -342,24 +346,28 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 		Direction:    "ltr",
 	}
 	applyEN(&show, localize)
+	// The normal state as built (en), the way back if a later render fails.
+	baseCopy, baseActions := show.Copy, append([]ipc.PromptAction(nil), show.Actions...)
 
-	// patchTo swaps the action set (and the confirm sentence) in place.
-	patchTo := func(confirm bool) *prompthost.Patch {
+	// patchTo swaps the action set (and the confirm sentence) in place. A
+	// render failure is an error: the confirm step is then never entered, so
+	// no raw action id reaches a renderer.
+	patchTo := func(confirm bool) (*prompthost.Patch, error) {
 		confirming.Store(confirm)
 		actions, def := normalActions(), ""
 		if confirm {
 			actions, def = confirmActions(), actionKeepSession
 		}
-		p := &prompthost.Patch{Actions: &actions, DefaultActionID: def, Relocalize: true}
-		if l, err := localize(promptcatalog.LocaleEN); err == nil {
-			p.Copy = &l.Copy
-			for i := range actions {
-				if label, ok := l.ActionLabels[actions[i].ID]; ok {
-					actions[i].Label = label
-				}
+		l, err := localize(promptcatalog.LocaleEN)
+		if err != nil {
+			return nil, err
+		}
+		for i := range actions {
+			if label, ok := l.ActionLabels[actions[i].ID]; ok {
+				actions[i].Label = label
 			}
 		}
-		return p
+		return &prompthost.Patch{Actions: &actions, DefaultActionID: def, Copy: &l.Copy, Relocalize: true}, nil
 	}
 	refuse := prompthost.ActionOutcome{Accepted: false}
 	onAction := func(actionID string, from prompthost.Owner) (prompthost.ActionOutcome, error) {
@@ -368,12 +376,27 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 			if !allowEnd || confirming.Load() {
 				return refuse, nil
 			}
-			return prompthost.ActionOutcome{Accepted: true, Patch: patchTo(true)}, nil
+			patch, err := patchTo(true)
+			if err != nil {
+				confirming.Store(false)
+				log.Error("session indicator confirm step could not be rendered; not asking", "promptId", promptID, "error", err.Error())
+				return refuse, nil
+			}
+			return prompthost.ActionOutcome{Accepted: true, Patch: patch}, nil
 		case actionKeepSession:
 			if !confirming.Load() {
 				return refuse, nil
 			}
-			return prompthost.ActionOutcome{Accepted: true, Patch: patchTo(false)}, nil
+			patch, err := patchTo(false)
+			if err != nil {
+				// Never leave the person in the confirm step: back to the
+				// normal state as it was built.
+				log.Error("session indicator copy could not be rendered; restoring the indicator as built", "promptId", promptID, "error", err.Error())
+				actions := append([]ipc.PromptAction(nil), baseActions...)
+				c := baseCopy
+				patch = &prompthost.Patch{Actions: &actions, Copy: &c}
+			}
+			return prompthost.ActionOutcome{Accepted: true, Patch: patch}, nil
 		case actionEndConfirm:
 			if !allowEnd || !confirming.Load() {
 				return refuse, nil
@@ -407,6 +430,33 @@ func RemoteSession(sessionID string, cfg ipc.DesktopPrompt, startedAt time.Time,
 	}
 }
 
+// WithEndFailed marks a re-shown indicator after a failed End session: the
+// pill keeps its normal actions (the person can try again) and says the
+// session is still active. The confirm step's own sentence replaces it while
+// that step is up.
+func WithEndFailed(p prompthost.Prompt) prompthost.Prompt {
+	inner := p.Localize
+	if inner == nil {
+		return p
+	}
+	p.Localize = func(loc promptcatalog.Locale) (prompthost.Localized, error) {
+		l, err := inner(loc)
+		if err != nil || l.Copy.StateDetail != "" {
+			return l, err
+		}
+		if l.Copy.StateDetail, err = remoteRender(loc, remoteNamespace, "session.endFailed", nil); err != nil {
+			return prompthost.Localized{}, err
+		}
+		return l, nil
+	}
+	if l, err := p.Localize(promptcatalog.LocaleEN); err == nil {
+		p.Show.Copy = l.Copy
+	} else {
+		log.Error("end-failed indicator copy could not be rendered", "promptId", p.ID, "error", err.Error())
+	}
+	return p
+}
+
 // RemoteSessionPromptID is the indicator's prompt id for a session, so the
 // session's end can close it.
 func RemoteSessionPromptID(sessionID string) string {
@@ -416,7 +466,7 @@ func RemoteSessionPromptID(sessionID string) string {
 func renderLabels(loc promptcatalog.Locale, keys map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(keys))
 	for action, key := range keys {
-		label, err := promptcatalog.Render(loc, remoteNamespace, key, nil)
+		label, err := remoteRender(loc, remoteNamespace, key, nil)
 		if err != nil {
 			return nil, err
 		}

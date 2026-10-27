@@ -48,6 +48,7 @@ var (
 	procBannerSetWindowLong   = pamDialogUser32.NewProc("SetWindowLongPtrW")
 	procBannerLoadCursorW     = pamDialogUser32.NewProc("LoadCursorW")
 	procBannerSetCursor       = pamDialogUser32.NewProc("SetCursor")
+	procBannerSetLastError    = syscall.NewLazyDLL("kernel32.dll").NewProc("SetLastError")
 	procGetModuleHandleW      = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
 
 	procCreateSolidBrush      = bannerGdi32.NewProc("CreateSolidBrush")
@@ -400,9 +401,20 @@ func showPillOS(label string, startedAtUnixMs int64, clickable bool, onClick fun
 		hwnd := bannerHwnd
 		bannerMu.Unlock()
 		if wasClickable != clickable {
-			// Toggle WS_EX_TRANSPARENT in place.
-			_, _, _ = procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(pillExStyle(clickable)))
-			_, _, _ = procBannerSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, bSwpNomove|bSwpNosize|bSwpNozorder|bSwpNoactivate|bSwpFramechanged)
+			// Toggle WS_EX_TRANSPARENT in place. SetWindowLongPtrW returns the
+			// previous style, so 0 is a failure only with a last error.
+			_, _, _ = procBannerSetLastError.Call(0)
+			prev, _, setErr := procBannerSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(pillExStyle(clickable)))
+			pos, _, _ := procBannerSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, bSwpNomove|bSwpNosize|bSwpNozorder|bSwpNoactivate|bSwpFramechanged)
+			if pillStyleChangeFailed(prev, setErr, pos) {
+				// The click-through state is unknown: refuse, so the caller
+				// falls back (the prompt host takes today's banner).
+				log.Warn("session pill style could not be changed; not showing it as asked", "clickable", clickable, "error", fmt.Sprint(setErr))
+				bannerMu.Lock()
+				bannerClickable, bannerOnClick = wasClickable, nil
+				bannerMu.Unlock()
+				return false
+			}
 		}
 		// Relabel: re-fit the pill to the new text, then repaint.
 		bannerApplyBounds(hwnd, bannerDesiredWidth(hwnd, u16), bannerScale(36))

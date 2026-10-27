@@ -314,6 +314,7 @@ describe('remote namespace', () => {
     'session.titleGeneric',
     'session.body',
     'session.confirmEnd',
+    'session.endFailed',
   ];
 
   it('is registered and carries exactly the keys the agent renders', () => {

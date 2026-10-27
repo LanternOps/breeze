@@ -61,6 +61,17 @@ func consentLostDetail(reason string, presented bool) string {
 	return "renderer_lost"
 }
 
+// consentAttemptForLoss is the v2 attempt for a consent whose renderer was
+// lost: unavailable when it had not been on screen, unknown when it had (the
+// answer may have been Deny), with the legacy exchange's detail.
+func consentAttemptForLoss(info prompthost.PlacementInfo, reason string) consentAttempt {
+	a := consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: consentLostDetail(reason, info.Presented), renderer: consentRendererLabel(info.Role)}
+	if info.Presented {
+		a.outcome = consentOutcomeUnknown
+	}
+	return a
+}
+
 // showStamped shows a prompt with the MSP identity in force pinned on it,
 // with no scope change in progress (see showNotice).
 func (h *Heartbeat) showStamped(p *prompthost.Prompt) error {
@@ -120,13 +131,7 @@ func (h *Heartbeat) solicitConsentPrompt(ctx context.Context, routed *sessionbro
 			settle(a)
 		},
 		Lost: func(info prompthost.PlacementInfo, reason string) {
-			a := consentAttempt{outcome: ipc.ConsentOutcomeUnavailable, detail: consentLostDetail(reason, info.Presented)}
-			if info.Presented {
-				// It was on screen: the answer may have been Deny.
-				a.outcome = consentOutcomeUnknown
-			}
-			a.renderer = consentRendererLabel(info.Role)
-			settle(a)
+			settle(consentAttemptForLoss(info, reason))
 		},
 	})
 	promptID = p.ID
@@ -142,15 +147,11 @@ func (h *Heartbeat) solicitConsentPrompt(ctx context.Context, routed *sessionbro
 		log.Info("consent prompt answered through the prompt host", "promptId", promptID, "outcome", a.outcome, "detail", a.detail, "renderer", a.renderer)
 		return a, true
 	}
-	if info, ok := host.PlacementOf(promptID, owner); !ok || info.Path != prompthost.PathPrompt {
-		select {
-		case a := <-answers:
-			return finish(a) // decided (or lost) already
-		default:
-		}
-		// Nothing was drawn (the renderer went away, or another modal holds
-		// the session): withdraw it, and ask today's way.
-		_ = host.Close(promptID, ipc.PromptCloseWithdrawn)
+	// Nothing drawn (no renderer could take it, or another modal holds the
+	// session): withdraw it and ask today's way. The host decides this
+	// atomically: once any renderer was assigned — even one lost since — the
+	// answer comes through the hooks, and the person is never asked twice.
+	if host.WithdrawUnplaced(promptID) {
 		log.Info("consent prompt had no prompt renderer after all; sending today's request", "promptId", promptID)
 		return consentAttempt{}, false
 	}
@@ -182,9 +183,20 @@ func (h *Heartbeat) solicitConsentPrompt(ctx context.Context, routed *sessionbro
 	}
 }
 
+// indicatorPromptShow shows an indicator prompt (a var so tests can make
+// the host refuse it).
+var indicatorPromptShow = func(h *Heartbeat, p prompthost.Prompt) error { return h.promptHost.Show(p) }
+
 // showSessionIndicator shows the remote-session indicator for sessionID.
 // Legacy: today's banner_show to the consent-UI helper.
 func (h *Heartbeat) showSessionIndicator(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) {
+	h.showIndicator(sessionID, prompt, targetWinSession, time.Now(), false)
+}
+
+// showIndicator shows the indicator through the prompt host when the path is
+// available, else today's banner. endFailed marks a re-show after a stop the
+// person asked for failed.
+func (h *Heartbeat) showIndicator(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string, startedAt time.Time, endFailed bool) {
 	legacy := func() { h.sendBannerShow(sessionID, prompt, targetWinSession) }
 	host := h.promptHost
 	if host == nil || h.sessionBroker == nil || prompt == nil {
@@ -202,12 +214,19 @@ func (h *Heartbeat) showSessionIndicator(sessionID string, prompt *ipc.DesktopPr
 		legacy()
 		return
 	}
-	p := promptkinds.RemoteSession(sessionID, *prompt, time.Now(), promptkinds.SessionHooks{
-		EndConfirmed: func() { h.endDesktopSessionByUser(sessionID) },
+	p := promptkinds.RemoteSession(sessionID, *prompt, startedAt, promptkinds.SessionHooks{
+		EndConfirmed: func() {
+			h.endDesktopSessionByUser(sessionID, func() {
+				h.reshowIndicatorAfterFailedEnd(sessionID, prompt, targetWinSession, startedAt)
+			})
+		},
 		ReportProblem: func(prompthost.Owner) {
 			log.Info("the person at the keyboard chose Report a problem on the session indicator", "sessionId", sessionID)
 		},
 	})
+	if endFailed {
+		p = promptkinds.WithEndFailed(p)
+	}
 	p.Owners = []prompthost.Owner{owner}
 	// The host's fallback (a renderer that cannot draw it in time) is
 	// today's banner.
@@ -215,11 +234,31 @@ func (h *Heartbeat) showSessionIndicator(sessionID string, prompt *ipc.DesktopPr
 	// Not pinned to an MSP scope (no identityRef): a scope change closes the
 	// prompts of the old scope, and the person must keep seeing that a
 	// technician is connected for as long as the session runs.
-	if err := host.Show(p); err != nil {
+	if err := indicatorPromptShow(h, p); err != nil {
 		// The person must still see that someone is connected.
 		log.Info("session indicator not shown through the prompt host; sending today's banner", "promptId", p.ID, "error", err.Error())
 		legacy()
 	}
+}
+
+// indicatorClosedWait bounds how long a re-show waits for the end_confirm
+// close to land (it is applied right after the action is accepted).
+var indicatorClosedWait = 2 * time.Second
+
+// reshowIndicatorAfterFailedEnd brings the pill back when the stop the person
+// confirmed failed: the session is still running, so they must still see it,
+// be able to try again, and be told it did not end.
+func (h *Heartbeat) reshowIndicatorAfterFailedEnd(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string, startedAt time.Time) {
+	if h.promptHost != nil {
+		// end_confirm closes the pill as its action is accepted; the stop
+		// can fail before that close lands. Re-show after it, never before.
+		id := promptkinds.RemoteSessionPromptID(sessionID)
+		deadline := time.Now().Add(indicatorClosedWait)
+		for h.promptHost.IsOpen(id) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	h.showIndicator(sessionID, prompt, targetWinSession, startedAt, true)
 }
 
 // closeSessionIndicator takes the indicator down when its session ends. It
@@ -258,13 +297,21 @@ func desktopUserEndResult(sessionID string) websocket.CommandResult {
 	}
 }
 
+// desktopUserEndStop is the stop routine a user end runs: exactly the
+// server's stop_desktop handler (a var so tests can make it fail).
+var desktopUserEndStop = handleStopDesktop
+
 // endDesktopSessionByUser ends a session the person confirmed ending from
 // the indicator: it reports ended_by_user FIRST, then runs exactly the stop
 // routine the server's stop_desktop command runs (which ends the capture
 // and sends the normal desk-disconnect result). It runs off the caller's
 // goroutine: the stop can wait 10 s on the capture helper, and the prompt
 // host serializes decisions.
-func (h *Heartbeat) endDesktopSessionByUser(sessionID string) {
+//
+// A stop that fails leaves the capture running: onStopFailed then re-shows
+// the indicator (logged at Error). The API has already recorded
+// ended_by_user for it; that stays (a known limit, no new message).
+func (h *Heartbeat) endDesktopSessionByUser(sessionID string, onStopFailed func()) {
 	if !desktopSessionIDPattern.MatchString(sessionID) {
 		log.Warn("refusing to end a desktop session with an invalid session ID", "sessionId", sessionID)
 		return
@@ -279,13 +326,16 @@ func (h *Heartbeat) endDesktopSessionByUser(sessionID string) {
 		if err := desktopUserEndSender(h, desktopUserEndResult(sessionID)); err != nil {
 			log.Warn("failed to report that the user ended the session; ending it anyway", "sessionId", sessionID, "error", err.Error())
 		}
-		result := handleStopDesktop(h, Command{
+		result := desktopUserEndStop(h, Command{
 			ID:      "desk-stop-" + sessionID,
 			Type:    tools.CmdStopDesktop,
 			Payload: map[string]any{"sessionId": sessionID},
 		})
 		if result.Status != "completed" {
-			log.Warn("failed to stop the desktop session the user ended", "sessionId", sessionID, "error", result.Error)
+			log.Error("the remote session the user ended could not be stopped; it is still active", "sessionId", sessionID, "error", result.Error)
+			if onStopFailed != nil {
+				onStopFailed()
+			}
 		}
 	}()
 }

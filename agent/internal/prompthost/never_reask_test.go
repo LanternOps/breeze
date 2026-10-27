@@ -218,6 +218,41 @@ func TestLocalizeRendersTheExpiryText(t *testing.T) {
 	}
 }
 
+// WithdrawUnplaced decides, atomically, whether a prompt never reached any
+// renderer (so the caller may ask the legacy way): it is false once a
+// renderer was assigned, even if that renderer was lost meanwhile.
+func TestWithdrawUnplacedOnlyWhenNoRendererWasEverAssigned(t *testing.T) {
+	hh := newHarness(t, nativeRenderer("native-1", "remote.consent@1"))
+	lost := &lostRecorder{}
+	// Drawn: never withdrawn this way.
+	if err := hh.h.Show(consentPrompt("consent:w1", &promptCalls{}, lost)); err != nil {
+		t.Fatal(err)
+	}
+	if hh.h.WithdrawUnplaced("consent:w1") || !hh.h.IsOpen("consent:w1") {
+		t.Fatal("a placed prompt was withdrawn")
+	}
+	// Drawn, then lost before the caller looked: still false (the loss
+	// callback answers), and nothing is re-shown.
+	s := showsTo(hh.dir.take(), "native-1")[0]
+	hh.closed("native-1", s, ipc.PromptClosedRenderFailed)
+	if hh.h.WithdrawUnplaced("consent:w1") {
+		t.Fatal("a lost prompt reported as never placed: the caller would re-ask")
+	}
+	// Held behind another modal for the same owner: withdrawn, closed.
+	if err := hh.h.Show(consentPrompt("consent:w2", &promptCalls{}, lost)); err != nil {
+		t.Fatal(err)
+	}
+	if err := hh.h.Show(consentPrompt("consent:w3", &promptCalls{}, lost)); err != nil {
+		t.Fatal(err)
+	}
+	if !hh.h.WithdrawUnplaced("consent:w3") || hh.h.IsOpen("consent:w3") {
+		t.Fatal("a held prompt that no renderer ever drew must be withdrawn")
+	}
+	if hh.h.WithdrawUnplaced("consent:none") {
+		t.Fatal("an unknown prompt")
+	}
+}
+
 // A renderer drops any message whose rev is not greater than the last one
 // it applied for that promptId, also across a close. A Reshowable prompt
 // closed withdrawn and shown again (a viewer reconnect on the same session

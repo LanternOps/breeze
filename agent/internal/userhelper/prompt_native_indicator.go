@@ -19,6 +19,7 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -41,6 +42,23 @@ func pillExStyle(clickable bool) uint32 {
 		style |= pillExTransparent
 	}
 	return style
+}
+
+// pillStyleChangeFailed reports whether toggling the pill's style in place
+// failed: SetWindowLongPtrW returned 0 with a last error (0 alone can be a
+// previous style of 0), or SetWindowPos returned 0.
+func pillStyleChangeFailed(setLongRet uintptr, setLongErr error, setPosRet uintptr) bool {
+	if setPosRet == 0 {
+		return true
+	}
+	if setLongRet != 0 || setLongErr == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(setLongErr, &errno) {
+		return errno != 0
+	}
+	return true
 }
 
 const (

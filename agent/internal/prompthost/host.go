@@ -579,6 +579,25 @@ func (h *Host) PlacementOf(id string, o Owner) (PlacementInfo, bool) {
 	return PlacementInfo{}, false
 }
 
+// WithdrawUnplaced closes an open prompt as withdrawn if, and only if, no
+// renderer was ever assigned to it (it was held, or nothing could draw it),
+// and reports whether it did. It decides under the state lock, so a renderer
+// assigned and lost in between can never read as "never drawn": a caller may
+// then ask another way without asking twice. Unknown or closed prompts
+// (decided, or lost — their callbacks answer) return false.
+func (h *Host) WithdrawUnplaced(id string) bool {
+	ob := &outbox{}
+	h.mu.Lock()
+	rec := h.prompts[id]
+	if rec == nil || rec.everPrompt {
+		h.mu.Unlock()
+		return false
+	}
+	h.closeLocked(rec, ipc.PromptCloseWithdrawn, h.clock.Now(), ob)
+	h.unlockAndFlush(ob)
+	return true
+}
+
 func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) error {
 	u := ipc.PromptUpdate{
 		PromptID:        rec.show.PromptID,
