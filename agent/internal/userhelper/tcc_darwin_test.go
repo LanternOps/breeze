@@ -178,7 +178,7 @@ func TestRequestScreenRecordingAtLoopStart_OnlyDesktopHelper(t *testing.T) {
 			defer restore()
 			markerPath := filepath.Join(t.TempDir(), "screen-recording-requested")
 
-			requestScreenRecordingAtLoopStart(tccLoopPolicyFor(tc.kind), ipc.DesktopContextUserSession, markerPath, time.Now())
+			requestScreenRecordingAtLoopStart(tccLoopPolicyFor(tc.kind, false), ipc.DesktopContextUserSession, markerPath, time.Now())
 
 			if requested != tc.want {
 				t.Fatalf("consent dialog requested = %v, want %v", requested, tc.want)

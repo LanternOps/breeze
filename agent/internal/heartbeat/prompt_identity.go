@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 )
@@ -59,9 +60,19 @@ func (h *Heartbeat) initPromptIdentity(dataDir string) {
 	})
 }
 
-// purgePromptScope removes the prompt-list entries created under an MSP
-// scope the device has left (org move, partner change, re-enrolment).
+// purgePromptScope takes down everything created under an MSP scope the
+// device has left (org move, partner change, re-enrolment), before anything
+// else from that heartbeat applies (it runs inside promptidentity Apply):
+// first the prompts still open in the prompt host — closed on every renderer
+// with the agent close reason withdrawn, because the old MSP no longer asks
+// anything of this device (resolved would claim a decision, superseded a
+// replacement, fenced a renderer move) — then the persisted list entries.
 func (h *Heartbeat) purgePromptScope(old string) {
+	if h.promptHost != nil {
+		if n := h.promptHost.CloseScope(old, ipc.PromptCloseWithdrawn); n > 0 {
+			log.Info("MSP identity scope changed; withdrew open prompts of the old scope", "closed", n)
+		}
+	}
 	if h.promptListStore == nil {
 		return
 	}

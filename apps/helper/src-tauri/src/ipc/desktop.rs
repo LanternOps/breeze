@@ -351,11 +351,24 @@ pub fn place_card(work_area: Rect, size: Size, index: usize) -> Position {
 // Prompt cards (#10190): windows
 // ---------------------------------------------------------------------------
 
-/// The event a card window listens for; carries its `PromptView`. Sent only
-/// to that card's label, never broadcast.
+/// The event a card window listens for: a [`super::prompt::VersionNotice`]
+/// only. The card then pulls its own view (`get_prompt_view`, label-checked).
 pub const PROMPT_UPDATED_EVENT: &str = "prompt-updated";
-/// The event the Notifications tab listens for; carries the list.
+/// The event the Notifications tab listens for: a version notice only. The
+/// main window then pulls the list (`get_notification_list`, main only).
 pub const PROMPT_LIST_EVENT: &str = "prompt-list-updated";
+
+/// The ONLY place a prompt event is emitted (#10190 W04), and its payload is a
+/// [`super::prompt::VersionNotice`] by type. Tauri 2.12 delivers every emit,
+/// `emit_to` included, to a JS `listen()` registered without a target (an
+/// `Any` listener) in ANY window, so targeting cannot keep a payload out of
+/// chat, consent, caller-verify or message windows; a version number reveals
+/// nothing. Pinned by `lib.rs` `prompt_events_carry_only_version_notices`.
+fn emit_version_notice(app: &AppHandle, label: &str, event: &'static str, notice: super::prompt::VersionNotice) {
+    if let Err(e) = app.emit_to(label, event, notice) {
+        eprintln!("[helper] failed to emit {}: {}", event, e);
+    }
+}
 
 const PROMPT_CARD: Size = Size { width: 400.0, height: 300.0 };
 
@@ -431,38 +444,59 @@ pub fn close_prompt_window(app: &AppHandle, prompt_id: &str) {
     }
 }
 
-/// Push a prompt's current view to its card (no-op when it has none).
-pub fn emit_prompt_view(app: &AppHandle, view: &super::prompt::PromptView) {
-    let label = super::prompt::window_label(&view.prompt_id);
+/// Tell a prompt's card that its view changed (no-op when it has no card).
+/// The card pulls the view itself through `get_prompt_view`.
+pub fn emit_prompt_view_notice(app: &AppHandle, prompt_id: &str, notice: super::prompt::VersionNotice) {
+    let label = super::prompt::window_label(prompt_id);
     if app.get_webview_window(&label).is_none() {
         return;
     }
-    if let Err(e) = app.emit_to(label.as_str(), PROMPT_UPDATED_EVENT, view) {
-        eprintln!("[helper] failed to emit {}: {}", PROMPT_UPDATED_EVENT, e);
-    }
+    emit_version_notice(app, &label, PROMPT_UPDATED_EVENT, notice);
 }
 
-/// Push the notification list to the main window's Notifications tab. An
-/// event only: this never shows, focuses or un-minimises the main window.
-pub fn emit_prompt_list(app: &AppHandle, list: &super::prompt::PromptListView) {
-    if let Err(e) = app.emit_to("main", PROMPT_LIST_EVENT, list) {
-        eprintln!("[helper] failed to emit {}: {}", PROMPT_LIST_EVENT, e);
-    }
+/// Tell the main window's Notifications tab that the list changed; it pulls
+/// the list through `get_notification_list`. An event only: this never
+/// shows, focuses or un-minimises the main window.
+pub fn emit_notification_list_notice(app: &AppHandle, notice: super::prompt::VersionNotice) {
+    emit_version_notice(app, "main", PROMPT_LIST_EVENT, notice);
 }
 
-/// After any prompt change: refresh that prompt's card (if open), the
+/// The list notice for the app's bridges (a default bridge stands in for one
+/// that is not managed, which only happens before setup).
+fn list_notice(app: &AppHandle) -> super::prompt::VersionNotice {
+    let prompts = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>();
+    let messages = app.try_state::<std::sync::Arc<super::message::MessageBridge>>();
+    let p = prompts.map(|b| b.tracker().version()).unwrap_or(0);
+    let m = messages.map(|b| b.tracker().version()).unwrap_or(0);
+    super::prompt::VersionNotice { version: p.saturating_add(m) }
+}
+
+/// After any prompt change: notify that prompt's card (if open), the
 /// Notifications tab and the tray entry. Never shows or focuses a window.
 pub fn publish_prompt_state(app: &AppHandle, prompt_id: Option<&str>) {
     let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
-    let now = super::client::now_unix_ms();
-    // Snapshots first; the tracker lock is never held across a window call.
-    let view = prompt_id.and_then(|id| bridge.tracker().view(id, now));
-    let list = bridge.tracker().list_view(now);
-    if let Some(view) = view {
-        emit_prompt_view(app, &view);
+    // Snapshot first; the tracker lock is never held across a window call.
+    let notice = bridge.tracker().change_notice();
+    if let Some(id) = prompt_id {
+        emit_prompt_view_notice(app, id, notice);
     }
-    emit_prompt_list(app, &list);
+    emit_notification_list_notice(app, list_notice(app));
     crate::refresh_tray_menu(app);
+}
+
+/// After an endpoint message card came or went (#10190 W04: message cards
+/// are in the one notification list): notify the Notifications tab and
+/// relabel the tray. Never shows or focuses a window.
+pub fn publish_notification_list(app: &AppHandle) {
+    emit_notification_list_notice(app, list_notice(app));
+    crate::refresh_tray_menu(app);
+}
+
+/// The one window that may read the notification list (#10190 W04): `main`,
+/// whose Notifications tab shows it. Cards, chat, consent, caller-verify and
+/// banner windows may not. Lives here, not in prompt.rs (#8138 guard).
+pub fn list_window_allowed(label: &str) -> bool {
+    label == "main"
 }
 
 /// Windows that may read the MSP identity (#10190 W03): the main window
@@ -487,11 +521,9 @@ pub const PROMPT_IDENTITY_EVENT: &str = "prompt-identity-updated";
 /// checks the caller's label.
 pub fn publish_prompt_identity(app: &AppHandle) {
     let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
-    let notice: super::prompt::PromptIdentityNotice = bridge.tracker().identity_notice();
+    let notice = bridge.tracker().identity_notice();
     for label in app.webview_windows().into_keys().filter(|l| identity_window_allowed(l)) {
-        if let Err(e) = app.emit_to(label.as_str(), PROMPT_IDENTITY_EVENT, notice) {
-            eprintln!("[helper] failed to emit {}: {}", PROMPT_IDENTITY_EVENT, e);
-        }
+        emit_version_notice(app, &label, PROMPT_IDENTITY_EVENT, notice);
     }
     crate::refresh_tray_menu(app);
 }

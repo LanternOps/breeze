@@ -66,7 +66,12 @@ type Client struct {
 	scopes              []string
 	stopChan            chan struct{}
 	desktopMgr          *helperDesktopManager
-	prompts             *nativePromptRenderer // prompt host renderer (#10190; dormant in W02)
+	prompts             *nativePromptRenderer // prompt host renderer (#10190)
+
+	// agentHandlesTCCNotice is this connection's
+	// AuthResponse.AgentHandlesTCCNotice (#10190 W04), set at authentication.
+	agentHandlesTCCNotice bool
+
 	// desktopFence is the helper half of the start fence: seeded from
 	// the service on connect, maintained from the starts and stops this helper
 	// sees. Zero value ready to use.
@@ -230,8 +235,9 @@ func (c *Client) Run() error {
 	// Start TCC permission check loop (macOS only; no-op on other platforms).
 	// It never captures the screen (#8390), so it needs no coordination with
 	// a live session's capturer.
+	agentHandlesTCC := c.agentHandlesTCCNotice
 	safeGo("tcc_check", func() {
-		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind)
+		runTCCCheckLoop(c.conn, runDone, c.context, c.binaryKind, agentHandlesTCC)
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
@@ -332,6 +338,7 @@ func (c *Client) authenticate() error {
 	displayEnv := detectDisplayEnv()
 	// Opaque, host-identity-free session id (#3109) — see newSessionID.
 	sessionID := newSessionID()
+	promptProtocol, promptKinds := NativePromptAdvertisement(c.role)
 
 	supportsConsent := consentUISupported()
 	authReq := ipc.AuthRequest{
@@ -355,8 +362,8 @@ func (c *Client) authenticate() error {
 		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
 		// Prompt host (#10190): protocol 1 with zero kinds in W02, so the
 		// broker grants no prompt scope and every prompt stays legacy.
-		PromptProtocolVersion: nativePromptProtocolFor(c.role),
-		PromptKinds:           advertisedNativePromptKinds(c.role),
+		PromptProtocolVersion: promptProtocol,
+		PromptKinds:           promptKinds,
 		RendererVersion:       helperRendererVersion(),
 		// The session's UI language (#10190 W03); the agent negotiates it.
 		UILocale: helperUILocale(),
@@ -413,6 +420,7 @@ func (c *Client) authenticate() error {
 	c.sessionKey = key
 	c.agentID = authResp.AgentID
 	c.scopes = authResp.AllowedScopes
+	c.agentHandlesTCCNotice = !ShowsOwnTCCReminder(authResp)
 	c.setAuthenticatedAt(time.Now())
 
 	return nil

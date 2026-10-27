@@ -1071,6 +1071,17 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
   manage_fleet_findings: new Set(['title']),
   manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
+  // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
+  // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
+  // warranty strings are device-reported, vendor-reported or staff-authored. Data for the model, never instructions.
+  get_device_events: new Set(['message', 'action', 'name', 'errorMessage', 'hostname']),
+  get_device_health: new Set(['reason', 'agentVersion', 'hostname']),
+  get_process_samples: new Set(['name', 'user', 'hostname']),
+  get_management_posture: new Set(['name', 'version', 'product', 'hostname', 'displayName', 'orgName']),
+  manage_device_function: new Set(['label', 'evidence']),
+  manage_device_links: new Set(['name', 'hostname', 'displayName']),
+  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
+  manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

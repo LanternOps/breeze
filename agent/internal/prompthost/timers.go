@@ -37,7 +37,13 @@ func (h *Host) Tick() {
 			}
 			continue
 		}
-		if !rec.expiryFired && rec.everPrompt {
+		// A prompt that never reached a renderer through the contract is
+		// expired by the host only when its expiry has no domain
+		// consequence (no OnExpire: a notice). Then the deadline just reaps
+		// the record and settles its list entry; a legacy-only prompt whose
+		// domain acts at expiry (restart, consent, elevation) keeps W02
+		// semantics: its legacy surface owns its own timeout.
+		if !rec.expiryFired && (rec.everPrompt || rec.p.OnExpire == nil) {
 			if d := rec.deadline(); !d.IsZero() && !now.Before(d) {
 				expiring = append(expiring, rec.show.PromptID)
 				continue

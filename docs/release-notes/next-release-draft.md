@@ -16,6 +16,8 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **On-device notices are opt-in (#10190 W04).** `PROMPT_HOST_ENABLED_KINDS` is optional. Unset (or `default`) means the code default, which enables nothing in this release. Set it to `notice.info` on the `api` service to opt in. Enable it only after this release's Breeze Assist build is published. No migration.
+
 ## Features / API
 
 ## Migrations
@@ -34,7 +36,11 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 ### On-device dialogs (#10190)
 
 - **One MSP identity for device prompts.** The server now resolves, in one place, the name, colour and logo a device's prompts are drawn under: the partner name (sanitized; an organization can never change it), with the colour and logo from Settings → Partner → Branding and the organization's portal branding winning where one is set. Agents that report `securityCapabilities.promptIdentityProtocolVersion: 1` receive it as a new heartbeat block, `promptIdentity` (no shipped agent reports it yet), and download the logo from the new agent-authenticated `GET /api/v1/agents/:id/prompt-identity/logo?sha256=<hex>`. Only PNG, JPEG or WebP logos of at most 256 KB and 1024 px per side are used; SVG and anything else mean no logo. An `https://` logo is fetched once by the server through the SSRF guard and cached; the device never fetches a URL. Endpoint-message sender cards use the same resolver: unchanged for partners without an organization portal colour, and an organization's portal colour now sets the accent.
-- **The caller-verification card now shows the Partner → Branding logo** (or the organization's portal branding logo where one is set) instead of the partner's login-page logo. Only an `https://` logo is shown there; an uploaded logo is not sent to the card yet. No migration, no new environment variables.
+- **The caller-verification card now shows the Partner → Branding logo** (or the organization's portal branding logo where one is set) instead of the partner's login-page logo. An `https://` logo is shown as before; an uploaded logo is shown once the agent has synced it to Breeze Assist and `/api/v1/helper/config` names the same logo (`branding.logo`, W04 below). No migration, no new environment variables.
+- **Notice cards and one notification list (W04).** With `notice.info` enabled, Breeze Assist draws notices as small cards that never take focus and stay in its Notifications list until they expire. Endpoint message cards look as before and now appear in the same list; the tray's "Notifications (n)" counts both.
+- **Safe-mode, macOS permission and remote-session-ended notices** move onto the prompt contract when `notice.info` is enabled and the device's Assist supports it; otherwise they use today's toasts and dialogs.
+- **The caller-verification card now shows uploaded logos.** When the logo named in `/api/v1/helper/config` (`branding.logo`) is the one the agent synced to Breeze Assist, the card draws those bytes. Otherwise it shows the `https://` logo as before, or none.
+- **Endpoint messages fall back to the generic sender identity** when the partner name sanitizes to empty, instead of failing the send.
 
 ### Flows — Jobs conversion (#5215 W06)
 

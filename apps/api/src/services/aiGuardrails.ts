@@ -182,6 +182,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_software_deployments: ['cancel'],
   manage_fleet_findings: ['acknowledge', 'dismiss', 'reopen'],
   manage_custom_fields: ['create_definition', 'update_definition'],
+  // Full-control W13 (#6783, plan class review): tenant-internal and reversible. A link group only changes how the
+  // device list renders its members (nothing targets or alerts by it) and is undone by linking again — dissolve
+  // included (members keep their data). A manual asset is one hand-entered inventory row; link / unlink attach it to
+  // a device or a discovered asset for de-duplication. Its hard delete is tier 3.
+  manage_device_links: ['create', 'update', 'dissolve'],
+  manage_manual_assets: ['create', 'update', 'link', 'unlink'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -425,6 +431,11 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_software_catalog: ['list', 'get'],
   manage_software_deployments: ['list', 'get', 'summary', 'results'],
   manage_software_inventory: ['list', 'names', 'devices'],
+  // Full-control W13 (#6783): the device-record reads.
+  manage_device_function: ['get'],
+  manage_device_links: ['list', 'get', 'for_device'],
+  manage_manual_assets: ['list'],
+  manage_device_warranty: ['get', 'expiring'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -618,6 +629,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_device_software: ['update', 'uninstall'],
   manage_software_inventory: ['approve', 'deny', 'clear'],
   manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783): see TIER3_SUPERVISED_ACTIONS.
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -965,6 +980,15 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_device_software: ['update', 'uninstall'],
   manage_software_inventory: ['approve', 'deny', 'clear'],
   manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783, plan class review). One approver (the requester):
+  // - a device function is an ALLOWED execution-targeting filter (filterEngine.ts field table): setting or clearing it
+  //   changes which devices dynamic groups select for scripts, deployments and policy (plan fact 1);
+  // - a manual-asset delete is a hard delete with no restore (retiredAt is the soft path);
+  // - a warranty refresh sends the device's serial number to the manufacturer's warranty API now (spec class rule:
+  //   nothing that leaves the tenant may be tier 2).
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -2607,6 +2631,37 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   manage_fleet_findings: { resource: 'devices', action: 'write' },
   manage_custom_fields: { resource: 'devices', action: 'write' },
+  // Full-control W13 (#6783, PR A) — each floor is read from its route by the W13 rows of
+  // aiGuardrails.routeBinding.contract.test.ts.
+  get_device_events: { resource: 'devices', action: 'read' },
+  get_device_health: { resource: 'devices', action: 'read' },
+  get_process_samples: { resource: 'devices', action: 'read' },
+  get_management_posture: { resource: 'devices', action: 'read' },
+  manage_device_function: {
+    get: { resource: 'devices', action: 'read' },
+    set: { resource: 'devices', action: 'write' },
+  },
+  manage_device_links: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    for_device: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    dissolve: { resource: 'devices', action: 'delete' },
+  },
+  manage_manual_assets: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'delete' },
+    link: { resource: 'devices', action: 'write' },
+    unlink: { resource: 'devices', action: 'write' },
+  },
+  manage_device_warranty: {
+    get: { resource: 'devices', action: 'read' },
+    expiring: { resource: 'devices', action: 'read' },
+    refresh: { resource: 'devices', action: 'write' },
+  },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };

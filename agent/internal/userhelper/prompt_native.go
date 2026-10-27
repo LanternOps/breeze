@@ -11,9 +11,9 @@
 // timeout into a decision, render operator text on a breeze-class kind, keep
 // a dialog up the agent closed, or draw a second copy of a prompt.
 //
-// Dormant in W02: the helper advertises protocol 1 and zero kinds, so the
-// broker never routes a prompt_* to it; anything that arrives anyway is
-// answered prompt_closed{render_failed} (spec §3.1 rule 4).
+// W04 advertises notice.info@1 (the user helper only); any other kind that
+// arrives anyway is answered prompt_closed{render_failed} (spec §3.1 rule 4).
+// A notice is live only where the server also enables it.
 package userhelper
 
 import (
@@ -51,11 +51,20 @@ func helperRendererVersion() string {
 }
 
 // advertisedNativePromptKinds is what the native renderer advertises at
-// auth ("<kind>@<n>"). Empty in W02: kinds are added by the wave that ships
-// each one (plan P2).
+// auth ("<kind>@<n>"). Kinds are added by the wave that ships each one (plan
+// P2): W04 adds notice.info@1 for the user helper. The SYSTEM helper's
+// renderer (elevation) ships in W07 (P14).
 func advertisedNativePromptKinds(role ipc.HelperRole) []string {
-	_ = role
+	if role == ipc.HelperRoleUser {
+		return []string{"notice.info@1"}
+	}
 	return []string{}
+}
+
+// NativePromptAdvertisement is what a native helper of this build advertises
+// at auth for a role: AuthRequest.PromptProtocolVersion and PromptKinds.
+func NativePromptAdvertisement(role ipc.HelperRole) (protocol int, kinds []string) {
+	return nativePromptProtocolFor(role), advertisedNativePromptKinds(role)
 }
 
 // nativePromptProtocolFor is the prompt protocol a helper role advertises.
@@ -497,10 +506,22 @@ type nativePromptRenderer struct {
 	// answered.
 	ended      map[string]ipc.PromptShow
 	endedOrder []string
+
+	// Notice delivery (notice_delivery.go): the session's notification
+	// state (nil where the platform has no such query: the notice is the
+	// dialog), the toast, and the re-poll interval of a held notice.
+	noticeState  func() (uint32, error)
+	toast        func(ipc.NotifyRequest) bool
+	noticeRepoll time.Duration
+	// noticeStateFailing / noticeStateWarnings (guarded by mu): the query
+	// is failing, and how many failure streaks were warned about.
+	noticeStateFailing  bool
+	noticeStateWarnings int
 }
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
-	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{}}
+	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{},
+		noticeState: platformNotificationState, toast: showNotification, noticeRepoll: defaultNoticeRepoll}
 	for _, ad := range advertised {
 		r.advertised[ad] = true
 	}
@@ -685,6 +706,17 @@ func (r *nativePromptRenderer) takeDown(promptID string) {
 }
 
 func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
+	if p.Presentation == ipc.PromptPresentationListOnly || p.State.Terminal() {
+		// A list entry (a reconnect replay, a rate-limited card) or a
+		// finished outcome: a native helper has no list, so nothing is
+		// drawn and nothing is re-toasted. It is remembered so a later
+		// update or a restored card at a newer rev is handled.
+		r.takeDown(p.PromptID)
+		r.mu.Lock()
+		r.rememberEndedLocked(p)
+		r.mu.Unlock()
+		return
+	}
 	m, err := buildNativePromptModel(p, r.now(), nil)
 	if err != nil {
 		detail := "invalid_prompt"
@@ -714,6 +746,19 @@ func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
 		return act.show.Lease // a replay may have moved it
 	}
 	go func() {
+		if r.usesNotificationState(p) && r.deliverNotice(ctx, p, m, lease) {
+			// Toasted, or the hold ended (withdrawn, expired): no dialog,
+			// nothing more to report. The agent's list keeps the entry.
+			r.mu.Lock()
+			if r.active[p.PromptID] == act {
+				delete(r.active, p.PromptID)
+				if ctx.Err() == nil {
+					r.rememberEndedLocked(act.show)
+				}
+			}
+			r.mu.Unlock()
+			return
+		}
 		var out nativeOutcome
 		func() {
 			defer func() {

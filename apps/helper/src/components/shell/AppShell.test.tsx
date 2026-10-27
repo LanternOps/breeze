@@ -41,11 +41,11 @@ vi.mock('../../stores/workspaceStore', () => {
 });
 
 // The prompt notification list (#10190) comes from Rust; tests set it here.
-const promptList = vi.hoisted(() => ({ entries: [] as unknown[] }));
+const promptList = vi.hoisted(() => ({ entries: [] as unknown[], messages: [] as unknown[] }));
 vi.mock('../../prompt/NotificationsTab', () => ({
-  usePromptList: () => ({ entries: promptList.entries, act: vi.fn(), error: null }),
-  NotificationsTab: ({ entries }: { entries: unknown[] }) => (
-    <div data-testid="notifications-tab">{entries.length} notifications</div>
+  useNotificationList: () => ({ entries: promptList.entries, messages: promptList.messages, act: vi.fn(), error: null }),
+  NotificationsTab: ({ entries, messages = [] }: { entries: unknown[]; messages?: unknown[] }) => (
+    <div data-testid="notifications-tab">{entries.length + messages.length} notifications</div>
   ),
 }));
 
@@ -385,4 +385,17 @@ it('shows the Notifications tab while the list has entries and opens the list', 
   expect(screen.getByTestId('notifications-tab')).toHaveTextContent('1 notifications');
   expect(document.querySelectorAll('.helper-header')).toHaveLength(1);
   promptList.entries = [];
+});
+
+// #10190 W04: message cards are in the one list, so a message alone shows it.
+it('shows the Notifications tab for a message card alone', () => {
+  promptList.entries = [];
+  promptList.messages = [{ messageId: 'm-1' }];
+  setWorkspaceState({ available: true });
+
+  render(<AppShell />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Notifications' }));
+
+  expect(screen.getByTestId('notifications-tab')).toHaveTextContent('1 notifications');
+  promptList.messages = [];
 });

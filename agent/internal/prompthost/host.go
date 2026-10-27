@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -65,6 +66,7 @@ type Host struct {
 
 	mu        sync.Mutex
 	enabled   EnabledKinds
+	kinds     map[string]map[int]KindSpec // kinds this build constructs (RegisterKind)
 	prompts   map[string]*record
 	tombs     *tombstones
 	limiter   *cardLimiter
@@ -115,6 +117,9 @@ type placement struct {
 	sendFailed  bool // the last prompt_show never left; fall back at the next tick
 	legacyDone  bool
 	tried       map[string]bool
+	// locale is the catalog locale this placement's copy is rendered in
+	// (Prompt.Localize), fixed at each assignment ("" = not assigned yet).
+	locale promptcatalog.Locale
 }
 
 func (pl *placement) lease() ipc.PromptLease {
@@ -131,6 +136,7 @@ func New(deps Deps) *Host {
 		identity:  deps.Identity,
 		osLocale:  deps.OSLocale,
 		prompts:   map[string]*record{},
+		kinds:     map[string]map[int]KindSpec{},
 		tombs:     newTombstones(deps.Inbox),
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
@@ -384,6 +390,7 @@ func (h *Host) modalBusy(rec *record, o Owner) bool {
 // assign moves a placement onto the chosen path.
 func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *outbox, fromFallback bool) {
 	pl.path = c.Path
+	pl.locale = h.placementLocale(c)
 	pl.sendFailed = false
 	switch c.Path {
 	case PathPrompt:
@@ -457,7 +464,7 @@ func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 		s.Presentation = ipc.PromptPresentationListOnly
 		s.Focus = ipc.PromptFocusNoActivate
 	}
-	return s
+	return h.localize(rec, s, pl.locale)
 }
 
 // wireTiming never restarts a budget: once a response window has started
@@ -556,7 +563,9 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
-	h.tombs.add(rec.show.PromptID, now, ob, h)
+	if !rec.p.Reshowable || reason == ipc.PromptCloseResolved {
+		h.tombs.add(rec.show.PromptID, now, ob, h)
+	}
 	if h.inbox == nil || !rec.show.ListEntry.Persistent {
 		return
 	}
@@ -604,13 +613,19 @@ func (h *Host) persist(rec *record, now time.Time, ob *outbox) {
 	inbox := h.inbox
 	seen := map[string]bool{}
 	for _, pl := range rec.placements {
+		loc := pl.locale
+		if loc == "" {
+			// Held (locked session, busy modal) before any assignment: the
+			// entry still reads in the machine's language.
+			loc = h.SessionLocale(RendererSession{})
+		}
 		e := ListEntry{
 			ID:        listEntryID(rec.show.PromptID, pl.owner),
 			PromptID:  rec.show.PromptID,
 			OwnerKey:  pl.owner.PrincipalKey(),
 			ScopeID:   scope,
 			ExpiresAt: expires,
-			Show:      rec.show,
+			Show:      h.localize(rec, rec.show, loc),
 		}
 		if seen[e.ID] {
 			continue // one principal in two sessions: one entry
@@ -816,6 +831,7 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		h.mu.Unlock()
 		return invalid(slog.LevelDebug, "the domain refused a prompt action")
 	}
+	changed := outcome.Close != nil
 	if cur != nil {
 		patch := outcome.Patch
 		if patch == nil && hasNext && next != cur.show.State {
@@ -824,6 +840,8 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		if patch != nil {
 			if perr := h.applyPatch(cur, *patch, now, ob); perr != nil {
 				h.log.Warn("prompt action patch refused", "promptId", m.PromptID, "error", perr.Error())
+			} else {
+				changed = true
 			}
 		}
 		res.Rev = cur.show.Rev
@@ -832,7 +850,13 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		}
 	}
 	res.Result = ipc.PromptActionAccepted
-	rec.results[key] = res
+	// Remember the answer only for an action that changed the prompt (a
+	// decision): a duplicate of that click must not apply it twice. An
+	// action that leaves the prompt as it was (Open Settings) keeps the
+	// same rev, and the person may take it again.
+	if changed {
+		rec.results[key] = res
+	}
 	h.unlockAndFlush(ob)
 	h.log.Info("prompt action accepted", "promptId", m.PromptID, "action", m.ActionID, "via", m.Via, "renderer", fromKey)
 	return res

@@ -250,6 +250,15 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   bootstrap_homebrew: { limit: 10, windowSeconds: 300 },
   manage_fleet_findings: { limit: 30, windowSeconds: 300 },
   manage_custom_fields: { limit: 20, windowSeconds: 300 },
+  // Full-control W13 (#6783, W13-D9): device reads 40/300 s, record writes 20/300 s, the vendor lookup 10/300 s.
+  get_device_events: { limit: 40, windowSeconds: 300 },
+  get_device_health: { limit: 40, windowSeconds: 300 },
+  get_process_samples: { limit: 40, windowSeconds: 300 },
+  get_management_posture: { limit: 20, windowSeconds: 300 },
+  manage_device_function: { limit: 20, windowSeconds: 300 },
+  manage_device_links: { limit: 20, windowSeconds: 300 },
+  manage_manual_assets: { limit: 20, windowSeconds: 300 },
+  manage_device_warranty: { limit: 10, windowSeconds: 300 },
 };
 
 /**

@@ -702,6 +702,16 @@ export const TOOL_TIERS = {
   bootstrap_homebrew: 3,
   manage_fleet_findings: 2,
   manage_custom_fields: 2,
+  // Spec 2026-09-23 W13 (#6783): device inventory + ops. Per-action classes live in aiGuardrails (W13 class
+  // review); every tool is tier 1 at the registry and its writes are classed per action.
+  get_device_events: 1,
+  get_device_health: 1,
+  get_process_samples: 1,
+  get_management_posture: 1,
+  manage_device_function: 1,
+  manage_device_links: 1,
+  manage_manual_assets: 1,
+  manage_device_warranty: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3187,6 +3197,8 @@ export function buildBreezeSdkTools(
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
         message: z.string().max(500).optional(),
+        // Full-control W13 (#6783): watchdog logs only, or excluding them.
+        source: z.enum(['agent', 'watchdog']).optional(),
         ...keysetZodShape(18, 500),
         includeFields: z.boolean().optional(),
       },
@@ -3892,6 +3904,64 @@ export function buildBreezeSdkTools(
       registryDescription('manage_custom_fields'),
       inputShape('manage_custom_fields'),
       makeHandler('manage_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and per-device records. Reads are tier 1; writes
+    // are classed in aiGuardrails; manage_device_function:set is agent-human-only.
+    tool(
+      'get_device_events',
+      registryDescription('get_device_events'),
+      inputShape('get_device_events'),
+      makeHandler('get_device_events', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_health',
+      registryDescription('get_device_health'),
+      inputShape('get_device_health'),
+      makeHandler('get_device_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_process_samples',
+      registryDescription('get_process_samples'),
+      inputShape('get_process_samples'),
+      makeHandler('get_process_samples', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_management_posture',
+      registryDescription('get_management_posture'),
+      inputShape('get_management_posture'),
+      makeHandler('get_management_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_function',
+      registryDescription('manage_device_function'),
+      inputShape('manage_device_function'),
+      makeHandler('manage_device_function', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_links',
+      registryDescription('manage_device_links'),
+      inputShape('manage_device_links'),
+      makeHandler('manage_device_links', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_manual_assets',
+      registryDescription('manage_manual_assets'),
+      inputShape('manage_manual_assets'),
+      makeHandler('manage_manual_assets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_warranty',
+      registryDescription('manage_device_warranty'),
+      inputShape('manage_device_warranty'),
+      makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

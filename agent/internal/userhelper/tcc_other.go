@@ -20,5 +20,5 @@ func RequestScreenRecording() bool {
 }
 
 // RunTCCCheckLoop is a no-op on non-macOS platforms or when CGO is disabled.
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string) {
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool) {
 }

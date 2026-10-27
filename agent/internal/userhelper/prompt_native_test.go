@@ -224,9 +224,17 @@ func envelopeFor(t *testing.T, typ string, payload any) *ipc.Envelope {
 	return &ipc.Envelope{ID: "e-1", Type: typ, Payload: raw}
 }
 
-func TestNativeRendererAdvertisesNothingInW02(t *testing.T) {
-	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); len(got) != 0 {
-		t.Fatalf("W02 native helper advertises %v; it must advertise zero kinds", got)
+// W04 (#10190): the native user-helper advertises notice.info@1 and nothing
+// else (plan P2: a kind is advertised by the wave that ships it). The SYSTEM
+// helper still advertises nothing.
+func TestNativeRendererAdvertisesOnlyNoticeInfoInW04(t *testing.T) {
+	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); len(got) != 1 || got[0] != "notice.info@1" {
+		t.Fatalf("W04 native helper advertises %v; want exactly notice.info@1", got)
+	}
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
+		if got := advertisedNativePromptKinds(role); len(got) != 0 {
+			t.Fatalf("role %s advertises %v; only the user helper renders natively", role, got)
+		}
 	}
 	if nativePromptProtocolFor(ipc.HelperRoleUser) != ipc.PromptProtocolVersion {
 		t.Fatal("the user helper speaks the prompt protocol")
@@ -236,7 +244,7 @@ func TestNativeRendererAdvertisesNothingInW02(t *testing.T) {
 	}
 	sink := &promptSink{}
 	r := newNativePromptRenderer(advertisedNativePromptKinds(ipc.HelperRoleUser), (&fakeNativeShow{}).show, sink.send, func() time.Time { return nativeNow })
-	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.notice.json")))
+	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.restart.json")))
 	closed := sink.waitFor(t, ipc.TypePromptClosed).(ipc.PromptClosed)
 	if closed.Reason != ipc.PromptClosedRenderFailed || closed.Detail != "unadvertised_kind" {
 		t.Fatalf("closed = %+v; an unadvertised prompt_show is answered render_failed (rule 4)", closed)

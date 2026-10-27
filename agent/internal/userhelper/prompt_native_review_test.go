@@ -12,7 +12,12 @@ import (
 func newTestRenderer(t *testing.T, fake *fakeNativeShow) (*nativePromptRenderer, *promptSink) {
 	t.Helper()
 	sink := &promptSink{}
-	return newNativePromptRenderer([]string{"restart.prompt@1", "elevation.request@1", "notice.info@1"}, fake.show, sink.send, func() time.Time { return nativeNow }), sink
+	r := newNativePromptRenderer([]string{"restart.prompt@1", "elevation.request@1", "notice.info@1"}, fake.show, sink.send, func() time.Time { return nativeNow })
+	// Never the real SHQueryUserNotificationState or a real toast in a test;
+	// notice_delivery_test.go installs fakes where it needs them.
+	r.noticeState = nil
+	r.toast = func(ipc.NotifyRequest) bool { return false }
+	return r, sink
 }
 
 func (s *promptSink) count(typ string) int {

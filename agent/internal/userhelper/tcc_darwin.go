@@ -241,9 +241,11 @@ func probeFullDiskAccess() bool {
 // the slower interval once all are granted.
 //
 // Only the desktop helper prompts (tccLoopPolicyFor), and no check captures
-// the screen (#8058, #8390).
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string) {
-	policy := tccLoopPolicyFor(binaryKind)
+// the screen (#8058, #8390). agentHandlesNotice (AuthResponse
+// .AgentHandlesTCCNotice, #10190 W04) silences the helper's own Full Disk
+// Access guidance: the agent shows the permission notice from these reports.
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, agentHandlesNotice bool) {
+	policy := tccLoopPolicyFor(binaryKind, agentHandlesNotice)
 	startedAt := time.Now()
 	var seq uint64
 	var consecutiveFailures int
@@ -271,8 +273,11 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 		// (unlike Screen Recording / Accessibility, whose system dialogs fire via
 		// RequestScreenRecording() and CheckTCCPermissions()). Without an
 		// on-machine dialog the user gets no signal that the one required manual
-		// grant is missing — exactly the "no third popup" report. Surface it here.
-		handleFullDiskAccessGuidance(status, promptFile)
+		// grant is missing — exactly the "no third popup" report. Surface it here,
+		// unless the agent shows the permission notice itself (#10190 W04).
+		if policy.remindPermissions {
+			handleFullDiskAccessGuidance(status, promptFile)
+		}
 
 		// Tell the user when setup finishes. Skip the first check so a machine
 		// that was already fully granted doesn't get a spurious notification.

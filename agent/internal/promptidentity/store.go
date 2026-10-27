@@ -157,7 +157,8 @@ type Options struct {
 	// channel (nil = FetchLogo fails with ErrNoFetcher).
 	Fetch func(ctx context.Context, sha string) ([]byte, error)
 	// OnScopeChange runs with the old scope before an identity under another
-	// scope is stored. It must not call back into the store.
+	// scope is stored, without the store's lock held: it may read the store
+	// (which still returns the old identity) but must not Apply or Clear.
 	OnScopeChange func(oldScope string)
 	Log           *slog.Logger
 
@@ -189,6 +190,10 @@ type Store struct {
 	dir  string
 	opts Options
 	log  *slog.Logger
+
+	// applyMu serialises Apply and Clear; it is taken before mu and held
+	// across OnScopeChange, which runs without mu.
+	applyMu sync.Mutex
 
 	mu     sync.Mutex
 	cur    *persistedIdentity
@@ -295,6 +300,17 @@ func (s *Store) Current() (Identity, bool) {
 	return id, true
 }
 
+// WithSettledIdentity runs f with the current identity once no Apply or
+// Clear is in progress, and keeps them out until f returns. A caller that
+// creates a prompt stamped with the scope uses it, so the prompt cannot be
+// created under a scope whose prompts a running scope change has already
+// taken down. f must not call Apply or Clear.
+func (s *Store) WithSettledIdentity(f func(id Identity, ok bool)) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	f(s.Current())
+}
+
 // LastScopeID is the scope of the current identity, or the scope last
 // dropped by Clear / "cleared" ("" = none ever).
 func (s *Store) LastScopeID() string {
@@ -338,6 +354,22 @@ func (s *Store) Apply(b *HeartbeatBlock) (changed, scopeChanged bool, err error)
 	if err := b.validate(); err != nil {
 		return false, false, err
 	}
+	// applyMu serialises the changes of the identity (Apply, Clear) so the
+	// scope-change callback can run without mu: it closes the old scope's
+	// prompts in the prompt host, whose branding flush reads Current()
+	// while holding the host's flush lock (#10190 W04). While the callback
+	// runs the old identity is still the current one, so nothing publishes
+	// the new identity before the old scope is gone.
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	if b.State == StateSet {
+		s.mu.Lock()
+		last := s.lastScopeLocked()
+		s.mu.Unlock()
+		if last != "" && last != b.ScopeID && s.opts.OnScopeChange != nil {
+			s.opts.OnScopeChange(last)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -360,11 +392,10 @@ func (s *Store) Apply(b *HeartbeatBlock) (changed, scopeChanged bool, err error)
 		l := *b.Logo
 		next.Logo = &l
 	}
+	// The same answer as before the callback: applyMu kept Apply and Clear
+	// out, and nothing else changes the scope.
 	last := s.lastScopeLocked()
 	scopeChanged = last != "" && last != next.ScopeID
-	if scopeChanged && s.opts.OnScopeChange != nil {
-		s.opts.OnScopeChange(last)
-	}
 
 	// Keep the stored logo only within the same scope and while the server
 	// still announces a logo; a new sha keeps the last-known one until its
@@ -403,6 +434,8 @@ func sameMeta(a, b *LogoMeta) bool {
 // is remembered so the next identity under another scope purges it. A store
 // that never held anything writes nothing.
 func (s *Store) Clear() error {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cur == nil && !s.onDisk {

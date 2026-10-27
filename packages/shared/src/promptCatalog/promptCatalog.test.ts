@@ -241,3 +241,49 @@ describe('renderPromptMessage', () => {
     ]);
   });
 });
+
+// W04 (#10190): the notice.info copy the agent renders (agent/internal/promptkinds).
+describe('notice namespace', () => {
+  const NOTICE_KEYS = [
+    'action.ok',
+    'action.openSettings',
+    'safeMode.title',
+    'safeMode.body',
+    'safeMode.bodyNow',
+    'sessionEnded.title',
+    'sessionEnded.body',
+    'sessionEnded.bodyNoTechnician',
+    'sessionEnded.durationLabel',
+    'sessionEnded.durationMinutes',
+    'sessionEnded.durationUnderMinute',
+    'tcc.title',
+    'tcc.bodyFullDiskAccess',
+    'tcc.bodyOthers',
+    'tcc.missingLabel',
+    'tcc.permission.fullDiskAccess',
+    'tcc.permission.screenRecording',
+    'tcc.permission.accessibility',
+  ];
+
+  it('is registered and carries exactly the keys the agent renders', () => {
+    expect(Object.keys(PROMPT_CATALOG)).toContain('notice');
+    const ns = (PROMPT_CATALOG as Record<string, { messages: Record<string, unknown> }>).notice;
+    expect(Object.keys(ns?.messages ?? {}).sort()).toEqual([...NOTICE_KEYS].sort());
+  });
+
+  it('leaves the safe-mode time to the renderer', () => {
+    expect(renderPromptMessage('notice', 'safeMode.body', 'en', { at: '{time:1767225600000}' })).toContain(
+      '{time:1767225600000}',
+    );
+  });
+
+  it('renders in the session locale', () => {
+    expect(renderPromptMessage('notice', 'action.ok', 'tr-TR')).toBe('Tamam');
+    expect(renderPromptMessage('notice', 'action.openSettings', 'de-DE')).toBe('Einstellungen öffnen');
+    expect(renderPromptMessage('notice', 'sessionEnded.body', 'fr-CA', { technician: 'Dana' })).toContain('Dana');
+  });
+
+  it('needs the technician parameter', () => {
+    expect(() => renderPromptMessage('notice', 'sessionEnded.body', 'en', {})).toThrow(/needs parameter "technician"/);
+  });
+});

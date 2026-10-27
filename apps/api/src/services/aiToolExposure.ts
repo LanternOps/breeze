@@ -205,5 +205,7 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   ['manage_audit_baselines:create', 'An active audit baseline replaces the org\'s active one and enrols every device of that OS in the daily audit-policy collection; a user-owned release would run it as the approving human and lose the run\'s site ceiling.'],
   // Full-control W12 (#6782, W12 plan agent exposure).
   ['manage_device_software:uninstall', 'Removing an application from a customer machine is irreversible (no undo, no dry run); a person decides it.'],
+  // Full-control W13 (#6783, W13 plan agent exposure; the W02-D2 manage_tags precedent).
+  ['manage_device_function:set', 'A device function is an allowed execution-targeting filter: it selects dynamic-group members, which feed an agent run\'s own scope (triggers.deviceGroupIds), so a run must not set it.'],
   ['manage_audit_baselines:request_apply', 'An apply request is the input to a second person\'s approval that pushes audit policy to up to 500 devices; its requester must be a person, who then cannot approve it.'],
 ]);

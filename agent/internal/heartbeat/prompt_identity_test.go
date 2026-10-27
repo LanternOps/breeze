@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/inbox"
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 )
 
@@ -214,5 +217,79 @@ func TestHeartbeatLogoFailureKeepsLastKnownAndBacksOff(t *testing.T) {
 	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: block})
 	if calls.Load() != before+1 {
 		t.Fatalf("bad logo refetched immediately (%d fetches)", calls.Load()-before)
+	}
+}
+
+// openPromptProbe observes, from a step that runs later in
+// processHeartbeatResponse, whether a prompt was still open in the host.
+type openPromptProbe struct {
+	fakeRollbackController
+	h        *Heartbeat
+	promptID string
+	open     bool
+	ran      bool
+}
+
+func (s *openPromptProbe) Acknowledge(id string) error {
+	s.ran = true
+	s.open = s.h.promptHost.IsOpen(s.promptID)
+	return s.fakeRollbackController.Acknowledge(id)
+}
+
+// W03 follow-up (#10190 W04): a scope change closes the old scope's prompts
+// that are still open in the prompt host — not only their persisted list
+// entries — before anything else from that heartbeat applies, with the
+// agent close reason withdrawn (the old MSP no longer asks anything of this
+// device). A prompt of the new scope stays.
+func TestScopeChangeClosesOpenPromptsBeforeAnythingElse(t *testing.T) {
+	h, _, _ := identityHeartbeat(t, fixtureLogoHandler(t))
+	probe := noticeProbe(t, "dana", 501, true)
+	broker := newTestBrokerWithSessions(t, probe.session)
+	h.sessionBroker = broker
+	h.promptHost = prompthost.New(prompthost.Deps{Broker: prompthost.NewBrokerDirectory(broker), Inbox: &inbox.PromptInbox{Store: h.promptListStore}, Identity: h.promptIdentity})
+	promptkinds.Register(h.promptHost)
+	// Every response carries the kill switch: an absent block means off.
+	noticeOn := &PromptHostSettings{EnabledKinds: []string{"notice.info"}}
+
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeA), PromptHost: noticeOn})
+	h.notifySafeModeReboot(10)
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptShow)) == 1 }, "the notice under scope A")
+	show := decodeShow(t, envelopesOf(probe, ipc.TypePromptShow)[0])
+	if show.IdentityRef == nil || show.IdentityRef.ScopeID != hbScopeA {
+		t.Fatalf("the notice must carry the identity it was created with: %+v", show.IdentityRef)
+	}
+	if !h.promptHost.IsOpen(show.PromptID) {
+		t.Fatal("notice not open")
+	}
+
+	snap := &openPromptProbe{h: h, promptID: show.PromptID}
+	h.rollbackController = snap
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeB), AcknowledgedRollbackObservationID: "obs-1", PromptHost: noticeOn})
+	if !snap.ran {
+		t.Fatal("the later response step did not run")
+	}
+	if snap.open {
+		t.Fatal("the old scope's prompt was still open when the rest of the response ran")
+	}
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptClose)) == 1 }, "the prompt_close")
+	var c ipc.PromptClose
+	if err := json.Unmarshal(envelopesOf(probe, ipc.TypePromptClose)[0].Payload, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.PromptID != show.PromptID || c.Reason != ipc.PromptCloseWithdrawn {
+		t.Fatalf("close = %+v, want withdrawn for %s", c, show.PromptID)
+	}
+	if left := h.promptListStore.Pending(prompthost.Owner{UID: 501}.PrincipalKey(), time.Now()); len(left) != 0 {
+		t.Fatalf("the closed prompt's list entry survived: %+v", left)
+	}
+
+	// A notice created under the new scope is untouched by a later change
+	// back to the same scope (no change, no close).
+	h.notifySafeModeReboot(20)
+	eventually(t, func() bool { return len(envelopesOf(probe, ipc.TypePromptShow)) == 2 }, "the notice under scope B")
+	h.processHeartbeatResponse(&HeartbeatResponse{PromptIdentity: identityBlock(hbScopeB), PromptHost: noticeOn})
+	time.Sleep(50 * time.Millisecond)
+	if n := len(envelopesOf(probe, ipc.TypePromptClose)); n != 1 {
+		t.Fatalf("an unchanged scope closed prompts (%d closes)", n)
 	}
 }
