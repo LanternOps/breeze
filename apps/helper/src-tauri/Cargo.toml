@@ -34,6 +34,9 @@ hex = "0.4"
 # (#10190 W03). Pinned exactly after supply-chain review (G6): zero
 # dependencies on Windows/macOS/Linux, MIT OR Apache-2.0, 1Password.
 sys-locale = "=0.3.2"
+# Decode the logo bytes of prompt_branding_sync to check their length and
+# sha256 (#10190 W03). Already in Cargo.lock through tauri: no new crate.
+base64 = "=0.22.1"
 
 [dev-dependencies]
 # `test-util` enables paused/virtual-clock tests (start_paused, time::advance)

@@ -592,6 +592,15 @@ pub struct PromptIdentityView {
     pub locale: Option<String>,
 }
 
+/// The `prompt-identity-updated` event payload: a change notice only. A JS
+/// `listen()` with no target hears every emit of its event name in any window,
+/// so the identity itself is read through the label-checked command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptIdentityNotice {
+    pub version: u64,
+}
+
 /// The notification list with the same change counter as [`PromptView`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1067,6 +1076,11 @@ impl PromptTracker {
         self.sync_locale.as_deref()
     }
 
+    /// The `prompt-identity-updated` payload: the change counter only.
+    pub fn identity_notice(&self) -> PromptIdentityNotice {
+        PromptIdentityNotice { version: self.version }
+    }
+
     /// What the webview's identity header renders (`get_prompt_identity`).
     pub fn identity_view(&self) -> PromptIdentityView {
         let id = self.identity.as_ref();
@@ -1254,6 +1268,22 @@ fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The renderer's own integrity check on the logo (the agent checks too, but
+/// the wire can carry anything): `data` is strict base64 whose decoded length
+/// is the declared `bytes` and whose sha256 is the declared `sha256`.
+fn logo_bytes_match(l: &PromptLogo) -> bool {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    // Bound the work before decoding: base64 of 256 KB.
+    if l.data.len() > 262_144usize.div_ceil(3) * 4 {
+        return false;
+    }
+    match base64::engine::general_purpose::STANDARD.decode(l.data.as_bytes()) {
+        Ok(bytes) => bytes.len() as u64 == u64::from(l.bytes) && hex::encode(Sha256::digest(&bytes)) == l.sha256,
+        Err(_) => false,
+    }
+}
+
 fn valid_branding(b: &PromptBrandingSync) -> bool {
     if !valid_locale(&b.locale) {
         return false;
@@ -1269,6 +1299,7 @@ fn valid_branding(b: &PromptBrandingSync) -> bool {
         is_hex(&l.sha256, 64)
             && matches!(l.mime.as_str(), "image/png" | "image/jpeg" | "image/webp")
             && (1..=262_144).contains(&l.bytes)
+            && logo_bytes_match(l)
     });
     b.scope_id.as_deref().is_some_and(|s| is_hex(s, 32))
         && b.partner_name.as_deref().is_some_and(|n| (1..=120).contains(&chars(n)))
@@ -1369,7 +1400,12 @@ pub fn is_renderer_type(typ: &str) -> bool {
 pub struct PromptBridge {
     tracker: Mutex<PromptTracker>,
     sender: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Outbound>>>,
+    /// Told whenever the identity a window may show has changed (lib.rs wires
+    /// it to `desktop::publish_prompt_identity`). Called with no lock held.
+    identity_notifier: Mutex<Option<IdentityNotifier>>,
 }
+
+type IdentityNotifier = Box<dyn Fn() + Send + Sync>;
 
 /// What a dismiss did, for the caller that owns the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1386,12 +1422,51 @@ impl PromptBridge {
     /// A bridge around a given tracker (tests advertise kinds W02 does not).
     #[cfg(test)]
     pub fn with_tracker(tracker: PromptTracker) -> Self {
-        Self { tracker: Mutex::new(tracker), sender: Mutex::new(None) }
+        Self { tracker: Mutex::new(tracker), sender: Mutex::new(None), identity_notifier: Mutex::new(None) }
     }
 
     /// Lock the tracker. Never hold the guard across an `.await` or a window call.
     pub fn tracker(&self) -> MutexGuard<'_, PromptTracker> {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn set_identity_notifier(&self, f: impl Fn() + Send + Sync + 'static) {
+        if let Ok(mut g) = self.identity_notifier.lock() {
+            *g = Some(Box::new(f));
+        }
+    }
+
+    fn notify_identity(&self) {
+        if let Ok(g) = self.identity_notifier.lock() {
+            if let Some(f) = g.as_ref() {
+                f();
+            }
+        }
+    }
+
+    /// `prompt_branding_sync`: store it (see [`PromptTracker::on_branding_sync`])
+    /// and, when it was applied, tell the windows. False when it was ignored.
+    pub fn branding_sync(&self, sync: PromptBrandingSync) -> bool {
+        let stored = self.tracker().on_branding_sync(sync);
+        if stored {
+            self.notify_identity();
+        }
+        stored
+    }
+
+    /// The session ended: [`PromptTracker::on_disconnect`], and the windows are
+    /// told when an identity was dropped, so no header keeps a stale MSP name.
+    /// Returns the prompts that had a card.
+    pub fn disconnect(&self) -> Vec<String> {
+        let (had_identity, cards) = {
+            let mut t = self.tracker();
+            let had = t.identity().is_some();
+            (had, t.on_disconnect())
+        };
+        if had_identity {
+            self.notify_identity();
+        }
+        cards
     }
 
     pub fn set_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<Outbound>) {
@@ -2405,5 +2480,95 @@ mod tests {
         let prod = include_str!("prompt.rs").split("\nmod tests {").next().unwrap();
         assert!(!prod.contains("std::fs"));
         assert!(!prod.contains("File::"));
+    }
+
+    // ----- W03 review: identity wire, logo integrity, notifier -----
+
+    /// The PNG in branding_sync.set.json, with a logo whose fields are edited.
+    fn with_logo(edit: impl FnOnce(&mut PromptLogo)) -> PromptBrandingSync {
+        let mut b: PromptBrandingSync = serde_json::from_str(BRANDING_SET).unwrap();
+        edit(b.logo.as_mut().unwrap());
+        b
+    }
+
+    #[test]
+    fn branding_logo_must_match_its_declared_bytes_and_sha256() {
+        let mut t = tracker();
+        assert!(t.on_branding_sync(with_logo(|_| {})), "the fixture's logo is consistent");
+        assert!(!t.on_branding_sync(with_logo(|l| l.bytes += 1)), "declared bytes != decoded length");
+        assert!(!t.on_branding_sync(with_logo(|l| l.sha256 = "0".repeat(64))), "sha256 of the bytes differs");
+        assert!(!t.on_branding_sync(with_logo(|l| l.data = "not base64!!".into())), "not base64");
+        assert!(!t.on_branding_sync(with_logo(|l| l.data = "https://example.invalid/logo.png".into())));
+        // The consistent identity is still the stored one.
+        assert_eq!(t.identity().and_then(|b| b.logo.as_ref()).map(|l| l.bytes), Some(69));
+    }
+
+    #[test]
+    fn identity_notice_carries_no_identity() {
+        let notice = PromptIdentityNotice { version: 7 };
+        assert_eq!(serde_json::to_value(notice).unwrap(), serde_json::json!({ "version": 7 }));
+    }
+
+    /// The keys of a TS `interface <name> { ... }` block (one `key:` per line).
+    fn ts_interface_keys(src: &str, name: &str) -> std::collections::BTreeSet<String> {
+        let start = src.find(&format!("export interface {name} {{")).unwrap_or_else(|| panic!("{name}"));
+        let body = &src[start..start + src[start..].find("\n}\n").unwrap()];
+        body.lines()
+            .skip(1)
+            .map(str::trim)
+            .filter(|l| !l.starts_with("/") && !l.starts_with("*"))
+            .filter_map(|l| l.split_once(':').map(|(k, _)| k.trim_end_matches('?').to_string()))
+            .filter(|k| k.chars().all(|c| c.is_ascii_alphanumeric()))
+            .collect()
+    }
+
+    #[test]
+    fn identity_view_wire_keys_match_the_ts_contract() {
+        let mut t = tracker();
+        assert!(t.on_branding_sync(serde_json::from_str(BRANDING_SET).unwrap()));
+        let json = serde_json::to_value(t.identity_view()).unwrap();
+        let keys: std::collections::BTreeSet<String> = json.as_object().unwrap().keys().cloned().collect();
+        let ts = include_str!("../../../src/prompt/identity.ts");
+        assert_eq!(keys, ts_interface_keys(ts, "PromptIdentityWire"), "PromptIdentityView vs identity.ts");
+        let logo: std::collections::BTreeSet<String> = json["logo"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(logo, ts_interface_keys(ts, "PromptIdentityWireLogo"));
+        assert_eq!(json["state"], "set");
+        let notice: std::collections::BTreeSet<String> = serde_json::to_value(PromptIdentityNotice { version: 1 })
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(notice, ts_interface_keys(ts, "PromptIdentityNotice"));
+    }
+
+    #[test]
+    fn bridge_notifies_identity_on_sync_and_on_disconnect_only_when_held() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let bridge = PromptBridge::default();
+        let n = Arc::new(AtomicUsize::new(0));
+        let c = n.clone();
+        bridge.set_identity_notifier(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        // Nothing held: a disconnect publishes nothing.
+        bridge.disconnect();
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        // An invalid sync changes nothing and publishes nothing.
+        let mut bad: PromptBrandingSync = serde_json::from_str(BRANDING_SET).unwrap();
+        bad.scope_id = None;
+        assert!(!bridge.branding_sync(bad));
+        assert_eq!(n.load(Ordering::SeqCst), 0);
+        assert!(bridge.branding_sync(serde_json::from_str(BRANDING_SET).unwrap()));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        // The session ends: the held identity is dropped and the windows told.
+        bridge.disconnect();
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        assert!(bridge.tracker().identity().is_none());
+        // A cleared sync is a change too (the header falls back to generic).
+        assert!(bridge.branding_sync(serde_json::from_str(BRANDING_CLEARED).unwrap()));
+        assert_eq!(n.load(Ordering::SeqCst), 3);
     }
 }

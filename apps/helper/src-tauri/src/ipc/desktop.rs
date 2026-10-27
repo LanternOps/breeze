@@ -476,20 +476,22 @@ pub fn identity_window_allowed(label: &str) -> bool {
 /// The event the identity header listens for (main window and prompt cards).
 pub const PROMPT_IDENTITY_EVENT: &str = "prompt-identity-updated";
 
-/// After a branding sync (or the session that carried it ending): push the
-/// identity to the windows allowed to read it, and relabel the tray in the
-/// synced language. An event only: never shows or focuses a window.
+/// After a branding sync (or the session that carried it ending): tell the
+/// windows allowed to read the identity that it changed, and relabel the tray
+/// in the synced language. An event only: never shows or focuses a window.
+///
+/// The event is a version notice, never the identity. Tauri delivers every
+/// emit (emit_filter and emit_to alike) to a JS listener registered without a
+/// target in ANY window, so targeting alone cannot keep the identity out of
+/// other windows; the identity is read through `get_prompt_identity`, which
+/// checks the caller's label.
 pub fn publish_prompt_identity(app: &AppHandle) {
     let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
-    let view = bridge.tracker().identity_view();
-    let sent = app.emit_filter(PROMPT_IDENTITY_EVENT, &view, |target| match target {
-        tauri::EventTarget::WebviewWindow { label }
-        | tauri::EventTarget::Webview { label }
-        | tauri::EventTarget::Window { label } => identity_window_allowed(label),
-        _ => false,
-    });
-    if let Err(e) = sent {
-        eprintln!("[helper] failed to emit {}: {}", PROMPT_IDENTITY_EVENT, e);
+    let notice: super::prompt::PromptIdentityNotice = bridge.tracker().identity_notice();
+    for label in app.webview_windows().into_keys().filter(|l| identity_window_allowed(l)) {
+        if let Err(e) = app.emit_to(label.as_str(), PROMPT_IDENTITY_EVENT, notice) {
+            eprintln!("[helper] failed to emit {}: {}", PROMPT_IDENTITY_EVENT, e);
+        }
     }
     crate::refresh_tray_menu(app);
 }

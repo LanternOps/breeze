@@ -16,7 +16,10 @@ import { chromeString } from './chrome';
  * a local Blob object URL; Assist never fetches a remote URL for it.
  */
 
-/** What Rust hands the webview (`get_prompt_identity` / `prompt-identity-updated`). */
+/**
+ * What `get_prompt_identity` returns (Rust `PromptIdentityView`; a Rust test
+ * checks these key sets against this file).
+ */
 export interface PromptIdentityWire {
   /** Rust's change counter: a window keeps the highest one it has seen. */
   version: number;
@@ -24,9 +27,25 @@ export interface PromptIdentityWire {
   state: 'set' | 'none';
   partnerName: string | null;
   primaryColor: string | null;
-  logo: { sha256: string; mime: string; bytes: number; data: string } | null;
+  logo: PromptIdentityWireLogo | null;
   /** The negotiated locale of the last branding sync (tray and list chrome). */
   locale: string | null;
+}
+
+export interface PromptIdentityWireLogo {
+  sha256: string;
+  mime: string;
+  bytes: number;
+  data: string;
+}
+
+/**
+ * The `prompt-identity-updated` event: a version notice only. A JS listener
+ * with no target hears every emit of its event name in any window, so the
+ * identity itself is read through the label-checked `get_prompt_identity`.
+ */
+export interface PromptIdentityNotice {
+  version: number;
 }
 
 export type LogoMime = 'image/png' | 'image/jpeg' | 'image/webp';
@@ -78,16 +97,21 @@ export function logoObjectUrl(
   logo: PromptLogo,
   create: (blob: Blob) => string = (b) => URL.createObjectURL(b),
 ): string | null {
-  if (!LOGO_MIMES.has(logo.mime) || !BASE64.test(logo.data) || logo.data.length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) {
+  const refuse = (why: string) => {
+    console.warn(`[prompt] MSP logo not shown: ${why}`);
     return null;
-  }
+  };
+  if (!LOGO_MIMES.has(logo.mime)) return refuse('type is not PNG, JPEG or WebP');
+  if (!BASE64.test(logo.data)) return refuse('data is not base64');
+  if (logo.data.length > Math.ceil(MAX_LOGO_BYTES / 3) * 4) return refuse('too large');
   let binary: string;
   try {
     binary = atob(logo.data);
   } catch {
-    return null;
+    return refuse('data is not base64');
   }
-  if (binary.length === 0 || binary.length > MAX_LOGO_BYTES) return null;
+  if (binary.length === 0) return refuse('empty');
+  if (binary.length > MAX_LOGO_BYTES) return refuse('too large');
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return create(new Blob([bytes], { type: logo.mime }));
@@ -96,12 +120,12 @@ export function logoObjectUrl(
 /** The commands and event behind the identity (main window and prompt cards). */
 export interface PromptIdentityApi {
   get(): Promise<PromptIdentityWire>;
-  subscribe(onIdentity: (wire: PromptIdentityWire) => void): Promise<() => void>;
+  subscribe(onNotice: (notice: PromptIdentityNotice) => void): Promise<() => void>;
 }
 
 const tauriIdentityApi: PromptIdentityApi = {
   get: () => invoke<PromptIdentityWire>('get_prompt_identity'),
-  subscribe: (onIdentity) => listen<PromptIdentityWire>('prompt-identity-updated', (e) => onIdentity(e.payload)),
+  subscribe: (onNotice) => listen<PromptIdentityNotice>('prompt-identity-updated', (e) => onNotice(e.payload)),
 };
 
 export interface ObjectUrls {
@@ -117,15 +141,18 @@ const browserUrls: ObjectUrls = {
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /**
- * The identity, kept current from Rust: subscribes FIRST, then pulls, and
- * keeps whichever has the higher `version`. The logo's object URL is created
- * once per logo and revoked when the logo changes, is cleared, or the window
- * unmounts. Outside Tauri it stays empty and calls nothing.
+ * The identity, kept current from Rust: subscribes FIRST, then pulls; every
+ * notice pulls again, and the pull with the higher `version` wins. The logo's
+ * object URL is created once per logo and revoked when the logo changes, is
+ * cleared, or the window unmounts (`decodeLogo: false` skips it entirely, for
+ * a window that only needs the locale). Outside Tauri it stays empty and
+ * calls nothing.
  */
 export function usePromptIdentity(
   api: PromptIdentityApi = tauriIdentityApi,
   enabled: boolean = inTauri(),
   urls: ObjectUrls = browserUrls,
+  { decodeLogo = true }: { decodeLogo?: boolean } = {},
 ) {
   const [wire, setWire] = useState<PromptIdentityWire | null>(null);
 
@@ -142,7 +169,7 @@ export function usePromptIdentity(
         .then(apply)
         .catch((err) => console.warn('[prompt] could not load the MSP identity', err));
     api
-      .subscribe(apply)
+      .subscribe(() => void pull())
       .then((fn) => {
         if (!live) {
           fn();
@@ -163,7 +190,7 @@ export function usePromptIdentity(
   }, [api, enabled]);
 
   const identity = useMemo(() => identityFromWire(wire), [wire]);
-  const logo = identity?.logo ?? null;
+  const logo = decodeLogo ? (identity?.logo ?? null) : null;
   const logoKey = logo ? `${logo.sha256}:${logo.mime}:${logo.data.length}` : null;
 
   const [logoUrl, setLogoUrl] = useState<string | null>(null);

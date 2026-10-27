@@ -1688,11 +1688,14 @@ fn tray_locale_from(synced: Option<&str>, os_tag: &str) -> &'static str {
     chrome::negotiate(synced.unwrap_or(os_tag))
 }
 
-fn tray_locale(app: &AppHandle) -> &'static str {
-    let synced = app
-        .try_state::<std::sync::Arc<crate::ipc::prompt::PromptBridge>>()
-        .and_then(|b| b.tracker().chrome_locale().map(str::to_string));
+fn tray_locale_for(bridge: Option<&crate::ipc::prompt::PromptBridge>) -> &'static str {
+    let synced = bridge.and_then(|b| b.tracker().chrome_locale().map(str::to_string));
     tray_locale_from(synced.as_deref(), chrome::os_ui_locale())
+}
+
+fn tray_locale(app: &AppHandle) -> &'static str {
+    let bridge = app.try_state::<std::sync::Arc<crate::ipc::prompt::PromptBridge>>();
+    tray_locale_for(bridge.as_deref().map(|b| b.as_ref()))
 }
 
 fn prompt_list_len(app: &AppHandle) -> usize {
@@ -2056,6 +2059,10 @@ pub fn run() {
             // Prompt host (#10190): prompts in process memory only; each card
             // is its own `prompt-<hash>` window, never the main one.
             let prompts = std::sync::Arc::new(crate::ipc::prompt::PromptBridge::default());
+            // A branding sync or session end tells the identity windows and
+            // relabels the tray (#10190 W03).
+            let identity_app = app.handle().clone();
+            prompts.set_identity_notifier(move || crate::ipc::desktop::publish_prompt_identity(&identity_app));
             app.manage(prompts.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
@@ -2509,6 +2516,52 @@ mod tests {
         assert_eq!(tray_locale_from(Some("tr-TR"), "de-AT"), "tr-TR");
         assert_eq!(tray_locale_from(None, "de-AT"), "de-DE");
         assert_eq!(tray_locale_from(None, ""), "en");
+    }
+
+    // #10190 W03 review: the tray follows the bridge's synced locale.
+    #[test]
+    fn tray_locale_reads_the_bridge() {
+        let bridge = crate::ipc::prompt::PromptBridge::default();
+        assert_eq!(tray_locale_for(Some(&bridge)), chrome::negotiate(chrome::os_ui_locale()));
+        assert_eq!(tray_locale_for(None), chrome::negotiate(chrome::os_ui_locale()));
+        let mut sync: crate::ipc::prompt::PromptBrandingSync = serde_json::from_str(include_str!(
+            "../../../../packages/shared/src/fixtures/prompt-host/branding_sync.cleared.json"
+        ))
+        .unwrap();
+        // A locale the OS of a CI runner is unlikely to report.
+        sync.locale = "tr-TR".into();
+        assert!(bridge.branding_sync(sync));
+        assert_eq!(tray_locale_for(Some(&bridge)), "tr-TR");
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        let start = lib.find("fn tray_locale(app").unwrap();
+        let body = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("tray_locale_for("), "tray_locale goes through the tested seam");
+    }
+
+    // #10190 W03 review: a JS `listen()` without a target registers `Any`,
+    // which Tauri delivers to on every emit (emit_filter and emit_to alike,
+    // `match_any_or_filter`). So the identity event carries only a version
+    // notice, sent to the allowed labels; the identity itself is read through
+    // the label-checked `get_prompt_identity` command.
+    #[test]
+    fn prompt_identity_event_is_a_targeted_notice_without_the_identity() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let start = desktop.find("pub fn publish_prompt_identity(").unwrap();
+        let body = &desktop[start..start + desktop[start..].find("\n}\n").unwrap()];
+        assert!(!body.contains("emit_filter"), "emit_filter reaches Any listeners in every window");
+        assert!(!body.contains("identity_view()"), "the event must not carry the identity");
+        assert!(body.contains("PromptIdentityNotice"));
+        assert!(body.contains("webview_windows()") && body.contains("identity_window_allowed("));
+        assert!(body.contains("emit_to("));
+        // The bridge's notifier is wired to it at setup.
+        let lib = prod_of(include_str!("lib.rs"));
+        let setup = &lib[lib.find("let prompts = std::sync::Arc::new(crate::ipc::prompt::PromptBridge::default());").unwrap()..];
+        let setup = &setup[..setup.find("app.manage(prompts.clone());").unwrap()];
+        assert!(setup.contains("set_identity_notifier(") && setup.contains("publish_prompt_identity("));
+        // The card capability text names the identity command and notice.
+        let cap = include_str!("../capabilities/prompt-card.json");
+        assert!(cap.contains("get_prompt_identity") && cap.contains("prompt-identity-updated"));
     }
 
     // #10190 W03: the identity is readable by the main window and prompt

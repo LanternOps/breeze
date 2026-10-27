@@ -1,6 +1,6 @@
 {
   "identifier": "prompt-card",
-  "description": "Prompt host card windows (#10190). They render agent-authored copy and, for restart prompts, operator text, so they get no window, webview, tray, menu, shell or emit permission and not core:default: the card calls only its own label-checked app commands (get_prompt_view, prompt_card_action, prompt_card_hide), and every privileged app command refuses a prompt-* caller (deny_message_window). The one thing it needs beyond that is to listen for its own prompt-updated event (core:event:allow-listen / allow-unlisten); Rust emits that event to this window's label only.",
+  "description": "Prompt host card windows (#10190). They render agent-authored copy and, for restart prompts, operator text, so they get no window, webview, tray, menu, shell or emit permission and not core:default: the card calls only its own label-checked app commands (get_prompt_view, prompt_card_action, prompt_card_hide, and get_prompt_identity for the MSP identity header), and every privileged app command refuses a prompt-* caller (deny_message_window). The one thing it needs beyond that is to listen for its prompt-updated event and the prompt-identity-updated notice (core:event:allow-listen / allow-unlisten); Rust emits both to allowed labels, and the identity notice carries only a version, never the identity.",
   "windows": ["prompt-*"],
   "permissions": [
     "core:event:allow-listen",

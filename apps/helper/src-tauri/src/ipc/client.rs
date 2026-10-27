@@ -721,7 +721,7 @@ where
                 }
             }
             "prompt_action_result" => handle_prompt_action_result(desktop_ctx, &prompts, &env.id, &env.payload),
-            "prompt_branding_sync" => handle_prompt_branding_sync(desktop_ctx, &prompts, &env.id, &env.payload),
+            "prompt_branding_sync" => handle_prompt_branding_sync(&prompts, &env.id, &env.payload),
             other if other.starts_with("prompt_") => {
                 let frames = handle_prompt_unknown(desktop_ctx, &prompts, other, &env.id, &env.payload);
                 for frame in frames {
@@ -1059,22 +1059,14 @@ fn handle_prompt_action_result(
     }
 }
 
-/// `prompt_branding_sync`: the MSP identity, kept in memory and forwarded to
-/// the main window and the prompt cards (identity header), plus the tray's
-/// language. `cleared: true` drops the identity.
-fn handle_prompt_branding_sync(
-    ctx: Option<&DesktopCtx>,
-    prompts: &PromptBridge,
-    env_id: &str,
-    payload: &Option<Box<RawValue>>,
-) {
+/// `prompt_branding_sync`: the MSP identity, kept in memory; the bridge tells
+/// the main window and the prompt cards (identity header) and the tray.
+/// `cleared: true` drops the identity.
+fn handle_prompt_branding_sync(prompts: &PromptBridge, env_id: &str, payload: &Option<Box<RawValue>>) {
     match payload_str(payload).map(serde_json::from_str::<prompt::PromptBrandingSync>) {
         Some(Ok(sync)) => {
-            let stored = prompts.tracker().on_branding_sync(sync);
-            if !stored {
+            if !prompts.branding_sync(sync) {
                 eprintln!("[helper] prompt_branding_sync ignored: incomplete identity (env={})", log_id(env_id));
-            } else if let Some(ctx) = ctx {
-                desktop::publish_prompt_identity(&ctx.app);
             }
         }
         _ => eprintln!("[helper] bad prompt_branding_sync payload; ignored (env={})", log_id(env_id)),
@@ -1148,13 +1140,10 @@ impl Drop for BridgeClearGuard {
         if let Some(prompts) = &self.prompts {
             prompts.clear_sender();
             let had_list = prompts.tracker().list_len(now_unix_ms()) > 0;
-            let had_identity = prompts.tracker().identity().is_some();
-            let cards = prompts.tracker().on_disconnect();
+            // The identity dies with the session too (the bridge tells the
+            // windows); the agent re-syncs it after the next auth.
+            let cards = prompts.disconnect();
             if let Some(app) = &self.app {
-                // The identity dies with the session; the agent re-syncs it.
-                if had_identity {
-                    desktop::publish_prompt_identity(app);
-                }
                 // Nothing tracked (always, in W02): leave the tray and the
                 // main window untouched.
                 if had_list || !cards.is_empty() {
@@ -2189,5 +2178,36 @@ mod prompt_auth_tests {
         req.ui_locale = String::new();
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.as_object().unwrap().get("uiLocale").is_none());
+    }
+
+    // W03 review: the real handlers drive the identity publish. Removing the
+    // publish from the branding-sync handler or from the session-end guard
+    // fails here.
+    #[test]
+    fn branding_sync_handler_and_session_end_publish_the_identity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const SET: &str = include_str!("../../../../../packages/shared/src/fixtures/prompt-host/branding_sync.set.json");
+        let prompts = std::sync::Arc::new(PromptBridge::default());
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = n.clone();
+        prompts.set_identity_notifier(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        let payload = Some(RawValue::from_string(SET.to_string()).unwrap());
+        handle_prompt_branding_sync(&prompts, "env-1", &payload);
+        assert_eq!(n.load(Ordering::SeqCst), 1, "a stored sync is published");
+        assert!(prompts.tracker().identity().is_some());
+
+        let guard = BridgeClearGuard {
+            bridge: None,
+            caller: None,
+            app: None,
+            messages: None,
+            chat: None,
+            prompts: Some(prompts.clone()),
+        };
+        drop(guard);
+        assert_eq!(n.load(Ordering::SeqCst), 2, "session end publishes the dropped identity");
+        assert!(prompts.tracker().identity().is_none());
     }
 }

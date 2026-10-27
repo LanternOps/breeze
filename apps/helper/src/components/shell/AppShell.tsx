@@ -420,7 +420,7 @@ export default function AppShell() {
   const prompts = usePromptList();
   // Only the locale is used here (#10190 W03): the list chrome follows the
   // last branding sync, like the tray entry.
-  const promptLocale = usePromptIdentity().locale;
+  const promptLocale = usePromptIdentity(undefined, undefined, undefined, { decodeLogo: false }).locale;
 
   // Files when the capability is known-available at first render, else chat.
   // The probe may still be pending (null) here, so an effect below promotes to
