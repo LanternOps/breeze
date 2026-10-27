@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   executeTool: vi.fn(),
   executeTenantToolDetailed: vi.fn(),
   loadTenantToolForExecution: vi.fn(),
+  anthropicClientFor: vi.fn(),
 }));
 
 vi.mock('../../../db', async (importOriginal) => ({
@@ -45,7 +46,10 @@ vi.mock('../../aiModels/settleInvocation', async (importOriginal) => ({
 }));
 vi.mock('../../aiModels/connectionFactory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../aiModels/connectionFactory')>()),
-  anthropicClientFor: () => ({ messages: { create: h.create }, beta: { messages: { create: h.create } } }),
+  anthropicClientFor: (...args: unknown[]) => {
+    h.anthropicClientFor(...args);
+    return { messages: { create: h.create }, beta: { messages: { create: h.create } } };
+  },
 }));
 vi.mock('../runLease', () => ({ reserveRunAiTokens: h.reserveRunAiTokens, settleRunAiTokens: h.settleRunAiTokens }));
 vi.mock('../flowLimits', () => ({ resolveFlowLimits: h.resolveFlowLimits }));
@@ -145,6 +149,13 @@ describe('executeAiStep', () => {
     expect(body.temperature).toBe(0);
     expect(body.max_tokens).toBe(1024);
     expect((body.tools as Array<{ name: string; input_schema: unknown }>).find((t) => t.name === 'submit_result')!.input_schema).toEqual(OUTPUT_SCHEMA);
+  });
+
+  it('the model client audits egress under the flow_ai_step surface for the RUN org (partner-wide flow in org X)', async () => {
+    h.create.mockResolvedValueOnce(message([submit({ verdict: 'ok' })]));
+    await executeAiStep(input(), ctx({ owner: { orgId: null, partnerId: PARTNER } }));
+    expect(h.anthropicClientFor).toHaveBeenCalledTimes(1);
+    expect(h.anthropicClientFor.mock.calls[0]![1]).toEqual({ surface: 'flow_ai_step', orgId: ORG_X });
   });
 
   it('tool call then result completes and records toolCalls', async () => {
