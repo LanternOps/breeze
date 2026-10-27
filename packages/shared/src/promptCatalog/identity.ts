@@ -6,8 +6,10 @@ import { PROMPT_PARTNER_NAME_MAX_CODE_POINTS, sanitizePromptPartnerName } from '
  * The heartbeat response block `promptIdentity` (spec §3.6, plan Task 3.2/3.3):
  * the MSP identity every device prompt is drawn under. Produced by the API
  * (`resolvePromptIdentity`), consumed by the agent (`promptidentity.Store`).
- * Pinned by fixtures/prompt-catalog/heartbeat-identity.*.json, which both
- * suites decode.
+ * Pinned by fixtures/prompt-catalog/heartbeat-identity.*.json (decoded here
+ * and by the agent's promptidentity package, W03 3C). The schema is strict so
+ * a producer typo fails the API tests; the agent decoder stays lenient and
+ * ignores unknown keys (forward compatibility).
  *
  * - Sent only to agents whose `securityCapabilities.promptIdentityProtocolVersion`
  *   is PROMPT_IDENTITY_PROTOCOL_VERSION; an absent block keeps the agent's
@@ -30,7 +32,7 @@ export const PROMPT_IDENTITY_LOGO_ROUTE = '/api/v1/agents/:id/prompt-identity/lo
 
 export const promptIdentityScopeIdSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
-export const promptIdentityLogoMetaSchema = z.object({
+export const promptIdentityLogoMetaSchema = z.strictObject({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
   mime: z.enum(PROMPT_LOGO_MIMES),
   bytes: z.number().int().min(1).max(PROMPT_LOGO_MAX_BYTES),
@@ -38,7 +40,7 @@ export const promptIdentityLogoMetaSchema = z.object({
 
 export const promptIdentityBlockSchema = z.discriminatedUnion('state', [
   z.strictObject({ state: z.literal('cleared') }),
-  z.object({
+  z.strictObject({
     state: z.literal('set'),
     scopeId: promptIdentityScopeIdSchema,
     partnerName: z

@@ -227,6 +227,61 @@
       "expected": null
     },
     {
+      "name": "Armenian oh inside a Latin word rejected",
+      "input": "Micr\u0585soft",
+      "expected": null
+    },
+    {
+      "name": "Cherokee A inside a Latin word rejected",
+      "input": "\u13aapple Support",
+      "expected": null
+    },
+    {
+      "name": "Coptic letter inside a Latin word rejected",
+      "input": "Micr\u2c9fsoft",
+      "expected": null
+    },
+    {
+      "name": "Vietnamese (Latin with diacritics) kept",
+      "input": "C\u00f4ng ty Tin h\u1ecdc Vi\u1ec7t",
+      "expected": "C\u00f4ng ty Tin h\u1ecdc Vi\u1ec7t"
+    },
+    {
+      "name": "Hangul filler alone is empty",
+      "input": "\u3164",
+      "expected": null
+    },
+    {
+      "name": "Hangul fillers around a name stripped",
+      "input": "\u3164Northwind\u115f \u1160IT\u3164",
+      "expected": "Northwind IT"
+    },
+    {
+      "name": "halfwidth Hangul filler is empty",
+      "input": "\uffa0",
+      "expected": null
+    },
+    {
+      "name": "Braille blank is empty",
+      "input": "\u2800\u2800",
+      "expected": null
+    },
+    {
+      "name": "Mongolian vowel separator stripped",
+      "input": "North\u180ewind",
+      "expected": "Northwind"
+    },
+    {
+      "name": "stacked combining marks capped at two per letter",
+      "input": "M\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300icrosoft",
+      "expected": "M\u0300\u0300icrosoft"
+    },
+    {
+      "name": "enclosing marks count toward the cap",
+      "input": "IT\u20dd\u20dd\u20dd\u20dd\u20dd",
+      "expected": "IT\u20dd\u20dd"
+    },
+    {
       "name": "mixed word hidden behind zero-width space still rejected",
       "input": "Mi\u200b\u0441rosoft",
       "expected": null
