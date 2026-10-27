@@ -56,6 +56,13 @@
     { "input": "e", "expected": "en" },
     { "input": "-", "expected": "en" },
     { "input": "fr-", "expected": "fr-FR" },
-    { "input": "x-fr-CA", "expected": "en" }
+    { "input": "x-fr-CA", "expected": "en" },
+    { "input": "\tde-DE\n", "expected": "de-DE" },
+    { "input": "\u0085de", "expected": "en" },
+    { "input": "﻿de", "expected": "en" },
+    { "input": "de ", "expected": "en" },
+    { "input": "İt-IT", "expected": "en" },
+    { "input": "ｄｅ", "expected": "en" },
+    { "input": "de-DE,en;q=0.9", "expected": "en" }
   ]
 }

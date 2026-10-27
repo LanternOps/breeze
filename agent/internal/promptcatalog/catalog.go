@@ -134,6 +134,17 @@ func Render(loc Locale, ns, key string, params map[string]string) (string, error
 	if !ok {
 		text = byLocale[string(LocaleEN)]
 	}
+	out, err := substitute(text, params)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s/%s", err, ns, key)
+	}
+	return out, nil
+}
+
+// substitute fills {name} parameters in one pass (a value is never re-read as
+// a placeholder) and leaves {remaining} / {time:<unixMs>} for the renderer.
+// Mirrors substitutePromptParams.
+func substitute(text string, params map[string]string) (string, error) {
 	var missing string
 	out := placeholderRE.ReplaceAllStringFunc(text, func(m string) string {
 		name := placeholderRE.FindStringSubmatch(m)[1]
@@ -150,7 +161,7 @@ func Render(loc Locale, ns, key string, params map[string]string) (string, error
 		return v
 	})
 	if missing != "" {
-		return "", fmt.Errorf("%w: %s/%s needs %q", ErrMissingParam, ns, key, missing)
+		return "", fmt.Errorf("%w %q", ErrMissingParam, missing)
 	}
 	return out, nil
 }

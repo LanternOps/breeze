@@ -207,3 +207,40 @@ func TestPlaceholdersMatchAcrossLocales(t *testing.T) {
 		}
 	}
 }
+
+func TestSubstituteRendererOwnedPassThrough(t *testing.T) {
+	got, err := substitute("Restart at {time:1767225600000} in {remaining} for {partner}", map[string]string{"partner": "Northwind"})
+	if err != nil || got != "Restart at {time:1767225600000} in {remaining} for Northwind" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := substitute("{time:1} {count}", nil); !errors.Is(err, ErrMissingParam) {
+		t.Fatalf("want ErrMissingParam, got %v", err)
+	}
+}
+
+func TestRenderFrCAIsNotFrFR(t *testing.T) {
+	ca, err := Render(Locale("fr-CA"), "common", "identity.generic", nil)
+	if err != nil || ca != "Votre équipe de soutien informatique" {
+		t.Fatalf("fr-CA got %q, %v", ca, err)
+	}
+	fr, _ := Render(Locale("fr-FR"), "common", "identity.generic", nil)
+	if fr == ca {
+		t.Fatal("fr-CA rendered the fr-FR text")
+	}
+}
+
+func TestCatalogTextIsPlainAndTrimmed(t *testing.T) {
+	cat, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ns, msgs := range cat {
+		for key, byLocale := range msgs {
+			for loc, text := range byLocale {
+				if strings.ContainsAny(text, "<>") || strings.TrimSpace(text) != text {
+					t.Errorf("%s/%s %s: %q has markup or untrimmed whitespace", ns, key, loc, text)
+				}
+			}
+		}
+	}
+}

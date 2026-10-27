@@ -34,7 +34,10 @@ export function isPromptLocale(value: unknown): value is PromptLocale {
  * Deterministic and total; mirrored by promptcatalog.Negotiate and pinned by
  * fixtures/prompt-catalog/locale-negotiation.json.
  *
- * 1. Trim, lower-case, `_` → `-`, drop a POSIX `.codeset` and `@modifier`.
+ * 1. Trim ASCII whitespace. A tag holding anything but ASCII letters, digits
+ *    and `_ - . @` → en (so Unicode case-folding or trim rules can never make
+ *    the TS and Go answers differ). Lower-case, `_` → `-`, drop a POSIX
+ *    `.codeset` and `@modifier`.
  * 2. An exact match among the eight wins.
  * 3. `fr-ca` followed by end or another subtag → fr-CA (an extension such as
  *    `-u-ca-gregory` does not change the region; a script subtag does).
@@ -43,7 +46,9 @@ export function isPromptLocale(value: unknown): value is PromptLocale {
  */
 export function negotiatePromptLocale(tag: string): PromptLocale {
   if (typeof tag !== 'string') return DEFAULT_PROMPT_LOCALE;
-  let t = tag.trim().toLowerCase().replace(/_/g, '-');
+  let t = tag.replace(/^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g, '');
+  if (!/^[A-Za-z0-9_.@-]*$/.test(t)) return DEFAULT_PROMPT_LOCALE;
+  t = t.toLowerCase().replace(/_/g, '-');
   const at = t.indexOf('@');
   if (at >= 0) t = t.slice(0, at);
   const dot = t.indexOf('.');
