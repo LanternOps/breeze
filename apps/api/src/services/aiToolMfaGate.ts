@@ -41,6 +41,11 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   manage_software_inventory: Object.freeze(['approve', 'deny', 'clear']),
   manage_fleet_findings: '*',
   manage_custom_fields: '*',
+  // Full-control W13 (#6783, W13-D6): every PR A write's REST twin carries requireMfa().
+  manage_device_function: Object.freeze(['set']),
+  manage_device_links: Object.freeze(['create', 'update', 'dissolve']),
+  manage_manual_assets: Object.freeze(['create', 'update', 'delete', 'link', 'unlink']),
+  manage_device_warranty: Object.freeze(['refresh']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

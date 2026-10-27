@@ -872,6 +872,43 @@ describe('W04 class rows (#6758)', () => {
   });
 });
 
+// ── W13 class rows (#6783, PR A; W13 plan class review) ───────────────────
+const W13_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_device_function: { get: 't1', set: 'supervised' },
+  manage_device_links: { list: 't1', get: 't1', for_device: 't1', create: 't2', update: 't2', dissolve: 't2' },
+  manage_manual_assets: { list: 't1', create: 't2', update: 't2', link: 't2', unlink: 't2', delete: 'supervised' },
+  manage_device_warranty: { get: 't1', expiring: 't1', refresh: 'supervised' },
+};
+const W13_WHOLE_TOOL: Record<string, W02Class> = {
+  get_device_events: 't1',
+  get_device_health: 't1',
+  get_process_samples: 't1',
+  get_management_posture: 't1',
+};
+
+describe('W13 class rows (#6783)', () => {
+  it.each(Object.keys(W13_EXPECTED))('%s: W13_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W13_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W13_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W13_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe(cls);
+  });
+
+  it('search_agent_logs stays tier 1 with the W13 source filter', () => {
+    expect(classOf('search_agent_logs', { source: 'watchdog' })).toBe('t1');
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have
