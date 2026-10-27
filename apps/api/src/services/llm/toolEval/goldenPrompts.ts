@@ -132,4 +132,8 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g100', prompt: 'What software is installed on FIN-LAPTOP-07?', expect: [{ tool: 'get_device_software' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
   { id: 'g101', prompt: 'Deploy 7-Zip from our software catalog to the three reception PCs.', expect: [{ tool: 'manage_software_deployments', action: 'create' }, { tool: 'manage_software_catalog', action: 'list' }, { tool: 'query_devices' }] },
   { id: 'g102', prompt: 'Approve Zoom in the software inventory for Contoso so it stops showing as unreviewed.', expect: [{ tool: 'manage_software_inventory', action: 'approve' }, { tool: 'manage_software_inventory', action: 'list' }, { tool: 'list_organizations' }] },
+  // Full-control W13 (#6783, PR A): device inventory and record tools reach chat.
+  { id: 'g103', prompt: 'What has happened on FIN-LAPTOP-07 in the last day, and is its Breeze agent healthy?', expect: [{ tool: 'get_device_events' }, { tool: 'get_device_health' }, { tool: 'resolve_device_context' }] },
+  { id: 'g104', prompt: 'Which of our devices have warranties expiring in the next 60 days?', expect: [{ tool: 'manage_device_warranty', action: 'expiring' }, { tool: 'query_devices' }] },
+  { id: 'g105', prompt: 'Mark DC-01 as a domain controller.', expect: [{ tool: 'manage_device_function', action: 'set' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
 ];
