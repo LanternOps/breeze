@@ -114,6 +114,8 @@ describe('flow limits settings routes (real DB, RLS)', () => {
 
     const ok = await put(appFor(partner.id, [org.id]), { limits: { aiTokensPerRun: 2000 } });
     expect(ok.status).toBe(200);
+    // The response reflects the write (not a re-read in another context).
+    expect(await ok.json()).toMatchObject({ level: 'partner', stored: { aiTokensPerRun: 2000 }, limits: { effective: { aiTokensPerRun: 2000 } } });
     expect(await settingsOf('partner', partner.id)).toEqual({ keep: 'partner-kept', flows: { monthlyRunsPerFlow: 500, aiTokensPerRun: 2000 } });
   });
 });

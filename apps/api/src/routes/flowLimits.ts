@@ -203,7 +203,10 @@ export function registerFlowLimitsRoutes(app: Hono): void {
       if (refused) return fail(c, refused);
 
       const partnerSettings = await readPartnerSettings(target.partnerId);
-      let rows: Array<{ id: string }>;
+      // RETURNING settings: the response is built from what was written. A
+      // re-read would go through readWithPartnerAxisVisibility's separate
+      // system context, which cannot see this request's uncommitted UPDATE.
+      let rows: Array<{ id: string; settings: unknown }>;
       if (target.level === 'org') {
         // Lower-only: every value set must be ≤ the partner's effective value.
         const ceiling = computeFlowLimits(partnerSettings, null);
@@ -217,13 +220,13 @@ export function registerFlowLimitsRoutes(app: Hono): void {
           .update(organizations)
           .set({ settings: flowLimitsSettingsUpdate(organizations.settings, body.limits), updatedAt: new Date() })
           .where(and(eq(organizations.id, target.orgId), eq(organizations.partnerId, target.partnerId)))
-          .returning({ id: organizations.id });
+          .returning({ id: organizations.id, settings: organizations.settings });
       } else {
         rows = await db
           .update(partners)
           .set({ settings: flowLimitsSettingsUpdate(partners.settings, body.limits), updatedAt: new Date() })
           .where(eq(partners.id, target.partnerId))
-          .returning({ id: partners.id });
+          .returning({ id: partners.id, settings: partners.settings });
       }
       if (rows.length === 0) return fail(c, target.level === 'org' ? 'org_not_found' : 'partner_required');
 
@@ -241,10 +244,10 @@ export function registerFlowLimitsRoutes(app: Hono): void {
         initiatedBy: 'manual',
       });
 
-      // Re-read so the response is what the resolver now sees.
-      const fresh = await resolveTarget(auth, target.orgId ?? undefined);
-      const freshPartner = target.level === 'partner' ? await readPartnerSettings(target.partnerId) : partnerSettings;
-      return c.json(viewOf(fresh.ok ? fresh : target, freshPartner, true));
+      const written = rows[0]!.settings ?? {};
+      return c.json(target.level === 'org'
+        ? viewOf({ ...target, orgSettings: written }, partnerSettings, true)
+        : viewOf(target, written, true));
     },
   );
 }

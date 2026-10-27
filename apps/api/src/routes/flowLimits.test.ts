@@ -176,6 +176,28 @@ describe('GET /limits', () => {
   });
 });
 
+describe('PUT /limits — response reflects the write', () => {
+  // The re-read helpers open a separate (system) context that cannot see the
+  // request's uncommitted UPDATE, so the response must come from RETURNING.
+  it('partner write: the response is built from the returned settings, not a re-read', async () => {
+    partnerRows = [{ settings: {} }]; // a re-read would still see the old row
+    updateReturning = [{ id: PARTNER, settings: flows({ monthlyRunsPerFlow: 500 }) }];
+    const body = await (await put({ limits: { monthlyRunsPerFlow: 500 } })).json();
+    expect(body.stored.monthlyRunsPerFlow).toBe(500);
+    expect(body.limits.effective.monthlyRunsPerFlow).toBe(500);
+  });
+
+  it('org write: the response is built from the returned org settings', async () => {
+    partnerRows = [{ settings: flows({ monthlyRunsPerFlow: 500 }) }];
+    orgRows = [{ settings: {}, partnerId: PARTNER }];
+    updateReturning = [{ id: ORG, settings: flows({ monthlyRunsPerFlow: 100 }) }];
+    const body = await (await put({ orgId: ORG, limits: { monthlyRunsPerFlow: 100 } })).json();
+    expect(body).toMatchObject({ level: 'org', orgId: ORG, stored: { monthlyRunsPerFlow: 100 } });
+    expect(body.limits.effective.monthlyRunsPerFlow).toBe(100);
+    expect(body.limits.source.monthlyRunsPerFlow).toBe('org');
+  });
+});
+
 describe('PUT /limits — partner default', () => {
   it('sets and clears fields with one path-level update of settings.flows', async () => {
     const res = await put({ limits: { monthlyRunsPerFlow: 500, aiTokensPerRun: null } });
