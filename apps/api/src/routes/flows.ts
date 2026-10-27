@@ -22,6 +22,7 @@ import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun
 import { disableFlow, enableFlow } from '../services/flows/versions';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
+import { registerFlowLimitsRoutes } from './flowLimits';
 
 export const flowsRoutes = new Hono();
 
@@ -34,6 +35,10 @@ flowsRoutes.use('*', async (c, next) => {
   await next();
 });
 flowsRoutes.use('*', requirePermission('automations', 'read'));
+
+// W05 (#5220): GET/PUT /limits. Registered before `/:id` so the literal path
+// never reaches the uuid param schema.
+registerFlowLimitsRoutes(flowsRoutes);
 
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),

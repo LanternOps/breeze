@@ -33,6 +33,7 @@ import {
   CATALOG_TAB_KEYS,
   PARTNER_SETTINGS_CATALOG,
   resolveAiApprovalTimeout,
+  type FlowLimitKey,
   type InheritanceOrgPageDto,
   type InheritanceOrgRowDto,
   type InheritanceTabDto,
@@ -43,6 +44,7 @@ import {
   aiBudgets,
   notificationChannelConfigs,
   notificationChannels,
+  organizations,
   partnerUsers,
   partners,
   users,
@@ -52,6 +54,7 @@ import { getOrgAgentUpdateConfig } from '../../routes/agents/helpers';
 import { createAccessToken } from '../../services/jwt';
 import { getEffectiveAiBudget, getEffectiveOrgSettings } from '../../services/effectiveSettings';
 import { getEnrollmentDefaultsForOrg } from '../../services/enrollmentDefaults';
+import { resolveFlowLimits } from '../../services/flows/flowLimits';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
 import { decryptNotificationChannelConfig } from '../../services/notificationChannelSecrets';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../../services/partnerPushoverDefaults';
@@ -89,6 +92,8 @@ const PARTNER_A_SETTINGS = {
   },
   aiBudgets: { maxTurnsPerSession: 9, monthlyBudgetCents: null },
   aiApprovals: { interactiveTimeoutMinutes: 15 },
+  // W05 (#5220): per-flow cap set, owner cap and AI tokens left to the defaults.
+  flows: { monthlyRunsPerFlow: 500 },
 };
 
 interface Fixture {
@@ -150,6 +155,8 @@ async function seed(): Promise<Fixture> {
         defaultEnrollmentDeviceCount: 7,
       },
       aiApprovals: { interactiveTimeoutMinutes: 20 },
+      // Per-flow above the partner value (500): clamped. Owner cap lowered: in effect.
+      flows: { monthlyRunsPerFlow: 900, monthlyRunsPerOwner: 50 },
       logForwarding: { enabled: true, elasticsearchUrl: 'https://org-a1.example', elasticsearchApiKey: 'CANARY-PLAIN-eventLogs-key' },
     })}::jsonb WHERE id = ${a1}`,
   );
@@ -168,6 +175,8 @@ async function seed(): Promise<Fixture> {
       security: {},
       defaults: { agentVersionPins: { agent: '0.90.0' } },
       aiApprovals: { interactiveTimeoutMinutes: 3 },
+      // Equal to the partner value (ambiguous) and an invalid zero (not an own value).
+      flows: { monthlyRunsPerFlow: 500, aiTokensPerRun: 0 },
       logForwarding: { enabled: false, elasticsearchUrl: 'https://org-a2.example' },
     },
   })).id;
@@ -342,6 +351,12 @@ async function runtimeSource(id: string, orgId: string, raw: OrgRaw, partnerSett
     }
     if (id === 'aiApprovals.interactiveTimeoutMinutes') {
       return resolveAiApprovalTimeout(partnerSettings, raw.settings).source === 'org' ? 'org' : 'other';
+    }
+    if (id.startsWith('flows.')) {
+      const field = id.slice('flows.'.length) as FlowLimitKey;
+      const [org] = await getTestDb().select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const limits = await resolveFlowLimits({ orgId, partnerId: org!.partnerId });
+      return decide(limits[field], orgValue, orgValue !== undefined);
     }
     if (source.kind === 'aiBudgets') {
       const budget = await getEffectiveAiBudget(orgId);

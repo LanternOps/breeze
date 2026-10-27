@@ -795,6 +795,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
   'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
+  'flowLimits.ts': { exempt: 'tool_in_later_wave', note: 'Flow limits settings (partner default / org lower-only override, Tool Catalog W05 #5220); no MCP tool planned yet — caps are read through get_flow usage.' },
   'flowWebhooks.ts': { exempt: 'inbound_integration', note: 'Public flow webhook ingress (Tool Catalog W05); HMAC/token authenticated, not an operator surface.' },
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },

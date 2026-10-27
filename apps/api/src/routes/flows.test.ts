@@ -49,6 +49,13 @@ vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
 vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
 vi.mock('../services/flows/webhook/deliveries', () => ({ listWebhookDeliveries: vi.fn() }));
+// The limits routes have their own suite (flowLimits.test.ts); here only the
+// registration order matters, so the stub answers a sentinel status.
+vi.mock('./flowLimits', () => ({
+  registerFlowLimitsRoutes: vi.fn((app: { get: (p: string, h: (c: any) => unknown) => void }) => {
+    app.get('/limits', (c: any) => c.json({ stub: true }, 299));
+  }),
+}));
 vi.mock('../services/flows/runService', () => ({
   startManualRun: vi.fn(),
   cancelFlowRun: vi.fn(),
@@ -63,6 +70,7 @@ import { enableFlow, disableFlow } from '../services/flows/versions';
 import { startManualRun, cancelFlowRun, listFlowRuns, getFlowRun, getFlowRunStep } from '../services/flows/runService';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
+import { registerFlowLimitsRoutes } from './flowLimits';
 import { flowsRoutes } from './flows';
 
 const FLOW_ID = '11111111-1111-4111-8111-111111111111';
@@ -127,6 +135,13 @@ describe('flows routes', () => {
     const res = await flowsRoutes.request(`/${FLOW_ID}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(payload);
+  });
+
+  it('GET /limits reaches the flow limits route, not the /:id uuid param (W05 #5220)', async () => {
+    const res = await flowsRoutes.request('/limits');
+    expect(registerFlowLimitsRoutes).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(299);
+    expect(getFlow).not.toHaveBeenCalled();
   });
 
   it('detail rejects a non-uuid id', async () => {

@@ -44,6 +44,34 @@ export const flowLimitsSettingsSchema = z.object({
 }).strict();
 export type FlowLimitsSettings = z.infer<typeof flowLimitsSettingsSchema>;
 
+const writeField = (ceiling: number) => z.number().int().min(1).max(ceiling).nullable().optional();
+
+/**
+ * `PUT /api/v1/flows/limits`. No `orgId` ⇒ the caller's partner default;
+ * `orgId` ⇒ that org's override, which may only LOWER the partner value
+ * (refused server-side, `limit_above_partner_ceiling`). Per field: a number
+ * sets it, `null` clears it (inherit), omission leaves it unchanged.
+ */
+export const flowLimitsUpdateSchema = z.object({
+  orgId: z.string().uuid().optional(),
+  limits: z.object({
+    monthlyRunsPerOwner: writeField(FLOW_LIMIT_CEILINGS.monthlyRunsPerOwner),
+    monthlyRunsPerFlow: writeField(FLOW_LIMIT_CEILINGS.monthlyRunsPerFlow),
+    aiTokensPerRun: writeField(FLOW_LIMIT_CEILINGS.aiTokensPerRun),
+  }).strict(),
+}).strict();
+export type FlowLimitsUpdate = z.infer<typeof flowLimitsUpdateSchema>;
+
+export const FLOW_LIMITS_WRITE_ERRORS = [
+  'org_not_found',
+  'partner_required',
+  'partner_scope_required',
+  'partner_wide_forbidden',
+  'org_scope_read_only',
+  'limit_above_partner_ceiling',
+] as const;
+export type FlowLimitsWriteError = (typeof FLOW_LIMITS_WRITE_ERRORS)[number];
+
 export type FlowLimitSource = 'default' | 'partner' | 'org';
 
 export interface FlowLimitsDto {
@@ -51,6 +79,20 @@ export interface FlowLimitsDto {
   source: Record<FlowLimitKey, FlowLimitSource>;
   /** The partner's values an org override may not exceed; null when the owner is the partner. */
   partnerCeiling: Record<FlowLimitKey, number> | null;
+}
+
+/** `GET /api/v1/flows/limits` and the `PUT` response: one level's stored values and what resolves. */
+export interface FlowLimitsViewDto {
+  level: 'partner' | 'org';
+  partnerId: string;
+  orgId: string | null;
+  /** What this level stores; null = not set (inherits). An org value above the ceiling is stored but not in effect. */
+  stored: Record<FlowLimitKey, number | null>;
+  limits: FlowLimitsDto;
+  defaults: Record<FlowLimitKey, number>;
+  ceilings: Record<FlowLimitKey, number>;
+  /** The caller may write this level (permission, MFA, scope, partner-wide authority). */
+  canManage: boolean;
 }
 
 export interface FlowUsageDto {

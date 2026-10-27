@@ -97,7 +97,9 @@ describe('partner settings inheritance bindings', () => {
     for (const entry of PARTNER_SETTINGS_CATALOG.filter((e) => BINDINGS[e.id]!.orgSource !== null)) {
       const binding = BINDINGS[entry.id]!;
       expect(binding.bucketSql('ownValue', PARTNER_ALL_SET), entry.id).not.toBeNull();
-      expect(binding.bucketSql('shadowed', PARTNER_ALL_SET) !== null, entry.id).toBe(entry.kind === 'locks');
+      // A cap whose resolver ignores a value above the ceiling shadows it (flows.*, W05 #5220).
+      expect(binding.bucketSql('shadowed', PARTNER_ALL_SET) !== null, entry.id).toBe(entry.kind === 'locks' || binding.clampedIsShadowed === true);
+      if (binding.clampedIsShadowed) expect(entry.qualifier, entry.id).toBe('cap');
       expect(binding.bucketSql('overrides', PARTNER_ALL_SET) !== null, entry.id).toBe(entry.kind === 'overridable' && !entry.secret);
     }
   });
@@ -171,6 +173,22 @@ describe('partner settings inheritance bindings', () => {
     expect(binding.hasOwnValue(4)).toBe(false);
     expect(binding.hasOwnValue(30.5)).toBe(false);
     expect(binding.hasOwnValue('30')).toBe(false);
+  });
+
+  it('a flow limit org value is in effect only when it lowers the partner value; above it, it is clamped (W05 #5220)', () => {
+    const binding = BINDINGS['flows.monthlyRunsPerFlow']!;
+    const partner = { flows: { monthlyRunsPerFlow: 500 } };
+    expect(binding.hasOwnValue(100)).toBe(true);
+    expect(binding.hasOwnValue(0)).toBe(false);
+    expect(binding.hasOwnValue(1.5)).toBe(false);
+    expect(binding.partnerSet(partner)).toBe(true);
+    expect(binding.partnerSet({})).toBe(false);
+    expect(binding.orgValueInEffect(partner, 100)).toBe(true);
+    expect(binding.orgValueInEffect(partner, 501)).toBe(false);
+    expect(binding.clamped!(partner, 501)).toBe(true);
+    expect(binding.clamped!(partner, 500)).toBe(false);
+    // No partner value: the ceiling is the platform default (10,000).
+    expect(binding.clamped!({}, 10_001)).toBe(true);
   });
 
   it('an AI budget column counts as set only when non-null', () => {

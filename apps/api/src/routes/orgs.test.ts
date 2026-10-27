@@ -1441,6 +1441,28 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(getCaptured().settings).not.toHaveProperty('ai');
       });
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The system
+      // wholesale write can neither erase nor set it.
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 100_000 }, branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+      });
+
+      it('cannot create settings.flows when none is stored', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 1 } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings).not.toHaveProperty('flows');
+      });
     });
 
     // SR2-05: the system-scoped wholesale settings write is a THIRD write path
@@ -4444,6 +4466,30 @@ describe('org routes', () => {
           .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any) // assertNotLocked: partner settings (no locks)
           .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { eventLogs: storedEventLogs } }]) as any); // current org settings
       }
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The
+      // wholesale org settings write keeps the stored block and ignores an
+      // incoming one (orgs:write is not automations:write).
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(noLockSelect([{ partnerId: 'partner-123' }]) as any)
+          .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any)
+          .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { flows: { monthlyRunsPerFlow: 50 } } }]) as any);
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }]) }),
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { flows: { monthlyRunsPerFlow: 9_999 }, eventLogs: { enabled: false } } }),
+        });
+
+        expect(res.status).toBe(200);
+        const written = set.mock.calls[0]![0].settings as Record<string, unknown>;
+        expect(written.flows).toEqual({ monthlyRunsPerFlow: 50 });
+      });
 
       it('refuses a URL change that would carry the stored API key ciphertext to a new origin', async () => {
         queueSelects({

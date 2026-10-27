@@ -3,7 +3,9 @@ import {
   FLOW_ADMISSION_REFUSALS,
   FLOW_LIMIT_CEILINGS,
   FLOW_LIMIT_DEFAULTS,
+  FLOW_LIMITS_WRITE_ERRORS,
   flowLimitsSettingsSchema,
+  flowLimitsUpdateSchema,
   flowUsagePeriodKey,
 } from './flowBudgets';
 
@@ -34,5 +36,22 @@ describe('flow budgets (#5220)', () => {
 
   it('lists the admission refusals', () => {
     expect([...FLOW_ADMISSION_REFUSALS]).toEqual(['flow_queue_full', 'flow_monthly_cap_reached', 'owner_monthly_cap_reached']);
+  });
+
+  it('the limits write takes a value, null (inherit) or omission per field, never above the platform ceiling', () => {
+    const orgId = '11111111-1111-4111-8111-111111111111';
+    expect(flowLimitsUpdateSchema.safeParse({ limits: { monthlyRunsPerFlow: 500, aiTokensPerRun: null } }).success).toBe(true);
+    expect(flowLimitsUpdateSchema.safeParse({ orgId, limits: {} }).success).toBe(true);
+    expect(flowLimitsUpdateSchema.safeParse({ limits: { monthlyRunsPerFlow: FLOW_LIMIT_CEILINGS.monthlyRunsPerFlow + 1 } }).success).toBe(false);
+    expect(flowLimitsUpdateSchema.safeParse({ limits: { monthlyRunsPerFlow: 0 } }).success).toBe(false);
+    expect(flowLimitsUpdateSchema.safeParse({ limits: { monthlyRunsPerFlow: 1.5 } }).success).toBe(false);
+    expect(flowLimitsUpdateSchema.safeParse({ limits: { somethingElse: 1 } }).success).toBe(false);
+    expect(flowLimitsUpdateSchema.safeParse({ orgId: 'nope', limits: {} }).success).toBe(false);
+  });
+
+  it('lists the limits write errors', () => {
+    expect([...FLOW_LIMITS_WRITE_ERRORS]).toEqual([
+      'org_not_found', 'partner_required', 'partner_scope_required', 'partner_wide_forbidden', 'org_scope_read_only', 'limit_above_partner_ceiling',
+    ]);
   });
 });
