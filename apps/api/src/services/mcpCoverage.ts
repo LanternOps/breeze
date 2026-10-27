@@ -460,23 +460,23 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/diagnose.ts': { tools: ['take_screenshot', 'get_device_context'] },
   'devices/diagnosticLogs.ts': { tools: ['search_agent_logs'] },
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
-  'devices/events.ts': { gap: '#6783' },
+  'devices/events.ts': { tools: ['get_device_events'] }, // W13 (#6783)
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
   // list/run/status are the same OS-native cleanup workflow as the `system_cleanup`
   // AI tool (W05 gap triage). The route's cancel endpoint (#6485 F-5) has no
   // matching `system_cleanup` action yet -- a small future addition, not a
   // fresh MCP_COVERAGE gap.
   'devices/filesystemSystemCleanup.ts': { tools: ['system_cleanup'] },
-  'devices/function.ts': { gap: '#6783' },
+  'devices/function.ts': { tools: ['manage_device_function'] }, // W13 (#6783)
   'devices/groups.ts': { tools: ['manage_groups'] },
   'devices/hardware.ts': { tools: ['get_ip_history', 'get_device_details'] },
   'devices/hardwareHealth.ts': { tools: ['get_device_hardware_health'] },
   'devices/timeStatus.ts': { tools: ['get_device_time_status'] },
-  'devices/health.ts': { gap: '#6783' },
+  'devices/health.ts': { tools: ['get_device_health'] }, // W13 (#6783)
   'devices/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'devices/homebrewBootstrap.ts': { tools: ['bootstrap_homebrew'] }, // W12 (#6782)
-  'devices/links.ts': { gap: '#6783' },
-  'devices/manual.ts': { gap: '#6783' },
+  'devices/links.ts': { tools: ['manage_device_links'] }, // W13 (#6783)
+  'devices/manual.ts': { tools: ['manage_manual_assets'] }, // W13 (#6783)
   'devices/metrics.ts': { tools: ['analyze_metrics', 'analyze_fleet_metrics'] },
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
@@ -487,8 +487,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/options.ts': { exempt: 'internal_plumbing' },
   'devices/placement.ts': { tools: ['get_device_details'] },
   'devices/patches.ts': { tools: ['manage_patches'] },
-  'devices/posture.ts': { gap: '#6783' },
-  'devices/processSamples.ts': { gap: '#6783' },
+  'devices/posture.ts': { tools: ['get_management_posture'] }, // W13 (#6783)
+  'devices/processSamples.ts': { tools: ['get_process_samples'] }, // W13 (#6783): the at-or-before sample; range markers are chart data
   'devices/provision.ts': { exempt: 'identity' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
   'devices/restorePoints.ts': { tools: ['list_device_restore_point_attempts'] },
@@ -500,8 +500,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
   'devices/attentionCounts.ts': { exempt: 'internal_plumbing', note: 'Per-page alert/ticket count batch for the devices list UI (#9038); the same counts reach the model through manage_alerts and the ticket tools.' },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
-  'devices/warranty.ts': { gap: '#6783' },
-  'devices/watchdogLogs.ts': { gap: '#6783' },
+  'devices/warranty.ts': { tools: ['manage_device_warranty'] }, // W13 (#6783)
+  'devices/watchdogLogs.ts': { tools: ['search_agent_logs'] }, // W13 (#6783): source 'watchdog'
   // #3834 W01: the host axis (hostsWorkloads/workloadRuntimes) is part of the
   // device projection that get_device_details returns; query_device_workloads
   // (W04) serves the per-workload list.

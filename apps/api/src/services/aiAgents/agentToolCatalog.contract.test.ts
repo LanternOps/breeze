@@ -457,6 +457,19 @@ describe('W11 security policy tools in the agent catalog (#6781)', () => {
   });
 });
 
+/** Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and records are offered (deletes and refresh become
+ * proposals); manage_device_function:set is AGENT_HUMAN_ONLY_ACTIONS, so the tool itself stays offered. */
+describe('W13 device inventory and ops tools in the agent catalog (#6783)', () => {
+  it.each([
+    'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
+    'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  ])('%s is mapped to automations_reports and offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('automations_reports');
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
 /** Spec 2026-09-23 W12 (#6782): software tools are offered (writes become proposals); bootstrap_homebrew and
  * manage_custom_fields are AGENT_HUMAN_ONLY_TOOLS (explicit D4 exceptions, W12 plan quorum QW6). */
 describe('W12 software tools in the agent catalog (#6782)', () => {
