@@ -34,6 +34,52 @@ type RestartSurface interface {
 	// BeforeOSRestart runs just before the OS restart command, so the
 	// after-the-fact list entry is on disk when the machine goes down.
 	BeforeOSRestart(campaign uint64, at time.Time)
+	// OSRestartFailed reports that the OS restart command failed (or this
+	// platform has none) after BeforeOSRestart: the machine is not going
+	// down, so the after-the-fact entry must go. A cancel during the OS
+	// grace minute is reported through Cancelled.
+	OSRestartFailed(campaign uint64)
+}
+
+// RebootSeams injects the OS- and disk-touching parts of a manager, for
+// tests in other packages that drive a real manager (the restart card's
+// end-to-end tests). Zero fields keep the real implementation.
+type RebootSeams struct {
+	Now           func() time.Time
+	AfterFunc     func(time.Duration, func()) *time.Timer
+	ExecOSReboot  func(grace time.Duration) error
+	AbortOSReboot func() error
+	HistoryPath   string
+	LedgerPath    string
+}
+
+// NewRebootManagerWithSeams is NewRebootManagerWithPrompt with injected
+// seams. Production code uses NewRebootManagerWithPrompt.
+func NewRebootManagerWithSeams(notifyFn NotifyFunc, promptFn PromptFunc, maxRebootsPerDay int, seams RebootSeams) *RebootManager {
+	rm := NewRebootManagerWithPrompt(notifyFn, promptFn, maxRebootsPerDay)
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if seams.Now != nil {
+		rm.nowFn = seams.Now
+	}
+	if seams.AfterFunc != nil {
+		rm.afterFunc = seams.AfterFunc
+	}
+	if seams.ExecOSReboot != nil {
+		rm.execOSReboot = seams.ExecOSReboot
+	}
+	if seams.AbortOSReboot != nil {
+		rm.abortOSReboot = seams.AbortOSReboot
+	}
+	if seams.HistoryPath != "" {
+		path := seams.HistoryPath
+		rm.historyPath = func() string { return path }
+	}
+	if seams.LedgerPath != "" {
+		path := seams.LedgerPath
+		rm.deferralLedger = func() string { return path }
+	}
+	return rm
 }
 
 // RestartRung is one rung as the card sees it.

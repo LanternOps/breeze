@@ -55,9 +55,20 @@ type restartCard struct {
 
 	mu       sync.Mutex
 	campaign uint64
+	// cancelled is the last campaign an operator cancelled: a rung of it that
+	// was already past the manager's checks when the cancel landed must not
+	// draw a card nobody can act on.
+	cancelled uint64
 	// placed are the owners the current campaign's card was drawn for: they
 	// get the after-restart entry.
 	placed map[string]prompthost.Owner
+
+	// legacyMu guards lastLegacy: the newest rung's warning, kept for a card
+	// rebuilt after a postponement (RestartRungNow carries no rung copy), so
+	// its fallback still says something (#3197). Separate from mu because a
+	// decision reads it under the host's action lock.
+	legacyMu   sync.Mutex
+	lastLegacy map[uint64]ipc.NotifyRequest
 }
 
 var _ patching.RestartSurface = (*restartCard)(nil)
@@ -82,15 +93,17 @@ func (h *Heartbeat) newRestartCard() *restartCard {
 
 func (c *restartCard) prompts() promptkinds.RestartPrompts {
 	return promptkinds.RestartPrompts{
-		Postpone: func(campaign uint64, renderer string) (promptkinds.RestartPromptInput, error) {
+		Postpone: func(campaign uint64, renderer string) (promptkinds.RestartPromptInput, bool, error) {
 			if err := c.mgr.UserPostpone(campaign, renderer); err != nil {
-				return promptkinds.RestartPromptInput{}, err
+				return promptkinds.RestartPromptInput{}, false, err
 			}
 			rung, ok := c.mgr.RestartRungNow(campaign)
 			if !ok {
-				return promptkinds.RestartPromptInput{}, errors.New("the restart is no longer scheduled")
+				// Applied, then replaced or cancelled before it could be read
+				// back: the postponement stands; the card is not refreshed.
+				return promptkinds.RestartPromptInput{}, false, nil
 			}
-			return c.input(rung), nil
+			return c.input(rung), true, nil
 		},
 		RestartNow: c.mgr.UserRestartNow,
 		Refresh:    c.host.Refresh,
@@ -112,6 +125,17 @@ func (c *restartCard) partner() string {
 }
 
 func (c *restartCard) input(r patching.RestartRung) promptkinds.RestartPromptInput {
+	legacy := ipc.NotifyRequest{Title: r.LegacyTitle, Body: r.LegacyBody, Urgency: r.LegacyUrgency}
+	c.legacyMu.Lock()
+	if legacy.Title != "" || legacy.Body != "" {
+		if c.lastLegacy == nil || len(c.lastLegacy) > 4 {
+			c.lastLegacy = map[uint64]ipc.NotifyRequest{}
+		}
+		c.lastLegacy[r.Campaign] = legacy
+	} else {
+		legacy = c.lastLegacy[r.Campaign]
+	}
+	c.legacyMu.Unlock()
 	return promptkinds.RestartPromptInput{
 		Campaign:        r.Campaign,
 		ScheduledAt:     r.ScheduledAt,
@@ -122,7 +146,7 @@ func (c *restartCard) input(r patching.RestartRung) promptkinds.RestartPromptInp
 		OperatorBody:    r.Text.Body,
 		OperatorButton:  r.Text.Button,
 		Partner:         c.partner(),
-		Legacy:          ipc.NotifyRequest{Title: r.LegacyTitle, Body: r.LegacyBody, Urgency: r.LegacyUrgency},
+		Legacy:          legacy,
 	}
 }
 
@@ -133,9 +157,15 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if r.Campaign == c.cancelled {
+		return false // cancelled under this rung: today's path, as before
+	}
 	if c.campaign != r.Campaign {
-		// A new operator schedule replaces the old campaign's cards.
+		// A new operator schedule replaces the old campaign's cards (and an
+		// after-restart entry of an old campaign whose OS countdown it
+		// aborted).
 		c.closeCampaignLocked(ipc.PromptCloseSuperseded)
+		c.forgetRestartedLocked()
 		c.campaign = r.Campaign
 		c.placed = map[string]prompthost.Owner{}
 	}
@@ -161,7 +191,7 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 	in := c.input(r)
 	var p prompthost.Prompt
 	if r.Final {
-		p = rs.RestartFinal(r.Campaign, r.ScheduledAt)
+		p = rs.RestartFinal(r.Campaign, r.ScheduledAt, in.Legacy)
 	} else {
 		p = rs.RestartPrompt(in)
 	}
@@ -185,7 +215,7 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 		show()
 	}
 	if err != nil {
-		log.Warn("restart card not shown; sending today's restart warning", "promptId", p.ID, "error", err.Error())
+		log.Error("restart card not shown; sending today's restart warning", "promptId", p.ID, "error", err.Error())
 		return false
 	}
 	for _, o := range onCard {
@@ -193,7 +223,7 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 	}
 	for _, o := range legacy {
 		if err := c.notify(o, in.Legacy); err != nil {
-			log.Warn("restart warning not delivered to a session without the card", "owner", o.Key(), "error", err.Error())
+			log.Error("restart warning not delivered to a session without the card", "campaign", r.Campaign, "final", r.Final, "owner", o.Key(), "error", err.Error())
 		}
 	}
 	return true
@@ -205,7 +235,11 @@ func (c *restartCard) ShowRung(r patching.RestartRung) bool {
 func (c *restartCard) Cancelled(campaign uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if campaign == 0 || campaign != c.campaign {
+	if campaign == 0 {
+		return
+	}
+	c.cancelled = campaign
+	if campaign != c.campaign {
 		return
 	}
 	rs := c.prompts()
@@ -225,7 +259,36 @@ func (c *restartCard) Cancelled(campaign uint64) {
 			c.closeQuietly(card.id, ipc.PromptCloseWithdrawn)
 		}
 	}
+	// Cancelled in the OS grace minute: the machine is not restarting after
+	// all, so "Your computer restarted at …" must not be left behind.
+	c.forgetRestartedLocked()
 	c.placed = map[string]prompthost.Owner{}
+}
+
+// OSRestartFailed implements patching.RestartSurface: the OS restart command
+// failed after the after-restart entry was written.
+func (c *restartCard) OSRestartFailed(campaign uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if campaign != c.campaign {
+		return
+	}
+	c.forgetRestartedLocked()
+}
+
+// forgetRestartedLocked retracts the current campaign's after-restart entry
+// (a no-op when none was written). Callers hold c.mu.
+func (c *restartCard) forgetRestartedLocked() {
+	if c.campaign == 0 || len(c.placed) == 0 {
+		return
+	}
+	owners := make([]prompthost.Owner, 0, len(c.placed))
+	for _, o := range c.placed {
+		owners = append(owners, o)
+	}
+	if err := c.host.RemoveFinished(promptkinds.RestartedNoticeID(c.campaign), owners); err != nil {
+		log.Error("after-restart list entry not withdrawn", "campaign", c.campaign, "error", err.Error())
+	}
 }
 
 // BeforeOSRestart implements patching.RestartSurface: every person the card
@@ -249,7 +312,7 @@ func (c *restartCard) BeforeOSRestart(campaign uint64, at time.Time) {
 		c.settled(func(id promptidentity.Identity, ok bool) { stampIdentity(&p, id, ok) })
 	}
 	if err := c.host.RecordFinished(p); err != nil {
-		log.Warn("after-restart list entry not written", "promptId", p.ID, "error", err.Error())
+		log.Error("after-restart list entry not written", "promptId", p.ID, "owners", len(owners), "error", err.Error())
 	}
 }
 

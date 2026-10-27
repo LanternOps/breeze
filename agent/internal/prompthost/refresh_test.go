@@ -168,6 +168,24 @@ func TestOnActionRendererReceivesTheRenderersRole(t *testing.T) {
 	}
 }
 
+func TestRemoveFinishedRetractsTheAfterTheFactEntry(t *testing.T) {
+	hh := newHarness(t, assistRenderer("assist-1", "notice.info@1"))
+	show := loadShow(t, "show.notice.json")
+	show.State = ipc.PromptStateApproved
+	show.Actions = []ipc.PromptAction{}
+	show.DefaultActionID = ""
+	p := Prompt{ID: "notice:restarted:9", Kind: KindSpec{Name: "notice.info", Version: 1}, Owners: []Owner{testOwner}, Show: show}
+	if err := hh.h.RecordFinished(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := hh.h.RemoveFinished(p.ID, []Owner{testOwner}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hh.inbox.entries[listEntryID(p.ID, testOwner)]; ok {
+		t.Fatal("the entry must be gone")
+	}
+}
+
 func TestRecordFinishedPersistsWithoutDrawingAndReplaysListOnly(t *testing.T) {
 	r := assistRenderer("assist-1", "notice.info@1")
 	r.UILocale = "fr-CA"

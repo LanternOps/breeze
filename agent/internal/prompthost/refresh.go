@@ -102,6 +102,22 @@ func (h *Host) Refresh(p Prompt) error {
 	return nil
 }
 
+// RemoveFinished retracts an after-the-fact entry RecordFinished wrote, for
+// each owner: the event it reports did not happen after all (a restart
+// aborted in its last minute, or an OS command that failed).
+func (h *Host) RemoveFinished(promptID string, owners []Owner) error {
+	if h.inbox == nil {
+		return nil
+	}
+	var errs []error
+	for _, o := range owners {
+		if err := h.inbox.RetractPrompt(listEntryID(promptID, o)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // RecordFinished writes an after-the-fact entry ("Your computer restarted at
 // 03:12 …", spec §3.2) to each owner's notification list without drawing
 // anything now. It is replayed list-only, never activated, when the owner's

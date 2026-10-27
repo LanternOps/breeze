@@ -1,6 +1,8 @@
 package heartbeat
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/prompthost"
 	"github.com/breeze-rmm/agent/internal/promptkinds"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
 // The restart card over a real prompt host (#10190 W05, plan Task 5.1).
@@ -162,6 +165,8 @@ func (d *rcDecider) RestartRungNow(campaign uint64) (patching.RestartRung, bool)
 	defer d.mu.Unlock()
 	r := d.rung
 	r.Resurface = false
+	// The real manager's snapshot carries no rung copy (only a rung does).
+	r.LegacyTitle, r.LegacyBody, r.LegacyUrgency = "", "", ""
 	return r, true
 }
 
@@ -179,6 +184,7 @@ type rcFixture struct {
 	clock   *rcClock
 	decider *rcDecider
 	toasts  []prompthost.Owner
+	reqs    []ipc.NotifyRequest
 	owners  []prompthost.Owner
 }
 
@@ -202,8 +208,9 @@ func newRCFixture(t *testing.T, enabled ...string) *rcFixture {
 		host:   f.host,
 		mgr:    f.decider,
 		owners: func() []prompthost.Owner { return f.owners },
-		notify: func(o prompthost.Owner, _ ipc.NotifyRequest) error {
+		notify: func(o prompthost.Owner, req ipc.NotifyRequest) error {
 			f.toasts = append(f.toasts, o)
+			f.reqs = append(f.reqs, req)
 			return nil
 		},
 	}
@@ -413,5 +420,352 @@ func TestLastUserActionInRebootStatusReport(t *testing.T) {
 	st.LastUserAction = nil
 	if rep := buildRebootStatusReport(st); rep.LastUserAction != nil {
 		t.Fatal("no decision, no field")
+	}
+}
+
+// presentedBy answers prompt_presented for a show, as a renderer would.
+func presentedBy(t *testing.T, h *prompthost.Host, key string, s ipc.PromptShow) {
+	t.Helper()
+	raw, _ := json.Marshal(ipc.PromptPresented{PromptID: s.PromptID, Rev: s.Rev, Lease: s.Lease, Visible: true})
+	h.HandleRendererMessage(&sessionbroker.Session{SessionID: key}, ipc.TypePromptPresented, raw)
+}
+
+func actBy(t *testing.T, h *prompthost.Host, key string, s ipc.PromptShow, actionID string) ipc.PromptActionResult {
+	t.Helper()
+	raw, _ := json.Marshal(ipc.PromptActionRequest{PromptID: s.PromptID, Rev: s.Rev, Lease: s.Lease, ActionID: actionID, Via: ipc.PromptViaClick})
+	_, reply := h.HandleRendererMessage(&sessionbroker.Session{SessionID: key}, ipc.TypePromptAction, raw)
+	return reply.(ipc.PromptActionResult)
+}
+
+// The closing card is the last warning: if its renderer never draws it, the
+// person still gets today's closing toast (#3197).
+func TestClosingCardFallsBackToTodaysToastWhenNotPresented(t *testing.T) {
+	f := newRCFixture(t, "restart.prompt", "restart.final")
+	f.owners = []prompthost.Owner{rcOwnerA}
+	final := f.rung()
+	final.Final, final.PostponeUntil = true, time.Time{}
+	final.ScheduledAt = rcNow.Add(time.Minute)
+	final.LegacyTitle, final.LegacyBody, final.LegacyUrgency = "Restarting Now", "This computer restarts for updates in 1 minute. Save your work now.", "critical"
+	if !f.card.ShowRung(final) {
+		t.Fatal("the closing rung must be taken")
+	}
+	f.dir.take()
+	f.clock.advance(11 * time.Second) // past the 10 s present budget
+	f.host.Tick()
+	if len(f.reqs) != 1 || f.reqs[0].Title != "Restarting Now" || f.reqs[0].Urgency != "critical" {
+		t.Fatalf("closing toast = %+v", f.reqs)
+	}
+}
+
+// A card rebuilt after a postponement keeps the newest rung's warning as its
+// fallback (RestartRungNow carries none).
+func TestPostponedCardKeepsItsFallbackWarning(t *testing.T) {
+	f := newRCFixture(t, "restart.prompt", "restart.final")
+	f.owners = []prompthost.Owner{rcOwnerA}
+	r := f.rung()
+	f.card.ShowRung(r)
+	s := rcShows(f.dir.take(), "assist-a")[0]
+	presentedBy(t, f.host, "assist-a", s)
+	if res := actBy(t, f.host, "assist-a", s, "postpone"); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("postpone = %s", res.Result)
+	}
+	f.dir.take()
+	// Assist goes away and nothing else can draw the card.
+	f.dir.mu.Lock()
+	f.dir.rs = f.dir.rs[1:]
+	f.dir.mu.Unlock()
+	f.host.RendererDisconnected("assist-a")
+	f.clock.advance(11 * time.Second) // past the 10 s grace
+	f.host.Tick()
+	if len(f.reqs) != 1 || f.reqs[0].Title != r.LegacyTitle || f.reqs[0].Body != r.LegacyBody {
+		t.Fatalf("fallback after a postponement = %+v, want the newest rung's warning", f.reqs)
+	}
+}
+
+func TestAfterRestartEntryWithdrawnWhenTheRestartDoesNotHappen(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		abort func(c *restartCard, campaign uint64)
+	}{
+		{"cancelled in the OS grace minute", func(c *restartCard, campaign uint64) { c.Cancelled(campaign) }},
+		{"OS restart command failed", func(c *restartCard, campaign uint64) { c.OSRestartFailed(campaign) }},
+		{"a new schedule aborted the countdown", func(c *restartCard, campaign uint64) {
+			next := patching.RestartRung{Campaign: campaign + 1, Resurface: true, ScheduledAt: rcNow.Add(time.Hour), LegacyTitle: "t", LegacyBody: "b"}
+			c.ShowRung(next)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRCFixture(t, "notice.info", "restart.prompt", "restart.final")
+			f.owners = []prompthost.Owner{rcOwnerA}
+			r := f.rung()
+			f.card.ShowRung(r)
+			f.card.BeforeOSRestart(r.Campaign, rcNow.Add(time.Minute))
+			id := promptkinds.RestartedNoticeID(r.Campaign) + "#" + rcOwnerA.PrincipalKey()
+			if _, ok := f.inbox.get(id); !ok {
+				t.Fatal("precondition: the entry was written")
+			}
+			tc.abort(f.card, r.Campaign)
+			if _, ok := f.inbox.get(id); ok {
+				t.Fatal("'Your computer restarted' must not survive a restart that did not happen")
+			}
+		})
+	}
+}
+
+func TestRungOfACancelledCampaignDrawsNoCard(t *testing.T) {
+	f := newRCFixture(t, "restart.prompt", "restart.final")
+	f.owners = []prompthost.Owner{rcOwnerA}
+	r := f.rung()
+	// The cancel lands before this campaign's first rung reaches the card.
+	f.card.Cancelled(r.Campaign)
+	if f.card.ShowRung(r) {
+		t.Fatal("a rung of a cancelled campaign must not draw a card")
+	}
+	if n := len(f.dir.take()); n != 0 {
+		t.Fatalf("sent %d prompt messages", n)
+	}
+}
+
+// Windows SCM lock / unlock reach the prompt host through the heartbeat.
+func TestSessionLockReachesThePromptHost(t *testing.T) {
+	f := newRCFixture(t, "restart.prompt", "restart.final")
+	f.owners = []prompthost.Owner{rcOwnerA}
+	h := &Heartbeat{promptHost: f.host}
+	h.promptSessionLockChanged(rcOwnerA.WinSessionID, true)
+	f.card.ShowRung(f.rung())
+	if n := len(rcShows(f.dir.take(), "assist-a")); n != 0 {
+		t.Fatal("a locked session got the card")
+	}
+	h.promptSessionLockChanged(rcOwnerA.WinSessionID, false)
+	f.host.Tick()
+	if n := len(rcShows(f.dir.take(), "assist-a")); n != 1 {
+		t.Fatalf("unlock must draw the card: %d", n)
+	}
+	(&Heartbeat{}).promptSessionLockChanged(1, true) // no prompt host: no panic
+}
+
+func TestLastUserActionWireShape(t *testing.T) {
+	at := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
+	st := patching.RebootState{RebootScheduled: true, ScheduledAt: time.Now().Add(time.Hour),
+		LastUserAction: &patching.RebootUserAction{Action: patching.UserActionRestartNow, At: at, Renderer: "native"}}
+	raw, err := json.Marshal(buildRebootStatusReport(st))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	a, ok := got["lastUserAction"].(map[string]any)
+	if !ok || a["action"] != "restart_now" || a["renderer"] != "native" || int64(a["atUnixMs"].(float64)) != at.UnixMilli() || len(a) != 3 {
+		t.Fatalf("lastUserAction on the wire = %s", raw)
+	}
+	st.LastUserAction = nil
+	raw, _ = json.Marshal(buildRebootStatusReport(st))
+	if strings.Contains(string(raw), "lastUserAction") {
+		t.Fatalf("an absent decision must be omitted: %s", raw)
+	}
+}
+
+// --- end to end: the real reboot manager, card and prompt host ------------
+
+type e2eTimers struct {
+	mu  sync.Mutex
+	fns map[time.Duration][]func()
+}
+
+func (f *e2eTimers) afterFunc(d time.Duration, fn func()) *time.Timer {
+	f.mu.Lock()
+	f.fns[d] = append(f.fns[d], fn)
+	f.mu.Unlock()
+	t := time.NewTimer(time.Hour)
+	t.Stop()
+	return t
+}
+
+func (f *e2eTimers) runAt(d time.Duration) {
+	f.mu.Lock()
+	fns := append([]func(){}, f.fns[d]...)
+	f.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
+// withDeadline fails the test instead of hanging on a lock-order deadlock.
+func withDeadline(t *testing.T, name string, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { defer close(done); f() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not return: deadlock between the reboot manager, the card and the prompt host?", name)
+	}
+}
+
+func TestRestartCardEndToEndWithTheRealManager(t *testing.T) {
+	f := newRCFixture(t, "notice.info", "restart.prompt", "restart.final")
+	f.owners = []prompthost.Owner{rcOwnerA}
+	timers := &e2eTimers{fns: map[time.Duration][]func(){}}
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var events []string
+	var legacy []string
+	mgr := patching.NewRebootManagerWithSeams(
+		func(title, _, _ string) { mu.Lock(); legacy = append(legacy, title); mu.Unlock() },
+		func(title, _, _ string, _ []string, _ time.Duration) (string, bool) {
+			mu.Lock()
+			legacy = append(legacy, "dialog:"+title)
+			mu.Unlock()
+			return "", true
+		},
+		3,
+		patching.RebootSeams{
+			Now:       time.Now,
+			AfterFunc: timers.afterFunc,
+			ExecOSReboot: func(time.Duration) error {
+				mu.Lock()
+				events = append(events, "os restart")
+				mu.Unlock()
+				return nil
+			},
+			AbortOSReboot: func() error { return nil },
+			HistoryPath:   filepath.Join(dir, "history.json"),
+			LedgerPath:    filepath.Join(dir, "ledger.json"),
+		})
+	f.card.mgr = mgr
+	mgr.SetRestartSurface(f.card)
+	// The host's clock is the manager's (real time) for this test.
+	f.clock.mu.Lock()
+	f.clock.t = time.Now()
+	f.clock.mu.Unlock()
+
+	if err := mgr.ScheduleWithOptions(2*time.Hour, time.Now().Add(10*time.Hour), "Patch", "patch_job",
+		patching.RebootOptions{Deferral: patching.DeferralPolicy{Allowed: true, MaxDeferrals: 3, DeferralMinutes: 60}}); err != nil {
+		t.Fatal(err)
+	}
+	withDeadline(t, "lead rung", func() { timers.runAt(0) })
+	shows := rcShows(f.dir.take(), "assist-a")
+	if len(shows) != 1 || shows[0].DefaultActionID != "postpone" || shows[0].Copy.StateDetail != "3 postponements left" {
+		t.Fatalf("lead card = %+v", shows)
+	}
+	card := shows[0]
+	presentedBy(t, f.host, "assist-a", card)
+
+	// Postpone on the card: the manager re-plans, the card is updated in place.
+	var res ipc.PromptActionResult
+	withDeadline(t, "postpone", func() { res = actBy(t, f.host, "assist-a", card, "postpone") })
+	if res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("postpone = %+v", res)
+	}
+	st := mgr.State()
+	if st.DeferralsUsed != 1 || st.LastUserAction == nil || st.LastUserAction.Renderer != "assist" {
+		t.Fatalf("manager after postpone = %+v / %+v", st, st.LastUserAction)
+	}
+	msgs := f.dir.take()
+	if len(rcShows(msgs, "assist-a")) != 0 {
+		t.Fatal("a postponement must not re-surface the card")
+	}
+	ups := rcUpdates(msgs, "assist-a")
+	if len(ups) == 0 || ups[len(ups)-1].Timing.DeadlineUnixMs != st.ScheduledAt.UnixMilli() {
+		t.Fatalf("card update after postpone = %+v, want the new restart time %v", ups, st.ScheduledAt)
+	}
+	// The re-planned lead rung updates in place too (#4941).
+	withDeadline(t, "re-planned lead rung", func() { timers.runAt(0) })
+	msgs = f.dir.take()
+	if len(rcShows(msgs, "assist-a")) != 0 {
+		t.Fatal("the re-planned lead rung re-surfaced the card")
+	}
+	card, err := applyAll(card, append(ups, rcUpdates(msgs, "assist-a")...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Copy.StateDetail != "2 postponements left" {
+		t.Fatalf("budget line after one postponement = %q", card.Copy.StateDetail)
+	}
+
+	// Restart now: the closing card replaces this one; the after-restart
+	// entry is on disk before the OS command.
+	withDeadline(t, "restart now", func() { res = actBy(t, f.host, "assist-a", card, "restart_now") })
+	if res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("restart_now = %+v", res)
+	}
+	withDeadline(t, "closing rung", func() { timers.runAt(0) })
+	msgs = f.dir.take()
+	finals := rcShows(msgs, "assist-a")
+	if len(finals) != 1 || finals[0].Kind != "restart.final" {
+		t.Fatalf("closing card = %+v", finals)
+	}
+	mu.Lock()
+	gotEvents, gotLegacy := append([]string{}, events...), append([]string{}, legacy...)
+	mu.Unlock()
+	if len(gotEvents) != 1 {
+		t.Fatalf("OS restart events = %v", gotEvents)
+	}
+	found := false
+	for _, e := range f.inbox.PromptEntries(rcOwnerA.PrincipalKey()) {
+		if strings.HasPrefix(e.PromptID, "notice:restarted:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no after-restart entry")
+	}
+	if len(gotLegacy) != 0 {
+		t.Fatalf("today's warnings went out although the card took every rung: %v", gotLegacy)
+	}
+}
+
+func applyAll(s ipc.PromptShow, ups []ipc.PromptUpdate) (ipc.PromptShow, error) {
+	for _, u := range ups {
+		if u.Rev <= s.Rev {
+			continue
+		}
+		next, err := ipc.ApplyPromptUpdate(s, u)
+		if err != nil {
+			return s, err
+		}
+		s = next
+	}
+	return s, nil
+}
+
+// An operator cancel racing a postponement on the card never deadlocks and
+// never resurrects the restart.
+func TestCardPostponeRacingCancelWithTheRealManager(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		f := newRCFixture(t, "restart.prompt", "restart.final")
+		f.owners = []prompthost.Owner{rcOwnerA}
+		timers := &e2eTimers{fns: map[time.Duration][]func(){}}
+		dir := t.TempDir()
+		mgr := patching.NewRebootManagerWithSeams(func(string, string, string) {}, nil, 3, patching.RebootSeams{
+			Now: time.Now, AfterFunc: timers.afterFunc,
+			ExecOSReboot:  func(time.Duration) error { return nil },
+			AbortOSReboot: func() error { return nil },
+			HistoryPath:   filepath.Join(dir, "h.json"), LedgerPath: filepath.Join(dir, "l.json"),
+		})
+		f.card.mgr = mgr
+		mgr.SetRestartSurface(f.card)
+		f.clock.mu.Lock()
+		f.clock.t = time.Now()
+		f.clock.mu.Unlock()
+		if err := mgr.ScheduleWithOptions(2*time.Hour, time.Now().Add(10*time.Hour), "Patch", "patch_job",
+			patching.RebootOptions{Deferral: patching.DeferralPolicy{Allowed: true, MaxDeferrals: 3, DeferralMinutes: 60}}); err != nil {
+			t.Fatal(err)
+		}
+		timers.runAt(0)
+		card := rcShows(f.dir.take(), "assist-a")[0]
+		presentedBy(t, f.host, "assist-a", card)
+		withDeadline(t, "postpone racing cancel", func() {
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); actBy(t, f.host, "assist-a", card, "postpone") }()
+			go func() { defer wg.Done(); _ = mgr.Cancel() }()
+			wg.Wait()
+		})
+		if st := mgr.State(); st.RebootScheduled {
+			t.Fatalf("iteration %d: the cancelled restart is scheduled again: %+v", i, st)
+		}
 	}
 }

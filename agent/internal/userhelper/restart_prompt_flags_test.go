@@ -1,6 +1,35 @@
 package userhelper
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+// The Windows restart box is windows-tagged and not run in CI: pin that it
+// takes its flags from restartPromptFlags and builds none of its own, so a
+// revert cannot quietly drop MB_DEFBUTTON2.
+func TestWindowsRestartBoxUsesRestartPromptFlags(t *testing.T) {
+	raw, err := os.ReadFile("notify_prompt_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	start := strings.Index(src, "func showNotifyPromptOS(")
+	if start < 0 {
+		t.Fatal("showNotifyPromptOS not found")
+	}
+	body := src[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "flags := uintptr(restartPromptFlags())") {
+		t.Fatal("showNotifyPromptOS must take its uType from restartPromptFlags()")
+	}
+	if strings.Contains(body, "consentMBYesNo") || strings.Contains(body, "notifyPromptMBIconWarning") {
+		t.Fatal("showNotifyPromptOS builds its own flags again; use restartPromptFlags()")
+	}
+}
 
 // P8 (#10190 W05): the legacy restart Yes/No box defaults to its second
 // button, No — the postponement the daemon sends as Actions[1] — whatever

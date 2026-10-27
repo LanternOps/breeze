@@ -95,10 +95,12 @@ type RestartPromptInput struct {
 // manager. The caller sets Owners (and IdentityRef) before Show.
 type RestartPrompts struct {
 	// Postpone applies a Postpone for the campaign and returns the schedule
-	// as it now stands. An error is a refusal the person sees as nothing
-	// changing (rejected_invalid): the restart was cancelled, replaced, or
-	// the deadline left no room.
-	Postpone func(campaign uint64, renderer string) (RestartPromptInput, error)
+	// as it now stands. An error is a refusal (rejected_invalid, and the
+	// person is told why): the restart was cancelled, replaced, or the
+	// deadline left no room. current=false means the postponement was
+	// applied but the new schedule could not be read back; the card is then
+	// left for the next rung to redraw.
+	Postpone func(campaign uint64, renderer string) (next RestartPromptInput, current bool, err error)
 	// RestartNow applies Restart now for the campaign.
 	RestartNow func(campaign uint64, renderer string) error
 	// Refresh changes the open card in place (prompthost.Host.Refresh).
@@ -211,8 +213,8 @@ func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 		Legacy: func(o prompthost.Owner) error {
 			return r.notify(o, legacy)
 		},
-		OnActionRenderer: func(actionID string, _ prompthost.Owner, role ipc.HelperRole) (prompthost.ActionOutcome, error) {
-			return r.decide(in.Campaign, actionID, RendererName(role))
+		OnActionRenderer: func(actionID string, from prompthost.Owner, role ipc.HelperRole) (prompthost.ActionOutcome, error) {
+			return r.decide(in.Campaign, actionID, from, RendererName(role))
 		},
 		Localize: localize,
 	}
@@ -223,7 +225,7 @@ func (r RestartPrompts) RestartPrompt(in RestartPromptInput) prompthost.Prompt {
 // person just answered collapses rather than re-opening, #4941). Restart now
 // moves the card to approved; the closing rung that the re-plan fires at
 // once replaces it with restart.final.
-func (r RestartPrompts) decide(campaign uint64, actionID, renderer string) (prompthost.ActionOutcome, error) {
+func (r RestartPrompts) decide(campaign uint64, actionID string, from prompthost.Owner, renderer string) (prompthost.ActionOutcome, error) {
 	switch actionID {
 	case actionOK:
 		// "Got it": the person saw the card. Nothing changes — the restart
@@ -234,16 +236,26 @@ func (r RestartPrompts) decide(campaign uint64, actionID, renderer string) (prom
 		if r.Postpone == nil {
 			return prompthost.ActionOutcome{}, errors.New("promptkinds: no reboot manager to postpone")
 		}
-		next, err := r.Postpone(campaign, renderer)
+		next, current, err := r.Postpone(campaign, renderer)
 		if err != nil {
-			log.Info("restart postponement refused", "campaign", campaign, "reason", err.Error())
+			r.refused(from, campaign, "Restart Cannot Be Postponed", err)
 			return prompthost.ActionOutcome{Accepted: false}, nil
+		}
+		if !current {
+			// Applied, but the new schedule could not be read back: accept
+			// (the audit already says postponed) and leave the card to the
+			// re-planned lead rung, bumping its rev so a duplicate of this
+			// click cannot spend a second postponement.
+			log.Warn("restart postponed but the card could not be brought up to date", "campaign", campaign)
+			return prompthost.ActionOutcome{Accepted: true, Patch: &prompthost.Patch{}}, nil
 		}
 		if r.Refresh != nil {
 			if err := r.Refresh(r.RestartPrompt(next)); err != nil {
-				// The postponement stands (the manager re-planned and the
-				// next rung re-shows the card); only this card's text is late.
-				log.Warn("restart card not refreshed after a postponement", "campaign", campaign, "error", err.Error())
+				// The postponement stands; only this card's text is late. The
+				// empty patch still bumps the rev, so a duplicate click on
+				// the old rev is stale rather than a second postponement.
+				log.Error("restart card not refreshed after a postponement", "campaign", campaign, "error", err.Error())
+				return prompthost.ActionOutcome{Accepted: true, Patch: &prompthost.Patch{}}, nil
 			}
 		}
 		return prompthost.ActionOutcome{Accepted: true}, nil
@@ -252,7 +264,7 @@ func (r RestartPrompts) decide(campaign uint64, actionID, renderer string) (prom
 			return prompthost.ActionOutcome{}, errors.New("promptkinds: no reboot manager to restart")
 		}
 		if err := r.RestartNow(campaign, renderer); err != nil {
-			log.Info("restart now refused", "campaign", campaign, "reason", err.Error())
+			r.refused(from, campaign, "Restart Could Not Be Started", err)
 			return prompthost.ActionOutcome{Accepted: false}, nil
 		}
 		approved := ipc.PromptStateApproved
@@ -262,8 +274,21 @@ func (r RestartPrompts) decide(campaign uint64, actionID, renderer string) (prom
 	return prompthost.ActionOutcome{}, errRestartAction
 }
 
+// refused tells the person why their answer did nothing, the way today's
+// dialog path does (patching notifyUser: the same titles, the manager's
+// reason, critical). A click must never just vanish.
+func (r RestartPrompts) refused(from prompthost.Owner, campaign uint64, title string, why error) {
+	log.Warn("restart decision refused", "campaign", campaign, "owner", from.Key(), "reason", why.Error())
+	if err := r.notify(from, ipc.NotifyRequest{Title: title, Body: why.Error(), Urgency: "critical"}); err != nil {
+		log.Warn("could not tell the person why their restart decision was refused", "owner", from.Key(), "error", err.Error())
+	}
+}
+
 // RestartFinal builds the closing card: the OS countdown to at is running.
-func (r RestartPrompts) RestartFinal(campaign uint64, at time.Time) prompthost.Prompt {
+// legacy is today's closing warning, sent to an owner whose renderer cannot
+// draw the card (or stops drawing it): the last warning must reach the
+// person (#3197).
+func (r RestartPrompts) RestartFinal(campaign uint64, at time.Time, legacy ipc.NotifyRequest) prompthost.Prompt {
 	id := RestartFinalID(campaign)
 	token := timeToken(at)
 	localize := func(loc promptcatalog.Locale) (prompthost.Localized, error) {
@@ -304,9 +329,12 @@ func (r RestartPrompts) RestartFinal(campaign uint64, at time.Time) prompthost.P
 	}
 	r.applyEN(&show, localize)
 	return prompthost.Prompt{
-		ID:       id,
-		Kind:     RestartFinalKind,
-		Show:     show,
+		ID:   id,
+		Kind: RestartFinalKind,
+		Show: show,
+		Legacy: func(o prompthost.Owner) error {
+			return r.notify(o, legacy)
+		},
 		OnAction: acknowledgeOnly,
 		Localize: localize,
 	}

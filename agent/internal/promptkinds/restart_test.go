@@ -191,7 +191,9 @@ func TestRestartPromptDefaultsNameThePartnerOrTheGenericTeam(t *testing.T) {
 
 func TestRestartFinalStealsFocusWithOnlyOK(t *testing.T) {
 	at := restartAt.Add(time.Minute)
-	p := RestartPrompts{}.RestartFinal(42, at)
+	var toasts []ipc.NotifyRequest
+	rs := RestartPrompts{Notify: func(_ prompthost.Owner, req ipc.NotifyRequest) error { toasts = append(toasts, req); return nil }}
+	p := rs.RestartFinal(42, at, ipc.NotifyRequest{Title: "Restarting Now", Body: "This computer restarts for updates in 1 minute. Save your work now.", Urgency: "critical"})
 	validShow(t, p.Show)
 	if p.ID != "restart:42:final" || p.Kind.Name != "restart.final" {
 		t.Fatalf("id/kind = %s/%s", p.ID, p.Kind.Name)
@@ -205,6 +207,13 @@ func TestRestartFinalStealsFocusWithOnlyOK(t *testing.T) {
 	out, err := p.OnAction("ok", testOwner)
 	if err != nil || !out.Accepted || out.Close == nil || *out.Close != ipc.PromptCloseResolved {
 		t.Fatalf("ok = %+v, %v", out, err)
+	}
+	// The last warning must reach a session whose renderer cannot draw it.
+	if p.Legacy == nil {
+		t.Fatal("the closing card needs today's closing warning as its fallback (#3197)")
+	}
+	if err := p.Legacy(testOwner); err != nil || len(toasts) != 1 || toasts[0].Title != "Restarting Now" || toasts[0].Urgency != "critical" {
+		t.Fatalf("final legacy = %+v (%v)", toasts, err)
 	}
 }
 
@@ -305,17 +314,20 @@ type fakeManager struct {
 	in        RestartPromptInput
 	postpones []string
 	restarts  []string
-	gate      chan struct{} // when set, the first Postpone blocks on it
+	gate      chan struct{} // when set, Postpone signals entered and blocks on it
+	entered   chan struct{}
+	stale     bool // the postponement applies but cannot be read back
 }
 
-func (m *fakeManager) Postpone(campaign uint64, renderer string) (RestartPromptInput, error) {
+func (m *fakeManager) Postpone(campaign uint64, renderer string) (RestartPromptInput, bool, error) {
 	if m.gate != nil {
+		m.entered <- struct{}{}
 		<-m.gate
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if campaign != m.in.Campaign {
-		return RestartPromptInput{}, errors.New("another campaign")
+		return RestartPromptInput{}, false, errors.New("the restart was cancelled or replaced while the prompt was open")
 	}
 	m.postpones = append(m.postpones, renderer)
 	m.in.ScheduledAt = m.in.PostponeUntil
@@ -324,7 +336,7 @@ func (m *fakeManager) Postpone(campaign uint64, renderer string) (RestartPromptI
 	if m.in.DeferralsLeft == 0 {
 		m.in.PostponeUntil = time.Time{}
 	}
-	return m.in, nil
+	return m.in, !m.stale, nil
 }
 
 func (m *fakeManager) RestartNow(campaign uint64, renderer string) error {
@@ -381,14 +393,15 @@ func TestRestartConcurrentDecisionsFirstWins(t *testing.T) {
 		t.Fatalf("session B gets its own language: %s %+v", sb.Locale, sb.Actions)
 	}
 
-	m.gate = make(chan struct{})
+	m.gate, m.entered = make(chan struct{}), make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	var resA, resB ipc.PromptActionResult
 	wg.Add(2)
 	go func() { defer wg.Done(); resA = actOn(t, h, "assist-a", sa, "postpone") }()
-	time.Sleep(50 * time.Millisecond) // A is inside the domain call
+	<-m.entered // A is inside the domain call, holding the host's action lock
+	// B crosses it: whether B reaches the action lock before or after A
+	// finishes, it acts on the rev A's decision replaced.
 	go func() { defer wg.Done(); resB = actOn(t, h, "native-b", sb, "restart_now") }()
-	time.Sleep(50 * time.Millisecond)
 	close(m.gate)
 	wg.Wait()
 
@@ -478,6 +491,16 @@ func TestRestartOKAcknowledgesWithoutChangingTheSchedule(t *testing.T) {
 
 func TestRestartRefusedDecisionChangesNothing(t *testing.T) {
 	h, dir, m, r := restartHost(t)
+	var told []ipc.NotifyRequest
+	r.Notify = func(o prompthost.Owner, req ipc.NotifyRequest) error {
+		if o.Key() != ownerA.Key() {
+			t.Errorf("the refusal went to %s", o.Key())
+		}
+		m.mu.Lock()
+		told = append(told, req)
+		m.mu.Unlock()
+		return nil
+	}
 	p := r.RestartPrompt(m.in)
 	p.Owners = []prompthost.Owner{ownerA}
 	if err := h.Show(p); err != nil {
@@ -490,6 +513,45 @@ func TestRestartRefusedDecisionChangesNothing(t *testing.T) {
 	}
 	if len(updatesOf(dir.take("assist-a"))) != 0 {
 		t.Fatal("a refused decision must not change the card")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(told) != 1 || told[0].Title != "Restart Cannot Be Postponed" || !strings.Contains(told[0].Body, "cancelled or replaced") || told[0].Urgency != "critical" {
+		t.Fatalf("the person must be told why, as the dialog path does: %+v", told)
+	}
+}
+
+func TestRestartPostponeAppliedButUnreadableStillBumpsTheRev(t *testing.T) {
+	h, dir, m, r := restartHost(t)
+	m.stale = true
+	p := r.RestartPrompt(m.in)
+	p.Owners = []prompthost.Owner{ownerA}
+	if err := h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	sa := lastShowOf(t, dir.take("assist-a"))
+	if res := actOn(t, h, "assist-a", sa, "postpone"); res.Result != ipc.PromptActionAccepted || res.Rev <= sa.Rev {
+		t.Fatalf("result = %+v, want accepted with a newer rev", res)
+	}
+	if again := actOn(t, h, "assist-a", sa, "postpone"); again.Result == ipc.PromptActionRejectedInvalid || len(m.postpones) != 1 {
+		t.Fatalf("a duplicate click on the old rev = %s, postpones %v", again.Result, m.postpones)
+	}
+}
+
+func TestRestartPostponeWithAFailedRefreshStillBumpsTheRev(t *testing.T) {
+	h, dir, m, r := restartHost(t)
+	r.Refresh = func(prompthost.Prompt) error { return errors.New("refresh refused") }
+	p := r.RestartPrompt(m.in)
+	p.Owners = []prompthost.Owner{ownerA}
+	if err := h.Show(p); err != nil {
+		t.Fatal(err)
+	}
+	sa := lastShowOf(t, dir.take("assist-a"))
+	if res := actOn(t, h, "assist-a", sa, "postpone"); res.Result != ipc.PromptActionAccepted || res.Rev <= sa.Rev {
+		t.Fatalf("result = %+v, want accepted with a newer rev", res)
+	}
+	if again := actOn(t, h, "assist-a", sa, "postpone"); again.Result == ipc.PromptActionRejectedInvalid || len(m.postpones) != 1 {
+		t.Fatalf("a duplicate click on the old rev = %s, postpones %v", again.Result, m.postpones)
 	}
 }
 

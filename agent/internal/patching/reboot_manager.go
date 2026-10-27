@@ -603,6 +603,14 @@ func (r *RebootManager) Cancel() error {
 	return nil
 }
 
+// tellOSRestartFailed withdraws the after-the-fact entry of a restart the OS
+// never started. Called with no lock held.
+func (r *RebootManager) tellOSRestartFailed(surface RestartSurface, campaign uint64) {
+	if surface != nil && campaign != 0 {
+		surface.OSRestartFailed(campaign)
+	}
+}
+
 // tellCancelled withdraws the restart card of a cancelled campaign. Called
 // with no lock held, and only once the restart is really off.
 func (r *RebootManager) tellCancelled(surface RestartSurface, campaign uint64) {
@@ -908,6 +916,7 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		r.finishOSInvokeLocked()
 		r.state.LastError = "no OS reboot implementation for this platform"
 		r.mu.Unlock()
+		r.tellOSRestartFailed(surface, campaign)
 		return
 	}
 	err := exec(grace)
@@ -916,6 +925,7 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if err != nil {
 		r.state.LastError = fmt.Sprintf("OS reboot invocation failed: %v", err)
 		r.mu.Unlock()
+		r.tellOSRestartFailed(surface, campaign)
 		// A failed shutdown invocation used to be discarded entirely: the old
 		// code called exec.Command(...).Run() and ignored the error, so a
 		// blocked or missing shutdown binary looked identical to a reboot.

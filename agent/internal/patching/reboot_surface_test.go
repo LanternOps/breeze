@@ -2,6 +2,7 @@
 package patching
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"testing"
@@ -18,7 +19,14 @@ type fakeSurface struct {
 	rungs     []RestartRung
 	cancelled []uint64
 	before    []uint64
+	failed    []uint64
 	events    *[]string // shared ordering log, optional
+}
+
+func (s *fakeSurface) OSRestartFailed(campaign uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed = append(s.failed, campaign)
 }
 
 func (s *fakeSurface) ShowRung(r RestartRung) bool {
@@ -343,5 +351,50 @@ func TestCampaignIDsAreUniqueAcrossManagers(t *testing.T) {
 			t.Fatalf("campaign %d repeated or missing (ok=%v)", r.Campaign, ok)
 		}
 		seen[r.Campaign] = true
+	}
+}
+
+func TestOSRestartFailureWithdrawsTheAfterRestartEntry(t *testing.T) {
+	rm, timers, _, _, clock, _, s := newSurfaceTestManager(t, true)
+	rm.execOSReboot = func(time.Duration) error { return errors.New("shutdown.exe not found") }
+	if err := rm.ScheduleWithOptions(30*time.Minute, clock.now().Add(10*time.Hour), "Patch", "patch_job", RebootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	timers.runAt(0)
+	c := s.last(t).Campaign
+	timers.runAt(PlanReboot(30 * time.Minute).OSInvokeAt)
+	if len(s.before) != 1 || len(s.failed) != 1 || s.failed[0] != c {
+		t.Fatalf("before=%v failed=%v, want the entry written then withdrawn for %d", s.before, s.failed, c)
+	}
+}
+
+func TestCancelInTheOSGraceMinuteTellsTheSurfaceOnlyWhenTheAbortWorked(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		abortErr  error
+		wantCalls int
+	}{
+		{"abort succeeds", nil, 1},
+		{"abort fails: the machine may still go down", errors.New("shutdown /a refused"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rm, timers, _, osCalls, clock, _, s := newSurfaceTestManager(t, true)
+			rm.abortOSReboot = func() error { return tc.abortErr }
+			if err := rm.ScheduleWithOptions(30*time.Minute, clock.now().Add(10*time.Hour), "Patch", "patch_job", RebootOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			timers.runAt(0)
+			timers.runAt(PlanReboot(30 * time.Minute).OSInvokeAt)
+			if len(*osCalls) != 1 {
+				t.Fatalf("precondition: the OS countdown runs (%d)", len(*osCalls))
+			}
+			err := rm.Cancel()
+			if (err != nil) != (tc.abortErr != nil) {
+				t.Fatalf("Cancel = %v", err)
+			}
+			if len(s.cancelled) != tc.wantCalls {
+				t.Fatalf("Cancelled calls = %d, want %d", len(s.cancelled), tc.wantCalls)
+			}
+		})
 	}
 }
