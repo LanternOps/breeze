@@ -71,7 +71,10 @@ describe('GET /agents/:id/prompt-identity/logo', () => {
     expect(res.status).toBe(404);
   });
 
-  it("no cross-partner leak: partner A's device gets 404 for partner B's logo, even with B's correct sha", async () => {
+  // Binding only: the fake enforces the partner rule itself, so this pins that
+  // the route hands it the agent's ids. The real cross-partner proof runs the
+  // real services: promptIdentityLogo.realService.test.ts.
+  it("with B's sha, A's device is resolved as A (binding)", async () => {
     const res = await app(AGENT_A).request(`/agents/agent-a/prompt-identity/logo?sha256=${sha(B_BYTES)}`);
     expect(res.status).toBe(404);
     const body = Buffer.from(await res.arrayBuffer());

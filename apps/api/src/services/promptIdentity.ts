@@ -34,7 +34,13 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners, portalBranding } from '../db/schema';
 import { readDevicePolicyCache, writeDevicePolicyCache } from './devicePolicyCache';
 import { partnerDocumentBrand, resolveDocumentBrand } from './partnerDocumentBrand';
-import { loadPromptIdentityLogo, promptLogoSourceKey, readCachedPromptLogo, type PromptLogo } from './promptIdentityLogo';
+import {
+  loadPromptIdentityLogo,
+  peekPromptIdentityLogo,
+  promptLogoSourceKey,
+  readCachedPromptLogo,
+  type PromptLogo,
+} from './promptIdentityLogo';
 
 export const PROMPT_IDENTITY_CACHE_TTL_SECONDS = 120;
 
@@ -156,14 +162,19 @@ export interface DevicePromptIdentityArgs {
 }
 
 /**
- * The identity a device's prompts are drawn under, cached per device (bound to
- * its org) for 120 s. `cleared` = the org resolves no partner row. Throws on a
- * DB error or a partner mismatch; the heartbeat then omits the block.
- *
- * Must be called OUTSIDE any held DB context: the read runs in its own short
- * system context and the logo may be fetched after it (#1105).
+ * How the logo is obtained on a device-cache miss.
+ * - `await`: load it, fetching an https source if needed (bounded by the
+ *   logo loader's overall deadline). The logo route uses this.
+ * - `warm`: never wait on the network. A cold https logo starts a background
+ *   load and the identity is reported as pending (null): the heartbeat omits
+ *   the block that beat, so the agent keeps its last-known identity and logo,
+ *   and the next beat finds the logo cached. Sending the block WITHOUT `logo`
+ *   instead would tell the agent "no logo" and blank a logo it already has
+ *   every time the logo cache expires.
  */
-export async function resolveDevicePromptIdentity(args: DevicePromptIdentityArgs): Promise<DevicePromptIdentity> {
+type LogoMode = 'await' | 'warm';
+
+async function resolveDeviceIdentity(args: DevicePromptIdentityArgs, mode: LogoMode): Promise<DevicePromptIdentity | null> {
   const { deviceId, orgId, partnerId } = args;
   if (!args.skipCacheRead) {
     const cached = await readDevicePolicyCache('prompt-identity', deviceId, orgId, parseCached);
@@ -179,7 +190,16 @@ export async function resolveDevicePromptIdentity(args: DevicePromptIdentityArgs
     result = { state: 'cleared' };
   } else {
     if (identity.partnerId !== partnerId) throw new PromptIdentityPartnerMismatchError(deviceId);
-    const logo = identity.logoSource ? await loadPromptIdentityLogo(identity.logoSource) : null;
+    const logoCtx = { partnerId: identity.partnerId };
+    let logo: PromptLogo | null = null;
+    if (identity.logoSource && mode === 'await') {
+      logo = await loadPromptIdentityLogo(identity.logoSource, logoCtx);
+    } else if (identity.logoSource) {
+      const peek = await peekPromptIdentityLogo(identity.logoSource, logoCtx);
+      // Not cached: the next beat re-resolves and finds the warmed logo.
+      if (peek.state === 'pending') return null;
+      logo = peek.state === 'ready' ? peek.logo : null;
+    }
     result = {
       state: 'set',
       partnerId: identity.partnerId,
@@ -188,6 +208,8 @@ export async function resolveDevicePromptIdentity(args: DevicePromptIdentityArgs
       ...(identity.primaryColor ? { primaryColor: identity.primaryColor } : {}),
       ...(logo && identity.logoSource
         ? {
+          // Metadata only: never the bytes or the source URL (a data: URL can
+          // be ~350 KB, and this entry is per device).
           logo: { sha256: logo.sha256, mime: logo.mime, bytes: logo.bytes },
           logoSourceKey: promptLogoSourceKey(identity.logoSource.trim()),
         }
@@ -196,6 +218,22 @@ export async function resolveDevicePromptIdentity(args: DevicePromptIdentityArgs
   }
   await writeDevicePolicyCache('prompt-identity', deviceId, orgId, result, PROMPT_IDENTITY_CACHE_TTL_SECONDS);
   return result;
+}
+
+/**
+ * The identity a device's prompts are drawn under, cached per device (bound to
+ * its org) for 120 s. `cleared` = the org resolves no partner row. Throws on a
+ * DB error or a partner mismatch.
+ *
+ * Must be called OUTSIDE any held DB context: the read runs in its own short
+ * system context and the logo may be fetched after it (#1105). Waits for the
+ * logo (bounded by the loader's deadline); the heartbeat uses the non-waiting
+ * path in buildHeartbeatPromptIdentity instead.
+ */
+export async function resolveDevicePromptIdentity(args: DevicePromptIdentityArgs): Promise<DevicePromptIdentity> {
+  const identity = await resolveDeviceIdentity(args, 'await');
+  // 'await' mode never reports pending.
+  return identity ?? { state: 'cleared' };
 }
 
 /** The wire block (server-only keys dropped), validated against the shared contract; null if it would not parse. */
@@ -219,11 +257,15 @@ export function toPromptIdentityBlock(identity: DevicePromptIdentity): PromptIde
 
 /**
  * The heartbeat's `promptIdentity` block, or undefined when it cannot be
- * resolved this beat (logged; the agent keeps its last-known identity).
+ * resolved this beat (logged; the agent keeps its last-known identity) or its
+ * https logo is still being fetched in the background. Never waits on the
+ * network, so a slow or hostile logo host cannot slow a heartbeat.
  */
 export async function buildHeartbeatPromptIdentity(args: DevicePromptIdentityArgs): Promise<PromptIdentityBlock | undefined> {
   try {
-    return toPromptIdentityBlock(await resolveDevicePromptIdentity(args)) ?? undefined;
+    const identity = await resolveDeviceIdentity(args, 'warm');
+    if (!identity) return undefined;
+    return toPromptIdentityBlock(identity) ?? undefined;
   } catch (err) {
     console.error(`[promptIdentity] failed to resolve the prompt identity for device ${args.deviceId}; block omitted:`, err);
     return undefined;
@@ -250,6 +292,6 @@ export async function loadDevicePromptLogo(args: DevicePromptIdentityArgs & { sh
   // uncached, and accept the reload only if it is still the same image.
   const fresh = await runOutsideDbContext(() => withSystemDbAccessContext(() => resolvePromptIdentity(args.orgId)));
   if (!fresh || fresh.partnerId !== args.partnerId || !fresh.logoSource) return null;
-  const logo = await loadPromptIdentityLogo(fresh.logoSource);
+  const logo = await loadPromptIdentityLogo(fresh.logoSource, { partnerId: fresh.partnerId });
   return logo && logo.sha256 === args.sha256 ? logo : null;
 }

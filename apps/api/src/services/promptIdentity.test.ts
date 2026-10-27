@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   cacheWrites: [] as Array<{ feature: string; deviceId: string; orgId: string | null; ttl: number }>,
   loadLogo: vi.fn(),
   readCachedLogo: vi.fn(),
+  peekLogo: vi.fn(),
 }));
 
 vi.mock('../db', async () => {
@@ -58,6 +59,7 @@ vi.mock('./promptIdentityLogo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./promptIdentityLogo')>()),
   loadPromptIdentityLogo: (...args: unknown[]) => h.loadLogo(...args),
   readCachedPromptLogo: (...args: unknown[]) => h.readCachedLogo(...args),
+  peekPromptIdentityLogo: (...args: unknown[]) => h.peekLogo(...args),
 }));
 
 import {
@@ -107,6 +109,8 @@ beforeEach(() => {
   h.loadLogo.mockResolvedValue(LOGO);
   h.readCachedLogo.mockReset();
   h.readCachedLogo.mockResolvedValue(undefined);
+  h.peekLogo.mockReset();
+  h.peekLogo.mockResolvedValue({ state: 'ready', logo: LOGO });
 });
 
 describe('promptIdentityScopeId', () => {
@@ -206,7 +210,7 @@ describe('resolveDevicePromptIdentity', () => {
     const identity = await resolveDevicePromptIdentity(args);
     expect(h.outsideContexts).toBe(1);
     expect(h.systemContexts).toBe(1);
-    expect(h.loadLogo).toHaveBeenCalledWith(PARTNER_LOGO);
+    expect(h.loadLogo).toHaveBeenCalledWith(PARTNER_LOGO, { partnerId: PARTNER });
     expect(identity).toEqual({
       state: 'set',
       partnerId: PARTNER,
@@ -328,5 +332,66 @@ describe('loadDevicePromptLogo (the logo route)', () => {
     await expect(
       loadDevicePromptLogo({ ...args, partnerId: 'dddddddd-0000-4000-8000-000000000009', sha256: LOGO.sha256 }),
     ).rejects.toThrow(/partner/);
+  });
+});
+
+describe('review round 1 (#10314)', () => {
+  const args = { deviceId: DEVICE, orgId: ORG, partnerId: PARTNER };
+
+  it('the device cache holds logo metadata only: exactly {sha256, mime, bytes}, no bytes, no source URL', async () => {
+    await resolveDevicePromptIdentity(args);
+    const entry = h.cache.get(`prompt-identity:${DEVICE}`)?.settings as Record<string, unknown>;
+    expect(entry.logo).toEqual({ sha256: LOGO.sha256, mime: 'image/png', bytes: LOGO.bytes });
+    expect(Object.keys(entry.logo as object).sort()).toEqual(['bytes', 'mime', 'sha256']);
+    expect(entry).not.toHaveProperty('logoSource');
+    expect(JSON.stringify(entry)).not.toContain(PARTNER_LOGO);
+    expect(JSON.stringify(entry)).not.toContain(Buffer.from(LOGO_BYTES).toString('base64'));
+    expect(JSON.stringify(entry)).not.toContain('"data"');
+  });
+
+  it("reload path: an evicted logo whose source image changed does not serve the new bytes under the old sha", async () => {
+    const NEW_BYTES = png(64, 64);
+    const NEW_LOGO = { ...LOGO, data: NEW_BYTES, bytes: NEW_BYTES.length, sha256: createHash('sha256').update(NEW_BYTES).digest('hex') };
+    // The device identity still names the old sha (resolved earlier, cached)...
+    await resolveDevicePromptIdentity(args);
+    // ...the logo bytes left the cache, and the source now serves a new image.
+    h.readCachedLogo.mockResolvedValue(undefined);
+    h.loadLogo.mockResolvedValue(NEW_LOGO);
+    expect(await loadDevicePromptLogo({ ...args, sha256: LOGO.sha256 })).toBeNull();
+  });
+
+  describe('heartbeat (warm) mode never waits on the network', () => {
+    it('a cold https logo omits the whole block this beat (agent keeps its last identity) and caches nothing', async () => {
+      h.peekLogo.mockResolvedValue({ state: 'pending' });
+      await expect(buildHeartbeatPromptIdentity(args)).resolves.toBeUndefined();
+      expect(h.cacheWrites).toEqual([]);
+      expect(h.loadLogo).not.toHaveBeenCalled();
+    });
+
+    it('the next beat, once the logo is warm, carries it', async () => {
+      h.peekLogo.mockResolvedValueOnce({ state: 'pending' });
+      await buildHeartbeatPromptIdentity(args);
+      const block = await buildHeartbeatPromptIdentity(args);
+      expect(block).toMatchObject({ state: 'set', logo: { sha256: LOGO.sha256 } });
+    });
+
+    it('a logo known to be bad sends the block without logo', async () => {
+      h.peekLogo.mockResolvedValue({ state: 'none' });
+      const block = await buildHeartbeatPromptIdentity(args);
+      expect(block).toMatchObject({ state: 'set', partnerName: 'Example IT Services' });
+      expect(block).not.toHaveProperty('logo');
+    });
+
+    it('peeks with the partner id (for the operator log line)', async () => {
+      await buildHeartbeatPromptIdentity(args);
+      expect(h.peekLogo).toHaveBeenCalledWith(PARTNER_LOGO, { partnerId: PARTNER });
+    });
+
+    it('no logo source: no peek, block without logo', async () => {
+      setRows({ partner: [{ name: 'Example IT', settings: {} }] });
+      const block = await buildHeartbeatPromptIdentity(args);
+      expect(h.peekLogo).not.toHaveBeenCalled();
+      expect(block).toEqual({ state: 'set', scopeId: promptIdentityScopeId(PARTNER, ORG), partnerName: 'Example IT' });
+    });
   });
 });
