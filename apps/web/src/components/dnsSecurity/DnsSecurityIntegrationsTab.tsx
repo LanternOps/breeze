@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plug, RefreshCw, Trash2, Plus, Clock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import AddDnsIntegrationModal from './AddDnsIntegrationModal';
 import EditDnsRetentionModal from './EditDnsRetentionModal';
@@ -50,6 +51,18 @@ function isDeleting(it: Integration): boolean {
   return it.isActive === false && it.lastSyncStatus === DELETING_STATUS;
 }
 
+// #10085 — while any row is deleting, the list is refetched so the row drops
+// out once the background job removes it: 5 s, then doubling to a 30 s cap.
+// The server has no terminal "delete failed" state (a failed job leaves the
+// row marked and the nightly sweep re-queues it), so the poll ends when no row
+// is deleting, on unmount, or after MAX_POLL_FAILURES list requests in a row
+// fail (the error banner then stays up). It sleeps while the tab is hidden.
+const DELETE_POLL_INITIAL_MS = 5_000;
+const DELETE_POLL_MAX_MS = 30_000;
+const MAX_POLL_FAILURES = 3;
+
+type FetchOutcome = 'ok' | 'failed' | 'aborted' | 'unauthorized';
+
 export default function DnsSecurityIntegrationsTab() {
   const { t } = useTranslation('security');
   const [integrations, setIntegrations] = useState<Integration[]>([]);
@@ -58,26 +71,50 @@ export default function DnsSecurityIntegrationsTab() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [retentionTarget, setRetentionTarget] = useState<Integration | null>(null);
+  // Integrations this tab asked to delete, by id → name, so their removal by
+  // the background job can be announced. Rows deleted elsewhere drop silently.
+  const deletesStartedHere = useRef(new Map<string, string>());
 
-  const fetchIntegrations = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
+  // `quiet` is the background poll: it keeps the table on screen (no spinner)
+  // and leaves an existing error banner up until a request succeeds.
+  const fetchIntegrations = useCallback(async (
+    signal?: AbortSignal,
+    { quiet = false }: { quiet?: boolean } = {},
+  ): Promise<FetchOutcome> => {
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await fetchWithAuth('/dns-security/integrations', { signal });
       if (!res.ok) {
         if (res.status === 401) {
           void navigateTo('/login', { replace: true });
-          return;
+          return 'unauthorized';
         }
         throw new Error(t('dnsSecurityDnsSecurityIntegrationsTab.messages.loadHttpError', { status: res.status }));
       }
       const body = await res.json();
-      setIntegrations((body.data ?? body.integrations ?? []) as Integration[]);
+      if (signal?.aborted) return 'aborted';
+      const rows = (body.data ?? body.integrations ?? []) as Integration[];
+      setIntegrations(rows);
+      setError(null);
+      const present = new Set(rows.map((r) => r.id));
+      for (const [id, name] of deletesStartedHere.current) {
+        if (present.has(id)) continue;
+        deletesStartedHere.current.delete(id);
+        showToast({
+          type: 'success',
+          message: t('dnsSecurityDnsSecurityIntegrationsTab.messages.deleteComplete', { name }),
+        });
+      }
+      return 'ok';
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return;
+      if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) return 'aborted';
       setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityIntegrationsTab.messages.loadFailed'));
+      return 'failed';
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!quiet && !signal?.aborted) setLoading(false);
     }
   }, []);
 
@@ -86,6 +123,61 @@ export default function DnsSecurityIntegrationsTab() {
     void fetchIntegrations(controller.signal);
     return () => controller.abort();
   }, [fetchIntegrations]);
+
+  const anyDeleting = integrations.some(isDeleting);
+
+  // One poll chain per "some row is deleting" episode: it starts when the first
+  // deleting row appears and is torn down (timer cleared, request aborted) when
+  // none remain or the tab unmounts.
+  useEffect(() => {
+    if (!anyDeleting) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delay = DELETE_POLL_INITIAL_MS;
+    let failures = 0;
+    let inFlight = false;
+    let waitingForVisible = false;
+
+    const schedule = () => {
+      if (controller.signal.aborted) return;
+      timer = setTimeout(tick, delay);
+      delay = Math.min(delay * 2, DELETE_POLL_MAX_MS);
+    };
+
+    async function tick() {
+      timer = null;
+      if (controller.signal.aborted) return;
+      if (document.visibilityState === 'hidden') {
+        waitingForVisible = true;
+        return;
+      }
+      inFlight = true;
+      const outcome = await fetchIntegrations(controller.signal, { quiet: true });
+      inFlight = false;
+      if (outcome === 'aborted' || outcome === 'unauthorized') return;
+      if (outcome === 'failed') {
+        failures += 1;
+        if (failures >= MAX_POLL_FAILURES) return;
+      } else {
+        failures = 0;
+      }
+      schedule();
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible' || !waitingForVisible || inFlight || timer !== null) return;
+      waitingForVisible = false;
+      void tick();
+    };
+
+    schedule();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      controller.abort();
+      if (timer !== null) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [anyDeleting, fetchIntegrations]);
 
   const handleSync = async (integration: Integration) => {
     setBusyId(integration.id);
@@ -122,6 +214,7 @@ export default function DnsSecurityIntegrationsTab() {
         successMessage: t('dnsSecurityDnsSecurityIntegrationsTab.messages.deleteSuccess', { name: integration.name }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
+      deletesStartedHere.current.set(integration.id, integration.name);
       await fetchIntegrations();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

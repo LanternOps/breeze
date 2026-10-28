@@ -1759,7 +1759,8 @@
       "syncQueued": "Die Synchronisierung steht für {{name}} in der Warteschlange",
       "deleteConfirm": "{{name}} löschen? Richtlinien, Ereignisse und Statistiken werden im Hintergrund entfernt.",
       "deleteFailed": "Fehler beim Löschen von {{name}}",
-      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht"
+      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht",
+      "deleteComplete": "{{name}} wurde gelöscht"
     },
     "loading": "Integrationen werden geladen…",
     "empty": {

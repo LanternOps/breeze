@@ -1759,7 +1759,8 @@
       "syncQueued": "Sincronização enfileirada para {{name}}",
       "deleteConfirm": "Excluir {{name}}? Suas políticas, eventos e estatísticas são removidos em segundo plano.",
       "deleteFailed": "Falha ao excluir {{name}}",
-      "deleteSuccess": "Excluindo {{name}} em segundo plano"
+      "deleteSuccess": "Excluindo {{name}} em segundo plano",
+      "deleteComplete": "Exclusão de {{name}} concluída"
     },
     "loading": "Carregando integrações…",
     "empty": {

@@ -1759,7 +1759,8 @@
       "syncQueued": "Senkronizasyon {{name}} için sıraya alındı",
       "deleteConfirm": "{{name}} silinsin mi? İlkeleri, olayları ve istatistikleri arka planda kaldırılır.",
       "deleteFailed": "{{name}} silinemedi",
-      "deleteSuccess": "{{name}} arka planda siliniyor"
+      "deleteSuccess": "{{name}} arka planda siliniyor",
+      "deleteComplete": "{{name}} silindi"
     },
     "loading": "Entegrasyonlar yükleniyor…",
     "empty": {

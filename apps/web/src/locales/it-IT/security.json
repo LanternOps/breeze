@@ -1759,7 +1759,8 @@
       "syncQueued": "Sincronizzazione accodata per {{name}}",
       "deleteConfirm": "Eliminare {{name}}? Criteri, eventi e statistiche vengono rimossi in background.",
       "deleteFailed": "Impossibile eliminare {{name}}",
-      "deleteSuccess": "Eliminazione di {{name}} in background"
+      "deleteSuccess": "Eliminazione di {{name}} in background",
+      "deleteComplete": "Eliminazione di {{name}} completata"
     },
     "loading": "Caricamento integrazioni…",
     "empty": {

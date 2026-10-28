@@ -1759,7 +1759,8 @@
       "syncQueued": "Sync queued for {{name}}",
       "deleteConfirm": "Delete {{name}}? Its policies, events and statistics are removed in the background.",
       "deleteFailed": "Failed to delete {{name}}",
-      "deleteSuccess": "Deleting {{name}} in the background"
+      "deleteSuccess": "Deleting {{name}} in the background",
+      "deleteComplete": "{{name}} deleted"
     },
     "loading": "Loading integrations…",
     "empty": {

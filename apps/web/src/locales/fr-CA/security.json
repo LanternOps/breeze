@@ -1759,7 +1759,8 @@
       "syncQueued": "Synchronisé pour {{name}}",
       "deleteConfirm": "Supprimer {{name}}? Ses politiques, événements et statistiques sont supprimés en arrière-plan.",
       "deleteFailed": "Impossible de supprimer {{name}}",
-      "deleteSuccess": "Suppression de {{name}} en arrière-plan"
+      "deleteSuccess": "Suppression de {{name}} en arrière-plan",
+      "deleteComplete": "Suppression de {{name}} terminée"
     },
     "loading": "Chargement des intégrations...",
     "empty": {
