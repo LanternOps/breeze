@@ -126,11 +126,19 @@ func TestParseSeceditSystemAccessGermanDefaults(t *testing.T) {
 // secedit writes UTF-16LE, but a copy saved by hand (or an older build) may be
 // UTF-8 with or without a BOM, with LF endings and odd spacing/case.
 func TestParseSeceditSystemAccessUTF8Variants(t *testing.T) {
-	body := "[system access]\nminimumpasswordlength=8\n  PasswordComplexity   =   1  \n"
+	body := "[system access]\nminimumpasswordlength=8\n  PasswordComplexity   =   2  \n"
+	le := encodeUTF16LEWithBOM(body)
+	be := make([]byte, len(le))
+	for i := 0; i+1 < len(le); i += 2 {
+		be[i], be[i+1] = le[i+1], le[i]
+	}
 	for name, data := range map[string][]byte{
-		"plain":   []byte(body),
-		"bom":     append([]byte{0xEF, 0xBB, 0xBF}, body...),
-		"utf16le": encodeUTF16LEWithBOM(body),
+		"plain":           []byte(body),
+		"bom":             append([]byte{0xEF, 0xBB, 0xBF}, body...),
+		"utf16le":         le,
+		"utf16le no bom":  le[2:],
+		"utf16be":         be,
+		"ascii not utf16": []byte("[System Access]\nMinimumPasswordLength = 8\nPasswordComplexity = 2\n"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := parseSeceditSystemAccess(data)
@@ -156,6 +164,24 @@ func TestParseSeceditSystemAccessIgnoresOtherSectionsAndGarbage(t *testing.T) {
 	want := map[string]any{"source": "secedit", "historyCount": 10}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parsed policy = %#v, want %#v", got, want)
+	}
+}
+
+// Only -1 means "never expires"; any other negative age is not a value secedit
+// writes and must be dropped rather than read as "never expires". When nothing
+// usable is left, the error names the values that were rejected.
+func TestParseSeceditSystemAccessRejectsUnexpectedValues(t *testing.T) {
+	got, err := parseSeceditSystemAccess([]byte("[System Access]\nMaximumPasswordAge = -5\nPasswordHistorySize = 3\n"))
+	if err != nil {
+		t.Fatalf("parseSeceditSystemAccess: %v", err)
+	}
+	if _, ok := got["maxAgeDays"]; ok {
+		t.Fatalf("MaximumPasswordAge -5 must be dropped, got %#v", got)
+	}
+
+	_, err = parseSeceditSystemAccess([]byte("[System Access]\nMinimumPasswordLength = abc\n"))
+	if err == nil || !strings.Contains(err.Error(), "MinimumPasswordLength = abc") {
+		t.Fatalf("expected the rejected value in the error, got %v", err)
 	}
 }
 
@@ -207,6 +233,15 @@ func TestPasswordPolicyFromUserModalsNeverExpiresAndNoLockoutLevel(t *testing.T)
 	}
 	if _, ok := got["lockoutThreshold"]; ok {
 		t.Fatal("lockoutThreshold must be absent when level 3 was not read")
+	}
+}
+
+// Ages are whole days, truncated like Local Security Policy shows them; a
+// sub-day minimum age is 0 days.
+func TestPasswordPolicyFromUserModalsTruncatesToWholeDays(t *testing.T) {
+	got := passwordPolicyFromUserModals(userModalsPolicy{MaxPasswordAgeSec: 42*86400 + 3600, MinPasswordAgeSec: 43200})
+	if got["maxAgeDays"] != 42 || got["minAgeDays"] != 0 {
+		t.Fatalf("maxAgeDays/minAgeDays = %v/%v, want 42/0", got["maxAgeDays"], got["minAgeDays"])
 	}
 }
 

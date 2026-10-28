@@ -139,6 +139,9 @@ describe('parsePasswordPolicySummary — maximum password age (#9597)', () => {
     const check = maxAgeCheck(0);
     expect(check?.pass).toBe(false);
     expect(check?.current).toBe('Never expires');
+    // secedit's own spelling, should a record ever carry it through raw.
+    expect(maxAgeCheck(-1)?.pass).toBe(false);
+    expect(maxAgeCheck(-1)?.current).toBe('Never expires');
   });
 
   it('passes 1-90 days and fails longer', () => {

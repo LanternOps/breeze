@@ -80,6 +80,7 @@ func parseSeceditSystemAccess(data []byte) (map[string]any, error) {
 
 	record := map[string]any{"source": "secedit"}
 	found, inSystemAccess := 0, false
+	var rejected []string
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, ";") {
@@ -101,21 +102,28 @@ func parseSeceditSystemAccess(data []byte) (map[string]any, error) {
 			continue
 		}
 		n, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil {
+		if err == nil && key == PasswordPolicyKeyMaxAgeDays && n == -1 {
+			n = 0 // how the export spells "password never expires"
+		}
+		if err != nil || n < 0 {
+			// Not a value secedit writes: leave the key unknown, never 0.
+			rejected = append(rejected, line)
 			continue
 		}
-		switch key {
-		case PasswordPolicyKeyComplexityEnabled:
+		if key == PasswordPolicyKeyComplexityEnabled {
 			record[key] = n != 0
-		case PasswordPolicyKeyMaxAgeDays:
-			// -1 is how the export spells "password never expires".
-			record[key] = max(n, 0)
-		default:
+		} else {
 			record[key] = n
 		}
 		found++
 	}
+	if len(rejected) > 0 {
+		log.Warn("secedit export had unreadable password policy values", "values", strings.Join(rejected, "; "))
+	}
 	if found == 0 {
+		if len(rejected) > 0 {
+			return nil, fmt.Errorf("secedit export has no readable password policy (rejected: %s)", strings.Join(rejected, "; "))
+		}
 		return nil, errors.New("secedit export has no [System Access] password policy")
 	}
 	return record, nil

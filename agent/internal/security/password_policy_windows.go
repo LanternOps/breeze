@@ -3,10 +3,13 @@
 package security
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -33,36 +36,72 @@ func collectPasswordPolicySecedit() (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate system directory: %w", err)
 	}
-	dir, err := securefs.CreatePrivateTempDir(seceditExportBaseDir(), "secpol-")
+	base := seceditExportBaseDir()
+	dir, err := securefs.CreatePrivateTempDir(base, "secpol-")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create secedit export directory under %s: %w", base, err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	cfgPath := filepath.Join(dir, "secpol.inf")
-	_, runErr := runCommand(seceditTimeout, filepath.Join(sysDir, "secedit.exe"),
+	logPath := filepath.Join(dir, "secedit.log")
+	ctx, cancel := context.WithTimeout(context.Background(), seceditTimeout)
+	defer cancel()
+	output, runErr := exec.CommandContext(ctx, filepath.Join(sysDir, "secedit.exe"),
 		"/export", "/areas", "SECURITYPOLICY",
 		"/cfg", cfgPath,
-		"/log", filepath.Join(dir, "secedit.log"),
+		"/log", logPath,
 		"/quiet",
-	)
+	).CombinedOutput()
+	if ctx.Err() != nil {
+		// Killed mid-run: whatever is in the file may be truncated.
+		return nil, fmt.Errorf("secedit export timed out after %s", seceditTimeout)
+	}
+	var exitErr *exec.ExitError
+	if runErr != nil && !errors.As(runErr, &exitErr) {
+		return nil, fmt.Errorf("run secedit: %w", runErr)
+	}
+
 	// secedit can exit non-zero ("completed with warnings" for an unrelated
-	// attribute) after writing a complete export, so the file decides.
+	// attribute) after writing a complete export, so a non-zero exit is
+	// accepted only when the export itself parses.
 	data, readErr := os.ReadFile(cfgPath)
-	if readErr != nil {
-		if runErr != nil {
-			return nil, fmt.Errorf("secedit export: %w", runErr)
+	if readErr == nil {
+		record, parseErr := parseSeceditSystemAccess(data)
+		if parseErr == nil {
+			if runErr != nil {
+				log.Warn("secedit exited non-zero but its export parsed; using it",
+					"exitCode", exitErr.ExitCode(), "detail", seceditDiagnostic(output, logPath))
+			}
+			return record, nil
 		}
-		return nil, fmt.Errorf("read secedit export: %w", readErr)
+		readErr = parseErr
 	}
-	record, parseErr := parseSeceditSystemAccess(data)
-	if parseErr != nil {
-		if runErr != nil {
-			return nil, fmt.Errorf("secedit export: %v: %w", runErr, parseErr)
+	if runErr != nil {
+		return nil, fmt.Errorf("secedit export exited %d: %v (%s)", exitErr.ExitCode(), readErr, seceditDiagnostic(output, logPath))
+	}
+	return nil, fmt.Errorf("secedit export: %w", readErr)
+}
+
+// seceditDiagnostic is a short tail of secedit's console output, or of its
+// log file when the console said nothing (/quiet), for error messages.
+func seceditDiagnostic(output []byte, logPath string) string {
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		if data, err := os.ReadFile(logPath); err == nil {
+			if decoded, err := decodeSeceditExport(data); err == nil {
+				text = strings.TrimSpace(decoded)
+			}
 		}
-		return nil, parseErr
 	}
-	return record, nil
+	const maxLen = 300
+	if len(text) > maxLen {
+		text = "..." + text[len(text)-maxLen:]
+	}
+	if text == "" {
+		return "no output"
+	}
+	return text
 }
 
 var procNetUserModalsGet = windows.NewLazySystemDLL("netapi32.dll").NewProc("NetUserModalsGet")
@@ -93,7 +132,9 @@ func collectPasswordPolicyNetAPI() (map[string]any, error) {
 	var info3 struct {
 		LockoutDuration, LockoutObservationWindow, LockoutThreshold uint32
 	}
-	if err := userModalsGet(3, unsafe.Pointer(&info3), unsafe.Sizeof(info3)); err == nil {
+	if err := userModalsGet(3, unsafe.Pointer(&info3), unsafe.Sizeof(info3)); err != nil {
+		log.Warn("NetUserModalsGet level 3 failed; lockout threshold will be reported unknown", "error", err.Error())
+	} else {
 		policy.LockoutThreshold = info3.LockoutThreshold
 		policy.HaveLockout = true
 	}
