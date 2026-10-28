@@ -377,21 +377,6 @@
     "bulkPolicyNote": "Mover altera as políticas de configuração, as janelas de manutenção, o roteamento de alertas e os relatórios do site que se aplicam a esses dispositivos. O Breeze não os moverá de volta automaticamente.",
     "failedToMoveDevices": "Falha ao mover os dispositivos"
   },
-  "createGroupModal": {
-    "failedToCreateGroup": "Falha ao criar o grupo",
-    "newDeviceGroup": "Novo grupo de dispositivos",
-    "name": "Nome",
-    "eGProductionServers": "ex.: Servidores de produção",
-    "type": "Tipo",
-    "static": "Estático",
-    "dynamic": "Dinâmico",
-    "manuallyAddAndRemoveDevicesAfter": "Adicione e remova dispositivos manualmente após a criação.",
-    "devicesAreAutoAssignedBasedOn": "Os dispositivos são atribuídos automaticamente com base nas regras de filtro.",
-    "filterRules": "Regras de filtro",
-    "cancel": "Cancelar",
-    "creating": "Criando...",
-    "createGroup": "Criar grupo"
-  },
   "decommissionedHiddenHint": {
     "label": "{{count}} removidos ocultos",
     "show": "mostrar",

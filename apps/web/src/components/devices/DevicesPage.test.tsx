@@ -174,7 +174,6 @@ vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
-vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => <div data-testid="device-filter-toolbar-stub" /> }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));

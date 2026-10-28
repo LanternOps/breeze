@@ -377,21 +377,6 @@
     "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
     "failedToMoveDevices": "Couldn't move the devices. Try again."
   },
-  "createGroupModal": {
-    "failedToCreateGroup": "Failed to create group",
-    "newDeviceGroup": "New Device Group",
-    "name": "Name",
-    "eGProductionServers": "e.g. Production Servers",
-    "type": "Type",
-    "static": "Static",
-    "dynamic": "Dynamic",
-    "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
-    "devicesAreAutoAssignedBasedOn": "Devices are auto-assigned based on filter rules.",
-    "filterRules": "Filter Rules",
-    "cancel": "Cancel",
-    "creating": "Creating...",
-    "createGroup": "Create Group"
-  },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
     "show": "show",
