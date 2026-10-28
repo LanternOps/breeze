@@ -431,6 +431,12 @@ describe('evaluateAgentTriggerFilters', () => {
       false,
     ],
     [
+      'warranty_evaluator source is excluded at its real lifecycle severity (#10371)',
+      triggers({ alertSeverities: ['info', 'low', 'medium'] }),
+      { ...ctx, severity: 'low', source: 'warranty_evaluator' },
+      false,
+    ],
+    [
       'absent source does not trip the lifecycle exclusion',
       triggers(),
       { ...ctx, source: null },

@@ -108,6 +108,7 @@ describe('WarrantyTab', () => {
     expect(screen.getByText(/info severity when warranty expires within this many days/i)).toBeTruthy();
     expect(screen.getByText(/low severity when warranty expires within this many days/i)).toBeTruthy();
     expect(screen.getByText(/expired warranty alerts at medium/i)).toBeTruthy();
+    expect(screen.getByText(/^urgent threshold \(days\)$/i)).toBeTruthy();
     expect(screen.queryByText(/critical/i)).toBeNull();
   });
 

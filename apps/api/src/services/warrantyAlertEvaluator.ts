@@ -138,6 +138,9 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   // half of the scale instead: warnDays → info, criticalDays → low,
   // expired → medium. (The `criticalDays` knob keeps its stored name; it now
   // means "the closer, more urgent window", not "critical severity".)
+  // Severity is fixed when the alert opens: the dedupe gate below skips any
+  // device that already has an open warranty alert, so an `info` alert does
+  // not step up to `low` as expiry approaches.
   let severity: 'medium' | 'low' | 'info' | null = null;
   let title = '';
   let message = '';
