@@ -80,12 +80,16 @@ type SensitiveDataFinding struct {
 }
 
 type SensitiveDataScanSummary struct {
-	FilesScanned   int                      `json:"filesScanned"`
-	FilesSkipped   int                      `json:"filesSkipped"`
-	BytesScanned   int64                    `json:"bytesScanned"`
-	FindingsCount  int                      `json:"findingsCount"`
-	TimedOut       bool                     `json:"timedOut"`
-	Partial        bool                     `json:"partial"`
+	FilesScanned  int   `json:"filesScanned"`
+	FilesSkipped  int   `json:"filesSkipped"`
+	BytesScanned  int64 `json:"bytesScanned"`
+	FindingsCount int   `json:"findingsCount"`
+	TimedOut      bool  `json:"timedOut"`
+	Partial       bool  `json:"partial"`
+	// LinksSkipped counts symlinks, junctions and other reparse points
+	// (OneDrive placeholders included) the walk refused to follow; they are
+	// also in FilesSkipped.
+	LinksSkipped   int                      `json:"linksSkipped"`
 	Errors         []SensitiveDataScanError `json:"errors"`
 	DurationMs     int64                    `json:"durationMs"`
 	DetectionClass []string                 `json:"detectionClasses"`
@@ -918,6 +922,7 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 		mu           sync.Mutex
 		filesScanned int
 		filesSkipped int
+		linksSkipped int
 		bytesScanned int64
 		timedOut     bool
 		partial      bool
@@ -1014,9 +1019,13 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 			// link would read a file its owner cannot (#10380 security review).
 			// WalkDir already declines to descend into one; this keeps a linked
 			// FILE from reaching scanSensitiveFile, which opens and reads it.
+			// On Windows this includes OneDrive placeholders (Go reports every
+			// non-symlink reparse tag as ModeIrregular); reading a cloud-only
+			// one would download it. Counted in linksSkipped so the gap shows.
 			if isSensitiveScanLinkType(d.Type()) {
 				mu.Lock()
 				filesSkipped++
+				linksSkipped++
 				mu.Unlock()
 				return nil
 			}
@@ -1142,6 +1151,7 @@ func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []st
 	summary := SensitiveDataScanSummary{
 		FilesScanned:   filesScanned,
 		FilesSkipped:   filesSkipped,
+		LinksSkipped:   linksSkipped,
 		BytesScanned:   bytesScanned,
 		FindingsCount:  len(findings),
 		TimedOut:       timedOut,

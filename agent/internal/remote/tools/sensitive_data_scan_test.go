@@ -334,6 +334,11 @@ func TestScanSensitiveDataDoesNotFollowLinks(t *testing.T) {
 	if response.Summary.FilesSkipped == 0 {
 		t.Fatalf("expected the links to be counted as skipped")
 	}
+	// Visible in the summary, so a folder full of links / OneDrive
+	// placeholders does not read as an unexplained near-empty scan.
+	if response.Summary.LinksSkipped != 2 {
+		t.Fatalf("linksSkipped = %d, want 2 (file link + directory link)", response.Summary.LinksSkipped)
+	}
 
 	// A root that is itself a link is refused and reported, not walked.
 	linkRoot := filepath.Join(t.TempDir(), "linkroot")

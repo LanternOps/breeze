@@ -149,7 +149,7 @@ Authorization: Bearer <token>
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars). When empty or omitted, the agent scans the `Desktop`, `Documents` and `Downloads` folders of every user profile on the device (`C:\Users\*` on Windows, `/Users/*` on macOS, `/home/*` on Linux). The scan never follows symbolic links, junctions or other reparse points, in the default scope or below an include path |
+| `includePaths` | string[] | Paths to scan (max 256, each up to 2,048 chars). When empty or omitted, the agent scans the `Desktop`, `Documents` and `Downloads` folders of every user profile on the device (`C:\Users\*` on Windows, `/Users/*` on macOS, `/home/*` on Linux). The scan does not follow symbolic links, junctions or other reparse points it finds, in the default scope or below an include path; on Windows that includes OneDrive cloud files. Skipped links are counted in `agentSummary.linksSkipped` |
 | `excludePaths` | string[] | Paths to exclude from scanning (max 256) |
 | `fileTypes` | string[] | File extensions to scan (max 128, each up to 32 chars) |
 | `maxFileSizeBytes` | integer | Maximum file size to scan (1 KB to 1 GB) |
