@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } from '@breeze/shared';
 
@@ -6,7 +7,8 @@ import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } fr
 // touches these — `decideSoftwareInventoryAcceptance` and
 // `replaceSoftwareInventoryProjection` take a `tx` argument directly and never
 // reach the module-level `db` import, so mocking it here doesn't affect them.
-const { transactionMock, tightenLockTimeoutMock, captureMessageMock } = vi.hoisted(() => ({
+const { transactionMock, tightenLockTimeoutMock, captureMessageMock, requestDeviceGroupReevaluationAfterCommitMock } = vi.hoisted(() => ({
+  requestDeviceGroupReevaluationAfterCommitMock: vi.fn(),
   transactionMock: vi.fn(),
   tightenLockTimeoutMock: vi.fn(async () => null),
   captureMessageMock: vi.fn(),
@@ -21,6 +23,12 @@ vi.mock('../db', () => ({
 vi.mock('../db/lockTimeout', () => ({
   tightenLockTimeout: tightenLockTimeoutMock,
 }));
+
+vi.mock('../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestDeviceGroupReevaluationAfterCommitMock,
+}));
+
+beforeEach(() => requestDeviceGroupReevaluationAfterCommitMock.mockReset());
 
 vi.mock('./sentry', () => ({ captureMessage: captureMessageMock }));
 
@@ -144,7 +152,7 @@ describe('replaceSoftwareInventoryProjection', () => {
     return {
       tx: {
         select,
-        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn((values: Array<Record<string, unknown>>) => {
             inserted.push(...values);
@@ -179,7 +187,7 @@ describe('replaceSoftwareInventoryProjection', () => {
           where: vi.fn().mockResolvedValue([{ id: 'new-row', name: 'Google Chrome', vendor: ' google llc ' }]),
         }),
       }),
-      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
       insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
       update: vi.fn().mockReturnValue({
         set: vi.fn((value) => {
@@ -395,5 +403,133 @@ describe('ingestSoftwareInventoryReport lock-timeout give-up reporting (#5181)',
     expect(thrown).toBe(boom);
     expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(1);
     expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+function nameDiffTx(previous: string[]) {
+  return {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      }),
+    }),
+    delete: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(previous.map((name) => ({ name }))) }),
+    }),
+    insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+    update: vi.fn(),
+  };
+}
+
+const inventoryDevice = { id: '11111111-1111-4111-8111-111111111112', orgId: '11111111-1111-4111-8111-111111111113', agentVersion: '1.0.0' };
+
+describe('replaceSoftwareInventoryProjection installed-name diff (#10497)', () => {
+  it.each([
+    ['names change', ['A', 'B'], ['A', 'C'], true],
+    ['only versions change', ['A', 'B'], ['A', 'B'], false],
+    ['order and duplicates differ only', ['A', 'B', 'A'], ['B', 'A', 'B'], false],
+    ['case-only rename', ['chrome'], ['Chrome'], true],
+    ['non-empty becomes empty', ['A'], [], true],
+    ['empty remains empty', [], [], false],
+  ] as const)('returns the name-set difference when %s', async (_label, previous, next, changed) => {
+    const tx = nameDiffTx([...previous]);
+    const result = await replaceSoftwareInventoryProjection(tx as never, {
+      device: inventoryDevice,
+      items: next.map((name) => ({ name, version: '2.0' })),
+      observationId: v2().observationId,
+      receivedAt,
+    });
+    expect(result).toEqual({ installedNamesChanged: changed });
+    expect(tx.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
+  beforeEach(() => {
+    transactionMock.mockReset();
+    tightenLockTimeoutMock.mockReset();
+    tightenLockTimeoutMock.mockResolvedValue(null);
+  });
+
+  function ingestTx(previous: string[], stateOverrides = {}, existing: unknown[] = []) {
+    const tx = {
+      ...nameDiffTx(previous),
+      execute: vi.fn()
+        .mockResolvedValueOnce([{ id: inventoryDevice.id, org_id: inventoryDevice.orgId }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{
+          latest_observation_id: null,
+          latest_received_at: null,
+          has_accepted_v2: false,
+          visible_item_count: previous.length,
+          latest_accepted_expected_sources: null,
+          ...stateOverrides,
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    transactionMock.mockImplementation(async (callback) => callback(tx));
+    return tx;
+  }
+
+  const report = v2({ itemCount: 2, items: [{ name: 'A', version: '2' }, { name: 'C', version: '2' }] });
+  const ingest = (inventory = report) => ingestSoftwareInventoryReport({ device: inventoryDevice, report: inventory, receivedAt });
+
+  it('requests a software re-evaluation when the installed-name set changes', async () => {
+    const tx = ingestTx(['A', 'B']);
+    await ingest();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith({
+      deviceId: inventoryDevice.id,
+      orgId: inventoryDevice.orgId,
+      eventType: 'device.updated',
+      changedFields: ['software.installed', 'software.notInstalled'],
+      reason: 'software_inventory_change',
+    });
+    expect(tx.execute).toHaveBeenCalledTimes(7);
+    expect(requestDeviceGroupReevaluationAfterCommitMock.mock.invocationCallOrder[0])
+      .toBeGreaterThan(tx.execute.mock.invocationCallOrder[6]!);
+  });
+
+  it('does not request one when only versions change', async () => {
+    const tx = ingestTx(['A', 'C']);
+    await ingest();
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('does not request one for a rejected_out_of_order report', async () => {
+    const tx = ingestTx(['A', 'B'], { latest_received_at: new Date(receivedAt.getTime() + 1000) });
+    expect((await ingest()).reasonCode).toBe('rejected_out_of_order');
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('does not request one on an idempotent V2 replay', async () => {
+    const first = ingestTx(['A', 'B']);
+    const result = await ingest();
+    const inserted = new PgDialect().sqlToQuery(first.execute.mock.calls[5]![0]);
+    const digest = inserted.params[16];
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    requestDeviceGroupReevaluationAfterCommitMock.mockReset();
+    const tx = ingestTx([], {}, [{
+      id: report.observationId,
+      org_id: inventoryDevice.orgId,
+      device_id: inventoryDevice.id,
+      report_digest: digest,
+      accepted_for_inventory: true,
+      absence_resolution_eligible: true,
+      reason_code: 'accepted_complete',
+      visible_item_count: 2,
+    }]);
+    expect(await ingest()).toEqual(result);
+    expect(tx.execute).toHaveBeenCalledTimes(3);
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
   });
 });

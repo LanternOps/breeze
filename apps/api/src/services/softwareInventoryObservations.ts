@@ -8,6 +8,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, softwareInventory } from '../db/schema';
 import { tightenLockTimeout } from '../db/lockTimeout';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { resolveInventoryVersion } from '../routes/agents/agentSelfInventory';
 import { sanitizeDate } from '../routes/agents/helpers';
 import { pgErrorCode, retryOnTransientLockError } from '../utils/pgErrors';
@@ -227,6 +228,12 @@ function rows<T>(result: unknown): T[] {
   return result as T[];
 }
 
+export function installedNameSetChanged(previous: readonly string[], next: readonly string[]): boolean {
+  const previousNames = new Set(previous);
+  const nextNames = new Set(next);
+  return previousNames.size !== nextNames.size || [...previousNames].some((name) => !nextNames.has(name));
+}
+
 export async function replaceSoftwareInventoryProjection(
   tx: Pick<typeof db, 'select' | 'delete' | 'insert' | 'update'>,
   input: {
@@ -235,7 +242,7 @@ export async function replaceSoftwareInventoryProjection(
     observationId: string;
     receivedAt: Date;
   },
-): Promise<void> {
+): Promise<{ installedNamesChanged: boolean }> {
   const { device, items, observationId, receivedAt } = input;
   const linkedFindings = await tx
     .select({ findingId: deviceVulnerabilities.id, name: softwareInventory.name, vendor: softwareInventory.vendor })
@@ -245,9 +252,11 @@ export async function replaceSoftwareInventoryProjection(
     .orderBy(deviceVulnerabilities.id)
     .for('update', { of: deviceVulnerabilities });
 
-  await tx.delete(softwareInventory).where(eq(softwareInventory.deviceId, device.id));
+  const previous = await tx.delete(softwareInventory).where(eq(softwareInventory.deviceId, device.id))
+    .returning({ name: softwareInventory.name });
+  const installedNamesChanged = installedNameSetChanged(previous.map((item) => item.name), items.map((item) => item.name));
 
-  if (items.length === 0) return;
+  if (items.length === 0) return { installedNamesChanged };
   await tx.insert(softwareInventory).values(items.map((item) => ({
     deviceId: device.id,
     orgId: device.orgId,
@@ -263,7 +272,7 @@ export async function replaceSoftwareInventoryProjection(
     observationId,
   })));
 
-  if (linkedFindings.length === 0) return;
+  if (linkedFindings.length === 0) return { installedNamesChanged };
   const findingNames = [...new Set(linkedFindings.map((finding) => finding.name.trim().toLowerCase()))];
   const replacements = await tx
     .select({ id: softwareInventory.id, name: softwareInventory.name, vendor: softwareInventory.vendor })
@@ -303,6 +312,7 @@ export async function replaceSoftwareInventoryProjection(
   if (severed > 0) {
     console.warn(`[Inventory] Software report for device ${device.id} severed ${severed} vuln finding link(s) with no replacement row (uninstalled or renamed software)`);
   }
+  return { installedNamesChanged };
 }
 
 type PersistedObservation = {
@@ -466,13 +476,15 @@ async function ingestSoftwareInventoryReportInner(input: {
         )
       `);
 
+      let installedNamesChanged = false;
       if (decision.acceptedForInventory) {
-        await replaceSoftwareInventoryProjection(tx, {
+        const projection = await replaceSoftwareInventoryProjection(tx, {
           device: input.device,
           items,
           observationId,
           receivedAt: input.receivedAt,
         });
+        installedNamesChanged = projection.installedNamesChanged;
       }
 
       if (decision.reasonCode !== 'rejected_out_of_order') {
@@ -501,6 +513,18 @@ async function ingestSoftwareInventoryReportInner(input: {
             WHERE device_id = ${input.device.id}::uuid
           `);
         }
+      }
+
+      // Software-keyed dynamic groups (#10497) had no inventory-change producer.
+      // The job has no software event type, so use device.updated with both software fields.
+      if (decision.acceptedForInventory && installedNamesChanged) {
+        requestDeviceGroupReevaluationAfterCommit({
+          deviceId: input.device.id,
+          orgId: input.device.orgId,
+          eventType: 'device.updated',
+          changedFields: ['software.installed', 'software.notInstalled'],
+          reason: 'software_inventory_change',
+        });
       }
 
       return {
