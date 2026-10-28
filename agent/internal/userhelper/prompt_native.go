@@ -11,9 +11,10 @@
 // timeout into a decision, render operator text on a breeze-class kind, keep
 // a dialog up the agent closed, or draw a second copy of a prompt.
 //
-// W04 advertises notice.info@1 (the user helper only); any other kind that
-// arrives anyway is answered prompt_closed{render_failed} (spec §3.1 rule 4).
-// A notice is live only where the server also enables it.
+// W04 advertises notice.info@1 and W05 restart.prompt@1 / restart.final@1
+// (the user helper only); any other kind that arrives anyway is answered
+// prompt_closed{render_failed} (spec §3.1 rule 4). A kind is live only where
+// the server also enables it.
 package userhelper
 
 import (
@@ -52,11 +53,17 @@ func helperRendererVersion() string {
 
 // advertisedNativePromptKinds is what the native renderer advertises at
 // auth ("<kind>@<n>"). Kinds are added by the wave that ships each one (plan
-// P2): W04 adds notice.info@1 for the user helper. The SYSTEM helper's
-// renderer (elevation) ships in W07 (P14).
+// P2): W04 adds notice.info@1 for the user helper, W05 the restart card and
+// its closing card (drawn natively as a TaskDialogIndirect / display dialog /
+// zenity question with the safe action — Postpone or OK — as the default).
+// The SYSTEM helper's renderer (elevation) ships in W07 (P14).
 func advertisedNativePromptKinds(role ipc.HelperRole) []string {
 	if role == ipc.HelperRoleUser {
-		return []string{"notice.info@1"}
+		return []string{
+			"notice.info@1",
+			"restart.prompt@1", // W05
+			"restart.final@1",  // W05
+		}
 	}
 	return []string{}
 }

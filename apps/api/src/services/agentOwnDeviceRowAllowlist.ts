@@ -62,6 +62,15 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
 
   // ── Non-agent paths in files an agent entry point reaches ───────────────
   {
+    file: 'src/services/quickSupportEnd.ts',
+    marker: 'support-session-end-decommission',
+    kind: 'non_agent_path',
+    reason:
+      'Ending a Quick Support session (a technician, the expiry sweep, or the supervised AI tool, W13 #6783) clears the ' +
+      'temporary client\'s token hashes and decommissions it, under system context after the caller\'s own session ' +
+      'lookup. Never an agent writing its own row; reached by agent entry points only through the AI tool registry.',
+  },
+  {
     file: 'src/services/deviceLinkGroups.ts',
     marker: 'link-group-unlink',
     kind: 'non_agent_path',

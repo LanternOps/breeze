@@ -476,6 +476,8 @@ describe('W12 software tool wiring (#6782)', () => {
 const W13_TOOLS = [
   'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
   'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  // PR B.
+  'browse_device_event_log', 'manage_tenant_variables', 'manage_support_sessions',
 ] as const;
 
 describe('W13 device inventory and ops wiring (#6783)', () => {

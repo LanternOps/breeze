@@ -64,6 +64,7 @@ export async function endSupportSession(
           payload: { sessionId },
         });
 
+        // own-device-row-allowlisted: support-session-end-decommission
         await db.update(devices).set({
           agentTokenHash: null,
           watchdogTokenHash: null,

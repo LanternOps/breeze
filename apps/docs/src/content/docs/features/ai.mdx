@@ -652,10 +652,16 @@ These tools read a device's activity timeline, agent health and recorded process
 | `manage_manual_assets` (delete) | 3 | Permanently delete a hand-entered asset. Retire it instead to keep the record |
 | `manage_device_warranty` (get/expiring) | 1 | One device's warranty, or devices whose warranty ends within a number of days |
 | `manage_device_warranty` (refresh) | 3 | Re-check one device's warranty with its manufacturer now. The device's serial number is sent to the manufacturer, so the refresh is approved. Devices whose warranty the agent collects (HP) are refused |
+| `browse_device_event_log` (list_logs) | 2 | List a Windows device's event logs, read live from its agent (runs without a prompt, with an audit row) |
+| `browse_device_event_log` (query/get_event) | 3 | Read event text from a device's live event logs. Security and Application logs can hold credentials and personal data, so every read is approved. `search_logs` reads the ingested copy without reaching the device |
+| `manage_tenant_variables` (list) | 1 | Tenant variables that scripts receive as `{{var.key}}`. Secret values are never shown |
+| `manage_tenant_variables` (create/update/delete) | 3 | Change a value that every script on the organization's devices receives. Secret variables and partner-wide variables are changed in the web app; a partner-wide variable can be created here |
+| `manage_support_sessions` (list/get) | 1 | Quick Support sessions and whether their temporary client is online |
+| `manage_support_sessions` (end) | 3 | End a Quick Support session: the temporary client removes itself from the person's machine. Sessions are started in the web app |
 
-Every write needs a session that has completed MFA.
+Every write, and every live event-log read, needs a session that has completed MFA. A session limited to some sites or devices cannot change tenant variables or use Quick Support sessions.
 
-AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
+AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_tenant_variables` writes (an agent that runs scripts must not also choose their inputs) or `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
 
 ---
 

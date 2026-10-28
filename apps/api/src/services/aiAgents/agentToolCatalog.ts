@@ -308,6 +308,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_device_links: 'automations_reports',
   manage_manual_assets: 'automations_reports',
   manage_device_warranty: 'automations_reports',
+  // W13 PR B (#6783): the live event-log read beside manage_processes; tenant variables beside the script tools;
+  // support sessions beside the remote-access tools.
+  browse_device_event_log: 'scripts_commands',
+  manage_tenant_variables: 'scripts_commands',
+  manage_support_sessions: 'remote_access',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',

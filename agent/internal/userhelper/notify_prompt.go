@@ -33,6 +33,21 @@ const (
 	maxNotifyPromptTimeoutMs = 600_000
 )
 
+// MB_ICONWARNING. The consent dialog uses MB_ICONQUESTION because it asks a
+// question about someone else's request; a pending restart of the machine the
+// user is working on is a warning about their own session.
+const notifyPromptMBIconWarning = 0x00000030
+
+// restartPromptFlags is the uType of the legacy restart Yes/No box
+// (MessageBoxTimeoutW). MB_DEFBUTTON2 makes No — Actions[1], the postponement
+// — the default (#10190 plan P8), so Enter or a stray key press never
+// restarts the machine. It applies whatever promptHost.enabledKinds says; a
+// countdown expiry still means no decision. Untagged so CI checks the flags
+// on every OS.
+func restartPromptFlags() uint32 {
+	return consentMBYesNo | consentMBDefButton2 | notifyPromptMBIconWarning | consentMBTopMost | consentMBSystemModal | consentMBSetForeground
+}
+
 // showNotifyPromptFn is the platform dialog seam; tests swap it for a fake.
 //
 // It blocks until the user answers or the countdown expires, mirroring

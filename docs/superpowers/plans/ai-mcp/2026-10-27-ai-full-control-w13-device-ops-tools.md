@@ -152,3 +152,21 @@ Per tool on the devices line: events 19, health 19, process samples 21, posture 
 ## Tasks
 
 T1 (this doc + quorum) → T4 service extraction, schemas, handlers → T2 guardrail classes → T3 route bindings + permission parity → T5 wiring + index measure → T6 agent catalog → T7 contract rows → T8 web `tierConfig.ts` → T9 docs → T10 prompt-size gate → T11 golden prompts → T12 integration suite → T13 merge main, gates, PR.
+
+## PR B (built after #10343 merged; `Closes #6783`)
+
+Built as decided above, with these implementation decisions:
+
+- **W13-D14 support-session `create` is not built.** Quorum QW3 required the one-time join code (and the `landingUrl` that embeds it) to stay out of the model context, the transcript, SSE and plaintext intent results. The sealed-reveal carrier (`actionIntents/secretBearingTools.ts` + the approval-history reveal UI) only knows a `temporaryPassword` today; extending it to a second credential kind (reveal endpoint shape, UI label, 8 locales) is cross-module work for its own change. Technicians start Quick Support sessions in the web app. `manage_support_sessions` is `list` / `get` (t1) and `end` (supervised).
+- **W13-D15 event-log content has no chat exemption.** `browse_device_event_log:query` / `get_event` are supervised for every channel; the #7906 chat-only System/Setup read-only path stays on `execute_command` (it pins the classified payload end to end, which a second tool would have to duplicate). `list_logs` is TIER2_READONLY. All three actions are MFA-gated (the system-tools router carries `requireMfa()` on every method; agents exempt).
+- **W13-D16 tenant-variable reads stay ungated by MFA and refuse device-bound sessions** (org-wide configuration, the W12 QW7 rule); writes are MFA-gated, refuse site- or device-restricted sessions (`canMutateOrgWideGovernance`), and are agent-human-only.
+- **Support sessions** carry an app-layer partner predicate (`organizations.partner_id = auth.partnerId`) on every read (REST relies on RLS alone) and refuse org scope and restricted sessions.
+
+| Measure | main `476395414f` | PR B branch |
+|---|---|---|
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| devices block (B2 < 2,048) | 1,620 | 1,713 |
+| scripts block | 363 | 416 |
+| Worst page turn (B3 < 7,040) | alert 5,164 | alert 5,257 |
+
+`browse_device_event_log` and `manage_support_sessions` join `devices`; `manage_tenant_variables` joins `scripts`. Registry 335 → 338 (within `MCP_TOOL_COUNT_APPROX` 330 ± 10; no bump).

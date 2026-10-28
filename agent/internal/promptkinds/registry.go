@@ -28,7 +28,11 @@ var NoticeInfo = prompthost.KindSpec{
 
 // Specs lists every kind this build constructs.
 func Specs() []prompthost.KindSpec {
-	return []prompthost.KindSpec{NoticeInfo}
+	return []prompthost.KindSpec{
+		NoticeInfo,
+		RestartPromptKind, // W05 (restart.go)
+		RestartFinalKind,  // W05 (restart.go)
+	}
 }
 
 // Register tells the prompt host which kinds this build speaks (the first

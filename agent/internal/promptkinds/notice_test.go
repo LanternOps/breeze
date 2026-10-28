@@ -351,10 +351,14 @@ func TestSessionEndedNoticeCopyAndID(t *testing.T) {
 
 func TestRegisterSpeaksNoticeInfoV1(t *testing.T) {
 	specs := Specs()
-	if len(specs) != 1 || specs[0].Name != "notice.info" || specs[0].Version != 1 {
+	if len(specs) == 0 || specs[0].Name != "notice.info" || specs[0].Version != 1 {
 		t.Fatalf("specs = %+v", specs)
 	}
-	if _, ok := ipc.PromptKindClass(NoticeInfo.Name); !ok {
-		t.Fatal("notice.info must be in the closed kind registry")
+	// Every kind this build speaks is in the closed kind registry (later
+	// waves append their kinds; the registry is append-only).
+	for _, s := range specs {
+		if _, ok := ipc.PromptKindClass(s.Name); !ok {
+			t.Fatalf("%s must be in the closed kind registry", s.Name)
+		}
 	}
 }

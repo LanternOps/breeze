@@ -129,6 +129,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/portal/performanceReadModel.ts': 'read model: portal performance metrics',
   'services/portal/softwareInventoryReadModel.ts': 'read model: portal software inventory',
   'services/softwareInventoryReads.ts': 'read model: technician software inventory list / name search / per-title devices (lifted from routes/softwareInventory.ts); excludes ephemeral and parked devices',
+  'services/aiToolsSupportSessions.ts': 'W13 PR B (#6783) AI read of the caller partner\'s Quick Support sessions (ephemeral devices in the hidden Quick Support org, never a parked device); end goes through endSupportSession; selects no fan-out targets',
   'services/aiToolsDeviceInventory.ts': 'W13 (#6783) AI reads: management-posture aggregates and the expiring-warranty list, both under the caller\'s org + site + exact-device scope and notParkedDeviceCondition; per-device reads go through the central device gate; selects no targets',
   'services/deviceLinkGroupOps.ts': 'read model: device link groups (#2138) list / get / per-device lookup plus link-group membership writes, all by explicit device id (lifted from routes/devices/links.ts); no background selection',
   'services/portal/patchDetailReadModel.ts': 'read model: portal patch detail',

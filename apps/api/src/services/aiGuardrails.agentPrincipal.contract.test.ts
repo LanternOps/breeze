@@ -1017,6 +1017,8 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
       // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
       'manage_groups:add_devices', 'manage_groups:remove_devices',
       'manage_tags:add', 'manage_tags:remove',
+      // W13 PR B (#6783): tenant-variable values are script inputs.
+      'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',
     ]);
     for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
   });
@@ -1114,6 +1116,28 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
     const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
     expect(check.disposition).toBe('deny');
+  });
+
+  describe('W13 PR B (#6783)', () => {
+    it.each(['create', 'update', 'delete'])('denies an allowlisted manage_tenant_variables:%s (script inputs)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_tenant_variables', `manage_tenant_variables:${action}`] });
+      const check = checkAgentGuardrails('manage_tenant_variables', { action, key: 'k', value: 'v' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('control: tenant-variable list and support-session list reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_tenant_variables', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'list' }, policy).disposition).toBe('allow');
+    });
+
+    it('event-log list_logs is read-only to an agent; query and support-session end become proposals', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['browse_device_event_log:query', 'manage_support_sessions:end'] });
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'list_logs', deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'query', deviceId: 'dev-1', logName: 'Security' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'end', sessionId: 's-1' }, policy).disposition).not.toBe('allow');
+    });
   });
 
   describe('W13 device inventory and ops (#6783)', () => {

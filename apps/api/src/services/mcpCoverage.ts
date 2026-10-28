@@ -673,7 +673,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
-  'remote/supportSessions.ts': { gap: '#6783' },
+  'remote/supportSessions.ts': { tools: ['manage_support_sessions'] }, // W13 (#6783): list / get / end; create not built (W13-D14)
   'reports/core.ts': { tools: ['generate_report'] },
   'reports/data.ts': { tools: ['generate_report'] },
   'reports/generate.ts': { tools: ['generate_report'] },
@@ -724,7 +724,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'stripeConnect/index.ts': { exempt: 'vendor_console_admin' },
   'supportPublic.ts': { exempt: 'portal' },
   'system.ts': { exempt: 'internal_plumbing', note: "Version/config-status reads are low AI value; setup-complete is onboarding UI. From #6807." },
-  'systemTools/eventLogs.ts': { gap: '#6783' },
+  'systemTools/eventLogs.ts': { tools: ['browse_device_event_log'] }, // W13 (#6783)
   'systemTools/fileBrowser.ts': { tools: ['file_operations'] },
   'systemTools/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'systemTools/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -733,7 +733,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'systemTools/scheduledTasks.ts': { tools: ['manage_scheduled_tasks'] },
   'systemTools/services.ts': { tools: ['manage_services'] },
   'tags.ts': { tools: ['manage_tags'] },
-  'tenantVariables.ts': { gap: '#6783' },
+  'tenantVariables.ts': { tools: ['manage_tenant_variables'] }, // W13 (#6783): never secret values
   'terminalWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'thirdPartyCatalog/list.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'thirdPartyCatalog/operations.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },

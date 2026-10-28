@@ -429,6 +429,23 @@ const BINDINGS: readonly Binding[] = [
     toolOnly: { extra: [], reason: 'Adds the exact-device axis and the parked-device rule (W13-D12).' },
   },
   { tool: 'manage_device_warranty', action: 'refresh', routeFile: 'devices/warranty.ts', method: 'post', path: '/:id/warranty/refresh' },
+  // Full-control W13 PR B (#6783).
+  { tool: 'browse_device_event_log', action: 'list_logs', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs', parents: ['systemTools/index.ts'] },
+  {
+    tool: 'browse_device_event_log', action: 'query', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel (REST gates only the Security log behind devices:execute, already the floor); the raw event XML is never returned.' },
+  },
+  {
+    tool: 'browse_device_event_log', action: 'get_event', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events/:recordId', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel; the raw event XML is never returned.' },
+  },
+  { tool: 'manage_tenant_variables', action: 'list', routeFile: 'tenantVariables.ts', method: 'get', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Refused to device-bound sessions; a secret value is never returned (W13-D7).' } },
+  { tool: 'manage_tenant_variables', action: 'create', routeFile: 'tenantVariables.ts', method: 'post', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Never a secret (no isSecret input); refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'update', routeFile: 'tenantVariables.ts', method: 'put', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'A secret or an existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'delete', routeFile: 'tenantVariables.ts', method: 'delete', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'An existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D13).' } },
+  { tool: 'manage_support_sessions', action: 'list', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'get', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions/:id', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'end', routeFile: 'remote/supportSessions.ts', method: 'post', path: '/support-sessions/:id/end', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, the session loaded under the partner predicate before the system-context end (W13-D8).' } },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
