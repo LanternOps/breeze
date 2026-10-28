@@ -88,7 +88,7 @@ export function WispLinksList({
         return target ? (
           <Pressable
             key={link.id ?? `${link.ref.kind}:${link.ref.id}`}
-            testID={`wisp-link-${link.id}`}
+            testID={`wisp-link-${link.id ?? `${link.ref.kind}:${link.ref.id}`}`}
             accessibilityRole="link"
             onPress={() => onOpenTicket(target.ticketId)}
             style={style}
@@ -96,7 +96,7 @@ export function WispLinksList({
             {body}
           </Pressable>
         ) : (
-          <View key={link.id ?? `${link.ref.kind}:${link.ref.id}`} testID={`wisp-link-${link.id}`} style={style}>
+          <View key={link.id ?? `${link.ref.kind}:${link.ref.id}`} testID={`wisp-link-${link.id ?? `${link.ref.kind}:${link.ref.id}`}`} style={style}>
             {body}
           </View>
         );

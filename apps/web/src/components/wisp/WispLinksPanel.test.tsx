@@ -8,7 +8,10 @@ const h = vi.hoisted(() => ({
   showToast: vi.fn(),
   pickerProps: null as null | Record<string, unknown>,
 }));
-vi.mock('@/lib/wispLinksApi', () => ({ removeWispLink: h.removeWispLink }));
+vi.mock('@/lib/wispLinksApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/wispLinksApi')>(),
+  removeWispLink: h.removeWispLink,
+}));
 vi.mock('@/components/shared/Toast', () => ({ showToast: h.showToast }));
 vi.mock('./WispEntityPicker', () => ({
   default: (props: Record<string, unknown>) => {
@@ -38,7 +41,7 @@ describe('WispLinksPanel (W08 Task 9)', () => {
 
   it('renders each link as a chip to its page, with status and a Wisp marker for model-added links', () => {
     render(<WispLinksPanel threadId="th-1" links={[link('1'), link('2', { source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z', status: null })]} onLinksChange={vi.fn()} />);
-    const chips = screen.getAllByTestId('wisp-link-chip');
+    const chips = screen.getAllByTestId(/^wisp-link-chip-/);
     expect(chips).toHaveLength(2);
     expect(screen.getByRole('link', { name: /#101 Printer jam/ })).toHaveAttribute('href', '/tickets/t-1');
     expect(chips[0]).toHaveTextContent('open');
@@ -53,9 +56,8 @@ describe('WispLinksPanel (W08 Task 9)', () => {
 
   it('does not remove a derived concern link with no persisted id', () => {
     render(<WispLinksPanel threadId="th-1" links={[link('1', { id: null, source: 'concern' })]} onLinksChange={vi.fn()} />);
-    const remove = screen.getByTestId('wisp-link-remove-null');
-    expect(remove).toBeDisabled();
-    fireEvent.click(remove);
+    expect(screen.getByTestId('wisp-link-chip-ticket:t-1')).toBeInTheDocument();
+    expect(screen.queryByTestId(/^wisp-link-remove-/)).toBeNull();
     expect(h.removeWispLink).not.toHaveBeenCalled();
   });
 
@@ -106,11 +108,24 @@ describe('WispLinksPanel (W08 Task 9)', () => {
     expect(onLinksChange).toHaveBeenCalledWith([expect.objectContaining({ id: '1', label: 'refreshed' })]);
   });
 
-  it('Add is disabled while the grant cannot add (paused/ended) and at the 50-link cap', () => {
-    const { rerender } = render(<WispLinksPanel threadId="th-1" links={[link('1')]} onLinksChange={vi.fn()} canAdd={false} />);
+  it('Add is disabled while the grant cannot add (paused/ended)', () => {
+    render(<WispLinksPanel threadId="th-1" links={[link('1')]} onLinksChange={vi.fn()} canAdd={false} />);
     expect(screen.getByTestId('wisp-links-add')).toBeDisabled();
-    const fifty = Array.from({ length: 50 }, (_, i) => link(String(i)));
-    rerender(<WispLinksPanel threadId="th-1" links={fifty} onLinksChange={vi.fn()} />);
+  });
+
+  it.each(['concern', 'auto'] as const)('50 %s rows do not disable Add', (source) => {
+    const rows = Array.from({ length: 50 }, (_, i) => link(String(i), { source, ...(source === 'concern' ? { id: null } : {}) }));
+    render(<WispLinksPanel threadId="th-1" links={rows} onLinksChange={vi.fn()} />);
+    expect(screen.getByTestId('wisp-links-add')).toBeEnabled();
+    expect(screen.getByTestId('wisp-links-count')).toHaveTextContent('0 of 50 linked');
+    fireEvent.click(screen.getByTestId('wisp-links-add'));
+    expect(screen.getByTestId('wisp-entity-picker-mock')).toBeInTheDocument();
+  });
+
+  it('50 pins disable Add', () => {
+    const pins = Array.from({ length: 50 }, (_, i) => link(String(i), { source: i % 2 ? 'wisp_pin' : 'user_pin' }));
+    render(<WispLinksPanel threadId="th-1" links={pins} onLinksChange={vi.fn()} />);
     expect(screen.getByTestId('wisp-links-add')).toBeDisabled();
+    expect(screen.getByTestId('wisp-links-count')).toHaveTextContent('50 of 50 linked');
   });
 });

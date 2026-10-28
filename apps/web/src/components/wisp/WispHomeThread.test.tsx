@@ -4,6 +4,7 @@
  * resume the thread's last session, else start the first — and nothing for a
  * paused or ended grant.
  */
+import type { WispThreadLink } from '@breeze/shared';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -282,6 +283,24 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     fireEvent.click(await screen.findByTestId('wisp-composer-link'));
     fireEvent.click(screen.getByText('pick'));
     expect(onLinksChange).toHaveBeenCalledWith([LINK]);
+  });
+
+  it.each(['concern', 'auto', 'pins'] as const)('50 %s rows apply the pin-only composer cap', async (source) => {
+    const links: WispThreadLink[] = Array.from({ length: 50 }, (_, i) => ({
+      ...LINK,
+      id: source === 'concern' ? null : `l-${i}`,
+      ref: { ...LINK.ref, kind: 'ticket', id: `t-${i}` },
+      source: source === 'pins' ? (i % 2 ? 'wisp_pin' : 'user_pin') : source,
+    }));
+    render(<WispHomeThread {...extra} links={links} wisp={wisp} lastSessionId={null} />);
+    const button = await screen.findByTestId('wisp-composer-link');
+    if (source === 'pins') {
+      expect(button).toBeDisabled();
+    } else {
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      expect(screen.getByTestId('picker-stub')).toBeInTheDocument();
+    }
   });
 
   it('links null hides the composer link button', async () => {

@@ -127,7 +127,7 @@ const linkEntityHandler = grantTool(linkEntitySchema, async (input, ceiling, aut
 
 const listLinksHandler = grantTool(listLinksInputSchema, async (input, ceiling, auth) => {
   const thread = await getOrCreateThread(ceiling.grantId);
-  // listLinks re-resolves every row (newest first) and already caps at the
+  // listLinks re-resolves every row (most recently touched first) and already caps at the
   // per-thread limit; `limit` only trims the page the model reads.
   const rows = await listLinks({ auth, ceiling }, thread.id);
   const page = rows.slice(0, input.limit ?? WISP_THREAD_LINK_LIMIT);
@@ -156,7 +156,7 @@ export function registerWispLinkTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'objects linked to the Wisp thread: pinned tickets, devices, quotes, customers',
     definition: {
       name: 'list_links',
-      description: 'List the Breeze objects linked to this Wisp thread that you can still see, newest first: kind, id, org, current label, status and page link. Call the object\'s own read tool for detail.',
+      description: 'List the Breeze objects linked to this Wisp thread that you can still see, most recently touched first: kind, id, org, current label, status and page link. Call the object\'s own read tool for detail.',
       input_schema: inputSchemaFor(listLinksShape),
     },
     handler: listLinksHandler,
