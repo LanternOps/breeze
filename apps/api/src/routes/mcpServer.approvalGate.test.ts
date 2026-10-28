@@ -211,7 +211,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 import { mcpServerRoutes } from './mcpServer';
-import { checkGuardrails, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { checkGuardrails, TIER2_ACTIONS, TIER3_ACTIONS } from '../services/aiGuardrails';
 
 // Real JSON schemas for the multiplexed tools these tests target, trimmed to
 // just the `action` enum the gate inspects (mirrors the real registry
@@ -947,6 +947,140 @@ describe('B-W04: Tier-3 tools/call files an approval intent (MCP_TIER3_INTENTS_E
     expect((await call()).approvalGate).toMatchObject({ tier3: 'approval_intent', tier3RequiresWebApp: false });
     delete process.env.MCP_TIER3_INTENTS_ENABLED;
     expect((await call()).approvalGate).toMatchObject({ tier3: 'web_app_only', tier3RequiresWebApp: true });
+  });
+});
+
+// #10027: the MCP gate and createActionIntent must agree on which calls are
+// Tier 3. The intent service classifies with checkGuardrails(toolName, input)
+// and refuses anything below Tier 3 with `tool_not_tier3` (MCP principals get
+// no Tier-2 intents). The mock below enforces that same rule, so a call the
+// gate files but the service would refuse surfaces exactly as it does in
+// production: -32000 "Unable to file the action for approval".
+describe('#10027: action tier below 3 on a flat Tier-3 tool is never filed as an intent (MCP_TIER3_INTENTS_ENABLED on)', () => {
+  const EXECUTE_COMMAND_SCHEMA = {
+    type: 'object',
+    properties: { deviceId: { type: 'string' }, commandType: { type: 'string' } },
+  };
+  const MANAGE_SERVICES_SCHEMA = {
+    type: 'object',
+    properties: { action: { type: 'string', enum: ['list', 'start', 'stop', 'restart'] } },
+  };
+
+  beforeEach(() => {
+    process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+    testState.mfaSatisfied = true;
+    mocks.getToolDefinitions.mockReturnValue([
+      { name: 'execute_command', description: 'Execute a system command.', input_schema: EXECUTE_COMMAND_SCHEMA },
+      { name: 'manage_services', description: 'Services.', input_schema: MANAGE_SERVICES_SCHEMA },
+    ]);
+    mocks.getToolTier.mockImplementation((name: string) => (
+      name === 'execute_command' || name === 'manage_services' ? 3 : undefined
+    ));
+    intentMocks.createMcpActionIntent.mockReset().mockImplementation(async (i: { toolName: string; toolInput: Record<string, unknown> }) => {
+      const tier = checkGuardrails(i.toolName, i.toolInput).tier;
+      if (tier <= 2) throw new Error(`tool_not_tier3: ${i.toolName} is tier ${tier}`);
+      return pendingOutcome(i.toolName);
+    });
+  });
+  afterEach(() => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+  });
+
+  const READ_COMMAND_TYPES = TIER2_ACTIONS.execute_command ?? [];
+
+  it('the read-only commandTypes under test are exactly the tier-2 execute_command entries', () => {
+    expect([...READ_COMMAND_TYPES].sort()).toEqual(['event_logs_list', 'file_list', 'list_processes']);
+  });
+
+  it.each(READ_COMMAND_TYPES)('execute_command %s runs directly (no intent, Tier-3 ledger kept)', async (commandType) => {
+    const input = { deviceId: 'd1', commandType };
+    const body = await (await callTool('execute_command', input)).json();
+    expect(body.error).toBeUndefined();
+    expect(body.result.isError).toBeUndefined();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(mocks.executeTool.mock.calls[0]![0]).toBe('execute_command');
+    expect(mocks.executeTool.mock.calls[0]![1]).toEqual(input);
+    // The scope tier is still the tool's static Tier 3, so the fail-closed
+    // Tier-3 ledger still records the call.
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'kill_process', 'start_service', 'stop_service', 'restart_service',
+    'file_read', 'list_services', 'event_logs_query', 'not_a_real_command',
+  ])('mutating / privileged execute_command %s still files an approval intent and never executes', async (commandType) => {
+    const input = { deviceId: 'd1', commandType };
+    expect(checkGuardrails('execute_command', input).tier).toBe(3);
+    const body = await (await callTool('execute_command', input)).json();
+    expect(body.error).toBeUndefined();
+    expect(body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId: PENDING_ID });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent.mock.calls[0]![0]).toMatchObject({ toolName: 'execute_command', toolInput: input });
+  });
+
+  it('execute_command with no commandType fails closed to an approval intent', async () => {
+    const body = await (await callTool('execute_command', { deviceId: 'd1', command: 'whoami' })).json();
+    expect(body.result.structuredContent).toMatchObject({ status: 'pending_approval' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('the scope gate still follows the tool\'s Tier 3: list_processes without ai:execute → -32603', async () => {
+    const body = await (await callTool('execute_command', { deviceId: 'd1', commandType: 'list_processes' }, ['ai:read', 'ai:write'])).json();
+    expect(body.error.code).toBe(-32603);
+    expect(body.error.message).toContain('requires ai:execute');
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('the production allowlist still applies to the read commandTypes', async () => {
+    // Same harness as the MCP_UNATTENDED_TIER3_PRINCIPALS production cases:
+    // the allowlist is empty in this suite, and production needs a redis.
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('MCP_REQUIRE_EXECUTE_ADMIN', 'false');
+    testState.redis = {};
+    try {
+      const body = await (await callTool('execute_command', { deviceId: 'd1', commandType: 'list_processes' })).json();
+      expect(body.error.code).toBe(-32603);
+      expect(body.error.message).toContain('MCP_EXECUTE_TOOL_ALLOWLIST');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+      expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    } finally {
+      testState.redis = null;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('production: ai:execute_admin is still required for the read commandTypes', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    testState.redis = {};
+    try {
+      const body = await (await callTool('execute_command', { deviceId: 'd1', commandType: 'list_processes' })).json();
+      expect(body.error.message).toContain('ai:execute_admin');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    } finally {
+      testState.redis = null;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('manage_services list runs directly; restart is filed for approval', async () => {
+    const list = await (await callTool('manage_services', { action: 'list', deviceId: 'd1' })).json();
+    expect(list.result.isError).toBeUndefined();
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    const restart = await (await callTool('manage_services', { action: 'restart', deviceId: 'd1', serviceName: 'spooler' })).json();
+    expect(restart.result.structuredContent).toMatchObject({ status: 'pending_approval' });
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('flag off: execute_command list_processes keeps today\'s refusal (unchanged)', async () => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    const body = await (await callTool('execute_command', { deviceId: 'd1', commandType: 'list_processes' })).json();
+    expect(body.result).toEqual({ content: [{ type: 'text', text: TODAY_APPROVAL_REQUIRED_TEXT }], isError: true });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });
 

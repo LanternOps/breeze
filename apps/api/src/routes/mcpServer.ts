@@ -2249,7 +2249,19 @@ async function handleToolsCall(
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
   const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
-  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal });
+  // #10027: with MCP_TIER3_INTENTS_ENABLED on, a call whose OWN classification
+  // (checkGuardrails, floored for approval extras) is below Tier 3 is not
+  // filed for approval: createActionIntent classifies with the same
+  // checkGuardrails call and refuses anything below Tier 3 (tool_not_tier3),
+  // so filing it could only fail. These are the explicit TIER1/TIER2_ACTIONS
+  // downgrades on a static-Tier-3 tool (execute_command list_processes,
+  // manage_services list, ...). Only the approval decision follows the
+  // action: `tier` stays the Math.max above, so the ai:execute /
+  // ai:execute_admin / production-allowlist gates and the Tier-3 ledger below
+  // still apply. With the flag off the gate is unchanged (B-W04 D-B37).
+  const actionBelowIntentTier = Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3;
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
+    && !(actionBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
   // exactly today's (same position, same body). ON, a call this credential
   // can file continues through every gate below into the intent branch; any
@@ -2293,7 +2305,8 @@ async function handleToolsCall(
   // execution-org resolution — never executed here.
   const fileAsIntent = approvalRequired;
   // Past the gate with an effective Tier 3 call means approval was skipped for
-  // a named principal. Carried to the audit row so an unattended run is
+  // a named principal, or (#10027, flag on) the action itself is below Tier 3.
+  // Only the former is an approval bypass. Carried to the audit row so an unattended run is
   // distinguishable from every other Tier 3 row in an investigation.
   const approvalBypassPrincipal = unattendedPrincipal ? mcpPrincipalRef(apiKey) : null;
 
