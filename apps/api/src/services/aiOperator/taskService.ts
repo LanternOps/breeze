@@ -714,7 +714,8 @@ async function prepareContactTargets(
     contactId: person.kind === 'existing' ? person.contactId : null,
     email: person.email,
   });
-  if (selfInheritance) return refuse('invalid_input', `${selfInheritance}: ${SELF_INHERITANCE_MESSAGE}`);
+  // The bare reason: POST /tasks returns `detail` as the error the form shows.
+  if (selfInheritance) return refuse('invalid_input', SELF_INHERITANCE_MESSAGE);
   const { accounts, problems } = await resolveProviderAccounts(input.orgId, {
     contactId: person.kind === 'existing' ? person.contactId : null,
     email: person.email,

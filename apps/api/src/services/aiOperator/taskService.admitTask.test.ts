@@ -406,7 +406,8 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
   it('#10076: a hint that resolves to the inheritor contact refuses invalid_input before any provider read', async () => {
     const r = await taskService.admitTask({ ...base, recipeInput: { personHint: 'Dana Ruiz', inheritorContactId: CONTACT } });
     expect(r).toMatchObject({ ok: false, refusal: 'invalid_input' });
-    expect((r as { detail: string }).detail).toContain('cannot inherit their own mail');
+    // The bare reason, no field prefix: the route returns it as the error the form shows.
+    expect((r as { detail: string }).detail).toBe("The person leaving cannot inherit their own mail. Choose someone else, or no one.");
     expect(h.calls).toEqual(['identifyTaskPerson']);
     expect(h.inserts).toHaveLength(0);
   });
