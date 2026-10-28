@@ -2,7 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { scriptParametersSchema } from '@breeze/shared';
+import { FLOW_WEBHOOK_DELIVERY_ID_RE, occurrenceKey, scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
@@ -66,6 +66,7 @@ import { resolveAutomationWebhookOwnerContext } from '../services/automationWebh
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
+import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -219,7 +220,7 @@ async function verifyAutomationWebhookSignature(input: {
   signatureHeader?: string | null;
   timestampHeader?: string | null;
   eventIdHeader?: string | null;
-}): Promise<{ ok: true } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
+}): Promise<{ ok: true; signatureDigest: string } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
   // The shared Breeze HMAC scheme (services/webhookSignature.ts, also used by
   // flow webhooks — Tool Catalog W05 #5220). Messages and statuses unchanged.
   const now = Date.now();
@@ -249,7 +250,28 @@ async function verifyAutomationWebhookSignature(input: {
     if (!eventIdReservation.ok) return eventIdReservation;
   }
 
-  return { ok: true };
+  return { ok: true, signatureDigest: verified.signatureDigest };
+}
+
+/**
+ * #5221 B2 (Decision 6) — the occurrence-claim aliases of one legacy webhook
+ * delivery: `webhook:sig:<digest>` (a signed delivery) and
+ * `webhook:dlv:<id>` (a sender delivery id the flow side would accept as
+ * `X-Breeze-Delivery-Id`). Either conflicting makes it a duplicate.
+ */
+function legacyWebhookClaimKeys(signatureDigest: string | null, eventIdHeader: string | undefined): string[] {
+  const keys: string[] = [];
+  if (signatureDigest) keys.push(occurrenceKey.webhookSig(signatureDigest));
+  const deliveryId = eventIdHeader?.trim();
+  if (deliveryId && FLOW_WEBHOOK_DELIVERY_ID_RE.test(deliveryId)) keys.push(occurrenceKey.webhookDelivery(deliveryId));
+  return keys;
+}
+
+/** The signed `x-breeze-timestamp` as an instant (seconds or milliseconds, as the verifier reads it). */
+function webhookTimestampInstant(header: string | undefined): Date | null {
+  const parsed = Number(header?.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return new Date(parsed > 1_000_000_000_000 ? parsed : parsed * 1000);
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -1964,6 +1986,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Query-string webhook secrets are no longer accepted; use HMAC signing (x-breeze-signature + x-breeze-timestamp)' }, 401);
   }
 
+  let signatureDigest: string | null = null;
   if (signatureHeader || timestampHeader) {
     const signatureCheck = await verifyAutomationWebhookSignature({
       automationId,
@@ -1976,6 +1999,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     if (!signatureCheck.ok) {
       return c.json({ error: signatureCheck.error }, signatureCheck.status);
     }
+    signatureDigest = signatureCheck.signatureDigest;
   } else {
     if (!headerSecret) {
       return c.json({ error: 'Missing signed webhook verification' }, 401);
@@ -2048,19 +2072,51 @@ automationWebhookRoutes.post('/:id', async (c) => {
     ) {
       return null;
     }
-    return createAutomationRunRecord({
-      automation: current,
-      triggeredBy: 'webhook',
-      details: {
-        sourceIp: getTrustedClientIp(c, 'unknown'),
-        userAgent: c.req.header('user-agent') ?? 'unknown',
-        payload,
-      },
-    });
+    // #5221 B2 (Decision 6) — a row with a conversion in any state claims the
+    // delivery (both aliases) in the run's own transaction. The row is enabled
+    // here, so its generation is shadow or reverted and legacy is the
+    // preferred engine (a switched row is disabled and never gets this far).
+    // A row with no conversion keeps today's path: no lock, no hook.
+    const conversion = await currentConversionForAutomation(db, current.id);
+    const claimKeys = conversion ? legacyWebhookClaimKeys(signatureDigest, eventIdHeader) : [];
+    try {
+      return await createAutomationRunRecord({
+        automation: current,
+        triggeredBy: 'webhook',
+        details: {
+          sourceIp: getTrustedClientIp(c, 'unknown'),
+          userAgent: c.req.header('user-agent') ?? 'unknown',
+          payload,
+        },
+        ...(conversion && claimKeys.length > 0
+          ? {
+              onCreated: async (tx, run) => {
+                const claim = await claimOccurrence(tx, {
+                  automationId: current.id,
+                  owner: { orgId: current.orgId, partnerId: current.partnerId },
+                  keys: claimKeys,
+                  engine: 'legacy',
+                  conversionId: conversion.id,
+                  legacyRunId: run.id,
+                  occurrenceAt: webhookTimestampInstant(timestampHeader),
+                });
+                if (!claim.ok) throw new OccurrenceClaimedError(claim.existing);
+              },
+            }
+          : {}),
+      });
+    } catch (err) {
+      if (err instanceof OccurrenceClaimedError) return 'claimed' as const;
+      throw err;
+    }
   }));
 
   if (!admitted) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+  if (admitted === 'claimed') {
+    // The same answer a Redis replay hit gives: this delivery was already admitted.
+    return c.json({ error: 'Duplicate webhook delivery' }, 409);
   }
   const { run, targetDeviceIds } = admitted;
 

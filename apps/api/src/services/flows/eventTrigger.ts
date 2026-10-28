@@ -51,6 +51,7 @@ import { isFlowAdmissionRefusal } from '@breeze/shared';
 import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { nullFlowInputs } from './inputDefaults';
 import { createFlowRun } from './runService';
+import { eventInstant, eventOccurrenceKey } from './conversion/claims';
 import { buildTriggerScope, type FlowTriggerScope } from './triggerScope';
 
 const LOG = '[FlowEventTrigger]';
@@ -225,6 +226,8 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
   }
 
   let scope: Omit<FlowTriggerScope, 'kind' | 'orgId'> | null = null;
+  const occurrenceEventKey = eventOccurrenceKey(event.id);
+  const occurrenceAt = eventInstant(event.metadata?.timestamp);
   let orgLive: boolean | null = null;
   let firstError: unknown = null;
   for (const flow of candidates) {
@@ -262,7 +265,14 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
         dedupeKey: `event:${event.id}`,
         chainDepth,
         causedByRunId,
+        // #5221 B2 (Decision 6): the same `event:<id>` the legacy engine claims
+        // and stores in automation_runs, and the event's instant. Only a flow
+        // converted from a legacy automation consults it; an id that cannot be
+        // a key gives no key, so a switched flow leaves that event to legacy.
+        occurrence: { keys: occurrenceEventKey ? [occurrenceEventKey] : [], at: occurrenceAt },
       });
+      // Already admitted by the legacy engine (or another generation): handled, not retried.
+      if (!result.created && result.reason === 'occurrence_claimed') continue;
       // Active-run cap or a monthly cap (W5): handled, never retried — a retry
       // would only refuse again (the flow is not paused).
       if (!result.created && isFlowAdmissionRefusal(result.reason)) {

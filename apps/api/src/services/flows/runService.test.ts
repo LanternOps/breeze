@@ -82,6 +82,14 @@ vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnap
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+// #5221 B2 — the ledger read and the claim are mocked; no conversion by default.
+vi.mock('./conversion/claims', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./conversion/claims')>()),
+  conversionForFlow: vi.fn(async () => null),
+  claimOccurrence: vi.fn(async () => ({ ok: true })),
+  reportOccurrenceAnomaly: vi.fn(),
+}));
+import { claimOccurrence, conversionForFlow, reportOccurrenceAnomaly } from './conversion/claims';
 
 import { actionIntents, flowRuns } from '../../db/schema';
 import { getUserPermissions, type UserPermissions } from '../permissions';
@@ -604,6 +612,96 @@ describe('createFlowRun', () => {
   it('a DB failure throws (callers retry)', async () => {
     queues.select.push(new Error('connection reset'));
     await expect(createFlowRun({ ...base, triggerKind: 'schedule' })).rejects.toThrow('connection reset');
+  });
+});
+
+describe('createFlowRun — occurrence claims (#5221 B2)', () => {
+  const AUTO = 'abababab-abab-4bab-8bab-abababababab';
+  const CONV = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+  const LEGACY_RUN = 'efefefef-efef-4fef-8fef-efefefefefef';
+  const KEY = 'event:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const at = new Date('2027-03-01T10:00:00.000Z');
+  const switchAt = new Date('2027-03-01T09:00:00.000Z');
+  const event = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: KEY,
+    triggerKind: 'event' as const, chainDepth: 0, causedByRunId: null,
+  };
+  const generation = (state: 'shadow' | 'switched' | 'reverted') => ({
+    id: CONV, state, switchAt: state === 'shadow' ? null : switchAt, automationId: AUTO, orgId: ORG, partnerId: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(conversionForFlow).mockReset().mockResolvedValue(null);
+    vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(reportOccurrenceAnomaly).mockReset();
+  });
+
+  it('a switched flow claims the occurrence in the run transaction, after the insert and the charge', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    const r = await createFlowRun({ ...event, occurrence: { keys: [KEY], at } });
+    expect(r).toMatchObject({ created: true, runId: RUN_ID });
+    expect(conversionForFlow).toHaveBeenCalledWith(expect.anything(), FLOW_ID);
+    expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toEqual({
+      automationId: AUTO, owner: { orgId: ORG, partnerId: null }, keys: [KEY], engine: 'flow',
+      conversionId: CONV, flowRunId: RUN_ID, occurrenceAt: at,
+    });
+    const charge = vi.mocked(chargeFlowRun).mock.invocationCallOrder[0]!;
+    const claim = vi.mocked(claimOccurrence).mock.invocationCallOrder[0]!;
+    expect(charge).toBeLessThan(claim);
+    expect(txRollbacks).toHaveLength(0);
+  });
+
+  it('a claim conflict rolls the run back and returns the existing linkage', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    const existing = { engine: 'legacy' as const, legacyRunId: LEGACY_RUN, flowRunId: null };
+    vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing });
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({
+      created: false, reason: 'occurrence_claimed', claimedBy: existing,
+    });
+    // The insert and the charge ran, then the transaction threw: all of it rolls back.
+    expect(callsOf('execute')).toHaveLength(1);
+    expect(txRollbacks).toHaveLength(1);
+    expect(enqueueFlowRunSlice).not.toHaveBeenCalled();
+    expect(recordAdmissionRefusal).not.toHaveBeenCalled();
+  });
+
+  it('a reverted (or shadow) generation attempts nothing new', async () => {
+    for (const state of ['reverted', 'shadow'] as const) {
+      calls.length = 0;
+      vi.mocked(conversionForFlow).mockResolvedValue(generation(state));
+      queueCreate();
+      expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({ created: false, reason: 'not_enabled' });
+      expect(callsOf('execute')).toHaveLength(0);
+    }
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('a switched flow does not attempt an occurrence it cannot key, and reports it', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [], at } })).toEqual({ created: false, reason: 'not_enabled' });
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_key_unbuildable', 'flow', KEY);
+  });
+
+  it('a missing instant is still attempted by a switched flow (claims dedupe) and reported', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at: null } })).toMatchObject({ created: true });
+    expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toMatchObject({ occurrenceAt: null });
+    expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_instant_missing', 'flow', KEY);
+  });
+
+  it('a flow with no conversion never claims, and without an occurrence the ledger is never read', async () => {
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [], at: null } })).toMatchObject({ created: true });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    queueCreate();
+    await createFlowRun({ ...event, dedupeKey: 'event:other' });
+    expect(conversionForFlow).toHaveBeenCalledTimes(1);
   });
 });
 

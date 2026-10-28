@@ -278,6 +278,10 @@ vi.mock('../middleware/auth', () => ({
   }),
 }));
 
+// #5221 B2 — no conversion unless a test says so; the webhook claim cases set one.
+vi.mock('../services/flows/conversion/claims', async () =>
+  (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
+import { claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
@@ -1643,7 +1647,83 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.accepted).toBe(true);
 	    expect(body.run.id).toBe('run-1');
+    // #5221 B2: a row with no conversion takes today's path — no claim hook.
+    expect(vi.mocked(createAutomationRunRecord).mock.calls.at(-1)![0]).not.toHaveProperty('onCreated');
 	  });
+
+  describe('occurrence claims on a converted row (#5221 B2)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    const CONV = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    function signedRequest(eventId: string) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: true,
+              trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+            }]),
+          }),
+        }),
+      } as any);
+      // A distinct body per case: the Redis replay guard would refuse a repeat signature.
+      const rawBody = JSON.stringify({ ping: eventId });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+      return {
+        timestamp,
+        send: () => app.request(`/automations/webhooks/${AUTO}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-breeze-timestamp': timestamp, 'x-breeze-signature': signature, 'x-breeze-event-id': eventId },
+          body: rawBody,
+        }),
+      };
+    }
+    function runRecordCallingHook() {
+      vi.mocked(createAutomationRunRecord).mockImplementationOnce(async (options: any) => {
+        const run = { id: 'run-1', status: 'running', devicesTargeted: 0, startedAt: new Date() };
+        if (options.onCreated) await options.onCreated({ tx: true }, run);
+        return { run, targetDeviceIds: [], reused: false } as any;
+      });
+    }
+
+    beforeEach(() => {
+      vi.mocked(currentConversionForAutomation).mockReset().mockResolvedValue({ id: CONV, state: 'shadow', switchAt: null });
+      vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+    });
+
+    it('claims both delivery aliases in the run transaction', async () => {
+      runRecordCallingHook();
+      const req = signedRequest('dlv-1');
+      const res = await req.send();
+      expect(res.status).toBe(202);
+      expect(currentConversionForAutomation).toHaveBeenCalledWith(expect.anything(), AUTO);
+      const [tx, claim] = vi.mocked(claimOccurrence).mock.calls[0]!;
+      expect(tx).toEqual({ tx: true });
+      expect(claim).toMatchObject({
+        automationId: AUTO, owner: { orgId: 'org-123', partnerId: null }, engine: 'legacy',
+        conversionId: CONV, legacyRunId: 'run-1', occurrenceAt: new Date(Number(req.timestamp) * 1000),
+      });
+      expect(claim.keys).toHaveLength(2);
+      expect(claim.keys[0]).toMatch(/^webhook:sig:[0-9a-f]{64}$/);
+      expect(claim.keys[1]).toBe('webhook:dlv:dlv-1');
+    });
+
+    it('a delivery the other engine already admitted is a 409 duplicate and enqueues nothing', async () => {
+      runRecordCallingHook();
+      vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing: { engine: 'flow', legacyRunId: null, flowRunId: 'f' } });
+      vi.mocked(enqueueAutomationRun).mockClear();
+      const res = await signedRequest('dlv-2').send();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Duplicate webhook delivery' });
+      expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    });
+
+    it('a delivery id the flow side cannot carry is left out of the claim', async () => {
+      runRecordCallingHook();
+      await signedRequest('has spaces/and slashes').send();
+      expect(vi.mocked(claimOccurrence).mock.calls[0]![1].keys).toEqual([expect.stringMatching(/^webhook:sig:/)]);
+    });
+  });
 
 	  it('rejects automation webhook when signed body is modified', async () => {
 	    vi.mocked(db.select).mockReturnValue({
