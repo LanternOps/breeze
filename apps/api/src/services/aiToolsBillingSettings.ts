@@ -3,7 +3,7 @@
  * billing-settings routes (routes/invoices/settings.ts) through the same
  * services (invoiceService.updatePartnerBillingSettings /
  * updateOrgBillingSettings, orgCurrencyService.getOrgCurrencyImpact,
- * reportingTotals). The reads replace `GET /orgs/partners/me` and the org row
+ * the FX reporting read in aiToolsFxReportingRead.ts). The reads replace `GET /orgs/partners/me` and the org row
  * (fact 5) with explicit billing projections.
  *
  * Classes (W14 plan): `get_partner` / `get_org` / `currency_impact` /
@@ -31,8 +31,8 @@ import { updateOrgBillingSettings, updatePartnerBillingSettings } from './invoic
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { getOrgCurrencyImpact } from './orgCurrencyService';
 import { OrgCurrencyServiceError } from './orgCurrencyCore';
-import { computeReportingTotal, parseGroupsParam, resolvePartnerReportingCurrency } from './reportingTotals';
-import { ExchangeRateServiceError } from './exchangeRateService';
+// The FX read lives in its own allowlisted module (the FX boundary test): this file never references FX.
+import { fxReportingTotalRead } from './aiToolsFxReportingRead';
 import { BillingProfileServiceError } from './billingProfileService';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, canManagePartnerWidePolicies } from './partnerWideAccess';
 import { BILLING_SETTINGS_ACTIONS } from './aiToolSchemasBilling';
@@ -79,7 +79,7 @@ const orgProjection = () => ({
 
 function serviceError(err: unknown): string | null {
   if (!(err instanceof InvoiceServiceError || err instanceof BillingProfileServiceError
-    || err instanceof OrgCurrencyServiceError || err instanceof ExchangeRateServiceError)) return null;
+    || err instanceof OrgCurrencyServiceError)) return null;
   // A coded 5xx is still a server failure: log it, then answer with its code.
   if (err.status >= 500) console.error(`[${TOOL}]`, err.code, err.message);
   const details = (err as { details?: unknown }).details;
@@ -228,17 +228,8 @@ export function registerBillingSettingsTools(aiTools: Map<string, AiTool>): void
             if (typeof input.currencyCode !== 'string') return jsonError('currencyCode is required', 'VALIDATION_ERROR');
             return bounded({ impact: await getOrgCurrencyImpact(orgId, input.currencyCode, actorFrom(auth)) });
           }
-          case 'reporting_totals': {
-            if (typeof input.groups !== 'string' || typeof input.date !== 'string') {
-              return jsonError('groups and date are required', 'VALIDATION_ERROR');
-            }
-            const groups = parseGroupsParam(input.groups);
-            const target = typeof input.to === 'string'
-              ? input.to
-              : (auth.partnerId ? await resolvePartnerReportingCurrency(auth.partnerId) : null);
-            if (!target) return jsonError('No reporting currency is configured for this partner', 'NO_REPORTING_CURRENCY');
-            return bounded({ total: await computeReportingTotal(groups, target, input.date) });
-          }
+          case 'reporting_totals':
+            return await fxReportingTotalRead(input, auth);
           case 'update_partner':
             return await updatePartner(input, auth);
           case 'update_org':

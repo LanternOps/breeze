@@ -213,7 +213,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_invoice',
       description:
-        "Get an invoice header and all lines, with depositDue and depositPaid when configured; with lineId, the devices that line billed. Amounts use its currencyCode; never sum across currencies.",
+        "Get an invoice header and all lines, with depositDue and depositPaid when configured; with lineId, the devices that line billed. Amounts use its currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -179,7 +179,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_contracts',
       description:
-        "List accessible recurring contracts newest first, filtered by org or status; view currency_mismatches lists contracts whose currency differs from their org's. Prices use contract currencyCode; never sum across currencies.",
+        "List accessible recurring contracts newest first, filtered by org or status; view currency_mismatches lists contracts whose currency differs from their org's. Prices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -245,7 +245,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_contract',
       description:
-        "Get a recurring contract header, lines, billing-period history and hour-block periods (last 24). With periodId: that period's outcome (devices billed, uncovered, flagged, overages). Prices use contract currencyCode.",
+        "Get a recurring contract header, lines, billing-period history and hour-block periods (last 24); with periodId, that period's outcome (devices billed, uncovered, flagged, overages). Prices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
