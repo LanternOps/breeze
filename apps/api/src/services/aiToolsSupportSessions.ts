@@ -28,6 +28,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { endSupportSession } from './quickSupportEnd';
+import { deviceScopeCondition } from './aiToolsSiteScope';
 import { SUPPORT_SESSION_ACTIONS } from './aiToolSchemasDeviceOps';
 import { auditToolWrite, bounded, clampLimit, json, jsonError, notFound, thrown } from './aiToolsSoftwareShared';
 
@@ -51,8 +52,17 @@ function partnerCondition(auth: AuthContext): SQL | undefined {
   return auth.scope === 'system' ? undefined : eq(organizations.partnerId, auth.partnerId ?? '00000000-0000-0000-0000-000000000000');
 }
 
+/**
+ * Every read below also carries the exact-device axis. `scopeDenied` already
+ * refuses a device-restricted session before any read, so today these
+ * predicates are `undefined` (no narrowing); they keep each query safe on its
+ * own if that refusal is ever loosened — a device-bound run would then see
+ * only sessions joined from its own devices (a session with no device yet has
+ * a NULL device_id, which never matches `IN`).
+ */
 async function loadSessions(auth: AuthContext, where: SQL | undefined, limit: number): Promise<SessionRow[]> {
-  const conditions = [partnerCondition(auth), where].filter((c): c is SQL => c !== undefined);
+  const conditions = [partnerCondition(auth), deviceScopeCondition(auth, supportSessions.deviceId), where]
+    .filter((c): c is SQL => c !== undefined);
   const rows = await db
     .select({ session: supportSessions })
     .from(supportSessions)
@@ -64,17 +74,22 @@ async function loadSessions(auth: AuthContext, where: SQL | undefined, limit: nu
 }
 
 /** Same derivation as the route's toView, as an explicit projection (no code hash, no claiming IP). */
-async function views(sessions: SessionRow[]) {
+async function views(auth: AuthContext, sessions: SessionRow[]) {
   const probeable = sessions.filter((s) => s.deviceId && (s.status === 'ready' || s.status === 'claimed'));
   const deviceIds = [...new Set(probeable.map((s) => s.deviceId!))];
   const online = new Set<string>();
   const live = new Set<string>();
   if (deviceIds.length > 0) {
-    for (const row of await db.select({ id: devices.id, status: devices.status }).from(devices).where(inArray(devices.id, deviceIds))) {
+    for (const row of await db.select({ id: devices.id, status: devices.status }).from(devices)
+      .where(and(inArray(devices.id, deviceIds), deviceScopeCondition(auth, devices.id)))) {
       if (row.status === 'online') online.add(row.id);
     }
     for (const row of await db.select({ deviceId: remoteSessions.deviceId }).from(remoteSessions)
-      .where(and(inArray(remoteSessions.deviceId, deviceIds), inArray(remoteSessions.status, [...LIVE_REMOTE_STATUSES])))) {
+      .where(and(
+        inArray(remoteSessions.deviceId, deviceIds),
+        inArray(remoteSessions.status, [...LIVE_REMOTE_STATUSES]),
+        deviceScopeCondition(auth, remoteSessions.deviceId),
+      ))) {
       live.add(row.deviceId);
     }
   }
@@ -133,12 +148,12 @@ export function registerSupportSessionTools(aiTools: Map<string, AiTool>): void 
       try {
         if (action === 'list') {
           const rows = await loadSessions(auth, undefined, clampLimit(input.limit, 50, 100));
-          return bounded({ sessions: await views(rows) });
+          return bounded({ sessions: await views(auth, rows) });
         }
         if (typeof input.sessionId !== 'string') return jsonError('sessionId is required', 'VALIDATION_ERROR');
         const [session] = await loadSessions(auth, eq(supportSessions.id, input.sessionId), 1);
         if (!session) return notFound('Support session');
-        if (action === 'get') return bounded({ session: (await views([session]))[0] });
+        if (action === 'get') return bounded({ session: (await views(auth, [session]))[0] });
 
         const mfa = mfaGatedToolError('manage_support_sessions', action, auth);
         if (mfa) return mfa;

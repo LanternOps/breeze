@@ -143,6 +143,20 @@ describe('manage_tenant_variables (W13-D7: never a secret value)', () => {
     expect(JSON.parse(text).variables.map((v: { value: unknown }) => v.value)).toEqual([null, 'https://example.test']);
   });
 
+  it('control: the same marker on a PLAIN row does reach the output, so the grep above can go red', async () => {
+    h.listVars.mockResolvedValue([
+      { id: VAR, key: 'api_base', isSecret: false, value: SECRET, ownerScope: 'organization', orgId: ORG },
+    ]);
+    expect(await raw('manage_tenant_variables', { action: 'list' })).toContain(SECRET);
+  });
+
+  it('the update/delete row lookup selects only id, owner and the secret flag — never the stored value', async () => {
+    h.select.mockImplementation(() => chain([varRow({ isSecret: true })]));
+    await run('manage_tenant_variables', { action: 'delete', variableId: VAR });
+    expect(h.select).toHaveBeenCalledTimes(1);
+    expect(Object.keys(h.select.mock.calls[0]![0] as object).sort()).toEqual(['id', 'isSecret', 'orgId']);
+  });
+
   it('a device-bound session cannot list org-wide variables', async () => {
     expect((await run('manage_tenant_variables', { action: 'list' }, makeAuth({ allowedDeviceIds: [DEV] }))).code).toBe('ACCESS_DENIED');
     expect(h.listVars).not.toHaveBeenCalled();

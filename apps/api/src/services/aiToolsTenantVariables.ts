@@ -27,7 +27,7 @@
  * re-made against the row as it is when the approved change executes.
  */
 import { and, eq } from 'drizzle-orm';
-import { createTenantVariableSchema, updateTenantVariableSchema } from '@breeze/shared';
+import { createTenantVariableSchema, updateTenantVariableSchema, type TenantVariable } from '@breeze/shared';
 import { db } from '../db';
 import { tenantVariables, type TenantVariableRow } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -70,9 +70,30 @@ function serviceError(err: unknown): string | null {
   return code ? jsonError(err.message, err.code ?? code) : null;
 }
 
-async function readableRow(id: string, auth: AuthContext): Promise<TenantVariableRow | null> {
+/**
+ * The one shape a variable reaches the model in (list, create, update). W13-D7:
+ * a secret row's value is always null here, whatever the service handed back
+ * (`toApiTenantVariable` already nulls it; this is the tool's own guarantee).
+ */
+function presentTenantVariable(v: TenantVariable) {
+  return {
+    id: v.id, key: v.key, isSecret: v.isSecret,
+    value: v.isSecret ? null : v.value,
+    description: v.description, ownerScope: v.ownerScope, orgId: v.orgId, orgName: v.orgName, version: v.version,
+  };
+}
+
+/**
+ * What update/delete need to decide (owner, secret flag) — never the stored
+ * value, so a secret's ciphertext is not even loaded.
+ */
+type ReadableRowFacts = Pick<TenantVariableRow, 'id' | 'orgId' | 'isSecret'>;
+
+async function readableRow(id: string, auth: AuthContext): Promise<ReadableRowFacts | null> {
   const access = tenantVariableReadCondition(auth);
-  const [row] = await db.select().from(tenantVariables)
+  const [row] = await db
+    .select({ id: tenantVariables.id, orgId: tenantVariables.orgId, isSecret: tenantVariables.isSecret })
+    .from(tenantVariables)
     .where(access ? and(eq(tenantVariables.id, id), access) : eq(tenantVariables.id, id))
     .limit(1);
   return row ?? null;
@@ -114,12 +135,7 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
           const scope = (typeof input.scope === 'string' ? input.scope : 'all') as 'partner' | 'org' | 'all';
           const rows = await listTenantVariables(auth, { orgId, scope });
           return bounded({
-            variables: rows.slice(0, MAX_TENANT_VARIABLES_LISTED).map((v) => ({
-              id: v.id, key: v.key, isSecret: v.isSecret,
-              // W13-D7: a secret's value is never returned (the service already nulls it; belt and braces).
-              value: v.isSecret ? null : v.value,
-              description: v.description, ownerScope: v.ownerScope, orgId: v.orgId, orgName: v.orgName, version: v.version,
-            })),
+            variables: rows.slice(0, MAX_TENANT_VARIABLES_LISTED).map(presentTenantVariable),
             total: rows.length,
             ...(rows.length > MAX_TENANT_VARIABLES_LISTED ? { truncated: true } : {}),
           });
@@ -145,7 +161,7 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
             orgId: row.orgId, partnerId: row.partnerId, action: 'tenant_variable.create', resourceType: 'tenant_variable',
             resourceId: row.id, resourceName: row.key, details: auditDetails(row),
           });
-          return bounded({ variable: toApiTenantVariable(row) });
+          return bounded({ variable: presentTenantVariable(toApiTenantVariable(row)) });
         }
 
         if (typeof input.variableId !== 'string') return jsonError('variableId is required', 'VALIDATION_ERROR');
@@ -172,7 +188,7 @@ export function registerTenantVariableTools(aiTools: Map<string, AiTool>): void 
             resourceId: row.id, resourceName: row.key,
             details: { ...auditDetails(row), valueChanged: parsed.data.value !== undefined },
           });
-          return bounded({ variable: toApiTenantVariable(row) });
+          return bounded({ variable: presentTenantVariable(toApiTenantVariable(row)) });
         }
 
         const row = await deleteTenantVariable(auth, existing.id);
