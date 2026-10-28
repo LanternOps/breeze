@@ -109,6 +109,41 @@ describe('AntivirusPage summary tiles (#10378)', () => {
     expect(await tile('coverage')).toBe('90%');
   });
 
+  it('shows 0% coverage, not NaN, for an empty antivirus block', async () => {
+    routeDashboard(dashboardWith({ protected: 0, unprotected: 0, unknown: 0 }));
+    render(<AntivirusPage />);
+
+    expect(await tile('total')).toBe('0');
+    expect(await tile('protected')).toBe('0');
+    expect(await tile('unprotected')).toBe('0');
+    expect(await tile('coverage')).toBe('0%');
+  });
+
+  it('shows an em dash on every tile when the dashboard read fails (#2472)', async () => {
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/security/status')) {
+        return response({
+          data: [{
+            deviceId: 'dev-1', deviceName: 'AV-PC', os: 'windows', status: 'protected',
+            riskLevel: 'low', realTimeProtection: true,
+            provider: { id: 'windows_defender', name: 'Microsoft Defender', vendor: 'Microsoft' },
+          }],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        });
+      }
+      return response({}, false, 500);
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<AntivirusPage />);
+
+    expect(await screen.findByText('AV-PC')).toBeInTheDocument();
+    for (const id of ['total', 'protected', 'unprotected', 'coverage']) {
+      expect(await tile(id)).toBe('—');
+    }
+  });
+
   it('shows an em dash, not posture counts, when the antivirus block is missing', async () => {
     routeDashboard(dashboardWith(undefined));
     render(<AntivirusPage />);
