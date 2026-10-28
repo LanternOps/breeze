@@ -179,8 +179,23 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// Track the hand-off so the outcome notices (#8928) can tell this user
 		// what IT decided. PR 1 shows nothing here: the consent dismiss and the
 		// "Request sent" notice come with PR 2.
-		h.pamTracker().MarkAwaiting(outcome.RequestID, targetWinSession,
-			pamProgramName(ev.TargetExecutablePath), outcome.SupportName)
+		//
+		// The notices go to the session the user answered the dialog in: the
+		// requester's own session when ETW resolved it, else the session of
+		// the console-fallback helper that showed the dialog. Never the
+		// machine-global "preferred" notify helper, which on a multi-session
+		// host can belong to another user (the deny reason is in the notice).
+		noticeWinSession := targetWinSession
+		if noticeWinSession == "" && session != nil {
+			noticeWinSession = session.WinSessionID
+		}
+		if noticeWinSession != "" {
+			h.pamTracker().MarkAwaiting(outcome.RequestID, noticeWinSession,
+				pamProgramName(ev.TargetExecutablePath), outcome.SupportName)
+		} else {
+			log.Info("pam: requester session unresolved; outcome notices disabled for this request",
+				"elevationRequestId", outcome.RequestID)
+		}
 		log.Info("pam: awaiting remote technician approval; server will issue pam_apply_v2", "elevationRequestId", outcome.RequestID)
 	}
 }

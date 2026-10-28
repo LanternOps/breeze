@@ -279,3 +279,15 @@ func TestNotifyPamUserUsesSinkAndToleratesNoBroker(t *testing.T) {
 	bare := &Heartbeat{}
 	bare.notifyPamUser("Request approved", "body", "7") // must not panic
 }
+
+// A PAM notice carries the deny reason: with no target session it is dropped,
+// never routed to the machine-global preferred helper (another user's session
+// on a multi-session host).
+func TestNotifyPamUserRefusesEmptySession(t *testing.T) {
+	h := &Heartbeat{}
+	rec := recordPamNotices(h)
+	h.notifyPamUser("Request denied", "mmc.exe was denied by IT.\nReason: no", "")
+	if calls := rec.Calls(); len(calls) != 0 {
+		t.Fatalf("notice with no session was shown: %+v", calls)
+	}
+}

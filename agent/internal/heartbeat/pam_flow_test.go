@@ -57,6 +57,12 @@ func TestRunPamFlow(t *testing.T) {
 		// wantTracked asserts the request was recorded as handed to IT
 		// (#8928): only a `pending` request the user approved is tracked.
 		wantTracked bool
+		// selectedWinSession is the Windows session of the helper that the
+		// flow selected (and so showed the dialog in).
+		selectedWinSession string
+		// wantTrackedSession is the session the outcome notices will target;
+		// empty means wantTargetWinSession.
+		wantTrackedSession string
 	}{
 		{
 			name:                 "policy hard-deny targets requester session and dismisses without dialog",
@@ -121,7 +127,24 @@ func TestRunPamFlow(t *testing.T) {
 			wantTracked:          true,
 		},
 		{
-			name:          "pending + Approve on the console fallback is tracked with no session",
+			// Unresolved requester session: the dialog was shown by the
+			// console-fallback helper, so the notices must go to THAT helper's
+			// session, never to a machine-global "preferred" helper that could
+			// belong to another user on a multi-session host.
+			name:               "pending + Approve on the console fallback is tracked in the dialog helper's session",
+			status:             "pending",
+			dialog:             approved,
+			selectedWinSession: "1",
+			wantFind:           true,
+			wantDialog:         true,
+			wantTriggered:      false,
+			wantDismissed:      false,
+			wantActuated:       false,
+			wantTracked:        true,
+			wantTrackedSession: "1",
+		},
+		{
+			name:          "pending + Approve with no resolvable session anywhere is not tracked",
 			status:        "pending",
 			dialog:        approved,
 			wantFind:      true,
@@ -129,7 +152,7 @@ func TestRunPamFlow(t *testing.T) {
 			wantTriggered: false,
 			wantDismissed: false,
 			wantActuated:  false,
-			wantTracked:   true,
+			wantTracked:   false,
 		},
 		{
 			name:                 "pending + Deny is not tracked",
@@ -317,7 +340,7 @@ func TestRunPamFlow(t *testing.T) {
 			var gotDialogSession, gotDismissSession *sessionbroker.Session
 			var gotDismissID string
 			var gotDismissTimeout time.Duration
-			selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper"}
+			selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper", WinSessionID: tc.selectedWinSession}
 			// noBroker reproduces production wiring: all swappable seams nil
 			// AND a nil sessionBroker. The defensive guard in RunPamFlow must
 			// keep this from dereferencing the nil broker.
@@ -376,7 +399,11 @@ func TestRunPamFlow(t *testing.T) {
 				t.Errorf("tracked = %v, want %v", tracked, tc.wantTracked)
 			}
 			if tracked {
-				want := pamTrackedRequest{WinSession: tc.wantTargetWinSession, Program: "target.exe", SupportName: "Contoso IT"}
+				wantSession := tc.wantTrackedSession
+				if wantSession == "" {
+					wantSession = tc.wantTargetWinSession
+				}
+				want := pamTrackedRequest{WinSession: wantSession, Program: "target.exe", SupportName: "Contoso IT"}
 				if entry.WinSession != want.WinSession || entry.Program != want.Program ||
 					entry.SupportName != want.SupportName || entry.Notified {
 					t.Errorf("tracked entry = %+v, want %+v", entry, want)

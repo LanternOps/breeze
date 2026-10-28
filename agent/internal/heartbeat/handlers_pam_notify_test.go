@@ -108,7 +108,7 @@ func TestPamRequestNotifyUsesTrackerNamesWithITFallback(t *testing.T) {
 	h := &Heartbeat{}
 	rec := recordPamNotices(h)
 	h.rememberSupportName("Fabrikam Support") // cache must not leak into a tracked entry
-	h.pamTracker().MarkAwaiting(pamNotifyTestRequestID, "", "setup.exe", "")
+	h.pamTracker().MarkAwaiting(pamNotifyTestRequestID, "3", "setup.exe", "")
 	result := handlePamRequestNotify(h, pamNotifyCommand(map[string]any{
 		"requestId": pamNotifyTestRequestID, "outcome": "expired",
 	}))
@@ -116,8 +116,9 @@ func TestPamRequestNotifyUsesTrackerNamesWithITFallback(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	want := pamNotifyCall{
-		Title: "Request expired",
-		Body:  "Your request for setup.exe expired before IT responded. Try again or contact IT.",
+		Title:      "Request expired",
+		Body:       "Your request for setup.exe expired before IT responded. Try again or contact IT.",
+		WinSession: "3",
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want [%+v]", calls, want)

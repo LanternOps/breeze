@@ -271,10 +271,16 @@ func pamCopyOffline(p, s string) (title, body string) {
 	return "Couldn't reach " + s, "Breeze couldn't send the request for " + p + ". If you have administrator credentials, enter them in the Windows prompt."
 }
 
-// notifyPamUser shows one PAM outcome notice in winSession ("" keeps the
-// machine-global notify-helper preference). Fire-and-forget: a missing helper
-// is logged by sendSessionNotifyTitled, never surfaced to the caller.
+// notifyPamUser shows one PAM outcome notice in winSession. An empty session
+// is refused rather than routed to the machine-global notify-helper
+// preference: these notices carry the program name and the technician's deny
+// reason, and must reach only the user who asked. Fire-and-forget: a missing
+// helper is logged by sendSessionNotifyTitled, never surfaced to the caller.
 func (h *Heartbeat) notifyPamUser(title, body, winSession string) {
+	if winSession == "" {
+		log.Warn("pam: outcome notice has no target session; not shown", "title", title)
+		return
+	}
 	if sink := h.pamNotifySink; sink != nil {
 		sink(title, body, winSession)
 		return
