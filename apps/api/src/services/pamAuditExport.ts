@@ -85,6 +85,9 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   // #9517: the agent's "cannot act" report. reason is a category code, closed
   // a boolean; the agent's free-text detail stays on the request row only.
   'services/pamDeviceUnable.ts': ['reason', 'prior_status', 'closed', 'cause'],
+  // #8971: the end user's withdraw. cause is the withdraw reason code,
+  // agent_declined_at the agent's ISO timestamp (or null); both scalar.
+  'services/pamWithdraw.ts': ['cause', 'agent_declined_at'],
 } as const satisfies Record<string, readonly string[]>;
 
 /**

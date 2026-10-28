@@ -278,8 +278,7 @@
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    },
-    "overridesOrgTab": "Os campos definidos aqui substituem e bloqueiam o mesmo campo na aba de IA de cada organização."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Registro de dispositivos",
       "ttl": "Validade padrão do link",
-      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos. As organizações podem escolher um padrão diferente.",
+      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos.",
       "deviceCount": "Dispositivos padrão por link",
-      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão. As organizações podem escolher um padrão diferente.",
+      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão.",
       "maxTtl": "Validade máxima do link",
       "maxTtlHint": "É um teto para o tempo de vida das chaves, não apenas para o que um administrador pode solicitar: nada emitido sob este parceiro continua utilizável por mais tempo — links de registro, convites de implantação do MCP e as credenciais filhas emitidas quando um instalador é resgatado.",
       "maxTtlWarning": "As organizações não podem aumentá-lo. Um teto curto também encurta o tempo que uma máquina tem para concluir o registro depois de resgatar um link, não apenas o tempo para baixá-lo."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Destinos de versão da atualização",
     "description": "Fixe o agente e o watchdog em uma versão registrada específica ou deixe em <strong>Última promovida</strong> para acompanhar a versão promovida globalmente. Agente e watchdog são independentes.",
-    "partnerDescription": " Uma fixação aqui é o padrão para todas as suas organizações; uma organização pode substituí-la.",
     "organizationDescription": " Uma fixação da organização substitui o padrão do parceiro.",
     "components": {
       "agent": "Destino do agente",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Proxy de rede",
       "label": "Servir o proxy de rede a partir de uma origem dedicada",
-      "help": "Aplica-se a todas as organizações; as organizações não podem substituí-lo. Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
+      "help": "Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1123,6 @@
     "description": "Configure os padrões de {{name}}.",
     "yourMsp": "seu MSP",
     "saveSettings": "Salvar configurações",
-    "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
     "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
     "modules": {
       "title": "Módulos",
@@ -1173,6 +1170,106 @@
     "knownGuests": {
       "added": "Convidado conhecido adicionado",
       "removed": "Convidado conhecido removido"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Bloqueia organizações",
+        "locksConditional": "Bloqueia organizações quando ativado",
+        "overridable": "A organização pode alterar",
+        "overridableCap": "A organização pode alterar, até {{limit}}",
+        "partnerOnly": "Para todo o parceiro"
+      },
+      "badgeHelp": {
+        "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
+        "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
+        "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
+        "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
+      },
+      "badgeHelpLabel": "Sobre “{{badge}}” ({{field}})",
+      "legend": {
+        "title": "Como as configurações se aplicam:",
+        "locks": "todas as organizações usam o seu valor",
+        "overridable": "o seu valor é o padrão; uma organização pode definir o próprio",
+        "partnerOnly": "aplica-se a todas as organizações; não há configuração por organização"
+      },
+      "value": {
+        "on": "Ativado",
+        "off": "Desativado",
+        "minutes_one": "{{count}} minuto",
+        "minutes_other": "{{count}} minutos",
+        "hours_one": "{{count}} hora",
+        "hours_other": "{{count}} horas",
+        "days_one": "{{count}} dia",
+        "days_other": "{{count}} dias"
+      },
+      "line": {
+        "appliesToAll_one": "Aplica-se a {{count}} organização",
+        "appliesToAll_other": "Aplica-se a todas as {{count}} organizações",
+        "hadOwnValue_one": "{{count}} tinha um valor próprio",
+        "hadOwnValue_other": "{{count}} tinham um valor próprio",
+        "notSet": "Não definido.",
+        "someSetOwn_one": "{{count}} de {{total}} organizações define o próprio",
+        "someSetOwn_other": "{{count}} de {{total}} organizações definem o próprio",
+        "restUsePlatformDefault": "as demais usam o padrão da plataforma ({{value}})",
+        "orgsUsePlatformDefault": "As organizações usam o padrão da plataforma ({{value}})",
+        "noneSetOwn": "Nenhuma organização tem um valor próprio",
+        "defaultFor_one": "Padrão para {{count}} organização",
+        "defaultFor_other": "Padrão para {{count}} organizações",
+        "override_one": "{{count}} altera",
+        "override_other": "{{count}} alteram",
+        "setOwn_one": "{{count}} define o próprio",
+        "setOwn_other": "{{count}} definem o próprio",
+        "clamped_one": "{{count}} é limitada ao seu teto",
+        "clamped_other": "{{count}} são limitadas ao seu teto",
+        "notInForce": "Sem efeito (destino desativado).",
+        "orgsUseOwnDestination": "As organizações usam o próprio destino",
+        "haveOne_one": "{{count}} tem um",
+        "haveOne_other": "{{count}} têm um",
+        "partnerOnlyDefault": "O padrão da plataforma ({{value}}) se aplica a todas as organizações",
+        "partnerOnlyBlank": "Não definido. O padrão da plataforma se aplica a todas as organizações",
+        "consumerAll": "{{consumer}}: aplica-se a todas as organizações",
+        "consumerOwn_one": "{{consumer}}: {{count}} organização usa um valor próprio",
+        "consumerOwn_other": "{{consumer}}: {{count}} organizações usam um valor próprio",
+        "noOrgs": "Ainda não há organizações",
+        "savedValue": "Valor salvo:",
+        "restricted": "O detalhamento por organização exige acesso completo de parceiro"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizações com valor próprio",
+          "overrides": "Organizações que alteram o seu padrão",
+          "shadowed": "Organizações cujo valor próprio não está em vigor",
+          "clamped": "Organizações limitadas ao seu teto"
+        },
+        "loading": "Carregando organizações…",
+        "error": "Não foi possível carregar as organizações.",
+        "empty": "Nenhuma organização nesta lista.",
+        "loadMore": "Carregar mais",
+        "set": "Definido",
+        "notSet": "Não definido",
+        "inEffect": "Em vigor",
+        "notInEffect": "Fora de vigor",
+        "ownValue": "Valor próprio:",
+        "channels": "Canais",
+        "readOnly": "Somente leitura. Altere o valor de uma organização nas configurações dela."
+      },
+      "summary": {
+        "title": "Em suas organizações",
+        "locks_one": "{{count}} configuração bloqueia organizações",
+        "locks_other": "{{count}} configurações bloqueiam organizações",
+        "overridable_one": "{{count}} pode ser alterada",
+        "overridable_other": "{{count}} podem ser alteradas",
+        "differ_one": "{{count}} tem organizações que diferem dos seus padrões",
+        "differ_other": "{{count}} têm organizações que diferem dos seus padrões",
+        "noneDiffer": "Todas as organizações usam os seus valores nesta guia.",
+        "hint": "Selecione uma configuração, ou um número sob um campo, para listar as organizações.",
+        "unavailable": "O detalhamento por organização não está disponível no momento.",
+        "back": "Voltar ao resumo"
+      },
+      "fields": {
+        "defaultProvider": "Provedor de acesso remoto padrão"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +7002,6 @@
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
-    "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
     "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
   },
   "orgAiApprovalTimeout": {

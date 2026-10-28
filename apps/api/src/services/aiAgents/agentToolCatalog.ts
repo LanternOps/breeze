@@ -313,6 +313,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   browse_device_event_log: 'scripts_commands',
   manage_tenant_variables: 'scripts_commands',
   manage_support_sessions: 'remote_access',
+  // W14 (#6784): billing lifecycle tools beside the contract / invoice tools.
+  manage_billing_profiles: 'business',
+  manage_billing_settings: 'business',
+  manage_contract_templates: 'business',
+  manage_contract_documents: 'business',
+  get_device_billing: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
