@@ -1458,6 +1458,8 @@
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação.",
       "acceptOnBehalf": {
         "button": "Aceitar em nome do cliente",
+        "emptyDraftTitle": "Adicione pelo menos um item antes de aceitar.",
+        "emptySentTitle": "Este orçamento não tem itens. Use Revisar orçamento para emitir uma versão com itens.",
         "title": "Registrar o aceite do cliente",
         "methodLabel": "Como o cliente concordou?",
         "method": {

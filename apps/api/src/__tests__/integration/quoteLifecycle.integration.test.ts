@@ -29,6 +29,12 @@ function ctxFor(orgId: string, partnerId: string): DbAccessContext {
 function actorFor(orgId: string, partnerId: string): QuoteActor {
   return { userId: null, partnerId, accessibleOrgIds: [orgId] };
 }
+/** A draft with one customer-visible item — the least a quote needs to be sent (#9963). */
+async function createDraftWithItem(ctx: DbAccessContext, actor: QuoteActor, orgId: string) {
+  const created = await withDbAccessContext(ctx, () => createQuote({ orgId, currencyCode: 'USD' }, actor));
+  await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Setup', quantity: 1, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
+  return created;
+}
 
 describe('quote lifecycle', () => {
   runDb('sendQuote assigns a number, sets sent + sentAt, returns an accept URL', async () => {
@@ -75,7 +81,7 @@ describe('quote lifecycle', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
     const actor = actorFor(org.id, partner.id);
-    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    const created = await createDraftWithItem(ctx, actor, org.id);
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     await markQuoteViewed(created.id, org.id);
     const [v1] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
@@ -95,7 +101,7 @@ describe('quote lifecycle', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
     const actor = actorFor(org.id, partner.id);
-    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    const created = await createDraftWithItem(ctx, actor, org.id);
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     const declined = await withDbAccessContext(ctx, () => declineQuoteByActor(created.id, 'Budget cut', actor));
     expect(declined.status).toBe('declined');
@@ -109,7 +115,7 @@ describe('quote lifecycle', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
     const actor = actorFor(org.id, partner.id);
-    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    const created = await createDraftWithItem(ctx, actor, org.id);
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     await withSystemDbAccessContext(() => db.update(quotes).set({ expiryDate: '2000-01-01' }).where(eq(quotes.id, created.id)));
     await expect(
@@ -121,8 +127,25 @@ describe('quote lifecycle', () => {
     const { partner, org } = await seed();
     const ctx = ctxFor(org.id, partner.id);
     const actor = actorFor(org.id, partner.id);
-    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    const created = await createDraftWithItem(ctx, actor, org.id);
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     await expect(withDbAccessContext(ctx, () => sendQuote(created.id, actor))).rejects.toMatchObject({ status: 409 });
+  });
+
+  // #9963: an item-less draft (none at all, or only internal lines) is refused
+  // at the service — not only by the web Send button — and stays a draft.
+  runDb('sendQuote refuses a draft with no customer-visible item and leaves it a draft', async () => {
+    const { partner, org } = await seed();
+    const ctx = ctxFor(org.id, partner.id);
+    const actor = actorFor(org.id, partner.id);
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await expect(withDbAccessContext(ctx, () => sendQuote(created.id, actor)))
+      .rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Internal cost', quantity: 1, unitPrice: 50, taxable: false, customerVisible: false, recurrence: 'one_time' } as any, actor));
+    await expect(withDbAccessContext(ctx, () => sendQuote(created.id, actor)))
+      .rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    const [row] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
+    expect(row!.status).toBe('draft');
+    expect(row!.quoteNumber).toBeNull();
   });
 });

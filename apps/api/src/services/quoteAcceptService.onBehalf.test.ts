@@ -408,6 +408,31 @@ describe('acceptQuote — origin on_behalf', () => {
     expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
   });
 
+  // #9963: an item-less draft accepted on behalf used to be claimed to sent and
+  // converted into a $0 draft invoice. Refused before the claim, writing nothing.
+  it('refuses a draft with no customer-visible lines, before the claim (422 QUOTE_EMPTY)', async () => {
+    queueAcceptHappyPath({ status: 'draft' }, { customerVisible: false });
+    await expect(acceptQuote(onBehalfParams)).rejects.toMatchObject({
+      status: 422, code: 'QUOTE_EMPTY', message: 'Add at least one item before accepting',
+    });
+    expect(claimQuoteSentMock).not.toHaveBeenCalled();
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
+
+  it('refuses a SENT quote with no lines on behalf, pointing at Revise', async () => {
+    results.length = 0;
+    queueResult([{
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', expiryDate: null,
+      quoteNumber: 'Q-2026-0001', currencyCode: 'USD', depositType: 'none',
+    }]);
+    queueResult([]); // blocks
+    queueResult([]); // lines — none
+    const err = await acceptQuote(onBehalfParams).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    expect((err as Error).message).toMatch(/Revise/);
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
+
   it('refuses a blank signer name rather than recording a nameless acceptance', async () => {
     queueAcceptHappyPath();
     await expect(acceptQuote({ ...onBehalfParams, signerName: '   ' })).rejects.toMatchObject({

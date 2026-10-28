@@ -819,3 +819,30 @@ describe('acceptQuote quote-line unit cost -> invoice-line cost basis (#9221)', 
     expect(invoiceLineValues()).toHaveProperty('costBasis', '612.40');
   });
 });
+
+// #9963: a quote with no customer-visible line items (sent before the send gate
+// existed, or one whose only lines are internal) must not convert into a $0
+// draft invoice. The customer path refuses with copy the customer can act on.
+describe('acceptQuote empty-quote gate (#9963)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  it('refuses a sent quote with no lines (422 QUOTE_EMPTY) and writes nothing', async () => {
+    queueAcceptHappyPath();
+    // Replace the queued line rows (3rd result) with an empty line set.
+    results[2] = [];
+    const err = await acceptQuote(baseParams).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    expect((err as Error).message).toMatch(/contact/i);
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
+
+  it('refuses a sent quote whose only lines are internal-only', async () => {
+    queueAcceptHappyPath({}, { customerVisible: false });
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+  });
+});

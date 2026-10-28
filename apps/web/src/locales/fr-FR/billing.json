@@ -1458,6 +1458,8 @@
       "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à ce devis en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification.",
       "acceptOnBehalf": {
         "button": "Accepter au nom du client",
+        "emptyDraftTitle": "Ajoutez au moins un article avant l'acceptation.",
+        "emptySentTitle": "Ce devis ne contient aucun article. Utilisez Réviser le devis pour émettre une version avec des articles.",
         "title": "Enregistrer l'acceptation du client",
         "methodLabel": "Comment le client a-t-il donné son accord ?",
         "method": {

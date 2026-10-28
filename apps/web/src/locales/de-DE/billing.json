@@ -1458,6 +1458,8 @@
       "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren.",
       "acceptOnBehalf": {
         "button": "Im Namen des Kunden annehmen",
+        "emptyDraftTitle": "Fügen Sie vor dem Annehmen mindestens einen Artikel hinzu.",
+        "emptySentTitle": "Dieses Angebot enthält keine Artikel. Nutzen Sie „Angebot überarbeiten“, um eine Version mit Artikeln auszustellen.",
         "title": "Annahme des Kunden erfassen",
         "methodLabel": "Wie hat der Kunde zugestimmt?",
         "method": {
