@@ -3,7 +3,7 @@ title: Partner-owned device groups — implementation plan
 issue: 10498
 spec: docs/superpowers/specs/devices/2026-10-28-partner-owned-device-groups-spec.md
 status: draft
-tracking_issue: LanternOps/breeze#10521
+tracking_issue: LanternOps/breeze#10544
 waves: [W0, W1, W2a, W2b, W3, W4]
 ---
 
