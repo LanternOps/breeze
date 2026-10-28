@@ -61,7 +61,10 @@ const UMBRELLA_ACTIVITY_OFFSET_CAP = 10_000;
 /**
  * Narrowest time slice the walk will split down to. A burst of more records
  * than the offset cap can reach inside one second is kept up to the cap and
- * the remainder dropped with a warning, rather than splitting forever.
+ * the remainder dropped, rather than splitting forever. The endpoint pages by
+ * limit/offset only (no cursor), so the remainder is unreachable; the slice
+ * carries a `truncated` marker so the job records the loss on the integration
+ * instead of a plain success (#10047).
  */
 const UMBRELLA_MIN_SLICE_MS = 1000;
 
@@ -464,6 +467,9 @@ export class UmbrellaProvider implements DnsProvider {
         }
 
         if (result.truncated) {
+          // Server-side detail; the tenant-visible record of the loss is the
+          // slice's `truncated` marker, which the job turns into a
+          // `truncated` sync status (#10047).
           console.warn(
             `[UmbrellaProvider] ${new Date(cursor).toISOString()}..${new Date(end).toISOString()} holds ` +
             `more than ${result.recordCount} activity records in under ${UMBRELLA_MIN_SLICE_MS} ms — ` +
@@ -474,7 +480,13 @@ export class UmbrellaProvider implements DnsProvider {
         }
 
         run.slicesCompleted++;
-        yield { events: result.events, until: new Date(end) };
+        yield {
+          events: result.events,
+          until: new Date(end),
+          ...(result.truncated
+            ? { truncated: { from: new Date(cursor), to: new Date(end), reachableRecords: result.recordCount } }
+            : {})
+        };
 
         cursor = end;
         if (result.recordCount < UMBRELLA_ACTIVITY_OFFSET_CAP / 4) width *= 2;
@@ -519,7 +531,8 @@ export class UmbrellaProvider implements DnsProvider {
    * The probe is a shortcut, not the guarantee — events can land mid-walk —
    * so the walk itself also stops before any offset past the cap. A window
    * that cannot be split further keeps what the cap allows and reports itself
-   * `truncated`.
+   * `truncated` — unless the page that crossed the cap was shorter than the
+   * server's page size, which ends the window: then nothing lay past the cap.
    */
   private async fetchActivityWindow(
     from: number,
@@ -566,7 +579,14 @@ export class UmbrellaProvider implements DnsProvider {
         if (splittable) return { kind: 'overflow' };
         run.skippedUnparseable += skippedUnparseable;
         run.skippedNonDns += skippedNonDns;
-        return { kind: 'complete', events, recordCount: nextOffset, truncated: true };
+        // The next page would sit past the cap, so whether anything is left
+        // cannot be asked. A page shorter than the largest one served this run
+        // is the window's last (the same rule that skips the probe above), so
+        // only a page as large as any seen means records were dropped. Without
+        // this, a window of 10,001..10,999 records would be reported as a loss
+        // it never had — and that report is now tenant-visible (#10047).
+        const truncated = records.length >= run.largestPage;
+        return { kind: 'complete', events, recordCount: nextOffset, truncated };
       }
       offset = nextOffset;
     }

@@ -1775,6 +1775,7 @@
     },
     "lastSyncFailedSuffix": " — failed",
     "lastSyncPartialSuffix": " — catching up",
+    "lastSyncTruncatedSuffix": " — some events not fetched",
     "never": "Never",
     "deletingInBackground": "Deleting…"
   },

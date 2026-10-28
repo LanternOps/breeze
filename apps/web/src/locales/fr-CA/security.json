@@ -1775,6 +1775,7 @@
     },
     "lastSyncFailedSuffix": " — échoué",
     "lastSyncPartialSuffix": " — en rattrapage",
+    "lastSyncTruncatedSuffix": " — certains événements non récupérés",
     "never": "Jamais",
     "deletingInBackground": "Suppression en cours…"
   },

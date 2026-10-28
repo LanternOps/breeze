@@ -1775,6 +1775,7 @@
     },
     "lastSyncFailedSuffix": "— başarısız oldu",
     "lastSyncPartialSuffix": " — yetişiyor",
+    "lastSyncTruncatedSuffix": " — bazı olaylar alınamadı",
     "never": "Hiçbir zaman",
     "deletingInBackground": "Siliniyor…"
   },

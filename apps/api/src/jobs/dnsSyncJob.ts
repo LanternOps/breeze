@@ -22,6 +22,7 @@ import {
   DnsProviderHttpError,
   type DnsEvent,
   type DnsEventSlice,
+  type DnsEventSliceTruncation,
   type DnsEventSliceWalkEnd
 } from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
@@ -651,39 +652,80 @@ async function persistDnsEventSync(params: {
   return insertedCount;
 }
 
+/** Truncated windows named in `lastSyncError`; the rest are counted. */
+const MAX_LISTED_TRUNCATIONS = 3;
+
 /**
- * Record how a sliced walk ended (#10018), in one write after its slices are
- * persisted:
+ * Tenant-visible account of the windows a walk could only partly fetch
+ * (#10047). Built only from timestamps and counts — never provider response
+ * text, which must not reach `lastSyncError`.
+ */
+function describeTruncations(truncations: readonly DnsEventSliceTruncation[]): string {
+  const listed = truncations
+    .slice(0, MAX_LISTED_TRUNCATIONS)
+    .map((t) => `${t.from.toISOString()}..${t.to.toISOString()} (${t.reachableRecords} fetched)`)
+    .join(', ');
+  const more = truncations.length - MAX_LISTED_TRUNCATIONS;
+  return (
+    `${truncations.length} ${truncations.length === 1 ? 'window' : 'windows'} held more records than the ` +
+    'provider lets a sync page through; records past that limit were not fetched and will not be retried: ' +
+    listed +
+    (more > 0 ? `, and ${more} more` : '')
+  );
+}
+
+function describeStoppedShort(stoppedShort: { from: Date; to: Date }): string {
+  return (
+    `Reached the per-run request budget; ${stoppedShort.from.toISOString()}..` +
+    `${stoppedShort.to.toISOString()} not yet fetched, resumes next run`
+  );
+}
+
+/**
+ * Record how a sliced walk ended, in one write after its slices are persisted:
  *
- * - Stopped short at the provider's request budget → `lastSyncStatus =
- *   'partial'` with the unfetched range in `lastSyncError`. `lastSync` is left
- *   at the last completed slice (or where it was, if none completed), so the
- *   next run resumes there. Without this the row kept the previous run's
- *   `success` while it fell days behind. The next run's first completed
- *   slice writes `success` again, and a run that reaches `until` leaves it.
+ * - Some slice could only be partly fetched (#10047) → `lastSyncStatus =
+ *   'truncated'`, with the affected windows in `lastSyncError`. Those records
+ *   are past the provider's paging limit and are never fetched, so this is
+ *   data loss, not a catch-up: it is distinct from `partial`, and outranks it
+ *   when a run is both (the message then carries both). The slices were still
+ *   checkpointed — re-fetching them would hit the same limit.
+ * - Stopped short at the provider's request budget (#10018) → `lastSyncStatus
+ *   = 'partial'` with the unfetched range in `lastSyncError`. `lastSync` is
+ *   left at the last completed slice (or where it was, if none completed), so
+ *   the next run resumes there. Without this the row kept the previous run's
+ *   `success` while it fell days behind.
  * - A new slice width → merged into `config.syncSliceWidthMs` with jsonb `||`
  *   (no read-modify-write of the tenant's settings), to seed the next run.
+ *
+ * Both statuses describe the LAST run: the next run's first completed slice
+ * writes `success` again, and a run that reaches `until` cleanly leaves it.
  */
 async function recordSliceWalkEnd(
   integrationId: string,
   config: DnsIntegrationConfig,
-  end: DnsEventSliceWalkEnd
+  end: DnsEventSliceWalkEnd,
+  truncations: readonly DnsEventSliceTruncation[]
 ): Promise<void> {
   const { stoppedShort, sliceWidthMs } = end;
   const widthChanged = sliceWidthMs !== undefined && sliceWidthMs !== config.syncSliceWidthMs;
-  if (!stoppedShort && !widthChanged) return;
+
+  let status: { lastSyncStatus: 'truncated' | 'partial'; lastSyncError: string } | undefined;
+  if (truncations.length > 0) {
+    status = {
+      lastSyncStatus: 'truncated',
+      lastSyncError:
+        describeTruncations(truncations) + (stoppedShort ? `. Also: ${describeStoppedShort(stoppedShort)}` : '')
+    };
+  } else if (stoppedShort) {
+    status = { lastSyncStatus: 'partial', lastSyncError: describeStoppedShort(stoppedShort) };
+  }
+  if (!status && !widthChanged) return;
 
   await db
     .update(dnsFilterIntegrations)
     .set({
-      ...(stoppedShort
-        ? {
-            lastSyncStatus: 'partial',
-            lastSyncError:
-              `Reached the per-run request budget; ${stoppedShort.from.toISOString()}..` +
-              `${stoppedShort.to.toISOString()} not yet fetched, resumes next run`
-          }
-        : {}),
+      ...(status ?? {}),
       ...(widthChanged
         ? {
             config: sql`${dnsFilterIntegrations.config} || jsonb_build_object('syncSliceWidthMs', ${sliceWidthMs}::bigint)`
@@ -748,6 +790,9 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
     let fetched = 0;
     let inserted = 0;
     let walkEnd: DnsEventSliceWalkEnd | undefined;
+    // Windows the provider could only partly fetch (#10047), recorded on the
+    // integration once the walk ends — after every slice's `success` write.
+    const truncations: DnsEventSliceTruncation[] = [];
     try {
       for (;;) {
         // Phase 2 — fetch the next slice with NO DB context held
@@ -777,6 +822,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
           })
         );
         fetched += slice.events.length;
+        if (slice.truncated) truncations.push(slice.truncated);
       }
     } finally {
       // Release any provider-held session (best-effort; see
@@ -803,9 +849,9 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
       });
     }
 
-    if (walkEnd) {
-      const end = walkEnd;
-      await runWithSystemDbAccess(() => recordSliceWalkEnd(integration.id, config, end));
+    if (walkEnd || truncations.length > 0) {
+      const end = walkEnd ?? {};
+      await runWithSystemDbAccess(() => recordSliceWalkEnd(integration.id, config, end, truncations));
     }
 
     return {

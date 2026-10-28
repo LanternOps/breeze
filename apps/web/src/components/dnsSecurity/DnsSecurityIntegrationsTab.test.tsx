@@ -146,6 +146,36 @@ describe('DnsSecurityIntegrationsTab', () => {
     expect(cell).not.toHaveTextContent(/failed/);
   });
 
+  it('marks a sync that could not fetch every record as incomplete, with the lost windows on hover (#10047)', async () => {
+    const truncationMessage =
+      '1 window held more records than the provider lets a sync page through; records past that limit ' +
+      'were not fetched and will not be retried: 2026-10-22T04:00:00.000Z..2026-10-22T04:00:01.000Z (11000 fetched)';
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: [{
+          id: 'int-1',
+          orgId: 'org-1',
+          provider: 'umbrella',
+          name: 'Umbrella Prod',
+          enabled: true,
+          lastSync: '2026-10-22T06:00:00.000Z',
+          lastSyncStatus: 'truncated',
+          lastSyncError: truncationMessage,
+          totalEventsProcessed: 11000,
+          createdAt: '2026-05-01T00:00:00.000Z',
+        }],
+      }),
+    );
+
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    const cell = screen.getByText(/some events not fetched/);
+    expect(cell).toHaveAttribute('title', truncationMessage);
+    expect(cell).toHaveClass('text-warning');
+    expect(cell).not.toHaveTextContent(/failed|catching up/);
+  });
+
   it('surfaces an inline error banner when the list endpoint fails', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 500));
     render(<DnsSecurityIntegrationsTab />);

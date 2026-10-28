@@ -46,6 +46,11 @@ type Integration = {
 // background job removes its history and then the row itself.
 const DELETING_STATUS = 'deleting';
 
+/** A sync that reached the provider but did not fetch everything (#10018, #10047). */
+function isWarningSyncStatus(status: string | null): boolean {
+  return status === 'partial' || status === 'truncated';
+}
+
 function isDeleting(it: Integration): boolean {
   return it.isActive === false && it.lastSyncStatus === DELETING_STATUS;
 }
@@ -186,7 +191,9 @@ export default function DnsSecurityIntegrationsTab() {
                   </td>
                   <td className="px-4 py-2">
                     {/* 'partial': the last run hit the provider's request budget and the
-                        rest resumes next run (#10018); the unfetched range is on hover. */}
+                        rest resumes next run (#10018); the unfetched range is on hover.
+                        'truncated': some records were past the provider's paging limit and
+                        will never be fetched (#10047); the affected windows are on hover. */}
                     {isDeleting(it) ? (
                       <span className="text-muted-foreground">{t('dnsSecurityDnsSecurityIntegrationsTab.deletingInBackground')}</span>
                     ) : it.lastSync ? (
@@ -194,23 +201,25 @@ export default function DnsSecurityIntegrationsTab() {
                         className={
                           it.lastSyncStatus === 'error'
                             ? 'text-destructive'
-                            : it.lastSyncStatus === 'partial'
+                            : isWarningSyncStatus(it.lastSyncStatus)
                               ? 'text-warning'
                               : ''
                         }
-                        title={it.lastSyncStatus === 'partial' ? it.lastSyncError ?? undefined : undefined}
+                        title={isWarningSyncStatus(it.lastSyncStatus) ? it.lastSyncError ?? undefined : undefined}
                       >
                         {formatDateTime(it.lastSync)}
                         {it.lastSyncStatus === 'error' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncFailedSuffix')}
                         {it.lastSyncStatus === 'partial' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncPartialSuffix')}
+                        {it.lastSyncStatus === 'truncated' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncTruncatedSuffix')}
                       </span>
                     ) : (
                       <span
                         className="text-muted-foreground"
-                        title={it.lastSyncStatus === 'partial' ? it.lastSyncError ?? undefined : undefined}
+                        title={isWarningSyncStatus(it.lastSyncStatus) ? it.lastSyncError ?? undefined : undefined}
                       >
                         {t('dnsSecurityDnsSecurityIntegrationsTab.never')}
                         {it.lastSyncStatus === 'partial' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncPartialSuffix')}
+                        {it.lastSyncStatus === 'truncated' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncTruncatedSuffix')}
                       </span>
                     )}
                   </td>
