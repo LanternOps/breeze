@@ -400,6 +400,16 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(h.captureException).not.toHaveBeenCalled();
   });
 
+  it('a held slot that is not the onboarding note is reported once, with no retry', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockRejectedValue(new h.ConcernSubjectHeldError(SIG, 'someone-else'));
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+
   it('a failing raise never changes the skip result (reported, not thrown)', async () => {
     h.results.push([grantRow()], [{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });

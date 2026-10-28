@@ -284,7 +284,10 @@ async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: 
       await raise();
     } catch (err) {
       if (!(err instanceof ConcernSubjectHeldError)) throw err;
-      await resolveConcernBySignature(partnerId, `readiness:${orgId}`, 'superseded_no_effective_agent');
+      // Retry only when the onboarding note (`readiness:<org>`, written by
+      // assessmentFinalizer.applyReadiness) was the holder and is now closed.
+      const { resolved } = await resolveConcernBySignature(partnerId, `readiness:${orgId}`, 'superseded_no_effective_agent');
+      if (!resolved) throw err;
       await raise();
     }
   } catch (err) {
