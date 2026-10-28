@@ -550,6 +550,33 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
     }
   });
 
+  // Review finding: admission checks the kill switch BEFORE resolving the
+  // agent, so a missing agent with the switch off is the server's flag, not
+  // "create one" — and a research agent that would be provisioned at launch
+  // still cannot run.
+  it('kill switch off is named first: no agent yet (patch_plan) and a not-yet-provisioned research agent both refuse', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+    expect(await pre('patch_plan')).toMatchObject({ refused: 'agent_disabled', detail: 'kill_switch_off' });
+    h.tables.devices = [[{ id: DEVICE }]];
+    expect(await pre('remediation_research', { deviceId: DEVICE })).toMatchObject({ refused: 'agent_disabled', detail: 'kill_switch_off' });
+    expect(h.resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+    noSideEffects();
+  });
+
+  it('patch_plan: a failing agent-name lookup still refuses, with a generic sentence', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // No queued ai_agents rows: the db mock throws.
+    expect(await pre('patch_plan')).toEqual({
+      refused: 'agent_disabled',
+      detail: 'disabled',
+      message: expect.stringContaining('The agent this specialist needs is switched off'),
+    });
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('agent name lookup failed'), expect.objectContaining({ agentId: 'a' }));
+    err.mockRestore();
+  });
+
   it('patch_plan: an unreadable agent name still refuses, with a generic sentence', async () => {
     h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
     h.tables.ai_agents = [[]];

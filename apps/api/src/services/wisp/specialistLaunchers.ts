@@ -234,15 +234,30 @@ async function findSweepSchedule(partnerId: string, orgId: string, sweepKinds: z
 type ResolvedAgent = NonNullable<Awaited<ReturnType<typeof resolveEffectiveAgentSystem>>>;
 
 /**
- * Why an existing effective agent would be skipped at run admission
- * (runService rules 1 and 2: `kill_switch_off`, `agent_disabled`, `mode_off`),
- * or null when it can accept a run. The resolver folds the server's agent kill
- * switch into `enabled: false`, so the env is read only to name the cause.
+ * Run admission rule 1 (runService): with the server's agent kill switch off,
+ * every run is skipped `kill_switch_off` before any agent is resolved. Checked
+ * first here too, so a missing agent reads as the server flag (not "create
+ * one") and an agent provisioned at launch is not assumed to run.
+ */
+const KILL_SWITCH_REFUSAL: PrerequisiteRefusal = Object.freeze({
+  refused: 'agent_disabled',
+  detail: 'kill_switch_off',
+  message: agentOffMessage('kill_switch_off', null),
+});
+
+function agentsKillSwitchOff(): boolean {
+  return !envFlag('BREEZE_AI_AGENTS_ENABLED', false);
+}
+
+/**
+ * Why an existing effective agent would be skipped at run admission (rule 2:
+ * `agent_disabled`, `mode_off`), or null when it can accept a run. Reads the
+ * merged effective policy, so an org override that switches the partner's
+ * agent off counts. The resolver also folds the kill switch into
+ * `enabled: false`; callers check the switch first.
  */
 function agentOffReason(resolved: ResolvedAgent): AgentOffReason | null {
-  if (!resolved.effective.enabled) {
-    return envFlag('BREEZE_AI_AGENTS_ENABLED', false) ? 'disabled' : 'kill_switch_off';
-  }
+  if (!resolved.effective.enabled) return agentsKillSwitchOff() ? 'kill_switch_off' : 'disabled';
   return resolved.effective.mode === 'off' ? 'mode_off' : null;
 }
 
@@ -270,14 +285,15 @@ async function agentName(agentId: string): Promise<string | null> {
 async function agentOffRefusal(resolved: ResolvedAgent): Promise<PrerequisiteRefusal | null> {
   const reason = agentOffReason(resolved);
   if (!reason) return null;
-  const name = reason === 'kill_switch_off' ? null : await agentName(resolved.agentId);
-  return { refused: 'agent_disabled', detail: reason, message: agentOffMessage(reason, name) };
+  if (reason === 'kill_switch_off') return { ...KILL_SWITCH_REFUSAL };
+  return { refused: 'agent_disabled', detail: reason, message: agentOffMessage(reason, await agentName(resolved.agentId)) };
 }
 
 type LaunchableAgent = { ok: true; agentId: string } | { ok: false; refusal: PrerequisiteRefusal };
 
 /** The org's effective agent of `kind`, if one exists AND would be admitted. */
 async function resolveLaunchableAgent(orgId: string, kind: AiAgentKind): Promise<LaunchableAgent> {
+  if (agentsKillSwitchOff()) return { ok: false, refusal: { ...KILL_SWITCH_REFUSAL } };
   const resolved = await resolveEffectiveAgentSystem(orgId, kind);
   if (!resolved) return { ok: false, refusal: { refused: 'no_effective_agent' } };
   const off = await agentOffRefusal(resolved);
@@ -332,10 +348,11 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     return agent.ok ? null : agent.refusal;
   },
   // The research agent is provisioned at launch (ensureResearchAgent writes
-  // it enabled), so a missing one passes; only an existing one that is
-  // switched off is doomed.
+  // it enabled), so a missing one passes; the kill switch, or an existing one
+  // that is switched off, is doomed.
   remediation_research: async ({ orgId, params }) => {
     if (!(await deviceInOrg(orgId, researchParamsSchema.parse(params).deviceId))) return { refused: 'device_not_in_org' };
+    if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
     const resolved = await resolveEffectiveAgentSystem(orgId, 'research');
     return resolved ? agentOffRefusal(resolved) : null;
   },
