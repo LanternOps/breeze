@@ -6,7 +6,7 @@ folds_in: [10500]
 status: draft
 date: 2026-10-28
 base: main @ bd22427dfe
-tracking_issue: LanternOps/breeze#10528
+tracking_issue: LanternOps/breeze#10551
 ---
 
 # Alert → PSA ticket Implementation Plan
