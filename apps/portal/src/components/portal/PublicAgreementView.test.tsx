@@ -172,6 +172,12 @@ describe('PublicAgreementView', () => {
     expect(declined.textContent).not.toContain('has been notified');
   });
 
+  it('reopened after declining with no declined date on the row falls back to the notified copy', async () => {
+    mockLoaded({}, { status: 'declined', declinedAt: null });
+    await renderLoaded();
+    expect(screen.getByTestId('public-agreement-declined').textContent).toContain('Thanks — Lantern IT has been notified.');
+  });
+
   it('401 renders the generic invalid-link message, never "Session expired"', async () => {
     mockGet({ error: 'Session expired', statusCode: 401 } as never);
     render(<PublicAgreementView token={TOKEN} />);

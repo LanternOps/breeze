@@ -102,7 +102,8 @@ type ResolveOutcome = { ok: true; link: ResolvedAgreementLink } | { ok: false; r
 /**
  * Resolve a token to a live request, or the response that refuses it. Order:
  *   1. verifyAgreementAcceptToken (signature, audience, kind, exp);
- *   2. the Redis jti revocation (fails CLOSED when Redis is down);
+ *   2. the Redis jti marker (fails CLOSED when Redis is down) — refuses here
+ *      for `respond`; for `view` it is applied after step 6 (see `purpose`);
  *   3. resolveMergedOrgIds(claims.orgId, claims.partnerId);
  *   4. ONE system read of the request (id AND org_id IN orgIds) joined to its
  *      current org + partner;
@@ -112,8 +113,8 @@ type ResolveOutcome = { ok: true; link: ResolvedAgreementLink } | { ok: false; r
  *      partner (requests carry no partner_id; a re-parented org must not keep
  *      transacting on a link whose seller snapshot names the old partner).
  * Any of 1–6 (and a never-sent draft) → the IDENTICAL 401: unknown id, other
- * org, other partner, stale jti, bad signature and revoked jti are
- * indistinguishable. Then: tenant gate → 410 ORG_UNAVAILABLE; dead link → 410
+ * org, other partner, stale jti, bad signature and a marked jti (on an open
+ * row, for `view`) are indistinguishable. Then: tenant gate → 410 ORG_UNAVAILABLE; dead link → 410
  * LINK_REVOKED; an open request past its expiry instant (or reaper-expired) →
  * 410 AGREEMENT_EXPIRED. 410 bodies carry the partner name only.
  *

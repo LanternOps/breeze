@@ -163,9 +163,14 @@ describe('agreementsPublic token-route enumeration', () => {
     it(`${route.method} ${route.path}: answered link (marker armed, row signed) → ${route.method === 'GET' ? 'viewable' : '401, never answers twice'}`, async () => {
       vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true);
       vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({ status: 'signed', signedAt: new Date() }) as never);
+      vi.mocked(loadTemplateVersionRenderData).mockResolvedValue({
+        templateId: 'tpl', templateVersionId: 'v', sourceType: 'uploaded', bodyHtml: null,
+        fileData: Buffer.from('%PDF-1.7'), versionSha256: 'sha', declaredVariables: [],
+        templateName: 'Agreement', versionNumber: 1,
+      } as never);
       const res = await send(route);
       if (route.method === 'GET') {
-        expect(res.status).not.toBe(401);
+        expect(res.status).toBe(200);
         expect(loadTemplateVersionRenderData).toHaveBeenCalled();
       } else {
         expect(res.status).toBe(401);

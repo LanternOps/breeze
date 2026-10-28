@@ -384,16 +384,62 @@ describe('reopening an answered link (#10199)', () => {
     expect(markAgreementRequestViewed).not.toHaveBeenCalled();
   });
 
-  it('GET: an answered link is still refused by every durable check — reissued jti 401, re-parented org 401, void 410', async () => {
-    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed', { acceptTokenJti: 'jti-reissued' }) as never);
-    expect((await get()).status).toBe(401);
-    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue({ ...answered('signed'), partnerId: OTHER_PARTNER_ID } as never);
-    expect((await get()).status).toBe(401);
-    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed', { publicLinkRevokedAt: new Date() }) as never);
-    const voided = await get();
-    expect(voided.status).toBe(410);
-    expect((await voided.json()).code).toBe('LINK_REVOKED');
+  it.each([
+    ['reissued jti', () => answered('signed', { acceptTokenJti: 'jti-reissued' })],
+    ['re-parented org', () => ({ ...answered('signed'), partnerId: OTHER_PARTNER_ID })],
+  ])('GET: an answered link is still refused by the durable checks — %s → identical 401', async (_n, res) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(res() as never);
+    for (const path of ['', '/file']) {
+      const r = await get(path);
+      expect(r.status).toBe(401);
+      expect(await r.json()).toEqual(INVALID);
+    }
     expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  // The marker is armed post-commit by void too: a withdrawn link must say so
+  // (410 LINK_REVOKED), never fall back to "invalid or expired".
+  it.each([
+    ['voided', { status: 'voided', publicLinkRevokedAt: new Date() }],
+    ['link revoked on an open row', { status: 'sent', publicLinkRevokedAt: new Date() }],
+    ['link revoked on a signed row', { status: 'signed', signedAt: SIGNED_AT, publicLinkRevokedAt: new Date() }],
+  ])('GET: armed marker + %s → 410 LINK_REVOKED with branding, nothing rendered', async (_n, rowOver) => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, rowOver) as never);
+    for (const path of ['', '/file']) {
+      const r = await get(path);
+      expect(r.status).toBe(410);
+      const body = await r.json();
+      expect(body.code).toBe('LINK_REVOKED');
+      expect(body.data).toEqual({ branding: { partnerName: 'Acme MSP' } });
+    }
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  it('GET: armed marker + blocked tenant — an open row stays 401 (learns nothing), an answered row is 410 ORG_UNAVAILABLE', async () => {
+    const blocked = { gate: { orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true } };
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution(blocked, { status: 'viewed' }) as never);
+    const open = await get();
+    expect(open.status).toBe(401);
+    expect(await open.json()).toEqual(INVALID);
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue({ ...answered('signed'), ...blocked } as never);
+    const answeredRes = await get();
+    expect(answeredRes.status).toBe(410);
+    expect((await answeredRes.json()).code).toBe('ORG_UNAVAILABLE');
+    expect(loadTemplateVersionRenderData).not.toHaveBeenCalled();
+  });
+
+  it('GET: armed marker + reaper-expired row → identical 401 (never answered, so nothing to show)', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(resolution({}, { status: 'expired' }) as never);
+    const r = await get();
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual(INVALID);
+  });
+
+  it('GET: a signed row past its signing deadline still renders (expiry only gates open requests)', async () => {
+    vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(answered('signed', { expiresAt: new Date(NOW - 1_000_000) }) as never);
+    const r = await get();
+    expect(r.status).toBe(200);
+    expect((await r.json()).data.request.status).toBe('signed');
   });
 
   it.each([
