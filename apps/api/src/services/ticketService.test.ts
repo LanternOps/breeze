@@ -3707,14 +3707,21 @@ describe('editTicketComment', () => {
     expect(auditMock).not.toHaveBeenCalled();
   });
 
-  it('rejects editing a note whose only system marker is originPrincipalKind (409)', async () => {
-    const sysNote = { ...BASE_COMMENT, id: 'c-note', userId: null, commentType: 'internal', authorType: 'internal', originPrincipalKind: 'system' };
+  // Each marker alone must be enough — dropping any clause of
+  // isSystemAuthoredComment fails one of these.
+  it.each([
+    ['originPrincipalKind', { authorType: 'internal', originPrincipalKind: 'system' }],
+    ['authorType', { authorType: 'system', originPrincipalKind: null }],
+  ])('rejects editing a note whose only system marker is %s (409)', async (_marker, markers) => {
+    const sysNote = { ...BASE_COMMENT, id: 'c-note', userId: null, commentType: 'internal', ...markers };
     dbMocks.selectResult
       .mockResolvedValueOnce([sysNote])
       .mockResolvedValueOnce([BASE_TICKET]);
 
     const err = await editTicketComment('c-note', { content: 'x' }, { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
     expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('rejects editing an already-deleted comment (409)', async () => {
@@ -3858,6 +3865,21 @@ describe('deleteTicketComment', () => {
     expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
     expect(setMock).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['originPrincipalKind', { authorType: 'internal', originPrincipalKind: 'system' }],
+    ['authorType', { authorType: 'system', originPrincipalKind: null }],
+  ])('rejects deleting a note whose only system marker is %s (409)', async (_marker, markers) => {
+    const sysNote = { ...BASE_COMMENT, userId: null, commentType: 'internal', ...markers };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([sysNote])
+      .mockResolvedValueOnce([BASE_TICKET]);
+
+    const err = await deleteTicketComment('c1', { kind: 'user' as const, userId: 'admin' }, { canManageAny: true }).catch(e => e);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe('SYSTEM_COMMENT_READ_ONLY');
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('rejects deleting an already-deleted comment (409)', async () => {
