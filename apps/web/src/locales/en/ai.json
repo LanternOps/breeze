@@ -684,13 +684,24 @@
       "meter": "{{spent}} of {{budget}} today",
       "resets": "resets in {{hours}} h",
       "raise": "Raise today's budget",
+      "atCeiling": "Today's budget is at your plan's limit.",
+      "seePlans": "See plans",
       "label": "Wisp spend today"
     },
     "pause": "Pause Wisp",
     "resume": "Resume",
     "paused": {
       "byYou": "You paused Wisp. It won't check in or nudge you until you resume.",
-      "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on."
+      "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on.",
+      "system": {
+        "budgetExhausted": "Paused: today's budget is used up. Wisp resumes when the budget resets in {{hours}} h.",
+        "budgetExhaustedNoTime": "Paused: today's budget is used up. Wisp resumes when the budget resets.",
+        "grantorAccessLost": "Paused by Breeze: your access no longer covers this grant. Wisp resumes on its own when your access is back.",
+        "grantorSuspended": "Paused by Breeze: your account is suspended. Wisp resumes on its own when the suspension is lifted.",
+        "factorExpired": "Paused by Breeze: your sign-in check for this grant expired.",
+        "entitlementLost": "Paused by Breeze: your plan no longer includes Wisp. Wisp resumes on its own when your plan includes it again.",
+        "unknown": "Paused by Breeze. You can't resume it from here; it resumes on its own when the cause clears."
+      }
     },
     "live": {
       "checking": "Checking {{org}}…",
